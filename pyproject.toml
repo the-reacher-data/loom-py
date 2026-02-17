@@ -1,0 +1,111 @@
+[project]
+name = "loom"
+version = "0.1.0"
+description = "Loom Python project"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "msgspec>=0.18,<1.0",
+]
+
+[project.optional-dependencies]
+fastapi = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.30,<1.0",
+]
+sqlalchemy = [
+    "sqlalchemy>=2.0,<3.0",
+]
+cache = [
+    "aiocache>=0.12,<1.0",
+    "omegaconf>=2.3,<3.0",
+]
+pyspark = [
+    "pyspark>=3.5,<4.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "aiocache>=0.12,<1.0",
+    "aiosqlite>=0.20.0",
+    "commitizen>=3.30.0",
+    "fakeredis>=2.23.0",
+    "greenlet>=3.0.0",
+    "mypy>=1.11.0",
+    "omegaconf>=2.3,<3.0",
+    "pre-commit>=3.8.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "redis>=5.0.0",
+    "ruff>=0.6.0",
+    "sqlalchemy>=2.0,<3.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loom"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests/unit", "tests/integration"]
+pythonpath = ["src"]
+addopts = "-ra --log-disable=aiosqlite"
+asyncio_mode = "auto"
+log_cli = true
+log_cli_level = "DEBUG"
+log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+tag_format = "v$version"
+version_files = [
+    "pyproject.toml:project.version",
+    "src/loom/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+
+[tool.semantic_branch]
+prerelease = [
+    "hotfix/.*",
+    "feature/.*",
+    "feat/.*",
+    "multifeature/.*",
+    "breaking/.*",
+    "fix/.*",
+]
+patch = [
+    "hotfix/.*",
+    "fix/.*",
+]
+minor = [
+    "feature/.*",
+    "feat/.*",
+    "multifeature/.*",
+]
+major = [
+    "breaking/.*",
+]
+prerelease_ignore = [
+    "docs/.*",
+]
+release_ignore = [
+    "wip/.*",
+    "docs/.*",
+    "chore/.*",
+]
