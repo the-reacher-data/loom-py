@@ -5,8 +5,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, ClassVar, cast
 
 import msgspec
-from sqlalchemy import delete, exists, func, inspect, select
-from sqlalchemy.engine import CursorResult
+from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.repository.abc import (
@@ -150,6 +149,21 @@ class SQLAlchemyContextMixin:
                 result[name] = value
         return result
 
+    def _mutation_tags(self, obj: Any) -> frozenset[str]:
+        mapper = inspect(obj).mapper
+        table_name = str(getattr(self.model, "__tablename__", self.entity_name))
+        obj_id = getattr(obj, self.id_attribute, None)
+
+        tags: set[str] = {table_name, f"{table_name}:list"}
+        if obj_id is not None:
+            tags.add(f"{table_name}:id:{obj_id}")
+
+        for column in mapper.column_attrs:
+            value = getattr(obj, column.key, None)
+            if value is not None:
+                tags.add(f"{table_name}:{column.key}:{value}")
+        return frozenset(tags)
+
     def _projections_for_profile(self, profile: str) -> dict[str, Projection[Any]]:
         result: dict[str, Projection[Any]] = {}
         for name, projection in self._projection_map().items():
@@ -206,6 +220,7 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin):
                     op="create",
                     ids=(obj_id,),
                     changed_fields=frozenset(self._serialize_input(data).keys()),
+                    tags=self._mutation_tags(obj),
                 )
             )
             return cast(OutputT, self._to_output(obj))
@@ -306,6 +321,7 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin):
                         op="update",
                         ids=(obj_id,),
                         changed_fields=frozenset(changed_fields),
+                        tags=self._mutation_tags(obj),
                     )
                 )
 
@@ -318,17 +334,18 @@ class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin):
     async def delete(self, obj_id: IdT) -> bool:
         """Delete one entity by id."""
         async with self._session_scope() as scoped_session:
-            stmt = delete(self.model).where(self._id_column() == obj_id)
-            result = cast(CursorResult[Any], await scoped_session.execute(stmt))
-
-            if result.rowcount == 0:
+            obj = await scoped_session.get(self.model, obj_id)
+            if obj is None:
                 return False
+            tags = self._mutation_tags(obj)
+            await scoped_session.delete(obj)
 
             record_mutation(
                 MutationEvent(
                     entity=self.entity_name,
                     op="delete",
                     ids=(obj_id,),
+                    tags=tags,
                 )
             )
             return True

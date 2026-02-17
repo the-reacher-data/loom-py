@@ -58,7 +58,7 @@ class SessionManager:
         if connect_args is not None:
             engine_config["connect_args"] = connect_args
 
-        self._log = get_logger(__name__).bind(component="session_manager")
+        self._log = get_logger(__name__).bind(module="session_manager")
         self._engine = create_async_engine(url, **engine_config)
         self._session_factory = async_sessionmaker(
             bind=self._engine,
@@ -78,13 +78,13 @@ class SessionManager:
         Yields:
             An ``AsyncSession`` bound to the managed engine.
         """
-        self._log.debug("SessionOpen")
+        self._log.debug("SessionScopeOpened")
         session = self._session_factory()
         try:
             yield session
         finally:
             await session.close()
-            self._log.debug("SessionClosed")
+            self._log.debug("SessionScopeClosed")
 
     async def dispose(self) -> None:
         """Dispose of the engine and release all pooled connections."""

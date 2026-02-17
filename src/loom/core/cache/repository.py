@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Generic, Mapping, cast
 
 import msgspec
+from sqlalchemy import inspect as sa_inspect
 
 from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
@@ -14,11 +16,18 @@ from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
+from loom.core.repository.sqlalchemy.projection import Projection
 
 
 class _ListIndexPayload(msgspec.Struct):
     ids: list[Any]
     total_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _DependencySpec:
+    entity: str
+    fk_field: str
 
 
 class CachedRepository(
@@ -48,9 +57,7 @@ class CachedRepository(
         self._cache = cache
         self._resolver = dependency_resolver
         self._entity_name = getattr(repository, "entity_name", repository.__class__.__name__.lower())
-        self._depends_on = self._parse_dependency_specs(
-            getattr(repository, "depends_on", ()),
-        )
+        self._depends_on = self._parse_dependency_specs(self._collect_dependency_specs(repository))
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
 
     @property
@@ -355,30 +362,59 @@ class CachedRepository(
 
     def _list_dependency_tags(self) -> list[str]:
         tags: list[str] = []
-        for dep_entity, _fk_field in self._depends_on:
-            tags.append(dep_entity)
-            tags.append(f"{dep_entity}:list")
+        for dependency in self._depends_on:
+            tags.append(dependency.entity)
+            tags.append(f"{dependency.entity}:list")
         return tags
 
     def _entity_dependency_tags(self, obj_id: object) -> list[str]:
         tags: list[str] = []
-        for dep_entity, _fk_field in self._depends_on:
-            tags.append(dep_entity)
-            tags.append(f"{dep_entity}:list")
-            tags.append(f"{dep_entity}:id:{obj_id}")
+        for dependency in self._depends_on:
+            tags.append(dependency.entity)
+            tags.append(f"{dependency.entity}:list")
+            tags.append(f"{dependency.entity}:{dependency.fk_field}:{obj_id}")
         return tags
 
-    def _parse_dependency_specs(self, specs: tuple[str, ...]) -> list[tuple[str, str]]:
-        deps: list[tuple[str, str]] = []
+    def _parse_dependency_specs(self, specs: tuple[str, ...]) -> list[_DependencySpec]:
+        deps: list[_DependencySpec] = []
         for spec in specs:
             if ":" not in spec:
-                continue
+                raise ValueError(f"Invalid dependency spec '{spec}'. Expected format '<entity>:<fk_field>'")
             entity_name, fk_field = spec.split(":", 1)
             entity = entity_name.strip()
             field = fk_field.strip()
-            if entity and field:
-                deps.append((entity, field))
+            if not entity or not field:
+                raise ValueError(f"Invalid dependency spec '{spec}'. Empty entity or fk field")
+            deps.append(_DependencySpec(entity=entity, fk_field=field))
         return deps
+
+    def _collect_dependency_specs(self, repository: Repository[OutputT, CreateT, UpdateT, IdT]) -> tuple[str, ...]:
+        specs: list[str] = list(getattr(repository, "depends_on", ()))
+        model = getattr(repository, "model", None)
+        if model is None:
+            return tuple(specs)
+
+        if hasattr(model, "__mapper__"):
+            mapper = sa_inspect(model)
+            for relationship in mapper.relationships:
+                raw_specs = (relationship.info or {}).get("depends_on", ())
+                specs.extend(self._normalize_specs(raw_specs))
+
+        for value in vars(model).values():
+            if isinstance(value, Projection):
+                specs.extend(value.depends_on)
+        return tuple(dict.fromkeys(specs))
+
+    def _normalize_specs(self, raw_specs: object) -> tuple[str, ...]:
+        if raw_specs is None:
+            return ()
+        if isinstance(raw_specs, str):
+            return (raw_specs,)
+        if isinstance(raw_specs, tuple):
+            return tuple(raw_specs)
+        if isinstance(raw_specs, list):
+            return tuple(raw_specs)
+        raise TypeError("depends_on metadata must be str, list[str], tuple[str, ...], or None")
 
     def _to_builtins(self, value: Any) -> Any:
         if isinstance(value, msgspec.Struct):

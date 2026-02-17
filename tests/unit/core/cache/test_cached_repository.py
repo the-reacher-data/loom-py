@@ -7,6 +7,7 @@ import msgspec
 from pytest import fixture, mark
 
 from loom.core.cache import CacheConfig, CachedRepository, GenerationalDependencyResolver, cache_query, cached
+from loom.core.cache.keys import entity_key
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import build_page_result
 from loom.core.repository.mutation import MutationEvent
@@ -141,6 +142,7 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
     def __init__(self) -> None:
         self.storage: dict[int, _EntityOut] = {}
         self.get_calls = 0
+        self.list_calls = 0
         self.custom_calls = 0
         self.session_manager = _FakeSessionManager()
 
@@ -160,6 +162,7 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
     ) -> PageResult[_EntityOut]:
         _ = filter_params
         _ = profile
+        self.list_calls += 1
         values = list(self.storage.values())
         start = page_params.offset
         end = start + page_params.limit
@@ -322,3 +325,33 @@ class TestCachedRepository:
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 2
+
+    @mark.asyncio
+    async def test_list_paginated_refills_missing_entity_from_repository(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        await wrapped_repository.create(_Create(name="a"))
+        await wrapped_repository.create(_Create(name="b"))
+        page_params = PageParams(page=1, limit=2)
+
+        first_page = await wrapped_repository.list_paginated(page_params)
+        assert len(first_page.items) == 2
+
+        cache_backend = wrapped_repository._cache
+        resolver = wrapped_repository._resolver
+        first_id = 1
+        first_tags = resolver.entity_tags(wrapped_repository.entity_name, first_id)
+        first_tags.extend(wrapped_repository._entity_dependency_tags(first_id))
+        first_fingerprint = await resolver.fingerprint(first_tags)
+        missing_key = entity_key(wrapped_repository.entity_name, first_id, "default", first_fingerprint)
+        await cache_backend.delete(missing_key)
+
+        second_page = await wrapped_repository.list_paginated(page_params)
+        assert len(second_page.items) == 2
+        assert tuple(item.id for item in second_page.items) == (1, 2)
+
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+        assert repo.list_calls == 1
+        assert repo.get_calls == 1

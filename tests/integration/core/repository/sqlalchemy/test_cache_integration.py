@@ -212,7 +212,7 @@ class TestRelatedInvalidationIntegration:
                     ids=(1,),
                     tags=frozenset(
                         {
-                            f"product_reviews:id:{product_id}",
+                            f"product_reviews:product_id:{product_id}",
                             "product_reviews",
                             "product_reviews:list",
                             f"productmodel:id:{product_id}",
@@ -222,7 +222,6 @@ class TestRelatedInvalidationIntegration:
                 ),
             )
         )
-
         second = await cached_integration_repo.get_by_id(product_id, profile="with_details")
         assert second is not None
         assert second.count_reviews == 1
