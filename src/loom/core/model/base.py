@@ -16,7 +16,7 @@ def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
         eval_ns: dict[str, Any] = {}
         eval_ns.update(namespace)
         eval_ns.setdefault("typing", typing)
-        return typing.ForwardRef(annotation)._evaluate(eval_ns, eval_ns, set())
+        return typing.ForwardRef(annotation)._evaluate(eval_ns, eval_ns, frozenset[str]())
     return annotation
 
 

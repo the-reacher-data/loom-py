@@ -118,7 +118,7 @@ class CachedRepository(
         )
 
         ids = [
-            entity_id
+            cast(IdT, entity_id)
             for item in page.items
             for entity_id in [self._extract_entity_id(item)]
             if entity_id is not None
@@ -202,11 +202,9 @@ class CachedRepository(
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _extract_entity_id(self, item: Any) -> IdT | None:
+    def _extract_entity_id(self, item: Any) -> object | None:
         value = getattr(item, "id", None)
-        if value is None:
-            return None
-        return cast(IdT, value)
+        return value
 
     def _wrap_custom_cached_method(
         self,
