@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from loom.core.backend.sqlalchemy import get_compiled
 from loom.core.model import (
     BaseModel,
     Cardinality,
@@ -43,7 +42,7 @@ class Product(BaseModel):
 
     has_reviews: bool = Projection(
         loader=ExistsLoader(
-            table=lambda: get_compiled(ProductReview).__table__,
+            table=ProductReview,
             foreign_key="product_id",
         ),
         profiles=("with_details",),
@@ -52,7 +51,7 @@ class Product(BaseModel):
     )
     count_reviews: int = Projection(
         loader=CountLoader(
-            table=lambda: get_compiled(ProductReview).__table__,
+            table=ProductReview,
             foreign_key="product_id",
         ),
         profiles=("with_details",),
@@ -61,7 +60,7 @@ class Product(BaseModel):
     )
     review_snippets: list[dict[str, Any]] = Projection(
         loader=JoinFieldsLoader(
-            table=lambda: get_compiled(ProductReview).__table__,
+            table=ProductReview,
             foreign_key="product_id",
             value_columns=("id", "rating", "comment"),
         ),

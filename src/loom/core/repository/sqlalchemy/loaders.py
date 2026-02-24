@@ -9,7 +9,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import FromClause
 
-TableRef = FromClause | Callable[[], FromClause]
+from loom.core.backend.sqlalchemy import get_compiled
+
+TableRef = FromClause | type | Callable[[], FromClause | type]
+
+
+def _resolve_table_ref(table_ref: TableRef) -> FromClause:
+    if isinstance(table_ref, type):
+        resolved = table_ref
+    elif callable(table_ref):
+        resolved = table_ref()
+    else:
+        resolved = table_ref
+    if isinstance(resolved, FromClause):
+        return resolved
+
+    direct_table = getattr(resolved, "__table__", None)
+    if isinstance(direct_table, FromClause):
+        return direct_table
+
+    compiled = get_compiled(resolved)
+    compiled_table = getattr(compiled, "__table__", None) if compiled is not None else None
+    if isinstance(compiled_table, FromClause):
+        return compiled_table
+
+    raise TypeError(
+        "Invalid table reference. Use a SQLAlchemy table/from clause or a compiled/uncompiled model class.",
+    )
 
 
 class ProjectionLoader(Protocol):
@@ -52,7 +78,7 @@ class CountLoader:
         self.where_clauses = tuple(where_clauses)
 
     def _table(self) -> FromClause:
-        return self.table() if callable(self.table) else self.table
+        return _resolve_table_ref(self.table)
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
@@ -103,7 +129,7 @@ class ExistsLoader:
         self.where_clauses = tuple(where_clauses)
 
     def _table(self) -> FromClause:
-        return self.table() if callable(self.table) else self.table
+        return _resolve_table_ref(self.table)
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
@@ -156,7 +182,7 @@ class JoinFieldsLoader:
         self.order_by = tuple(order_by)
 
     def _table(self) -> FromClause:
-        return self.table() if callable(self.table) else self.table
+        return _resolve_table_ref(self.table)
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
