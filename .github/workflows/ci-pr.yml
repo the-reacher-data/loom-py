@@ -7,6 +7,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  security-events: write
 
 jobs:
   validate:
@@ -89,14 +90,21 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Snyk dependency scan
+        id: snyk
         if: ${{ env.SNYK_TOKEN != '' }}
         continue-on-error: true
         uses: snyk/actions/python@master
         with:
           command: test
-          args: --severity-threshold=high --all-projects
+          args: --severity-threshold=high --all-projects --sarif-file-output=snyk.sarif
         env:
           SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
+
+      - name: Upload Snyk SARIF to GitHub Security
+        if: ${{ always() && env.SNYK_TOKEN != '' && hashFiles('snyk.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
 
       - name: Publish prerelease package to TestPyPI
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.TEST_PYPI_API_TOKEN != '' && steps.version.outputs.deploy == 'true' }}
