@@ -15,7 +15,6 @@ jobs:
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/uv-ci-pr
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,6 +26,12 @@ jobs:
           python-version: "3.11"
 
       - uses: astral-sh/setup-uv@v3
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-pr" >> "$GITHUB_ENV"
 
       - name: Fetch PR base branch for changelog diff
         shell: bash
