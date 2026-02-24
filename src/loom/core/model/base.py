@@ -16,7 +16,7 @@ def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
         eval_ns: dict[str, Any] = {}
         eval_ns.update(namespace)
         eval_ns.setdefault("typing", typing)
-        return eval(annotation, eval_ns)  # noqa: S307
+        return typing.ForwardRef(annotation)._evaluate(eval_ns, eval_ns, set())
     return annotation
 
 

@@ -10,9 +10,9 @@ def stable_hash(value: str) -> str:
         value: Arbitrary string to hash.
 
     Returns:
-        A 16-character hexadecimal SHA-1 digest prefix.
+        A 16-character hexadecimal SHA-256 digest prefix.
     """
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def entity_key(
