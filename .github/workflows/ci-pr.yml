@@ -106,7 +106,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/loom/__init__.py
+          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
+          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
           uv run --with build python -m build
           uv run --with twine twine upload \
             --repository-url https://test.pypi.org/legacy/ \

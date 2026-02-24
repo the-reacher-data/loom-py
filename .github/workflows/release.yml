@@ -49,14 +49,15 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           output: CHANGELOG_RELEASE.md
 
-      - name: Sync package __version__
+      - name: Sync project version
         if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/loom/__init__.py
+          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
+          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
 
       - name: Build package
         if: ${{ steps.version.outputs.deploy == 'true' }}
