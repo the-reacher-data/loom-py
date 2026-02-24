@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import Annotated
 
-from loom.core.repository.sqlalchemy.model import BaseModel
+from loom.core.model import BaseModel, Field, Integer, String
 
 
-class CategoryModel(BaseModel):
+class Category(BaseModel):
     __tablename__ = "categories"
 
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    id: Annotated[int, Integer, Field(primary_key=True, autoincrement=True)]
+    name: Annotated[str, String(100)]

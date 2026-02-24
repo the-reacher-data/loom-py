@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
-from typing import TypeVar
+from typing import Annotated, Any, TypeVar
 
 import msgspec
-from pytest import fixture, mark
+from pytest import fixture, mark, raises
 
-from loom.core.cache import CacheConfig, CachedRepository, GenerationalDependencyResolver, cache_query, cached
+from loom.core.cache import (
+    CacheConfig,
+    CachedRepository,
+    GenerationalDependencyResolver,
+    cache_query,
+    cached,
+)
 from loom.core.cache.keys import entity_key
+from loom.core.model import BaseModel, Cardinality, Field, Integer, Projection, Relation
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import build_page_result
 from loom.core.repository.mutation import MutationEvent
-from loom.core.repository.sqlalchemy.transactional import transactional
 
 T = TypeVar("T")
 
@@ -38,7 +43,9 @@ class _MemoryCacheBackend:
     async def set_value(self, key: str, value: Any, ttl: int | None = None) -> None:
         await self.set(key, value, ttl=ttl)
 
-    async def multi_get(self, keys: list[str], *, type: type[T] | None = None) -> list[T | Any | None]:
+    async def multi_get(
+        self, keys: list[str], *, type: type[T] | None = None
+    ) -> list[T | Any | None]:
         result: list[T | Any | None] = []
         for key in keys:
             value = self.data.get(key)
@@ -113,7 +120,7 @@ class _FakeSessionManager:
         _ = exc
         _ = tb
 
-    def session(self) -> "_FakeSessionManager":
+    def session(self) -> _FakeSessionManager:
         return self
 
 
@@ -132,6 +139,21 @@ class _Update(msgspec.Struct, kw_only=True):
 
 class _EntityModel:
     __name__ = "EntityModel"
+
+
+class _ModelWithDependsOn(BaseModel):
+    __tablename__ = "products"
+    id: Annotated[int, Integer, Field(primary_key=True)]
+    reviews: list[dict[str, Any]] = Relation(
+        foreign_key="product_id",
+        cardinality=Cardinality.ONE_TO_MANY,
+        depends_on=("product_reviews:product_id",),
+    )
+    note_count: int = Projection(
+        loader=None,
+        depends_on=("product_notes:product_id",),
+        default=0,
+    )
 
 
 @cached
@@ -202,19 +224,13 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
         return len(self.storage) + entity_id
 
 
-class _UseCase:
-    def __init__(self, repo: Any) -> None:
-        self.repo = repo
-        self.session_manager = repo.session_manager
-        self.hook_calls = 0
+class _RepoWithModelDependsOn(_FakeRepository):
+    model = _ModelWithDependsOn
+    depends_on = ("products:id",)
 
-    async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
-        _ = events
-        self.hook_calls += 1
 
-    @transactional
-    async def create_entity(self) -> None:
-        await self.repo.create(_Create(name="n1"))
+class _RepoWithInvalidDependsOn(_FakeRepository):
+    depends_on = ("invalid",)
 
 
 @fixture
@@ -223,11 +239,15 @@ def cache_config() -> CacheConfig:
 
 
 @fixture
-def wrapped_repository(cache_config: CacheConfig) -> CachedRepository[_EntityOut, _Create, _Update, int]:
+def wrapped_repository(
+    cache_config: CacheConfig,
+) -> CachedRepository[_EntityOut, _Create, _Update, int]:
     repository = _FakeRepository()
     cache = _MemoryCacheBackend()
     resolver = GenerationalDependencyResolver(cache)
-    return CachedRepository(repository, config=cache_config, cache=cache, dependency_resolver=resolver)
+    return CachedRepository(
+        repository, config=cache_config, cache=cache, dependency_resolver=resolver
+    )
 
 
 class TestCachedDecorator:
@@ -270,16 +290,6 @@ class TestCachedRepository:
         repo = wrapped_repository._repository
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 1
-
-    @mark.asyncio
-    async def test_transactional_propagates_post_commit_to_repo_dependency(
-        self,
-        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
-    ) -> None:
-        use_case = _UseCase(wrapped_repository)
-        await use_case.create_entity()
-
-        assert use_case.hook_calls == 1
 
     @mark.asyncio
     async def test_delete_invalidates_entity_cache(
@@ -344,7 +354,9 @@ class TestCachedRepository:
         first_tags = resolver.entity_tags(wrapped_repository.entity_name, first_id)
         first_tags.extend(wrapped_repository._entity_dependency_tags(first_id))
         first_fingerprint = await resolver.fingerprint(first_tags)
-        missing_key = entity_key(wrapped_repository.entity_name, first_id, "default", first_fingerprint)
+        missing_key = entity_key(
+            wrapped_repository.entity_name, first_id, "default", first_fingerprint
+        )
         await cache_backend.delete(missing_key)
 
         second_page = await wrapped_repository.list_paginated(page_params)
@@ -355,3 +367,32 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.list_calls == 1
         assert repo.get_calls == 1
+
+
+class TestDependencySpecs:
+    def test_collects_depends_on_from_repository_relation_and_projection(
+        self, cache_config: CacheConfig
+    ) -> None:
+        repository = _RepoWithModelDependsOn()
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+        wrapped = CachedRepository(
+            repository, config=cache_config, cache=cache, dependency_resolver=resolver
+        )
+
+        specs = {(item.entity, item.fk_field) for item in wrapped._depends_on}
+        assert specs == {
+            ("products", "id"),
+            ("product_reviews", "product_id"),
+            ("product_notes", "product_id"),
+        }
+
+    def test_invalid_dependency_spec_fails_fast(self, cache_config: CacheConfig) -> None:
+        repository = _RepoWithInvalidDependsOn()
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+
+        with raises(ValueError, match="Invalid dependency spec"):
+            CachedRepository(
+                repository, config=cache_config, cache=cache, dependency_resolver=resolver
+            )

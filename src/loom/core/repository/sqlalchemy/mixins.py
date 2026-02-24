@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import msgspec
 from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loom.core.model.introspection import (
+    get_column_fields,
+    get_id_attribute,
+    get_projections,
+    get_relations,
+    get_table_name,
+)
 from loom.core.repository.abc import (
     FilterParams,
     IdT,
@@ -17,7 +23,6 @@ from loom.core.repository.abc import (
     build_page_result,
 )
 from loom.core.repository.mutation import MutationEvent
-from loom.core.repository.sqlalchemy.projection import Projection
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
@@ -27,25 +32,49 @@ class SQLAlchemyContextMixin:
     """Shared context and helper methods for all SQLAlchemy repository mixins."""
 
     model: type[Any]
-    id_attribute: ClassVar[str] = "id"
-    output_fields: ClassVar[tuple[str, ...]] = ()
-    output_struct: ClassVar[type[msgspec.Struct] | None] = None
-    include_loaded_relationships: ClassVar[bool] = True
-    _output_struct_cache: ClassVar[dict[tuple[str, tuple[str, ...]], type[msgspec.Struct]]] = {}
+    _sa_model: type[Any] | None = None
+    _id_attr: str | None = None
+    _column_field_names: frozenset[str] | None = None
+
+    def _init_struct_model(self) -> None:
+        """Resolve SA model and metadata from a Struct-based model definition."""
+        from loom.core.backend.sqlalchemy import get_compiled
+
+        sa = get_compiled(self.model)
+        if sa is None:
+            raise RuntimeError(
+                f"Model {self.model.__name__} has not been compiled. "
+                f"Call compile_model() or compile_all() before creating a repository."
+            )
+        self._sa_model = sa
+        self._id_attr = get_id_attribute(self.model)
+        self._column_field_names = frozenset(get_column_fields(self.model).keys())
+
+    @property
+    def _effective_sa_model(self) -> type[Any]:
+        if self._sa_model is not None:
+            return self._sa_model
+        return self.model
+
+    @property
+    def _effective_id_attribute(self) -> str:
+        if self._id_attr is not None:
+            return self._id_attr
+        return "id"
 
     def create_object(self, data: msgspec.Struct) -> Any:
         """Create a model instance from a struct without persisting it."""
-        return self.model(**self._serialize_input(data))
+        return self._effective_sa_model(**self._serialize_input(data))
 
     @property
     def entity_name(self) -> str:
         """Return normalized entity name for mutation tracking."""
-        return self.model.__name__.lower()
+        return get_table_name(self.model)
 
     def _id_column(self) -> Any:
-        return getattr(self.model, self.id_attribute)
+        return getattr(self._effective_sa_model, self._effective_id_attribute)
 
-    def _serialize_input(self, data: msgspec.Struct | Mapping[str, Any]) -> dict[str, Any]:
+    def _serialize_input(self, data: msgspec.Struct | dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, msgspec.Struct):
             builtins = msgspec.to_builtins(data)
             if not isinstance(builtins, dict):
@@ -54,147 +83,104 @@ class SQLAlchemyContextMixin:
         return dict(data)
 
     def _get_profile_options(self, profile: str) -> list[Any]:
-        getter = getattr(self.model, "get_profile_options", None)
-        if callable(getter):
-            return list(getter(profile))
-        return []
+        from sqlalchemy.orm import selectinload
 
-    def _resolve_output_struct(self) -> type[msgspec.Struct]:
-        cls = type(self)
-        if cls.output_struct is not None:
-            return cls.output_struct
+        sa_model = self._effective_sa_model
+        relations = get_relations(self.model)
+        options: list[Any] = []
+        for rel_name, rel in relations.items():
+            if profile in rel.profiles:
+                attr = getattr(sa_model, rel_name, None)
+                if attr is not None:
+                    options.append(selectinload(attr))
+        return options
 
-        mapper = inspect(self.model)
-        field_names = [column.key for column in mapper.column_attrs]
-        field_names.extend(self.output_fields)
-        unique_fields = []
-        seen: set[str] = set()
-        for name in field_names:
-            if name in seen:
-                continue
-            seen.add(name)
-            unique_fields.append((name, Any))
+    def _to_output(
+        self,
+        obj: Any,
+        profile: str = "default",
+        projection_values: dict[str, Any] | None = None,
+    ) -> Any:
+        """Convert an SA ORM object to the Struct model."""
+        mapper = inspect(obj).mapper
+        column_names = self._column_field_names or frozenset()
 
-        struct_cls = msgspec.defstruct(
-            f"{self.model.__name__}Output",
-            unique_fields,
-            kw_only=True,
-        )
-        cls.output_struct = struct_cls
-        return struct_cls
+        kwargs: dict[str, Any] = {}
+        for col in mapper.column_attrs:
+            if col.key in column_names:
+                kwargs[col.key] = getattr(obj, col.key)
 
-    def _resolve_output_struct_for_payload(self, payload: dict[str, Any]) -> type[msgspec.Struct]:
-        if self.output_struct is not None:
-            return self.output_struct
+        relations = get_relations(self.model)
+        for rel_name, rel in relations.items():
+            if profile in rel.profiles and rel_name in obj.__dict__:
+                kwargs[rel_name] = self._serialize_related(getattr(obj, rel_name))
 
-        keys = tuple(sorted(payload.keys()))
-        qualified_name = self.model.__qualname__
-        cache_key = (qualified_name, keys)
-        cached = self._output_struct_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if projection_values:
+            kwargs.update(projection_values)
 
-        fields = [(key, Any) for key in keys]
-        struct_cls = msgspec.defstruct(
-            f"{qualified_name}Output_{abs(hash(keys))}",
-            fields,
-            kw_only=True,
-        )
-        self._output_struct_cache[cache_key] = struct_cls
-        return struct_cls
+        return self.model(**kwargs)
 
     def _serialize_related(self, value: Any) -> Any:
+        """Recursively serialize ORM relationship values to dicts/lists."""
         if value is None:
             return None
-
         if isinstance(value, list):
             return [self._serialize_related(item) for item in value]
-
         if hasattr(value, "__mapper__"):
             rel_mapper = inspect(value).mapper
-            return {column.key: getattr(value, column.key) for column in rel_mapper.column_attrs}
-
+            return {col.key: getattr(value, col.key) for col in rel_mapper.column_attrs}
         return value
 
-    def _to_output(self, obj: Any) -> msgspec.Struct:
-        mapper = inspect(obj).mapper
-        payload = {column.key: getattr(obj, column.key) for column in mapper.column_attrs}
-
-        for field_name in self.output_fields:
-            payload[field_name] = getattr(obj, field_name, None)
-
-        for projection_name, projection in self._projection_map().items():
-            if projection.has_value(obj):
-                payload[projection_name] = getattr(obj, projection_name)
-
-        if self.include_loaded_relationships:
-            for relationship in mapper.relationships:
-                rel_name = relationship.key
-                if rel_name in obj.__dict__:
-                    payload[rel_name] = self._serialize_related(getattr(obj, rel_name))
-
-        struct_cls = self._resolve_output_struct_for_payload(payload)
-        return struct_cls(**payload)
-
-    def to_output_from_payload(self, payload: Mapping[str, Any]) -> msgspec.Struct:
-        """Build dynamic msgspec output from cached dict payload."""
-        payload_dict = dict(payload)
-        struct_cls = self._resolve_output_struct_for_payload(payload_dict)
-        return struct_cls(**payload_dict)
-
-    def _projection_map(self) -> dict[str, Projection[Any]]:
-        result: dict[str, Projection[Any]] = {}
-        for name, value in vars(self.model).items():
-            if isinstance(value, Projection):
-                result[name] = value
-        return result
+    def to_output_from_payload(self, payload: dict[str, Any]) -> Any:
+        """Build output from a cached dict payload."""
+        return msgspec.convert(dict(payload), type=self.model)
 
     def _mutation_tags(self, obj: Any) -> frozenset[str]:
-        mapper = inspect(obj).mapper
-        table_name = str(getattr(self.model, "__tablename__", self.entity_name))
-        obj_id = getattr(obj, self.id_attribute, None)
-
+        table_name = get_table_name(self.model)
+        obj_id = getattr(obj, self._effective_id_attribute, None)
         tags: set[str] = {table_name, f"{table_name}:list"}
         if obj_id is not None:
             tags.add(f"{table_name}:id:{obj_id}")
 
+        mapper = inspect(obj).mapper
         for column in mapper.column_attrs:
             value = getattr(obj, column.key, None)
             if value is not None:
                 tags.add(f"{table_name}:{column.key}:{value}")
         return frozenset(tags)
 
-    def _projections_for_profile(self, profile: str) -> dict[str, Projection[Any]]:
-        result: dict[str, Projection[Any]] = {}
-        for name, projection in self._projection_map().items():
-            if profile in projection.profiles:
-                result[name] = projection
-        return result
+    def _projections_for_profile(self, profile: str) -> dict[str, Any]:
+        """Return projections active for the given profile."""
+        struct_projections = get_projections(self.model)
+        return {name: proj for name, proj in struct_projections.items() if profile in proj.profiles}
 
-    async def _populate_projection_values(
+    async def _collect_projection_values(
         self,
         scoped_session: AsyncSession,
         objs: list[Any],
         profile: str,
-    ) -> None:
+    ) -> dict[int, dict[str, Any]]:
+        """Batch-load projection values for a list of ORM objects."""
         if not objs:
-            return
+            return {}
         projections = self._projections_for_profile(profile)
         if not projections:
-            return
+            return {}
 
-        obj_ids = [getattr(obj, self.id_attribute) for obj in objs]
+        id_attr = self._effective_id_attribute
+        obj_ids = [getattr(obj, id_attr) for obj in objs]
+        values_by_index: dict[int, dict[str, Any]] = {i: {} for i in range(len(objs))}
+
         for field_name, projection in projections.items():
             loader = projection.loader
             if loader is None:
                 continue
             rows = await loader.load_many(scoped_session, obj_ids)
-            for obj in objs:
-                obj_id = getattr(obj, self.id_attribute)
-                if obj_id in rows:
-                    setattr(obj, field_name, rows[obj_id])
-                else:
-                    setattr(obj, field_name, projection.default)
+            default = projection.default
+            for i, oid in enumerate(obj_ids):
+                values_by_index[i][field_name] = rows.get(oid, default)
+
+        return values_by_index
 
     def _session_scope(
         self, session: AsyncSession | None = None
@@ -208,12 +194,14 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin):
     async def create(self, data: msgspec.Struct) -> OutputT:
         """Persist one entity and return its output struct."""
         async with self._session_scope() as scoped_session:
-            obj = self.model(**self._serialize_input(data))
+            sa_model = self._effective_sa_model
+            obj = sa_model(**self._serialize_input(data))
             scoped_session.add(obj)
             await scoped_session.flush()
             await scoped_session.refresh(obj)
 
-            obj_id = getattr(obj, self.id_attribute, None)
+            id_attr = self._effective_id_attribute
+            obj_id = getattr(obj, id_attr, None)
             record_mutation(
                 MutationEvent(
                     entity=self.entity_name,
@@ -227,7 +215,7 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin):
 
 
 class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
-    """Mixin providing read operations (``get_by_id``, ``list_paginated``, ``exists``) for SQLAlchemy repositories."""
+    """Mixin providing read operations for SQLAlchemy repositories."""
 
     async def get_by_id(
         self,
@@ -236,11 +224,12 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
     ) -> OutputT | None:
         """Fetch one entity by id with optional profile-aware loading."""
         async with self._session_scope() as scoped_session:
+            sa_model = self._effective_sa_model
             options = self._get_profile_options(profile)
 
             if options:
                 stmt = (
-                    select(self.model)
+                    select(sa_model)
                     .where(self._id_column() == obj_id)
                     .options(*options)
                     .execution_options(populate_existing=True)
@@ -248,12 +237,20 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
                 result = await scoped_session.execute(stmt)
                 obj = result.scalar_one_or_none()
             else:
-                obj = await scoped_session.get(self.model, obj_id)
+                obj = await scoped_session.get(sa_model, obj_id)
 
             if obj is None:
                 return None
-            await self._populate_projection_values(scoped_session, [obj], profile)
-            return cast(OutputT, self._to_output(obj))
+
+            pv = await self._collect_projection_values(
+                scoped_session,
+                [obj],
+                profile,
+            )
+            return cast(
+                OutputT,
+                self._to_output(obj, profile=profile, projection_values=pv.get(0)),
+            )
 
     async def list_paginated(
         self,
@@ -263,12 +260,13 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
     ) -> PageResult[OutputT]:
         """Fetch a paginated entity list and total count."""
         async with self._session_scope() as scoped_session:
+            sa_model = self._effective_sa_model
             options = self._get_profile_options(profile)
-            stmt = select(self.model).order_by(self._id_column())
+            stmt = select(sa_model).order_by(self._id_column())
             if options:
                 stmt = stmt.options(*options)
 
-            count_stmt = select(func.count()).select_from(self.model)
+            count_stmt = select(func.count()).select_from(sa_model)
 
             if filter_params and filter_params.filters:
                 stmt = stmt.filter_by(**filter_params.filters)
@@ -280,8 +278,24 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
             total_result = await scoped_session.execute(count_stmt)
 
             loaded_items = list(items_result.scalars().all())
-            await self._populate_projection_values(scoped_session, loaded_items, profile)
-            items: list[OutputT] = [cast(OutputT, self._to_output(item)) for item in loaded_items]
+
+            proj_map = await self._collect_projection_values(
+                scoped_session,
+                loaded_items,
+                profile,
+            )
+            items: list[OutputT] = [
+                cast(
+                    OutputT,
+                    self._to_output(
+                        item,
+                        profile=profile,
+                        projection_values=proj_map.get(i),
+                    ),
+                )
+                for i, item in enumerate(loaded_items)
+            ]
+
             total_count = int(total_result.scalar() or 0)
             return build_page_result(items, total_count, page_params)
 
@@ -299,12 +313,14 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin):
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
         """Apply partial updates and return updated output struct."""
         async with self._session_scope() as scoped_session:
-            obj = await scoped_session.get(self.model, obj_id)
+            sa_model = self._effective_sa_model
+            obj = await scoped_session.get(sa_model, obj_id)
             if obj is None:
                 return None
 
             input_data = self._serialize_input(data)
-            values = {key: value for key, value in input_data.items() if key != self.id_attribute}
+            id_attr = self._effective_id_attribute
+            values = {key: value for key, value in input_data.items() if key != id_attr}
 
             changed_fields: set[str] = set()
             for field_name, field_value in values.items():
@@ -334,7 +350,8 @@ class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin):
     async def delete(self, obj_id: IdT) -> bool:
         """Delete one entity by id."""
         async with self._session_scope() as scoped_session:
-            obj = await scoped_session.get(self.model, obj_id)
+            sa_model = self._effective_sa_model
+            obj = await scoped_session.get(sa_model, obj_id)
             if obj is None:
                 return False
             tags = self._mutation_tags(obj)

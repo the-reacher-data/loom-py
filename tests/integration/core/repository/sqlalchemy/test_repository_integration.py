@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import msgspec
 from pytest import mark
 
 from loom.core.repository.abc import FilterParams, PageParams
-from helpers.integration_context import IntegrationContext, ScenarioDict
+from tests.helpers.integration_context import IntegrationContext, ScenarioDict
+from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
 
@@ -13,11 +15,15 @@ class TestRepositorySQLAlchemyIntegration:
         self,
         integration_context: IntegrationContext,
     ) -> None:
-        created = await integration_context.product.repository.create(CreateProduct(name="keyboard", price=120.0))
+        created = await integration_context.product.repository.create(
+            CreateProduct(name="keyboard", price=120.0)
+        )
+        assert isinstance(created, Product)
         assert created.id == 1
 
         loaded = await integration_context.product.repository.get_by_id(1)
         assert loaded is not None
+        assert isinstance(loaded, Product)
         assert loaded.name == "keyboard"
 
         updated = await integration_context.product.repository.update(1, UpdateProduct(price=99.9))
@@ -48,17 +54,22 @@ class TestRepositorySQLAlchemyIntegration:
         assert {item.name for item in page.items} == {"b", "c"}
 
     @mark.asyncio
-    async def test_profile_default_has_no_projection_fields(
+    async def test_profile_default_omits_unloaded_fields(
         self,
         integration_context: IntegrationContext,
     ) -> None:
-        created = await integration_context.product.repository.create(CreateProduct(name="monitor", price=180.0))
+        created = await integration_context.product.repository.create(
+            CreateProduct(name="monitor", price=180.0)
+        )
 
-        loaded = await integration_context.product.repository.get_by_id(created.id, profile="default")
+        loaded = await integration_context.product.repository.get_by_id(
+            created.id, profile="default"
+        )
         assert loaded is not None
-        assert not hasattr(loaded, "count_reviews")
-        assert not hasattr(loaded, "has_reviews")
-        assert not hasattr(loaded, "review_snippets")
+        data = msgspec.json.decode(msgspec.json.encode(loaded))
+        assert "countReviews" not in data
+        assert "hasReviews" not in data
+        assert "reviewSnippets" not in data
 
     @mark.asyncio
     async def test_with_details_loads_orm_and_projection_fields(
@@ -69,8 +80,9 @@ class TestRepositorySQLAlchemyIntegration:
         await integration_context.load(scenario_one_product_with_details)
         loaded = await integration_context.product.repository.get_by_id(1, profile="with_details")
         assert loaded is not None
+        assert isinstance(loaded, Product)
 
-        categories = getattr(loaded, "categories")
+        categories = loaded.categories
         assert isinstance(categories, list)
         assert {category_item["name"] for category_item in categories} == {"electronics"}
 

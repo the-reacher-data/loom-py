@@ -2,38 +2,31 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import AsyncGenerator
-from collections.abc import Callable
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
-import msgspec
 from pytest import fixture, mark
 
-from loom.core.cache import CacheConfig, CacheGateway, CachedRepository, GenerationalDependencyResolver
+from loom.core.cache import (
+    CacheConfig,
+    CachedRepository,
+    CacheGateway,
+    GenerationalDependencyResolver,
+)
 from loom.core.repository import Repository
 from loom.core.repository.abc import PageParams
 from loom.core.repository.mutation import MutationEvent
-from helpers.integration_context import IntegrationContext, ScenarioDict
+from tests.helpers.integration_context import IntegrationContext, ScenarioDict
+from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.review.schemas import CreateProductReview
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
-
-
-class _ProductCacheOut(msgspec.Struct, kw_only=True):
-    id: int
-    name: str
-    price: float
-    has_reviews: bool = False
-    count_reviews: int = 0
-    review_snippets: list[dict[str, object]] = msgspec.field(default_factory=list)
-    created_at: object | None = None
-    updated_at: object | None = None
 
 
 @fixture
 async def cached_integration_repo(
     integration_context: IntegrationContext,
     cache_backend_kind: str,
-) -> AsyncGenerator[CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int], None]:
+) -> AsyncGenerator[CachedRepository[Product, CreateProduct, UpdateProduct, int], None]:
     namespace = "integration_cache"
     aiocache_config: dict[str, object] = {
         "default": {
@@ -50,7 +43,7 @@ async def cached_integration_repo(
 
     if cache_backend_kind == "redis-fake":
         fakeredis_async = importlib.import_module("fakeredis.aioredis")
-        fake_connection = getattr(fakeredis_async, "FakeConnection")
+        fake_connection = fakeredis_async.FakeConnection
         aiocache_config["test_cache"] = {
             "cache": "aiocache.RedisCache",
             "serializer": {"class": "loom.core.cache.serializer.MsgspecSerializer"},
@@ -75,7 +68,7 @@ async def cached_integration_repo(
     )
     repository = CachedRepository(
         repository=cast(
-            Repository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
+            Repository[Product, CreateProduct, UpdateProduct, int],
             integration_context.product.repository,
         ),
         config=cache_config,
@@ -94,32 +87,30 @@ def cache_backend_kind(request: Any) -> str:
     return cast(str, request.param)
 
 
-@fixture
-def spy_repo_method(
-    cached_integration_repo: CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
-) -> Callable[[str], Any]:
-    def _spy(method_name: str) -> Any:
-        base_repo = cached_integration_repo._repository
+class TestCacheIntegration:
+    @staticmethod
+    def _spy_base_repo_method(
+        cached_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
+        method_name: str,
+    ) -> Any:
+        base_repo = cached_repo._repository
         original = getattr(base_repo, method_name)
         mocked = AsyncMock(wraps=original)
         return patch.object(base_repo, method_name, mocked)
 
-    return _spy
-
-
-class TestCacheIntegration:
     @mark.asyncio
     async def test_get_by_id_cached_and_invalidated_on_update(
         self,
-        cached_integration_repo: CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
         integration_context: IntegrationContext,
         scenario_one_product: ScenarioDict,
-        spy_repo_method: Callable[[str], Any],
     ) -> None:
+        # Arrange
         await integration_context.load(scenario_one_product)
         product_id = 1
 
-        with spy_repo_method("get_by_id") as get_by_id_spy:
+        # Act / Assert
+        with self._spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
             first = await cached_integration_repo.get_by_id(product_id)
             second = await cached_integration_repo.get_by_id(product_id)
 
@@ -129,7 +120,9 @@ class TestCacheIntegration:
             assert second.name == "seed"
             assert get_by_id_spy.await_count == 1
 
-            updated = await cached_integration_repo.update(product_id, UpdateProduct(name="seed-updated"))
+            updated = await cached_integration_repo.update(
+                product_id, UpdateProduct(name="seed-updated")
+            )
             assert updated is not None
 
             after_update = await cached_integration_repo.get_by_id(product_id)
@@ -140,15 +133,16 @@ class TestCacheIntegration:
     @mark.asyncio
     async def test_list_paginated_cache_hit_and_invalidation_on_create(
         self,
-        cached_integration_repo: CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
         integration_context: IntegrationContext,
         scenario_catalog_with_price_20: ScenarioDict,
-        spy_repo_method: Callable[[str], Any],
     ) -> None:
+        # Arrange
         await integration_context.load(scenario_catalog_with_price_20)
         page = PageParams(page=1, limit=2)
 
-        with spy_repo_method("list_paginated") as list_spy:
+        # Act / Assert
+        with self._spy_base_repo_method(cached_integration_repo, "list_paginated") as list_spy:
             first = await cached_integration_repo.list_paginated(page)
             second = await cached_integration_repo.list_paginated(page)
 
@@ -165,15 +159,16 @@ class TestCacheIntegration:
     @mark.asyncio
     async def test_delete_invalidates_cached_entity(
         self,
-        cached_integration_repo: CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
         integration_context: IntegrationContext,
         scenario_one_product: ScenarioDict,
-        spy_repo_method: Callable[[str], Any],
     ) -> None:
+        # Arrange
         await integration_context.load(scenario_one_product)
         product_id = 1
 
-        with spy_repo_method("get_by_id") as get_by_id_spy:
+        # Act / Assert
+        with self._spy_base_repo_method(cached_integration_repo, "get_by_id") as get_by_id_spy:
             _ = await cached_integration_repo.get_by_id(product_id)
             _ = await cached_integration_repo.get_by_id(product_id)
 
@@ -189,7 +184,7 @@ class TestRelatedInvalidationIntegration:
     @mark.asyncio
     async def test_with_details_profile_is_invalidated_from_review_repository(
         self,
-        cached_integration_repo: CachedRepository[_ProductCacheOut, CreateProduct, UpdateProduct, int],
+        cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
         integration_context: IntegrationContext,
         scenario_one_product: ScenarioDict,
     ) -> None:
@@ -207,7 +202,7 @@ class TestRelatedInvalidationIntegration:
         await cached_integration_repo.on_transaction_committed(
             (
                 MutationEvent(
-                    entity="productreviewmodel",
+                    entity="product_reviews",
                     op="create",
                     ids=(1,),
                     tags=frozenset(
@@ -215,8 +210,6 @@ class TestRelatedInvalidationIntegration:
                             f"product_reviews:product_id:{product_id}",
                             "product_reviews",
                             "product_reviews:list",
-                            f"productmodel:id:{product_id}",
-                            "productmodel:list",
                         }
                     ),
                 ),

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Mapping
+from typing import Any
 
 import msgspec
 
@@ -75,7 +76,9 @@ def build_integration_context(
     )
 
 
-def _discover_repository_classes(package_name: str) -> dict[str, type[RepositorySQLAlchemy[Any, Any]]]:
+def _discover_repository_classes(
+    package_name: str,
+) -> dict[str, type[RepositorySQLAlchemy[Any, Any]]]:
     package = importlib.import_module(package_name)
     modules = _walk_modules(package)
     discovered: dict[str, type[RepositorySQLAlchemy[Any, Any]]] = {}

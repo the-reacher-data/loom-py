@@ -47,15 +47,21 @@ class RepositorySQLAlchemy(
     SQLAlchemyDeleteMixin,
     Generic[OutputT, IdT],
 ):
-    """Base SQLAlchemy repository with context-aware session management."""
+    """Base SQLAlchemy repository with context-aware session management.
 
-    def __init__(self, session_manager: SessionManager) -> None:
-        """Initialise the repository with a session manager.
+    Pass ``model`` (a Struct-based ``BaseModel``) to ``__init__``; the
+    repository uses the compiled SA class for queries and returns the
+    Struct directly.
+    """
 
-        Args:
-            session_manager: Manages async database sessions and connection pooling.
-        """
+    def __init__(
+        self,
+        session_manager: SessionManager,
+        model: type,
+    ) -> None:
         self.session_manager = session_manager
+        self.model = model
+        self._init_struct_model()
         self.log = get_logger(__name__).bind(repository=self.__class__.__name__)
 
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:

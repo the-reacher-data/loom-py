@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Generic, Mapping, cast
+from typing import Any, Generic, cast
 
 import msgspec
-from sqlalchemy import inspect as sa_inspect
 
 from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
+from loom.core.model.introspection import get_projections, get_relations
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
-from loom.core.repository.sqlalchemy.projection import Projection
 
 
 class _ListIndexPayload(msgspec.Struct):
@@ -44,19 +43,12 @@ class CachedRepository(
         cache: CacheBackend,
         dependency_resolver: DependencyResolver,
     ) -> None:
-        """Wrap an existing repository with cache-aside semantics.
-
-        Args:
-            repository: The inner repository to delegate persistence to.
-            config: Cache configuration (TTLs, toggles).
-            cache: Backend used for reading and writing cached values.
-            dependency_resolver: Strategy for tag-based generational invalidation.
-        """
         self._repository = repository
         self._config = config
         self._cache = cache
         self._resolver = dependency_resolver
-        self._entity_name = getattr(repository, "entity_name", repository.__class__.__name__.lower())
+        fallback_name = repository.__class__.__name__.lower()
+        self._entity_name = getattr(repository, "entity_name", fallback_name)
         self._depends_on = self._parse_dependency_specs(self._collect_dependency_specs(repository))
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
 
@@ -66,15 +58,6 @@ class CachedRepository(
         return self._entity_name
 
     async def get_by_id(self, obj_id: IdT, profile: str = "default") -> OutputT | None:
-        """Fetch a single entity by id, returning a cached copy when available.
-
-        Args:
-            obj_id: Primary key of the entity.
-            profile: Loading profile name for eager-load options.
-
-        Returns:
-            The entity output struct, or ``None`` if not found.
-        """
         tags = self._resolver.entity_tags(self.entity_name, obj_id)
         tags.extend(self._entity_dependency_tags(obj_id))
         fingerprint = await self._resolver.fingerprint(tags)
@@ -99,16 +82,6 @@ class CachedRepository(
         filter_params: FilterParams | None = None,
         profile: str = "default",
     ) -> PageResult[OutputT]:
-        """Fetch a paginated entity list, returning cached results when available.
-
-        Args:
-            page_params: Pagination parameters (page number and limit).
-            filter_params: Optional filter criteria.
-            profile: Loading profile name for eager-load options.
-
-        Returns:
-            A ``PageResult`` containing the items and pagination metadata.
-        """
         filters_payload = self._serialize_filters(filter_params)
         filter_fingerprint = stable_hash(filters_payload)
         tags = self._resolver.list_tags(self.entity_name, filter_fingerprint)
@@ -138,9 +111,13 @@ class CachedRepository(
                 )
 
         self._log.debug("CacheMissList", key=index_key)
-        page = await self._repository.list_paginated(page_params, filter_params=filter_params, profile=profile)
+        page = await self._repository.list_paginated(
+            page_params,
+            filter_params=filter_params,
+            profile=profile,
+        )
 
-        ids = [cast(IdT, getattr(item, "id")) for item in page.items if hasattr(item, "id")]
+        ids = [cast(IdT, item.id) for item in page.items if hasattr(item, "id")]
         index_to_store = _ListIndexPayload(ids=ids, total_count=page.total_count)
         ttl = self._config.ttl_for_entity(self.entity_name, is_list=True)
         await self._cache.set_value(index_key, index_to_store, ttl=ttl)
@@ -149,14 +126,6 @@ class CachedRepository(
         return page
 
     async def create(self, data: CreateT) -> OutputT:
-        """Create a new entity and bump related cache dependency tags.
-
-        Args:
-            data: Creation payload struct.
-
-        Returns:
-            The newly created entity output struct.
-        """
         created = await self._repository.create(data)
         entity_id = getattr(created, "id", None)
         await self._resolver.bump_from_events(
@@ -172,15 +141,6 @@ class CachedRepository(
         return created
 
     async def update(self, obj_id: IdT, data: UpdateT) -> OutputT | None:
-        """Update an existing entity and bump related cache dependency tags.
-
-        Args:
-            obj_id: Primary key of the entity to update.
-            data: Partial update payload struct.
-
-        Returns:
-            The updated entity output struct, or ``None`` if not found.
-        """
         updated = await self._repository.update(obj_id, data)
         if updated is None:
             return None
@@ -197,14 +157,6 @@ class CachedRepository(
         return updated
 
     async def delete(self, obj_id: IdT) -> bool:
-        """Delete an entity and bump related cache dependency tags.
-
-        Args:
-            obj_id: Primary key of the entity to delete.
-
-        Returns:
-            ``True`` if the entity was deleted, ``False`` if not found.
-        """
         deleted = await self._repository.delete(obj_id)
         if deleted:
             await self._resolver.bump_from_events(
@@ -219,11 +171,6 @@ class CachedRepository(
         return deleted
 
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
-        """Handle post-commit hook by bumping dependency tags and forwarding to the inner repository.
-
-        Args:
-            events: Mutation events collected during the committed transaction.
-        """
         await self._resolver.bump_from_events(events)
         post_commit = getattr(self._repository, "on_transaction_committed", None)
         if callable(post_commit):
@@ -291,10 +238,7 @@ class CachedRepository(
             self._resolver.entity_tags(self.entity_name, eid) + self._entity_dependency_tags(eid)
             for eid in ids
         ]
-        fingerprints = [
-            await self._resolver.fingerprint(tags)
-            for tags in tags_by_id
-        ]
+        fingerprints = [await self._resolver.fingerprint(tags) for tags in tags_by_id]
         entity_keys = [
             entity_key(self.entity_name, eid, profile, fp)
             for eid, fp in zip(ids, fingerprints, strict=False)
@@ -379,7 +323,8 @@ class CachedRepository(
         deps: list[_DependencySpec] = []
         for spec in specs:
             if ":" not in spec:
-                raise ValueError(f"Invalid dependency spec '{spec}'. Expected format '<entity>:<fk_field>'")
+                msg = f"Invalid dependency spec '{spec}'. Expected '<entity>:<fk_field>'"
+                raise ValueError(msg)
             entity_name, fk_field = spec.split(":", 1)
             entity = entity_name.strip()
             field = fk_field.strip()
@@ -388,38 +333,25 @@ class CachedRepository(
             deps.append(_DependencySpec(entity=entity, fk_field=field))
         return deps
 
-    def _collect_dependency_specs(self, repository: Repository[OutputT, CreateT, UpdateT, IdT]) -> tuple[str, ...]:
+    def _collect_dependency_specs(
+        self,
+        repository: Repository[OutputT, CreateT, UpdateT, IdT],
+    ) -> tuple[str, ...]:
         specs: list[str] = list(getattr(repository, "depends_on", ()))
         model = getattr(repository, "model", None)
         if model is None:
             return tuple(specs)
 
-        if hasattr(model, "__mapper__"):
-            mapper = sa_inspect(model)
-            for relationship in mapper.relationships:
-                raw_specs = (relationship.info or {}).get("depends_on", ())
-                specs.extend(self._normalize_specs(raw_specs))
-
-        for value in vars(model).values():
-            if isinstance(value, Projection):
-                specs.extend(value.depends_on)
+        for rel in get_relations(model).values():
+            specs.extend(rel.depends_on)
+        for proj in get_projections(model).values():
+            specs.extend(proj.depends_on)
         return tuple(dict.fromkeys(specs))
-
-    def _normalize_specs(self, raw_specs: object) -> tuple[str, ...]:
-        if raw_specs is None:
-            return ()
-        if isinstance(raw_specs, str):
-            return (raw_specs,)
-        if isinstance(raw_specs, tuple):
-            return tuple(raw_specs)
-        if isinstance(raw_specs, list):
-            return tuple(raw_specs)
-        raise TypeError("depends_on metadata must be str, list[str], tuple[str, ...], or None")
 
     def _to_builtins(self, value: Any) -> Any:
         if isinstance(value, msgspec.Struct):
             return msgspec.to_builtins(value)
-        if isinstance(value, (list, tuple)):
+        if isinstance(value, list | tuple):
             return [self._to_builtins(item) for item in value]
         if isinstance(value, dict):
             return {str(key): self._to_builtins(item) for key, item in value.items()}

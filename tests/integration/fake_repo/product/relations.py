@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import msgspec
-from sqlalchemy import ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import Annotated
 
-from loom.core.repository.sqlalchemy.model import BaseModel
+import msgspec
+
+from loom.core.model import BaseModel, Field, Integer, OnDelete
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
 
 class CreateProductCategoryLink(msgspec.Struct):
@@ -13,13 +14,24 @@ class CreateProductCategoryLink(msgspec.Struct):
     category_id: int
 
 
-class ProductCategoryLinkModel(BaseModel):
+class ProductCategoryLink(BaseModel):
     __tablename__ = "product_category_links"
 
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), nullable=False)
+    id: Annotated[int, Integer, Field(primary_key=True, autoincrement=True)]
+    product_id: Annotated[
+        int,
+        Integer,
+        Field(foreign_key="products.id", on_delete=OnDelete.CASCADE),
+    ]
+    category_id: Annotated[
+        int,
+        Integer,
+        Field(foreign_key="categories.id", on_delete=OnDelete.CASCADE),
+    ]
 
 
-class ProductCategoryRepository(RepositorySQLAlchemy[msgspec.Struct, int]):
+class ProductCategoryRepository(RepositorySQLAlchemy[ProductCategoryLink, int]):
     context_key = "category_link"
-    model = ProductCategoryLinkModel
+
+    def __init__(self, session_manager: SessionManager) -> None:
+        super().__init__(session_manager=session_manager, model=ProductCategoryLink)

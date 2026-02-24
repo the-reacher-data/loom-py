@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pytest import fixture
 
-from helpers.integration_context import ScenarioDict
+from tests.helpers.integration_context import ScenarioDict
 from tests.integration.fake_repo.product.category.schemas import CreateCategory
 from tests.integration.fake_repo.product.relations import CreateProductCategoryLink
 from tests.integration.fake_repo.product.review.schemas import CreateProductReview

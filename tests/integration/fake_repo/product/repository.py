@@ -2,17 +2,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import msgspec
-
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
-from tests.integration.fake_repo.product.model import ProductModel
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from tests.integration.fake_repo.product.model import Product
 
 if TYPE_CHECKING:
-    from tests.integration.fake_repo.product.relations import ProductCategoryRepository
+    from tests.integration.fake_repo.product.category.repository import CategoryRepository
     from tests.integration.fake_repo.product.review.repository import ProductReviewRepository
 
 
-class ProductRepository(RepositorySQLAlchemy[msgspec.Struct, int]):
-    model = ProductModel
+class ProductRepository(RepositorySQLAlchemy[Product, int]):
     review_repo: ProductReviewRepository
-    category_link_repo: ProductCategoryRepository
+    category_link_repo: CategoryRepository
+
+    def __init__(self, session_manager: SessionManager) -> None:
+        super().__init__(session_manager=session_manager, model=Product)

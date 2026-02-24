@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from typing import Annotated, Any
+from unittest.mock import AsyncMock
 
-import pytest
 from pytest import fixture
+
+from loom.core.backend.sqlalchemy import compile_all, reset_registry
+from loom.core.model import BaseModel, Field, Integer
+
+
+class _DummyModel(BaseModel):
+    __tablename__ = "dummies"
+    id: Annotated[int, Integer, Field(primary_key=True, autoincrement=True)]
 
 
 class MockSessionManager:
@@ -15,6 +22,19 @@ class MockSessionManager:
     @asynccontextmanager
     async def session(self) -> Any:
         yield self._session
+
+
+@fixture(autouse=True)
+def _compiled_dummy_model() -> Any:
+    reset_registry()
+    compile_all(_DummyModel)
+    yield
+    reset_registry()
+
+
+@fixture
+def dummy_model() -> type:
+    return _DummyModel
 
 
 @fixture
@@ -29,10 +49,3 @@ def mock_session() -> AsyncMock:
 @fixture
 def mock_session_manager(mock_session: AsyncMock) -> MockSessionManager:
     return MockSessionManager(mock_session)
-
-
-@fixture
-def fake_model() -> type:
-    model = MagicMock()
-    model.__name__ = "Dummy"
-    return model

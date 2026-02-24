@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import msgspec
-
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
-from tests.integration.fake_repo.product.category.model import CategoryModel
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from tests.integration.fake_repo.product.category.model import Category
 
 
-class CategoryRepository(RepositorySQLAlchemy[msgspec.Struct, int]):
-    model = CategoryModel
+class CategoryRepository(RepositorySQLAlchemy[Category, int]):
+    def __init__(self, session_manager: SessionManager) -> None:
+        super().__init__(session_manager=session_manager, model=Category)
