@@ -42,7 +42,7 @@ class Product(BaseModel):
 
     has_reviews: bool = Projection(
         loader=ExistsLoader(
-            table=ProductReview,
+            model=ProductReview,
             foreign_key="product_id",
         ),
         profiles=("with_details",),
@@ -51,7 +51,7 @@ class Product(BaseModel):
     )
     count_reviews: int = Projection(
         loader=CountLoader(
-            table=ProductReview,
+            model=ProductReview,
             foreign_key="product_id",
         ),
         profiles=("with_details",),
@@ -60,7 +60,7 @@ class Product(BaseModel):
     )
     review_snippets: list[dict[str, Any]] = Projection(
         loader=JoinFieldsLoader(
-            table=ProductReview,
+            model=ProductReview,
             foreign_key="product_id",
             value_columns=("id", "rating", "comment"),
         ),

@@ -14,6 +14,14 @@ from loom.core.backend.sqlalchemy import get_compiled
 TableRef = FromClause | type | Callable[[], FromClause | type]
 
 
+def _coalesce_table_ref(*, table: TableRef | None, model: type | None) -> TableRef:
+    if table is not None:
+        return table
+    if model is not None:
+        return model
+    raise ValueError("A loader requires either 'table' or 'model'.")
+
+
 def _resolve_table_ref(table_ref: TableRef) -> FromClause:
     if isinstance(table_ref, type):
         resolved = table_ref
@@ -62,7 +70,8 @@ class CountLoader:
     def __init__(
         self,
         *,
-        table: TableRef,
+        table: TableRef | None = None,
+        model: type | None = None,
         foreign_key: str,
         where_clauses: Sequence[ColumnElement[bool]] = (),
     ) -> None:
@@ -70,10 +79,11 @@ class CountLoader:
 
         Args:
             table: Target table or callable returning it (for deferred resolution).
+            model: Model class associated with the table (preferred API for framework users).
             foreign_key: Column name in ``table`` referencing the parent id.
             where_clauses: Additional SQL filter conditions.
         """
-        self.table = table
+        self.table = _coalesce_table_ref(table=table, model=model)
         self.foreign_key = foreign_key
         self.where_clauses = tuple(where_clauses)
 
@@ -113,7 +123,8 @@ class ExistsLoader:
     def __init__(
         self,
         *,
-        table: TableRef,
+        table: TableRef | None = None,
+        model: type | None = None,
         foreign_key: str,
         where_clauses: Sequence[ColumnElement[bool]] = (),
     ) -> None:
@@ -121,10 +132,11 @@ class ExistsLoader:
 
         Args:
             table: Target table or callable returning it (for deferred resolution).
+            model: Model class associated with the table (preferred API for framework users).
             foreign_key: Column name in ``table`` referencing the parent id.
             where_clauses: Additional SQL filter conditions.
         """
-        self.table = table
+        self.table = _coalesce_table_ref(table=table, model=model)
         self.foreign_key = foreign_key
         self.where_clauses = tuple(where_clauses)
 
@@ -160,7 +172,8 @@ class JoinFieldsLoader:
     def __init__(
         self,
         *,
-        table: TableRef,
+        table: TableRef | None = None,
+        model: type | None = None,
         foreign_key: str,
         value_columns: Sequence[str],
         where_clauses: Sequence[ColumnElement[bool]] = (),
@@ -170,12 +183,13 @@ class JoinFieldsLoader:
 
         Args:
             table: Target table or callable returning it (for deferred resolution).
+            model: Model class associated with the table (preferred API for framework users).
             foreign_key: Column name in ``table`` referencing the parent id.
             value_columns: Column names to select from the related table.
             where_clauses: Additional SQL filter conditions.
             order_by: SQLAlchemy ordering clauses applied to the result rows.
         """
-        self.table = table
+        self.table = _coalesce_table_ref(table=table, model=model)
         self.foreign_key = foreign_key
         self.value_columns = tuple(value_columns)
         self.where_clauses = tuple(where_clauses)
