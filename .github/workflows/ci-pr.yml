@@ -15,6 +15,7 @@ jobs:
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/uv-ci-pr
     steps:
       - uses: actions/checkout@v4
         with:
