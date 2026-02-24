@@ -42,7 +42,8 @@ def _resolve_table_ref(table_ref: TableRef) -> FromClause:
         return compiled_table
 
     raise TypeError(
-        "Invalid table reference. Use a SQLAlchemy table/from clause or a compiled/uncompiled model class.",
+        "Invalid table reference. Use a SQLAlchemy table/from clause "
+        "or a compiled/uncompiled model class.",
     )
 
 

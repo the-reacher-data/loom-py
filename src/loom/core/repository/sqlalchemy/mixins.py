@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager
-from typing import Any, cast
+from typing import Any, Generic, cast
 
 import msgspec
 from sqlalchemy import exists, func, inspect, select
@@ -28,7 +28,7 @@ from loom.core.repository.sqlalchemy.transactional import record_mutation
 _SENTINEL = object()
 
 
-class SQLAlchemyContextMixin:
+class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     """Shared context and helper methods for all SQLAlchemy repository mixins."""
 
     model: type[Any]
@@ -188,7 +188,7 @@ class SQLAlchemyContextMixin:
         raise NotImplementedError
 
 
-class SQLAlchemyCreateMixin(SQLAlchemyContextMixin):
+class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``create`` operation for SQLAlchemy repositories."""
 
     async def create(self, data: msgspec.Struct) -> OutputT:
@@ -214,7 +214,7 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin):
             return cast(OutputT, self._to_output(obj))
 
 
-class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
+class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing read operations for SQLAlchemy repositories."""
 
     async def get_by_id(
@@ -307,7 +307,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin):
             return bool(result.scalar())
 
 
-class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin):
+class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``update`` operation for SQLAlchemy repositories."""
 
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
@@ -344,7 +344,7 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin):
             return cast(OutputT, self._to_output(obj))
 
 
-class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin):
+class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``delete`` operation for SQLAlchemy repositories."""
 
     async def delete(self, obj_id: IdT) -> bool:

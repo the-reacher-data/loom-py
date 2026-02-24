@@ -25,7 +25,7 @@ class CacheConfig(msgspec.Struct, kw_only=True):
     ttl: dict[str, int] = msgspec.field(default_factory=dict)
 
     @classmethod
-    def from_mapping(cls, data: dict[str, Any]) -> "CacheConfig":
+    def from_mapping(cls, data: dict[str, Any]) -> CacheConfig:
         """Create a ``CacheConfig`` from a raw dictionary (e.g. parsed TOML/YAML).
 
         Args:

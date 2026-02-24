@@ -30,7 +30,7 @@ class LoomStructMeta(StructMeta):
     """
 
     def __new__(
-        mcls,
+        cls,
         name: str,
         bases: tuple[type, ...],
         namespace: dict[str, Any],
@@ -70,10 +70,10 @@ class LoomStructMeta(StructMeta):
                     annotations[attr_name] = resolved | UnsetType
 
         namespace["__annotations__"] = annotations
-        cls = super().__new__(mcls, name, bases, namespace, **kwargs)
-        cls.__loom_relations__ = relations  # type: ignore[attr-defined]
-        cls.__loom_projections__ = projections  # type: ignore[attr-defined]
-        return cls  # type: ignore[return-value]
+        struct_cls = super().__new__(cls, name, bases, namespace, **kwargs)
+        struct_cls.__loom_relations__ = relations  # type: ignore[attr-defined]
+        struct_cls.__loom_projections__ = projections  # type: ignore[attr-defined]
+        return struct_cls  # type: ignore[return-value]
 
 
 class BaseModel(msgspec.Struct, metaclass=LoomStructMeta):

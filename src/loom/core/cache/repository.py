@@ -117,7 +117,12 @@ class CachedRepository(
             profile=profile,
         )
 
-        ids = [cast(IdT, item.id) for item in page.items if hasattr(item, "id")]
+        ids = [
+            entity_id
+            for item in page.items
+            for entity_id in [self._extract_entity_id(item)]
+            if entity_id is not None
+        ]
         index_to_store = _ListIndexPayload(ids=ids, total_count=page.total_count)
         ttl = self._config.ttl_for_entity(self.entity_name, is_list=True)
         await self._cache.set_value(index_key, index_to_store, ttl=ttl)
@@ -173,8 +178,9 @@ class CachedRepository(
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
         await self._resolver.bump_from_events(events)
         post_commit = getattr(self._repository, "on_transaction_committed", None)
-        if callable(post_commit):
-            await post_commit(events)
+        if inspect.iscoroutinefunction(post_commit):
+            handler = cast(Callable[[tuple[MutationEvent, ...]], Awaitable[None]], post_commit)
+            await handler(events)
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._repository, name)
@@ -195,6 +201,12 @@ class CachedRepository(
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _extract_entity_id(self, item: Any) -> IdT | None:
+        value = getattr(item, "id", None)
+        if value is None:
+            return None
+        return cast(IdT, value)
 
     def _wrap_custom_cached_method(
         self,

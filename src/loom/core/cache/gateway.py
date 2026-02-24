@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any, Mapping
-from typing import TypeVar, cast
+from collections.abc import Mapping
+from typing import Any, TypeVar, cast
 
 import msgspec
 
@@ -75,7 +75,10 @@ class CacheGateway:
         """
         values = await self._cache.multi_get(keys)
         if type is not None:
-            return [msgspec.convert(value, type=type) if value is not None else None for value in values]
+            return [
+                msgspec.convert(value, type=type) if value is not None else None
+                for value in values
+            ]
         return cast(list[T | Any | None], values)
 
     async def multi_set_values(

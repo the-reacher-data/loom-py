@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextvars
 from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import Any, ParamSpec, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar, cast, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +67,9 @@ def get_pending_mutations() -> tuple[MutationEvent, ...]:
     return tuple(events)
 
 
-def transactional(method: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+def transactional(
+    method: Callable[Concatenate[Any, P], Awaitable[T]],
+) -> Callable[Concatenate[Any, P], Awaitable[T]]:
     """Create a single transaction boundary for service/orchestrator use cases."""
 
     @wraps(method)
@@ -76,7 +78,8 @@ def transactional(method: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]
 
         if isinstance(self, RepositorySQLAlchemy):
             raise TypeError(
-                "@transactional is intended for service/orchestrator boundaries, not repository methods.",
+                "@transactional is intended for service/orchestrator boundaries, "
+                "not repository methods.",
             )
 
         existing_session = get_active_session()
@@ -126,7 +129,7 @@ def transactional(method: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]
                 _active_session.reset(session_token)
                 _mutations.reset(mutations_token)
 
-    return cast(Callable[P, Awaitable[T]], wrapper)
+    return cast(Callable[Concatenate[Any, P], Awaitable[T]], wrapper)
 
 
 def _iter_post_commit_dependencies(owner: Any) -> list[SupportsPostCommit]:
