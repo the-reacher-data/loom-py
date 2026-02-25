@@ -1,0 +1,495 @@
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from loom.core.command import Command
+from loom.core.engine.compiler import UseCaseCompiler
+from loom.core.engine.executor import RuntimeExecutor
+from loom.core.errors import NotFound
+from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.rule import RuleViolation, RuleViolations
+from loom.core.use_case.use_case import UseCase
+
+
+# ---------------------------------------------------------------------------
+# Domain fixtures
+# ---------------------------------------------------------------------------
+
+
+class CreateUserCommand(Command, frozen=True):
+    email: str
+    name: str
+
+
+class UpdateUserCommand(Command, frozen=True):
+    email: str
+
+
+class User:
+    def __init__(self, id: int, email: str) -> None:
+        self.id = id
+        self.email = email
+
+
+class UserResult:
+    def __init__(self, id: int) -> None:
+        self.id = id
+
+
+# ---------------------------------------------------------------------------
+# Recording logger
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def bind(self, **fields: Any) -> _RecordingLogger:
+        return self
+
+    def debug(self, event: str, **fields: Any) -> None:
+        self.messages.append(event)
+
+    def info(self, event: str, **fields: Any) -> None:
+        self.messages.append(event)
+
+    def warning(self, event: str, **fields: Any) -> None:
+        self.messages.append(event)
+
+    def error(self, event: str, **fields: Any) -> None:
+        self.messages.append(event)
+
+    def exception(self, event: str, **fields: Any) -> None:
+        self.messages.append(event)
+
+
+# ---------------------------------------------------------------------------
+# UseCase fixtures
+# ---------------------------------------------------------------------------
+
+
+class _NoMarkersUseCase(UseCase[str]):
+    async def execute(self, value: int) -> str:  # type: ignore[override]
+        return f"value={value}"
+
+
+class _InputOnlyUseCase(UseCase[str]):
+    async def execute(  # type: ignore[override]
+        self, cmd: CreateUserCommand = Input()
+    ) -> str:
+        return cmd.email
+
+
+class _ParamsAndInputUseCase(UseCase[UserResult]):
+    async def execute(  # type: ignore[override]
+        self,
+        tenant_id: str,
+        cmd: CreateUserCommand = Input(),
+    ) -> UserResult:
+        return UserResult(id=99)
+
+
+class _WithLoadUseCase(UseCase[str]):
+    async def execute(  # type: ignore[override]
+        self,
+        user_id: int,
+        user: User = Load(User, by="user_id"),
+    ) -> str:
+        return user.email
+
+
+class _ComputeAndRuleUseCase(UseCase[str]):
+    computes = [
+        lambda cmd, fs: type(cmd)(  # uppercase email
+            email=cmd.email.upper(), name=cmd.name
+        )
+    ]
+    rules = [
+        lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("email", "bad"))
+        if cmd.email == "BANNED@CORP.COM"
+        else None
+    ]
+
+    async def execute(  # type: ignore[override]
+        self, cmd: CreateUserCommand = Input()
+    ) -> str:
+        return cmd.email
+
+
+class _FullPipelineUseCase(UseCase[UserResult]):
+    def __init__(self) -> None:
+        self.received_user: User | None = None
+        self.received_cmd: CreateUserCommand | None = None
+
+    async def execute(  # type: ignore[override]
+        self,
+        user_id: int,
+        cmd: CreateUserCommand = Input(),
+        user: User = Load(User, by="user_id"),
+    ) -> UserResult:
+        self.received_user = user
+        self.received_cmd = cmd
+        return UserResult(id=user_id)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_executor(
+    *,
+    debug: bool = False,
+    logger: _RecordingLogger | None = None,
+) -> RuntimeExecutor:
+    compiler = UseCaseCompiler()
+    return RuntimeExecutor(
+        compiler,
+        debug_execution=debug,
+        logger=logger or _RecordingLogger(),
+    )
+
+
+def _fake_repo(entity: Any | None) -> Any:
+    repo = AsyncMock()
+    repo.get_by_id = AsyncMock(return_value=entity)
+    return repo
+
+
+# ---------------------------------------------------------------------------
+# Tests: no markers
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteNoMarkers:
+    async def test_executes_and_returns_result(self) -> None:
+        ex = _make_executor()
+        result = await ex.execute(
+            _NoMarkersUseCase(),
+            params={"value": 42},
+        )
+        assert result == "value=42"
+
+    async def test_missing_param_raises(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(ValueError, match="missing required parameter"):
+            await ex.execute(_NoMarkersUseCase(), params={})
+
+
+# ---------------------------------------------------------------------------
+# Tests: Input binding
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteWithInput:
+    async def test_command_built_from_payload(self) -> None:
+        ex = _make_executor()
+        result = await ex.execute(
+            _InputOnlyUseCase(),
+            payload={"email": "alice@corp.com", "name": "Alice"},
+        )
+        assert result == "alice@corp.com"
+
+    async def test_missing_payload_raises(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(ValueError, match="payload is required"):
+            await ex.execute(_InputOnlyUseCase())
+
+    async def test_params_and_input_together(self) -> None:
+        ex = _make_executor()
+        result = await ex.execute(
+            _ParamsAndInputUseCase(),
+            params={"tenant_id": "t-1"},
+            payload={"email": "a@b.com", "name": "A"},
+        )
+        assert result.id == 99
+
+
+# ---------------------------------------------------------------------------
+# Tests: Load steps
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteWithLoad:
+    async def test_entity_loaded_via_repo(self) -> None:
+        user = User(id=1, email="loaded@corp.com")
+        repo = _fake_repo(user)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithLoadUseCase(),
+            params={"user_id": 1},
+            dependencies={User: repo},
+        )
+
+        repo.get_by_id.assert_awaited_once_with(1)
+        assert result == "loaded@corp.com"
+
+    async def test_load_override_skips_repo(self) -> None:
+        user = User(id=7, email="override@corp.com")
+        repo = _fake_repo(None)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithLoadUseCase(),
+            params={"user_id": 7},
+            dependencies={User: repo},
+            load_overrides={User: user},
+        )
+
+        repo.get_by_id.assert_not_awaited()
+        assert result == "override@corp.com"
+
+    async def test_missing_entity_raises_not_found(self) -> None:
+        repo = _fake_repo(None)
+        ex = _make_executor()
+
+        with pytest.raises(NotFound) as exc_info:
+            await ex.execute(
+                _WithLoadUseCase(),
+                params={"user_id": 99},
+                dependencies={User: repo},
+            )
+
+        assert exc_info.value.entity == "User"
+        assert exc_info.value.id == 99
+
+    async def test_no_dependencies_raises(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(RuntimeError, match="No dependencies provided"):
+            await ex.execute(
+                _WithLoadUseCase(),
+                params={"user_id": 1},
+            )
+
+    async def test_missing_repo_type_raises(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(RuntimeError, match="No repository registered"):
+            await ex.execute(
+                _WithLoadUseCase(),
+                params={"user_id": 1},
+                dependencies={},
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tests: full pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteFullPipeline:
+    async def test_kwargs_injected_correctly(self) -> None:
+        user = User(id=5, email="user@corp.com")
+        uc = _FullPipelineUseCase()
+        ex = _make_executor()
+
+        result = await ex.execute(
+            uc,
+            params={"user_id": 5},
+            payload={"email": "new@corp.com", "name": "Alice"},
+            dependencies={User: _fake_repo(user)},
+        )
+
+        assert result.id == 5
+        assert uc.received_user is user
+        assert uc.received_cmd is not None
+        assert uc.received_cmd.email == "new@corp.com"
+
+    async def test_compute_applied_before_execute(self) -> None:
+        received: list[str] = []
+
+        class _TrackedUseCase(UseCase[None]):
+            computes = [lambda cmd, fs: type(cmd)(email="computed@corp.com", name=cmd.name)]
+
+            async def execute(  # type: ignore[override]
+                self, cmd: CreateUserCommand = Input()
+            ) -> None:
+                received.append(cmd.email)
+
+        ex = _make_executor()
+        await ex.execute(
+            _TrackedUseCase(),
+            payload={"email": "original@corp.com", "name": "Alice"},
+        )
+        assert received == ["computed@corp.com"]
+
+    async def test_rule_violation_raises_before_execute(self) -> None:
+        called: list[bool] = []
+
+        def bad_rule(cmd: Any, fs: Any) -> None:
+            raise RuleViolation("email", "invalid")
+
+        class _RuleUseCase(UseCase[None]):
+            rules = [bad_rule]
+
+            async def execute(  # type: ignore[override]
+                self, cmd: CreateUserCommand = Input()
+            ) -> None:
+                called.append(True)
+
+        ex = _make_executor()
+        with pytest.raises(RuleViolations) as exc_info:
+            await ex.execute(
+                _RuleUseCase(),
+                payload={"email": "bad@corp.com", "name": "X"},
+            )
+
+        assert len(exc_info.value.violations) == 1
+        assert exc_info.value.violations[0].field == "email"
+        assert called == []
+
+    async def test_rule_violations_accumulated(self) -> None:
+        def rule_a(cmd: Any, fs: Any) -> None:
+            raise RuleViolation("email", "bad email")
+
+        def rule_b(cmd: Any, fs: Any) -> None:
+            raise RuleViolation("name", "bad name")
+
+        class _MultiRuleUseCase(UseCase[None]):
+            rules = [rule_a, rule_b]
+
+            async def execute(  # type: ignore[override]
+                self, cmd: CreateUserCommand = Input()
+            ) -> None:
+                pass
+
+        ex = _make_executor()
+        with pytest.raises(RuleViolations) as exc_info:
+            await ex.execute(
+                _MultiRuleUseCase(),
+                payload={"email": "x@x.com", "name": "X"},
+            )
+
+        assert len(exc_info.value.violations) == 2
+
+    async def test_compute_sees_updated_command_in_rules(self) -> None:
+        """Rules run after computes — they see the enriched command."""
+        seen_in_rule: list[str] = []
+
+        def capture_rule(cmd: Any, fs: Any) -> None:
+            seen_in_rule.append(cmd.email)
+
+        class _EnrichAndCheckUseCase(UseCase[None]):
+            computes = [lambda cmd, fs: type(cmd)(email="enriched@corp.com", name=cmd.name)]
+            rules = [capture_rule]
+
+            async def execute(  # type: ignore[override]
+                self, cmd: CreateUserCommand = Input()
+            ) -> None:
+                pass
+
+        ex = _make_executor()
+        await ex.execute(
+            _EnrichAndCheckUseCase(),
+            payload={"email": "original@corp.com", "name": "X"},
+        )
+
+        assert seen_in_rule == ["enriched@corp.com"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: no re-compilation at runtime
+# ---------------------------------------------------------------------------
+
+
+class TestNoRecompilation:
+    async def test_compiler_compile_called_once_per_class(self) -> None:
+        # Use a locally-defined class so __execution_plan__ is always None
+        # at the start of this test, regardless of other tests' execution order.
+        class _FreshUseCase(UseCase[str]):
+            async def execute(self, value: int) -> str:  # type: ignore[override]
+                return f"value={value}"
+
+        compiler = UseCaseCompiler()
+        ex = RuntimeExecutor(compiler, logger=_RecordingLogger())
+
+        # Execute twice — _build_plan should only be called once
+        with patch.object(
+            compiler, "_build_plan", wraps=compiler._build_plan
+        ) as mock_build:
+            await ex.execute(_FreshUseCase(), params={"value": 1})
+            await ex.execute(_FreshUseCase(), params={"value": 2})
+
+        mock_build.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: logging
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorLogging:
+    async def test_always_logs_exec(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(logger=log)
+        await ex.execute(_NoMarkersUseCase(), params={"value": 1})
+        assert any("[EXEC]" in m for m in log.messages)
+
+    async def test_always_logs_done_with_ms(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(logger=log)
+        await ex.execute(_NoMarkersUseCase(), params={"value": 1})
+        assert any("[DONE]" in m and "ms" in m for m in log.messages)
+
+    async def test_debug_false_no_step_logs(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(debug=False, logger=log)
+        await ex.execute(
+            _InputOnlyUseCase(),
+            payload={"email": "a@b.com", "name": "X"},
+        )
+        assert not any("[STEP]" in m for m in log.messages)
+
+    async def test_debug_true_emits_step_logs(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(debug=True, logger=log)
+        await ex.execute(
+            _InputOnlyUseCase(),
+            payload={"email": "a@b.com", "name": "X"},
+        )
+        assert any("[STEP]" in m for m in log.messages)
+
+    async def test_debug_true_emits_bind_input(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(debug=True, logger=log)
+        await ex.execute(
+            _InputOnlyUseCase(),
+            payload={"email": "a@b.com", "name": "X"},
+        )
+        assert any("Bind Input" in m for m in log.messages)
+
+    async def test_debug_true_emits_load_step(self) -> None:
+        log = _RecordingLogger()
+        ex = _make_executor(debug=True, logger=log)
+        user = User(id=1, email="u@u.com")
+        await ex.execute(
+            _WithLoadUseCase(),
+            params={"user_id": 1},
+            dependencies={User: _fake_repo(user)},
+        )
+        assert any("Load User" in m for m in log.messages)
+
+    async def test_rule_failure_always_logged_as_warning(self) -> None:
+        def bad_rule(cmd: Any, fs: Any) -> None:
+            raise RuleViolation("email", "bad")
+
+        class _RuleUseCase(UseCase[None]):
+            rules = [bad_rule]
+
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:  # type: ignore[override]
+                pass
+
+        log = _RecordingLogger()
+        ex = _make_executor(debug=False, logger=log)
+
+        with pytest.raises(RuleViolations):
+            await ex.execute(
+                _RuleUseCase(),
+                payload={"email": "x@x.com", "name": "X"},
+            )
+
+        assert any("[RULE]" in m for m in log.messages)
