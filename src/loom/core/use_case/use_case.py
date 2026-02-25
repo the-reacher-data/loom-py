@@ -1,72 +1,66 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Generic, TypeVar
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
-from loom.core.command.base import Command
 from loom.core.use_case.compute import ComputeFn
-from loom.core.use_case.rule import RuleFn, RuleViolation, RuleViolations
+from loom.core.use_case.rule import RuleFn
 
-CommandT = TypeVar("CommandT", bound=Command)
+if TYPE_CHECKING:
+    from loom.core.engine.plan import ExecutionPlan
+
 ResultT = TypeVar("ResultT")
 
 
-class UseCase(Generic[CommandT, ResultT]):
-    """Orchestrates the command pipeline: compute -> rules -> execute.
+class UseCase(ABC, Generic[ResultT]):
+    """Base class for all use cases.
 
-    Rules are evaluated exhaustively — all violations are accumulated
-    and raised together as ``RuleViolations``.
+    Subclass and implement ``execute`` with typed parameters. Parameter
+    defaults declare the execution contract:
 
-    Args:
-        execute: Async callable that performs the actual operation.
-        computes: Sequence of compute functions applied in order.
-        rules: Sequence of validation rules applied in order.
+    - ``Input()``  — command payload, built from the raw request.
+    - ``Load(EntityType, by="param")`` — entity prefetched before execution.
+    - No default — primitive param bound directly from the caller.
+
+    Class attributes ``computes`` and ``rules`` declare the pre-execution
+    pipeline. They are inspected once at startup by ``UseCaseCompiler`` and
+    embedded in the immutable ``ExecutionPlan``.
+
+    Attributes:
+        computes: Compute transformations applied in order before rule checks.
+        rules: Rule validations applied in order after computes.
 
     Example::
 
-        use_case = UseCase(
-            execute=create_user_handler,
-            computes=[set_created_at],
-            rules=[email_not_disposable],
-        )
-        result = await use_case(command, fields_set)
+        class UpdateUserUseCase(UseCase[UserResponse]):
+            computes = [set_updated_at]
+            rules = [email_must_be_valid]
+
+            def __init__(self, user_repo: UserRepository) -> None:
+                self._user_repo = user_repo
+
+            async def execute(
+                self,
+                user_id: int,
+                cmd: UpdateUserCommand = Input(),
+                user: User = Load(User, by="user_id"),
+            ) -> UserResponse:
+                ...
     """
 
-    def __init__(
-        self,
-        execute: Callable[[CommandT, frozenset[str]], Awaitable[ResultT]],
-        computes: Sequence[ComputeFn[CommandT]] = (),
-        rules: Sequence[RuleFn[CommandT]] = (),
-    ) -> None:
-        self._execute = execute
-        self._computes = computes
-        self._rules = rules
+    __execution_plan__: ClassVar[ExecutionPlan | None] = None
+    computes: ClassVar[Sequence[ComputeFn[Any]]] = ()
+    rules: ClassVar[Sequence[RuleFn[Any]]] = ()
 
-    async def __call__(
-        self, command: CommandT, fields_set: frozenset[str]
-    ) -> ResultT:
-        """Run the full pipeline: computes, then rules, then execute.
+    @abstractmethod
+    async def execute(self, **kwargs: Any) -> ResultT:
+        """Execute core business logic.
 
-        Args:
-            command: The command to process.
-            fields_set: Fields explicitly provided in the original payload.
+        Override with an explicit typed signature. The compiler inspects
+        this method once at startup to build the ``ExecutionPlan``.
 
         Returns:
-            The result produced by the execute callable.
-
-        Raises:
-            RuleViolations: If any rules fail validation.
+            The result of the use case operation.
         """
-        for compute in self._computes:
-            command = compute(command, fields_set)
-
-        violations: list[RuleViolation] = []
-        for rule in self._rules:
-            try:
-                rule(command, fields_set)
-            except RuleViolation as exc:
-                violations.append(exc)
-        if violations:
-            raise RuleViolations(violations)
-
-        return await self._execute(command, fields_set)
+        ...
