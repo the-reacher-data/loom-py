@@ -1,45 +1,23 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from loom.core.command.base import Command
 from loom.core.command.introspection import get_patch_fields
+from loom.core.errors.errors import RuleViolation, RuleViolations
 from loom.core.use_case.field_ref import FieldRef
 
+# Re-exported for backward compatibility — canonical home is loom.core.errors.
+__all__ = [
+    "Rule",
+    "RuleFn",
+    "RuleViolation",
+    "RuleViolations",
+]
+
 CommandT = TypeVar("CommandT", bound=Command)
-
-
-class RuleViolation(Exception):
-    """Raised when a business rule is violated.
-
-    Args:
-        field: The field that caused the violation.
-        message: Human-readable description of the violation.
-    """
-
-    def __init__(self, field: str, message: str) -> None:
-        self.field = field
-        self.message = message
-        super().__init__(f"{field}: {message}")
-
-
-class RuleViolations(Exception):
-    """Raised when one or more business rules are violated.
-
-    Accumulates all violations from rule evaluation instead of
-    failing fast on the first violation.
-
-    Args:
-        violations: Sequence of individual rule violations.
-    """
-
-    def __init__(self, violations: Sequence[RuleViolation]) -> None:
-        self.violations: tuple[RuleViolation, ...] = tuple(violations)
-        messages = "; ".join(str(v) for v in self.violations)
-        super().__init__(messages)
-
 
 RuleFn = Callable[[CommandT, frozenset[str]], None]
 
