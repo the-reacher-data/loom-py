@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [closed]
     branches: ["master"]
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: "Branch used to compute semantic release version"
+        required: true
+        default: "master"
 
 permissions:
   contents: write
@@ -15,10 +21,11 @@ concurrency:
 
 jobs:
   release:
-    if: ${{ github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'docs/') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'docs/')) }}
     runs-on: ubuntu-latest
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      RELEASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.event.pull_request.head.ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,19 +47,33 @@ jobs:
         id: version
         uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
         with:
-          branch: ${{ github.event.pull_request.head.ref }}
+          branch: ${{ env.RELEASE_BRANCH }}
           prerelease: "false"
 
       - name: Generate release changelog
         id: changelog
-        if: ${{ steps.version.outputs.deploy == 'true' }}
+        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
         uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
         with:
           mode: "release"
-          branch: ${{ github.event.pull_request.head.ref }}
+          branch: ${{ env.RELEASE_BRANCH }}
           version: ${{ steps.version.outputs.version }}
           pr-number: ${{ github.event.pull_request.number }}
           output: CHANGELOG_RELEASE.md
+
+      - name: Generate fallback changelog for manual release
+        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SOURCE_BRANCH: ${{ env.RELEASE_BRANCH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > CHANGELOG_RELEASE.md <<EOF
+          # Release v${VERSION}
+
+          Manual release triggered from branch: ${SOURCE_BRANCH}
+          EOF
 
       - name: Sync project version
         if: ${{ steps.version.outputs.deploy == 'true' }}
