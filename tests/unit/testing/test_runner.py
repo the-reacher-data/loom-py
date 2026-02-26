@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 
 from loom.core.command import Command
@@ -11,7 +12,6 @@ from loom.core.use_case.markers import Input, Load
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 from loom.testing.runner import UseCaseTest
-
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -61,6 +61,19 @@ class _RuleFailUseCase(UseCase[str]):
 
     async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
         return cmd.email
+
+
+class _Product(msgspec.Struct):
+    id: int
+    name: str
+
+
+class _MainRepoUseCase(UseCase[_Product, str]):
+    async def execute(self, product_id: int) -> str:
+        product = await self.main_repo.get_by_id(product_id)
+        if product is None:
+            return "missing"
+        return product.name
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +129,7 @@ class TestUseCaseTestRun:
             .run()
         )
         assert result == "from_repo"
-        repo.get_by_id.assert_awaited_once_with(5)
+        repo.get_by_id.assert_awaited_once_with(5, profile="default")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +209,11 @@ class TestUseCaseTestBuilder:
         runner = UseCaseTest(_LoadUseCase())
         assert runner.with_deps(Entity, AsyncMock()) is runner
 
+    def test_with_main_repo_returns_self(self) -> None:
+        runner = UseCaseTest(_MainRepoUseCase())
+        repo = AsyncMock()
+        assert runner.with_main_repo(repo) is runner
+
     async def test_with_input_merges_multiple_calls(self) -> None:
         result = await (
             UseCaseTest(_SimpleUseCase())
@@ -223,3 +241,17 @@ class TestUseCaseTestBuilder:
             .run()
         )
         assert result == "cmd@corp.com"
+
+    async def test_with_main_repo_injects_repo_for_use_case_logic(self) -> None:
+        repo = AsyncMock()
+        repo.get_by_id = AsyncMock(return_value=_Product(id=1, name="keyboard"))
+
+        result = await (
+            UseCaseTest(_MainRepoUseCase())
+            .with_main_repo(repo)
+            .with_params(product_id=1)
+            .run()
+        )
+
+        assert result == "keyboard"
+        repo.get_by_id.assert_awaited_once_with(1)

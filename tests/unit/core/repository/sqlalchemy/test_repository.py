@@ -19,7 +19,7 @@ class TestRepositorySessionScope:
         mock_session: AsyncMock,
         dummy_model: type,
     ) -> None:
-        repo = RepositorySQLAlchemy(
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
         mock_session.new = {"pending"}
@@ -37,7 +37,7 @@ class TestRepositorySessionScope:
         mock_session: AsyncMock,
         dummy_model: type,
     ) -> None:
-        repo = RepositorySQLAlchemy(
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
         mock_session.new = set()
@@ -57,7 +57,7 @@ class TestRepositorySessionScope:
         mock_session: AsyncMock,
         dummy_model: type,
     ) -> None:
-        repo = RepositorySQLAlchemy(
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
 
@@ -73,7 +73,7 @@ class TestRepositorySessionScope:
         mock_session_manager: Any,
         dummy_model: type,
     ) -> None:
-        repo = RepositorySQLAlchemy(
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
         explicit_session = AsyncMock()

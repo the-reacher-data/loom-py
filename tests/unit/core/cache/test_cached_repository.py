@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, TypeVar
+from typing import Any, TypeVar
 
 import msgspec
 from pytest import fixture, mark, raises
@@ -13,9 +13,9 @@ from loom.core.cache import (
     cached,
 )
 from loom.core.cache.keys import entity_key
-from loom.core.model import BaseModel, Cardinality, Field, Integer, Projection, Relation
+from loom.core.model import BaseModel, Cardinality, ColumnField, ProjectionField, RelationField
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
-from loom.core.repository.abc.query import build_page_result
+from loom.core.repository.abc.query import CursorResult, PaginationMode, QuerySpec, build_page_result
 from loom.core.repository.mutation import MutationEvent
 
 T = TypeVar("T")
@@ -143,13 +143,13 @@ class _EntityModel:
 
 class _ModelWithDependsOn(BaseModel):
     __tablename__ = "products"
-    id: Annotated[int, Integer, Field(primary_key=True)]
-    reviews: list[dict[str, Any]] = Relation(
+    id: int = ColumnField(primary_key=True)
+    reviews: list[dict[str, Any]] = RelationField(
         foreign_key="product_id",
         cardinality=Cardinality.ONE_TO_MANY,
         depends_on=("product_reviews:product_id",),
     )
-    note_count: int = Projection(
+    note_count: int = ProjectionField(
         loader=None,
         depends_on=("product_notes:product_id",),
         default=0,
@@ -158,13 +158,14 @@ class _ModelWithDependsOn(BaseModel):
 
 @cached
 class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
-    model = _EntityModel
+    model: type[Any] = _EntityModel
     output_type = _EntityOut
 
     def __init__(self) -> None:
         self.storage: dict[int, _EntityOut] = {}
         self.get_calls = 0
         self.list_calls = 0
+        self.query_calls = 0
         self.custom_calls = 0
         self.session_manager = _FakeSessionManager()
 
@@ -190,6 +191,19 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
         end = start + page_params.limit
         items = values[start:end]
         return build_page_result(items, len(values), page_params)
+
+    async def list_with_query(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[_EntityOut] | CursorResult[_EntityOut]:
+        _ = profile
+        self.query_calls += 1
+        if query.pagination == PaginationMode.CURSOR:
+            values = tuple(list(self.storage.values())[: query.limit])
+            return CursorResult(items=values, next_cursor=None, has_next=False)
+        page = PageParams(page=query.page, limit=query.limit)
+        return await self.list_paginated(page, profile=profile)
 
     async def create(self, data: _Create) -> _EntityOut:
         new_id = len(self.storage) + 1
@@ -367,6 +381,43 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.list_calls == 1
         assert repo.get_calls == 1
+
+    @mark.asyncio
+    async def test_list_with_query_offset_uses_cache_aside(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        await wrapped_repository.create(_Create(name="a"))
+        await wrapped_repository.create(_Create(name="b"))
+        query = QuerySpec(page=1, limit=1, pagination=PaginationMode.OFFSET)
+
+        first = await wrapped_repository.list_with_query(query)
+        second = await wrapped_repository.list_with_query(query)
+
+        assert len(first.items) == 1
+        assert len(second.items) == 1
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+        assert repo.query_calls == 1
+
+    @mark.asyncio
+    async def test_list_with_query_cursor_caches_only_first_page(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        await wrapped_repository.create(_Create(name="a"))
+        await wrapped_repository.create(_Create(name="b"))
+        first_page = QuerySpec(limit=1, pagination=PaginationMode.CURSOR)
+        next_page = QuerySpec(limit=1, pagination=PaginationMode.CURSOR, cursor="cursor-2")
+
+        _ = await wrapped_repository.list_with_query(first_page)
+        _ = await wrapped_repository.list_with_query(first_page)
+        _ = await wrapped_repository.list_with_query(next_page)
+        _ = await wrapped_repository.list_with_query(next_page)
+
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+        assert repo.query_calls == 3
 
 
 class TestDependencySpecs:

@@ -17,6 +17,9 @@ fastapi = [
 sqlalchemy = [
     "sqlalchemy>=2.0,<3.0",
 ]
+config = [
+    "omegaconf>=2.3,<3.0",
+]
 cache = [
     "aiocache>=0.12,<1.0",
     "omegaconf>=2.3,<3.0",
@@ -46,6 +49,7 @@ dev = [
     "redis>=5.0.0",
     "ruff>=0.6.0",
     "sqlalchemy>=2.0,<3.0",
+    "httpx>=0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -57,6 +61,16 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "Input",
+    "Load",
+    "loom.core.use_case.Input",
+    "loom.core.use_case.Load",
+    "loom.core.use_case.markers.Input",
+    "loom.core.use_case.markers.Load",
+]
 
 [tool.mypy]
 python_version = "3.11"

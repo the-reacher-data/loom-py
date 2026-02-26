@@ -4,7 +4,7 @@ import msgspec
 from pytest import mark
 
 from loom.core.repository.abc import FilterParams, PageParams
-from tests.helpers.integration_context import IntegrationContext, ScenarioDict
+from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
@@ -13,7 +13,7 @@ class TestRepositorySQLAlchemyIntegration:
     @mark.asyncio
     async def test_crud_flow_with_real_sqlite(
         self,
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
     ) -> None:
         created = await integration_context.product.repository.create(
             CreateProduct(name="keyboard", price=120.0)
@@ -39,7 +39,7 @@ class TestRepositorySQLAlchemyIntegration:
     @mark.asyncio
     async def test_paginated_list_with_filters(
         self,
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_catalog_with_price_20: ScenarioDict,
     ) -> None:
         await integration_context.load(scenario_catalog_with_price_20)
@@ -56,7 +56,7 @@ class TestRepositorySQLAlchemyIntegration:
     @mark.asyncio
     async def test_profile_default_omits_unloaded_fields(
         self,
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
     ) -> None:
         created = await integration_context.product.repository.create(
             CreateProduct(name="monitor", price=180.0)
@@ -74,7 +74,7 @@ class TestRepositorySQLAlchemyIntegration:
     @mark.asyncio
     async def test_with_details_loads_orm_and_projection_fields(
         self,
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_one_product_with_details: ScenarioDict,
     ) -> None:
         await integration_context.load(scenario_one_product_with_details)

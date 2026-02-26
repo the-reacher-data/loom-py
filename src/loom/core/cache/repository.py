@@ -15,12 +15,20 @@ from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
 from loom.core.model.introspection import get_projections, get_relations
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
+from loom.core.repository.abc.query import CursorResult, FilterGroup, PaginationMode, QuerySpec
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
 
 
 class _ListIndexPayload(msgspec.Struct):
     ids: list[Any]
     total_count: int
+
+
+class _QueryIndexPayload(msgspec.Struct):
+    ids: list[Any]
+    total_count: int | None = None
+    next_cursor: str | None = None
+    has_next: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +137,82 @@ class CachedRepository(
 
         await self._cache_entity_batch(page.items, profile=profile)
         return page
+
+    async def list_with_query(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[OutputT] | CursorResult[OutputT]:
+        is_cursor = query.pagination == PaginationMode.CURSOR
+        # For cursor pagination, cache only the first page to avoid
+        # unbounded key growth and low-hit deep-page caches.
+        should_cache = not is_cursor or query.cursor is None
+        if not should_cache:
+            return await self._repository.list_with_query(query, profile=profile)
+
+        query_payload = self._serialize_query(query)
+        query_fingerprint = stable_hash(repr(query_payload))
+        tags = self._resolver.list_tags(self.entity_name, query_fingerprint)
+        tags.extend(self._list_dependency_tags())
+        deps_fingerprint = await self._resolver.fingerprint(tags)
+        query_key = (
+            f"{self.entity_name}:query:{query_fingerprint}:"
+            f"profile={profile}:deps={deps_fingerprint}"
+        )
+
+        cached_index = await self._cache.get_value(query_key, type=_QueryIndexPayload)
+        if cached_index is not None:
+            entity_ids = cast(list[IdT], cached_index.ids)
+            items = await self._load_items_from_index(entity_ids, profile=profile)
+            if len(items) == len(entity_ids):
+                self._log.debug("CacheHitQuery", key=query_key)
+                if is_cursor:
+                    return CursorResult(
+                        items=tuple(items),
+                        next_cursor=cached_index.next_cursor,
+                        has_next=cached_index.has_next,
+                    )
+                return PageResult(
+                    items=tuple(items),
+                    total_count=0 if cached_index.total_count is None else cached_index.total_count,
+                    page=query.page,
+                    limit=query.limit,
+                    has_next=cached_index.has_next,
+                )
+
+        self._log.debug("CacheMissQuery", key=query_key)
+        loaded = await self._repository.list_with_query(query, profile=profile)
+        ids = [
+            cast(IdT, entity_id)
+            for item in loaded.items
+            for entity_id in [self._extract_entity_id(item)]
+            if entity_id is not None
+        ]
+        ttl = self._config.ttl_for_entity(self.entity_name, is_list=True)
+        if isinstance(loaded, CursorResult):
+            await self._cache.set_value(
+                query_key,
+                _QueryIndexPayload(
+                    ids=ids,
+                    next_cursor=loaded.next_cursor,
+                    has_next=loaded.has_next,
+                ),
+                ttl=ttl,
+            )
+            await self._cache_entity_batch(loaded.items, profile=profile)
+            return loaded
+
+        await self._cache.set_value(
+            query_key,
+            _QueryIndexPayload(
+                ids=ids,
+                total_count=loaded.total_count,
+                has_next=loaded.has_next,
+            ),
+            ttl=ttl,
+        )
+        await self._cache_entity_batch(loaded.items, profile=profile)
+        return loaded
 
     async def create(self, data: CreateT) -> OutputT:
         created = await self._repository.create(data)
@@ -371,6 +455,34 @@ class CachedRepository(
         if filter_params is None:
             return "{}"
         return repr(self._to_builtins(filter_params.filters))
+
+    def _serialize_query(self, query: QuerySpec) -> dict[str, Any]:
+        return {
+            "pagination": query.pagination.value,
+            "limit": query.limit,
+            "page": query.page,
+            "cursor": query.cursor,
+            "sort": [
+                {"field": sort.field, "direction": sort.direction}
+                for sort in query.sort
+            ],
+            "filters": self._serialize_filter_group(query.filters),
+        }
+
+    def _serialize_filter_group(self, group: FilterGroup | None) -> dict[str, Any] | None:
+        if group is None:
+            return None
+        return {
+            "op": group.op,
+            "filters": [
+                {
+                    "field": item.field,
+                    "op": item.op.value,
+                    "value": self._to_builtins(item.value),
+                }
+                for item in group.filters
+            ],
+        }
 
     def _struct_keys(self, payload: msgspec.Struct) -> list[str]:
         data = msgspec.to_builtins(payload)

@@ -10,8 +10,8 @@ from fastapi import HTTPException
 from loom.core.errors import Conflict, Forbidden, LoomError, NotFound, RuleViolation, RuleViolations
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
 from loom.core.use_case.use_case import UseCase
-from loom.fastapi.errors import HttpErrorMapper
-from loom.fastapi.rest_adapter import LoomRestAdapter
+from loom.rest.errors import HttpErrorMapper
+from loom.rest.rest_adapter import LoomRestAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -68,12 +68,10 @@ class TestAdapterRequest:
 class TestLoomAdapterProtocol:
     def test_rest_adapter_satisfies_loom_adapter(self) -> None:
         executor = MagicMock(spec=["execute"])
-        adapter = LoomRestAdapter(executor)  # type: ignore[arg-type]
-        # Duck-typing: has `handle` with correct signature — no TypeError expected
+        adapter = LoomRestAdapter(executor)
         assert callable(adapter.handle)
 
     def test_loom_adapter_is_protocol(self) -> None:
-        # LoomAdapter is a structural protocol — any class with `handle` satisfies it
         class _CustomAdapter:
             async def handle(
                 self,
@@ -83,7 +81,7 @@ class TestLoomAdapterProtocol:
                 return None
 
         adapter = _CustomAdapter()
-        assert isinstance(adapter, LoomAdapter)  # type: ignore[misc]
+        assert isinstance(adapter, LoomAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +130,7 @@ class TestHttpErrorMapper:
 
     def test_detail_contains_code_and_message(self) -> None:
         exc = self._mapper().to_http(NotFound("Order", id=42))
+        assert isinstance(exc.detail, dict)
         assert exc.detail["code"] == "not_found"
         assert "42" in exc.detail["message"]
 
@@ -189,7 +188,7 @@ class TestLoomRestAdapterSuccess:
     async def test_empty_dependencies_passed_as_none(self) -> None:
         executor = self._make_executor("ok")
         adapter = LoomRestAdapter(executor)
-        req = AdapterRequest(params={})  # dependencies = {}
+        req = AdapterRequest(params={})
         await adapter.handle(_SimpleUseCase(), req)
         _, kwargs = executor.execute.call_args
         assert kwargs["dependencies"] is None

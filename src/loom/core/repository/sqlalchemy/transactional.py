@@ -36,9 +36,66 @@ def get_active_session() -> AsyncSession | None:
     """Return the transactional session bound to the current context, or ``None``.
 
     Returns:
-        The active ``AsyncSession`` if inside a ``@transactional`` scope, else ``None``.
+        The active ``AsyncSession`` if inside a ``@transactional`` scope
+        or inside a :class:`~loom.core.repository.sqlalchemy.uow.SQLAlchemyUnitOfWork`
+        managed by :class:`~loom.core.engine.executor.RuntimeExecutor`.
     """
     return _active_session.get()
+
+
+def set_active_session(
+    session: AsyncSession,
+) -> contextvars.Token[AsyncSession | None]:
+    """Bind ``session`` to the current async context.
+
+    Used by :class:`~loom.core.repository.sqlalchemy.uow.SQLAlchemyUnitOfWork`
+    so that :func:`get_active_session` returns the UoW session, making
+    repository ``_session_scope`` and :func:`transactional` seamlessly
+    participate in the same transaction.
+
+    Args:
+        session: The ``AsyncSession`` to bind.
+
+    Returns:
+        A reset token that must be passed to :func:`reset_active_session`.
+    """
+    return _active_session.set(session)
+
+
+def reset_active_session(token: contextvars.Token[AsyncSession | None]) -> None:
+    """Restore the session ContextVar to its previous state.
+
+    Args:
+        token: The token returned by :func:`set_active_session`.
+    """
+    _active_session.reset(token)
+
+
+MutationsToken = contextvars.Token[list[MutationEvent] | None]
+
+
+def set_active_mutations() -> tuple[list[MutationEvent], MutationsToken]:
+    """Initialise a fresh mutations list for the current context.
+
+    Returns:
+        A tuple of ``(mutations_list, reset_token)`` where the list collects
+        :class:`~loom.core.repository.mutation.MutationEvent` objects and
+        the token is passed to :func:`reset_active_mutations` on exit.
+    """
+    mutations: list[MutationEvent] = []
+    token = _mutations.set(mutations)
+    return mutations, token
+
+
+def reset_active_mutations(
+    token: MutationsToken,
+) -> None:
+    """Restore the mutations ContextVar to its previous state.
+
+    Args:
+        token: The token returned by :func:`set_active_mutations`.
+    """
+    _mutations.reset(token)
 
 
 def record_mutation(event: MutationEvent) -> None:

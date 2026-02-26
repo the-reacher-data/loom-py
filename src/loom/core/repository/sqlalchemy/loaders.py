@@ -11,10 +11,10 @@ from sqlalchemy.sql.selectable import FromClause
 
 from loom.core.backend.sqlalchemy import get_compiled
 
-TableRef = FromClause | type | Callable[[], FromClause | type]
+TableRef = FromClause | type[Any] | Callable[[], FromClause | type[Any]]
 
 
-def _coalesce_table_ref(*, table: TableRef | None, model: type | None) -> TableRef:
+def _coalesce_table_ref(*, table: TableRef | None, model: type[Any] | None) -> TableRef:
     if table is not None:
         return table
     if model is not None:
@@ -23,12 +23,15 @@ def _coalesce_table_ref(*, table: TableRef | None, model: type | None) -> TableR
 
 
 def _resolve_table_ref(table_ref: TableRef) -> FromClause:
+    if isinstance(table_ref, FromClause):
+        return table_ref
+
+    resolved: FromClause | type[Any]
     if isinstance(table_ref, type):
         resolved = table_ref
-    elif callable(table_ref):
-        resolved = table_ref()
     else:
-        resolved = table_ref
+        resolved = table_ref()
+
     if isinstance(resolved, FromClause):
         return resolved
 

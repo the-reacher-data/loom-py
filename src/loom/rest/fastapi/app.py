@@ -1,0 +1,101 @@
+"""FastAPI application factory.
+
+:func:`create_fastapi_app` is the composition root that wires together the
+domain bootstrap result and REST interface declarations into a runnable
+``FastAPI`` instance.
+
+It is intentionally kept thin — all validation happens during
+:class:`~loom.rest.compiler.RestInterfaceCompiler` compilation (fail-fast at
+startup) and all request handling is delegated to
+:func:`~loom.rest.fastapi.router_runtime.bind_interfaces`.
+
+Usage::
+
+    result = bootstrap_app(
+        config=cfg,
+        use_cases=[CreateOrderUseCase, GetOrderUseCase],
+        modules=[register_repositories],
+    )
+    app = create_fastapi_app(
+        result,
+        interfaces=[OrderRestInterface],
+        title="Orders API",
+        version="1.0.0",
+    )
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+from fastapi import FastAPI
+
+from loom.core.bootstrap.bootstrap import BootstrapResult
+from loom.core.engine.executor import RuntimeExecutor
+from loom.rest.compiler import RestInterfaceCompiler
+from loom.rest.fastapi.router_runtime import bind_interfaces
+from loom.rest.model import RestApiDefaults, RestInterface
+
+
+def create_fastapi_app(
+    result: BootstrapResult,
+    interfaces: Sequence[type[RestInterface[Any]]],
+    *,
+    defaults: RestApiDefaults | None = None,
+    **fastapi_kwargs: Any,
+) -> FastAPI:
+    """Create a FastAPI application from a bootstrap result and REST interfaces.
+
+    Compiles all ``RestInterface`` declarations via
+    :class:`~loom.rest.compiler.RestInterfaceCompiler`, binds each compiled
+    route to the ``FastAPI`` instance, and returns the ready application.
+
+    Compilation is fail-fast: any structural error (missing use-case plan,
+    duplicate route, missing prefix) raises
+    :class:`~loom.rest.compiler.InterfaceCompilationError` before the app
+    starts accepting requests.
+
+    Args:
+        result: Fully initialised :class:`~loom.core.bootstrap.bootstrap.BootstrapResult`
+            from :func:`~loom.core.bootstrap.bootstrap.bootstrap_app`.
+        interfaces: ``RestInterface`` subclasses declaring which endpoints to
+            expose.  Compiled in declaration order.
+        defaults: Global REST API defaults (pagination mode, profile policy).
+            Falls back to :class:`~loom.rest.model.RestApiDefaults` when not
+            provided.
+        **fastapi_kwargs: Additional keyword arguments forwarded to the
+            ``FastAPI`` constructor (e.g. ``title``, ``version``,
+            ``docs_url``).
+
+    Returns:
+        Configured :class:`fastapi.FastAPI` instance ready to serve requests.
+
+    Raises:
+        InterfaceCompilationError: If any interface fails structural validation.
+
+    Example::
+
+        app = create_fastapi_app(
+            result,
+            interfaces=[UserRestInterface, OrderRestInterface],
+            defaults=RestApiDefaults(pagination_mode=PaginationMode.CURSOR),
+            title="My API",
+            version="2.0.0",
+        )
+    """
+    app = FastAPI(**fastapi_kwargs)
+
+    interface_compiler = RestInterfaceCompiler(
+        result.compiler,
+        defaults=defaults,
+    )
+    executor = RuntimeExecutor(result.compiler)
+
+    all_routes = []
+    for iface in interfaces:
+        all_routes.extend(interface_compiler.compile(iface))
+
+    bind_interfaces(app, all_routes, result.factory, executor)
+
+    return app

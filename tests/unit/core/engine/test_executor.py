@@ -226,7 +226,7 @@ class TestExecuteWithLoad:
             dependencies={User: repo},
         )
 
-        repo.get_by_id.assert_awaited_once_with(1)
+        repo.get_by_id.assert_awaited_once_with(1, profile="default")
         assert result == "loaded@corp.com"
 
     async def test_load_override_skips_repo(self) -> None:

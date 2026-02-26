@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import msgspec
+from loom.core.command import Command, Patch
 
 
-class CreateProduct(msgspec.Struct):
+class CreateProduct(Command, frozen=True):
     name: str
     price: float
 
 
-class UpdateProduct(msgspec.Struct, kw_only=True):
-    name: str | msgspec.UnsetType = msgspec.UNSET
-    price: float | msgspec.UnsetType = msgspec.UNSET
+class UpdateProduct(Command, frozen=True):
+    name: Patch[str] = None
+    price: Patch[float] = None

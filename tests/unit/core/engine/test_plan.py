@@ -126,7 +126,7 @@ class TestRuleStep:
     def test_is_frozen(self) -> None:
         step = RuleStep(fn=_noop_rule)
         with pytest.raises(dataclasses.FrozenInstanceError):
-            step.fn = _noop_compute  # type: ignore[misc]
+            step.fn = _noop_rule  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -218,9 +218,9 @@ class TestRuntimeEvent:
             event.use_case_name = "Y"  # type: ignore[misc]
 
     def test_event_kind_values(self) -> None:
-        assert EventKind.COMPILE_START == "compile_start"
-        assert EventKind.COMPILE_DONE == "compile_done"
-        assert EventKind.EXEC_START == "exec_start"
-        assert EventKind.STEP_DONE == "step_done"
-        assert EventKind.EXEC_DONE == "exec_done"
-        assert EventKind.EXEC_ERROR == "exec_error"
+        assert EventKind.COMPILE_START.value == "compile_start"
+        assert EventKind.COMPILE_DONE.value == "compile_done"
+        assert EventKind.EXEC_START.value == "exec_start"
+        assert EventKind.STEP_DONE.value == "step_done"
+        assert EventKind.EXEC_DONE.value == "exec_done"
+        assert EventKind.EXEC_ERROR.value == "exec_error"

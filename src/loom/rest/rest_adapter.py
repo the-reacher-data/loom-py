@@ -1,3 +1,5 @@
+"""Concrete REST transport adapter."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -8,7 +10,7 @@ from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import LoomError
 from loom.core.transport.adapter import AdapterRequest
 from loom.core.use_case.use_case import UseCase
-from loom.fastapi.errors import HttpErrorMapper
+from loom.rest.errors import HttpErrorMapper
 
 
 class LoomRestAdapter:

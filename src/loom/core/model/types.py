@@ -3,7 +3,9 @@ from __future__ import annotations
 from loom.core.model.field import ColumnType
 
 
-def String(length: int) -> ColumnType:
+def String(length: int | None = None) -> ColumnType:
+    if length is None:
+        return ColumnType("String")
     return ColumnType("String", args=(length,))
 
 
@@ -12,6 +14,7 @@ BigInteger = ColumnType("BigInteger")
 Float = ColumnType("Float")
 Boolean = ColumnType("Boolean")
 Text = ColumnType("Text")
+JSON = ColumnType("JSON")
 
 
 def DateTime(*, tz: bool = True) -> ColumnType:

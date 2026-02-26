@@ -9,6 +9,8 @@ from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, LoadStep
 from loom.core.errors import NotFound
 from loom.core.logger import LoggerPort, get_logger
+from loom.core.uow.abc import UnitOfWorkFactory
+from loom.core.uow.context import _active_uow
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 
@@ -22,6 +24,11 @@ class RuntimeExecutor:
     through the fixed pipeline: bind params → build command → load entities
     → apply computes → check rules → call execute.
 
+    Optionally manages a :class:`~loom.core.uow.abc.UnitOfWork` lifecycle
+    around each execution when a ``uow_factory`` is provided.  Nested calls
+    detected via a ``contextvars.ContextVar`` share the outer transaction and
+    never open an additional UoW.
+
     No signature inspection occurs at runtime. All structural information
     comes from the cached ExecutionPlan produced by UseCaseCompiler.
 
@@ -32,6 +39,10 @@ class RuntimeExecutor:
 
     Args:
         compiler: Compiler used to retrieve cached plans.
+        uow_factory: Optional UoW factory.  When provided, each top-level
+            :meth:`execute` call is wrapped in a single atomic transaction
+            (begin → commit on success, rollback on exception).  Nested
+            executions within the same async context reuse the outer UoW.
         debug_execution: When ``True``, emits ``[STEP]`` logs for every
             pipeline stage. Defaults to ``False`` (summary logs only).
         logger: Optional logger. Defaults to the framework logger.
@@ -40,12 +51,15 @@ class RuntimeExecutor:
 
     Example::
 
-        executor = RuntimeExecutor(compiler, metrics=prometheus_adapter)
+        executor = RuntimeExecutor(
+            compiler,
+            uow_factory=SQLAlchemyUnitOfWorkFactory(session_manager),
+            metrics=prometheus_adapter,
+        )
         result = await executor.execute(
             use_case,
             params={"user_id": 1},
             payload={"email": "new@corp.com"},
-            dependencies={User: user_repo},
         )
     """
 
@@ -53,18 +67,20 @@ class RuntimeExecutor:
         self,
         compiler: UseCaseCompiler,
         *,
+        uow_factory: UnitOfWorkFactory | None = None,
         debug_execution: bool = False,
         logger: LoggerPort | None = None,
         metrics: MetricsAdapter | None = None,
     ) -> None:
         self._compiler = compiler
+        self._uow_factory = uow_factory
         self._debug = debug_execution
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
 
     async def execute(
         self,
-        use_case: UseCase[ResultT],
+        use_case: UseCase[Any, ResultT],
         *,
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
@@ -72,6 +88,11 @@ class RuntimeExecutor:
         load_overrides: dict[type[Any], Any] | None = None,
     ) -> ResultT:
         """Execute the UseCase via its compiled plan.
+
+        When a ``uow_factory`` was provided at construction and no UoW is
+        already active in the current async context, opens a fresh UoW
+        (begin), runs the pipeline, and commits on success or rolls back on
+        any exception.  Nested calls reuse the existing UoW transparently.
 
         Args:
             use_case: Constructed UseCase instance to execute.
@@ -99,6 +120,38 @@ class RuntimeExecutor:
         self._emit(RuntimeEvent(kind=EventKind.EXEC_START, use_case_name=uc_name))
         start = time.perf_counter()
 
+        _owns_uow = self._uow_factory is not None and _active_uow.get() is None
+
+        if not _owns_uow:
+            return await self._run_pipeline(
+                plan, use_case, uc_name, start, params, payload, dependencies, load_overrides
+            )
+
+        uow = self._uow_factory.create()  # type: ignore[union-attr]
+        token = _active_uow.set(uow)
+        try:
+            async with uow:
+                return await self._run_pipeline(
+                    plan, use_case, uc_name, start, params, payload, dependencies, load_overrides
+                )
+        finally:
+            _active_uow.reset(token)
+
+    # ------------------------------------------------------------------
+    # Pipeline
+    # ------------------------------------------------------------------
+
+    async def _run_pipeline(
+        self,
+        plan: ExecutionPlan,
+        use_case: UseCase[Any, ResultT],
+        uc_name: str,
+        start: float,
+        params: dict[str, Any] | None,
+        payload: dict[str, Any] | None,
+        dependencies: dict[type[Any], Any] | None,
+        load_overrides: dict[type[Any], Any] | None,
+    ) -> ResultT:
         try:
             bound: dict[str, Any] = {}
 
@@ -289,7 +342,7 @@ class RuntimeExecutor:
             )
 
         value = bound[step.by]
-        entity = await repo.get_by_id(value)
+        entity = await repo.get_by_id(value, profile=step.profile)
 
         if entity is None:
             raise NotFound(step.entity_type.__name__, id=value)

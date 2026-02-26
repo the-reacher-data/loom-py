@@ -1,4 +1,4 @@
-.PHONY: test test-cov test-failfast test-node test-class mypy
+.PHONY: test test-cov test-failfast test-node test-class mypy test-golden golden-update
 
 TEST_NODE ?=
 TEST_CLASS ?=
@@ -31,6 +31,18 @@ test-node:
 test-class:
 	@if [ -z "$(TEST_CLASS)" ]; then echo "Define TEST_CLASS=<ruta::Clase>"; exit 1; fi
 	uv run pytest -q "$(TEST_CLASS)"
+
+# Ejecuta sólo los tests de golden testing
+# Corre tests/unit/testing/test_golden.py y los conftest fixtures de tests/conftest.py
+
+test-golden:
+	uv run pytest -q tests/unit/testing/test_golden.py
+
+# Regenera todos los snapshots golden (plans + outputs)
+# Equivale a pasar --update-golden al suite completo
+
+golden-update:
+	uv run pytest -q --update-golden
 
 # Validación de tipos
 

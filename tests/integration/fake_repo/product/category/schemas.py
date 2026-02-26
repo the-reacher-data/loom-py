@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import msgspec
+from loom.core.command import Command
 
 
-class CreateCategory(msgspec.Struct):
+class CreateCategory(Command, frozen=True):
     name: str

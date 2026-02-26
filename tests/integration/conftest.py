@@ -7,7 +7,7 @@ from pytest import fixture
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
-from tests.helpers.integration_context import IntegrationContext, build_integration_context
+from loom.testing import RepositoryIntegrationHarness, build_repository_harness
 from tests.integration.fake_repo.product.category.model import Category
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.relations import ProductCategoryLink
@@ -15,7 +15,7 @@ from tests.integration.fake_repo.product.review.model import ProductReview
 
 
 @fixture
-async def integration_context(tmp_path: Path) -> AsyncGenerator[IntegrationContext, None]:
+async def integration_context(tmp_path: Path) -> AsyncGenerator[RepositoryIntegrationHarness, None]:
     reset_registry()
     compile_all(Category, ProductReview, ProductCategoryLink, Product)
 
@@ -31,9 +31,14 @@ async def integration_context(tmp_path: Path) -> AsyncGenerator[IntegrationConte
         connect_args={},
     )
 
-    integration_context = build_integration_context(
-        package_name="tests.integration.fake_repo",
+    integration_context = build_repository_harness(
         session_manager=manager,
+        models={
+            "product": Product,
+            "category": Category,
+            "category_link": ProductCategoryLink,
+            "review": ProductReview,
+        },
         load_order=("product", "category", "category_link", "review"),
     )
     async with manager.engine.begin() as conn:

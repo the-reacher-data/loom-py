@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     MetaData,
     Numeric,
     String,
@@ -16,6 +17,10 @@ from sqlalchemy import (
     Text,
     func,
 )
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
+from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
+from sqlalchemy.dialects.postgresql import TSVECTOR as PG_TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, mapped_column, relationship
 
 from loom.core.model.enums import Cardinality, ServerDefault
@@ -34,8 +39,12 @@ _SA_TYPE_MAP: dict[str, type] = {
     "Float": Float,
     "Boolean": Boolean,
     "Text": Text,
+    "JSON": JSON,
     "DateTime": DateTime,
     "Numeric": Numeric,
+    "Postgres.JSONB": PG_JSONB,
+    "Postgres.UUID": PG_UUID,
+    "Postgres.TSVECTOR": PG_TSVECTOR,
 }
 
 _SERVER_DEFAULT_MAP = {
@@ -58,6 +67,14 @@ _registry: dict[type, type] = {}
 
 
 def _build_sa_column_type(col_type: ColumnType) -> Any:
+    if col_type.type_name == "Postgres.ARRAY":
+        if len(col_type.args) != 1:
+            raise ValueError("Postgres.ARRAY expects one inner ColumnType")
+        inner = col_type.args[0]
+        if not isinstance(inner, ColumnType):
+            raise ValueError("Postgres.ARRAY inner type must be ColumnType")
+        return PG_ARRAY(_build_sa_column_type(inner))
+
     sa_type_cls = _SA_TYPE_MAP.get(col_type.type_name)
     if sa_type_cls is None:
         raise ValueError(f"Unsupported column type: {col_type.type_name}")

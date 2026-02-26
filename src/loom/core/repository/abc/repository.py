@@ -4,7 +4,13 @@ from typing import Protocol, TypeVar
 
 import msgspec
 
-from loom.core.repository.abc.query import FilterParams, PageParams, PageResult
+from loom.core.repository.abc.query import (
+    CursorResult,
+    FilterParams,
+    PageParams,
+    PageResult,
+    QuerySpec,
+)
 
 IdT = TypeVar("IdT", contravariant=True)
 OutputT = TypeVar("OutputT", bound=msgspec.Struct, covariant=True)
@@ -42,6 +48,30 @@ class RepositoryRead(Protocol[OutputT, IdT]):
 
         Returns:
             A ``PageResult`` with the matching items and pagination metadata.
+        """
+        ...
+
+    async def list_with_query(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[OutputT] | CursorResult[OutputT]:
+        """Fetch a list of entities using a structured :class:`~loom.core.repository.abc.query.QuerySpec`.
+
+        Supports both offset and cursor pagination, structured filters, and
+        explicit sort directives.  The concrete return type depends on
+        ``query.pagination``:
+
+        - ``PaginationMode.OFFSET`` → :class:`~loom.core.repository.abc.query.PageResult`
+        - ``PaginationMode.CURSOR`` → :class:`~loom.core.repository.abc.query.CursorResult`
+
+        Args:
+            query: Structured query specification.
+            profile: Loading profile name for eager-load options.
+
+        Returns:
+            A ``PageResult`` for offset queries or a ``CursorResult`` for
+            cursor queries.
         """
         ...
 

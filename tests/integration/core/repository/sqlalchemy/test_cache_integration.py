@@ -16,7 +16,7 @@ from loom.core.cache import (
 from loom.core.repository import Repository
 from loom.core.repository.abc import PageParams
 from loom.core.repository.mutation import MutationEvent
-from tests.helpers.integration_context import IntegrationContext, ScenarioDict
+from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.review.schemas import CreateProductReview
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
@@ -24,7 +24,7 @@ from tests.integration.fake_repo.product.schemas import CreateProduct, UpdatePro
 
 @fixture
 async def cached_integration_repo(
-    integration_context: IntegrationContext,
+    integration_context: RepositoryIntegrationHarness,
     cache_backend_kind: str,
 ) -> AsyncGenerator[CachedRepository[Product, CreateProduct, UpdateProduct, int], None]:
     namespace = "integration_cache"
@@ -102,7 +102,7 @@ class TestCacheIntegration:
     async def test_get_by_id_cached_and_invalidated_on_update(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_one_product: ScenarioDict,
     ) -> None:
         # Arrange
@@ -134,7 +134,7 @@ class TestCacheIntegration:
     async def test_list_paginated_cache_hit_and_invalidation_on_create(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_catalog_with_price_20: ScenarioDict,
     ) -> None:
         # Arrange
@@ -160,7 +160,7 @@ class TestCacheIntegration:
     async def test_delete_invalidates_cached_entity(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_one_product: ScenarioDict,
     ) -> None:
         # Arrange
@@ -185,7 +185,7 @@ class TestRelatedInvalidationIntegration:
     async def test_with_details_profile_is_invalidated_from_review_repository(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
-        integration_context: IntegrationContext,
+        integration_context: RepositoryIntegrationHarness,
         scenario_one_product: ScenarioDict,
     ) -> None:
         await integration_context.load(scenario_one_product)

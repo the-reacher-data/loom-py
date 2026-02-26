@@ -41,10 +41,10 @@ def with_session_scope(
 
 
 class RepositorySQLAlchemy(
-    SQLAlchemyCreateMixin,
-    SQLAlchemyReadMixin,
-    SQLAlchemyUpdateMixin,
-    SQLAlchemyDeleteMixin,
+    SQLAlchemyCreateMixin[OutputT, IdT],
+    SQLAlchemyReadMixin[OutputT, IdT],
+    SQLAlchemyUpdateMixin[OutputT, IdT],
+    SQLAlchemyDeleteMixin[OutputT, IdT],
     Generic[OutputT, IdT],
 ):
     """Base SQLAlchemy repository with context-aware session management.

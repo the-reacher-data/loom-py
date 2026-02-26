@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated
+from collections.abc import Generator
+from typing import Any, cast
 
 from pytest import fixture
 
@@ -14,22 +15,19 @@ from loom.core.backend.sqlalchemy import (
 from loom.core.model import (
     BaseModel,
     Cardinality,
-    Field,
-    Float,
-    Integer,
+    ColumnField,
     OnDelete,
-    Relation,
-    String,
+    RelationField,
 )
 
 
 class _Product(BaseModel):
     __tablename__ = "test_products"
-    id: Annotated[int, Integer, Field(primary_key=True, autoincrement=True)]
-    name: Annotated[str, String(120)]
-    price: Annotated[float, Float]
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=120)
+    price: float = ColumnField()
 
-    reviews: list[dict] = Relation(
+    reviews: list[dict[str, object]] = RelationField(
         foreign_key="product_id",
         cardinality=Cardinality.ONE_TO_MANY,
         on_delete=OnDelete.CASCADE,
@@ -40,17 +38,13 @@ class _Product(BaseModel):
 
 class _Review(BaseModel):
     __tablename__ = "test_reviews"
-    id: Annotated[int, Integer, Field(primary_key=True, autoincrement=True)]
-    product_id: Annotated[
-        int,
-        Integer,
-        Field(foreign_key="test_products.id", on_delete=OnDelete.CASCADE),
-    ]
-    comment: Annotated[str, String(255)]
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    product_id: int = ColumnField(foreign_key="test_products.id", on_delete=OnDelete.CASCADE)
+    comment: str = ColumnField(length=255)
 
 
 @fixture(autouse=True)
-def _clean_registry():
+def _clean_registry() -> Generator[None, None, None]:
     reset_registry()
     yield
     reset_registry()
@@ -58,7 +52,7 @@ def _clean_registry():
 
 class TestCompileModel:
     def test_columns_and_pk(self) -> None:
-        sa_cls = compile_model(_Product)
+        sa_cls = cast(Any, compile_model(_Product))
         table = sa_cls.__table__
         assert sa_cls.__tablename__ == "test_products"
         assert {c.name for c in table.columns} >= {"id", "name", "price"}
@@ -66,7 +60,7 @@ class TestCompileModel:
 
     def test_foreign_key_on_delete(self) -> None:
         compile_model(_Product)
-        sa_cls = compile_model(_Review)
+        sa_cls = cast(Any, compile_model(_Review))
         fk = next(iter(sa_cls.__table__.c.product_id.foreign_keys))
         assert fk.column.table.name == "test_products"
         assert fk.ondelete == "CASCADE"

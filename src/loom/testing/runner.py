@@ -7,6 +7,7 @@ import msgspec
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
+from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
@@ -32,7 +33,7 @@ class UseCaseTest(Generic[ResultT]):
         )
     """
 
-    def __init__(self, use_case: UseCase[ResultT]) -> None:
+    def __init__(self, use_case: UseCase[Any, ResultT]) -> None:
         self._use_case = use_case
         self._params: dict[str, Any] = {}
         self._payload: dict[str, Any] | None = None
@@ -115,6 +116,21 @@ class UseCaseTest(Generic[ResultT]):
             ``self`` for chaining.
         """
         self._dependencies[entity_type] = repo
+        return self
+
+    def with_main_repo(self, repo: RepoFor[Any]) -> UseCaseTest[ResultT]:
+        """Inject the main repository dependency into the UseCase instance.
+
+        This is useful for unit tests of ``UseCase[TModel, TResult]`` where
+        the core logic reads from ``self.main_repo``.
+
+        Args:
+            repo: Repository instance compatible with the UseCase's main model.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._use_case.main_repo = repo
         return self
 
     # ------------------------------------------------------------------

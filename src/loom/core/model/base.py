@@ -1,13 +1,19 @@
 import sys
 import typing
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import msgspec
 from msgspec import UNSET, UnsetType
-from msgspec._core import StructMeta
 
+from loom.core.model.field import ColumnFieldSpec
 from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
+
+if TYPE_CHECKING:
+    class _StructMeta(type):
+        pass
+else:
+    _StructMeta = type(msgspec.Struct)
 
 
 def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
@@ -20,7 +26,7 @@ def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
     return annotation
 
 
-class LoomStructMeta(StructMeta):
+class LoomStructMeta(_StructMeta):
     """Metaclass that intercepts ``Relation`` and ``Projection`` assignments
     before ``StructMeta`` processes the class body.
 
@@ -35,12 +41,13 @@ class LoomStructMeta(StructMeta):
         bases: tuple[type, ...],
         namespace: dict[str, Any],
         **kwargs: Any,
-    ) -> "LoomStructMeta":
+    ) -> Any:
         kwargs.setdefault("frozen", True)
         kwargs.setdefault("kw_only", True)
         kwargs.setdefault("omit_defaults", True)
         kwargs.setdefault("rename", "camel")
 
+        columns: dict[str, ColumnFieldSpec] = {}
         relations: dict[str, Relation] = {}
         projections: dict[str, Projection] = {}
         annotations: dict[str, Any] = namespace.get("__annotations__", {})
@@ -56,7 +63,16 @@ class LoomStructMeta(StructMeta):
 
         for attr_name in list(namespace):
             value = namespace[attr_name]
-            if isinstance(value, Relation):
+            if isinstance(value, ColumnFieldSpec):
+                columns[attr_name] = value
+                if value.field.default is not msgspec.UNSET:
+                    namespace[attr_name] = value.field.default
+                elif value.field.primary_key and value.field.autoincrement:
+                    # Avoid propagating msgspec.UNSET into INSERT bind parameters.
+                    namespace[attr_name] = None
+                else:
+                    namespace[attr_name] = UNSET
+            elif isinstance(value, Relation):
                 relations[attr_name] = value
                 namespace[attr_name] = UNSET
                 if attr_name in annotations:
@@ -70,17 +86,24 @@ class LoomStructMeta(StructMeta):
                     annotations[attr_name] = resolved | UnsetType
 
         namespace["__annotations__"] = annotations
-        struct_cls = super().__new__(cls, name, bases, namespace, **kwargs)
-        struct_cls.__loom_relations__ = relations  # type: ignore[attr-defined]
-        struct_cls.__loom_projections__ = projections  # type: ignore[attr-defined]
-        return struct_cls  # type: ignore[return-value]
+        struct_cls: Any = super().__new__(cls, name, bases, namespace, **kwargs)
+        struct_cls.__loom_columns__ = columns
+        struct_cls.__loom_relations__ = relations
+        struct_cls.__loom_projections__ = projections
+        return struct_cls
 
 
-class BaseModel(msgspec.Struct, metaclass=LoomStructMeta):
-    """Base for all loom domain models.
+if TYPE_CHECKING:
+    class BaseModel(msgspec.Struct):
+        """Typing-only base model to avoid metaclass noise in mypy."""
 
-    Subclasses must declare ``__tablename__`` and annotate fields with
-    ``Annotated[T, ColumnType, Field(...)]``.
-    """
+        __tablename__: ClassVar[str]
+else:
+    class BaseModel(msgspec.Struct, metaclass=LoomStructMeta):
+        """Base for all loom domain models.
 
-    __tablename__: ClassVar[str]
+        Subclasses must declare ``__tablename__`` and provide typed attributes.
+        Column metadata is optional via ``ColumnField(...)``.
+        """
+
+        __tablename__: ClassVar[str]

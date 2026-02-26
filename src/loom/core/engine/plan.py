@@ -50,11 +50,14 @@ class LoadStep:
         name: Parameter name as declared in the signature.
         entity_type: Domain entity type to load.
         by: Name of the primitive param whose value is used as lookup key.
+        profile: Loading profile forwarded to ``repo.get_by_id``.
+            Defaults to ``"default"``.
     """
 
     name: str
     entity_type: type[Any]
     by: str
+    profile: str = "default"
 
 
 @dataclass(frozen=True)

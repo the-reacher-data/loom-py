@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import msgspec
+from loom.core.command import Command
 
 
-class CreateProductReview(msgspec.Struct):
+class CreateProductReview(Command, frozen=True):
     product_id: int
     rating: int
     comment: str

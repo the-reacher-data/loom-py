@@ -15,7 +15,7 @@ from loom.core.engine.plan import (
     RuleStep,
 )
 from loom.core.logger import LoggerPort, get_logger
-from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.markers import _InputMarker, _LoadMarker
 from loom.core.use_case.use_case import UseCase
 
 
@@ -152,14 +152,18 @@ class UseCaseCompiler:
         load_steps: list[LoadStep] = []
         input_count = 0
 
+        _variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+
         for name, param in sig.parameters.items():
             if name == "self":
+                continue
+            if param.kind in _variadic:
                 continue
 
             default = param.default
             annotation = hints.get(name, Any)
 
-            if isinstance(default, Input):
+            if isinstance(default, _InputMarker):
                 input_count += 1
                 if input_count > 1:
                     raise CompilationError(
@@ -170,8 +174,13 @@ class UseCaseCompiler:
                 cmd_name = getattr(annotation, "__name__", repr(annotation))
                 self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")
 
-            elif isinstance(default, Load):
-                ls = LoadStep(name=name, entity_type=default.entity_type, by=default.by)
+            elif isinstance(default, _LoadMarker):
+                ls = LoadStep(
+                    name=name,
+                    entity_type=default.entity_type,
+                    by=default.by,
+                    profile=default.profile,
+                )
                 load_steps.append(ls)
                 self._logger.info(
                     f"[BOOT]  - Detected Load: {default.entity_type.__name__}"

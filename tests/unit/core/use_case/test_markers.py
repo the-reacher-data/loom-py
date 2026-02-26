@@ -10,7 +10,7 @@ class FakeEntity:
 class TestInput:
     def test_has_no_extra_attributes(self) -> None:
         marker = Input()
-        assert marker.__slots__ == ()
+        assert type(marker).__slots__ == ()
 
 
 class TestLoad:

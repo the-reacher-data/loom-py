@@ -1,10 +1,170 @@
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Generic, Literal, TypeVar
 
 import msgspec
 
 OutputT = TypeVar("OutputT", bound=msgspec.Struct, covariant=True)
+
+
+class PaginationMode(str, Enum):
+    """Pagination strategy for list and query operations.
+
+    Attributes:
+        OFFSET: Classic page+limit pagination.  Compatible with all backends.
+        CURSOR: Keyset (cursor) pagination.  Performant at scale; requires a
+            stable sort order with a tie-breaker.
+    """
+
+    OFFSET = "offset"
+    CURSOR = "cursor"
+
+
+class FilterOp(str, Enum):
+    """Filter operator applied to a single field.
+
+    Attributes:
+        EQ: Exact equality.
+        NE: Inequality.
+        GT: Greater than.
+        GTE: Greater than or equal.
+        LT: Less than.
+        LTE: Less than or equal.
+        IN: Value is in a collection.
+        LIKE: SQL LIKE pattern (case-sensitive).
+        ILIKE: SQL LIKE pattern (case-insensitive).
+        IS_NULL: Field is NULL.
+        EXISTS: Related collection is non-empty (subquery).
+        NOT_EXISTS: Related collection is empty (subquery).
+    """
+
+    EQ = "eq"
+    NE = "ne"
+    GT = "gt"
+    GTE = "gte"
+    LT = "lt"
+    LTE = "lte"
+    IN = "in"
+    LIKE = "like"
+    ILIKE = "ilike"
+    IS_NULL = "is_null"
+    EXISTS = "exists"
+    NOT_EXISTS = "not_exists"
+
+
+@dataclass(frozen=True)
+class FilterSpec:
+    """A single field filter condition.
+
+    Args:
+        field: Dot-separated field path (e.g. ``"price"`` or
+            ``"category.name"``).
+        op: Comparison operator.
+        value: Value to compare against.  Ignored for ``IS_NULL``,
+            ``EXISTS``, and ``NOT_EXISTS``.
+
+    Example::
+
+        FilterSpec(field="price", op=FilterOp.GTE, value=10.0)
+    """
+
+    field: str
+    op: FilterOp
+    value: Any = None
+
+
+@dataclass(frozen=True)
+class FilterGroup:
+    """A group of filter conditions combined with AND or OR logic.
+
+    Args:
+        filters: Filter conditions to combine.
+        op: Logical operator: ``"AND"`` (default) or ``"OR"``.
+
+    Example::
+
+        FilterGroup(
+            filters=(
+                FilterSpec("price", FilterOp.GTE, 10.0),
+                FilterSpec("price", FilterOp.LTE, 100.0),
+            ),
+            op="AND",
+        )
+    """
+
+    filters: tuple[FilterSpec, ...]
+    op: Literal["AND", "OR"] = "AND"
+
+
+@dataclass(frozen=True)
+class SortSpec:
+    """A single sort directive applied to a query.
+
+    Args:
+        field: Field name to sort by.
+        direction: ``"ASC"`` (default) or ``"DESC"``.
+
+    Example::
+
+        SortSpec(field="created_at", direction="DESC")
+    """
+
+    field: str
+    direction: Literal["ASC", "DESC"] = "ASC"
+
+
+@dataclass(frozen=True)
+class QuerySpec:
+    """Structured query contract for list operations.
+
+    Replaces the flat ``FilterParams`` dict with an explicit, type-safe
+    representation.  The repository implementation compiles this into
+    backend-specific clauses at query time.
+
+    Args:
+        filters: Optional filter group applied to the query.
+        sort: Ordered tuple of sort directives.
+        pagination: Pagination strategy.  Defaults to ``OFFSET``.
+        limit: Maximum number of items per page (1-1000).
+        page: 1-based page number (only for ``OFFSET`` mode).
+        cursor: Opaque cursor token (only for ``CURSOR`` mode).
+
+    Example::
+
+        QuerySpec(
+            filters=FilterGroup(
+                filters=(FilterSpec("price", FilterOp.GTE, 10.0),),
+            ),
+            sort=(SortSpec("name"),),
+            pagination=PaginationMode.OFFSET,
+            limit=20,
+            page=1,
+        )
+    """
+
+    filters: FilterGroup | None = None
+    sort: tuple[SortSpec, ...] = field(default_factory=tuple)
+    pagination: PaginationMode = PaginationMode.OFFSET
+    limit: int = 50
+    page: int = 1
+    cursor: str | None = None
+
+
+class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True):
+    """Result of a cursor-paginated query.
+
+    Attributes:
+        items: Entities for the current page.
+        next_cursor: Opaque token for the next page, or ``None`` if this
+            is the last page.
+        has_next: ``True`` if more items follow.
+    """
+
+    items: tuple[OutputT, ...]
+    next_cursor: str | None
+    has_next: bool
 
 
 class PageParams(msgspec.Struct, kw_only=True):

@@ -1,4 +1,17 @@
-from loom.core.repository.abc.query import FilterParams, PageParams, PageResult, build_page_result
+from loom.core.repository.abc.query import (
+    CursorResult,
+    FilterGroup,
+    FilterOp,
+    FilterParams,
+    FilterSpec,
+    PageParams,
+    PageResult,
+    PaginationMode,
+    QuerySpec,
+    SortSpec,
+    build_page_result,
+)
+from loom.core.repository.abc.repo_for import RepoFor
 from loom.core.repository.abc.repository import (
     CreateT,
     IdT,
@@ -11,14 +24,22 @@ from loom.core.repository.abc.repository import (
 
 __all__ = [
     "CreateT",
+    "CursorResult",
+    "FilterGroup",
+    "FilterOp",
     "FilterParams",
+    "FilterSpec",
     "IdT",
     "OutputT",
     "PageParams",
     "PageResult",
+    "PaginationMode",
+    "QuerySpec",
+    "RepoFor",
     "Repository",
     "RepositoryRead",
     "RepositoryWrite",
+    "SortSpec",
     "UpdateT",
     "build_page_result",
 ]

@@ -15,14 +15,17 @@ from loom.core.model.introspection import (
     get_table_name,
 )
 from loom.core.repository.abc import (
+    CursorResult,
     FilterParams,
     IdT,
     OutputT,
     PageParams,
     PageResult,
+    QuerySpec,
     build_page_result,
 )
 from loom.core.repository.mutation import MutationEvent
+from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCompiler
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
@@ -215,7 +218,15 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
 
 
 class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
-    """Mixin providing read operations for SQLAlchemy repositories."""
+    """Mixin providing read operations for SQLAlchemy repositories.
+
+    Class attributes:
+        allowed_filter_fields: Whitelist of field names permitted in
+            :meth:`list_with_query` filters.  An empty frozenset (the default)
+            allows all fields.
+    """
+
+    allowed_filter_fields: frozenset[str] = frozenset()
 
     async def get_by_id(
         self,
@@ -298,6 +309,63 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
 
             total_count = int(total_result.scalar() or 0)
             return build_page_result(items, total_count, page_params)
+
+    async def list_with_query(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[OutputT] | CursorResult[OutputT]:
+        """Fetch a list of entities using a structured :class:`~loom.core.repository.abc.query.QuerySpec`.
+
+        Supports offset and cursor pagination, structured filters, and
+        explicit sort directives.
+
+        Args:
+            query: Structured query specification.
+            profile: Loading profile name for eager-load options.
+
+        Returns:
+            :class:`~loom.core.repository.abc.query.PageResult` for offset
+            queries, :class:`~loom.core.repository.abc.query.CursorResult`
+            for cursor queries.
+        """
+        from loom.core.repository.abc.query import PaginationMode
+
+        async with self._session_scope() as scoped_session:
+            sa_model = self._effective_sa_model
+            id_col = self._id_column()
+            options = self._get_profile_options(profile)
+
+            compiler = QuerySpecCompiler(sa_model, id_col, self.allowed_filter_fields)
+            raw_items, total_count, next_cursor, has_next = await compiler.execute(
+                scoped_session, query, options
+            )
+
+            proj_map = await self._collect_projection_values(
+                scoped_session, raw_items, profile
+            )
+            items: list[OutputT] = [
+                cast(
+                    OutputT,
+                    self._to_output(
+                        item,
+                        profile=profile,
+                        projection_values=proj_map.get(i),
+                    ),
+                )
+                for i, item in enumerate(raw_items)
+            ]
+
+            if query.pagination == PaginationMode.CURSOR:
+                return CursorResult(
+                    items=tuple(items),
+                    next_cursor=next_cursor,
+                    has_next=has_next,
+                )
+
+            from loom.core.repository.abc.query import PageParams
+            page_params = PageParams(page=query.page, limit=query.limit)
+            return build_page_result(items, total_count or 0, page_params)
 
     async def exists(self, obj_id: IdT) -> bool:
         """Check whether an entity exists by id."""

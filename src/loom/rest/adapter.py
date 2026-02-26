@@ -1,3 +1,5 @@
+"""Pydantic-backed command adapter for FastAPI request parsing."""
+
 from __future__ import annotations
 
 from types import UnionType
