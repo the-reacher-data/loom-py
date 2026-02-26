@@ -1,0 +1,149 @@
+name: ci-pr
+
+on:
+  pull_request:
+    branches: ["master"]
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-pr" >> "$GITHUB_ENV"
+
+      - name: Fetch PR base branch for changelog diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --prune origin \
+            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      - name: Quality report (strict gate)
+        id: quality
+        continue-on-error: true
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@v1
+        with:
+          src-dir: src
+          test-dir: tests
+          coverage-threshold: "80"
+          fail-on-quality: "any"
+          fail-on-security: "high"
+          include-security: "true"
+
+      - name: Publish PR quality comment
+        if: ${{ always() && steps.quality.outputs.report-file != '' }}
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          tags: "<!-- loom-quality-report -->"
+          body-file: ${{ steps.quality.outputs.report-file }}
+
+      - name: Compute candidate prerelease version
+        id: version
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
+        with:
+          branch: ${{ github.head_ref }}
+          prerelease: "true"
+
+      - name: Generate changelog preview
+        id: changelog
+        continue-on-error: true
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
+        with:
+          mode: "pr"
+          branch: ${{ github.event.pull_request.head.sha }}
+          version: ${{ steps.version.outputs.deploy == 'true' && steps.version.outputs.version || 'UNRELEASED' }}
+          pr-number: ${{ github.event.pull_request.number }}
+          base-ref: origin/${{ github.base_ref }}
+          output: changelog_preview.md
+
+      - name: Publish PR changelog comment
+        if: ${{ steps.changelog.outcome == 'success' && steps.changelog.outputs.output_path != '' }}
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
+          body-file: ${{ steps.changelog.outputs.output_path }}
+
+      - name: Upload coverage to Codecov
+        if: ${{ always() && hashFiles('coverage.xml') != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Snyk dependency scan
+        id: snyk
+        if: ${{ env.SNYK_TOKEN != '' }}
+        continue-on-error: true
+        uses: snyk/actions/python@master
+        with:
+          command: test
+          args: --severity-threshold=high --all-projects --sarif-file-output=snyk.sarif
+        env:
+          SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
+
+      - name: Upload Snyk SARIF to GitHub Security
+        if: ${{ always() && env.SNYK_TOKEN != '' && hashFiles('snyk.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: snyk.sarif
+
+      - name: Publish prerelease package to TestPyPI
+        if: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.TEST_PYPI_API_TOKEN != '' && steps.version.outputs.deploy == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TEST_PYPI_TOKEN: ${{ env.TEST_PYPI_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
+          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+          uv run --with build python -m build
+          uv run --with twine twine upload \
+            --repository-url https://test.pypi.org/legacy/ \
+            -u __token__ -p "${TEST_PYPI_TOKEN}" \
+            --skip-existing dist/*
+
+      - name: Enforce changelog generation
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.changelog.outcome }}" != "success" ]; then
+            echo "Changelog preview generation failed"
+            exit 1
+          fi
+
+      - name: Enforce quality gate
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.quality.outcome }}" != "success" ] || [ "${{ steps.quality.outputs.blocking }}" = "true" ]; then
+            echo "Blocking quality/security conditions detected"
+            exit 1
+          fi

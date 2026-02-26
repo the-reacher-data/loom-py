@@ -1,0 +1,49 @@
+name: ci-main
+
+on:
+  push:
+    branches: ["master"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Quality report (strict)
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@v1
+        with:
+          src-dir: src
+          test-dir: tests
+          coverage-threshold: "80"
+          fail-on-quality: "any"
+          fail-on-security: "high"
+          include-security: "true"
+
+      - name: Upload coverage to Codecov
+        if: ${{ hashFiles('coverage.xml') != '' }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Snyk dependency monitor
+        if: ${{ env.SNYK_TOKEN != '' }}
+        uses: snyk/actions/python@master
+        with:
+          command: monitor
+          args: --all-projects
+        env:
+          SNYK_TOKEN: ${{ env.SNYK_TOKEN }}

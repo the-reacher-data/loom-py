@@ -1,0 +1,28 @@
+app:
+  name: fake_repo
+  code_path: ..
+  discovery:
+    mode: modules
+    modules:
+      include:
+        - app.product.model
+        - app.product.category.model
+        - app.product.review.model
+        - app.product.relations
+        - app.product.use_cases
+        - app.product.interface
+  rest:
+    backend: fastapi
+    title: Fake Repo Integration API
+    version: 1.0.0
+    docs_url: /docs
+    redoc_url: /redoc
+
+database:
+  url: ${oc.env:LOOM_TEST_DATABASE_URL}
+  echo: false
+  pool_pre_ping: true
+
+metrics:
+  enabled: false
+  path: /metrics

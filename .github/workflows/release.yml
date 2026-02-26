@@ -1,0 +1,113 @@
+name: release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ["master"]
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'docs/') }}
+    runs-on: ubuntu-latest
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-release" >> "$GITHUB_ENV"
+
+      - name: Compute release version from merged branch
+        id: version
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
+        with:
+          branch: ${{ github.event.pull_request.head.ref }}
+          prerelease: "false"
+
+      - name: Generate release changelog
+        id: changelog
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
+        with:
+          mode: "release"
+          branch: ${{ github.event.pull_request.head.ref }}
+          version: ${{ steps.version.outputs.version }}
+          pr-number: ${{ github.event.pull_request.number }}
+          output: CHANGELOG_RELEASE.md
+
+      - name: Sync project version
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
+          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+
+      - name: Build package
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --with build python -m build
+
+      - name: Publish package to PyPI (token mode)
+        if: ${{ steps.version.outputs.deploy == 'true' && env.PYPI_API_TOKEN != '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ env.PYPI_API_TOKEN }}
+
+      - name: Publish package to PyPI (trusted publisher)
+        if: ${{ steps.version.outputs.deploy == 'true' && env.PYPI_API_TOKEN == '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Create and push tags
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists; skipping"
+            exit 0
+          fi
+
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+          MAJOR=$(echo "${VERSION}" | cut -d. -f1)
+          git push origin ":refs/tags/v${MAJOR}" || true
+          git tag -fa "v${MAJOR}" -m "Release v${VERSION}"
+          git push origin "v${MAJOR}" --force
+
+      - name: Create GitHub release
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body_path: CHANGELOG_RELEASE.md

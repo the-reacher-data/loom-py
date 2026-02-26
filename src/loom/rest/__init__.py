@@ -1,0 +1,35 @@
+"""Loom REST layer — transport-agnostic declarations and adapters.
+
+Provides the declarative REST interface model, route compiler, and HTTP
+adapters.  These components are framework-agnostic and do not depend on
+FastAPI directly.
+
+For FastAPI-specific bindings (response class, route registration, app
+factory) see :mod:`loom.rest.fastapi`.
+"""
+
+from loom.rest.adapter import PydanticAdapter
+from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
+from loom.rest.errors import HttpErrorMapper
+from loom.rest.middleware import TraceIdMiddleware
+from loom.rest.model import (
+    PaginationMode,
+    RestApiDefaults,
+    RestInterface,
+    RestRoute,
+)
+from loom.rest.rest_adapter import LoomRestAdapter
+
+__all__ = [
+    "CompiledRoute",
+    "HttpErrorMapper",
+    "InterfaceCompilationError",
+    "LoomRestAdapter",
+    "PaginationMode",
+    "PydanticAdapter",
+    "RestApiDefaults",
+    "RestInterface",
+    "RestInterfaceCompiler",
+    "RestRoute",
+    "TraceIdMiddleware",
+]
