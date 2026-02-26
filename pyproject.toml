@@ -1,5 +1,5 @@
 [project]
-name = "loom"
+name = "loom-kernel"
 version = "0.0.0"
 description = "Loom Python project"
 readme = "README.md"
