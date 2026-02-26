@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,7 +14,7 @@ from loom.core.use_case.use_case import UseCase
 
 
 class _UC(UseCase[object, str]):
-    async def execute(self) -> str:  # type: ignore[override]
+    async def execute(self) -> str:
         return "ok"
 
 

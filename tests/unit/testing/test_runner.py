@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -28,18 +29,18 @@ class Entity:
         self.name = name
 
 
-class _SimpleUseCase(UseCase[str]):
-    async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
+class _SimpleUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.email
 
 
-class _ParamOnlyUseCase(UseCase[str]):
-    async def execute(self, user_id: int) -> str:  # type: ignore[override]
+class _ParamOnlyUseCase(UseCase[Any, str]):
+    async def execute(self, user_id: int) -> str:
         return f"id={user_id}"
 
 
-class _ParamAndInputUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _ParamAndInputUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         tenant_id: str,
         cmd: Cmd = Input(),
@@ -47,8 +48,8 @@ class _ParamAndInputUseCase(UseCase[str]):
         return f"{tenant_id}:{cmd.email}"
 
 
-class _LoadUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _LoadUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         eid: int,
         entity: Entity = Load(Entity, by="eid"),
@@ -56,10 +57,10 @@ class _LoadUseCase(UseCase[str]):
         return entity.name
 
 
-class _RuleFailUseCase(UseCase[str]):
+class _RuleFailUseCase(UseCase[Any, str]):
     rules = [lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("email", "bad"))]
 
-    async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
+    async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.email
 
 
@@ -70,7 +71,7 @@ class _Product(msgspec.Struct):
 
 class _MainRepoUseCase(UseCase[_Product, str]):
     async def execute(self, product_id: int) -> str:
-        product = await self.main_repo.get_by_id(product_id)
+        product: _Product | None = await self.main_repo.get_by_id(product_id)
         if product is None:
             return "missing"
         return product.name
@@ -84,9 +85,7 @@ class _MainRepoUseCase(UseCase[_Product, str]):
 class TestUseCaseTestRun:
     async def test_run_simple_input_use_case(self) -> None:
         result = await (
-            UseCaseTest(_SimpleUseCase())
-            .with_input(email="alice@corp.com", name="Alice")
-            .run()
+            UseCaseTest(_SimpleUseCase()).with_input(email="alice@corp.com", name="Alice").run()
         )
         assert result == "alice@corp.com"
 
@@ -111,10 +110,7 @@ class TestUseCaseTestRun:
     async def test_run_with_loaded_entity(self) -> None:
         entity = Entity(name="preloaded")
         result = await (
-            UseCaseTest(_LoadUseCase())
-            .with_params(eid=1)
-            .with_loaded(Entity, entity)
-            .run()
+            UseCaseTest(_LoadUseCase()).with_params(eid=1).with_loaded(Entity, entity).run()
         )
         assert result == "preloaded"
 
@@ -122,12 +118,7 @@ class TestUseCaseTestRun:
         entity = Entity(name="from_repo")
         repo = AsyncMock()
         repo.get_by_id = AsyncMock(return_value=entity)
-        result = await (
-            UseCaseTest(_LoadUseCase())
-            .with_params(eid=5)
-            .with_deps(Entity, repo)
-            .run()
-        )
+        result = await UseCaseTest(_LoadUseCase()).with_params(eid=5).with_deps(Entity, repo).run()
         assert result == "from_repo"
         repo.get_by_id.assert_awaited_once_with(5, profile="default")
 
@@ -140,22 +131,13 @@ class TestUseCaseTestRun:
 class TestUseCaseTestErrors:
     async def test_rule_violation_propagated(self) -> None:
         with pytest.raises(RuleViolations):
-            await (
-                UseCaseTest(_RuleFailUseCase())
-                .with_input(email="bad@corp.com", name="X")
-                .run()
-            )
+            await UseCaseTest(_RuleFailUseCase()).with_input(email="bad@corp.com", name="X").run()
 
     async def test_not_found_propagated(self) -> None:
         repo = AsyncMock()
         repo.get_by_id = AsyncMock(return_value=None)
         with pytest.raises(NotFound):
-            await (
-                UseCaseTest(_LoadUseCase())
-                .with_params(eid=99)
-                .with_deps(Entity, repo)
-                .run()
-            )
+            await UseCaseTest(_LoadUseCase()).with_params(eid=99).with_deps(Entity, repo).run()
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +229,7 @@ class TestUseCaseTestBuilder:
         repo.get_by_id = AsyncMock(return_value=_Product(id=1, name="keyboard"))
 
         result = await (
-            UseCaseTest(_MainRepoUseCase())
-            .with_main_repo(repo)
-            .with_params(product_id=1)
-            .run()
+            UseCaseTest(_MainRepoUseCase()).with_main_repo(repo).with_params(product_id=1).run()
         )
 
         assert result == "keyboard"

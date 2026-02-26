@@ -62,7 +62,7 @@ class FakeProductRepo:
 
 
 class NoDepsUseCase(UseCase[Any, str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -70,7 +70,7 @@ class SingleDepUseCase(UseCase[Any, str]):
     def __init__(self, repo: IOrderRepo) -> None:
         self._repo = repo
 
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -79,7 +79,7 @@ class MultiDepUseCase(UseCase[Any, str]):
         self._repo = repo
         self._email = email
 
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -87,7 +87,7 @@ class MainRepoUseCase(UseCase[Product, str]):
     def __init__(self, main_repo: RepoFor[Product]) -> None:
         super().__init__(main_repo)
 
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -96,7 +96,7 @@ class MixedRepoUseCase(UseCase[Product, str]):
         super().__init__(main_repo)
         self._email = email
 
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -106,7 +106,6 @@ class AutoMainRepoUseCase(UseCase[Product, Product]):
 
 
 class AutoMainRepoExplicitModelUseCase(UseCase[Product, bool]):
-
     async def execute(self, **kwargs: Any) -> bool:
         return True
 
@@ -116,11 +115,17 @@ class AutoMainRepoExplicitModelUseCase(UseCase[Product, bool]):
 # ---------------------------------------------------------------------------
 
 
+def _make_provider(obj: Any) -> Any:
+    def _provider() -> Any:
+        return obj
+
+    return _provider
+
+
 def _container_with(*pairs: tuple[type, object]) -> LoomContainer:
     c = LoomContainer()
     for iface, impl in pairs:
-        obj = impl
-        c.register(iface, lambda o=obj: o, scope=Scope.REQUEST)
+        c.register(iface, _make_provider(impl), scope=Scope.REQUEST)
     return c
 
 
@@ -143,7 +148,7 @@ def test_build_single_dep() -> None:
 
     uc = factory.build(SingleDepUseCase)
     assert isinstance(uc, SingleDepUseCase)
-    assert uc._repo is repo  # type: ignore[attr-defined]
+    assert uc._repo is repo
 
 
 def test_build_multi_deps() -> None:

@@ -4,10 +4,7 @@ from typing import Any
 
 import pytest
 
-from loom.core.use_case.compute import ComputeFn
-from loom.core.use_case.rule import RuleFn
 from loom.core.use_case.use_case import UseCase
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -27,14 +24,14 @@ def _noop_rule(cmd: object, fields_set: frozenset[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _MinimalUseCase(UseCase[str]):
+class _MinimalUseCase(UseCase[Any, str]):
     """UseCase with no computes or rules."""
 
     async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
-class _WithPipelineUseCase(UseCase[None]):
+class _WithPipelineUseCase(UseCase[Any, None]):
     """UseCase that declares computes and rules at class level."""
 
     computes = [_noop_compute]
@@ -55,7 +52,7 @@ class TestUseCaseIsAbstract:
             UseCase()  # type: ignore[abstract]
 
     def test_subclass_without_execute_is_abstract(self) -> None:
-        class _Incomplete(UseCase[str]):
+        class _Incomplete(UseCase[Any, str]):
             pass
 
         with pytest.raises(TypeError):
@@ -103,8 +100,8 @@ class TestUseCaseExecute:
         assert result == "ok"
 
     async def test_subclass_can_declare_typed_execute(self) -> None:
-        class _TypedUseCase(UseCase[int]):
-            async def execute(self, x: int = 0) -> int:  # type: ignore[override]
+        class _TypedUseCase(UseCase[Any, int]):
+            async def execute(self, x: int = 0) -> int:
                 return x * 2
 
         uc = _TypedUseCase()

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
+import msgspec
 import pytest
 
-import msgspec
-
-from loom.core.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.bootstrap import bootstrap_app
 from loom.core.engine.events import RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.use_case.use_case import UseCase
@@ -19,7 +19,7 @@ class _Model(msgspec.Struct):
 
 
 class _SimpleUseCase(UseCase[_Model, None]):
-    async def execute(self) -> None:  # type: ignore[override]
+    async def execute(self) -> None:
         return None
 
 
@@ -67,7 +67,7 @@ class TestCreateFastapiAppWiresMetrics:
         created_executors: list[RuntimeExecutor] = []
         original_init = RuntimeExecutor.__init__
 
-        def _capture_init(self: RuntimeExecutor, *args: object, **kwargs: object) -> None:
+        def _capture_init(self: RuntimeExecutor, *args: Any, **kwargs: Any) -> None:
             original_init(self, *args, **kwargs)
             created_executors.append(self)
 

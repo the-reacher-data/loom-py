@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock
+from typing import Any, cast
 
 import msgspec
 import pytest
 
 from loom.core.command import Command
-from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.plan import (
     ComputeStep,
     ExecutionPlan,
@@ -22,7 +20,6 @@ from loom.core.engine.plan import (
 from loom.core.use_case.use_case import UseCase
 from loom.testing.golden import GoldenHarness, _ErrorProxy, _serialize_result, serialize_plan
 
-
 # ---------------------------------------------------------------------------
 # Domain fixtures
 # ---------------------------------------------------------------------------
@@ -33,7 +30,7 @@ class Product(msgspec.Struct):
     name: str
 
 
-class CreateProductCmd(Command):
+class CreateProductCmd(Command, frozen=True):
     name: str
 
 
@@ -67,12 +64,12 @@ class FakeProductRepo:
 
 
 class CreateProductUseCase(UseCase[Product, Product]):
-    async def execute(self, cmd: CreateProductCmd = ...) -> Product:  # type: ignore[override,assignment]
-        return await self.main_repo.create(cmd)
+    async def execute(self, cmd: CreateProductCmd = ...) -> Product:  # type: ignore[assignment]
+        return cast(Product, await self.main_repo.create(cmd))
 
 
-class SimpleUseCase(UseCase[str]):
-    async def execute(self) -> str:  # type: ignore[override]
+class SimpleUseCase(UseCase[Any, str]):
+    async def execute(self) -> str:
         return "ok"
 
 
@@ -167,7 +164,7 @@ class TestErrorProxy:
     def test_proxies_normal_attribute(self) -> None:
         repo = FakeProductRepo()
         proxy = _ErrorProxy(repo, {})
-        assert proxy.create.__func__ is repo.create.__func__
+        assert getattr(proxy.create, "__func__", None) is getattr(repo.create, "__func__", None)
 
     @pytest.mark.asyncio
     async def test_raises_configured_error_on_method(self) -> None:
@@ -288,8 +285,12 @@ class TestGoldenHarnessBaseline:
         assert "max_ms" in data
 
     @pytest.mark.asyncio
-    async def test_exceeds_limit_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import loom.testing.golden as golden_mod
+    async def test_exceeds_limit_raises(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import time as _time_module
 
         call_count = 0
 
@@ -298,7 +299,7 @@ class TestGoldenHarnessBaseline:
             call_count += 1
             return 0.0 if call_count == 1 else 10.0
 
-        monkeypatch.setattr(golden_mod.time, "perf_counter", _fake_perf_counter)
+        monkeypatch.setattr(_time_module, "perf_counter", _fake_perf_counter)
 
         harness = GoldenHarness()
         with pytest.raises(AssertionError, match="baseline exceeded"):

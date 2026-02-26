@@ -24,3 +24,4 @@ class DiscoveryEngine(Protocol):
 
     def discover(self) -> DiscoveryResult:
         """Return discovered models, use cases, and REST interfaces."""
+        ...

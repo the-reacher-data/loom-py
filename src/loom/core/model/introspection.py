@@ -8,10 +8,10 @@ from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
 
 import msgspec
 
-from loom.core.model.field import ColumnFieldSpec, ColumnType, Field
+from loom.core.model.field import ColumnType, Field
 from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
-from loom.core.model.types import Boolean, DateTime, Float, Integer, JSON, Numeric, String
+from loom.core.model.types import JSON, Boolean, DateTime, Float, Integer, Numeric, String
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +132,7 @@ def _extract_metadata(annotation: Any) -> tuple[Any, ...]:
     return getattr(annotation, "__metadata__", ())
 
 
-def _extract_origin_type(annotation: Any) -> type:
+def _extract_origin_type(annotation: Any) -> type[Any]:
     """Return the base type from ``Annotated[T, ...]``."""
     origin = getattr(annotation, "__origin__", None)
     if origin is not None:

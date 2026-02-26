@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -37,16 +36,16 @@ class FakeOrderRepo(IOrderRepo):
 # ---------------------------------------------------------------------------
 
 
-class NoDepsUseCase(UseCase[str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+class NoDepsUseCase(UseCase[Any, str]):
+    async def execute(self, **kwargs: Any) -> str:
         return "noop"
 
 
-class RepoDepsUseCase(UseCase[str]):
+class RepoDepsUseCase(UseCase[Any, str]):
     def __init__(self, repo: IOrderRepo) -> None:
         self._repo = repo
 
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+    async def execute(self, **kwargs: Any) -> str:
         return "noop"
 
 
@@ -143,7 +142,7 @@ def test_bootstrap_no_use_cases() -> None:
 
 
 def test_bootstrap_compilation_error_raises_bootstrap_error() -> None:
-    class BrokenUseCase(UseCase[str]):
+    class BrokenUseCase(UseCase[Any, str]):
         # abstract — not overriding execute
         pass
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import msgspec
-import pytest
 
 from loom.core.command.base import Command
 from loom.core.errors import Conflict, NotFound
@@ -14,7 +13,6 @@ from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface, RestRoute
 from loom.testing.http_harness import HttpTestHarness
 from loom.testing.in_memory import InMemoryRepository
-
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -26,22 +24,22 @@ class Product(msgspec.Struct):
     name: str
 
 
-class CreateProductCmd(Command):
+class CreateProductCmd(Command, frozen=True):
     name: str
 
 
 class GetProductUseCase(UseCase[Product, Product | None]):
-    async def execute(self, product_id: int) -> Product | None:  # type: ignore[override]
+    async def execute(self, product_id: int) -> Product | None:
         return await self.main_repo.get_by_id(product_id)
 
 
 class CreateProductUseCase(UseCase[Product, Product]):
-    async def execute(self, cmd: CreateProductCmd = Input()) -> Product:  # type: ignore[override,assignment]
-        return await self.main_repo.create(cmd)
+    async def execute(self, cmd: CreateProductCmd = Input()) -> Product:
+        return cast(Product, await self.main_repo.create(cmd))
 
 
 class DeleteProductUseCase(UseCase[Product, bool]):
-    async def execute(self, product_id: int) -> bool:  # type: ignore[override]
+    async def execute(self, product_id: int) -> bool:
         return await self.main_repo.delete(product_id)
 
 
@@ -64,7 +62,7 @@ class Tag(msgspec.Struct):
 
 
 class GetTagUseCase(UseCase[Tag, Tag | None]):
-    async def execute(self, tag_id: int) -> Tag | None:  # type: ignore[override]
+    async def execute(self, tag_id: int) -> Tag | None:
         return await self.main_repo.get_by_id(tag_id)
 
 

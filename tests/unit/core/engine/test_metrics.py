@@ -9,12 +9,10 @@ from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.engine.metrics import MetricsAdapter
 from loom.core.errors import NotFound
 from loom.core.use_case.markers import Input, Load
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -45,25 +43,25 @@ class _RecordingAdapter:
         return [e for e in self.events if e.kind == kind]
 
 
-class _SimpleUseCase(UseCase[str]):
-    async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
+class _SimpleUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.value
 
 
-class _FailingUseCase(UseCase[str]):
-    async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
+class _FailingUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: Cmd = Input()) -> str:
         raise RuntimeError("boom")
 
 
-class _RuleFailUseCase(UseCase[str]):
+class _RuleFailUseCase(UseCase[Any, str]):
     rules = [lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("value", "bad"))]
 
-    async def execute(self, cmd: Cmd = Input()) -> str:  # type: ignore[override]
+    async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.value
 
 
-class _LoadUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _LoadUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         eid: int,
         entity: Entity = Load(Entity, by="eid"),

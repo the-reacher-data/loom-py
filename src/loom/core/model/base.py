@@ -10,6 +10,7 @@ from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
 
 if TYPE_CHECKING:
+
     class _StructMeta(type):
         pass
 else:
@@ -94,11 +95,14 @@ class LoomStructMeta(_StructMeta):
 
 
 if TYPE_CHECKING:
+
     class BaseModel(msgspec.Struct):
         """Typing-only base model to avoid metaclass noise in mypy."""
 
         __tablename__: ClassVar[str]
+        __loom_columns__: ClassVar[dict[str, ColumnFieldSpec]]
 else:
+
     class BaseModel(msgspec.Struct, metaclass=LoomStructMeta):
         """Base for all loom domain models.
 

@@ -10,7 +10,6 @@ from loom.core.engine.plan import ExecutionPlan
 from loom.core.use_case.markers import Input, Load
 from loom.core.use_case.use_case import UseCase
 
-
 # ---------------------------------------------------------------------------
 # Test domain fixtures
 # ---------------------------------------------------------------------------
@@ -74,25 +73,23 @@ def _noop_rule(cmd: object, fields_set: frozenset[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _NoMarkersUseCase(UseCase[str]):
-    async def execute(self, user_id: int) -> str:  # type: ignore[override]
+class _NoMarkersUseCase(UseCase[Any, str]):
+    async def execute(self, user_id: int) -> str:
         return "ok"
 
 
-class _NoParamsUseCase(UseCase[str]):
-    async def execute(self) -> str:  # type: ignore[override]
+class _NoParamsUseCase(UseCase[Any, str]):
+    async def execute(self) -> str:
         return "ok"
 
 
-class _WithInputUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
-        self, cmd: UserCommand = Input()
-    ) -> str:
+class _WithInputUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: UserCommand = Input()) -> str:
         return "ok"
 
 
-class _WithLoadUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _WithLoadUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         user_id: int,
         user: User = Load(User, by="user_id"),
@@ -100,11 +97,11 @@ class _WithLoadUseCase(UseCase[str]):
         return "ok"
 
 
-class _WithAllUseCase(UseCase[str]):
+class _WithAllUseCase(UseCase[Any, str]):
     computes = [_noop_compute]
     rules = [_noop_rule]
 
-    async def execute(  # type: ignore[override]
+    async def execute(
         self,
         user_id: int,
         cmd: UserCommand = Input(),
@@ -113,8 +110,8 @@ class _WithAllUseCase(UseCase[str]):
         return "ok"
 
 
-class _MultipleLoadsUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _MultipleLoadsUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         user_id: int,
         product_id: int,
@@ -269,8 +266,8 @@ class TestCompilerCache:
 
 class TestCompilationErrors:
     def test_two_input_markers_raises(self) -> None:
-        class _TwoInputs(UseCase[str]):
-            async def execute(  # type: ignore[override]
+        class _TwoInputs(UseCase[Any, str]):
+            async def execute(
                 self,
                 a: UserCommand = Input(),
                 b: UserCommand = Input(),
@@ -281,8 +278,8 @@ class TestCompilationErrors:
             UseCaseCompiler().compile(_TwoInputs)
 
     def test_load_by_unknown_param_raises(self) -> None:
-        class _BadLoad(UseCase[str]):
-            async def execute(  # type: ignore[override]
+        class _BadLoad(UseCase[Any, str]):
+            async def execute(
                 self,
                 user: User = Load(User, by="nonexistent"),
             ) -> str:
@@ -298,8 +295,8 @@ class TestCompilationErrors:
     def test_load_by_references_input_param_raises(self) -> None:
         """Input binding params are not primitive params — Load cannot ref them."""
 
-        class _BadRef(UseCase[str]):
-            async def execute(  # type: ignore[override]
+        class _BadRef(UseCase[Any, str]):
+            async def execute(
                 self,
                 cmd: UserCommand = Input(),
                 user: User = Load(User, by="cmd"),
@@ -329,10 +326,7 @@ class TestCompilerLogging:
     def test_logs_load_detection(self) -> None:
         log = _RecordingLogger()
         UseCaseCompiler(logger=log).compile(_WithLoadUseCase)
-        assert any(
-            "Detected Load" in m and "User" in m and "user_id" in m
-            for m in log.messages
-        )
+        assert any("Detected Load" in m and "User" in m and "user_id" in m for m in log.messages)
 
     def test_logs_compute_count(self) -> None:
         log = _RecordingLogger()

@@ -13,7 +13,6 @@ from loom.core.use_case.markers import Input, Load
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 
-
 # ---------------------------------------------------------------------------
 # Domain fixtures
 # ---------------------------------------------------------------------------
@@ -72,20 +71,18 @@ class _RecordingLogger:
 # ---------------------------------------------------------------------------
 
 
-class _NoMarkersUseCase(UseCase[str]):
-    async def execute(self, value: int) -> str:  # type: ignore[override]
+class _NoMarkersUseCase(UseCase[Any, str]):
+    async def execute(self, value: int) -> str:
         return f"value={value}"
 
 
-class _InputOnlyUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
-        self, cmd: CreateUserCommand = Input()
-    ) -> str:
+class _InputOnlyUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: CreateUserCommand = Input()) -> str:
         return cmd.email
 
 
-class _ParamsAndInputUseCase(UseCase[UserResult]):
-    async def execute(  # type: ignore[override]
+class _ParamsAndInputUseCase(UseCase[Any, UserResult]):
+    async def execute(
         self,
         tenant_id: str,
         cmd: CreateUserCommand = Input(),
@@ -93,8 +90,8 @@ class _ParamsAndInputUseCase(UseCase[UserResult]):
         return UserResult(id=99)
 
 
-class _WithLoadUseCase(UseCase[str]):
-    async def execute(  # type: ignore[override]
+class _WithLoadUseCase(UseCase[Any, str]):
+    async def execute(
         self,
         user_id: int,
         user: User = Load(User, by="user_id"),
@@ -102,30 +99,30 @@ class _WithLoadUseCase(UseCase[str]):
         return user.email
 
 
-class _ComputeAndRuleUseCase(UseCase[str]):
+class _ComputeAndRuleUseCase(UseCase[Any, str]):
     computes = [
         lambda cmd, fs: type(cmd)(  # uppercase email
             email=cmd.email.upper(), name=cmd.name
         )
     ]
     rules = [
-        lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("email", "bad"))
-        if cmd.email == "BANNED@CORP.COM"
-        else None
+        lambda cmd, fs: (
+            (_ for _ in ()).throw(RuleViolation("email", "bad"))
+            if cmd.email == "BANNED@CORP.COM"
+            else None
+        )
     ]
 
-    async def execute(  # type: ignore[override]
-        self, cmd: CreateUserCommand = Input()
-    ) -> str:
+    async def execute(self, cmd: CreateUserCommand = Input()) -> str:
         return cmd.email
 
 
-class _FullPipelineUseCase(UseCase[UserResult]):
+class _FullPipelineUseCase(UseCase[Any, UserResult]):
     def __init__(self) -> None:
         self.received_user: User | None = None
         self.received_cmd: CreateUserCommand | None = None
 
-    async def execute(  # type: ignore[override]
+    async def execute(
         self,
         user_id: int,
         cmd: CreateUserCommand = Input(),
@@ -302,12 +299,10 @@ class TestExecuteFullPipeline:
     async def test_compute_applied_before_execute(self) -> None:
         received: list[str] = []
 
-        class _TrackedUseCase(UseCase[None]):
+        class _TrackedUseCase(UseCase[Any, None]):
             computes = [lambda cmd, fs: type(cmd)(email="computed@corp.com", name=cmd.name)]
 
-            async def execute(  # type: ignore[override]
-                self, cmd: CreateUserCommand = Input()
-            ) -> None:
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:
                 received.append(cmd.email)
 
         ex = _make_executor()
@@ -323,12 +318,10 @@ class TestExecuteFullPipeline:
         def bad_rule(cmd: Any, fs: Any) -> None:
             raise RuleViolation("email", "invalid")
 
-        class _RuleUseCase(UseCase[None]):
+        class _RuleUseCase(UseCase[Any, None]):
             rules = [bad_rule]
 
-            async def execute(  # type: ignore[override]
-                self, cmd: CreateUserCommand = Input()
-            ) -> None:
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:
                 called.append(True)
 
         ex = _make_executor()
@@ -349,12 +342,10 @@ class TestExecuteFullPipeline:
         def rule_b(cmd: Any, fs: Any) -> None:
             raise RuleViolation("name", "bad name")
 
-        class _MultiRuleUseCase(UseCase[None]):
+        class _MultiRuleUseCase(UseCase[Any, None]):
             rules = [rule_a, rule_b]
 
-            async def execute(  # type: ignore[override]
-                self, cmd: CreateUserCommand = Input()
-            ) -> None:
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:
                 pass
 
         ex = _make_executor()
@@ -373,13 +364,11 @@ class TestExecuteFullPipeline:
         def capture_rule(cmd: Any, fs: Any) -> None:
             seen_in_rule.append(cmd.email)
 
-        class _EnrichAndCheckUseCase(UseCase[None]):
+        class _EnrichAndCheckUseCase(UseCase[Any, None]):
             computes = [lambda cmd, fs: type(cmd)(email="enriched@corp.com", name=cmd.name)]
             rules = [capture_rule]
 
-            async def execute(  # type: ignore[override]
-                self, cmd: CreateUserCommand = Input()
-            ) -> None:
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:
                 pass
 
         ex = _make_executor()
@@ -400,17 +389,15 @@ class TestNoRecompilation:
     async def test_compiler_compile_called_once_per_class(self) -> None:
         # Use a locally-defined class so __execution_plan__ is always None
         # at the start of this test, regardless of other tests' execution order.
-        class _FreshUseCase(UseCase[str]):
-            async def execute(self, value: int) -> str:  # type: ignore[override]
+        class _FreshUseCase(UseCase[Any, str]):
+            async def execute(self, value: int) -> str:
                 return f"value={value}"
 
         compiler = UseCaseCompiler()
         ex = RuntimeExecutor(compiler, logger=_RecordingLogger())
 
         # Execute twice — _build_plan should only be called once
-        with patch.object(
-            compiler, "_build_plan", wraps=compiler._build_plan
-        ) as mock_build:
+        with patch.object(compiler, "_build_plan", wraps=compiler._build_plan) as mock_build:
             await ex.execute(_FreshUseCase(), params={"value": 1})
             await ex.execute(_FreshUseCase(), params={"value": 2})
 
@@ -477,10 +464,10 @@ class TestExecutorLogging:
         def bad_rule(cmd: Any, fs: Any) -> None:
             raise RuleViolation("email", "bad")
 
-        class _RuleUseCase(UseCase[None]):
+        class _RuleUseCase(UseCase[Any, None]):
             rules = [bad_rule]
 
-            async def execute(self, cmd: CreateUserCommand = Input()) -> None:  # type: ignore[override]
+            async def execute(self, cmd: CreateUserCommand = Input()) -> None:
                 pass
 
         log = _RecordingLogger()

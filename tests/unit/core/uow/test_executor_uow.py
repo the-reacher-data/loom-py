@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.use_case.use_case import UseCase
 from loom.core.uow.abc import UnitOfWork, UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
-
+from loom.core.use_case.use_case import UseCase
 
 # ---------------------------------------------------------------------------
 # Helpers — mock UoW
@@ -34,17 +33,17 @@ def _make_uow_factory() -> tuple[MagicMock, MagicMock]:
     return factory, uow
 
 
-class _SimpleUC(UseCase[str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+class _SimpleUC(UseCase[Any, str]):
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
-class _FailingUC(UseCase[str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+class _FailingUC(UseCase[Any, str]):
+    async def execute(self, **kwargs: Any) -> str:
         raise RuntimeError("intentional failure")
 
 
-def _compiler(*uc_types: type[UseCase[Any]]) -> UseCaseCompiler:
+def _compiler(*uc_types: type[UseCase[Any, Any]]) -> UseCaseCompiler:
     c = UseCaseCompiler()
     for t in uc_types:
         c.compile(t)
@@ -177,8 +176,8 @@ async def test_active_uow_reset_after_failed_execution() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _EntityUC(UseCase[str]):
-    async def execute(self, entity_id: str, **kwargs: Any) -> str:  # type: ignore[override]
+class _EntityUC(UseCase[Any, str]):
+    async def execute(self, entity_id: str, **kwargs: Any) -> str:
         return f"loaded:{entity_id}"
 
 
@@ -190,11 +189,11 @@ async def test_load_default_profile_passed_to_repo() -> None:
     class MyEntity:
         pass
 
-    class LoadUC(UseCase[str]):
-        async def execute(  # type: ignore[override]
+    class LoadUC(UseCase[Any, str]):
+        async def execute(
             self,
             entity_id: str,
-            entity: MyEntity = Load(MyEntity, by="entity_id"),  # type: ignore[assignment]
+            entity: MyEntity = Load(MyEntity, by="entity_id"),
         ) -> str:
             return "ok"
 
@@ -219,11 +218,11 @@ async def test_load_custom_profile_passed_to_repo() -> None:
     class MyEntity:
         pass
 
-    class LoadUC(UseCase[str]):
-        async def execute(  # type: ignore[override]
+    class LoadUC(UseCase[Any, str]):
+        async def execute(
             self,
             entity_id: str,
-            entity: MyEntity = Load(MyEntity, by="entity_id", profile="detail"),  # type: ignore[assignment]
+            entity: MyEntity = Load(MyEntity, by="entity_id", profile="detail"),
         ) -> str:
             return "ok"
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 import msgspec
 
 from loom.core.model import TimestampedModel
-from loom.core.model.field import ColumnField, ColumnFieldSpec
 from loom.core.model.enums import ServerDefault
+from loom.core.model.field import ColumnField
 
 
 class Order(TimestampedModel):
@@ -59,6 +59,7 @@ class TestTimestampedModelSerialization:
 class TestTimestampedModelInheritance:
     def test_is_subclass_of_base_model(self) -> None:
         from loom.core.model import BaseModel
+
         assert issubclass(Order, BaseModel)
 
     def test_user_model_inherits_timestamps(self) -> None:

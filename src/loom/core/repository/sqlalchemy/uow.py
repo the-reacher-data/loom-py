@@ -83,8 +83,9 @@ class SQLAlchemyUnitOfWork:
             raise RuntimeError("SQLAlchemyUnitOfWork.begin() called twice without commit/rollback")
 
         self._session_cm = self._session_manager.session()
-        self._session = await self._session_cm.__aenter__()
-        self._session_token = set_active_session(self._session)
+        session: AsyncSession = await self._session_cm.__aenter__()
+        self._session = session
+        self._session_token = set_active_session(session)
         _, self._mutations_token = set_active_mutations()
         _log.debug("UoWBegin")
 

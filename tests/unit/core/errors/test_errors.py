@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from loom.core.errors import (
@@ -12,7 +14,6 @@ from loom.core.errors import (
     RuleViolations,
     SystemError,
 )
-
 
 # ---------------------------------------------------------------------------
 # LoomError base
@@ -230,8 +231,8 @@ class TestExecutorUsesNotFound:
         class _Entity:
             pass
 
-        class _UC(UseCase[None]):
-            async def execute(  # type: ignore[override]
+        class _UC(UseCase[Any, None]):
+            async def execute(
                 self,
                 eid: int,
                 entity: _Entity = Load(_Entity, by="eid"),

@@ -80,6 +80,7 @@ extend-immutable-calls = [
 python_version = "3.11"
 strict = true
 mypy_path = ["src"]
+exclude = ["tests/integration/fake_repo/src/"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

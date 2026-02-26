@@ -41,8 +41,8 @@ def test_load_config_single_file(tmp_path: Path) -> None:
     f = tmp_path / "config.yaml"
     f.write_text("database:\n  url: sqlite:///dev.db\n  pool_size: 3\n")
     cfg = load_config(str(f))
-    assert cfg.database.url == "sqlite:///dev.db"  # type: ignore[attr-defined]
-    assert cfg.database.pool_size == 3  # type: ignore[attr-defined]
+    assert cfg.database.url == "sqlite:///dev.db"
+    assert cfg.database.pool_size == 3
 
 
 def test_load_config_returns_dictconfig(tmp_path: Path) -> None:
@@ -58,8 +58,8 @@ def test_load_config_dot_access(tmp_path: Path) -> None:
     f = tmp_path / "cfg.yaml"
     f.write_text("server:\n  host: 0.0.0.0\n  port: 8080\n")
     cfg = load_config(str(f))
-    assert cfg.server.host == "0.0.0.0"  # type: ignore[attr-defined]
-    assert cfg.server.port == 8080  # type: ignore[attr-defined]
+    assert cfg.server.host == "0.0.0.0"
+    assert cfg.server.port == 8080
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +74,8 @@ def test_load_config_multiple_files_later_overrides(tmp_path: Path) -> None:
     override.write_text("debug: true\n")
 
     cfg = load_config(str(base), str(override))
-    assert cfg.debug is True  # type: ignore[attr-defined]
-    assert cfg.log_level == "INFO"  # type: ignore[attr-defined]
+    assert cfg.debug is True
+    assert cfg.log_level == "INFO"
 
 
 def test_load_config_three_files_merge(tmp_path: Path) -> None:
@@ -87,9 +87,9 @@ def test_load_config_three_files_merge(tmp_path: Path) -> None:
     c.write_text("z: 3\n")
 
     cfg = load_config(str(a), str(b), str(c))
-    assert cfg.x == 1  # type: ignore[attr-defined]
-    assert cfg.y == 2  # type: ignore[attr-defined]
-    assert cfg.z == 3  # type: ignore[attr-defined]
+    assert cfg.x == 1
+    assert cfg.y == 2
+    assert cfg.z == 3
 
 
 def test_load_config_nested_merge(tmp_path: Path) -> None:
@@ -99,8 +99,8 @@ def test_load_config_nested_merge(tmp_path: Path) -> None:
     override.write_text("database:\n  url: postgresql://prod/mydb\n")
 
     cfg = load_config(str(base), str(override))
-    assert cfg.database.url == "postgresql://prod/mydb"  # type: ignore[attr-defined]
-    assert cfg.database.pool_size == 5  # type: ignore[attr-defined]  — from base
+    assert cfg.database.url == "postgresql://prod/mydb"
+    assert cfg.database.pool_size == 5  # from base
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ def test_load_config_env_interpolation(tmp_path: Path, monkeypatch: pytest.Monke
     f = tmp_path / "cfg.yaml"
     f.write_text("database:\n  url: ${oc.env:DB_URL}\n")
     cfg = load_config(str(f))
-    assert cfg.database.url == "postgresql+asyncpg://prod-host/prod"  # type: ignore[attr-defined]
+    assert cfg.database.url == "postgresql+asyncpg://prod-host/prod"
 
 
 # ---------------------------------------------------------------------------
