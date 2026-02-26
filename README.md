@@ -5,35 +5,35 @@
 [![PyPI](https://img.shields.io/pypi/v/loom-kernel)](https://pypi.org/project/loom-kernel/)
 [![Python](https://img.shields.io/pypi/pyversions/loom-kernel)](https://pypi.org/project/loom-kernel/)
 
-Framework Python agnostico para construir aplicaciones de backend con:
+Framework-agnostic Python toolkit to build backend applications with:
 
-- casos de uso tipados (`msgspec.Struct`)
-- repositorios desacoplados de infraestructura
-- adaptadores REST/FastAPI
-- utilidades de testing para flujos de negocio
+- typed use cases (`msgspec.Struct`)
+- repositories decoupled from infrastructure
+- REST/FastAPI adapters
+- testing utilities for business workflows
 
-## Proposito
+## Purpose
 
-`loom-kernel` te ayuda a modelar dominio y casos de uso con arquitectura limpia.
-La libreria separa contratos del core y adaptadores concretos para que puedas
-cambiar infraestructura (DB, cache, transporte) sin romper la logica de negocio.
+`loom-kernel` helps you model domain logic and use cases with clean architecture.
+The library separates core contracts from concrete adapters so you can swap
+infrastructure (DB, cache, transport) without breaking business logic.
 
-## Subrutas principales
+## Main subpaths
 
-| Subruta | Para que sirve |
+| Subpath | What it is for |
 | --- | --- |
-| `src/loom/core/use_case` | Definicion de `UseCase`, reglas (`Rule`) y pasos de computo (`Compute`). |
-| `src/loom/core/engine` | Compilacion y ejecucion del plan runtime de un caso de uso. |
-| `src/loom/core/repository/abc` | Contratos de repositorio, paginacion y query spec tipado. |
-| `src/loom/core/repository/sqlalchemy` | Implementacion concreta de repositorios con SQLAlchemy async. |
-| `src/loom/core/model` | Modelo base, campos, relaciones e introspeccion de entidades. |
-| `src/loom/core/cache` | Decoradores y repositorio cacheado con invalidacion por dependencias. |
-| `src/loom/rest` | Modelo REST agnostico y compilador de rutas. |
-| `src/loom/rest/fastapi` | Integracion directa con FastAPI (auto wiring y runtime router). |
-| `src/loom/prometheus` | Middleware y adaptador para metricas de runtime. |
-| `src/loom/testing` | Harnesses para tests unitarios/integracion y golden tests. |
+| `src/loom/core/use_case` | `UseCase` definition, rules (`Rule`), and compute steps (`Compute`). |
+| `src/loom/core/engine` | Compilation and runtime execution of a use-case plan. |
+| `src/loom/core/repository/abc` | Repository contracts, pagination, and typed query spec. |
+| `src/loom/core/repository/sqlalchemy` | Concrete async SQLAlchemy repository implementation. |
+| `src/loom/core/model` | Base model, fields, relations, and entity introspection. |
+| `src/loom/core/cache` | Decorators and cached repository with dependency invalidation. |
+| `src/loom/rest` | Framework-agnostic REST model and route compiler. |
+| `src/loom/rest/fastapi` | Direct FastAPI integration (auto wiring and runtime router). |
+| `src/loom/prometheus` | Middleware and adapter for runtime metrics. |
+| `src/loom/testing` | Harnesses for unit/integration tests and golden tests. |
 
-## Ejemplo rapido
+## Quick example
 
 ```python
 import msgspec
@@ -62,6 +62,6 @@ class CreateProductUseCase(UseCase[CreateProduct, Product]):
     )
 ```
 
-## Estado
+## Status
 
-Proyecto en evolucion activa.
+Project under active development.
