@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+from typing import cast
 
+import msgspec
 import pytest
 from pytest import mark
 
 from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.command import Command, Patch
+from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.engine.executor import RuntimeExecutor
@@ -21,6 +25,34 @@ class _Cfg:
     env: str = "test"
 
 
+class _CacheSettings(msgspec.Struct, kw_only=True):
+    backend: str = "memory"
+    alias: str = "default"
+    ttl_seconds: int = 60
+
+
+class _ProductUseCaseSettings(msgspec.Struct, kw_only=True):
+    timeout_ms: int = 200
+    pagination_mode: str = "cursor"
+
+
+class _UseCasesSettings(msgspec.Struct, kw_only=True):
+    products_list: _ProductUseCaseSettings = msgspec.field(default_factory=_ProductUseCaseSettings)
+
+
+class _IntegrationAppConfig(msgspec.Struct, kw_only=True):
+    env: str = "test"
+    cache: _CacheSettings = msgspec.field(default_factory=_CacheSettings)
+    use_cases: _UseCasesSettings = msgspec.field(default_factory=_UseCasesSettings)
+
+
+class UseCaseConfigSnapshot(Command, frozen=True):
+    env: str
+    cache_backend: str
+    timeout_ms: int
+    pagination_mode: str
+
+
 class CreateProductCmd(Command, frozen=True):
     name: str
     price: float
@@ -32,19 +64,16 @@ class UpdateProductCmd(Command, frozen=True):
 
 
 class CreateProductUseCase(UseCase[Product, Product]):
-
     async def execute(self, cmd: CreateProductCmd = Input()) -> Product:
-        return await self.main_repo.create(cmd)
+        return cast(Product, await self.main_repo.create(cmd))
 
 
 class GetProductUseCase(UseCase[Product, Product | None]):
-
     async def execute(self, product_id: int) -> Product | None:
         return await self.main_repo.get_by_id(product_id)
 
 
 class UpdateProductUseCase(UseCase[Product, Product | None]):
-
     async def execute(
         self,
         product_id: int,
@@ -54,7 +83,6 @@ class UpdateProductUseCase(UseCase[Product, Product | None]):
 
 
 class DeleteProductUseCase(UseCase[Product, bool]):
-
     async def execute(self, product_id: int) -> bool:
         return await self.main_repo.delete(product_id)
 
@@ -74,10 +102,14 @@ def _price_must_be_positive(price: float) -> str | None:
     return None
 
 
-NORMALIZE_NAME = Compute.set(F(CreateProductWithRulesCmd).name).from_fields(
-    F(CreateProductWithRulesCmd).name,
-    via=_normalize_product_name,
-).build()
+NORMALIZE_NAME = (
+    Compute.set(F(CreateProductWithRulesCmd).name)
+    .from_fields(
+        F(CreateProductWithRulesCmd).name,
+        via=_normalize_product_name,
+    )
+    .build()
+)
 
 PRICE_RULE = Rule.check(
     F(CreateProductWithRulesCmd).price,
@@ -89,10 +121,22 @@ class CreateProductWithComputeAndRulesUseCase(UseCase[Product, Product]):
     computes = [NORMALIZE_NAME]
     rules = [PRICE_RULE]
 
-    async def execute(
-        self, cmd: CreateProductWithRulesCmd = Input()
-    ) -> Product:
-        return await self.main_repo.create(cmd)
+    async def execute(self, cmd: CreateProductWithRulesCmd = Input()) -> Product:
+        return cast(Product, await self.main_repo.create(cmd))
+
+
+class ReadTypedConfigUseCase(UseCase[object, UseCaseConfigSnapshot]):
+    def __init__(self, settings: _IntegrationAppConfig) -> None:
+        self._settings = settings
+
+    async def execute(self) -> UseCaseConfigSnapshot:
+        products_list = self._settings.use_cases.products_list
+        return UseCaseConfigSnapshot(
+            env=self._settings.env,
+            cache_backend=self._settings.cache.backend,
+            timeout_ms=products_list.timeout_ms,
+            pagination_mode=products_list.pagination_mode,
+        )
 
 
 def _repo_module(
@@ -195,3 +239,63 @@ class TestUseCaseCrudIntegration:
                 create_uc,
                 payload={"name": "bad", "price": -1.0},
             )
+
+    @mark.asyncio
+    async def test_use_case_can_resolve_typed_config_from_bootstrap(self) -> None:
+        config = _IntegrationAppConfig(
+            env="integration",
+            use_cases=_UseCasesSettings(
+                products_list=_ProductUseCaseSettings(
+                    timeout_ms=750,
+                    pagination_mode="offset",
+                )
+            ),
+            cache=_CacheSettings(backend="redis", ttl_seconds=120),
+        )
+        result = bootstrap_app(config=config, use_cases=[ReadTypedConfigUseCase])
+        executor = RuntimeExecutor(result.compiler)
+
+        use_case = result.factory.build(ReadTypedConfigUseCase)
+        snapshot = await executor.execute(use_case)
+
+        assert snapshot.env == "integration"
+        assert snapshot.cache_backend == "redis"
+        assert snapshot.timeout_ms == 750
+        assert snapshot.pagination_mode == "offset"
+
+    @mark.asyncio
+    async def test_use_case_can_resolve_typed_config_loaded_from_yaml(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CACHE_TTL", "300")
+        config_file = tmp_path / "integration-config.yaml"
+        config_file.write_text(
+            "\n".join(
+                [
+                    "app:",
+                    "  env: test-yaml",
+                    "  cache:",
+                    "    backend: memory",
+                    "    ttl_seconds: ${oc.decode:${oc.env:CACHE_TTL}}",
+                    "  use_cases:",
+                    "    products_list:",
+                    "      timeout_ms: 900",
+                    "      pagination_mode: cursor",
+                ]
+            )
+        )
+
+        raw_cfg = load_config(str(config_file))
+        typed_cfg = section(raw_cfg, "app", _IntegrationAppConfig)
+
+        result = bootstrap_app(config=typed_cfg, use_cases=[ReadTypedConfigUseCase])
+        executor = RuntimeExecutor(result.compiler)
+        use_case = result.factory.build(ReadTypedConfigUseCase)
+        snapshot = await executor.execute(use_case)
+
+        assert snapshot.env == "test-yaml"
+        assert snapshot.cache_backend == "memory"
+        assert snapshot.timeout_ms == 900
+        assert snapshot.pagination_mode == "cursor"

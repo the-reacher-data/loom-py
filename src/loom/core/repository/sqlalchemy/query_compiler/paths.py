@@ -6,7 +6,7 @@ against a SQLAlchemy mapped class, returning the appropriate column attribute.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from loom.core.repository.sqlalchemy.query_compiler.errors import FilterPathError
 
@@ -77,6 +77,6 @@ def _related_model(attr: Any, path: str) -> type[Any]:
     """Extract the mapped class from a relationship attribute."""
     try:
         prop = attr.property
-        return prop.mapper.class_
-    except AttributeError:
-        raise FilterPathError(path)
+        return cast(type[Any], prop.mapper.class_)
+    except AttributeError as exc:
+        raise FilterPathError(path) from exc

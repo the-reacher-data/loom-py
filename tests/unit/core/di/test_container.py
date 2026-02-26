@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from loom.core.di.container import LoomContainer, ResolutionError
 from loom.core.di.scope import Scope
-
-# ---------------------------------------------------------------------------
-# Dummy interfaces and implementations
-# ---------------------------------------------------------------------------
 
 
 class IService:
@@ -33,155 +31,131 @@ class ProductRepo:
     pass
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def container() -> LoomContainer:
+    return LoomContainer()
 
 
-def test_register_class_provider() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.REQUEST)
-    assert container.is_registered(IService)
+class TestRegister:
+    def test_register_class_provider(self, container: LoomContainer) -> None:
+        container.register(IService, ConcreteService, scope=Scope.REQUEST)
+        assert container.is_registered(IService)
+
+    def test_register_factory_provider(self, container: LoomContainer) -> None:
+        container.register(IService, lambda: ConcreteService(), scope=Scope.REQUEST)
+        assert container.is_registered(IService)
+
+    def test_register_overrides_previous(self, container: LoomContainer) -> None:
+        class AltService(IService):
+            pass
+
+        container.register(IService, ConcreteService, scope=Scope.REQUEST)
+        container.register(IService, AltService, scope=Scope.REQUEST)
+
+        instance = container.resolve(IService)
+        assert isinstance(instance, AltService)
 
 
-def test_register_factory_provider() -> None:
-    container = LoomContainer()
-    container.register(IService, lambda: ConcreteService(), scope=Scope.REQUEST)
-    assert container.is_registered(IService)
+class TestResolve:
+    @pytest.mark.parametrize("scope", [Scope.REQUEST, Scope.TRANSACTION])
+    def test_resolve_non_singleton_scope_creates_new_instance(
+        self,
+        container: LoomContainer,
+        scope: Scope,
+    ) -> None:
+        container.register(IService, ConcreteService, scope=scope)
+
+        a = container.resolve(IService)
+        b = container.resolve(IService)
+        assert a is not b
+
+    def test_resolve_application_scope_returns_same_instance(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        container.register(IService, ConcreteService, scope=Scope.APPLICATION)
+
+        a = container.resolve(IService)
+        b = container.resolve(IService)
+        assert a is b
+
+    def test_resolve_unregistered_raises(self, container: LoomContainer) -> None:
+        with pytest.raises(ResolutionError, match="IService"):
+            container.resolve(IService)
+
+    def test_resolve_lambda_provider(self, container: LoomContainer) -> None:
+        sentinel = ConcreteService()
+        container.register(IService, lambda: sentinel, scope=Scope.REQUEST)
+
+        result = container.resolve(IService)
+        assert result is sentinel
+
+    def test_is_registered_true(self, container: LoomContainer) -> None:
+        container.register(IService, ConcreteService)
+        assert container.is_registered(IService) is True
+
+    def test_is_registered_false(self, container: LoomContainer) -> None:
+        assert container.is_registered(IService) is False
 
 
-def test_register_overrides_previous() -> None:
-    class AltService(IService):
-        pass
+class TestValidate:
+    def test_validate_instantiates_application_scope(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        container.register(IService, ConcreteService, scope=Scope.APPLICATION)
+        container.validate()
+        resolved = cast(ConcreteService, container.resolve(IService))
+        assert resolved.created is True
 
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.REQUEST)
-    container.register(IService, AltService, scope=Scope.REQUEST)
+    def test_validate_does_not_instantiate_request_scope(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        call_count = 0
 
-    instance = container.resolve(IService)
-    assert isinstance(instance, AltService)
+        def provider() -> ConcreteService:
+            nonlocal call_count
+            call_count += 1
+            return ConcreteService()
 
+        container.register(IService, provider, scope=Scope.REQUEST)
+        container.validate()
+        assert call_count == 0
 
-# ---------------------------------------------------------------------------
-# Resolution
-# ---------------------------------------------------------------------------
+    def test_validate_raises_on_failing_application_provider(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        def bad_provider() -> IService:
+            raise RuntimeError("database unreachable")
 
+        container.register(IService, bad_provider, scope=Scope.APPLICATION)
 
-def test_resolve_request_scope_creates_new_instance() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.REQUEST)
+        with pytest.raises(ResolutionError, match="IService"):
+            container.validate()
 
-    a = container.resolve(IService)
-    b = container.resolve(IService)
-    assert a is not b
-
-
-def test_resolve_application_scope_returns_same_instance() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.APPLICATION)
-
-    a = container.resolve(IService)
-    b = container.resolve(IService)
-    assert a is b
-
-
-def test_resolve_transaction_scope_creates_new_instance() -> None:
-    # TRANSACTION behaves like REQUEST in v1
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.TRANSACTION)
-
-    a = container.resolve(IService)
-    b = container.resolve(IService)
-    assert a is not b
-
-
-def test_resolve_unregistered_raises() -> None:
-    container = LoomContainer()
-    with pytest.raises(ResolutionError, match="IService"):
-        container.resolve(IService)
-
-
-def test_resolve_lambda_provider() -> None:
-    sentinel = ConcreteService()
-    container = LoomContainer()
-    container.register(IService, lambda: sentinel, scope=Scope.REQUEST)
-
-    result = container.resolve(IService)
-    assert result is sentinel
-
-
-# ---------------------------------------------------------------------------
-# Validate
-# ---------------------------------------------------------------------------
-
-
-def test_validate_instantiates_application_scope() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.APPLICATION)
-    container.validate()  # must not raise
-    # singleton must be alive after validate
-    assert container.resolve(IService).created is True  # type: ignore[attr-defined]
-
-
-def test_validate_does_not_instantiate_request_scope() -> None:
-    call_count = 0
-
-    def provider() -> ConcreteService:
-        nonlocal call_count
-        call_count += 1
-        return ConcreteService()
-
-    container = LoomContainer()
-    container.register(IService, provider, scope=Scope.REQUEST)
-    container.validate()
-    assert call_count == 0
-
-
-def test_validate_raises_on_failing_application_provider() -> None:
-    def bad_provider() -> IService:
-        raise RuntimeError("database unreachable")
-
-    container = LoomContainer()
-    container.register(IService, bad_provider, scope=Scope.APPLICATION)
-
-    with pytest.raises(ResolutionError, match="IService"):
+    def test_validate_multiple_application_bindings(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        container.register(IService, ConcreteService, scope=Scope.APPLICATION)
+        container.register(AnotherService, AnotherService, scope=Scope.APPLICATION)
         container.validate()
 
 
-def test_validate_multiple_application_bindings() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService, scope=Scope.APPLICATION)
-    container.register(AnotherService, AnotherService, scope=Scope.APPLICATION)
-    container.validate()  # both must succeed
+class TestRepoResolution:
+    def test_register_repo_and_resolve_repo(self, container: LoomContainer) -> None:
+        repo = ProductRepo()
+        container.register(ProductRepo, lambda: repo, scope=Scope.APPLICATION)
+        container.register_repo(Product, ProductRepo)
 
+        resolved = container.resolve_repo(Product)
+        assert resolved is repo
 
-# ---------------------------------------------------------------------------
-# is_registered
-# ---------------------------------------------------------------------------
-
-
-def test_is_registered_true() -> None:
-    container = LoomContainer()
-    container.register(IService, ConcreteService)
-    assert container.is_registered(IService) is True
-
-
-def test_is_registered_false() -> None:
-    container = LoomContainer()
-    assert container.is_registered(IService) is False
-
-
-def test_register_repo_and_resolve_repo() -> None:
-    repo = ProductRepo()
-    container = LoomContainer()
-    container.register(ProductRepo, lambda: repo, scope=Scope.APPLICATION)
-    container.register_repo(Product, ProductRepo)
-
-    resolved = container.resolve_repo(Product)
-    assert resolved is repo
-
-
-def test_resolve_repo_missing_mapping_raises() -> None:
-    container = LoomContainer()
-    with pytest.raises(ResolutionError, match="Product"):
-        container.resolve_repo(Product)
+    def test_resolve_repo_missing_mapping_raises(
+        self,
+        container: LoomContainer,
+    ) -> None:
+        with pytest.raises(ResolutionError, match="Product"):
+            container.resolve_repo(Product)

@@ -54,7 +54,7 @@ class LoomAdapter(Protocol):
         class MyCliAdapter:
             async def handle(
                 self,
-                use_case: UseCase[Any],
+                use_case: UseCase[Any, Any],
                 request: AdapterRequest,
             ) -> Any:
                 ...
@@ -62,7 +62,7 @@ class LoomAdapter(Protocol):
 
     async def handle(
         self,
-        use_case: UseCase[Any],
+        use_case: UseCase[Any, Any],
         request: AdapterRequest,
     ) -> Any:
         """Execute the UseCase and return a transport-ready result.

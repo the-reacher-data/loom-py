@@ -121,12 +121,16 @@ class HttpTestHarness:
         repos = dict(self._repos)
         error_overrides = dict(self._error_overrides)
 
+        def _make_provider(instance: Any) -> Callable[[], Any]:
+            def _provider() -> Any:
+                return instance
+
+            return _provider
+
         def _module(container: LoomContainer) -> None:
             for model, fake in repos.items():
                 overrides = {
-                    method: err
-                    for (m, method), err in error_overrides.items()
-                    if m is model
+                    method: err for (m, method), err in error_overrides.items() if m is model
                 }
                 effective = _ErrorProxy(fake, overrides) if overrides else fake
                 # Each model gets a unique sentinel class as its DI key to
@@ -134,7 +138,9 @@ class HttpTestHarness:
                 # (e.g. InMemoryRepository).
                 sentinel: type[Any] = type(f"_Repo_{model.__name__}", (), {})
                 container.register(
-                    sentinel, lambda e=effective: e, scope=Scope.APPLICATION
+                    sentinel,
+                    _make_provider(effective),
+                    scope=Scope.APPLICATION,
                 )
                 container.register_repo(model, sentinel)
 
@@ -171,12 +177,8 @@ class HttpTestHarness:
             resp = client.post("/products/", json={"name": "Widget"})
             assert resp.status_code == 201
         """
-        use_cases: list[type[UseCase[Any]]] = list(
-            dict.fromkeys(
-                route.use_case
-                for iface in interfaces
-                for route in iface.routes
-            )
+        use_cases: list[type[UseCase[Any, Any]]] = list(
+            dict.fromkeys(route.use_case for iface in interfaces for route in iface.routes)
         )
         result = bootstrap_app(
             config=_NullConfig(),

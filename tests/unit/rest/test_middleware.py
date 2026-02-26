@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import pytest
 
 from loom.core.tracing import get_trace_id
 from loom.rest.middleware import TraceIdMiddleware, _extract_header
-
 
 # ---------------------------------------------------------------------------
 # ASGI test helpers
@@ -36,6 +34,7 @@ async def _null_receive() -> dict[str, Any]:
 def _make_async_sink(target: list[Any]) -> Any:
     async def _sink(message: Any) -> None:
         target.append(message)
+
     return _sink
 
 

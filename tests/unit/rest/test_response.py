@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 
 import msgspec
-import pytest
 
 from loom.rest.fastapi.response import MsgspecJSONResponse
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -37,27 +35,27 @@ def test_media_type_is_json() -> None:
 
 def test_render_dict() -> None:
     r = MsgspecJSONResponse(content={"a": 1, "b": "hello"})
-    assert json.loads(r.body) == {"a": 1, "b": "hello"}
+    assert json.loads(bytes(r.body)) == {"a": 1, "b": "hello"}
 
 
 def test_render_list() -> None:
     r = MsgspecJSONResponse(content=[1, 2, 3])
-    assert json.loads(r.body) == [1, 2, 3]
+    assert json.loads(bytes(r.body)) == [1, 2, 3]
 
 
 def test_render_string() -> None:
     r = MsgspecJSONResponse(content="hello")
-    assert json.loads(r.body) == "hello"
+    assert json.loads(bytes(r.body)) == "hello"
 
 
 def test_render_int() -> None:
     r = MsgspecJSONResponse(content=42)
-    assert json.loads(r.body) == 42
+    assert json.loads(bytes(r.body)) == 42
 
 
 def test_render_none() -> None:
     r = MsgspecJSONResponse(content=None)
-    assert json.loads(r.body) is None
+    assert json.loads(bytes(r.body)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -68,14 +66,14 @@ def test_render_none() -> None:
 def test_render_msgspec_struct() -> None:
     item = _Item(id=1, name="Widget")
     r = MsgspecJSONResponse(content=item)
-    data = json.loads(r.body)
+    data = json.loads(bytes(r.body))
     assert data == {"id": 1, "name": "Widget"}
 
 
 def test_render_list_of_structs() -> None:
     items = [_Item(id=1, name="A"), _Item(id=2, name="B")]
     r = MsgspecJSONResponse(content=items)
-    data = json.loads(r.body)
+    data = json.loads(bytes(r.body))
     assert data == [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
 
 

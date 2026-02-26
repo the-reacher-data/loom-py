@@ -78,7 +78,7 @@ class RestRoute:
         )
     """
 
-    use_case: type[UseCase[Any]]
+    use_case: type[UseCase[Any, Any]]
     method: str
     path: str
     summary: str = ""
@@ -110,6 +110,8 @@ class RestInterface(Generic[T]):
         profile_default: Default query profile for routes in this interface.
         allowed_profiles: Profiles available to callers of routes in this
             interface.
+        expose_profile: Whether this interface publicly accepts
+            ``?profile=...`` by default. Can be overridden per-route.
 
     Example::
 
@@ -133,6 +135,7 @@ class RestInterface(Generic[T]):
     pagination_mode: PaginationMode | None = None
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
+    expose_profile: bool = False
 
 
 @dataclass(frozen=True)

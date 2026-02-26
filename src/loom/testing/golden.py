@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -54,8 +55,7 @@ def serialize_plan(plan: ExecutionPlan) -> dict[str, Any]:
         assert snapshot["use_case"] == "my_app.use_cases.MyUseCase"
     """
     param_bindings = [
-        {"annotation": _qname(pb.annotation), "name": pb.name}
-        for pb in plan.param_bindings
+        {"annotation": _qname(pb.annotation), "name": pb.name} for pb in plan.param_bindings
     ]
     input_binding = (
         {
@@ -183,9 +183,20 @@ class GoldenHarness:
 
     def _build_container(self) -> LoomContainer:
         container = LoomContainer()
+
+        def _make_provider(instance: Any) -> Callable[[], Any]:
+            def _provider() -> Any:
+                return instance
+
+            return _provider
+
         for interface, instance in self._repos.items():
             effective = self._wrap(interface, instance)
-            container.register(interface, lambda e=effective: e, scope=Scope.APPLICATION)
+            container.register(
+                interface,
+                _make_provider(effective),
+                scope=Scope.APPLICATION,
+            )
         for model, interface in self._model_map.items():
             container.register_repo(model, interface)
         return container
@@ -250,14 +261,11 @@ class GoldenHarness:
 
         baseline_dir.mkdir(parents=True, exist_ok=True)
         record = {"elapsed_ms": round(elapsed_ms, 3), "max_ms": max_ms, "name": name}
-        (baseline_dir / f"{name}.json").write_text(
-            json.dumps(record, indent=2, sort_keys=True)
-        )
+        (baseline_dir / f"{name}.json").write_text(json.dumps(record, indent=2, sort_keys=True))
 
         if elapsed_ms > max_ms:
             raise AssertionError(
-                f"Performance baseline exceeded for '{name}': "
-                f"{elapsed_ms:.2f}ms > {max_ms:.2f}ms"
+                f"Performance baseline exceeded for '{name}': {elapsed_ms:.2f}ms > {max_ms:.2f}ms"
             )
         return result
 

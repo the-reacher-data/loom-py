@@ -56,7 +56,7 @@ class UseCaseCompiler:
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
 
-    def compile(self, use_case_type: type[UseCase[Any]]) -> ExecutionPlan:
+    def compile(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan:
         """Return the ExecutionPlan for ``use_case_type``, compiling if needed.
 
         Compilation is idempotent: calling this method multiple times with
@@ -77,7 +77,7 @@ class UseCaseCompiler:
         self._cache[use_case_type] = plan
         return plan
 
-    def get_plan(self, use_case_type: type[UseCase[Any]]) -> ExecutionPlan | None:
+    def get_plan(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan | None:
         """Return the cached plan for ``use_case_type``, or ``None``.
 
         Args:
@@ -92,7 +92,7 @@ class UseCaseCompiler:
         if self._metrics is not None:
             self._metrics.on_event(event)
 
-    def _build_plan(self, use_case_type: type[UseCase[Any]]) -> ExecutionPlan:
+    def _build_plan(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan:
         uc_name = use_case_type.__qualname__
         self._logger.info(f"[BOOT] Compiling UseCase: {uc_name}", usecase=uc_name)
         self._emit(RuntimeEvent(kind=EventKind.COMPILE_START, use_case_name=uc_name))
@@ -130,14 +130,13 @@ class UseCaseCompiler:
 
     def _inspect_execute(
         self,
-        use_case_type: type[UseCase[Any]],
+        use_case_type: type[UseCase[Any, Any]],
     ) -> tuple[list[ParamBinding], InputBinding | None, list[LoadStep]]:
         execute_fn = use_case_type.execute
 
         if getattr(execute_fn, "__isabstractmethod__", False):
             raise CompilationError(
-                f"{use_case_type.__qualname__} must override execute() "
-                "before it can be compiled"
+                f"{use_case_type.__qualname__} must override execute() before it can be compiled"
             )
 
         try:
@@ -183,8 +182,7 @@ class UseCaseCompiler:
                 )
                 load_steps.append(ls)
                 self._logger.info(
-                    f"[BOOT]  - Detected Load: {default.entity_type.__name__}"
-                    f" by {default.by}"
+                    f"[BOOT]  - Detected Load: {default.entity_type.__name__} by {default.by}"
                 )
 
             else:
@@ -195,7 +193,7 @@ class UseCaseCompiler:
 
     def _validate_load_refs(
         self,
-        use_case_type: type[UseCase[Any]],
+        use_case_type: type[UseCase[Any, Any]],
         param_bindings: list[ParamBinding],
         load_steps: list[LoadStep],
     ) -> None:

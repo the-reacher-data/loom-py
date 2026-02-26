@@ -73,8 +73,8 @@ class UseCase(ABC, Generic[ModelT, ResultT]):
         two-parameter form ``UseCase[Model, Result]``.
         """
         if not isinstance(params, tuple):
-            return super().__class_getitem__((Any, params))
-        return super().__class_getitem__(params)
+            return super().__class_getitem__((Any, params))  # type: ignore[misc]
+        return super().__class_getitem__(params)  # type: ignore[misc]
 
     @property
     def main_repo(self) -> RepoFor[Any]:

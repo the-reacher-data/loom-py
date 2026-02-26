@@ -56,6 +56,8 @@ class CompiledRoute:
             route → interface → global precedence.
         effective_profile_default: Resolved default profile name.
         effective_allowed_profiles: Resolved set of allowed profiles.
+        effective_expose_profile: Whether ``?profile=...`` is publicly
+            accepted for this route.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
     """
 
@@ -65,6 +67,7 @@ class CompiledRoute:
     effective_pagination_mode: PaginationMode
     effective_profile_default: str
     effective_allowed_profiles: tuple[str, ...]
+    effective_expose_profile: bool
     interface_tags: tuple[str, ...] = ()
 
 
@@ -127,9 +130,7 @@ class RestInterfaceCompiler:
     # Internal
     # ------------------------------------------------------------------
 
-    def _compile_fresh(
-        self, interface: type[RestInterface[Any]]
-    ) -> list[CompiledRoute]:
+    def _compile_fresh(self, interface: type[RestInterface[Any]]) -> list[CompiledRoute]:
         iface_name = interface.__qualname__
         prefix = interface.prefix.rstrip("/")
 
@@ -158,15 +159,20 @@ class RestInterfaceCompiler:
                     route=route,
                     full_path=full_path,
                     effective_pagination_mode=self._resolve_pagination(route, interface),
-                    effective_profile_default=self._resolve_profile_default(
-                        route, interface
-                    ),
-                    effective_allowed_profiles=self._resolve_allowed_profiles(
-                        route, interface
-                    ),
+                    effective_profile_default=self._resolve_profile_default(route, interface),
+                    effective_allowed_profiles=self._resolve_allowed_profiles(route, interface),
+                    effective_expose_profile=self._resolve_expose_profile(route, interface),
                     interface_tags=interface.tags,
                 )
             )
+
+            effective = compiled[-1]
+            if effective.effective_expose_profile and not effective.effective_allowed_profiles:
+                raise InterfaceCompilationError(
+                    f"{iface_name}: route ({route.method.upper()}, {route.path!r}) "
+                    "has profile exposure enabled but no allowed profiles. "
+                    "Declare at least one allowed profile."
+                )
 
         return compiled
 
@@ -174,31 +180,21 @@ class RestInterfaceCompiler:
         iface_name = interface.__qualname__
         if not interface.prefix:
             raise InterfaceCompilationError(
-                f"{iface_name}: 'prefix' must be a non-empty string "
-                "(e.g. '/users')."
+                f"{iface_name}: 'prefix' must be a non-empty string (e.g. '/users')."
             )
         if not interface.routes:
             raise InterfaceCompilationError(
-                f"{iface_name}: 'routes' is empty.  Declare at least one "
-                "RestRoute to expose."
+                f"{iface_name}: 'routes' is empty.  Declare at least one RestRoute to expose."
             )
 
     def _validate_route(self, iface_name: str, route: RestRoute) -> None:
         if not route.method:
             raise InterfaceCompilationError(
-                f"{iface_name}: RestRoute for {route.use_case.__qualname__!r} "
-                "is missing 'method'."
+                f"{iface_name}: RestRoute for {route.use_case.__qualname__!r} is missing 'method'."
             )
         if route.path == "" and route.path is not None:
             # path="" is treated as "/" — allowed, but warn via compilation for clarity
             pass
-        if route.expose_profile and not route.allowed_profiles:
-            raise InterfaceCompilationError(
-                f"{iface_name}: route ({route.method.upper()}, {route.path!r}) "
-                "has 'expose_profile=True' but 'allowed_profiles' is empty.  "
-                "Declare at least one allowed profile."
-            )
-
         plan = self._uc_compiler.get_plan(route.use_case)
         if plan is None:
             raise InterfaceCompilationError(
@@ -210,20 +206,12 @@ class RestInterfaceCompiler:
     def _resolve_pagination(
         self, route: RestRoute, interface: type[RestInterface[Any]]
     ) -> PaginationMode:
-        return (
-            route.pagination_mode
-            or interface.pagination_mode
-            or self._defaults.pagination_mode
-        )
+        return route.pagination_mode or interface.pagination_mode or self._defaults.pagination_mode
 
     def _resolve_profile_default(
         self, route: RestRoute, interface: type[RestInterface[Any]]
     ) -> str:
-        return (
-            route.profile_default
-            or interface.profile_default
-            or self._defaults.profile_default
-        )
+        return route.profile_default or interface.profile_default or self._defaults.profile_default
 
     def _resolve_allowed_profiles(
         self, route: RestRoute, interface: type[RestInterface[Any]]
@@ -233,3 +221,10 @@ class RestInterfaceCompiler:
         if interface.allowed_profiles:
             return interface.allowed_profiles
         return self._defaults.allowed_profiles
+
+    def _resolve_expose_profile(
+        self, route: RestRoute, interface: type[RestInterface[Any]]
+    ) -> bool:
+        if route.expose_profile:
+            return True
+        return interface.expose_profile

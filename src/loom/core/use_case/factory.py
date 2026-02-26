@@ -92,9 +92,7 @@ class UseCaseFactory:
         """
         self._get_deps(use_case_type)
 
-    def _get_deps(
-        self, use_case_type: type[Any]
-    ) -> list[tuple[str, DepToken]]:
+    def _get_deps(self, use_case_type: type[Any]) -> list[tuple[str, DepToken]]:
         """Return the cached (or freshly computed) dependency list for a UseCase.
 
         Inspection uses ``typing.get_type_hints`` so ``from __future__ import
@@ -115,9 +113,9 @@ class UseCaseFactory:
             if main_model is None:
                 self._dep_cache[use_case_type] = []
                 return []
-            deps: list[tuple[str, DepToken]] = [("main_repo", ("repo_for", main_model))]
-            self._dep_cache[use_case_type] = deps
-            return deps
+            main_repo_deps: list[tuple[str, DepToken]] = [("main_repo", ("repo_for", main_model))]
+            self._dep_cache[use_case_type] = main_repo_deps
+            return main_repo_deps
 
         # UseCase subclasses that don't declare __init__ inherit object.__init__
         if init is object.__init__:

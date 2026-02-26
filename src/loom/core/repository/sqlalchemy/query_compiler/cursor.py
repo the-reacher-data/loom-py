@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 
@@ -53,7 +53,10 @@ def decode_cursor(token: str) -> dict[str, Any]:
     """
     try:
         raw = base64.urlsafe_b64decode(token.encode())
-        return json.loads(raw)
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict):
+            raise ValueError("Decoded cursor payload must be an object.")
+        return cast(dict[str, Any], decoded)
     except Exception as exc:
         raise ValueError(f"Invalid cursor token: {exc}") from exc
 
@@ -108,5 +111,6 @@ def extract_next_cursor(
     if has_next:
         last = page_items[-1]
         value = getattr(last, cursor_field)
-        next_cursor = encode_cursor(cursor_field, msgspec.to_builtins(value) if hasattr(value, "__struct_fields__") else value)
+        encoded_value = msgspec.to_builtins(value) if hasattr(value, "__struct_fields__") else value
+        next_cursor = encode_cursor(cursor_field, encoded_value)
     return page_items, next_cursor, has_next

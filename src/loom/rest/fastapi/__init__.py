@@ -7,11 +7,13 @@ Provides the FastAPI binding for compiled REST interfaces:
 """
 
 from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.fastapi.auto import create_app
 from loom.rest.fastapi.response import MsgspecJSONResponse
 from loom.rest.fastapi.router_runtime import bind_interfaces
 
 __all__ = [
     "MsgspecJSONResponse",
     "bind_interfaces",
+    "create_app",
     "create_fastapi_app",
 ]

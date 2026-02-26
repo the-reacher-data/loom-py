@@ -7,12 +7,18 @@ import msgspec
 import pytest
 from fastapi import HTTPException
 
-from loom.core.errors import Conflict, Forbidden, LoomError, NotFound, RuleViolation, RuleViolations
+from loom.core.errors import (
+    Conflict,
+    Forbidden,
+    LoomError,
+    NotFound,
+    RuleViolation,
+    RuleViolations,
+)
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
 from loom.core.use_case.use_case import UseCase
 from loom.rest.errors import HttpErrorMapper
 from loom.rest.rest_adapter import LoomRestAdapter
-
 
 # ---------------------------------------------------------------------------
 # Domain fixtures
@@ -24,8 +30,8 @@ class _ResultStruct(msgspec.Struct):
     name: str
 
 
-class _SimpleUseCase(UseCase[str]):
-    async def execute(self) -> str:  # type: ignore[override]
+class _SimpleUseCase(UseCase[Any, str]):
+    async def execute(self) -> str:
         return "ok"
 
 
@@ -75,7 +81,7 @@ class TestLoomAdapterProtocol:
         class _CustomAdapter:
             async def handle(
                 self,
-                use_case: UseCase[Any],
+                use_case: UseCase[Any, Any],
                 request: AdapterRequest,
             ) -> Any:
                 return None
@@ -148,25 +154,19 @@ class TestLoomRestAdapterSuccess:
 
     async def test_returns_plain_result(self) -> None:
         adapter = LoomRestAdapter(self._make_executor("ok"))
-        result = await adapter.handle(
-            _SimpleUseCase(), AdapterRequest(params={})
-        )
+        result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
         assert result == "ok"
 
     async def test_struct_result_serialized_to_builtins(self) -> None:
         struct = _ResultStruct(id=1, name="Alice")
         adapter = LoomRestAdapter(self._make_executor(struct))
-        result = await adapter.handle(
-            _SimpleUseCase(), AdapterRequest(params={})
-        )
+        result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
         assert result == {"id": 1, "name": "Alice"}
 
     async def test_non_struct_result_returned_as_is(self) -> None:
         payload = {"key": "value"}
         adapter = LoomRestAdapter(self._make_executor(payload))
-        result = await adapter.handle(
-            _SimpleUseCase(), AdapterRequest(params={})
-        )
+        result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
         assert result is payload
 
     async def test_params_forwarded_to_executor(self) -> None:

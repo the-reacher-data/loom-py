@@ -6,27 +6,26 @@ from typing import Any
 
 import pytest
 
+from loom.core.use_case.use_case import UseCase
 from loom.rest.model import (
     PaginationMode,
     RestApiDefaults,
     RestInterface,
     RestRoute,
 )
-from loom.core.use_case.use_case import UseCase
-
 
 # ---------------------------------------------------------------------------
 # Dummy use cases
 # ---------------------------------------------------------------------------
 
 
-class CreateUserUseCase(UseCase[str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+class CreateUserUseCase(UseCase[Any, str]):
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
-class ListUsersUseCase(UseCase[str]):
-    async def execute(self, **kwargs: Any) -> str:  # type: ignore[override]
+class ListUsersUseCase(UseCase[Any, str]):
+    async def execute(self, **kwargs: Any) -> str:
         return "ok"
 
 
@@ -94,6 +93,7 @@ def test_rest_interface_defaults() -> None:
     assert EmptyInterface.pagination_mode is None
     assert EmptyInterface.profile_default == ""
     assert EmptyInterface.allowed_profiles == ()
+    assert EmptyInterface.expose_profile is False
 
 
 def test_rest_interface_subclass_overrides() -> None:
@@ -109,12 +109,14 @@ def test_rest_interface_subclass_overrides() -> None:
         pagination_mode = PaginationMode.CURSOR
         profile_default = "summary"
         allowed_profiles = ("summary", "detail")
+        expose_profile = True
 
     assert UserInterface.prefix == "/users"
     assert UserInterface.tags == ("Users",)
     assert UserInterface.auto is True
     assert UserInterface.pagination_mode == PaginationMode.CURSOR
     assert len(UserInterface.routes) == 2
+    assert UserInterface.expose_profile is True
 
 
 def test_rest_interface_is_generic() -> None:
@@ -159,5 +161,5 @@ def test_rest_api_defaults_is_frozen() -> None:
 
 
 def test_pagination_mode_values() -> None:
-    assert PaginationMode.OFFSET == "offset"
-    assert PaginationMode.CURSOR == "cursor"
+    assert PaginationMode.OFFSET.value == "offset"
+    assert PaginationMode.CURSOR.value == "cursor"

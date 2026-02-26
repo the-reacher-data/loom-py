@@ -50,7 +50,7 @@ class LoomRestAdapter:
 
     async def handle(
         self,
-        use_case: UseCase[Any],
+        use_case: UseCase[Any, Any],
         request: AdapterRequest,
     ) -> Any:
         """Execute the UseCase and return a serializable result.

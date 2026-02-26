@@ -3,7 +3,16 @@ from __future__ import annotations
 import msgspec
 from pytest import mark
 
-from loom.core.repository.abc import FilterParams, PageParams
+from loom.core.repository.abc import (
+    FilterGroup,
+    FilterOp,
+    FilterParams,
+    FilterSpec,
+    PageParams,
+    PaginationMode,
+    QuerySpec,
+    SortSpec,
+)
 from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
@@ -52,6 +61,77 @@ class TestRepositorySQLAlchemyIntegration:
         assert page.total_count == 2
         assert len(page.items) == 2
         assert {item.name for item in page.items} == {"b", "c"}
+
+    @mark.asyncio
+    async def test_list_with_query_offset_supports_filters_and_pagination(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+        scenario_catalog_with_price_20: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_catalog_with_price_20)
+
+        query_page_1 = QuerySpec(
+            filters=FilterGroup(filters=(FilterSpec(field="price", op=FilterOp.EQ, value=20.0),)),
+            sort=(SortSpec(field="id", direction="ASC"),),
+            pagination=PaginationMode.OFFSET,
+            limit=1,
+            page=1,
+        )
+        page_1 = await integration_context.product.repository.list_with_query(query_page_1)
+
+        assert page_1.total_count == 2
+        assert page_1.page == 1
+        assert page_1.limit == 1
+        assert page_1.has_next is True
+        assert [item.name for item in page_1.items] == ["b"]
+
+        query_page_2 = QuerySpec(
+            filters=query_page_1.filters,
+            sort=query_page_1.sort,
+            pagination=PaginationMode.OFFSET,
+            limit=1,
+            page=2,
+        )
+        page_2 = await integration_context.product.repository.list_with_query(query_page_2)
+
+        assert page_2.total_count == 2
+        assert page_2.page == 2
+        assert page_2.limit == 1
+        assert page_2.has_next is False
+        assert [item.name for item in page_2.items] == ["c"]
+
+    @mark.asyncio
+    async def test_list_with_query_cursor_supports_filters_and_next_cursor(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+        scenario_catalog_with_price_20: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_catalog_with_price_20)
+
+        first_query = QuerySpec(
+            filters=FilterGroup(filters=(FilterSpec(field="price", op=FilterOp.EQ, value=20.0),)),
+            sort=(SortSpec(field="id", direction="ASC"),),
+            pagination=PaginationMode.CURSOR,
+            limit=1,
+        )
+        first_page = await integration_context.product.repository.list_with_query(first_query)
+
+        assert first_page.has_next is True
+        assert first_page.next_cursor is not None
+        assert [item.name for item in first_page.items] == ["b"]
+
+        second_query = QuerySpec(
+            filters=first_query.filters,
+            sort=first_query.sort,
+            pagination=PaginationMode.CURSOR,
+            limit=1,
+            cursor=first_page.next_cursor,
+        )
+        second_page = await integration_context.product.repository.list_with_query(second_query)
+
+        assert second_page.has_next is False
+        assert second_page.next_cursor is None
+        assert [item.name for item in second_page.items] == ["c"]
 
     @mark.asyncio
     async def test_profile_default_omits_unloaded_fields(

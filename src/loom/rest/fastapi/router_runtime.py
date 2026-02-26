@@ -23,16 +23,26 @@ from __future__ import annotations
 
 import inspect
 import re
+import types
+import typing
 from collections.abc import Sequence
 from typing import Any
 
 import msgspec
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import LoomError
+from loom.core.repository.abc.query import (
+    FilterGroup,
+    FilterOp,
+    FilterSpec,
+    PaginationMode,
+    QuerySpec,
+    SortSpec,
+)
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
 from loom.rest.errors import HttpErrorMapper
@@ -52,6 +62,116 @@ def _extract_path_params(path: str) -> list[str]:
         ``["user_id", "order_id"]``.
     """
     return re.findall(r"\{(\w+)\}", path)
+
+
+_RESERVED_QUERY_KEYS = frozenset(
+    {"page", "limit", "cursor", "after", "pagination", "sort", "direction", "profile"}
+)
+
+
+def _coerce_scalar(value: str) -> Any:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _parse_filter_op(op: str) -> FilterOp:
+    try:
+        return FilterOp(op.lower())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unsupported filter operator: {op!r}") from exc
+
+
+def _build_query_spec(request: Request) -> QuerySpec:
+    query_params = request.query_params
+    page = int(query_params.get("page", "1"))
+    limit = int(query_params.get("limit", "50"))
+    cursor = query_params.get("after") or query_params.get("cursor")
+    pagination_raw = query_params.get("pagination")
+    sort_field = query_params.get("sort")
+    direction_raw = query_params.get("direction", "ASC").upper()
+
+    if direction_raw not in {"ASC", "DESC"}:
+        raise HTTPException(status_code=400, detail="direction must be 'ASC' or 'DESC'.")
+
+    if pagination_raw is None:
+        pagination = PaginationMode.CURSOR if cursor is not None else PaginationMode.OFFSET
+    else:
+        try:
+            pagination = PaginationMode(pagination_raw.lower())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid pagination mode: {pagination_raw!r}.",
+            ) from exc
+
+    sort: tuple[SortSpec, ...] = ()
+    if sort_field is not None and sort_field != "":
+        sort = (SortSpec(field=sort_field, direction=typing.cast(Any, direction_raw)),)
+
+    filters: list[FilterSpec] = []
+    for key, raw_value in query_params.items():
+        if key in _RESERVED_QUERY_KEYS:
+            continue
+
+        parts = [part for part in key.split("__") if part]
+        if not parts:
+            continue
+
+        maybe_op = parts[-1].lower()
+        if maybe_op in {item.value for item in FilterOp}:
+            op = _parse_filter_op(maybe_op)
+            field_parts = parts[:-1]
+        else:
+            op = FilterOp.EQ
+            field_parts = parts
+
+        if not field_parts:
+            raise HTTPException(status_code=400, detail=f"Invalid filter field: {key!r}.")
+        field = ".".join(field_parts)
+
+        if op == FilterOp.IN:
+            value = [_coerce_scalar(item) for item in raw_value.split(",") if item != ""]
+        elif op in {FilterOp.EXISTS, FilterOp.NOT_EXISTS, FilterOp.IS_NULL}:
+            value = _coerce_scalar(raw_value)
+        else:
+            value = _coerce_scalar(raw_value)
+
+        filters.append(FilterSpec(field=field, op=op, value=value))
+
+    filter_group = FilterGroup(filters=tuple(filters)) if filters else None
+    return QuerySpec(
+        filters=filter_group,
+        sort=sort,
+        pagination=pagination,
+        limit=limit,
+        page=page,
+        cursor=cursor,
+    )
+
+
+def _resolve_query_param_name(uc_type: type[Any]) -> str | None:
+    execute_sig = inspect.signature(uc_type.execute)
+    hints = typing.get_type_hints(uc_type.execute)
+    for name, param in execute_sig.parameters.items():
+        if name == "self":
+            continue
+        annotation = hints.get(name, param.annotation)
+        origin = typing.get_origin(annotation)
+        args = typing.get_args(annotation)
+        if annotation is QuerySpec:
+            return name
+        if origin in {typing.Union, types.UnionType} and QuerySpec in args:
+            return name
+    return None
 
 
 def _make_handler(
@@ -75,9 +195,36 @@ def _make_handler(
     path_params = _extract_path_params(compiled_route.route.path)
     uc_type = compiled_route.route.use_case
     status_code = compiled_route.route.status_code
+    execute_sig = inspect.signature(uc_type.execute)
+    accepts_profile_param = "profile" in execute_sig.parameters
+    query_param_name = _resolve_query_param_name(uc_type)
+
+    def _resolve_profile(request: Request) -> str:
+        requested = request.query_params.get("profile")
+        if requested is None:
+            return compiled_route.effective_profile_default
+
+        if not compiled_route.effective_expose_profile:
+            raise HTTPException(
+                status_code=400,
+                detail="Query parameter 'profile' is not allowed for this route.",
+            )
+
+        allowed = compiled_route.effective_allowed_profiles
+        if allowed and requested not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Invalid profile {requested!r}. Allowed: {', '.join(allowed)}"),
+            )
+        return requested
 
     async def _handler(request: Request, **kwargs: Any) -> Response:
         params: dict[str, Any] = {p: kwargs[p] for p in path_params}
+        selected_profile = _resolve_profile(request)
+        if accepts_profile_param:
+            params["profile"] = selected_profile
+        if query_param_name is not None:
+            params[query_param_name] = _build_query_spec(request)
 
         payload: dict[str, Any] | None = None
         body = await request.body()
