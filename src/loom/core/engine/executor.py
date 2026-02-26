@@ -9,6 +9,7 @@ from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, LoadStep
 from loom.core.errors import NotFound
 from loom.core.logger import LoggerPort, get_logger
+from loom.core.tracing import get_trace_id
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
 from loom.core.use_case.rule import RuleViolation, RuleViolations
@@ -116,8 +117,6 @@ class RuntimeExecutor:
             plan = self._compiler.compile(uc_type)
         uc_name = uc_type.__qualname__
 
-        self._logger.info(f"[EXEC] {uc_name}", usecase=uc_name)
-        self._emit(RuntimeEvent(kind=EventKind.EXEC_START, use_case_name=uc_name))
         start = time.perf_counter()
 
         _owns_uow = self._uow_factory is not None and _active_uow.get() is None
@@ -152,6 +151,16 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> ResultT:
+        trace_id = get_trace_id()
+        logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
+
+        logger.info(f"[EXEC] {uc_name}", usecase=uc_name)
+        self._emit(RuntimeEvent(
+            kind=EventKind.EXEC_START,
+            use_case_name=uc_name,
+            trace_id=trace_id,
+        ))
+
         try:
             bound: dict[str, Any] = {}
 
@@ -166,7 +175,7 @@ class RuntimeExecutor:
 
         except RuleViolations as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
-            self._logger.warning(
+            logger.warning(
                 f"[FAIL] {uc_name}",
                 usecase=uc_name,
                 duration_ms=elapsed_ms,
@@ -179,13 +188,14 @@ class RuntimeExecutor:
                     duration_ms=elapsed_ms,
                     status="rule_failure",
                     error=exc,
+                    trace_id=trace_id,
                 )
             )
             raise
 
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
-            self._logger.error(
+            logger.error(
                 f"[FAIL] {uc_name}",
                 usecase=uc_name,
                 duration_ms=elapsed_ms,
@@ -199,12 +209,13 @@ class RuntimeExecutor:
                     duration_ms=elapsed_ms,
                     status="failure",
                     error=exc,
+                    trace_id=trace_id,
                 )
             )
             raise
 
         elapsed_ms = (time.perf_counter() - start) * 1000
-        self._logger.info(
+        logger.info(
             f"[DONE] {elapsed_ms:.1f}ms",
             usecase=uc_name,
             duration_ms=elapsed_ms,
@@ -216,6 +227,7 @@ class RuntimeExecutor:
                 use_case_name=uc_name,
                 duration_ms=elapsed_ms,
                 status="success",
+                trace_id=trace_id,
             )
         )
         return result
@@ -236,7 +248,17 @@ class RuntimeExecutor:
                     f"{plan.use_case_type.__qualname__}: "
                     f"missing required parameter '{pb.name}'"
                 )
-            bound[pb.name] = params[pb.name]
+            raw = params[pb.name]
+            if isinstance(pb.annotation, type):
+                try:
+                    if not isinstance(raw, pb.annotation):
+                        bound[pb.name] = pb.annotation(raw)
+                    else:
+                        bound[pb.name] = raw
+                except (TypeError, ValueError):
+                    bound[pb.name] = raw
+            else:
+                bound[pb.name] = raw
 
     def _build_command(
         self,

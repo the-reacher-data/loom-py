@@ -1,4 +1,5 @@
 from loom.core.model.base import BaseModel, LoomStructMeta
+from loom.core.model.timestamped import TimestampedModel
 from loom.core.model.enums import Cardinality, OnDelete, OnUpdate, ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnField, ColumnType, Field
 from loom.core.model.introspection import (
@@ -26,6 +27,7 @@ from loom.core.model.types_postgres import Postgres
 
 __all__ = [
     "BaseModel",
+    "TimestampedModel",
     "BigInteger",
     "Boolean",
     "Cardinality",

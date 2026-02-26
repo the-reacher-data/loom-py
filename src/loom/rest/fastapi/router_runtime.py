@@ -32,9 +32,13 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
+from loom.core.errors import LoomError
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
+from loom.rest.errors import HttpErrorMapper
 from loom.rest.fastapi.response import MsgspecJSONResponse
+
+_error_mapper = HttpErrorMapper()
 
 
 def _extract_path_params(path: str) -> list[str]:
@@ -82,7 +86,10 @@ def _make_handler(
             payload = raw
 
         uc = factory.build(uc_type)
-        result = await executor.execute(uc, params=params, payload=payload)
+        try:
+            result = await executor.execute(uc, params=params, payload=payload)
+        except LoomError as exc:
+            raise _error_mapper.to_http(exc) from exc
         return MsgspecJSONResponse(content=result, status_code=status_code)
 
     sig_params: list[inspect.Parameter] = [

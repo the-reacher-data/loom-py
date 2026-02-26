@@ -50,3 +50,4 @@ class RuntimeEvent:
     duration_ms: float | None = None
     status: str | None = None
     error: BaseException | None = None
+    trace_id: str | None = None

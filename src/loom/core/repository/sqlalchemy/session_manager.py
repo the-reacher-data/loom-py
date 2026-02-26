@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -11,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from loom.core.logger import get_logger
+from loom.core.tracing import get_trace_id
 
 
 class SessionManager:
@@ -27,6 +30,7 @@ class SessionManager:
         pool_timeout: int | None = 30,
         pool_recycle: int | None = 1800,
         connect_args: dict[str, object] | None = None,
+        inject_trace_id: bool = False,
         **engine_kwargs: object,
     ) -> None:
         """Create a session manager backed by an async SQLAlchemy engine.
@@ -40,6 +44,10 @@ class SessionManager:
             pool_timeout: Seconds to wait before raising on pool exhaustion.
             pool_recycle: Seconds after which a connection is recycled.
             connect_args: Extra keyword arguments passed to the DBAPI ``connect()`` call.
+            inject_trace_id: When ``True``, prefixes every SQL statement with a
+                ``/* trace_id=<id> */`` comment when a trace identifier is active
+                in the current async context.  Visible in database slow-query logs
+                and ``pg_stat_activity``.  Defaults to ``False``.
             **engine_kwargs: Additional keyword arguments forwarded to ``create_async_engine``.
         """
         engine_config: dict[str, object] = {
@@ -65,10 +73,13 @@ class SessionManager:
             class_=AsyncSession,
             expire_on_commit=False,
         )
+        if inject_trace_id:
+            _register_trace_id_listener(self._engine)
         self._log.info(
             "SessionManagerInitialized",
             backend=self._engine.url.get_backend_name(),
             driver=self._engine.url.get_driver_name(),
+            inject_trace_id=inject_trace_id,
         )
 
     @asynccontextmanager
@@ -100,3 +111,31 @@ class SessionManager:
     def session_factory(self) -> async_sessionmaker[AsyncSession]:
         """The configured async session factory bound to the engine."""
         return self._session_factory
+
+
+def _register_trace_id_listener(async_engine: AsyncEngine) -> None:
+    """Register a ``before_cursor_execute`` listener that injects trace comments.
+
+    The listener is attached to the underlying sync engine so it fires for
+    every SQL statement executed through the async engine.  When a
+    trace-id is active in the current async context, the statement is
+    prefixed with ``/* trace_id=<id> */``.
+
+    Args:
+        async_engine: The :class:`~sqlalchemy.ext.asyncio.AsyncEngine` whose
+            sync engine will receive the listener.
+    """
+
+    @event.listens_for(async_engine.sync_engine, "before_cursor_execute", retval=True)
+    def _inject(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> tuple[str, Any]:
+        tid = get_trace_id()
+        if tid:
+            statement = f"/* trace_id={tid} */ " + statement
+        return statement, parameters

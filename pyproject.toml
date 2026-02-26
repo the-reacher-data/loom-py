@@ -27,6 +27,9 @@ cache = [
 pyspark = [
     "pyspark>=3.5,<4.0",
 ]
+prometheus = [
+    "prometheus-client>=0.20",
+]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -50,6 +53,7 @@ dev = [
     "ruff>=0.6.0",
     "sqlalchemy>=2.0,<3.0",
     "httpx>=0.28.1",
+    "prometheus-client>=0.20",
 ]
 
 [tool.hatch.build.targets.wheel]

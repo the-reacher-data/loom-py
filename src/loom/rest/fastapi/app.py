@@ -37,11 +37,15 @@ from loom.rest.compiler import RestInterfaceCompiler
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
 
+# Type alias for ASGI middleware classes accepted by FastAPI.add_middleware.
+_MiddlewareClass = Any
+
 
 def create_fastapi_app(
     result: BootstrapResult,
     interfaces: Sequence[type[RestInterface[Any]]],
     *,
+    middleware: Sequence[_MiddlewareClass] = (),
     defaults: RestApiDefaults | None = None,
     **fastapi_kwargs: Any,
 ) -> FastAPI:
@@ -61,6 +65,19 @@ def create_fastapi_app(
             from :func:`~loom.core.bootstrap.bootstrap.bootstrap_app`.
         interfaces: ``RestInterface`` subclasses declaring which endpoints to
             expose.  Compiled in declaration order.
+        middleware: ASGI middleware classes to register on the application.
+            Added in declaration order (first = outermost wrapper).
+            Accepts any class compatible with ``FastAPI.add_middleware``.
+            Example::
+
+                from loom.rest.middleware import TraceIdMiddleware
+                from loom.prometheus import PrometheusMiddleware
+
+                app = create_fastapi_app(
+                    result,
+                    interfaces=[...],
+                    middleware=[TraceIdMiddleware, PrometheusMiddleware],
+                )
         defaults: Global REST API defaults (pagination mode, profile policy).
             Falls back to :class:`~loom.rest.model.RestApiDefaults` when not
             provided.
@@ -86,11 +103,14 @@ def create_fastapi_app(
     """
     app = FastAPI(**fastapi_kwargs)
 
+    for mw_class in middleware:
+        app.add_middleware(mw_class)
+
     interface_compiler = RestInterfaceCompiler(
         result.compiler,
         defaults=defaults,
     )
-    executor = RuntimeExecutor(result.compiler)
+    executor = RuntimeExecutor(result.compiler, metrics=result.metrics)
 
     all_routes = []
     for iface in interfaces:

@@ -60,16 +60,20 @@ class BootstrapResult:
         container: Validated DI container with all bindings resolved.
         compiler: Use-case compiler with all plans cached.
         factory: Factory for constructing use-case instances per request.
+        metrics: Optional metrics adapter passed to :func:`bootstrap_app`.
+            Propagated to the transport layer so it can wire it into the
+            :class:`~loom.core.engine.executor.RuntimeExecutor`.
     """
 
     container: LoomContainer
     compiler: UseCaseCompiler
     factory: UseCaseFactory
+    metrics: MetricsAdapter | None = None
 
 
 def bootstrap_app(
     config: object,
-    use_cases: Sequence[type[UseCase[Any]]],
+    use_cases: Sequence[type[UseCase[Any, Any]]],
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     logger: LoggerPort | None = None,
     metrics: MetricsAdapter | None = None,
@@ -140,7 +144,12 @@ def bootstrap_app(
         container.validate()
 
         _logger.info("[BOOT] Bootstrap complete")
-        return BootstrapResult(container=container, compiler=compiler, factory=factory)
+        return BootstrapResult(
+            container=container,
+            compiler=compiler,
+            factory=factory,
+            metrics=metrics,
+        )
 
     except BootstrapError:
         raise
