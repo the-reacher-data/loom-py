@@ -26,11 +26,7 @@ def _resolve_table_ref(table_ref: TableRef) -> FromClause:
     if isinstance(table_ref, FromClause):
         return table_ref
 
-    resolved: FromClause | type[Any]
-    if isinstance(table_ref, type):
-        resolved = table_ref
-    else:
-        resolved = table_ref()
+    resolved: FromClause | type[Any] = table_ref if isinstance(table_ref, type) else table_ref()
 
     if isinstance(resolved, FromClause):
         return resolved

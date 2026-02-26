@@ -15,7 +15,12 @@ from loom.core.cache import (
 from loom.core.cache.keys import entity_key
 from loom.core.model import BaseModel, Cardinality, ColumnField, ProjectionField, RelationField
 from loom.core.repository import FilterParams, PageParams, PageResult, Repository
-from loom.core.repository.abc.query import CursorResult, PaginationMode, QuerySpec, build_page_result
+from loom.core.repository.abc.query import (
+    CursorResult,
+    PaginationMode,
+    QuerySpec,
+    build_page_result,
+)
 from loom.core.repository.mutation import MutationEvent
 
 T = TypeVar("T")

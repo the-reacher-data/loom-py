@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
     Float,
     ForeignKey,
     Integer,
-    JSON,
     MetaData,
     Numeric,
     String,

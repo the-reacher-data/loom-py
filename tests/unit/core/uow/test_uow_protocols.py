@@ -9,7 +9,6 @@ import pytest
 
 from loom.core.uow.abc import UnitOfWork, UnitOfWorkFactory
 
-
 # ---------------------------------------------------------------------------
 # Fake implementations (satisfy protocol structurally)
 # ---------------------------------------------------------------------------
@@ -22,7 +21,7 @@ class FakeUoW:
     async def commit(self) -> None: ...
     async def rollback(self) -> None: ...
 
-    async def __aenter__(self) -> "FakeUoW":
+    async def __aenter__(self) -> FakeUoW:
         await self.begin()
         return self
 
@@ -97,7 +96,7 @@ async def test_uow_context_manager_commit_on_success() -> None:
             nonlocal rolled_back
             rolled_back = True
 
-        async def __aenter__(self) -> "TrackingUoW":
+        async def __aenter__(self) -> TrackingUoW:
             await self.begin()
             return self
 
@@ -126,7 +125,7 @@ async def test_uow_context_manager_rollback_on_exception() -> None:
             nonlocal rolled_back
             rolled_back = True
 
-        async def __aenter__(self) -> "TrackingUoW":
+        async def __aenter__(self) -> TrackingUoW:
             return self
 
         async def __aexit__(self, exc_type: Any, *args: Any) -> None:

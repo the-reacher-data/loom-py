@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 
 import msgspec
@@ -9,7 +9,7 @@ import msgspec
 OutputT = TypeVar("OutputT", bound=msgspec.Struct, covariant=True)
 
 
-class PaginationMode(str, Enum):
+class PaginationMode(StrEnum):
     """Pagination strategy for list and query operations.
 
     Attributes:
@@ -22,7 +22,7 @@ class PaginationMode(str, Enum):
     CURSOR = "cursor"
 
 
-class FilterOp(str, Enum):
+class FilterOp(StrEnum):
     """Filter operator applied to a single field.
 
     Attributes:

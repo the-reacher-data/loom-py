@@ -8,8 +8,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.repository.abc.query import (
-    CursorResult,
-    PageResult,
     PaginationMode,
     QuerySpec,
 )

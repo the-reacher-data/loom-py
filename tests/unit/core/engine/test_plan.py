@@ -15,7 +15,6 @@ from loom.core.engine.plan import (
 )
 from loom.core.use_case.rule import RuleViolation
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

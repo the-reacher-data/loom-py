@@ -315,7 +315,8 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
         query: QuerySpec,
         profile: str = "default",
     ) -> PageResult[OutputT] | CursorResult[OutputT]:
-        """Fetch a list of entities using a structured :class:`~loom.core.repository.abc.query.QuerySpec`.
+        """Fetch entities using a structured
+        :class:`~loom.core.repository.abc.query.QuerySpec`.
 
         Supports offset and cursor pagination, structured filters, and
         explicit sort directives.
@@ -341,9 +342,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
                 scoped_session, query, options
             )
 
-            proj_map = await self._collect_projection_values(
-                scoped_session, raw_items, profile
-            )
+            proj_map = await self._collect_projection_values(scoped_session, raw_items, profile)
             items: list[OutputT] = [
                 cast(
                     OutputT,
@@ -364,6 +363,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
                 )
 
             from loom.core.repository.abc.query import PageParams
+
             page_params = PageParams(page=query.page, limit=query.limit)
             return build_page_result(items, total_count or 0, page_params)
 

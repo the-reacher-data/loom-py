@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pytest import mark
 from typing import Any
 from unittest.mock import AsyncMock
 

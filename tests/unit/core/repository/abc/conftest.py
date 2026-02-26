@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from pytest import fixture
 
 from loom.core.repository.abc import PageParams

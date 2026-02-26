@@ -9,7 +9,6 @@ import pytest
 
 from loom.testing.in_memory import InMemoryRepository
 
-
 # ---------------------------------------------------------------------------
 # Domain fixtures
 # ---------------------------------------------------------------------------

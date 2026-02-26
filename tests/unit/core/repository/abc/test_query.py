@@ -26,7 +26,11 @@ class TestPageParams:
 
 class TestBuildPageResult:
     def test_build_page_result_calculates_has_next(self, page_params: PageParams) -> None:
-        result = build_page_result(items=[DummyOutput(id=1)], total_count=25, page_params=page_params)
+        result = build_page_result(
+            items=[DummyOutput(id=1)],
+            total_count=25,
+            page_params=page_params,
+        )
 
         assert result.page == 2
         assert result.limit == 10

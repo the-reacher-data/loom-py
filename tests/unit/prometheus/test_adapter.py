@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from prometheus_client import CollectorRegistry
 
 from loom.core.engine.events import EventKind, RuntimeEvent
@@ -28,41 +27,50 @@ def _metric_value(registry: CollectorRegistry, sample_name: str, labels: dict[st
 class TestExecDone:
     def test_increments_requests_total_success(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_DONE,
-            use_case_name="CreateOrder",
-            status="success",
-            duration_ms=10.0,
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_DONE,
+                use_case_name="CreateOrder",
+                status="success",
+                duration_ms=10.0,
+            )
+        )
         # Counter named "loom_usecase_requests" → sample name "loom_usecase_requests_total"
         val = _metric_value(
-            registry, "loom_usecase_requests_total",
+            registry,
+            "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "success"},
         )
         assert val == 1.0
 
     def test_observes_duration_histogram(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_DONE,
-            use_case_name="GetOrder",
-            duration_ms=500.0,
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_DONE,
+                use_case_name="GetOrder",
+                duration_ms=500.0,
+            )
+        )
         count = _metric_value(
-            registry, "loom_usecase_duration_seconds_count",
+            registry,
+            "loom_usecase_duration_seconds_count",
             {"usecase": "GetOrder"},
         )
         assert count == 1.0
 
     def test_noop_when_duration_none(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_DONE,
-            use_case_name="GetOrder",
-            duration_ms=None,
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_DONE,
+                use_case_name="GetOrder",
+                duration_ms=None,
+            )
+        )
         count = _metric_value(
-            registry, "loom_usecase_duration_seconds_count",
+            registry,
+            "loom_usecase_duration_seconds_count",
             {"usecase": "GetOrder"},
         )
         assert count == 0.0
@@ -71,41 +79,50 @@ class TestExecDone:
 class TestExecError:
     def test_increments_requests_total_with_status(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_ERROR,
-            use_case_name="CreateOrder",
-            status="rule_failure",
-            error=ValueError("bad"),
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_ERROR,
+                use_case_name="CreateOrder",
+                status="rule_failure",
+                error=ValueError("bad"),
+            )
+        )
         val = _metric_value(
-            registry, "loom_usecase_requests_total",
+            registry,
+            "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "rule_failure"},
         )
         assert val == 1.0
 
     def test_increments_errors_total_by_error_kind(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_ERROR,
-            use_case_name="CreateOrder",
-            error=ValueError("oops"),
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_ERROR,
+                use_case_name="CreateOrder",
+                error=ValueError("oops"),
+            )
+        )
         # Counter named "loom_usecase_errors" → sample name "loom_usecase_errors_total"
         val = _metric_value(
-            registry, "loom_usecase_errors_total",
+            registry,
+            "loom_usecase_errors_total",
             {"usecase": "CreateOrder", "error_kind": "ValueError"},
         )
         assert val == 1.0
 
     def test_error_kind_unknown_when_error_none(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_ERROR,
-            use_case_name="X",
-            error=None,
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_ERROR,
+                use_case_name="X",
+                error=None,
+            )
+        )
         val = _metric_value(
-            registry, "loom_usecase_errors_total",
+            registry,
+            "loom_usecase_errors_total",
             {"usecase": "X", "error_kind": "unknown"},
         )
         assert val == 1.0
@@ -114,13 +131,16 @@ class TestExecError:
 class TestExecStart:
     def test_noop_on_exec_start(self) -> None:
         adapter, registry = _adapter()
-        adapter.on_event(RuntimeEvent(
-            kind=EventKind.EXEC_START,
-            use_case_name="CreateOrder",
-        ))
+        adapter.on_event(
+            RuntimeEvent(
+                kind=EventKind.EXEC_START,
+                use_case_name="CreateOrder",
+            )
+        )
         # No requests should be recorded for EXEC_START
         val = _metric_value(
-            registry, "loom_usecase_requests_total",
+            registry,
+            "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "success"},
         )
         assert val == 0.0

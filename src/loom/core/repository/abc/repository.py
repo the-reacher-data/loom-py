@@ -56,7 +56,8 @@ class RepositoryRead(Protocol[OutputT, IdT]):
         query: QuerySpec,
         profile: str = "default",
     ) -> PageResult[OutputT] | CursorResult[OutputT]:
-        """Fetch a list of entities using a structured :class:`~loom.core.repository.abc.query.QuerySpec`.
+        """Fetch entities using a structured
+        :class:`~loom.core.repository.abc.query.QuerySpec`.
 
         Supports both offset and cursor pagination, structured filters, and
         explicit sort directives.  The concrete return type depends on

@@ -141,16 +141,16 @@ def _extract_origin_type(annotation: Any) -> type[Any]:
             value = args[0]
             if isinstance(value, type):
                 return value
-            return Any
+            return object
     raw = _unwrap_optional(annotation)
     origin = get_origin(raw)
     if origin is not None:
         if isinstance(origin, type):
             return origin
-        return Any
+        return object
     if isinstance(raw, type):
         return raw
-    return Any
+    return object
 
 
 def _unwrap_optional(annotation: Any) -> Any:
