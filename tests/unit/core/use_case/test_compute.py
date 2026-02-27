@@ -22,9 +22,7 @@ def set_slug(command: CreateArticle, fields_set: frozenset[str]) -> CreateArticl
     return msgspec.structs.replace(command, slug=slug)
 
 
-def maybe_set_slug(
-    command: CreateArticle, fields_set: frozenset[str]
-) -> CreateArticle:
+def maybe_set_slug(command: CreateArticle, fields_set: frozenset[str]) -> CreateArticle:
     if "title" not in fields_set:
         return command
     slug = command.title.lower().replace(" ", "-")
@@ -59,18 +57,30 @@ class TestCompute:
         assert result.slug == ""
 
     def test_dsl_assigns_single_source(self) -> None:
-        compute = Compute.set(F(CreateArticle).slug).from_fields(F(CreateArticle).title).build()
+        compute = Compute.set(F(CreateArticle).slug).from_command(F(CreateArticle).title)
 
         cmd = CreateArticle(title="Hello")
         result = compute(cmd, frozenset({"title"}))
 
         assert result.slug == "Hello"
 
+    def test_dsl_can_use_execute_params(self) -> None:
+        compute = (
+            Compute.set(F(CreateArticle).slug)
+            .from_command(F(CreateArticle).title, via=lambda title, suffix: f"{title}-{suffix}")
+            .from_params("suffix")
+        )
+
+        cmd = CreateArticle(title="Hello")
+        result = compute(cmd, frozenset({"title"}), {"suffix": "v2"})
+
+        assert result.slug == "Hello-v2"
+
     def test_dsl_assigns_via_callable(self) -> None:
         compute = Compute.set(F(CreateArticle).slug).from_fields(
             F(CreateArticle).title,
             via=lambda title: str(title).lower().replace(" ", "-"),
-        ).build()
+        )
 
         cmd = CreateArticle(title="Hello World")
         result = compute(cmd, frozenset({"title"}))
@@ -78,10 +88,14 @@ class TestCompute:
         assert result.slug == "hello-world"
 
     def test_dsl_when_present_respects_patch_fields_set(self) -> None:
-        compute = Compute.set(F(UpdateArticle).slug).from_fields(
-            F(UpdateArticle).title,
-            via=normalize_patch_slug,
-        ).when_present(F(UpdateArticle).title)
+        compute = (
+            Compute.set(F(UpdateArticle).slug)
+            .from_fields(
+                F(UpdateArticle).title,
+                via=normalize_patch_slug,
+            )
+            .when_present(F(UpdateArticle).title)
+        )
 
         missing, _ = UpdateArticle.from_payload({})
         missing_result = compute(missing, frozenset())

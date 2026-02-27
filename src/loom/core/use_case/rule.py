@@ -19,7 +19,7 @@ __all__ = [
 
 CommandT = TypeVar("CommandT", bound=Command)
 
-RuleFn = Callable[[CommandT, frozenset[str]], None]
+RuleFn = Callable[..., None]
 
 
 def _resolve_from_command(command: Command, ref: FieldRef) -> Any:
@@ -41,68 +41,136 @@ def _is_present(command: Command, fields_set: frozenset[str], ref: FieldRef) -> 
 
 @dataclass(frozen=True, slots=True)
 class _RuleSpec:
-    evaluator: Callable[[Command, frozenset[str]], None]
+    evaluator: Callable[..., Any]
+    field: str | None = None
+    message: str | None = None
+    command_sources: tuple[FieldRef, ...] = ()
+    param_names: tuple[str, ...] = ()
+    include_command: bool = False
+    include_fields_set: bool = False
     predicate: FieldRef | None = None
 
-    def __call__(self, command: Command, fields_set: frozenset[str]) -> None:
-        if self.predicate is not None and not _is_present(
-            command, fields_set, self.predicate
-        ):
-            return
-        self.evaluator(command, fields_set)
-
-
-class _RuleWhenBuilder:
-    __slots__ = ("_spec",)
-
-    def __init__(self, spec: _RuleSpec) -> None:
-        self._spec = spec
-
-    def when_present(self, predicate: FieldRef) -> RuleFn[Any]:
+    def from_command(self, *sources: FieldRef) -> _RuleSpec:
+        if not sources:
+            # Full command mode: provide both command and fields_set.
+            return _RuleSpec(
+                evaluator=self.evaluator,
+                field=self.field,
+                message=self.message,
+                command_sources=(),
+                param_names=self.param_names,
+                include_command=True,
+                include_fields_set=True,
+                predicate=self.predicate,
+            )
         return _RuleSpec(
-            evaluator=self._spec.evaluator,
+            evaluator=self.evaluator,
+            field=self.field,
+            message=self.message,
+            command_sources=tuple(sources),
+            param_names=self.param_names,
+            include_command=False,
+            include_fields_set=False,
+            predicate=self.predicate,
+        )
+
+    def from_params(self, *names: str) -> _RuleSpec:
+        if not names:
+            raise ValueError("Rule.from_params(...) requires at least one parameter name.")
+        return _RuleSpec(
+            evaluator=self.evaluator,
+            field=self.field,
+            message=self.message,
+            command_sources=self.command_sources,
+            param_names=(*self.param_names, *names),
+            include_command=self.include_command,
+            include_fields_set=self.include_fields_set,
+            predicate=self.predicate,
+        )
+
+    def when_present(self, predicate: FieldRef) -> _RuleSpec:
+        return _RuleSpec(
+            evaluator=self.evaluator,
+            field=self.field,
+            message=self.message,
+            command_sources=self.command_sources,
+            param_names=self.param_names,
+            include_command=self.include_command,
+            include_fields_set=self.include_fields_set,
             predicate=predicate,
         )
 
-    def build(self) -> RuleFn[Any]:
-        return self._spec
+    def __call__(
+        self,
+        command: Command,
+        fields_set: frozenset[str],
+        context: dict[str, object] | None = None,
+    ) -> None:
+        if self.predicate is not None and not _is_present(command, fields_set, self.predicate):
+            return
 
+        args: list[Any] = []
+        if self.include_command:
+            args.append(command)
+        if self.include_fields_set:
+            args.append(fields_set)
+        for source in self.command_sources:
+            args.append(_resolve_from_command(command, source))
 
-@dataclass(frozen=True, slots=True)
-class _CheckEvaluator:
-    targets: tuple[FieldRef, ...]
-    validator: Callable[..., Any]
+        if self.param_names:
+            if context is None:
+                raise ValueError("Rule.from_params(...) requires runtime context.")
+            missing = [name for name in self.param_names if name not in context]
+            if missing:
+                missing_str = ", ".join(missing)
+                raise ValueError(f"Missing runtime context keys for rule: {missing_str}")
+            args.extend(context[name] for name in self.param_names)
 
-    def __call__(self, command: Command, fields_set: frozenset[str]) -> None:
-        del fields_set
-        values = tuple(_resolve_from_command(command, target) for target in self.targets)
-        result = self.validator(*values)
+        result = self.evaluator(*args)
         if isinstance(result, RuleViolation):
             raise result
         if isinstance(result, str):
-            raise RuleViolation(self.targets[0].leaf, result)
+            raise RuleViolation(self._resolved_field(command), result)
         if result is False:
-            raise RuleViolation(self.targets[0].leaf, "Rule check failed")
+            raise RuleViolation(self._resolved_field(command), self._resolved_message())
+        if result is True:
+            raise RuleViolation(self._resolved_field(command), self._resolved_message())
+
+    def _resolved_field(self, command: Command) -> str:
+        if self.field is not None:
+            return self.field
+        if self.command_sources:
+            return self.command_sources[0].leaf
+        return type(command).__name__
+
+    def _resolved_message(self) -> str:
+        return self.message or "Rule check failed"
 
 
 @dataclass(frozen=True, slots=True)
-class _ForbidEvaluator:
-    condition: Callable[[Command, frozenset[str]], bool]
-    field: str
-    message: str
-
-    def __call__(self, command: Command, fields_set: frozenset[str]) -> None:
-        if self.condition(command, fields_set):
-            raise RuleViolation(self.field, self.message)
-
-
-@dataclass(frozen=True, slots=True)
-class _RequirePresentEvaluator:
+class _RequirePresentSpec:
     target: FieldRef
     field: str
     message: str
+    predicate: FieldRef | None = None
 
-    def __call__(self, command: Command, fields_set: frozenset[str]) -> None:
+    def when_present(self, predicate: FieldRef) -> _RequirePresentSpec:
+        return _RequirePresentSpec(
+            target=self.target,
+            field=self.field,
+            message=self.message,
+            predicate=predicate,
+        )
+
+    def __call__(
+        self,
+        command: Command,
+        fields_set: frozenset[str],
+        context: dict[str, object] | None = None,
+    ) -> None:
+        del context
+        if self.predicate is not None and not _is_present(command, fields_set, self.predicate):
+            return
         if not _is_present(command, fields_set, self.target):
             raise RuleViolation(self.field, self.message)
 
@@ -114,21 +182,32 @@ class Rule:
     def check(
         *targets: FieldRef,
         via: Callable[..., Any],
-    ) -> _RuleWhenBuilder:
+        message: str | None = None,
+    ) -> RuleFn:
         if not targets:
             raise ValueError("Rule.check(...) requires at least one target.")
-        evaluator = _CheckEvaluator(targets=targets, validator=via)
-        return _RuleWhenBuilder(_RuleSpec(evaluator=evaluator))
+        return _RuleSpec(
+            evaluator=via,
+            field=targets[0].leaf,
+            message=message,
+            command_sources=tuple(targets),
+        )
 
     @staticmethod
     def forbid(
-        condition: Callable[[Command, frozenset[str]], bool],
+        condition: Callable[..., bool],
         *,
-        field: str,
+        field: str | FieldRef | None = None,
         message: str,
-    ) -> _RuleWhenBuilder:
-        evaluator = _ForbidEvaluator(condition=condition, field=field, message=message)
-        return _RuleWhenBuilder(_RuleSpec(evaluator=evaluator))
+    ) -> RuleFn:
+        resolved_field = field.leaf if isinstance(field, FieldRef) else field
+        return _RuleSpec(
+            evaluator=condition,
+            field=resolved_field,
+            message=message,
+            include_command=True,
+            include_fields_set=True,
+        )
 
     @staticmethod
     def require_present(
@@ -136,12 +215,11 @@ class Rule:
         *,
         field: str | None = None,
         message: str | None = None,
-    ) -> RuleFn[Any]:
+    ) -> RuleFn:
         resolved_field = field or target.leaf
         resolved_message = message or f"{target.leaf} is required"
-        evaluator = _RequirePresentEvaluator(
+        return _RequirePresentSpec(
             target=target,
             field=resolved_field,
             message=resolved_message,
         )
-        return _RuleSpec(evaluator=evaluator)

@@ -37,6 +37,26 @@ def is_disposable(command: Command, _fields_set: frozenset[str]) -> bool:
     return user.email.endswith("@throwaway.com")
 
 
+def email_format_error_or_none(email: str) -> str | None:
+    if "@" not in email:
+        return "Invalid email format"
+    return None
+
+
+def patch_email_format_error_or_none(email: str | None) -> str | None:
+    if isinstance(email, str) and "@" not in email:
+        return "Invalid email format"
+    return None
+
+
+def forbid_user_one(
+    _command: Command,
+    _fields_set: frozenset[str],
+    user_id: str,
+) -> bool:
+    return user_id == "1"
+
+
 class TestRuleViolation:
     def test_exposes_field_and_message(self) -> None:
         exc = RuleViolation("email", "Invalid email")
@@ -96,8 +116,8 @@ class TestRuleDsl:
     def test_check_runs_validator(self) -> None:
         rule = Rule.check(
             F(CreateUser).email,
-            via=lambda email: "Invalid email format" if "@" not in email else None,
-        ).build()
+            via=email_format_error_or_none,
+        )
 
         with pytest.raises(RuleViolation) as exc_info:
             rule(CreateUser(email="invalid", name="Alice"), frozenset({"email", "name"}))
@@ -107,9 +127,7 @@ class TestRuleDsl:
     def test_check_when_present_for_patch_field(self) -> None:
         rule = Rule.check(
             F(UpdateUser).email,
-            via=lambda email: "Invalid email format"
-            if isinstance(email, str) and "@" not in email
-            else None,
+            via=patch_email_format_error_or_none,
         ).when_present(F(UpdateUser).email)
 
         cmd_missing, fields_missing = UpdateUser.from_payload({"name": "Alice"})
@@ -124,11 +142,40 @@ class TestRuleDsl:
             is_disposable,
             field="email",
             message="Disposable emails not allowed",
-        ).build()
+        )
 
         with pytest.raises(RuleViolation):
             rule(
                 CreateUser(email="spam@throwaway.com", name="Spammer"),
+                frozenset({"email", "name"}),
+            )
+
+    def test_forbid_from_params_uses_runtime_context(self) -> None:
+        rule = Rule.forbid(
+            forbid_user_one,
+            field="user_id",
+            message="user id is blocked",
+        ).from_params("user_id")
+
+        with pytest.raises(RuleViolation) as exc_info:
+            rule(
+                CreateUser(email="ok@example.com", name="Alice"),
+                frozenset({"email", "name"}),
+                {"user_id": "1"},
+            )
+
+        assert exc_info.value.field == "user_id"
+
+    def test_forbid_from_params_missing_context_raises(self) -> None:
+        rule = Rule.forbid(
+            forbid_user_one,
+            field="user_id",
+            message="user id is blocked",
+        ).from_params("user_id")
+
+        with pytest.raises(ValueError, match="runtime context"):
+            rule(
+                CreateUser(email="ok@example.com", name="Alice"),
                 frozenset({"email", "name"}),
             )
 
@@ -144,3 +191,16 @@ class TestRuleDsl:
             rule(cmd, fields_set)
 
         assert exc_info.value.field == "email"
+
+    def test_tdd_check_without_build_should_be_directly_callable(self) -> None:
+        """Rule.check(...) returns a directly callable rule."""
+        rule = Rule.check(
+            F(CreateUser).email,
+            via=email_format_error_or_none,
+        )
+
+        with pytest.raises(RuleViolation):
+            rule(
+                CreateUser(email="invalid", name="Alice"),
+                frozenset({"email", "name"}),
+            )

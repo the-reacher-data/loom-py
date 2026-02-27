@@ -3,13 +3,91 @@ from __future__ import annotations
 from typing import cast
 
 from loom.core.repository.abc.query import PageParams, PageResult
-from loom.core.use_case import Input
+from loom.core.use_case import Compute, F, Input, LoadById, Rule
 from loom.core.use_case.use_case import UseCase
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
 
+def _normalize_name(value: str) -> str:
+    return value.strip()
+
+
+def _normalize_price(value: float) -> float:
+    return round(value, 2)
+
+
+def _name_must_not_be_blank(name: str) -> str | None:
+    if not name.strip():
+        return "name must not be blank"
+    return None
+
+
+def _price_must_be_positive(price: float) -> str | None:
+    if price <= 0:
+        return "price must be positive"
+    return None
+
+
+CREATE_NORMALIZE_NAME = Compute.set(F(CreateProduct).name).from_fields(
+    F(CreateProduct).name, via=_normalize_name
+)
+CREATE_NORMALIZE_PRICE = Compute.set(F(CreateProduct).price).from_fields(
+    F(CreateProduct).price, via=_normalize_price
+)
+UPDATE_NORMALIZE_NAME = (
+    Compute.set(F(UpdateProduct).name)
+    .from_fields(F(UpdateProduct).name, via=_normalize_name)
+    .when_present(F(UpdateProduct).name)
+)
+UPDATE_NORMALIZE_PRICE = (
+    Compute.set(F(UpdateProduct).price)
+    .from_fields(F(UpdateProduct).price, via=_normalize_price)
+    .when_present(F(UpdateProduct).price)
+)
+
+CREATE_NAME_RULE = Rule.check(F(CreateProduct).name, via=_name_must_not_be_blank)
+CREATE_PRICE_RULE = Rule.check(F(CreateProduct).price, via=_price_must_be_positive)
+UPDATE_NAME_RULE = Rule.check(F(UpdateProduct).name, via=_name_must_not_be_blank).when_present(
+    F(UpdateProduct).name
+)
+UPDATE_PRICE_RULE = Rule.check(F(UpdateProduct).price, via=_price_must_be_positive).when_present(
+    F(UpdateProduct).price
+)
+
+
+def _patch_payload_is_empty(_cmd: UpdateProduct, fields: frozenset[str]) -> bool:
+    return len(fields) == 0
+
+
+def _is_system_product_name_update_forbidden(
+    _cmd: UpdateProduct,
+    _fields_set: frozenset[str],
+    product_id: str,
+) -> bool:
+    return str(product_id) == "1"
+
+
+UPDATE_NOT_EMPTY_RULE = Rule.forbid(
+    _patch_payload_is_empty,
+    message="at least one field must be provided",
+)
+
+UPDATE_SYSTEM_NAME_IMMUTABLE_RULE = (
+    Rule.forbid(
+        _is_system_product_name_update_forbidden,
+        field=F(UpdateProduct).name,
+        message="system product name cannot be changed",
+    )
+    .from_params("product_id")
+    .when_present(F(UpdateProduct).name)
+)
+
+
 class CreateProductUseCase(UseCase[Product, Product]):
+    computes = [CREATE_NORMALIZE_NAME, CREATE_NORMALIZE_PRICE]
+    rules = [CREATE_NAME_RULE, CREATE_PRICE_RULE]
+
     async def execute(self, cmd: CreateProduct = Input()) -> Product:
         return cast(Product, await self.main_repo.create(cmd))
 
@@ -25,9 +103,18 @@ class ListProductsUseCase(UseCase[Product, PageResult[Product]]):
 
 
 class UpdateProductUseCase(UseCase[Product, Product | None]):
+    computes = [UPDATE_NORMALIZE_NAME, UPDATE_NORMALIZE_PRICE]
+    rules = [
+        UPDATE_NOT_EMPTY_RULE,
+        UPDATE_NAME_RULE,
+        UPDATE_PRICE_RULE,
+        UPDATE_SYSTEM_NAME_IMMUTABLE_RULE,
+    ]
+
     async def execute(
         self,
         product_id: str,
+        product: Product = LoadById(Product, by="product_id"),
         cmd: UpdateProduct = Input(),
     ) -> Product | None:
         return await self.main_repo.update(int(product_id), cmd)
