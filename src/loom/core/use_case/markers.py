@@ -174,13 +174,23 @@ def LoadById(
 def Load(
     entity_type: type[EntityT],
     *,
+    by: str | None = None,
     from_param: str | None = None,
     from_command: str | None = None,
     against: str,
     profile: str = "default",
     on_missing: OnMissing = OnMissing.RAISE,
 ) -> Any:
-    """Factory returning marker for preloaded entity parameters by field."""
+    """Factory returning marker for preloaded entity parameters by field.
+
+    Backward compatibility:
+        ``by=...`` is accepted as an alias of ``from_param=...``.
+    """
+    if by is not None:
+        if from_param is not None or from_command is not None:
+            raise ValueError("Load() does not allow mixing 'by' with from_param/from_command")
+        from_param = by
+
     if (from_param is None) == (from_command is None):
         raise ValueError("Load() requires exactly one of from_param or from_command")
 
