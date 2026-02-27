@@ -9,13 +9,21 @@ from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import (
     ComputeStep,
     ExecutionPlan,
+    ExistsStep,
     InputBinding,
     LoadStep,
     ParamBinding,
     RuleStep,
 )
 from loom.core.logger import LoggerPort, get_logger
-from loom.core.use_case.markers import _InputMarker, _LoadMarker
+from loom.core.use_case.markers import (
+    LookupKind,
+    SourceKind,
+    _ExistsMarker,
+    _InputMarker,
+    _LoadByIdMarker,
+    _LoadMarker,
+)
 from loom.core.use_case.use_case import UseCase
 
 
@@ -97,7 +105,9 @@ class UseCaseCompiler:
         self._logger.info(f"[BOOT] Compiling UseCase: {uc_name}", usecase=uc_name)
         self._emit(RuntimeEvent(kind=EventKind.COMPILE_START, use_case_name=uc_name))
 
-        param_bindings, input_binding, load_steps = self._inspect_execute(use_case_type)
+        param_bindings, input_binding, load_steps, exists_steps = self._inspect_execute(
+            use_case_type
+        )
         compute_steps = tuple(ComputeStep(fn=fn) for fn in use_case_type.computes)
         rule_steps = tuple(RuleStep(fn=fn) for fn in use_case_type.rules)
 
@@ -110,7 +120,7 @@ class UseCaseCompiler:
             usecase=uc_name,
         )
 
-        total = len(load_steps) + len(compute_steps) + len(rule_steps)
+        total = len(load_steps) + len(exists_steps) + len(compute_steps) + len(rule_steps)
         self._logger.info(
             f"[BOOT]  - ExecutionPlan built ({total} steps)",
             usecase=uc_name,
@@ -122,6 +132,7 @@ class UseCaseCompiler:
             param_bindings=tuple(param_bindings),
             input_binding=input_binding,
             load_steps=tuple(load_steps),
+            exists_steps=tuple(exists_steps),
             compute_steps=compute_steps,
             rule_steps=rule_steps,
         )
@@ -131,7 +142,7 @@ class UseCaseCompiler:
     def _inspect_execute(
         self,
         use_case_type: type[UseCase[Any, Any]],
-    ) -> tuple[list[ParamBinding], InputBinding | None, list[LoadStep]]:
+    ) -> tuple[list[ParamBinding], InputBinding | None, list[LoadStep], list[ExistsStep]]:
         execute_fn = use_case_type.execute
 
         if getattr(execute_fn, "__isabstractmethod__", False):
@@ -149,6 +160,7 @@ class UseCaseCompiler:
         param_bindings: list[ParamBinding] = []
         input_binding: InputBinding | None = None
         load_steps: list[LoadStep] = []
+        exists_steps: list[ExistsStep] = []
         input_count = 0
 
         _variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
@@ -173,35 +185,99 @@ class UseCaseCompiler:
                 cmd_name = getattr(annotation, "__name__", repr(annotation))
                 self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")
 
+            elif isinstance(default, _LoadByIdMarker):
+                ls = LoadStep(
+                    name=name,
+                    entity_type=default.entity_type,
+                    source_kind=SourceKind.PARAM,
+                    source_name=default.by,
+                    lookup_kind=LookupKind.BY_ID,
+                    against="id",
+                    profile=default.profile,
+                    on_missing=default.on_missing,
+                )
+                load_steps.append(ls)
+                self._logger.info(
+                    f"[BOOT]  - Detected LoadById: {default.entity_type.__name__} by {default.by}"
+                )
+
             elif isinstance(default, _LoadMarker):
                 ls = LoadStep(
                     name=name,
                     entity_type=default.entity_type,
-                    by=default.by,
+                    source_kind=default.from_kind,
+                    source_name=default.from_name,
+                    lookup_kind=LookupKind.BY_FIELD,
+                    against=default.against,
                     profile=default.profile,
+                    on_missing=default.on_missing,
                 )
                 load_steps.append(ls)
+                src = f"{default.from_kind.value}:{default.from_name}"
                 self._logger.info(
-                    f"[BOOT]  - Detected Load: {default.entity_type.__name__} by {default.by}"
+                    "[BOOT]  - Detected Load: "
+                    f"{default.entity_type.__name__} {default.against} <- {src}"
+                )
+
+            elif isinstance(default, _ExistsMarker):
+                es = ExistsStep(
+                    name=name,
+                    entity_type=default.entity_type,
+                    source_kind=default.from_kind,
+                    source_name=default.from_name,
+                    against=default.against,
+                    on_missing=default.on_missing,
+                )
+                exists_steps.append(es)
+                src = f"{default.from_kind.value}:{default.from_name}"
+                self._logger.info(
+                    "[BOOT]  - Detected Exists: "
+                    f"{default.entity_type.__name__} {default.against} <- {src}"
                 )
 
             else:
                 param_bindings.append(ParamBinding(name=name, annotation=annotation))
 
-        self._validate_load_refs(use_case_type, param_bindings, load_steps)
-        return param_bindings, input_binding, load_steps
+        self._validate_marker_refs(
+            use_case_type,
+            param_bindings,
+            input_binding,
+            load_steps,
+            exists_steps,
+        )
+        return param_bindings, input_binding, load_steps, exists_steps
 
-    def _validate_load_refs(
+    def _validate_marker_refs(
         self,
         use_case_type: type[UseCase[Any, Any]],
         param_bindings: list[ParamBinding],
+        input_binding: InputBinding | None,
         load_steps: list[LoadStep],
+        exists_steps: list[ExistsStep],
     ) -> None:
         param_names = {pb.name for pb in param_bindings}
         for ls in load_steps:
-            if ls.by not in param_names:
+            if ls.source_kind is SourceKind.PARAM and ls.source_name not in param_names:
                 raise CompilationError(
                     f"{use_case_type.__qualname__}.execute: "
-                    f"Load({ls.entity_type.__name__}, by='{ls.by}'): "
-                    f"parameter '{ls.by}' not found in execute signature"
+                    f"LoadById({ls.entity_type.__name__}): "
+                    f"parameter '{ls.source_name}' not found in execute signature"
+                )
+            if ls.source_kind is SourceKind.COMMAND and input_binding is None:
+                raise CompilationError(
+                    f"{use_case_type.__qualname__}.execute: "
+                    f"LoadById({ls.entity_type.__name__}): from_command requires Input() parameter"
+                )
+
+        for es in exists_steps:
+            if es.source_kind is SourceKind.PARAM and es.source_name not in param_names:
+                raise CompilationError(
+                    f"{use_case_type.__qualname__}.execute: "
+                    f"Exists({es.entity_type.__name__}): "
+                    f"parameter '{es.source_name}' not found in execute signature"
+                )
+            if es.source_kind is SourceKind.COMMAND and input_binding is None:
+                raise CompilationError(
+                    f"{use_case_type.__qualname__}.execute: "
+                    f"Exists({es.entity_type.__name__}): from_command requires Input() parameter"
                 )
