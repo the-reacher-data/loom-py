@@ -14,6 +14,8 @@ from tests.integration.fake_repo.product.use_cases import (
 class ProductRestInterface(RestInterface[Product]):
     prefix = "/products"
     tags = ("Products",)
+    profile_default = "default"
+    allowed_profiles = ("default", "with_details")
     routes = (
         RestRoute(
             use_case=CreateProductUseCase,
@@ -25,11 +27,13 @@ class ProductRestInterface(RestInterface[Product]):
             use_case=ListProductsUseCase,
             method="GET",
             path="/",
+            expose_profile=True,
         ),
         RestRoute(
             use_case=GetProductUseCase,
             method="GET",
             path="/{product_id}",
+            expose_profile=True,
         ),
         RestRoute(
             use_case=UpdateProductUseCase,

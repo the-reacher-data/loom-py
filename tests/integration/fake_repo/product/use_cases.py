@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import cast
 
-from loom.core.repository.abc.query import PageParams, PageResult
-from loom.core.use_case import Compute, F, Input, LoadById, Rule
+from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
+from loom.core.use_case import Compute, F, Input, Rule
 from loom.core.use_case.use_case import UseCase
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
@@ -116,13 +116,17 @@ class CreateProductUseCase(UseCase[Product, Product]):
 
 
 class GetProductUseCase(UseCase[Product, Product | None]):
-    async def execute(self, product_id: str) -> Product | None:
-        return await self.main_repo.get_by_id(int(product_id))
+    async def execute(self, product_id: str, profile: str = "default") -> Product | None:
+        return await self.main_repo.get_by_id(int(product_id), profile=profile)
 
 
-class ListProductsUseCase(UseCase[Product, PageResult[Product]]):
-    async def execute(self) -> PageResult[Product]:
-        return await self.main_repo.list_paginated(PageParams(page=1, limit=100))
+class ListProductsUseCase(UseCase[Product, PageResult[Product] | CursorResult[Product]]):
+    async def execute(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[Product] | CursorResult[Product]:
+        return await self.main_repo.list_with_query(query, profile=profile)
 
 
 class UpdateProductUseCase(UseCase[Product, Product | None]):
@@ -138,7 +142,6 @@ class UpdateProductUseCase(UseCase[Product, Product | None]):
     async def execute(
         self,
         product_id: str,
-        product: Product = LoadById(Product, by="product_id"),
         cmd: UpdateProduct = Input(),
     ) -> Product | None:
         return await self.main_repo.update(int(product_id), cmd)
