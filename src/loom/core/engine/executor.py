@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar, cast
 
 from loom.core.engine.compiler import UseCaseCompiler
@@ -420,7 +421,8 @@ class RuntimeExecutor:
                 f"'{step.entity_type.__name__}' must implement exists_by(field, value)"
             )
 
-        found = bool(await exists_by(step.against, value))
+        exists_by_async = cast(Callable[[str, Any], Awaitable[bool]], exists_by)
+        found = bool(await exists_by_async(step.against, value))
         if found:
             return True
 
@@ -437,7 +439,8 @@ class RuntimeExecutor:
             raise RuntimeError(
                 f"Repository for '{step.entity_type.__name__}' must implement get_by(field, value)"
             )
-        return await get_by(step.against, value, profile=step.profile)
+        get_by_async = cast(Callable[..., Awaitable[Any | None]], get_by)
+        return await get_by_async(step.against, value, profile=step.profile)
 
     @staticmethod
     def _resolve_lookup_value(

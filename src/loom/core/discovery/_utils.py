@@ -34,7 +34,7 @@ def _is_local_class(cls: type[Any], module_name: str) -> bool:
 
 def _as_model(cls: type[Any]) -> type[BaseModel] | None:
     if issubclass(cls, BaseModel) and cls is not BaseModel:
-        return typing.cast(type[BaseModel], cls)
+        return cls
     return None
 
 
