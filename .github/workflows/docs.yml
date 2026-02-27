@@ -39,9 +39,9 @@ jobs:
         run: |
           set -euo pipefail
           uv run \
-            --with sphinx>=8.0 \
-            --with furo>=2024.8.6 \
-            --with myst-parser>=3.0 \
+            --with 'sphinx>=8.0' \
+            --with 'furo>=2024.8.6' \
+            --with 'myst-parser>=3.0' \
             sphinx-build -W -b html docs docs/_build/html
 
       - name: Upload docs artifact
