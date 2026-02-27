@@ -14,9 +14,40 @@ from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface
 
+ItemT = typing.TypeVar("ItemT")
+
 
 def import_modules(module_paths: list[str]) -> list[ModuleType]:
     return [importlib.import_module(path) for path in module_paths]
+
+
+def _append_unique(items: list[ItemT], seen: set[ItemT], value: ItemT) -> None:
+    if value in seen:
+        return
+    items.append(value)
+    seen.add(value)
+
+
+def _is_local_class(cls: type[Any], module_name: str) -> bool:
+    return cls.__module__ == module_name
+
+
+def _as_model(cls: type[Any]) -> type[BaseModel] | None:
+    if issubclass(cls, BaseModel) and cls is not BaseModel:
+        return typing.cast(type[BaseModel], cls)
+    return None
+
+
+def _as_use_case(cls: type[Any]) -> type[UseCase[object, object]] | None:
+    if issubclass(cls, UseCase) and cls is not UseCase:
+        return typing.cast(type[UseCase[object, object]], cls)
+    return None
+
+
+def _as_interface(cls: type[Any]) -> type[RestInterface[object]] | None:
+    if issubclass(cls, RestInterface) and cls is not RestInterface:
+        return typing.cast(type[RestInterface[object]], cls)
+    return None
 
 
 def collect_from_modules(
@@ -37,24 +68,22 @@ def collect_from_modules(
     for module in modules:
         module_name = module.__name__
         for _, cls in inspect.getmembers(module, inspect.isclass):
-            if cls.__module__ != module_name:
+            if not _is_local_class(cls, module_name):
                 continue
-            if issubclass(cls, BaseModel) and cls is not BaseModel:
-                if cls not in seen_models:
-                    models.append(cls)
-                    seen_models.add(cls)
+
+            model = _as_model(cls)
+            if model is not None:
+                _append_unique(models, seen_models, model)
                 continue
-            if issubclass(cls, UseCase) and cls is not UseCase:
-                use_case = typing.cast(type[UseCase[object, object]], cls)
-                if use_case not in seen_use_cases:
-                    use_cases.append(use_case)
-                    seen_use_cases.add(use_case)
+
+            use_case = _as_use_case(cls)
+            if use_case is not None:
+                _append_unique(use_cases, seen_use_cases, use_case)
                 continue
-            if issubclass(cls, RestInterface) and cls is not RestInterface:
-                interface = typing.cast(type[RestInterface[object]], cls)
-                if interface not in seen_interfaces:
-                    interfaces.append(interface)
-                    seen_interfaces.add(interface)
+
+            interface = _as_interface(cls)
+            if interface is not None:
+                _append_unique(interfaces, seen_interfaces, interface)
 
     return models, use_cases, interfaces
 
