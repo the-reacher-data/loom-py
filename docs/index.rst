@@ -1,5 +1,5 @@
 loom-kernel documentation
-========================
+=========================
 
 Framework-agnostic toolkit to build backend applications with typed use cases,
 repository contracts, and transport adapters.
@@ -9,6 +9,7 @@ repository contracts, and transport adapters.
    :caption: Guides
 
    guides/quickstart
+   examples-repo/index
    guides/use-case-dsl
    guides/fake-repo-examples
    guides/autocrud
