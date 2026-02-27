@@ -18,9 +18,30 @@ class FieldRef:
             raise AttributeError(item)
         return FieldRef(root=self.root, path=(*self.path, item))
 
+    def __or__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr("or", self, other)
+
+    def __and__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr("and", self, other)
+
     @property
     def leaf(self) -> str:
         return self.path[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class FieldExpr:
+    """Boolean expression over field references used by DSL predicates."""
+
+    op: str
+    left: FieldRef | FieldExpr
+    right: FieldRef | FieldExpr
+
+    def __or__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr("or", self, other)
+
+    def __and__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr("and", self, other)
 
 
 class _FieldRefFactory:
@@ -42,4 +63,3 @@ def F(root: type[Command] | str) -> Any:
         ``F(UpdateUserCommand).birthdate``
     """
     return _FieldRefFactory(root)
-

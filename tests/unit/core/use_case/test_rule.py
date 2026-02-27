@@ -137,6 +137,19 @@ class TestRuleDsl:
         with pytest.raises(RuleViolation):
             rule(cmd_invalid, fields_invalid)
 
+    def test_check_when_present_supports_or_expression(self) -> None:
+        rule = Rule.check(
+            F(UpdateUser).email,
+            via=patch_email_format_error_or_none,
+        ).when_present(F(UpdateUser).email | F(UpdateUser).name)
+
+        cmd_missing, fields_missing = UpdateUser.from_payload({})
+        rule(cmd_missing, fields_missing)
+
+        cmd_invalid, fields_invalid = UpdateUser.from_payload({"email": "invalid"})
+        with pytest.raises(RuleViolation):
+            rule(cmd_invalid, fields_invalid)
+
     def test_forbid_blocks_condition(self) -> None:
         rule = Rule.forbid(
             is_disposable,

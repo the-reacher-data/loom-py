@@ -22,3 +22,11 @@ class TestFieldRef:
         assert ref.root == "user"
         assert ref.path == ("profile", "name")
         assert ref.leaf == "name"
+
+    def test_supports_or_expression(self) -> None:
+        expr = F(UpdateUser).email | F(UpdateUser).email
+        assert expr.op == "or"
+
+    def test_supports_and_expression(self) -> None:
+        expr = F(UpdateUser).email & F(UpdateUser).email
+        assert expr.op == "and"

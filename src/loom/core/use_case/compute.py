@@ -8,7 +8,7 @@ import msgspec
 
 from loom.core.command.base import Command
 from loom.core.command.introspection import get_patch_fields
-from loom.core.use_case.field_ref import FieldRef
+from loom.core.use_case.field_ref import FieldExpr, FieldRef
 
 CommandT = TypeVar("CommandT", bound=Command)
 
@@ -33,6 +33,24 @@ def _is_present(command: Command, fields_set: frozenset[str], ref: FieldRef) -> 
     return _resolve_from_command(command, ref) is not None
 
 
+def _predicate_is_present(
+    command: Command,
+    fields_set: frozenset[str],
+    predicate: FieldRef | FieldExpr,
+) -> bool:
+    if isinstance(predicate, FieldRef):
+        return _is_present(command, fields_set, predicate)
+    if predicate.op == "or":
+        return _predicate_is_present(command, fields_set, predicate.left) or _predicate_is_present(
+            command, fields_set, predicate.right
+        )
+    if predicate.op == "and":
+        return _predicate_is_present(command, fields_set, predicate.left) and _predicate_is_present(
+            command, fields_set, predicate.right
+        )
+    raise ValueError(f"Unsupported predicate op: {predicate.op}")
+
+
 @dataclass(frozen=True, slots=True)
 class _ComputeSpec:
     target: FieldRef
@@ -40,7 +58,7 @@ class _ComputeSpec:
     param_names: tuple[str, ...] = ()
     include_command: bool = False
     via: Callable[..., Any] | None = None
-    predicate: FieldRef | None = None
+    predicate: FieldRef | FieldExpr | None = None
 
     def from_params(self, *names: str) -> _ComputeSpec:
         if not names:
@@ -54,7 +72,7 @@ class _ComputeSpec:
             predicate=self.predicate,
         )
 
-    def when_present(self, predicate: FieldRef) -> _ComputeSpec:
+    def when_present(self, predicate: FieldRef | FieldExpr) -> _ComputeSpec:
         return _ComputeSpec(
             target=self.target,
             command_sources=self.command_sources,
@@ -70,7 +88,9 @@ class _ComputeSpec:
         fields_set: frozenset[str],
         context: dict[str, object] | None = None,
     ) -> Command:
-        if self.predicate is not None and not _is_present(command, fields_set, self.predicate):
+        if self.predicate is not None and not _predicate_is_present(
+            command, fields_set, self.predicate
+        ):
             return command
 
         args: list[Any] = []

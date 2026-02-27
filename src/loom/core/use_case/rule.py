@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 from loom.core.command.base import Command
 from loom.core.command.introspection import get_patch_fields
 from loom.core.errors.errors import RuleViolation, RuleViolations
-from loom.core.use_case.field_ref import FieldRef
+from loom.core.use_case.field_ref import FieldExpr, FieldRef
 
 # Re-exported for backward compatibility — canonical home is loom.core.errors.
 __all__ = [
@@ -39,6 +39,24 @@ def _is_present(command: Command, fields_set: frozenset[str], ref: FieldRef) -> 
     return _resolve_from_command(command, ref) is not None
 
 
+def _predicate_is_present(
+    command: Command,
+    fields_set: frozenset[str],
+    predicate: FieldRef | FieldExpr,
+) -> bool:
+    if isinstance(predicate, FieldRef):
+        return _is_present(command, fields_set, predicate)
+    if predicate.op == "or":
+        return _predicate_is_present(command, fields_set, predicate.left) or _predicate_is_present(
+            command, fields_set, predicate.right
+        )
+    if predicate.op == "and":
+        return _predicate_is_present(command, fields_set, predicate.left) and _predicate_is_present(
+            command, fields_set, predicate.right
+        )
+    raise ValueError(f"Unsupported predicate op: {predicate.op}")
+
+
 @dataclass(frozen=True, slots=True)
 class _RuleSpec:
     evaluator: Callable[..., Any]
@@ -48,7 +66,7 @@ class _RuleSpec:
     param_names: tuple[str, ...] = ()
     include_command: bool = False
     include_fields_set: bool = False
-    predicate: FieldRef | None = None
+    predicate: FieldRef | FieldExpr | None = None
 
     def from_command(self, *sources: FieldRef) -> _RuleSpec:
         if not sources:
@@ -88,7 +106,7 @@ class _RuleSpec:
             predicate=self.predicate,
         )
 
-    def when_present(self, predicate: FieldRef) -> _RuleSpec:
+    def when_present(self, predicate: FieldRef | FieldExpr) -> _RuleSpec:
         return _RuleSpec(
             evaluator=self.evaluator,
             field=self.field,
@@ -106,7 +124,9 @@ class _RuleSpec:
         fields_set: frozenset[str],
         context: dict[str, object] | None = None,
     ) -> None:
-        if self.predicate is not None and not _is_present(command, fields_set, self.predicate):
+        if self.predicate is not None and not _predicate_is_present(
+            command, fields_set, self.predicate
+        ):
             return
 
         args: list[Any] = []
@@ -152,9 +172,9 @@ class _RequirePresentSpec:
     target: FieldRef
     field: str
     message: str
-    predicate: FieldRef | None = None
+    predicate: FieldRef | FieldExpr | None = None
 
-    def when_present(self, predicate: FieldRef) -> _RequirePresentSpec:
+    def when_present(self, predicate: FieldRef | FieldExpr) -> _RequirePresentSpec:
         return _RequirePresentSpec(
             target=self.target,
             field=self.field,
@@ -169,7 +189,9 @@ class _RequirePresentSpec:
         context: dict[str, object] | None = None,
     ) -> None:
         del context
-        if self.predicate is not None and not _is_present(command, fields_set, self.predicate):
+        if self.predicate is not None and not _predicate_is_present(
+            command, fields_set, self.predicate
+        ):
             return
         if not _is_present(command, fields_set, self.target):
             raise RuleViolation(self.field, self.message)

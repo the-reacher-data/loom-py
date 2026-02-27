@@ -16,6 +16,12 @@ class UpdateArticle(Command, frozen=True):
     slug: Computed[str] = ""
 
 
+class UpdateArticleMulti(Command, frozen=True):
+    title: Patch[str | None]
+    subtitle: Patch[str | None]
+    slug: Computed[str] = ""
+
+
 def set_slug(command: CreateArticle, fields_set: frozenset[str]) -> CreateArticle:
     del fields_set
     slug = command.title.lower().replace(" ", "-")
@@ -102,5 +108,19 @@ class TestCompute:
         assert missing_result.slug == ""
 
         provided, fields_set = UpdateArticle.from_payload({"title": "PATCHED"})
+        provided_result = compute(provided, fields_set)
+        assert provided_result.slug == "patched"
+
+    def test_dsl_when_present_supports_or_expression(self) -> None:
+        compute = Compute.set(F(UpdateArticleMulti).slug).from_command(
+            F(UpdateArticleMulti).title,
+            via=normalize_patch_slug,
+        ).when_present(F(UpdateArticleMulti).title | F(UpdateArticleMulti).subtitle)
+
+        missing, _ = UpdateArticleMulti.from_payload({})
+        missing_result = compute(missing, frozenset())
+        assert missing_result.slug == ""
+
+        provided, fields_set = UpdateArticleMulti.from_payload({"title": "PATCHED"})
         provided_result = compute(provided, fields_set)
         assert provided_result.slug == "patched"
