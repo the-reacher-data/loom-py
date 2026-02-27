@@ -29,6 +29,12 @@ def _price_must_be_positive(price: float) -> str | None:
     return None
 
 
+def _normalize_name_with_product_context(name: str | None, _product_id: str) -> str | None:
+    if name is None:
+        return None
+    return _normalize_name(name)
+
+
 CREATE_NORMALIZE_NAME = Compute.set(F(CreateProduct).name).from_fields(
     F(CreateProduct).name, via=_normalize_name
 )
@@ -37,7 +43,8 @@ CREATE_NORMALIZE_PRICE = Compute.set(F(CreateProduct).price).from_fields(
 )
 UPDATE_NORMALIZE_NAME = (
     Compute.set(F(UpdateProduct).name)
-    .from_fields(F(UpdateProduct).name, via=_normalize_name)
+    .from_command(F(UpdateProduct).name, via=_normalize_name_with_product_context)
+    .from_params("product_id")
     .when_present(F(UpdateProduct).name)
 )
 UPDATE_NORMALIZE_PRICE = (
@@ -68,10 +75,17 @@ def _is_system_product_name_update_forbidden(
     return str(product_id) == "1"
 
 
+def _name_cannot_match_price(name: str | None, price: float | None) -> bool:
+    if name is None or price is None:
+        return False
+    return name.strip() == str(price)
+
+
 UPDATE_NOT_EMPTY_RULE = Rule.forbid(
     _patch_payload_is_empty,
     message="at least one field must be provided",
-)
+).from_command()
+
 
 UPDATE_SYSTEM_NAME_IMMUTABLE_RULE = (
     Rule.forbid(
@@ -81,6 +95,16 @@ UPDATE_SYSTEM_NAME_IMMUTABLE_RULE = (
     )
     .from_params("product_id")
     .when_present(F(UpdateProduct).name)
+)
+
+UPDATE_NAME_PRICE_MISMATCH_RULE = (
+    Rule.forbid(
+        _name_cannot_match_price,
+        field=F(UpdateProduct).name,
+        message="name cannot be equal to price",
+    )
+    .from_command(F(UpdateProduct).name, F(UpdateProduct).price)
+    .when_present(F(UpdateProduct).name & F(UpdateProduct).price)
 )
 
 
@@ -109,6 +133,7 @@ class UpdateProductUseCase(UseCase[Product, Product | None]):
         UPDATE_NAME_RULE,
         UPDATE_PRICE_RULE,
         UPDATE_SYSTEM_NAME_IMMUTABLE_RULE,
+        UPDATE_NAME_PRICE_MISMATCH_RULE,
     ]
 
     async def execute(
