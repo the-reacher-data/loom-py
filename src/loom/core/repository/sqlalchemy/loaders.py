@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeAlias
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +11,7 @@ from sqlalchemy.sql.selectable import FromClause
 
 from loom.core.backend.sqlalchemy import get_compiled
 
-TableRef = FromClause | type[Any] | Callable[[], FromClause | type[Any]]
+TableRef: TypeAlias = "FromClause | type[Any] | Callable[[], FromClause | type[Any]]"
 
 
 def _coalesce_table_ref(*, table: TableRef | None, model: type[Any] | None) -> TableRef:

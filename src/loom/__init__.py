@@ -3,7 +3,7 @@
 Exposes top-level namespaces used by docs/autosummary and end users.
 """
 
-from loom import prometheus, rest, testing
+from . import prometheus, rest, testing
 
 __all__ = [
     "prometheus",
