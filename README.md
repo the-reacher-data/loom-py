@@ -1,7 +1,7 @@
 # loom-kernel
 
 [![CI](https://img.shields.io/github/actions/workflow/status/the-reacher-data/loom-py/ci-main.yml?branch=master&label=ci)](https://github.com/the-reacher-data/loom-py/actions/workflows/ci-main.yml)
-[![Coverage](https://codecov.io/gh/the-reacher-data/loom-py/branch/master/graph/badge.svg)](https://codecov.io/gh/the-reacher-data/loom-py)
+[![Coverage](https://codecov.io/gh/the-reacher-data/loom-py/branch/master/graph/badge.svg)](https://app.codecov.io/gh/the-reacher-data/loom-py/tree/master)
 [![PyPI](https://img.shields.io/pypi/v/loom-kernel)](https://pypi.org/project/loom-kernel/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/the-reacher-data/loom-py/blob/master/pyproject.toml)
 
@@ -35,13 +35,12 @@ infrastructure (DB, cache, transport) without breaking business logic.
 
 ## Quick example
 
+### Case 1: Configurable write use case (rules + computes)
+
 ```python
 from loom.core.command import Command, Patch
-from loom.core.errors import RuleViolation
 from loom.core.model import BaseModel, ColumnField
 from loom.core.use_case import Compute, F, Input, Rule, UseCase
-from loom.rest.fastapi.auto import create_app
-from loom.rest.model import RestInterface, RestRoute
 
 
 class CreateProduct(Command, frozen=True):
@@ -64,10 +63,6 @@ class Product(BaseModel):
 
 def normalize_text(value: str) -> str:
     return value.strip()
-
-
-def normalize_price(value: float) -> float:
-    return round(float(value), 2)
 
 
 def price_positive_error(value: float) -> str | None:
@@ -95,21 +90,10 @@ normalize_create_name = Compute.set(F(CreateProduct).name).from_command(
     via=normalize_text,
 )
 
-normalize_create_price = Compute.set(F(CreateProduct).price).from_command(
-    F(CreateProduct).price,
-    via=normalize_price,
-)
-
 normalize_update_name = (
     Compute.set(F(UpdateProduct).name)
     .from_command(F(UpdateProduct).name, via=normalize_text)
     .when_present(F(UpdateProduct).name)
-)
-
-normalize_update_price = (
-    Compute.set(F(UpdateProduct).price)
-    .from_command(F(UpdateProduct).price, via=normalize_price)
-    .when_present(F(UpdateProduct).price)
 )
 
 create_price_rule = Rule.check(
@@ -148,7 +132,7 @@ update_price_rule = Rule.check(
 
 
 class CreateProductUseCase(UseCase[Product, Product]):
-    computes = (normalize_create_name, normalize_create_price)
+    computes = (normalize_create_name,)
     rules = (create_price_rule,)
 
     async def execute(self, cmd: CreateProduct = Input()) -> Product:
@@ -156,7 +140,7 @@ class CreateProductUseCase(UseCase[Product, Product]):
 
 
 class UpdateProductUseCase(UseCase[Product, Product | None]):
-    computes = (normalize_update_name, normalize_update_price)
+    computes = (normalize_update_name,)
     rules = (
         update_not_empty_rule,
         update_system_name_immutable_rule,
@@ -167,32 +151,35 @@ class UpdateProductUseCase(UseCase[Product, Product | None]):
     async def execute(self, product_id: str, cmd: UpdateProduct = Input()) -> Product | None:
         # product_id is available to rules via .from_params("product_id")
         return await self.main_repo.update(int(product_id), cmd)
+```
+
+### Case 2: Real AutoCRUD interface (no extra boilerplate)
+
+```python
+from loom.core.model import BaseModel, ColumnField
+from loom.core.use_case.autocrud import AutoCrud
+from loom.rest.model import RestInterface
 
 
-class ProductRestInterface(RestInterface[Product]):
+class Product(BaseModel):
+    __tablename__ = "products"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=120)
+    price: float = ColumnField()
+
+
+class ProductApi(RestInterface[Product]):
     prefix = "/products"
     tags = ("Products",)
     profile_default = "default"
-    routes = (
-        RestRoute(
-            use_case=CreateProductUseCase,
-            method="POST",
-            path="/",
-            status_code=201,
-        ),
-        RestRoute(
-            use_case=UpdateProductUseCase,
-            method="PATCH",
-            path="/{product_id}",
-        ),
-    )
-
-
-# Auto app bootstrap from YAML config + discovery
-app = create_app(config_path="config/conf.yaml", code_path="src")
+    autocrud = AutoCrud.create()
 ```
 
-This example shows:
+This README includes both styles:
+- configurable write use cases when you need explicit business flow;
+- real AutoCRUD when you want a full API surface with minimal code.
+
+The configurable case shows:
 - `Compute.from_command(...)` for deterministic data normalization.
 - `Rule.check(...)` for field validation returning a message.
 - `Rule.forbid(...).from_command()` for full-command checks.
