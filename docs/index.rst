@@ -9,6 +9,7 @@ repository contracts, and transport adapters.
    :caption: Guides
 
    guides/quickstart
+   guides/use-case-dsl
    guides/fake-repo-examples
    guides/autocrud
 
