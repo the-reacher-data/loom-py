@@ -151,8 +151,6 @@ class _RuleSpec:
             raise result
         if isinstance(result, str):
             raise RuleViolation(self._resolved_field(command), result)
-        if result is False:
-            raise RuleViolation(self._resolved_field(command), self._resolved_message())
         if result is True:
             raise RuleViolation(self._resolved_field(command), self._resolved_message())
 
