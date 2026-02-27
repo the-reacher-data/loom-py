@@ -166,74 +166,35 @@ class UseCaseCompiler:
         _variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
 
         for name, param in sig.parameters.items():
-            if name == "self":
-                continue
-            if param.kind in _variadic:
+            if self._should_skip_parameter(name, param):
                 continue
 
             default = param.default
             annotation = hints.get(name, Any)
 
             if isinstance(default, _InputMarker):
-                input_count += 1
-                if input_count > 1:
-                    raise CompilationError(
-                        f"{use_case_type.__qualname__}.execute: "
-                        "only one Input() parameter is allowed"
-                    )
-                input_binding = InputBinding(name=name, command_type=annotation)
-                cmd_name = getattr(annotation, "__name__", repr(annotation))
-                self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")
+                input_binding, input_count = self._handle_input_marker(
+                    use_case_type=use_case_type,
+                    name=name,
+                    annotation=annotation,
+                    input_binding=input_binding,
+                    input_count=input_count,
+                )
 
             elif isinstance(default, _LoadByIdMarker):
-                ls = LoadStep(
-                    name=name,
-                    entity_type=default.entity_type,
-                    source_kind=SourceKind.PARAM,
-                    source_name=default.by,
-                    lookup_kind=LookupKind.BY_ID,
-                    against="id",
-                    profile=default.profile,
-                    on_missing=default.on_missing,
-                )
+                ls = self._build_load_by_id_step(name, default)
                 load_steps.append(ls)
-                self._logger.info(
-                    f"[BOOT]  - Detected LoadById: {default.entity_type.__name__} by {default.by}"
-                )
+                self._log_load_by_id(default)
 
             elif isinstance(default, _LoadMarker):
-                ls = LoadStep(
-                    name=name,
-                    entity_type=default.entity_type,
-                    source_kind=default.from_kind,
-                    source_name=default.from_name,
-                    lookup_kind=LookupKind.BY_FIELD,
-                    against=default.against,
-                    profile=default.profile,
-                    on_missing=default.on_missing,
-                )
+                ls = self._build_load_step(name, default)
                 load_steps.append(ls)
-                src = f"{default.from_kind.value}:{default.from_name}"
-                self._logger.info(
-                    "[BOOT]  - Detected Load: "
-                    f"{default.entity_type.__name__} {default.against} <- {src}"
-                )
+                self._log_load(default)
 
             elif isinstance(default, _ExistsMarker):
-                es = ExistsStep(
-                    name=name,
-                    entity_type=default.entity_type,
-                    source_kind=default.from_kind,
-                    source_name=default.from_name,
-                    against=default.against,
-                    on_missing=default.on_missing,
-                )
+                es = self._build_exists_step(name, default)
                 exists_steps.append(es)
-                src = f"{default.from_kind.value}:{default.from_name}"
-                self._logger.info(
-                    "[BOOT]  - Detected Exists: "
-                    f"{default.entity_type.__name__} {default.against} <- {src}"
-                )
+                self._log_exists(default)
 
             else:
                 param_bindings.append(ParamBinding(name=name, annotation=annotation))
@@ -246,6 +207,87 @@ class UseCaseCompiler:
             exists_steps,
         )
         return param_bindings, input_binding, load_steps, exists_steps
+
+    @staticmethod
+    def _should_skip_parameter(name: str, param: inspect.Parameter) -> bool:
+        variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        return name == "self" or param.kind in variadic
+
+    def _handle_input_marker(
+        self,
+        *,
+        use_case_type: type[UseCase[Any, Any]],
+        name: str,
+        annotation: Any,
+        input_binding: InputBinding | None,
+        input_count: int,
+    ) -> tuple[InputBinding, int]:
+        next_count = input_count + 1
+        if next_count > 1:
+            raise CompilationError(
+                f"{use_case_type.__qualname__}.execute: "
+                "only one Input() parameter is allowed"
+            )
+        next_binding = InputBinding(name=name, command_type=annotation)
+        cmd_name = getattr(annotation, "__name__", repr(annotation))
+        self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")
+        return next_binding, next_count
+
+    @staticmethod
+    def _build_load_by_id_step(name: str, marker: _LoadByIdMarker[Any]) -> LoadStep:
+        return LoadStep(
+            name=name,
+            entity_type=marker.entity_type,
+            source_kind=SourceKind.PARAM,
+            source_name=marker.by,
+            lookup_kind=LookupKind.BY_ID,
+            against="id",
+            profile=marker.profile,
+            on_missing=marker.on_missing,
+        )
+
+    @staticmethod
+    def _build_load_step(name: str, marker: _LoadMarker[Any]) -> LoadStep:
+        return LoadStep(
+            name=name,
+            entity_type=marker.entity_type,
+            source_kind=marker.from_kind,
+            source_name=marker.from_name,
+            lookup_kind=LookupKind.BY_FIELD,
+            against=marker.against,
+            profile=marker.profile,
+            on_missing=marker.on_missing,
+        )
+
+    @staticmethod
+    def _build_exists_step(name: str, marker: _ExistsMarker[Any]) -> ExistsStep:
+        return ExistsStep(
+            name=name,
+            entity_type=marker.entity_type,
+            source_kind=marker.from_kind,
+            source_name=marker.from_name,
+            against=marker.against,
+            on_missing=marker.on_missing,
+        )
+
+    def _log_load_by_id(self, marker: _LoadByIdMarker[Any]) -> None:
+        self._logger.info(
+            f"[BOOT]  - Detected LoadById: {marker.entity_type.__name__} by {marker.by}"
+        )
+
+    def _log_load(self, marker: _LoadMarker[Any]) -> None:
+        src = f"{marker.from_kind.value}:{marker.from_name}"
+        self._logger.info(
+            "[BOOT]  - Detected Load: "
+            f"{marker.entity_type.__name__} {marker.against} <- {src}"
+        )
+
+    def _log_exists(self, marker: _ExistsMarker[Any]) -> None:
+        src = f"{marker.from_kind.value}:{marker.from_name}"
+        self._logger.info(
+            "[BOOT]  - Detected Exists: "
+            f"{marker.entity_type.__name__} {marker.against} <- {src}"
+        )
 
     def _validate_marker_refs(
         self,
