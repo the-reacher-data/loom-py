@@ -31,12 +31,24 @@ jobs:
           fail-on-security: "high"
           include-security: "true"
 
+      - name: Run pytest with coverage and JUnit output
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --with pytest-cov pytest --cov --junitxml=junit.xml -o junit_family=legacy
+
       - name: Upload coverage to Codecov
         if: ${{ hashFiles('coverage.xml') != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && hashFiles('junit.xml') != '' }}
+        uses: codecov/test-results-action@v1
+        with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Snyk dependency monitor
