@@ -3,9 +3,8 @@
 Exposes top-level namespaces used by docs/autosummary and end users.
 """
 
-from . import prometheus, rest, testing
-
 __all__ = [
+    "core",
     "prometheus",
     "rest",
     "testing",

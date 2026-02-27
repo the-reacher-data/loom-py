@@ -39,6 +39,11 @@ jobs:
         run: |
           set -euo pipefail
           uv run \
+            --extra fastapi \
+            --extra sqlalchemy \
+            --extra cache \
+            --extra config \
+            --extra prometheus \
             --with 'sphinx>=8.0' \
             --with 'furo>=2024.8.6' \
             --with 'myst-parser>=3.0' \
