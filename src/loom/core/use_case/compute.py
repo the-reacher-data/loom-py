@@ -153,20 +153,12 @@ class _ComputeSetBuilder:
             via=via,
         )
 
-    def from_fields(
-        self,
-        *sources: FieldRef,
-        via: Callable[..., Any] | None = None,
-    ) -> _ComputeSpec:
-        """Backward-compatible alias for from_command(...)."""
-        return self.from_command(*sources, via=via)
-
 
 class Compute:
     """Compute DSL namespace.
 
     Example:
-        ``Compute.set(F(UpdateUser).slug).from_fields(F(UpdateUser).name, via=slugify)``
+        ``Compute.set(F(UpdateUser).slug).from_command(F(UpdateUser).name, via=slugify)``
     """
 
     @staticmethod

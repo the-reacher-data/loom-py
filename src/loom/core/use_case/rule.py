@@ -161,6 +161,10 @@ class _RuleSpec:
             return self.field
         if self.command_sources:
             return self.command_sources[0].leaf
+        if self.param_names:
+            return self.param_names[0]
+        if isinstance(self.predicate, FieldRef):
+            return self.predicate.leaf
         return type(command).__name__
 
     def _resolved_message(self) -> str:
@@ -219,13 +223,10 @@ class Rule:
     def forbid(
         condition: Callable[..., bool],
         *,
-        field: str | FieldRef | None = None,
         message: str,
     ) -> RuleFn:
-        resolved_field = field.leaf if isinstance(field, FieldRef) else field
         return _RuleSpec(
             evaluator=condition,
-            field=resolved_field,
             message=message,
             include_command=True,
             include_fields_set=True,

@@ -35,10 +35,10 @@ def _normalize_name_with_product_context(name: str | None, _product_id: str) -> 
     return _normalize_name(name)
 
 
-CREATE_NORMALIZE_NAME = Compute.set(F(CreateProduct).name).from_fields(
+CREATE_NORMALIZE_NAME = Compute.set(F(CreateProduct).name).from_command(
     F(CreateProduct).name, via=_normalize_name
 )
-CREATE_NORMALIZE_PRICE = Compute.set(F(CreateProduct).price).from_fields(
+CREATE_NORMALIZE_PRICE = Compute.set(F(CreateProduct).price).from_command(
     F(CreateProduct).price, via=_normalize_price
 )
 UPDATE_NORMALIZE_NAME = (
@@ -49,7 +49,7 @@ UPDATE_NORMALIZE_NAME = (
 )
 UPDATE_NORMALIZE_PRICE = (
     Compute.set(F(UpdateProduct).price)
-    .from_fields(F(UpdateProduct).price, via=_normalize_price)
+    .from_command(F(UpdateProduct).price, via=_normalize_price)
     .when_present(F(UpdateProduct).price)
 )
 
@@ -90,9 +90,9 @@ UPDATE_NOT_EMPTY_RULE = Rule.forbid(
 UPDATE_SYSTEM_NAME_IMMUTABLE_RULE = (
     Rule.forbid(
         _is_system_product_name_update_forbidden,
-        field=F(UpdateProduct).name,
         message="system product name cannot be changed",
     )
+    .from_command(F(UpdateProduct).name)
     .from_params("product_id")
     .when_present(F(UpdateProduct).name)
 )
@@ -100,7 +100,6 @@ UPDATE_SYSTEM_NAME_IMMUTABLE_RULE = (
 UPDATE_NAME_PRICE_MISMATCH_RULE = (
     Rule.forbid(
         _name_cannot_match_price,
-        field=F(UpdateProduct).name,
         message="name cannot be equal to price",
     )
     .from_command(F(UpdateProduct).name, F(UpdateProduct).price)

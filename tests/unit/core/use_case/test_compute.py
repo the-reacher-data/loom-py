@@ -83,7 +83,7 @@ class TestCompute:
         assert result.slug == "Hello-v2"
 
     def test_dsl_assigns_via_callable(self) -> None:
-        compute = Compute.set(F(CreateArticle).slug).from_fields(
+        compute = Compute.set(F(CreateArticle).slug).from_command(
             F(CreateArticle).title,
             via=lambda title: str(title).lower().replace(" ", "-"),
         )
@@ -96,7 +96,7 @@ class TestCompute:
     def test_dsl_when_present_respects_patch_fields_set(self) -> None:
         compute = (
             Compute.set(F(UpdateArticle).slug)
-            .from_fields(
+            .from_command(
                 F(UpdateArticle).title,
                 via=normalize_patch_slug,
             )

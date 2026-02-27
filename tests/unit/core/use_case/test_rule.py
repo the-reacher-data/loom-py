@@ -153,7 +153,6 @@ class TestRuleDsl:
     def test_forbid_blocks_condition(self) -> None:
         rule = Rule.forbid(
             is_disposable,
-            field="email",
             message="Disposable emails not allowed",
         )
 
@@ -166,7 +165,6 @@ class TestRuleDsl:
     def test_forbid_from_params_uses_runtime_context(self) -> None:
         rule = Rule.forbid(
             forbid_user_one,
-            field="user_id",
             message="user id is blocked",
         ).from_params("user_id")
 
@@ -182,7 +180,6 @@ class TestRuleDsl:
     def test_forbid_from_params_missing_context_raises(self) -> None:
         rule = Rule.forbid(
             forbid_user_one,
-            field="user_id",
             message="user id is blocked",
         ).from_params("user_id")
 

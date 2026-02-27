@@ -102,7 +102,7 @@ def _price_must_be_positive(price: float) -> str | None:
     return None
 
 
-NORMALIZE_NAME = Compute.set(F(CreateProductWithRulesCmd).name).from_fields(
+NORMALIZE_NAME = Compute.set(F(CreateProductWithRulesCmd).name).from_command(
     F(CreateProductWithRulesCmd).name,
     via=_normalize_product_name,
 )
