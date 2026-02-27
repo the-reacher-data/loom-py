@@ -11,8 +11,8 @@ from tests.integration.fake_repo.main import create_app_from_config
 @mark.parametrize(
     "config_relpath",
     [
-        "examples/fake_repo/src/config/conf.modules.yaml",
-        "examples/fake_repo/src/config/conf.manifest.yaml",
+        "tests/integration/fake_repo/src/config/conf.modules.yaml",
+        "tests/integration/fake_repo/src/config/conf.manifest.yaml",
     ],
 )
 def test_fake_repo_app_bootstrap_without_metrics(
@@ -78,7 +78,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
     database_url = f"sqlite+aiosqlite:///{db_path}"
     monkeypatch.setenv("LOOM_TEST_DATABASE_URL", database_url)
 
-    config_path = Path("examples/fake_repo/src/config/conf.interfaces.yaml")
+    config_path = Path("tests/integration/fake_repo/src/config/conf.interfaces.yaml")
     app = create_app_from_config(str(config_path))
 
     with TestClient(app) as client:
@@ -127,8 +127,8 @@ def test_fake_repo_app_bootstrap_with_metrics(
 @mark.parametrize(
     "config_relpath",
     [
-        "examples/fake_repo/src/config/conf.modules.yaml",
-        "examples/fake_repo/src/config/conf.manifest.yaml",
+        "tests/integration/fake_repo/src/config/conf.modules.yaml",
+        "tests/integration/fake_repo/src/config/conf.manifest.yaml",
     ],
 )
 def test_fake_repo_list_query_cursor_and_profile_controls(
