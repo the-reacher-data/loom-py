@@ -8,7 +8,7 @@ import msgspec
 
 from loom.core.command.base import Command
 from loom.core.command.introspection import get_patch_fields
-from loom.core.use_case.field_ref import FieldExpr, FieldRef
+from loom.core.use_case.field_ref import FieldExpr, FieldRef, PredicateOp
 
 CommandT = TypeVar("CommandT", bound=Command)
 
@@ -40,11 +40,11 @@ def _predicate_is_present(
 ) -> bool:
     if isinstance(predicate, FieldRef):
         return _is_present(command, fields_set, predicate)
-    if predicate.op == "or":
+    if predicate.op is PredicateOp.OR:
         return _predicate_is_present(command, fields_set, predicate.left) or _predicate_is_present(
             command, fields_set, predicate.right
         )
-    if predicate.op == "and":
+    if predicate.op is PredicateOp.AND:
         return _predicate_is_present(command, fields_set, predicate.left) and _predicate_is_present(
             command, fields_set, predicate.right
         )
