@@ -1,9 +1,9 @@
 # loom-kernel
 
 [![CI](https://img.shields.io/github/actions/workflow/status/the-reacher-data/loom-py/ci-main.yml?branch=master&label=ci)](https://github.com/the-reacher-data/loom-py/actions/workflows/ci-main.yml)
-[![Coverage](https://img.shields.io/codecov/c/github/the-reacher-data/loom-py?branch=master)](https://app.codecov.io/gh/the-reacher-data/loom-py)
+[![Coverage](https://codecov.io/gh/the-reacher-data/loom-py/branch/master/graph/badge.svg)](https://codecov.io/gh/the-reacher-data/loom-py)
 [![PyPI](https://img.shields.io/pypi/v/loom-kernel)](https://pypi.org/project/loom-kernel/)
-[![Python](https://img.shields.io/pypi/pyversions/loom-kernel)](https://pypi.org/project/loom-kernel/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/the-reacher-data/loom-py/blob/master/pyproject.toml)
 
 Framework-agnostic Python toolkit to build backend applications with:
 
@@ -39,7 +39,7 @@ infrastructure (DB, cache, transport) without breaking business logic.
 from loom.core.command import Command, Patch
 from loom.core.errors import RuleViolation
 from loom.core.model import BaseModel, ColumnField
-from loom.core.use_case import Compute, F, Input, UseCase
+from loom.core.use_case import Compute, F, Input, Rule, UseCase
 from loom.rest.fastapi.auto import create_app
 from loom.rest.model import RestInterface, RestRoute
 
@@ -66,41 +66,106 @@ def normalize_text(value: str) -> str:
     return value.strip()
 
 
-def validate_create_price(cmd: CreateProduct, _: frozenset[str]) -> None:
-    if cmd.price <= 0:
-        raise RuleViolation(field="price", message="price must be greater than zero")
+def normalize_price(value: float) -> float:
+    return round(float(value), 2)
 
 
-def validate_update_price(cmd: UpdateProduct, fields: frozenset[str]) -> None:
-    # For Patch fields, validate only when the field was actually sent by caller.
-    if "price" in fields and cmd.price is not None and cmd.price <= 0:
-        raise RuleViolation(field="price", message="price must be greater than zero")
+def price_positive_error(value: float) -> str | None:
+    if value <= 0:
+        return "price must be greater than zero"
+    return None
 
 
-normalize_create_name = Compute.set(F(CreateProduct).name).from_fields(
+def patch_is_empty(_cmd: UpdateProduct, fields_set: frozenset[str]) -> bool:
+    return len(fields_set) == 0
+
+
+def system_name_change_forbidden(name: str | None, product_id: str) -> bool:
+    return product_id == "1" and name is not None
+
+
+def name_matches_price(name: str | None, price: float | None) -> bool:
+    if name is None or price is None:
+        return False
+    return name.strip() == str(price)
+
+
+normalize_create_name = Compute.set(F(CreateProduct).name).from_command(
     F(CreateProduct).name,
     via=normalize_text,
-).when_present(F(CreateProduct).name)
+)
 
-normalize_update_name = Compute.set(F(UpdateProduct).name).from_fields(
-    F(UpdateProduct).name,
-    via=normalize_text,
-).when_present(F(UpdateProduct).name)
+normalize_create_price = Compute.set(F(CreateProduct).price).from_command(
+    F(CreateProduct).price,
+    via=normalize_price,
+)
+
+normalize_update_name = (
+    Compute.set(F(UpdateProduct).name)
+    .from_command(F(UpdateProduct).name, via=normalize_text)
+    .when_present(F(UpdateProduct).name)
+)
+
+normalize_update_price = (
+    Compute.set(F(UpdateProduct).price)
+    .from_command(F(UpdateProduct).price, via=normalize_price)
+    .when_present(F(UpdateProduct).price)
+)
+
+create_price_rule = Rule.check(
+    F(CreateProduct).price,
+    via=price_positive_error,
+)
+
+update_not_empty_rule = Rule.forbid(
+    patch_is_empty,
+    message="at least one field must be provided",
+).from_command()
+
+update_system_name_immutable_rule = (
+    Rule.forbid(
+        system_name_change_forbidden,
+        message="system product name cannot be changed",
+    )
+    .from_command(F(UpdateProduct).name)
+    .from_params("product_id")
+    .when_present(F(UpdateProduct).name)
+)
+
+update_name_price_rule = (
+    Rule.forbid(
+        name_matches_price,
+        message="name cannot be equal to price",
+    )
+    .from_command(F(UpdateProduct).name, F(UpdateProduct).price)
+    .when_present(F(UpdateProduct).name & F(UpdateProduct).price)
+)
+
+update_price_rule = Rule.check(
+    F(UpdateProduct).price,
+    via=price_positive_error,
+).when_present(F(UpdateProduct).price)
 
 
 class CreateProductUseCase(UseCase[Product, Product]):
-    computes = (normalize_create_name,)
-    rules = (validate_create_price,)
+    computes = (normalize_create_name, normalize_create_price)
+    rules = (create_price_rule,)
 
     async def execute(self, cmd: CreateProduct = Input()) -> Product:
         return await self.main_repo.create(cmd)
 
 
 class UpdateProductUseCase(UseCase[Product, Product | None]):
-    computes = (normalize_update_name,)
-    rules = (validate_update_price,)
+    computes = (normalize_update_name, normalize_update_price)
+    rules = (
+        update_not_empty_rule,
+        update_system_name_immutable_rule,
+        update_name_price_rule,
+        update_price_rule,
+    )
 
     async def execute(self, product_id: str, cmd: UpdateProduct = Input()) -> Product | None:
+        # product_id is available to rules via .from_params("product_id")
         return await self.main_repo.update(int(product_id), cmd)
 
 
@@ -126,6 +191,13 @@ class ProductRestInterface(RestInterface[Product]):
 # Auto app bootstrap from YAML config + discovery
 app = create_app(config_path="config/conf.yaml", code_path="src")
 ```
+
+This example shows:
+- `Compute.from_command(...)` for deterministic data normalization.
+- `Rule.check(...)` for field validation returning a message.
+- `Rule.forbid(...).from_command()` for full-command checks.
+- `Rule.forbid(...).from_params(...)` to use execute parameters (for example `product_id`).
+- `.when_present(...)` to run patch-aware logic only when selected fields are present.
 
 With this setup, the framework can bootstrap a complete HTTP app
 (routes, dependency wiring, and runtime execution) from your interfaces,
