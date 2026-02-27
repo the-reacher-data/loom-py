@@ -68,12 +68,18 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
+    "Exists",
     "Input",
     "Load",
+    "LoadById",
+    "loom.core.use_case.Exists",
     "loom.core.use_case.Input",
     "loom.core.use_case.Load",
+    "loom.core.use_case.LoadById",
+    "loom.core.use_case.markers.Exists",
     "loom.core.use_case.markers.Input",
     "loom.core.use_case.markers.Load",
+    "loom.core.use_case.markers.LoadById",
 ]
 
 [tool.mypy]

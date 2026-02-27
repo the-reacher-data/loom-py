@@ -225,7 +225,7 @@ class TestExecutorUsesNotFound:
 
         from loom.core.engine.compiler import UseCaseCompiler
         from loom.core.engine.executor import RuntimeExecutor
-        from loom.core.use_case.markers import Load
+        from loom.core.use_case.markers import LoadById
         from loom.core.use_case.use_case import UseCase
 
         class _Entity:
@@ -235,7 +235,7 @@ class TestExecutorUsesNotFound:
             async def execute(
                 self,
                 eid: int,
-                entity: _Entity = Load(_Entity, by="eid"),
+                entity: _Entity = LoadById(_Entity, by="eid"),
             ) -> None:
                 pass
 

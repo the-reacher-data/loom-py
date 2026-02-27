@@ -263,6 +263,38 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
                 self._to_output(obj, profile=profile, projection_values=pv.get(0)),
             )
 
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> OutputT | None:
+        """Fetch one entity by equality over an arbitrary column field."""
+        async with self._session_scope() as scoped_session:
+            sa_model = self._effective_sa_model
+            if not hasattr(sa_model, field):
+                raise ValueError(f"Unknown field '{field}' for model '{self.model.__name__}'")
+
+            options = self._get_profile_options(profile)
+            stmt = select(sa_model).where(getattr(sa_model, field) == value).limit(1)
+            if options:
+                stmt = stmt.options(*options).execution_options(populate_existing=True)
+
+            result = await scoped_session.execute(stmt)
+            obj = result.scalar_one_or_none()
+            if obj is None:
+                return None
+
+            pv = await self._collect_projection_values(
+                scoped_session,
+                [obj],
+                profile,
+            )
+            return cast(
+                OutputT,
+                self._to_output(obj, profile=profile, projection_values=pv.get(0)),
+            )
+
     async def list_paginated(
         self,
         page_params: PageParams,
@@ -369,8 +401,16 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
 
     async def exists(self, obj_id: IdT) -> bool:
         """Check whether an entity exists by id."""
+        return await self.exists_by(self._effective_id_attribute, obj_id)
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        """Check whether an entity exists by an arbitrary column field."""
         async with self._session_scope() as scoped_session:
-            stmt = select(exists().where(self._id_column() == obj_id))
+            sa_model = self._effective_sa_model
+            if not hasattr(sa_model, field):
+                raise ValueError(f"Unknown field '{field}' for model '{self.model.__name__}'")
+
+            stmt = select(exists().where(getattr(sa_model, field) == value))
             result = await scoped_session.execute(stmt)
             return bool(result.scalar())
 

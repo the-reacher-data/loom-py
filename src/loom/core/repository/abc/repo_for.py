@@ -21,6 +21,19 @@ class RepoFor(Protocol[ModelT]):
         """Fetch one entity by id."""
         ...
 
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> ModelT | None:
+        """Fetch one entity by arbitrary field."""
+        ...
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        """Check whether any entity exists matching ``field == value``."""
+        ...
+
     async def list_paginated(
         self,
         page_params: PageParams,

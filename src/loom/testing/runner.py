@@ -93,7 +93,7 @@ class UseCaseTest(Generic[ResultT]):
         """Pre-load an entity, bypassing repository calls for this type.
 
         Args:
-            entity_type: The entity class used in the ``Load()`` marker.
+            entity_type: The entity class used in the ``LoadById()`` marker.
             entity: The pre-loaded entity instance.
 
         Returns:
@@ -105,11 +105,11 @@ class UseCaseTest(Generic[ResultT]):
     def with_deps(self, entity_type: type[Any], repo: Any) -> UseCaseTest[ResultT]:
         """Register a repository for a given entity type.
 
-        Used when the UseCase has ``Load()`` steps that require a repo.
+        Used when the UseCase has ``LoadById()`` steps that require a repo.
         ``with_loaded`` takes precedence over ``with_deps`` for the same type.
 
         Args:
-            entity_type: The entity class used in the ``Load()`` marker.
+            entity_type: The entity class used in the ``LoadById()`` marker.
             repo: Repository implementing ``get_by_id``.
 
         Returns:

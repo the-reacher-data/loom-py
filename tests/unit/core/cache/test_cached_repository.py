@@ -182,6 +182,28 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
         self.get_calls += 1
         return self.storage.get(obj_id)
 
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> _EntityOut | None:
+        _ = profile
+        if field == "id":
+            candidate = self.storage.get(int(value))
+            self.get_calls += 1
+            return candidate
+        if field == "name":
+            self.get_calls += 1
+            for item in self.storage.values():
+                if item.name == value:
+                    return item
+            return None
+        raise ValueError(f"unsupported field: {field}")
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        return await self.get_by(field, value) is not None
+
     async def list_paginated(
         self,
         page_params: PageParams,

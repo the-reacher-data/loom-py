@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import msgspec
 
@@ -31,6 +31,28 @@ class RepositoryRead(Protocol[OutputT, IdT]):
         Returns:
             The entity output struct, or ``None`` if not found.
         """
+        ...
+
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> OutputT | None:
+        """Fetch a single entity by an arbitrary field.
+
+        Args:
+            field: Entity field name used in the equality lookup.
+            value: Value to compare against.
+            profile: Loading profile name for eager-load options.
+
+        Returns:
+            The entity output struct, or ``None`` if not found.
+        """
+        ...
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        """Check whether any entity exists matching ``field == value``."""
         ...
 
     async def list_paginated(

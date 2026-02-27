@@ -19,7 +19,7 @@ class AdapterRequest:
         payload: Raw dict for command construction via ``Input()``. ``None``
             when the UseCase declares no ``Input()`` marker.
         dependencies: Mapping of entity type to repository instance. Populated
-            by the DI container at request scope. Empty dict when no ``Load()``
+            by the DI container at request scope. Empty dict when no ``LoadById()``
             steps are declared.
 
     Example::

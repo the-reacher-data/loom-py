@@ -172,7 +172,7 @@ async def test_active_uow_reset_after_failed_execution() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4.5 — Load with profile
+# 4.5 — LoadById with profile
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +183,7 @@ class _EntityUC(UseCase[Any, str]):
 
 @pytest.mark.asyncio
 async def test_load_default_profile_passed_to_repo() -> None:
-    from loom.core.use_case.markers import Load
+    from loom.core.use_case.markers import LoadById
     from loom.core.use_case.use_case import UseCase
 
     class MyEntity:
@@ -193,7 +193,7 @@ async def test_load_default_profile_passed_to_repo() -> None:
         async def execute(
             self,
             entity_id: str,
-            entity: MyEntity = Load(MyEntity, by="entity_id"),
+            entity: MyEntity = LoadById(MyEntity, by="entity_id"),
         ) -> str:
             return "ok"
 
@@ -212,7 +212,7 @@ async def test_load_default_profile_passed_to_repo() -> None:
 
 @pytest.mark.asyncio
 async def test_load_custom_profile_passed_to_repo() -> None:
-    from loom.core.use_case.markers import Load
+    from loom.core.use_case.markers import LoadById
     from loom.core.use_case.use_case import UseCase
 
     class MyEntity:
@@ -222,7 +222,7 @@ async def test_load_custom_profile_passed_to_repo() -> None:
         async def execute(
             self,
             entity_id: str,
-            entity: MyEntity = Load(MyEntity, by="entity_id", profile="detail"),
+            entity: MyEntity = LoadById(MyEntity, by="entity_id", profile="detail"),
         ) -> str:
             return "ok"
 
