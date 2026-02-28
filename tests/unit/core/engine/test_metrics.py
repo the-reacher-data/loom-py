@@ -10,7 +10,7 @@ from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import NotFound
-from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.markers import Input, LoadById
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 
@@ -64,7 +64,7 @@ class _LoadUseCase(UseCase[Any, str]):
     async def execute(
         self,
         eid: int,
-        entity: Entity = Load(Entity, by="eid"),
+        entity: Entity = LoadById(Entity, by="eid"),
     ) -> str:
         return "ok"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from prometheus_client import CollectorRegistry
 
 from loom.core.engine.events import EventKind, RuntimeEvent
@@ -41,7 +42,7 @@ class TestExecDone:
             "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "success"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
     def test_observes_duration_histogram(self) -> None:
         adapter, registry = _adapter()
@@ -57,7 +58,7 @@ class TestExecDone:
             "loom_usecase_duration_seconds_count",
             {"usecase": "GetOrder"},
         )
-        assert count == 1.0
+        assert count == pytest.approx(1.0)
 
     def test_noop_when_duration_none(self) -> None:
         adapter, registry = _adapter()
@@ -73,7 +74,7 @@ class TestExecDone:
             "loom_usecase_duration_seconds_count",
             {"usecase": "GetOrder"},
         )
-        assert count == 0.0
+        assert count == pytest.approx(0.0)
 
 
 class TestExecError:
@@ -92,7 +93,7 @@ class TestExecError:
             "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "rule_failure"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
     def test_increments_errors_total_by_error_kind(self) -> None:
         adapter, registry = _adapter()
@@ -109,7 +110,7 @@ class TestExecError:
             "loom_usecase_errors_total",
             {"usecase": "CreateOrder", "error_kind": "ValueError"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
     def test_error_kind_unknown_when_error_none(self) -> None:
         adapter, registry = _adapter()
@@ -125,7 +126,7 @@ class TestExecError:
             "loom_usecase_errors_total",
             {"usecase": "X", "error_kind": "unknown"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
 
 class TestExecStart:
@@ -143,4 +144,4 @@ class TestExecStart:
             "loom_usecase_requests_total",
             {"usecase": "CreateOrder", "status": "success"},
         )
-        assert val == 0.0
+        assert val == pytest.approx(0.0)

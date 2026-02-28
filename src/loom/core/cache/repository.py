@@ -84,6 +84,30 @@ class CachedRepository(
         await self._cache.set_value(key, self._to_builtins(loaded), ttl=ttl)
         return loaded
 
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> OutputT | None:
+        """Fetch one entity by arbitrary field.
+
+        This path intentionally delegates to the wrapped repository without
+        cache-aside behavior for now. Field-based lookups can target mutable
+        columns and the cache invalidation surface is broader than id-based
+        access; keeping it uncached preserves correctness while the lookup
+        cache policy is designed explicitly.
+        """
+        return await self._repository.get_by(field, value, profile=profile)
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        """Check existence by arbitrary field.
+
+        Existence checks are delegated directly to the wrapped repository to
+        avoid stale negative/positive cache entries on mutable fields.
+        """
+        return await self._repository.exists_by(field, value)
+
     async def list_paginated(
         self,
         page_params: PageParams,
@@ -462,10 +486,7 @@ class CachedRepository(
             "limit": query.limit,
             "page": query.page,
             "cursor": query.cursor,
-            "sort": [
-                {"field": sort.field, "direction": sort.direction}
-                for sort in query.sort
-            ],
+            "sort": [{"field": sort.field, "direction": sort.direction} for sort in query.sort],
             "filters": self._serialize_filter_group(query.filters),
         }
 

@@ -67,18 +67,34 @@ def serialize_plan(plan: ExecutionPlan) -> dict[str, Any]:
     )
     load_steps = [
         {
-            "by": ls.by,
+            "against": ls.against,
             "entity_type": _qname(ls.entity_type),
+            "lookup_kind": ls.lookup_kind.value,
             "name": ls.name,
+            "on_missing": ls.on_missing.value,
             "profile": ls.profile,
+            "source_kind": ls.source_kind.value,
+            "source_name": ls.source_name,
         }
         for ls in plan.load_steps
+    ]
+    exists_steps = [
+        {
+            "against": es.against,
+            "entity_type": _qname(es.entity_type),
+            "name": es.name,
+            "on_missing": es.on_missing.value,
+            "source_kind": es.source_kind.value,
+            "source_name": es.source_name,
+        }
+        for es in plan.exists_steps
     ]
     compute_steps = [{"fn": _qname(cs.fn)} for cs in plan.compute_steps]
     rule_steps = [{"fn": _qname(rs.fn)} for rs in plan.rule_steps]
 
     return {
         "compute_steps": compute_steps,
+        "exists_steps": exists_steps,
         "input_binding": input_binding,
         "load_steps": load_steps,
         "param_bindings": param_bindings,

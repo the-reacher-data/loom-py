@@ -1,1 +1,1 @@
-"""Loom package root."""
+"""Public package root for loom-kernel."""

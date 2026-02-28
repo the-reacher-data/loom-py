@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from loom.core.command import Command, Patch
-from loom.core.use_case import F
+from loom.core.use_case import F, PredicateOp
 
 
 class UpdateUser(Command, frozen=True):
@@ -22,3 +22,11 @@ class TestFieldRef:
         assert ref.root == "user"
         assert ref.path == ("profile", "name")
         assert ref.leaf == "name"
+
+    def test_supports_or_expression(self) -> None:
+        expr = F(UpdateUser).email | F(UpdateUser).email
+        assert expr.op is PredicateOp.OR
+
+    def test_supports_and_expression(self) -> None:
+        expr = F(UpdateUser).email & F(UpdateUser).email
+        assert expr.op is PredicateOp.AND

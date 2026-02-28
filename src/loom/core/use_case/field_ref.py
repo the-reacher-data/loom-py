@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from loom.core.command.base import Command
+
+
+class PredicateOp(StrEnum):
+    OR = "or"
+    AND = "and"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,9 +24,30 @@ class FieldRef:
             raise AttributeError(item)
         return FieldRef(root=self.root, path=(*self.path, item))
 
+    def __or__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr(PredicateOp.OR, self, other)
+
+    def __and__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr(PredicateOp.AND, self, other)
+
     @property
     def leaf(self) -> str:
         return self.path[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class FieldExpr:
+    """Boolean expression over field references used by DSL predicates."""
+
+    op: PredicateOp
+    left: FieldRef | FieldExpr
+    right: FieldRef | FieldExpr
+
+    def __or__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr(PredicateOp.OR, self, other)
+
+    def __and__(self, other: FieldRef | FieldExpr) -> FieldExpr:
+        return FieldExpr(PredicateOp.AND, self, other)
 
 
 class _FieldRefFactory:
@@ -42,4 +69,3 @@ def F(root: type[Command] | str) -> Any:
         ``F(UpdateUserCommand).birthdate``
     """
     return _FieldRefFactory(root)
-

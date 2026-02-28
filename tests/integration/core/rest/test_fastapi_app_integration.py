@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, mark
 
@@ -11,8 +12,8 @@ from tests.integration.fake_repo.main import create_app_from_config
 @mark.parametrize(
     "config_relpath",
     [
-        "tests/integration/fake_repo/src/config/conf.modules.yaml",
-        "tests/integration/fake_repo/src/config/conf.manifest.yaml",
+        "tests/integration/fake_repo/config/conf.modules.yaml",
+        "tests/integration/fake_repo/config/conf.manifest.yaml",
     ],
 )
 def test_fake_repo_app_bootstrap_without_metrics(
@@ -56,7 +57,7 @@ def test_fake_repo_app_bootstrap_without_metrics(
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated is not None
-        assert updated["price"] == 99.9
+        assert updated["price"] == pytest.approx(99.9)
 
         delete_response = client.delete("/products/1")
         assert delete_response.status_code == 200
@@ -78,7 +79,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
     database_url = f"sqlite+aiosqlite:///{db_path}"
     monkeypatch.setenv("LOOM_TEST_DATABASE_URL", database_url)
 
-    config_path = Path("tests/integration/fake_repo/src/config/conf.interfaces.yaml")
+    config_path = Path("tests/integration/fake_repo/config/conf.interfaces.yaml")
     app = create_app_from_config(str(config_path))
 
     with TestClient(app) as client:
@@ -108,7 +109,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated is not None
-        assert updated["price"] == 99.9
+        assert updated["price"] == pytest.approx(99.9)
 
         delete_response = client.delete("/products/1")
         assert delete_response.status_code == 200
@@ -127,8 +128,8 @@ def test_fake_repo_app_bootstrap_with_metrics(
 @mark.parametrize(
     "config_relpath",
     [
-        "tests/integration/fake_repo/src/config/conf.modules.yaml",
-        "tests/integration/fake_repo/src/config/conf.manifest.yaml",
+        "tests/integration/fake_repo/config/conf.modules.yaml",
+        "tests/integration/fake_repo/config/conf.manifest.yaml",
     ],
 )
 def test_fake_repo_list_query_cursor_and_profile_controls(

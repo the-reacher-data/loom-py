@@ -9,7 +9,7 @@ from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import NotFound
-from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.markers import Exists, Input, Load, LoadById, OnMissing
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 
@@ -94,9 +94,50 @@ class _WithLoadUseCase(UseCase[Any, str]):
     async def execute(
         self,
         user_id: int,
-        user: User = Load(User, by="user_id"),
+        user: User = LoadById(User, by="user_id"),
     ) -> str:
         return user.email
+
+
+class _WithLoadByFieldUseCase(UseCase[Any, str]):
+    async def execute(
+        self,
+        email: str,
+        user: User = Load(User, from_param="email", against="email"),
+    ) -> str:
+        return user.email
+
+
+class _WithLoadFromCommandUseCase(UseCase[Any, str]):
+    async def execute(
+        self,
+        cmd: CreateUserCommand = Input(),
+        user: User = Load(User, from_command="email", against="email"),
+    ) -> str:
+        return user.email
+
+
+class _WithExistsUseCase(UseCase[Any, bool]):
+    async def execute(
+        self,
+        email: str,
+        user_exists: bool = Exists(User, from_param="email", against="email"),
+    ) -> bool:
+        return user_exists
+
+
+class _WithExistsRaiseUseCase(UseCase[Any, bool]):
+    async def execute(
+        self,
+        email: str,
+        user_exists: bool = Exists(
+            User,
+            from_param="email",
+            against="email",
+            on_missing=OnMissing.RAISE,
+        ),
+    ) -> bool:
+        return user_exists
 
 
 class _ComputeAndRuleUseCase(UseCase[Any, str]):
@@ -126,7 +167,7 @@ class _FullPipelineUseCase(UseCase[Any, UserResult]):
         self,
         user_id: int,
         cmd: CreateUserCommand = Input(),
-        user: User = Load(User, by="user_id"),
+        user: User = LoadById(User, by="user_id"),
     ) -> UserResult:
         self.received_user = user
         self.received_cmd = cmd
@@ -154,6 +195,8 @@ def _make_executor(
 def _fake_repo(entity: Any | None) -> Any:
     repo = AsyncMock()
     repo.get_by_id = AsyncMock(return_value=entity)
+    repo.get_by = AsyncMock(return_value=entity)
+    repo.exists_by = AsyncMock(return_value=entity is not None)
     return repo
 
 
@@ -207,7 +250,7 @@ class TestExecuteWithInput:
 
 
 # ---------------------------------------------------------------------------
-# Tests: Load steps
+# Tests: LoadById steps
 # ---------------------------------------------------------------------------
 
 
@@ -224,6 +267,34 @@ class TestExecuteWithLoad:
         )
 
         repo.get_by_id.assert_awaited_once_with(1, profile="default")
+        assert result == "loaded@corp.com"
+
+    async def test_entity_loaded_by_field_via_repo(self) -> None:
+        user = User(id=1, email="loaded@corp.com")
+        repo = _fake_repo(user)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithLoadByFieldUseCase(),
+            params={"email": "loaded@corp.com"},
+            dependencies={User: repo},
+        )
+
+        repo.get_by.assert_awaited_once_with("email", "loaded@corp.com", profile="default")
+        assert result == "loaded@corp.com"
+
+    async def test_entity_loaded_by_command_field_via_repo(self) -> None:
+        user = User(id=1, email="loaded@corp.com")
+        repo = _fake_repo(user)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithLoadFromCommandUseCase(),
+            payload={"email": "loaded@corp.com", "name": "Alice"},
+            dependencies={User: repo},
+        )
+
+        repo.get_by.assert_awaited_once_with("email", "loaded@corp.com", profile="default")
         assert result == "loaded@corp.com"
 
     async def test_load_override_skips_repo(self) -> None:
@@ -270,6 +341,44 @@ class TestExecuteWithLoad:
                 _WithLoadUseCase(),
                 params={"user_id": 1},
                 dependencies={},
+            )
+
+
+class TestExecuteWithExists:
+    async def test_exists_true_when_entity_is_present(self) -> None:
+        repo = _fake_repo(User(id=1, email="ok@corp.com"))
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithExistsUseCase(),
+            params={"email": "ok@corp.com"},
+            dependencies={User: repo},
+        )
+
+        repo.exists_by.assert_awaited_once_with("email", "ok@corp.com")
+        assert result is True
+
+    async def test_exists_false_when_entity_is_missing(self) -> None:
+        repo = _fake_repo(None)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _WithExistsUseCase(),
+            params={"email": "missing@corp.com"},
+            dependencies={User: repo},
+        )
+
+        assert result is False
+
+    async def test_exists_raise_on_missing(self) -> None:
+        repo = _fake_repo(None)
+        ex = _make_executor()
+
+        with pytest.raises(NotFound):
+            await ex.execute(
+                _WithExistsRaiseUseCase(),
+                params={"email": "missing@corp.com"},
+                dependencies={User: repo},
             )
 
 

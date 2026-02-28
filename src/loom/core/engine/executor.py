@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar, cast
 
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
-from loom.core.engine.plan import ExecutionPlan, LoadStep
+from loom.core.engine.plan import ExecutionPlan, ExistsStep, LoadStep
 from loom.core.errors import NotFound
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.tracing import get_trace_id
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
+from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 
@@ -100,7 +103,7 @@ class RuntimeExecutor:
             params: Primitive parameter values keyed by name.
             payload: Raw dict for command construction via ``Input()``.
             dependencies: Mapping of entity type to repository, used for
-                ``Load()`` steps.
+                ``LoadById()`` / ``LoadById()`` / ``Exists()`` steps.
             load_overrides: Pre-loaded entities by type, bypassing repo
                 calls. Used by test harnesses.
 
@@ -155,11 +158,13 @@ class RuntimeExecutor:
         logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
 
         logger.info(f"[EXEC] {uc_name}", usecase=uc_name)
-        self._emit(RuntimeEvent(
-            kind=EventKind.EXEC_START,
-            use_case_name=uc_name,
-            trace_id=trace_id,
-        ))
+        self._emit(
+            RuntimeEvent(
+                kind=EventKind.EXEC_START,
+                use_case_name=uc_name,
+                trace_id=trace_id,
+            )
+        )
 
         try:
             bound: dict[str, Any] = {}
@@ -167,6 +172,7 @@ class RuntimeExecutor:
             self._bind_params(plan, params or {}, bound)
             fields_set = self._build_command(plan, payload, bound)
             await self._execute_loads(plan, bound, dependencies, load_overrides)
+            await self._execute_exists(plan, bound, dependencies)
             self._apply_computes(plan, bound, fields_set)
             self._check_rules(plan, bound, fields_set)
 
@@ -245,8 +251,7 @@ class RuntimeExecutor:
         for pb in plan.param_bindings:
             if pb.name not in params:
                 raise ValueError(
-                    f"{plan.use_case_type.__qualname__}: "
-                    f"missing required parameter '{pb.name}'"
+                    f"{plan.use_case_type.__qualname__}: missing required parameter '{pb.name}'"
                 )
             raw = params[pb.name]
             if isinstance(pb.annotation, type):
@@ -271,8 +276,7 @@ class RuntimeExecutor:
 
         if payload is None:
             raise ValueError(
-                f"{plan.use_case_type.__qualname__}: "
-                "payload is required for a UseCase with Input()"
+                f"{plan.use_case_type.__qualname__}: payload is required for a UseCase with Input()"
             )
 
         command, fields_set = plan.input_binding.command_type.from_payload(payload)
@@ -288,9 +292,20 @@ class RuntimeExecutor:
         load_overrides: dict[type[Any], Any] | None,
     ) -> None:
         for ls in plan.load_steps:
-            entity = await self._resolve_load(ls, bound, dependencies, load_overrides)
+            entity = await self._resolve_load(ls, plan, bound, dependencies, load_overrides)
             bound[ls.name] = entity
             self._log_step(f"Load {ls.entity_type.__name__}")
+
+    async def _execute_exists(
+        self,
+        plan: ExecutionPlan,
+        bound: dict[str, Any],
+        dependencies: dict[type[Any], Any] | None,
+    ) -> None:
+        for es in plan.exists_steps:
+            result = await self._resolve_exists(es, plan, bound, dependencies)
+            bound[es.name] = result
+            self._log_step(f"Exists {es.entity_type.__name__}")
 
     def _apply_computes(
         self,
@@ -303,8 +318,12 @@ class RuntimeExecutor:
 
         command = bound[plan.input_binding.name]
         for cs in plan.compute_steps:
+            compute_fn = cast(Any, cs.fn)
             label = getattr(cs.fn, "__name__", type(cs.fn).__name__)
-            command = cs.fn(command, fields_set)
+            if self._accepts_context(cs.fn):
+                command = compute_fn(command, fields_set, bound)
+            else:
+                command = compute_fn(command, fields_set)
             self._log_step(f"Compute {label}")
 
         bound[plan.input_binding.name] = command
@@ -324,7 +343,10 @@ class RuntimeExecutor:
         for rs in plan.rule_steps:
             label = getattr(rs.fn, "__name__", type(rs.fn).__name__)
             try:
-                rs.fn(command, fields_set)
+                if self._accepts_context(rs.fn):
+                    rs.fn(command, fields_set, bound)
+                else:
+                    rs.fn(command, fields_set)
                 self._log_step(f"Rule {label}")
             except RuleViolation as exc:
                 violations.append(exc)
@@ -344,6 +366,7 @@ class RuntimeExecutor:
     async def _resolve_load(
         self,
         step: LoadStep,
+        plan: ExecutionPlan,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
@@ -353,23 +376,88 @@ class RuntimeExecutor:
 
         if dependencies is None:
             raise RuntimeError(
-                f"No dependencies provided for Load({step.entity_type.__name__})"
+                f"No dependencies provided for LoadById({step.entity_type.__name__})"
             )
 
         repo = dependencies.get(step.entity_type)
         if repo is None:
             raise RuntimeError(
-                f"No repository registered for entity type "
-                f"'{step.entity_type.__name__}'"
+                f"No repository registered for entity type '{step.entity_type.__name__}'"
             )
 
-        value = bound[step.by]
-        entity = await repo.get_by_id(value, profile=step.profile)
+        value = self._resolve_lookup_value(step.source_kind, step.source_name, plan, bound)
+        entity = await self._get_entity(repo, step, value)
 
         if entity is None:
+            if step.on_missing is OnMissing.RETURN_NONE:
+                return None
+            if step.on_missing is OnMissing.RETURN_FALSE:
+                return False
             raise NotFound(step.entity_type.__name__, id=value)
 
         return entity
+
+    async def _resolve_exists(
+        self,
+        step: ExistsStep,
+        plan: ExecutionPlan,
+        bound: dict[str, Any],
+        dependencies: dict[type[Any], Any] | None,
+    ) -> bool:
+        if dependencies is None:
+            raise RuntimeError(f"No dependencies provided for Exists({step.entity_type.__name__})")
+
+        repo = dependencies.get(step.entity_type)
+        if repo is None:
+            raise RuntimeError(
+                f"No repository registered for entity type '{step.entity_type.__name__}'"
+            )
+
+        value = self._resolve_lookup_value(step.source_kind, step.source_name, plan, bound)
+        exists_by = getattr(repo, "exists_by", None)
+        if not callable(exists_by):
+            raise RuntimeError(
+                "Repository for "
+                f"'{step.entity_type.__name__}' must implement exists_by(field, value)"
+            )
+
+        exists_by_async = cast(Callable[[str, Any], Awaitable[bool]], exists_by)
+        found = bool(await exists_by_async(step.against, value))
+        if found:
+            return True
+
+        if step.on_missing is OnMissing.RAISE:
+            raise NotFound(step.entity_type.__name__, id=value)
+        return False
+
+    async def _get_entity(self, repo: Any, step: LoadStep, value: Any) -> Any | None:
+        if step.lookup_kind is LookupKind.BY_ID:
+            return await repo.get_by_id(value, profile=step.profile)
+
+        get_by = getattr(repo, "get_by", None)
+        if not callable(get_by):
+            raise RuntimeError(
+                f"Repository for '{step.entity_type.__name__}' must implement get_by(field, value)"
+            )
+        get_by_async = cast(Callable[..., Awaitable[Any | None]], get_by)
+        return await get_by_async(step.against, value, profile=step.profile)
+
+    @staticmethod
+    def _resolve_lookup_value(
+        source_kind: SourceKind,
+        source_name: str,
+        plan: ExecutionPlan,
+        bound: dict[str, Any],
+    ) -> Any:
+        if source_kind is SourceKind.PARAM:
+            return bound[source_name]
+
+        if plan.input_binding is None:
+            raise RuntimeError("from_command source requires Input() binding")
+        command = bound[plan.input_binding.name]
+        if not hasattr(command, source_name):
+            raise RuntimeError(f"Command '{type(command).__name__}' has no field '{source_name}'")
+        return getattr(command, source_name)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -378,6 +466,28 @@ class RuntimeExecutor:
     def _emit(self, event: RuntimeEvent) -> None:
         if self._metrics is not None:
             self._metrics.on_event(event)
+
+    @staticmethod
+    def _accepts_context(fn: Any) -> bool:
+        """Return True when callable accepts a third positional context arg."""
+        try:
+            params = tuple(inspect.signature(fn).parameters.values())
+        except (TypeError, ValueError):
+            return False
+
+        positional = [
+            p
+            for p in params
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if len(positional) >= 3:
+            return True
+
+        return any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params)
 
     def _log_step(self, label: str) -> None:
         if self._debug:

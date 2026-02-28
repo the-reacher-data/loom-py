@@ -24,6 +24,13 @@ repos:
 
       - id: mypy
         name: mypy strict
-        entry: uv run mypy --no-incremental src tests
+        entry: uv run mypy --no-incremental src
         language: system
         pass_filenames: false
+
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        pass_filenames: false
+        types: [python]

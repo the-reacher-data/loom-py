@@ -7,7 +7,7 @@ import pytest
 from loom.core.command import Command
 from loom.core.engine.compiler import CompilationError, UseCaseCompiler
 from loom.core.engine.plan import ExecutionPlan
-from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.markers import Exists, Input, Load, LoadById, SourceKind
 from loom.core.use_case.use_case import UseCase
 
 # ---------------------------------------------------------------------------
@@ -92,9 +92,36 @@ class _WithLoadUseCase(UseCase[Any, str]):
     async def execute(
         self,
         user_id: int,
-        user: User = Load(User, by="user_id"),
+        user: User = LoadById(User, by="user_id"),
     ) -> str:
         return "ok"
+
+
+class _WithLoadByFieldUseCase(UseCase[Any, str]):
+    async def execute(
+        self,
+        email: str,
+        user: User = Load(User, from_param="email", against="email"),
+    ) -> str:
+        return "ok"
+
+
+class _WithLoadFromCommandUseCase(UseCase[Any, str]):
+    async def execute(
+        self,
+        cmd: UserCommand = Input(),
+        user: User = Load(User, from_command="email", against="email"),
+    ) -> str:
+        return "ok"
+
+
+class _WithExistsUseCase(UseCase[Any, bool]):
+    async def execute(
+        self,
+        email: str,
+        user_exists: bool = Exists(User, from_param="email", against="email"),
+    ) -> bool:
+        return user_exists
 
 
 class _WithAllUseCase(UseCase[Any, str]):
@@ -105,7 +132,7 @@ class _WithAllUseCase(UseCase[Any, str]):
         self,
         user_id: int,
         cmd: UserCommand = Input(),
-        user: User = Load(User, by="user_id"),
+        user: User = LoadById(User, by="user_id"),
     ) -> str:
         return "ok"
 
@@ -115,8 +142,8 @@ class _MultipleLoadsUseCase(UseCase[Any, str]):
         self,
         user_id: int,
         product_id: int,
-        user: User = Load(User, by="user_id"),
-        product: Product = Load(Product, by="product_id"),
+        user: User = LoadById(User, by="user_id"),
+        product: Product = LoadById(Product, by="product_id"),
     ) -> str:
         return "ok"
 
@@ -145,6 +172,7 @@ class TestCompileNoMarkers:
     def test_no_load_steps(self) -> None:
         plan = UseCaseCompiler().compile(_NoMarkersUseCase)
         assert plan.load_steps == ()
+        assert plan.exists_steps == ()
 
     def test_empty_pipeline_steps(self) -> None:
         plan = UseCaseCompiler().compile(_NoMarkersUseCase)
@@ -177,7 +205,7 @@ class TestCompileWithInput:
 
 
 # ---------------------------------------------------------------------------
-# Compilation: Load marker
+# Compilation: LoadById marker
 # ---------------------------------------------------------------------------
 
 
@@ -188,7 +216,8 @@ class TestCompileWithLoad:
         ls = plan.load_steps[0]
         assert ls.name == "user"
         assert ls.entity_type is User
-        assert ls.by == "user_id"
+        assert ls.source_kind is SourceKind.PARAM
+        assert ls.source_name == "user_id"
 
     def test_load_not_in_param_bindings(self) -> None:
         plan = UseCaseCompiler().compile(_WithLoadUseCase)
@@ -203,9 +232,35 @@ class TestCompileWithLoad:
 
     def test_multiple_loads_by_refs(self) -> None:
         plan = UseCaseCompiler().compile(_MultipleLoadsUseCase)
-        by_map = {ls.name: ls.by for ls in plan.load_steps}
+        by_map = {ls.name: ls.source_name for ls in plan.load_steps}
         assert by_map["user"] == "user_id"
         assert by_map["product"] == "product_id"
+
+    def test_detects_load_by_field(self) -> None:
+        plan = UseCaseCompiler().compile(_WithLoadByFieldUseCase)
+        assert len(plan.load_steps) == 1
+        ls = plan.load_steps[0]
+        assert ls.source_kind is SourceKind.PARAM
+        assert ls.source_name == "email"
+        assert ls.against == "email"
+
+    def test_detects_load_from_command(self) -> None:
+        plan = UseCaseCompiler().compile(_WithLoadFromCommandUseCase)
+        assert len(plan.load_steps) == 1
+        ls = plan.load_steps[0]
+        assert ls.source_kind is SourceKind.COMMAND
+        assert ls.source_name == "email"
+        assert ls.against == "email"
+
+
+class TestCompileWithExists:
+    def test_detects_exists_step(self) -> None:
+        plan = UseCaseCompiler().compile(_WithExistsUseCase)
+        assert len(plan.exists_steps) == 1
+        es = plan.exists_steps[0]
+        assert es.source_kind is SourceKind.PARAM
+        assert es.source_name == "email"
+        assert es.against == "email"
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +274,7 @@ class TestCompileFullPlan:
         assert len(plan.param_bindings) == 1
         assert plan.input_binding is not None
         assert len(plan.load_steps) == 1
+        assert len(plan.exists_steps) == 0
         assert len(plan.compute_steps) == 1
         assert len(plan.rule_steps) == 1
 
@@ -281,7 +337,7 @@ class TestCompilationErrors:
         class _BadLoad(UseCase[Any, str]):
             async def execute(
                 self,
-                user: User = Load(User, by="nonexistent"),
+                user: User = LoadById(User, by="nonexistent"),
             ) -> str:
                 return "ok"
 
@@ -293,13 +349,13 @@ class TestCompilationErrors:
             UseCaseCompiler().compile(UseCase)  # type: ignore[type-abstract]
 
     def test_load_by_references_input_param_raises(self) -> None:
-        """Input binding params are not primitive params — Load cannot ref them."""
+        """Input binding params are not primitive params — LoadById cannot ref them."""
 
         class _BadRef(UseCase[Any, str]):
             async def execute(
                 self,
                 cmd: UserCommand = Input(),
-                user: User = Load(User, by="cmd"),
+                user: User = LoadById(User, by="cmd"),
             ) -> str:
                 return "ok"
 
@@ -326,7 +382,9 @@ class TestCompilerLogging:
     def test_logs_load_detection(self) -> None:
         log = _RecordingLogger()
         UseCaseCompiler(logger=log).compile(_WithLoadUseCase)
-        assert any("Detected Load" in m and "User" in m and "user_id" in m for m in log.messages)
+        assert any(
+            "Detected LoadById" in m and "User" in m and "user_id" in m for m in log.messages
+        )
 
     def test_logs_compute_count(self) -> None:
         log = _RecordingLogger()

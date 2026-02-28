@@ -9,7 +9,7 @@ import pytest
 from loom.core.command import Command
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.errors import NotFound
-from loom.core.use_case.markers import Input, Load
+from loom.core.use_case.markers import Input, LoadById
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
 from loom.testing.runner import UseCaseTest
@@ -52,7 +52,7 @@ class _LoadUseCase(UseCase[Any, str]):
     async def execute(
         self,
         eid: int,
-        entity: Entity = Load(Entity, by="eid"),
+        entity: Entity = LoadById(Entity, by="eid"),
     ) -> str:
         return entity.name
 

@@ -102,19 +102,15 @@ def _price_must_be_positive(price: float) -> str | None:
     return None
 
 
-NORMALIZE_NAME = (
-    Compute.set(F(CreateProductWithRulesCmd).name)
-    .from_fields(
-        F(CreateProductWithRulesCmd).name,
-        via=_normalize_product_name,
-    )
-    .build()
+NORMALIZE_NAME = Compute.set(F(CreateProductWithRulesCmd).name).from_command(
+    F(CreateProductWithRulesCmd).name,
+    via=_normalize_product_name,
 )
 
 PRICE_RULE = Rule.check(
     F(CreateProductWithRulesCmd).price,
     via=_price_must_be_positive,
-).build()
+)
 
 
 class CreateProductWithComputeAndRulesUseCase(UseCase[Product, Product]):
@@ -191,7 +187,7 @@ class TestUseCaseCrudIntegration:
             payload={"price": 49.9},
         )
         assert updated is not None
-        assert float(updated.price) == 49.9
+        assert float(updated.price) == pytest.approx(49.9)
 
         delete_uc = result.factory.build(DeleteProductUseCase)
         deleted = await executor.execute(delete_uc, params={"product_id": 1})
@@ -219,7 +215,7 @@ class TestUseCaseCrudIntegration:
         )
 
         assert created.name == "HEADSET"
-        assert float(created.price) == 42.0
+        assert float(created.price) == pytest.approx(42.0)
 
     @mark.asyncio
     async def test_use_case_compute_and_rules_rejects_invalid_input(

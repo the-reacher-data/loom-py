@@ -17,6 +17,7 @@ from loom.core.engine.plan import (
     ParamBinding,
     RuleStep,
 )
+from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.use_case import UseCase
 from loom.testing.golden import GoldenHarness, _ErrorProxy, _serialize_result, serialize_plan
 
@@ -56,6 +57,17 @@ class FakeProductRepo:
     async def list_paginated(self, *args: Any, **kwargs: Any) -> Any:
         return []
 
+    async def get_by(
+        self,
+        field: str,
+        value: Any,
+        profile: str = "default",
+    ) -> Product | None:
+        return Product(id=1, name="existing")
+
+    async def exists_by(self, field: str, value: Any) -> bool:
+        return True
+
     async def update(self, obj_id: Any, data: Any) -> Product | None:
         return Product(id=int(obj_id), name="updated")
 
@@ -84,7 +96,19 @@ class TestSerializePlan:
             use_case_type=SimpleUseCase,
             param_bindings=(ParamBinding("user_id", int),),
             input_binding=InputBinding("cmd", CreateProductCmd),
-            load_steps=(LoadStep("product", Product, by="user_id", profile="detail"),),
+            load_steps=(
+                LoadStep(
+                    "product",
+                    Product,
+                    source_kind=SourceKind.PARAM,
+                    source_name="user_id",
+                    lookup_kind=LookupKind.BY_ID,
+                    against="id",
+                    profile="detail",
+                    on_missing=OnMissing.RAISE,
+                ),
+            ),
+            exists_steps=(),
             compute_steps=(ComputeStep(fn=_normalize),),
             rule_steps=(RuleStep(fn=_price_rule),),
         )
@@ -118,7 +142,8 @@ class TestSerializePlan:
         plan = self._make_plan()
         result = serialize_plan(plan)
         ls = result["load_steps"][0]
-        assert ls["by"] == "user_id"
+        assert ls["source_name"] == "user_id"
+        assert ls["lookup_kind"] == "by_id"
         assert ls["profile"] == "detail"
         assert "Product" in ls["entity_type"]
 
@@ -138,6 +163,7 @@ class TestSerializePlan:
             param_bindings=(),
             input_binding=None,
             load_steps=(),
+            exists_steps=(),
             compute_steps=(),
             rule_steps=(),
         )

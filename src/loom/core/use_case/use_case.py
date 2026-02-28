@@ -22,7 +22,9 @@ class UseCase(ABC, Generic[ModelT, ResultT]):
     defaults declare the execution contract:
 
     - ``Input()``  — command payload, built from the raw request.
-    - ``Load(EntityType, by="param")`` — entity prefetched before execution.
+    - ``LoadById(EntityType, by="param")`` — entity prefetched by id.
+    - ``Load(EntityType, ...)`` — entity prefetched by arbitrary field.
+    - ``Exists(EntityType, ...)`` — boolean existence check by field.
     - No default — primitive param bound directly from the caller.
 
     Class attributes ``computes`` and ``rules`` declare the pre-execution
@@ -46,14 +48,14 @@ class UseCase(ABC, Generic[ModelT, ResultT]):
                 self,
                 user_id: int,
                 cmd: UpdateUserCommand = Input(),
-                user: User = Load(User, by="user_id"),
+                user: User = LoadById(User, by="user_id"),
             ) -> UserResponse:
                 ...
     """
 
     __execution_plan__: ClassVar[ExecutionPlan | None] = None
     computes: ClassVar[Sequence[ComputeFn[Any]]] = ()
-    rules: ClassVar[Sequence[RuleFn[Any]]] = ()
+    rules: ClassVar[Sequence[RuleFn]] = ()
 
     def __init__(self, main_repo: RepoFor[Any] | None = None) -> None:
         """Initialise the use case base dependencies.

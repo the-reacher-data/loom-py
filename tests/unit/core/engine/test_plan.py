@@ -8,11 +8,13 @@ from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.plan import (
     ComputeStep,
     ExecutionPlan,
+    ExistsStep,
     InputBinding,
     LoadStep,
     ParamBinding,
     RuleStep,
 )
+from loom.core.use_case.markers import LookupKind, SourceKind
 from loom.core.use_case.rule import RuleViolation
 
 # ---------------------------------------------------------------------------
@@ -82,18 +84,49 @@ class TestLoadStep:
         class User:
             pass
 
-        ls = LoadStep(name="user", entity_type=User, by="user_id")
+        ls = LoadStep(
+            name="user",
+            entity_type=User,
+            source_kind=SourceKind.PARAM,
+            source_name="user_id",
+            lookup_kind=LookupKind.BY_ID,
+            against="id",
+        )
         assert ls.name == "user"
         assert ls.entity_type is User
-        assert ls.by == "user_id"
+        assert ls.source_name == "user_id"
 
     def test_is_frozen(self) -> None:
         class User:
             pass
 
-        ls = LoadStep(name="user", entity_type=User, by="user_id")
+        ls = LoadStep(
+            name="user",
+            entity_type=User,
+            source_kind=SourceKind.PARAM,
+            source_name="user_id",
+            lookup_kind=LookupKind.BY_ID,
+            against="id",
+        )
         with pytest.raises(dataclasses.FrozenInstanceError):
-            ls.by = "other"  # type: ignore[misc]
+            ls.source_name = "other"  # type: ignore[misc]
+
+
+class TestExistsStep:
+    def test_fields_accessible(self) -> None:
+        class User:
+            pass
+
+        es = ExistsStep(
+            name="exists",
+            entity_type=User,
+            source_kind=SourceKind.PARAM,
+            source_name="email",
+            against="email",
+        )
+        assert es.name == "exists"
+        assert es.entity_type is User
+        assert es.source_name == "email"
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +178,17 @@ class TestExecutionPlan:
             use_case_type=_FakeUseCase,
             param_bindings=(ParamBinding("user_id", int),),
             input_binding=InputBinding("cmd", FakeCommand),
-            load_steps=(LoadStep("user", User, "user_id"),),
+            load_steps=(
+                LoadStep(
+                    "user",
+                    User,
+                    source_kind=SourceKind.PARAM,
+                    source_name="user_id",
+                    lookup_kind=LookupKind.BY_ID,
+                    against="id",
+                ),
+            ),
+            exists_steps=(),
             compute_steps=(ComputeStep(_noop_compute),),
             rule_steps=(RuleStep(_noop_rule),),
         )
@@ -170,6 +213,7 @@ class TestExecutionPlan:
             param_bindings=(),
             input_binding=None,
             load_steps=(),
+            exists_steps=(),
             compute_steps=(),
             rule_steps=(),
         )
@@ -207,7 +251,7 @@ class TestRuntimeEvent:
             error=err,
         )
         assert event.step_name == "Load User"
-        assert event.duration_ms == 5.2
+        assert event.duration_ms == pytest.approx(5.2)
         assert event.status == "failure"
         assert event.error is err
 

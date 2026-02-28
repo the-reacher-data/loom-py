@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import msgspec
+import pytest
 
 from loom.core.model import TimestampedModel
 from loom.core.model.enums import ServerDefault
@@ -53,7 +54,7 @@ class TestTimestampedModelSerialization:
         encoded = msgspec.json.encode(order)
         data = msgspec.json.decode(encoded, type=dict)
         assert data["id"] == 1
-        assert data["total"] == 9.99
+        assert data["total"] == pytest.approx(9.99)
 
 
 class TestTimestampedModelInheritance:

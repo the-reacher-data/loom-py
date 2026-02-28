@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from loom.core.use_case.compute import ComputeFn
+from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.rule import RuleFn
 
 
@@ -41,23 +42,43 @@ class InputBinding:
 
 @dataclass(frozen=True)
 class LoadStep:
-    """An entity prefetch step marked with ``Load(entity_type, by=...)``.
+    """An entity prefetch step marked with ``LoadById`` or ``Load``.
 
     The executor resolves the entity from a repository before calling
-    ``execute``, raising ``NotFound`` if the entity is absent.
+    ``execute``. Missing behavior is controlled by ``on_missing``.
 
     Args:
         name: Parameter name as declared in the signature.
         entity_type: Domain entity type to load.
-        by: Name of the primitive param whose value is used as lookup key.
+        source_kind: Where the lookup value is extracted from.
+        source_name: Name of param/command field used as lookup value.
+        lookup_kind: Lookup strategy (id or arbitrary field).
+        against: Entity field used in repository lookup.
         profile: Loading profile forwarded to ``repo.get_by_id``.
             Defaults to ``"default"``.
+        on_missing: Policy when no entity is found.
     """
 
     name: str
     entity_type: type[Any]
-    by: str
+    source_kind: SourceKind
+    source_name: str
+    lookup_kind: LookupKind
+    against: str
     profile: str = "default"
+    on_missing: OnMissing = OnMissing.RAISE
+
+
+@dataclass(frozen=True)
+class ExistsStep:
+    """A boolean existence check step marked with ``Exists``."""
+
+    name: str
+    entity_type: type[Any]
+    source_kind: SourceKind
+    source_name: str
+    against: str
+    on_missing: OnMissing = OnMissing.RETURN_FALSE
 
 
 @dataclass(frozen=True)
@@ -85,7 +106,7 @@ class RuleStep:
         fn: The rule function to evaluate.
     """
 
-    fn: RuleFn[Any]
+    fn: RuleFn
 
 
 @dataclass(frozen=True)
@@ -100,6 +121,7 @@ class ExecutionPlan:
         param_bindings: Primitive parameters bound from the caller.
         input_binding: Command payload binding, or ``None`` if absent.
         load_steps: Entity prefetch steps, in declaration order.
+        exists_steps: Boolean existence checks, in declaration order.
         compute_steps: Compute transformations, in declaration order.
         rule_steps: Rule validations, in declaration order.
 
@@ -109,7 +131,17 @@ class ExecutionPlan:
             use_case_type=UpdateUserUseCase,
             param_bindings=(ParamBinding("user_id", int),),
             input_binding=InputBinding("cmd", UpdateUserCommand),
-            load_steps=(LoadStep("user", User, by="user_id"),),
+            load_steps=(
+                LoadStep(
+                    "user",
+                    User,
+                    source_kind=SourceKind.PARAM,
+                    source_name="user_id",
+                    lookup_kind=LookupKind.BY_ID,
+                    against="id",
+                ),
+            ),
+            exists_steps=(),
             compute_steps=(),
             rule_steps=(),
         )
@@ -119,5 +151,6 @@ class ExecutionPlan:
     param_bindings: tuple[ParamBinding, ...]
     input_binding: InputBinding | None
     load_steps: tuple[LoadStep, ...]
+    exists_steps: tuple[ExistsStep, ...]
     compute_steps: tuple[ComputeStep, ...]
     rule_steps: tuple[RuleStep, ...]

@@ -27,6 +27,40 @@ def _resolve_annotation(annotation: Any, namespace: dict[str, Any]) -> Any:
     return annotation
 
 
+def _build_eval_namespace(namespace: dict[str, Any]) -> dict[str, Any]:
+    """Build annotation evaluation namespace from module globals + class locals."""
+    eval_ns: dict[str, Any] = {}
+    module = namespace.get("__module__")
+    if module:
+        mod = sys.modules.get(module)
+        if mod:
+            eval_ns.update(vars(mod))
+    eval_ns.update(namespace)
+    return eval_ns
+
+
+def _resolve_column_default(spec: ColumnFieldSpec) -> Any:
+    """Resolve runtime default assigned to a model field in class namespace."""
+    if spec.field.default is not msgspec.UNSET:
+        return spec.field.default
+    if spec.field.primary_key and spec.field.autoincrement:
+        # Avoid propagating msgspec.UNSET into INSERT bind parameters.
+        return None
+    return UNSET
+
+
+def _mark_optional_unset(
+    attr_name: str,
+    annotations: dict[str, Any],
+    eval_ns: dict[str, Any],
+) -> None:
+    """Widen annotation to include ``UnsetType`` for lazy-loaded fields."""
+    if attr_name not in annotations:
+        return
+    resolved = _resolve_annotation(annotations[attr_name], eval_ns)
+    annotations[attr_name] = resolved | UnsetType
+
+
 class LoomStructMeta(_StructMeta):
     """Metaclass that intercepts ``Relation`` and ``Projection`` assignments
     before ``StructMeta`` processes the class body.
@@ -53,38 +87,26 @@ class LoomStructMeta(_StructMeta):
         projections: dict[str, Projection] = {}
         annotations: dict[str, Any] = namespace.get("__annotations__", {})
 
-        # Build evaluation context from the module where the class is defined
-        eval_ns: dict[str, Any] = {}
-        module = namespace.get("__module__")
-        if module:
-            mod = sys.modules.get(module)
-            if mod:
-                eval_ns.update(vars(mod))
-        eval_ns.update(namespace)
+        eval_ns = _build_eval_namespace(namespace)
 
         for attr_name in list(namespace):
             value = namespace[attr_name]
+
             if isinstance(value, ColumnFieldSpec):
                 columns[attr_name] = value
-                if value.field.default is not msgspec.UNSET:
-                    namespace[attr_name] = value.field.default
-                elif value.field.primary_key and value.field.autoincrement:
-                    # Avoid propagating msgspec.UNSET into INSERT bind parameters.
-                    namespace[attr_name] = None
-                else:
-                    namespace[attr_name] = UNSET
-            elif isinstance(value, Relation):
+                namespace[attr_name] = _resolve_column_default(value)
+                continue
+
+            if isinstance(value, Relation):
                 relations[attr_name] = value
                 namespace[attr_name] = UNSET
-                if attr_name in annotations:
-                    resolved = _resolve_annotation(annotations[attr_name], eval_ns)
-                    annotations[attr_name] = resolved | UnsetType
-            elif isinstance(value, Projection):
+                _mark_optional_unset(attr_name, annotations, eval_ns)
+                continue
+
+            if isinstance(value, Projection):
                 projections[attr_name] = value
                 namespace[attr_name] = UNSET
-                if attr_name in annotations:
-                    resolved = _resolve_annotation(annotations[attr_name], eval_ns)
-                    annotations[attr_name] = resolved | UnsetType
+                _mark_optional_unset(attr_name, annotations, eval_ns)
 
         namespace["__annotations__"] = annotations
         struct_cls: Any = super().__new__(cls, name, bases, namespace, **kwargs)

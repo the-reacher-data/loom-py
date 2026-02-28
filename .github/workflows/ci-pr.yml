@@ -15,17 +15,20 @@ jobs:
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
       TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
 
       - name: Configure uv environment path
         shell: bash
@@ -43,7 +46,7 @@ jobs:
       - name: Quality report (strict gate)
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@v1
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           src-dir: src
           test-dir: tests
@@ -54,7 +57,7 @@ jobs:
 
       - name: Publish PR quality comment
         if: ${{ always() && steps.quality.outputs.report-file != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@v1
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- loom-quality-report -->"
@@ -62,7 +65,7 @@ jobs:
 
       - name: Compute candidate prerelease version
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           branch: ${{ github.head_ref }}
           prerelease: "true"
@@ -70,7 +73,7 @@ jobs:
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           mode: "pr"
           branch: ${{ github.event.pull_request.head.sha }}
@@ -81,36 +84,85 @@ jobs:
 
       - name: Publish PR changelog comment
         if: ${{ steps.changelog.outcome == 'success' && steps.changelog.outputs.output_path != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@v1
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
           body-file: ${{ steps.changelog.outputs.output_path }}
 
+      - name: Run pytest with coverage and JUnit output
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --with pytest-cov pytest --cov --junitxml=junit.xml -o junit_family=legacy
+
       - name: Upload coverage to Codecov
         if: ${{ always() && hashFiles('coverage.xml') != '' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - name: Snyk dependency scan
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() && hashFiles('junit.xml') != '' }}
+        uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' && env.SONAR_PROJECT_KEY != '' }}
+        uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703 # v5
+        with:
+          args: >
+            -Dsonar.projectKey=${{ env.SONAR_PROJECT_KEY }}
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: Setup Snyk CLI
+        if: ${{ env.SNYK_TOKEN != '' }}
+        uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # master
+
+      - name: Snyk dependency scan by scope (core/dev/extras)
         id: snyk
         if: ${{ env.SNYK_TOKEN != '' }}
         continue-on-error: true
-        uses: snyk/actions/python@master
-        with:
-          command: test
-          args: --severity-threshold=high --all-projects --sarif-file-output=snyk.sarif
+        shell: bash
         env:
           SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
+        run: |
+          set -euo pipefail
 
-      - name: Upload Snyk SARIF to GitHub Security
-        if: ${{ always() && env.SNYK_TOKEN != '' && hashFiles('snyk.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: snyk.sarif
+          MANIFEST_DIR="$RUNNER_TEMP/snyk-manifests"
+          mkdir -p "$MANIFEST_DIR"
+
+          uv export --frozen --no-default-groups --no-dev --no-hashes --no-emit-project \
+            -o "$MANIFEST_DIR/requirements-core.txt"
+          uv export --frozen --only-group dev --no-hashes --no-emit-project \
+            -o "$MANIFEST_DIR/requirements-dev.txt"
+
+          for extra in fastapi sqlalchemy config cache pyspark prometheus; do
+            uv export --frozen --no-default-groups --no-dev --extra "$extra" \
+              --no-hashes --no-emit-project \
+              -o "$MANIFEST_DIR/requirements-extra-${extra}.txt"
+          done
+
+          snyk test --severity-threshold=high \
+            --file="$MANIFEST_DIR/requirements-core.txt" \
+            --package-manager=pip \
+            --project-name="loom-py/core"
+          snyk test --severity-threshold=high \
+            --file="$MANIFEST_DIR/requirements-dev.txt" \
+            --package-manager=pip \
+            --project-name="loom-py/dev"
+
+          for extra in fastapi sqlalchemy config cache pyspark prometheus; do
+            snyk test --severity-threshold=high \
+              --file="$MANIFEST_DIR/requirements-extra-${extra}.txt" \
+              --package-manager=pip \
+              --project-name="loom-py/extra-${extra}"
+          done
 
       - name: Publish prerelease package to TestPyPI
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.TEST_PYPI_API_TOKEN != '' && steps.version.outputs.deploy == 'true' }}

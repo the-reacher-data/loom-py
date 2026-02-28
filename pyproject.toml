@@ -43,14 +43,15 @@ dev = [
     "fakeredis>=2.23.0",
     "fastapi>=0.115,<1.0",
     "greenlet>=3.0.0",
-    "mypy>=1.11.0",
+    "mypy>=1.11.0,<2.0",
     "omegaconf>=2.3,<3.0",
     "pydantic>=2.0,<3.0",
     "pre-commit>=3.8.0",
+    "pyright>=1.1.390,<2.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "redis>=5.0.0",
-    "ruff>=0.6.0",
+    "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
     "httpx>=0.28.1",
     "prometheus-client>=0.20",
@@ -68,19 +69,30 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
+    "Exists",
     "Input",
     "Load",
+    "LoadById",
+    "loom.core.use_case.Exists",
     "loom.core.use_case.Input",
     "loom.core.use_case.Load",
+    "loom.core.use_case.LoadById",
+    "loom.core.use_case.markers.Exists",
     "loom.core.use_case.markers.Input",
     "loom.core.use_case.markers.Load",
+    "loom.core.use_case.markers.LoadById",
 ]
+
+[tool.pyright]
+pythonVersion = "3.11"
+include = ["src"]
+typeCheckingMode = "standard"
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = ["src"]
-exclude = ["tests/integration/fake_repo/src/"]
+exclude = ["^tests/"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

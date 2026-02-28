@@ -1,0 +1,57 @@
+name: docs
+
+on:
+  pull_request:
+    branches: ["master"]
+    paths:
+      - "docs/**"
+      - "src/**/*.py"
+      - "README.md"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: ["master"]
+    paths:
+      - "docs/**"
+      - "src/**/*.py"
+      - "README.md"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
+
+      - name: Build docs (strict)
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run \
+            --extra fastapi \
+            --extra sqlalchemy \
+            --extra cache \
+            --extra config \
+            --extra prometheus \
+            --with 'sphinx>=8.0' \
+            --with 'furo>=2024.8.6' \
+            --with 'myst-parser>=3.0' \
+            sphinx-build -W -b html docs docs/_build/html
+
+      - name: Upload docs artifact
+        if: ${{ always() && hashFiles('docs/_build/html/**') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docs-html
+          path: docs/_build/html

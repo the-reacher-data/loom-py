@@ -76,12 +76,12 @@ def load_config(*config_files: str) -> DictConfig:
     if not config_files:
         raise ConfigError("load_config requires at least one config file.")
 
-    OmegaConf = _ensure_omegaconf()
+    omega_conf = _ensure_omegaconf()
 
     bases = []
     for path in config_files:
         try:
-            bases.append(OmegaConf.load(path))
+            bases.append(omega_conf.load(path))
         except FileNotFoundError as exc:
             raise ConfigError(f"Configuration file not found: {path!r}") from exc
         except Exception as exc:
@@ -89,7 +89,7 @@ def load_config(*config_files: str) -> DictConfig:
                 f"Failed to parse configuration file {path!r}: {exc}"
             ) from exc
 
-    merged = OmegaConf.merge(*bases) if len(bases) > 1 else bases[0]
+    merged = omega_conf.merge(*bases) if len(bases) > 1 else bases[0]
     return merged  # type: ignore[no-any-return]
 
 
@@ -124,7 +124,7 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
 
         db = section(cfg, "database", DatabaseConfig)
     """
-    OmegaConf = _ensure_omegaconf()
+    omega_conf = _ensure_omegaconf()
 
     # Navigate through dot-separated keys
     node: Any = cfg
@@ -138,7 +138,7 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
             ) from exc
 
     try:
-        data = OmegaConf.to_container(node, resolve=True)
+        data = omega_conf.to_container(node, resolve=True)
     except Exception as exc:
         raise ConfigError(
             f"Failed to resolve config section {key!r} "

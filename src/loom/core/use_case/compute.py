@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 import msgspec
 
 from loom.core.command.base import Command
-from loom.core.command.introspection import get_patch_fields
-from loom.core.use_case.field_ref import FieldRef
+from loom.core.use_case._predicates import (
+    predicate_is_present as _predicate_is_present,
+)
+from loom.core.use_case._predicates import (
+    resolve_from_command as _resolve_from_command,
+)
+from loom.core.use_case.field_ref import FieldExpr, FieldRef
 
 CommandT = TypeVar("CommandT", bound=Command)
 
@@ -16,57 +21,58 @@ CommandT = TypeVar("CommandT", bound=Command)
 ComputeFn = Callable[[CommandT, frozenset[str]], CommandT]
 
 
-def _resolve_from_command(command: Command, ref: FieldRef) -> Any:
-    current: Any = command
-    for item in ref.path:
-        current = getattr(current, item)
-    return current
-
-
-def _is_present(command: Command, fields_set: frozenset[str], ref: FieldRef) -> bool:
-    if (
-        isinstance(ref.root, type)
-        and issubclass(ref.root, Command)
-        and ref.leaf in get_patch_fields(ref.root)
-    ):
-        return ref.leaf in fields_set
-    return _resolve_from_command(command, ref) is not None
-
-
 @dataclass(frozen=True, slots=True)
 class _ComputeSpec:
     target: FieldRef
-    sources: tuple[FieldRef, ...]
-    via: Callable[..., Any] | None
-    predicate: FieldRef | None = None
+    command_sources: tuple[FieldRef, ...] = ()
+    param_names: tuple[str, ...] = ()
+    include_command: bool = False
+    via: Callable[..., Any] | None = None
+    predicate: FieldRef | FieldExpr | None = None
 
-    def __call__(self, command: Command, fields_set: frozenset[str]) -> Command:
-        if self.predicate is not None and not _is_present(
+    def from_params(self, *names: str) -> _ComputeSpec:
+        if not names:
+            raise ValueError("Compute.from_params(...) requires at least one param name.")
+        return replace(self, param_names=(*self.param_names, *names))  # NOSONAR
+
+    def when_present(self, predicate: FieldRef | FieldExpr) -> _ComputeSpec:
+        return replace(self, predicate=predicate)  # NOSONAR
+
+    def __call__(
+        self,
+        command: Command,
+        fields_set: frozenset[str],
+        context: dict[str, object] | None = None,
+    ) -> Command:
+        if self.predicate is not None and not _predicate_is_present(
             command, fields_set, self.predicate
         ):
             return command
 
-        values = tuple(_resolve_from_command(command, source) for source in self.sources)
-        next_value = values[0] if self.via is None else self.via(*values)
+        args: list[Any] = []
+        if self.include_command:
+            args.append(command)
+        for source in self.command_sources:
+            args.append(_resolve_from_command(command, source))
+
+        if self.param_names:
+            if context is None:
+                raise ValueError("Compute.from_params(...) requires runtime context.")
+            if missing := [n for n in self.param_names if n not in context]:
+                raise ValueError(f"Missing runtime context keys for compute: {', '.join(missing)}")
+            args.extend(context[n] for n in self.param_names)
+
+        if self.via is None:
+            if len(args) != 1:
+                raise ValueError(
+                    "Compute without via requires exactly one source. "
+                    "Use from_command(F(...)) or provide via=..."
+                )
+            next_value = args[0]
+        else:
+            next_value = self.via(*args)
+
         return msgspec.structs.replace(command, **{self.target.leaf: next_value})
-
-
-class _ComputeWhenBuilder:
-    __slots__ = ("_spec",)
-
-    def __init__(self, spec: _ComputeSpec) -> None:
-        self._spec = spec
-
-    def when_present(self, predicate: FieldRef) -> ComputeFn[Any]:
-        return _ComputeSpec(
-            target=self._spec.target,
-            sources=self._spec.sources,
-            via=self._spec.via,
-            predicate=predicate,
-        )
-
-    def build(self) -> ComputeFn[Any]:
-        return self._spec
 
 
 class _ComputeSetBuilder:
@@ -75,25 +81,30 @@ class _ComputeSetBuilder:
     def __init__(self, target: FieldRef) -> None:
         self._target = target
 
-    def from_fields(
+    def from_command(
         self,
         *sources: FieldRef,
         via: Callable[..., Any] | None = None,
-    ) -> _ComputeWhenBuilder:
+    ) -> _ComputeSpec:
         if not sources:
-            raise ValueError(
-                "Compute.set(...).from_fields(...) requires at least one source."
-            )
-        if len(sources) > 1 and via is None:
-            raise ValueError(
-                "A 'via' callable is required when multiple sources are provided."
-            )
-        return _ComputeWhenBuilder(
-            _ComputeSpec(
+            if via is None:
+                raise ValueError(
+                    "Compute.from_command() without fields requires via=... "
+                    "to derive the target value."
+                )
+            return _ComputeSpec(
                 target=self._target,
-                sources=tuple(sources),
+                include_command=True,
                 via=via,
             )
+
+        if len(sources) > 1 and via is None:
+            raise ValueError("A via callable is required when multiple command fields are used.")
+
+        return _ComputeSpec(
+            target=self._target,
+            command_sources=tuple(sources),
+            via=via,
         )
 
 
@@ -101,7 +112,7 @@ class Compute:
     """Compute DSL namespace.
 
     Example:
-        ``Compute.set(F(UpdateUser).slug).from_fields(F(UpdateUser).name, via=slugify)``
+        ``Compute.set(F(UpdateUser).slug).from_command(F(UpdateUser).name, via=slugify)``
     """
 
     @staticmethod
