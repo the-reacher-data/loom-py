@@ -1,6 +1,6 @@
 # Fake repo examples
 
-This project contains realistic examples under `examples/fake_repo`.
+This project contains a documented example in `docs/examples-repo/index.md`.
 
 Recommended reading order:
 
@@ -13,5 +13,5 @@ These examples are the reference implementation for DSL usage and expected behav
 
 Useful files:
 
-- `examples/fake_repo/src/app/product/use_cases.py`
+- `tests/integration/fake_repo/src/app/product/use_cases.py`
 - `tests/integration/core/use_case/test_use_case_crud_integration.py`

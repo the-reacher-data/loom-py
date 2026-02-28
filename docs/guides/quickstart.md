@@ -14,4 +14,4 @@ pip install loom-kernel
 2. Create a `UseCase` with `rules` and `computes`.
 3. Wire a `RestInterface` or run the use case directly from bootstrap/runtime.
 
-See `examples/fake_repo` for runnable end-to-end examples.
+See `docs/examples-repo/index.md` for the documented fake-repo example.
