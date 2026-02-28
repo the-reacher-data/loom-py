@@ -251,7 +251,7 @@ class TestRuntimeEvent:
             error=err,
         )
         assert event.step_name == "Load User"
-        assert event.duration_ms == 5.2
+        assert event.duration_ms == pytest.approx(5.2)
         assert event.status == "failure"
         assert event.error is err
 

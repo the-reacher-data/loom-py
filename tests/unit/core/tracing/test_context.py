@@ -108,7 +108,8 @@ class TestAsyncIsolation:
             async def child() -> None:
                 seen.append(get_trace_id())
 
-            await asyncio.create_task(child())
+            task = asyncio.create_task(child())
+            await task
             assert seen == ["parent-tid"]
         finally:
             reset_trace_id(token)

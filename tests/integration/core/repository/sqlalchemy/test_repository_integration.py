@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import msgspec
+import pytest
 from pytest import mark
 
 from loom.core.repository.abc import (
@@ -37,7 +38,7 @@ class TestRepositorySQLAlchemyIntegration:
 
         updated = await integration_context.product.repository.update(1, UpdateProduct(price=99.9))
         assert updated is not None
-        assert float(updated.price) == 99.9
+        assert float(updated.price) == pytest.approx(99.9)
 
         deleted = await integration_context.product.repository.delete(1)
         assert deleted is True

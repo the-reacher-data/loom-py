@@ -73,7 +73,7 @@ class TestPrometheusMiddlewareHTTP:
             "http_requests_total",
             {"method": "GET", "path_template": "/products", "status_code": "200"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_records_duration(self) -> None:
@@ -92,7 +92,7 @@ class TestPrometheusMiddlewareHTTP:
             "http_request_duration_seconds_count",
             {"method": "GET", "path_template": "/"},
         )
-        assert count == 1.0
+        assert count == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_uses_route_template_not_real_path(self) -> None:
@@ -117,8 +117,8 @@ class TestPrometheusMiddlewareHTTP:
             "http_requests_total",
             {"path_template": "/products/42", "status_code": "200"},
         )
-        assert template_val == 1.0
-        assert real_val == 0.0
+        assert template_val == pytest.approx(1.0)
+        assert real_val == pytest.approx(0.0)
 
     @pytest.mark.asyncio
     async def test_records_status_code(self) -> None:
@@ -137,7 +137,7 @@ class TestPrometheusMiddlewareHTTP:
             "http_requests_total",
             {"method": "GET", "path_template": "/", "status_code": "404"},
         )
-        assert val == 1.0
+        assert val == pytest.approx(1.0)
 
 
 class TestPrometheusMiddlewareNonHTTP:

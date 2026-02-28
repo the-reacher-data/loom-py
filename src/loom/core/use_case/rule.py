@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, TypeVar
+from dataclasses import dataclass, replace
+from typing import Any, Protocol, Self, TypeVar
 
 from loom.core.command.base import Command
-from loom.core.command.introspection import get_patch_fields
 from loom.core.errors.errors import RuleViolation, RuleViolations
-from loom.core.use_case.field_ref import FieldExpr, FieldRef, PredicateOp
+from loom.core.use_case._predicates import (
+    is_present as _is_present,
+)
+from loom.core.use_case._predicates import (
+    predicate_is_present as _predicate_is_present,
+)
+from loom.core.use_case._predicates import (
+    resolve_from_command as _resolve_from_command,
+)
+from loom.core.use_case.field_ref import FieldExpr, FieldRef
 
 # Re-exported for backward compatibility — canonical home is loom.core.errors.
 __all__ = [
@@ -19,42 +27,20 @@ __all__ = [
 
 CommandT = TypeVar("CommandT", bound=Command)
 
-RuleFn = Callable[..., None]
+
+class RuleFn(Protocol):
+    def __call__(
+        self,
+        command: Command,
+        fields_set: frozenset[str],
+        context: dict[str, object] | None = None,
+    ) -> None: ...
 
 
-def _resolve_from_command(command: Command, ref: FieldRef) -> Any:
-    current: Any = command
-    for item in ref.path:
-        current = getattr(current, item)
-    return current
-
-
-def _is_present(command: Command, fields_set: frozenset[str], ref: FieldRef) -> bool:
-    if (
-        isinstance(ref.root, type)
-        and issubclass(ref.root, Command)
-        and ref.leaf in get_patch_fields(ref.root)
-    ):
-        return ref.leaf in fields_set
-    return _resolve_from_command(command, ref) is not None
-
-
-def _predicate_is_present(
-    command: Command,
-    fields_set: frozenset[str],
-    predicate: FieldRef | FieldExpr,
-) -> bool:
-    if isinstance(predicate, FieldRef):
-        return _is_present(command, fields_set, predicate)
-    if predicate.op is PredicateOp.OR:
-        return _predicate_is_present(command, fields_set, predicate.left) or _predicate_is_present(
-            command, fields_set, predicate.right
-        )
-    if predicate.op is PredicateOp.AND:
-        return _predicate_is_present(command, fields_set, predicate.left) and _predicate_is_present(
-            command, fields_set, predicate.right
-        )
-    raise ValueError(f"Unsupported predicate op: {predicate.op}")
+class RuleBuilderFn(RuleFn, Protocol):
+    def from_command(self, *sources: FieldRef) -> Self: ...
+    def from_params(self, *names: str) -> Self: ...
+    def when_present(self, predicate: FieldRef | FieldExpr) -> Self: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,52 +57,21 @@ class _RuleSpec:
     def from_command(self, *sources: FieldRef) -> _RuleSpec:
         if not sources:
             # Full command mode: provide both command and fields_set.
-            return _RuleSpec(
-                evaluator=self.evaluator,
-                field=self.field,
-                message=self.message,
-                command_sources=(),
-                param_names=self.param_names,
-                include_command=True,
-                include_fields_set=True,
-                predicate=self.predicate,
-            )
-        return _RuleSpec(
-            evaluator=self.evaluator,
-            field=self.field,
-            message=self.message,
+            return replace(self, command_sources=(), include_command=True, include_fields_set=True)
+        return replace(
+            self,
             command_sources=tuple(sources),
-            param_names=self.param_names,
             include_command=False,
             include_fields_set=False,
-            predicate=self.predicate,
         )
 
     def from_params(self, *names: str) -> _RuleSpec:
         if not names:
             raise ValueError("Rule.from_params(...) requires at least one parameter name.")
-        return _RuleSpec(
-            evaluator=self.evaluator,
-            field=self.field,
-            message=self.message,
-            command_sources=self.command_sources,
-            param_names=(*self.param_names, *names),
-            include_command=self.include_command,
-            include_fields_set=self.include_fields_set,
-            predicate=self.predicate,
-        )
+        return replace(self, param_names=(*self.param_names, *names))
 
     def when_present(self, predicate: FieldRef | FieldExpr) -> _RuleSpec:
-        return _RuleSpec(
-            evaluator=self.evaluator,
-            field=self.field,
-            message=self.message,
-            command_sources=self.command_sources,
-            param_names=self.param_names,
-            include_command=self.include_command,
-            include_fields_set=self.include_fields_set,
-            predicate=predicate,
-        )
+        return replace(self, predicate=predicate)
 
     def __call__(
         self,
@@ -140,11 +95,9 @@ class _RuleSpec:
         if self.param_names:
             if context is None:
                 raise ValueError("Rule.from_params(...) requires runtime context.")
-            missing = [name for name in self.param_names if name not in context]
-            if missing:
-                missing_str = ", ".join(missing)
-                raise ValueError(f"Missing runtime context keys for rule: {missing_str}")
-            args.extend(context[name] for name in self.param_names)
+            if missing := [n for n in self.param_names if n not in context]:
+                raise ValueError(f"Missing runtime context keys for rule: {', '.join(missing)}")
+            args.extend(context[n] for n in self.param_names)
 
         result = self.evaluator(*args)
         if isinstance(result, RuleViolation):
@@ -155,15 +108,13 @@ class _RuleSpec:
             raise RuleViolation(self._resolved_field(command), self._resolved_message())
 
     def _resolved_field(self, command: Command) -> str:
-        if self.field is not None:
-            return self.field
-        if self.command_sources:
-            return self.command_sources[0].leaf
-        if self.param_names:
-            return self.param_names[0]
-        if isinstance(self.predicate, FieldRef):
-            return self.predicate.leaf
-        return type(command).__name__
+        candidates = (
+            self.field,
+            self.command_sources[0].leaf if self.command_sources else None,
+            self.param_names[0] if self.param_names else None,
+            self.predicate.leaf if isinstance(self.predicate, FieldRef) else None,
+        )
+        return next((c for c in candidates if c is not None), type(command).__name__)
 
     def _resolved_message(self) -> str:
         return self.message or "Rule check failed"
@@ -177,12 +128,7 @@ class _RequirePresentSpec:
     predicate: FieldRef | FieldExpr | None = None
 
     def when_present(self, predicate: FieldRef | FieldExpr) -> _RequirePresentSpec:
-        return _RequirePresentSpec(
-            target=self.target,
-            field=self.field,
-            message=self.message,
-            predicate=predicate,
-        )
+        return replace(self, predicate=predicate)
 
     def __call__(
         self,
@@ -207,7 +153,7 @@ class Rule:
         *targets: FieldRef,
         via: Callable[..., Any],
         message: str | None = None,
-    ) -> RuleFn:
+    ) -> RuleBuilderFn:
         if not targets:
             raise ValueError("Rule.check(...) requires at least one target.")
         return _RuleSpec(
@@ -222,7 +168,7 @@ class Rule:
         condition: Callable[..., bool],
         *,
         message: str,
-    ) -> RuleFn:
+    ) -> RuleBuilderFn:
         return _RuleSpec(
             evaluator=condition,
             message=message,

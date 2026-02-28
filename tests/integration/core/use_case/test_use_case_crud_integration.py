@@ -187,7 +187,7 @@ class TestUseCaseCrudIntegration:
             payload={"price": 49.9},
         )
         assert updated is not None
-        assert float(updated.price) == 49.9
+        assert float(updated.price) == pytest.approx(49.9)
 
         delete_uc = result.factory.build(DeleteProductUseCase)
         deleted = await executor.execute(delete_uc, params={"product_id": 1})
@@ -215,7 +215,7 @@ class TestUseCaseCrudIntegration:
         )
 
         assert created.name == "HEADSET"
-        assert float(created.price) == 42.0
+        assert float(created.price) == pytest.approx(42.0)
 
     @mark.asyncio
     async def test_use_case_compute_and_rules_rejects_invalid_input(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, mark
 
@@ -56,7 +57,7 @@ def test_fake_repo_app_bootstrap_without_metrics(
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated is not None
-        assert updated["price"] == 99.9
+        assert updated["price"] == pytest.approx(99.9)
 
         delete_response = client.delete("/products/1")
         assert delete_response.status_code == 200
@@ -108,7 +109,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated is not None
-        assert updated["price"] == 99.9
+        assert updated["price"] == pytest.approx(99.9)
 
         delete_response = client.delete("/products/1")
         assert delete_response.status_code == 200
