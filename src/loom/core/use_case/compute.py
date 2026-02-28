@@ -33,10 +33,10 @@ class _ComputeSpec:
     def from_params(self, *names: str) -> _ComputeSpec:
         if not names:
             raise ValueError("Compute.from_params(...) requires at least one param name.")
-        return replace(self, param_names=(*self.param_names, *names))
+        return replace(self, param_names=(*self.param_names, *names))  # NOSONAR
 
     def when_present(self, predicate: FieldRef | FieldExpr) -> _ComputeSpec:
-        return replace(self, predicate=predicate)
+        return replace(self, predicate=predicate)  # NOSONAR
 
     def __call__(
         self,

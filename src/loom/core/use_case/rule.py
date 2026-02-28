@@ -57,8 +57,10 @@ class _RuleSpec:
     def from_command(self, *sources: FieldRef) -> _RuleSpec:
         if not sources:
             # Full command mode: provide both command and fields_set.
-            return replace(self, command_sources=(), include_command=True, include_fields_set=True)
-        return replace(
+            return replace(  # NOSONAR
+                self, command_sources=(), include_command=True, include_fields_set=True
+            )
+        return replace(  # NOSONAR
             self,
             command_sources=tuple(sources),
             include_command=False,
@@ -68,10 +70,10 @@ class _RuleSpec:
     def from_params(self, *names: str) -> _RuleSpec:
         if not names:
             raise ValueError("Rule.from_params(...) requires at least one parameter name.")
-        return replace(self, param_names=(*self.param_names, *names))
+        return replace(self, param_names=(*self.param_names, *names))  # NOSONAR
 
     def when_present(self, predicate: FieldRef | FieldExpr) -> _RuleSpec:
-        return replace(self, predicate=predicate)
+        return replace(self, predicate=predicate)  # NOSONAR
 
     def __call__(
         self,
@@ -104,7 +106,7 @@ class _RuleSpec:
             raise result
         if isinstance(result, str):
             raise RuleViolation(self._resolved_field(command), result)
-        if result is True:
+        if result is True:  # intentional: only boolean True signals failure, not any truthy value
             raise RuleViolation(self._resolved_field(command), self._resolved_message())
 
     def _resolved_field(self, command: Command) -> str:
@@ -128,7 +130,7 @@ class _RequirePresentSpec:
     predicate: FieldRef | FieldExpr | None = None
 
     def when_present(self, predicate: FieldRef | FieldExpr) -> _RequirePresentSpec:
-        return replace(self, predicate=predicate)
+        return replace(self, predicate=predicate)  # NOSONAR
 
     def __call__(
         self,

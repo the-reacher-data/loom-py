@@ -33,6 +33,7 @@ class _JobWithDefaults(Job[None]):
     """Job that relies entirely on default ClassVar values."""
 
     async def execute(self) -> None:
+        # No-op: only ClassVar defaults are under test, not the execution body.
         pass
 
 
@@ -68,11 +69,11 @@ class TestJobIsAbstract:
 
     def test_concrete_async_subclass_can_be_instantiated(self) -> None:
         job = _AsyncJob()
-        assert job is not None
+        assert isinstance(job, _AsyncJob)
 
     def test_concrete_sync_subclass_can_be_instantiated(self) -> None:
         job = _SyncJob()
-        assert job is not None
+        assert isinstance(job, _SyncJob)
 
 
 # ---------------------------------------------------------------------------
