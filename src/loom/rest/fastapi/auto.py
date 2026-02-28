@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -22,6 +23,7 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.logger import ColorLogger, StdLogger, StructLogger, configure_logger_factory
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -73,6 +75,11 @@ class _DatabaseConfig(msgspec.Struct, kw_only=True):
 class _MetricsConfig(msgspec.Struct, kw_only=True):
     enabled: bool = False
     path: str = "/metrics"
+
+
+class _LoggerConfig(msgspec.Struct, kw_only=True):
+    backend: str = "color"
+    enable_colors: bool = True
 
 
 def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -136,6 +143,22 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
+def _configure_logger(logger_cfg: _LoggerConfig) -> None:
+    backend = logger_cfg.backend.lower()
+    if backend in {"color", "coloured", "colored"}:
+        configure_logger_factory(
+            lambda name: ColorLogger(name, enable_colors=logger_cfg.enable_colors)
+        )
+        return
+    if backend in {"std", "stdlib"}:
+        configure_logger_factory(StdLogger)
+        return
+    if backend in {"struct", "structlog"}:
+        configure_logger_factory(StructLogger)
+        return
+    raise ValueError(f"Unsupported logger backend: {logger_cfg.backend!r}")
+
+
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
@@ -176,6 +199,11 @@ def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
+    try:
+        logger_cfg = section(raw, "logger", _LoggerConfig)
+    except ConfigError:
+        logger_cfg = _LoggerConfig()
+    _configure_logger(logger_cfg)
 
     config_file = Path(config_path).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
