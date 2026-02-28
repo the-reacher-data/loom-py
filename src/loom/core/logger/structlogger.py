@@ -30,14 +30,13 @@ class StructLogger(LoggerPort):
         Returns:
             A new ``StructLogger`` instance with merged fields.
         """
-        merged = dict(self._bound_fields)
-        merged.update(fields)
-        return StructLogger(self._name, bound_fields=merged)
+        return StructLogger(self._name, bound_fields=self._merge(fields))
 
     def _merged(self, fields: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(self._bound_fields)
-        merged.update(fields)
-        return merged
+        return self._merge(fields)
+
+    def _merge(self, fields: dict[str, Any]) -> dict[str, Any]:
+        return {**self._bound_fields, **fields}
 
     def debug(self, event: str, **fields: Any) -> None:
         """Emit a DEBUG-level structured log entry.

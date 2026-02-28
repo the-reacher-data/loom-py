@@ -28,17 +28,17 @@ class StdLogger(LoggerPort):
         Returns:
             A new ``StdLogger`` instance with merged fields.
         """
-        merged = dict(self._bound_fields)
-        merged.update(fields)
-        return StdLogger(self._logger.name, bound_fields=merged)
+        return StdLogger(self._logger.name, bound_fields=self._merge(fields))
 
     def _payload(self, event: str, fields: dict[str, Any]) -> str:
-        merged = dict(self._bound_fields)
-        merged.update(fields)
+        merged = self._merge(fields)
         if not merged:
             return event
         kv = ", ".join(f"{k}={v!r}" for k, v in sorted(merged.items()))
         return f"{event} | {kv}"
+
+    def _merge(self, fields: dict[str, Any]) -> dict[str, Any]:
+        return {**self._bound_fields, **fields}
 
     def debug(self, event: str, **fields: Any) -> None:
         """Emit a DEBUG-level log entry via stdlib logging.
