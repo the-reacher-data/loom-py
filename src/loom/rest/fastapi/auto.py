@@ -75,6 +75,28 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
+def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return InterfacesDiscoveryEngine(
+        discovery_cfg.interfaces.modules,
+        warn_recommended=discovery_cfg.interfaces.warn_recommended,
+    ).discover()
+
+
+def _discover_modules(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
+
+
+def _discover_manifest(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
+
+
+_DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
+    "interfaces": _discover_interfaces,
+    "modules": _discover_modules,
+    "manifest": _discover_manifest,
+}
+
+
 def _ensure_code_path(code_path: Path) -> None:
     path_str = str(code_path.resolve())
     if path_str not in sys.path:
@@ -108,17 +130,10 @@ def _register_repositories(
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    mode = discovery_cfg.mode
-    if mode == "interfaces":
-        return InterfacesDiscoveryEngine(
-            discovery_cfg.interfaces.modules,
-            warn_recommended=discovery_cfg.interfaces.warn_recommended,
-        ).discover()
-    if mode == "modules":
-        return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
-    if mode == "manifest":
-        return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
-    raise ValueError(f"Unsupported discovery mode: {mode!r}")
+    engine = _DISCOVERY_ENGINES.get(discovery_cfg.mode)
+    if engine is None:
+        raise ValueError(f"Unsupported discovery mode: {discovery_cfg.mode!r}")
+    return engine(discovery_cfg)
 
 
 def _build_bootstrap(
