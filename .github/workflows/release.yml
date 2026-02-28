@@ -27,15 +27,15 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       RELEASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.event.pull_request.head.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@v3
+      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
 
       - name: Configure uv environment path
         shell: bash
@@ -45,7 +45,7 @@ jobs:
 
       - name: Compute release version from merged branch
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@v1
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           branch: ${{ env.RELEASE_BRANCH }}
           prerelease: "false"
@@ -53,7 +53,7 @@ jobs:
       - name: Generate release changelog
         id: changelog
         if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@v1
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1
         with:
           mode: "release"
           branch: ${{ env.RELEASE_BRANCH }}
@@ -94,13 +94,13 @@ jobs:
 
       - name: Publish package to PyPI (token mode)
         if: ${{ steps.version.outputs.deploy == 'true' && env.PYPI_API_TOKEN != '' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
         with:
           password: ${{ env.PYPI_API_TOKEN }}
 
       - name: Publish package to PyPI (trusted publisher)
         if: ${{ steps.version.outputs.deploy == 'true' && env.PYPI_API_TOKEN == '' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
 
       - name: Create and push tags
         if: ${{ steps.version.outputs.deploy == 'true' }}
@@ -127,7 +127,7 @@ jobs:
 
       - name: Create GitHub release
         if: ${{ steps.version.outputs.deploy == 'true' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
