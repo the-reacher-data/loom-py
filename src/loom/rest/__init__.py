@@ -11,7 +11,6 @@ factory) see :mod:`loom.rest.fastapi`.
 from loom.rest.adapter import PydanticAdapter
 from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
 from loom.rest.errors import HttpErrorMapper
-from loom.rest import fastapi
 from loom.rest.middleware import TraceIdMiddleware
 from loom.rest.model import (
     PaginationMode,
@@ -23,7 +22,6 @@ from loom.rest.rest_adapter import LoomRestAdapter
 
 __all__ = [
     "CompiledRoute",
-    "fastapi",
     "HttpErrorMapper",
     "InterfaceCompilationError",
     "LoomRestAdapter",
