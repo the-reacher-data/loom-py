@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import and_, or_
@@ -15,6 +16,18 @@ from loom.core.repository.sqlalchemy.query_compiler.subquery import (
 )
 
 _RELATION_OPS = frozenset([FilterOp.EXISTS, FilterOp.NOT_EXISTS])
+_SIMPLE_OPS: dict[FilterOp, Callable[[Any, Any], Any]] = {
+    FilterOp.EQ: lambda col, value: col == value,
+    FilterOp.NE: lambda col, value: col != value,
+    FilterOp.GT: lambda col, value: col > value,
+    FilterOp.GTE: lambda col, value: col >= value,
+    FilterOp.LT: lambda col, value: col < value,
+    FilterOp.LTE: lambda col, value: col <= value,
+    FilterOp.IN: lambda col, value: col.in_(value),
+    FilterOp.LIKE: lambda col, value: col.like(value),
+    FilterOp.ILIKE: lambda col, value: col.ilike(value),
+    FilterOp.IS_NULL: lambda col, _value: col.is_(None),
+}
 
 
 def compile_filter_group(
@@ -36,9 +49,7 @@ def compile_filter_group(
         UnsafeFilterError: If a field is not in ``allowed_fields``.
         FilterPathError: If a field path cannot be resolved.
     """
-    clauses = [
-        _compile_spec(sa_model, spec, allowed_fields) for spec in group.filters
-    ]
+    clauses = [_compile_spec(sa_model, spec, allowed_fields) for spec in group.filters]
     if group.op == "OR":
         return or_(*clauses)
     return and_(*clauses)
@@ -63,24 +74,7 @@ def _compile_spec(
 
 
 def _apply_op(col: Any, op: FilterOp, value: Any) -> Any:
-    if op == FilterOp.EQ:
-        return col == value
-    if op == FilterOp.NE:
-        return col != value
-    if op == FilterOp.GT:
-        return col > value
-    if op == FilterOp.GTE:
-        return col >= value
-    if op == FilterOp.LT:
-        return col < value
-    if op == FilterOp.LTE:
-        return col <= value
-    if op == FilterOp.IN:
-        return col.in_(value)
-    if op == FilterOp.LIKE:
-        return col.like(value)
-    if op == FilterOp.ILIKE:
-        return col.ilike(value)
-    if op == FilterOp.IS_NULL:
-        return col.is_(None)
+    handler = _SIMPLE_OPS.get(op)
+    if handler is not None:
+        return handler(col, value)
     raise ValueError(f"Unsupported FilterOp: {op!r}")
