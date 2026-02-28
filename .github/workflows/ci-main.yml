@@ -94,12 +94,15 @@ jobs:
               -o "$MANIFEST_DIR/requirements-extra-${extra}.txt"
           done
 
+          python -m pip install -r "$MANIFEST_DIR/requirements-core.txt"
           snyk monitor --file="$MANIFEST_DIR/requirements-core.txt" --package-manager=pip \
             --project-name="loom-py/core" --target-reference="${GITHUB_REF_NAME:-master}"
+          python -m pip install -r "$MANIFEST_DIR/requirements-dev.txt"
           snyk monitor --file="$MANIFEST_DIR/requirements-dev.txt" --package-manager=pip \
             --project-name="loom-py/dev" --target-reference="${GITHUB_REF_NAME:-master}"
 
           for extra in fastapi sqlalchemy config cache pyspark prometheus; do
+            python -m pip install -r "$MANIFEST_DIR/requirements-extra-${extra}.txt"
             snyk monitor \
               --file="$MANIFEST_DIR/requirements-extra-${extra}.txt" \
               --package-manager=pip \
