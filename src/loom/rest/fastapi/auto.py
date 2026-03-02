@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -23,7 +24,13 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
-from loom.core.logger import ColorLogger, StdLogger, StructLogger, configure_logger_factory
+from loom.core.logger import (
+    Environment,
+    HandlerConfig,
+    LogConfig,
+    Renderer,
+    configure_logging,
+)
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -78,8 +85,12 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
 
 
 class _LoggerConfig(msgspec.Struct, kw_only=True):
-    backend: str = "color"
-    enable_colors: bool = True
+    name: str = ""
+    environment: str = ""
+    renderer: str | None = None
+    colors: bool | None = None
+    level: str = "INFO"
+    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
 
 
 def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -143,20 +154,22 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
+def _parse_renderer(value: str | None) -> Renderer | None:
+    return Renderer.from_str(value) if value is not None else None
+
+
 def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    backend = logger_cfg.backend.lower()
-    if backend in {"color", "coloured", "colored"}:
-        configure_logger_factory(
-            lambda name: ColorLogger(name, enable_colors=logger_cfg.enable_colors)
+    env_str = logger_cfg.environment.strip() or os.getenv("ENVIRONMENT", "dev")
+    configure_logging(
+        LogConfig(
+            name=logger_cfg.name,
+            environment=Environment.from_str(env_str),
+            renderer=_parse_renderer(logger_cfg.renderer),
+            colors=logger_cfg.colors,
+            level=logger_cfg.level,
+            handlers=tuple(logger_cfg.handlers),
         )
-        return
-    if backend in {"std", "stdlib"}:
-        configure_logger_factory(StdLogger)
-        return
-    if backend in {"struct", "structlog"}:
-        configure_logger_factory(StructLogger)
-        return
-    raise ValueError(f"Unsupported logger backend: {logger_cfg.backend!r}")
+    )
 
 
 def _build_bootstrap(
