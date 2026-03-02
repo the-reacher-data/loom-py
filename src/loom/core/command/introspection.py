@@ -42,11 +42,7 @@ def get_calculated_fields(cls: type) -> dict[str, CommandField]:
     Returns:
         Mapping of field name to ``CommandField`` metadata.
     """
-    return {
-        name: cf
-        for name, cf in get_command_fields(cls).items()
-        if cf.calculated
-    }
+    return {name: cf for name, cf in get_command_fields(cls).items() if cf.calculated}
 
 
 def get_internal_fields(cls: type) -> dict[str, CommandField]:
@@ -58,20 +54,12 @@ def get_internal_fields(cls: type) -> dict[str, CommandField]:
     Returns:
         Mapping of field name to ``CommandField`` metadata.
     """
-    return {
-        name: cf
-        for name, cf in get_command_fields(cls).items()
-        if cf.internal
-    }
+    return {name: cf for name, cf in get_command_fields(cls).items() if cf.internal}
 
 
 def get_patch_fields(cls: type) -> dict[str, CommandField]:
     """Return ``CommandField`` descriptors marked as ``patch``."""
-    return {
-        name: cf
-        for name, cf in get_command_fields(cls).items()
-        if cf.patch
-    }
+    return {name: cf for name, cf in get_command_fields(cls).items() if cf.patch}
 
 
 def is_patch_command(cls: type) -> bool:

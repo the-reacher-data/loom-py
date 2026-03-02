@@ -103,9 +103,7 @@ class LoomContainer:
         """
         binding = self._bindings.get(interface)
         if binding is None:
-            raise ResolutionError(
-                f"No binding registered for: {interface.__qualname__}"
-            )
+            raise ResolutionError(f"No binding registered for: {interface.__qualname__}")
         if binding.scope is Scope.APPLICATION:
             if binding._instance is None:
                 binding._instance = binding.provider()

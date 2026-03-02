@@ -14,9 +14,7 @@ from typing import Any
 # Holds the currently active UnitOfWork within an async execution context.
 # Set to the UoW instance by RuntimeExecutor when it owns the transaction.
 # None when no active UoW is managed by the executor.
-_active_uow: contextvars.ContextVar[Any] = contextvars.ContextVar(
-    "_active_uow", default=None
-)
+_active_uow: contextvars.ContextVar[Any] = contextvars.ContextVar("_active_uow", default=None)
 
 
 def get_active_uow() -> Any:

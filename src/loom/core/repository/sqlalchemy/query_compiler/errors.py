@@ -34,7 +34,5 @@ class UnsafeFilterError(ValueError):
     """
 
     def __init__(self, field: str) -> None:
-        super().__init__(
-            f"Filtering on field {field!r} is not allowed by this repository."
-        )
+        super().__init__(f"Filtering on field {field!r} is not allowed by this repository.")
         self.field = field

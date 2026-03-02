@@ -59,12 +59,8 @@ class PydanticAdapter:
         if cached is not None:
             return cached
 
-        struct_fields = {
-            f.name: f for f in msgspec.structs.fields(command_cls)
-        }
-        excluded = set(get_calculated_fields(command_cls)) | set(
-            get_internal_fields(command_cls)
-        )
+        struct_fields = {f.name: f for f in msgspec.structs.fields(command_cls)}
+        excluded = set(get_calculated_fields(command_cls)) | set(get_internal_fields(command_cls))
         patch_fields = set(get_patch_fields(command_cls))
 
         field_definitions: dict[str, Any] = {}
@@ -83,8 +79,8 @@ class PydanticAdapter:
         model = cast(
             type[pydantic.BaseModel],
             pydantic.create_model(
-            f"{command_cls.__name__}Schema",
-            **field_definitions,
+                f"{command_cls.__name__}Schema",
+                **field_definitions,
             ),
         )
         self._cache[command_cls] = model

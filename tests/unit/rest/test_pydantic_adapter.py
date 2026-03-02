@@ -66,9 +66,7 @@ class TestRegister:
         adapter = PydanticAdapter()
         adapter.register(CreateUser)
 
-        cmd, fields_set = adapter.parse(
-            CreateUser, {"email": "a@b.com", "name": "Alice"}
-        )
+        cmd, fields_set = adapter.parse(CreateUser, {"email": "a@b.com", "name": "Alice"})
         assert isinstance(cmd, CreateUser)
         assert cmd.email == "a@b.com"
 
@@ -76,9 +74,7 @@ class TestRegister:
 class TestParse:
     def test_returns_correct_command_and_fields_set(self) -> None:
         adapter = PydanticAdapter()
-        cmd, fields_set = adapter.parse(
-            CreateUser, {"email": "a@b.com", "name": "Alice"}
-        )
+        cmd, fields_set = adapter.parse(CreateUser, {"email": "a@b.com", "name": "Alice"})
 
         assert isinstance(cmd, CreateUser)
         assert cmd.email == "a@b.com"

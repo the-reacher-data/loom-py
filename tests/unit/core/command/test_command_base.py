@@ -51,18 +51,14 @@ class TestCommandFrozen:
 
 class TestCommandFromPayload:
     def test_full_payload(self) -> None:
-        cmd, fields_set = CreateUser.from_payload(
-            {"email": "a@b.com", "name": "Alice", "age": 30}
-        )
+        cmd, fields_set = CreateUser.from_payload({"email": "a@b.com", "name": "Alice", "age": 30})
         assert cmd.email == "a@b.com"
         assert cmd.name == "Alice"
         assert cmd.age == 30
         assert fields_set == frozenset({"email", "name", "age"})
 
     def test_partial_payload_with_defaults(self) -> None:
-        cmd, fields_set = CreateUser.from_payload(
-            {"email": "a@b.com", "name": "Alice"}
-        )
+        cmd, fields_set = CreateUser.from_payload({"email": "a@b.com", "name": "Alice"})
         assert cmd.age is None
         assert fields_set == frozenset({"email", "name"})
 
@@ -71,9 +67,7 @@ class TestCommandFromPayload:
             CreateUser.from_payload({"email": "a@b.com"})
 
     def test_fields_set_tracks_payload_keys(self) -> None:
-        cmd, fields_set = CreateWithInternal.from_payload(
-            {"email": "a@b.com"}
-        )
+        cmd, fields_set = CreateWithInternal.from_payload({"email": "a@b.com"})
         assert cmd.email == "a@b.com"
         assert cmd.tenant_id == 0
         assert "email" in fields_set

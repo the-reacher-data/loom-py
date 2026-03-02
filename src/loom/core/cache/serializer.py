@@ -10,6 +10,7 @@ _ = importlib.import_module("aiocache.serializers")
 
 class MsgspecSerializer:
     """aiocache serializer backed by msgspec msgpack."""
+
     encoding: str | None = None
 
     def dumps(self, value: Any) -> bytes:

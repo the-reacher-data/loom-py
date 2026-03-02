@@ -51,8 +51,7 @@ class HttpErrorMapper:
 
         if isinstance(error, RuleViolations):
             detail["violations"] = [
-                {"field": v.field, "message": v.message}
-                for v in error.violations
+                {"field": v.field, "message": v.message} for v in error.violations
             ]
 
         return HTTPException(status_code=status, detail=detail)

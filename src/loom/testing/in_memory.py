@@ -146,10 +146,7 @@ class InMemoryRepository(Generic[T]):
         updates: dict[str, Any] = (
             data
             if isinstance(data, dict)
-            else {
-                f.name: getattr(data, f.name)
-                for f in msgspec.structs.fields(type(data))
-            }
+            else {f.name: getattr(data, f.name) for f in msgspec.structs.fields(type(data))}
         )
         for k, v in updates.items():
             if v is not None and k in current and k != self._id_field:

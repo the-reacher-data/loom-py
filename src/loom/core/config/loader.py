@@ -39,11 +39,11 @@ def _ensure_omegaconf() -> Any:
     """Import OmegaConf or raise a clear ConfigError."""
     try:
         from omegaconf import OmegaConf
+
         return OmegaConf
     except ImportError as exc:
         raise ConfigError(
-            "omegaconf is required for load_config. "
-            "Install it with: pip install loom[config]"
+            "omegaconf is required for load_config. Install it with: pip install loom[config]"
         ) from exc
 
 
@@ -85,9 +85,7 @@ def load_config(*config_files: str) -> DictConfig:
         except FileNotFoundError as exc:
             raise ConfigError(f"Configuration file not found: {path!r}") from exc
         except Exception as exc:
-            raise ConfigError(
-                f"Failed to parse configuration file {path!r}: {exc}"
-            ) from exc
+            raise ConfigError(f"Failed to parse configuration file {path!r}: {exc}") from exc
 
     merged = omega_conf.merge(*bases) if len(bases) > 1 else bases[0]
     return merged  # type: ignore[no-any-return]
@@ -133,8 +131,7 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
             node = node[part]
         except Exception as exc:
             raise ConfigError(
-                f"Config section not found: {key!r}  "
-                f"(failed at segment {part!r})"
+                f"Config section not found: {key!r}  (failed at segment {part!r})"
             ) from exc
 
     try:
@@ -149,6 +146,5 @@ def section(cfg: DictConfig, key: str, target_type: type[T]) -> T:
         return msgspec.convert(data, target_type, strict=False)
     except msgspec.ValidationError as exc:
         raise ConfigError(
-            f"Config section {key!r} failed validation as "
-            f"{target_type.__name__!r}: {exc}"
+            f"Config section {key!r} failed validation as {target_type.__name__!r}: {exc}"
         ) from exc

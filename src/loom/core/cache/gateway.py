@@ -76,8 +76,7 @@ class CacheGateway:
         values = await self._cache.multi_get(keys)
         if type is not None:
             return [
-                msgspec.convert(value, type=type) if value is not None else None
-                for value in values
+                msgspec.convert(value, type=type) if value is not None else None for value in values
             ]
         return cast(list[T | Any | None], values)
 

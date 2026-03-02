@@ -17,9 +17,7 @@ class TestPatchCommand:
         assert fields_set == frozenset({"email"})
 
     def test_explicit_none_vs_omitted(self) -> None:
-        cmd, fields_set = UpdateUser.from_payload(
-            {"email": None, "name": "Alice"}
-        )
+        cmd, fields_set = UpdateUser.from_payload({"email": None, "name": "Alice"})
         assert cmd.email is None
         assert cmd.name == "Alice"
         assert "email" in fields_set
