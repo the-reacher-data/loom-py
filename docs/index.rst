@@ -1,6 +1,12 @@
 loom-kernel documentation
 =========================
 
+.. raw:: html
+
+   <div class="loom-hero">
+     <img src="_static/logo-transparent.png" alt="loom-kernel logo" />
+   </div>
+
 Framework-agnostic toolkit to build backend applications with typed use cases,
 repository contracts, and transport adapters.
 

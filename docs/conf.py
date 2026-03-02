@@ -33,16 +33,18 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "loom-kernel docs"
-html_logo = "_static/logo.svg"
-html_theme_options = {
-    "light_logo": "logo.svg",
-    "dark_logo": "logo.svg",
-}
+html_css_files = [
+    "custom.css",
+]
 
 autosummary_generate = True
 autosummary_imported_members = False
 autodoc_typehints = "description"
 autodoc_member_order = "bysource"
+autodoc_default_options = {
+    "members": True,
+    "show-inheritance": True,
+}
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
