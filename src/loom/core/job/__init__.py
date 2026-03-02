@@ -1,1 +1,1 @@
-# Job system — exports populated in Piece 10.
+# Job system — public API populated incrementally as pieces are implemented.

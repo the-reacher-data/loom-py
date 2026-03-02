@@ -1,15 +1,3 @@
-"""Distributable background unit of work.
-
-A :class:`Job` is a self-contained, dispatachable unit of work — smaller in
-scope than a :class:`~loom.core.use_case.UseCase` and not tied to a single
-domain entity.  Jobs are orchestrated *by* UseCases (or other Jobs), not
-triggered directly from HTTP.
-
-The Celery runner detects whether ``execute`` is a coroutine at startup via
-``inspect.iscoroutinefunction`` and dispatches accordingly, so both ``async
-def`` and ``def`` implementations are supported without changes to the caller.
-"""
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -26,52 +14,44 @@ ResultT = TypeVar("ResultT")
 
 
 class Job(ABC, Generic[ResultT]):
-    """Base class for all distributable background units of work.
+    """Base class for all distributable units of work.
 
-    Subclass and implement :meth:`execute` with a typed signature.  The
-    method may be ``async def`` (I/O-bound) or ``def`` (CPU-bound) — the
-    runner auto-detects the variant via ``inspect.iscoroutinefunction``.
+    ``Job`` is independent of ``UseCase`` — it does not inherit from it.
+    The compiler and factory operate on ``__execution_plan__`` and
+    ``execute()`` by duck typing, so they support ``Job`` without changes.
 
-    Class attributes ``computes`` and ``rules`` are processed by
-    :class:`~loom.core.engine.compiler.UseCaseCompiler` at startup, exactly
-    as for :class:`~loom.core.use_case.UseCase`.
+    Subclass and implement ``execute`` with any typed signature.  The method
+    may be ``async def`` or a plain ``def``; the Celery runner detects the
+    kind via ``inspect.iscoroutinefunction`` at registration time.
 
-    ClassVars prefixed with ``__`` configure Celery routing and retry
-    behaviour.  Override them in subclasses to customise per-job:
-
-    .. code-block:: python
-
-        class SendWelcomeEmailJob(Job[None]):
-            __queue__    = "emails"
-            __retries__  = 3
-            __countdown__ = 5
+    Class attributes ``computes`` and ``rules`` declare the pre-execution
+    pipeline, identical in semantics to ``UseCase``.  Routing ClassVars
+    (``__queue__``, ``__retries__``, etc.) control how Celery dispatches
+    and executes the task.  They can be overridden per subclass or at
+    runtime via ``JobConfig`` without affecting sibling ``Job`` classes.
 
     Attributes:
-        computes: Compute transformations applied in order before rule checks.
-        rules: Rule validations applied in order after computes.
-        __execution_plan__: Compiled plan cached by ``UseCaseCompiler``.
-            ``None`` until first compilation.
-        __queue__: Celery queue name.  Defaults to ``"default"``.
-        __retries__: Maximum automatic retries on failure.  Defaults to ``0``.
-        __countdown__: Seconds to delay before first execution.
-            Defaults to ``0`` (immediate).
-        __timeout__: Hard execution time-limit in seconds.
-            ``None`` means no limit.
-        __priority__: Celery task priority.  Defaults to ``0`` (normal).
+        __execution_plan__: Compiled plan, populated once by the compiler.
+        computes: Compute transformations applied before rule checks.
+        rules: Rule validations applied after computes.
+        __queue__: Celery queue name for this job. Defaults to ``"default"``.
+        __retries__: Maximum number of automatic retries on failure.
+        __countdown__: Delay in seconds before the task is first executed.
+        __timeout__: Soft time limit in seconds; ``None`` means no limit.
+        __priority__: Celery task priority (0 = lowest, 9 = highest for most
+            brokers).
 
     Example::
 
-        class GenerateReportJob(Job[ReportResult]):
-            __queue__    = "reports"
-            __retries__  = 2
-            __timeout__  = 120
+        class SendWelcomeEmailJob(Job[None]):
+            __queue__ = "email"
+            __retries__ = 3
 
-            def __init__(self, report_repo: ReportRepository) -> None:
-                self._report_repo = report_repo
+            def __init__(self, mailer: MailerPort) -> None:
+                self._mailer = mailer
 
-            async def execute(self, report_id: int) -> ReportResult:
-                data = await self._report_repo.get_data(report_id)
-                return ReportResult.build(data)
+            async def execute(self, user_id: int, email: str) -> None:
+                await self._mailer.send_welcome(user_id, email)
     """
 
     __execution_plan__: ClassVar[ExecutionPlan | None] = None
@@ -86,12 +66,17 @@ class Job(ABC, Generic[ResultT]):
 
     @abstractmethod
     def execute(self, *args: Any, **kwargs: Any) -> Any:
-        """Execute the job's core logic.
+        """Execute the job logic.
 
-        Override with an explicit typed signature.  The compiler inspects this
-        method once at startup to build the :class:`~loom.core.engine.plan.ExecutionPlan`.
+        Override with an explicit typed signature.  The compiler inspects
+        this method once at startup to build the ``ExecutionPlan``.
+
+        The method may be ``async def`` or a plain ``def``.  Celery runners
+        use ``inspect.iscoroutinefunction`` to choose the right execution
+        path.
 
         Returns:
-            The result of the job.  Type is determined by ``ResultT``.
+            The result of the job.  Type is fixed by the ``ResultT``
+            generic parameter of the subclass.
         """
         ...
