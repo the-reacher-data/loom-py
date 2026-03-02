@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
@@ -18,6 +18,10 @@ from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
 from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.rule import RuleViolation, RuleViolations
+
+if TYPE_CHECKING:
+    from loom.core.job.job import Job
+    from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
 
@@ -83,6 +87,28 @@ class RuntimeExecutor:
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
 
+    @overload
+    async def execute(
+        self,
+        compilable: UseCase[Any, ResultT],
+        *,
+        params: dict[str, Any] | None = ...,
+        payload: dict[str, Any] | None = ...,
+        dependencies: dict[type[Any], Any] | None = ...,
+        load_overrides: dict[type[Any], Any] | None = ...,
+    ) -> ResultT: ...
+
+    @overload
+    async def execute(
+        self,
+        compilable: Job[ResultT],
+        *,
+        params: dict[str, Any] | None = ...,
+        payload: dict[str, Any] | None = ...,
+        dependencies: dict[type[Any], Any] | None = ...,
+        load_overrides: dict[type[Any], Any] | None = ...,
+    ) -> ResultT: ...
+
     async def execute(
         self,
         compilable: Compilable,
@@ -91,7 +117,7 @@ class RuntimeExecutor:
         payload: dict[str, Any] | None = None,
         dependencies: dict[type[Any], Any] | None = None,
         load_overrides: dict[type[Any], Any] | None = None,
-    ) -> ResultT:
+    ) -> Any:
         """Execute a compiled instance via its ExecutionPlan.
 
         Accepts any object satisfying the :class:`~loom.core.engine.compilable.Compilable`
@@ -138,7 +164,7 @@ class RuntimeExecutor:
         token = _active_uow.set(uow)
         try:
             await uow.begin()
-            result: ResultT = await self._run_pipeline(
+            result: Any = await self._run_pipeline(
                 plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
             )
             await uow.commit()
@@ -165,7 +191,7 @@ class RuntimeExecutor:
         payload: dict[str, Any] | None,
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
-    ) -> ResultT:
+    ) -> Any:
         trace_id = get_trace_id()
         logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
 
@@ -191,9 +217,9 @@ class RuntimeExecutor:
             self._log_step("Execute core logic")
             execute_fn = compilable.execute
             if inspect.iscoroutinefunction(execute_fn):
-                result: ResultT = cast(ResultT, await execute_fn(**bound))
+                result: Any = await execute_fn(**bound)
             else:
-                result = cast(ResultT, execute_fn(**bound))
+                result = execute_fn(**bound)
 
         except RuleViolations as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000

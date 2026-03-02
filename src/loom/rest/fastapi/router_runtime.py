@@ -137,8 +137,6 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
 
         if op == FilterOp.IN:
             value = [_coerce_scalar(item) for item in raw_value.split(",") if item != ""]
-        elif op in {FilterOp.EXISTS, FilterOp.NOT_EXISTS, FilterOp.IS_NULL}:
-            value = _coerce_scalar(raw_value)
         else:
             value = _coerce_scalar(raw_value)
 

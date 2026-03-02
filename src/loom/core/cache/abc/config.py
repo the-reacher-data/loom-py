@@ -44,16 +44,24 @@ class CacheConfig(msgspec.Struct, kw_only=True):
             ttl={str(k): int(v) for k, v in dict(data.get("ttl", {})).items()},
         )
 
-    def ttl_for_entity(self, entity: str, *, is_list: bool) -> int:
-        """Resolve the effective TTL for an entity, falling back to defaults.
+    def ttl_for_single(self, entity: str) -> int:
+        """Resolve the effective TTL for a single-entity lookup.
 
         Args:
             entity: Normalized entity name (e.g. ``"user"``).
-            is_list: If ``True``, resolve the list-specific TTL override.
 
         Returns:
             TTL value in seconds.
         """
-        if is_list:
-            return self.ttl.get(f"{entity}_list", self.default_list_ttl)
         return self.ttl.get(entity, self.default_ttl)
+
+    def ttl_for_list(self, entity: str) -> int:
+        """Resolve the effective TTL for a list or index query.
+
+        Args:
+            entity: Normalized entity name (e.g. ``"user"``).
+
+        Returns:
+            TTL value in seconds.
+        """
+        return self.ttl.get(f"{entity}_list", self.default_list_ttl)

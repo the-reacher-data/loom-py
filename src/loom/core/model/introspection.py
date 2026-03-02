@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from types import UnionType
@@ -86,19 +86,7 @@ def _with_struct_default(field: Field, struct_default: Any) -> Field:
         return field
     if struct_default is msgspec.NODEFAULT:
         return field
-    return Field(
-        primary_key=field.primary_key,
-        unique=field.unique,
-        index=field.index,
-        nullable=field.nullable,
-        autoincrement=field.autoincrement,
-        server_default=field.server_default,
-        server_onupdate=field.server_onupdate,
-        foreign_key=field.foreign_key,
-        on_delete=field.on_delete,
-        default=struct_default,
-        length=field.length,
-    )
+    return replace(field, default=struct_default)
 
 
 def get_relations(cls: type) -> dict[str, Relation]:

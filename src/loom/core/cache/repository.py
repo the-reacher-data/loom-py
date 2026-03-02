@@ -80,7 +80,7 @@ class CachedRepository(
         loaded = await self._repository.get_by_id(obj_id, profile=profile)
         if loaded is None:
             return None
-        ttl = self._config.ttl_for_entity(self.entity_name, is_list=False)
+        ttl = self._config.ttl_for_single(self.entity_name)
         await self._cache.set_value(key, self._to_builtins(loaded), ttl=ttl)
         return loaded
 
@@ -156,7 +156,7 @@ class CachedRepository(
             if entity_id is not None
         ]
         index_to_store = _ListIndexPayload(ids=ids, total_count=page.total_count)
-        ttl = self._config.ttl_for_entity(self.entity_name, is_list=True)
+        ttl = self._config.ttl_for_list(self.entity_name)
         await self._cache.set_value(index_key, index_to_store, ttl=ttl)
 
         await self._cache_entity_batch(page.items, profile=profile)
@@ -212,7 +212,7 @@ class CachedRepository(
             for entity_id in [self._extract_entity_id(item)]
             if entity_id is not None
         ]
-        ttl = self._config.ttl_for_entity(self.entity_name, is_list=True)
+        ttl = self._config.ttl_for_list(self.entity_name)
         if isinstance(loaded, CursorResult):
             await self._cache.set_value(
                 query_key,
@@ -331,11 +331,11 @@ class CachedRepository(
                 entity_id: object = args[0] if args else raw_hash
                 tags = self._resolver.entity_tags(self.entity_name, entity_id)
                 tags.extend(self._entity_dependency_tags(entity_id))
-                ttl = self._config.ttl_for_entity(ttl_key or self.entity_name, is_list=False)
+                ttl = self._config.ttl_for_single(ttl_key or self.entity_name)
             else:
                 tags = self._resolver.list_tags(self.entity_name, raw_hash)
                 tags.extend(self._list_dependency_tags())
-                ttl = self._config.ttl_for_entity(ttl_key or self.entity_name, is_list=True)
+                ttl = self._config.ttl_for_list(ttl_key or self.entity_name)
 
             fingerprint = await self._resolver.fingerprint(tags)
             key = f"{self.entity_name}:custom:{method_name}:{raw_hash}:deps={fingerprint}"
@@ -390,7 +390,7 @@ class CachedRepository(
             items[position] = loaded
 
         refill_pairs: list[tuple[str, Any]] = []
-        ttl = self._config.ttl_for_entity(self.entity_name, is_list=False)
+        ttl = self._config.ttl_for_single(self.entity_name)
         for obj, ek in zip(items, entity_keys, strict=False):
             refill_pairs.append((ek, self._to_builtins(obj)))
         await self._cache.multi_set_values(refill_pairs, ttl=ttl)
@@ -400,7 +400,7 @@ class CachedRepository(
     async def _cache_entity_batch(self, items: Sequence[OutputT], profile: str) -> None:
         if not items:
             return
-        ttl = self._config.ttl_for_entity(self.entity_name, is_list=False)
+        ttl = self._config.ttl_for_single(self.entity_name)
         pairs: list[tuple[str, Any]] = []
         for item in items:
             entity_id = getattr(item, "id", None)

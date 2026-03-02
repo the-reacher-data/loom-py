@@ -42,30 +42,19 @@ def _make_http_instruments(
 ) -> tuple[Counter, Histogram]:
     from prometheus_client import Counter, Histogram
 
-    if registry is not None:
-        requests_total: Counter = Counter(
-            "http_requests",
-            "Total HTTP requests by method, path template, and status code.",
-            ["method", "path_template", "status_code"],
-            registry=registry,
-        )
-        duration_seconds: Histogram = Histogram(
-            "http_request_duration_seconds",
-            "HTTP request duration in seconds by method and path template.",
-            ["method", "path_template"],
-            registry=registry,
-        )
-    else:
-        requests_total = Counter(
-            "http_requests",
-            "Total HTTP requests by method, path template, and status code.",
-            ["method", "path_template", "status_code"],
-        )
-        duration_seconds = Histogram(
-            "http_request_duration_seconds",
-            "HTTP request duration in seconds by method and path template.",
-            ["method", "path_template"],
-        )
+    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
+    requests_total: Counter = Counter(
+        "http_requests",
+        "Total HTTP requests by method, path template, and status code.",
+        ["method", "path_template", "status_code"],
+        **reg,
+    )
+    duration_seconds: Histogram = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request duration in seconds by method and path template.",
+        ["method", "path_template"],
+        **reg,
+    )
     return requests_total, duration_seconds
 
 
