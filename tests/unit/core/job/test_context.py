@@ -80,5 +80,6 @@ async def test_contextvar_default_not_shared() -> None:
         add_pending_dispatch(lambda: calls.append("fresh"))
         await flush_pending_dispatches()
 
-    await asyncio.ensure_future(fresh_context())
+    task = asyncio.ensure_future(fresh_context())
+    await task
     assert calls == ["fresh"]

@@ -72,7 +72,7 @@ def test_wait_async_timeout_raises_job_timeout_error() -> None:
         handle.wait(timeout=2.0)
 
     assert exc_info.value.job_id == "tid"
-    assert exc_info.value.timeout == 2.0
+    assert exc_info.value.timeout == pytest.approx(2.0)
 
 
 def test_wait_async_failure_raises_job_failed_error() -> None:
