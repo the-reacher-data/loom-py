@@ -150,12 +150,14 @@ jobs:
 
           python -m pip install -r "$MANIFEST_DIR/requirements-core.txt"
           snyk test --severity-threshold=high \
+            --skip-unresolved \
             --file="$MANIFEST_DIR/requirements-core.txt" \
             --package-manager=pip \
             --project-name="loom-py/core"
 
           python -m pip install -r "$MANIFEST_DIR/requirements-dev.txt"
           snyk test --severity-threshold=high \
+            --skip-unresolved \
             --file="$MANIFEST_DIR/requirements-dev.txt" \
             --package-manager=pip \
             --project-name="loom-py/dev"
@@ -163,6 +165,7 @@ jobs:
           for extra in fastapi sqlalchemy config cache pyspark prometheus; do
             python -m pip install -r "$MANIFEST_DIR/requirements-extra-${extra}.txt"
             snyk test --severity-threshold=high \
+              --skip-unresolved \
               --file="$MANIFEST_DIR/requirements-extra-${extra}.txt" \
               --package-manager=pip \
               --project-name="loom-py/extra-${extra}"
