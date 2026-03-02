@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -22,6 +24,13 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.logger import (
+    Environment,
+    HandlerConfig,
+    LogConfig,
+    Renderer,
+    configure_logging,
+)
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -75,6 +84,37 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
+class _LoggerConfig(msgspec.Struct, kw_only=True):
+    name: str = ""
+    environment: str = ""
+    renderer: str | None = None
+    colors: bool | None = None
+    level: str = "INFO"
+    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
+
+
+def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return InterfacesDiscoveryEngine(
+        discovery_cfg.interfaces.modules,
+        warn_recommended=discovery_cfg.interfaces.warn_recommended,
+    ).discover()
+
+
+def _discover_modules(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
+
+
+def _discover_manifest(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
+    return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
+
+
+_DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
+    "interfaces": _discover_interfaces,
+    "modules": _discover_modules,
+    "manifest": _discover_manifest,
+}
+
+
 def _ensure_code_path(code_path: Path) -> None:
     path_str = str(code_path.resolve())
     if path_str not in sys.path:
@@ -108,17 +148,28 @@ def _register_repositories(
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    mode = discovery_cfg.mode
-    if mode == "interfaces":
-        return InterfacesDiscoveryEngine(
-            discovery_cfg.interfaces.modules,
-            warn_recommended=discovery_cfg.interfaces.warn_recommended,
-        ).discover()
-    if mode == "modules":
-        return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
-    if mode == "manifest":
-        return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
-    raise ValueError(f"Unsupported discovery mode: {mode!r}")
+    engine = _DISCOVERY_ENGINES.get(discovery_cfg.mode)
+    if engine is None:
+        raise ValueError(f"Unsupported discovery mode: {discovery_cfg.mode!r}")
+    return engine(discovery_cfg)
+
+
+def _parse_renderer(value: str | None) -> Renderer | None:
+    return Renderer.from_str(value) if value is not None else None
+
+
+def _configure_logger(logger_cfg: _LoggerConfig) -> None:
+    env_str = logger_cfg.environment.strip() or os.getenv("ENVIRONMENT", "dev")
+    configure_logging(
+        LogConfig(
+            name=logger_cfg.name,
+            environment=Environment.from_str(env_str),
+            renderer=_parse_renderer(logger_cfg.renderer),
+            colors=logger_cfg.colors,
+            level=logger_cfg.level,
+            handlers=tuple(logger_cfg.handlers),
+        )
+    )
 
 
 def _build_bootstrap(
@@ -161,6 +212,11 @@ def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
+    try:
+        logger_cfg = section(raw, "logger", _LoggerConfig)
+    except ConfigError:
+        logger_cfg = _LoggerConfig()
+    _configure_logger(logger_cfg)
 
     config_file = Path(config_path).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)

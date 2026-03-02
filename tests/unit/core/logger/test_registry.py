@@ -5,9 +5,9 @@ from typing import Any
 
 from pytest import fixture
 
-from loom.core.logger import configure_logger_factory, get_logger
+from loom.core.logger import configure_logger_factory, get_logger, reset_logger_factory
 from loom.core.logger.abc import LoggerPort
-from loom.core.logger.std import StdLogger
+from loom.core.logger.structlogger import StructLogger
 
 
 class _FakeLogger(LoggerPort):
@@ -36,16 +36,16 @@ class _FakeLogger(LoggerPort):
 
 
 @fixture(autouse=True)
-def reset_logger_factory() -> Iterator[None]:
-    configure_logger_factory(None)
+def reset_factory() -> Iterator[None]:
+    reset_logger_factory()
     yield
-    configure_logger_factory(None)
+    reset_logger_factory()
 
 
 class TestLoggerRegistry:
-    def test_returns_std_logger_by_default(self) -> None:
+    def test_returns_struct_logger_by_default(self) -> None:
         logger = get_logger("loom.default")
-        assert isinstance(logger, StdLogger)
+        assert isinstance(logger, StructLogger)
 
     def test_uses_custom_factory(self) -> None:
         def factory(name: str) -> LoggerPort:

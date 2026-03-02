@@ -30,6 +30,7 @@ from typing import Any
 
 import msgspec
 from fastapi import FastAPI, HTTPException
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -67,6 +68,7 @@ def _extract_path_params(path: str) -> list[str]:
 _RESERVED_QUERY_KEYS = frozenset(
     {"page", "limit", "cursor", "after", "pagination", "sort", "direction", "profile"}
 )
+_FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 
 def _coerce_scalar(value: str) -> Any:
@@ -90,33 +92,28 @@ def _parse_filter_op(op: str) -> FilterOp:
         raise HTTPException(status_code=400, detail=f"Unsupported filter operator: {op!r}") from exc
 
 
-def _build_query_spec(request: Request) -> QuerySpec:
-    query_params = request.query_params
-    page = int(query_params.get("page", "1"))
-    limit = int(query_params.get("limit", "50"))
-    cursor = query_params.get("after") or query_params.get("cursor")
-    pagination_raw = query_params.get("pagination")
-    sort_field = query_params.get("sort")
-    direction_raw = query_params.get("direction", "ASC").upper()
+def _parse_pagination_mode(raw: str | None, cursor: str | None) -> PaginationMode:
+    if raw is None:
+        return PaginationMode.CURSOR if cursor is not None else PaginationMode.OFFSET
+    try:
+        return PaginationMode(raw.lower())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid pagination mode: {raw!r}.",
+        ) from exc
 
-    if direction_raw not in {"ASC", "DESC"}:
+
+def _parse_sort(sort_field: str | None, direction_raw: str) -> tuple[SortSpec, ...]:
+    direction = direction_raw.upper()
+    if direction not in {"ASC", "DESC"}:
         raise HTTPException(status_code=400, detail="direction must be 'ASC' or 'DESC'.")
+    if sort_field is None or sort_field == "":
+        return ()
+    return (SortSpec(field=sort_field, direction=typing.cast(Any, direction)),)
 
-    if pagination_raw is None:
-        pagination = PaginationMode.CURSOR if cursor is not None else PaginationMode.OFFSET
-    else:
-        try:
-            pagination = PaginationMode(pagination_raw.lower())
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid pagination mode: {pagination_raw!r}.",
-            ) from exc
 
-    sort: tuple[SortSpec, ...] = ()
-    if sort_field is not None and sort_field != "":
-        sort = (SortSpec(field=sort_field, direction=typing.cast(Any, direction_raw)),)
-
+def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
     filters: list[FilterSpec] = []
     for key, raw_value in query_params.items():
         if key in _RESERVED_QUERY_KEYS:
@@ -127,7 +124,7 @@ def _build_query_spec(request: Request) -> QuerySpec:
             continue
 
         maybe_op = parts[-1].lower()
-        if maybe_op in {item.value for item in FilterOp}:
+        if maybe_op in _FILTER_OP_VALUES:
             op = _parse_filter_op(maybe_op)
             field_parts = parts[:-1]
         else:
@@ -146,7 +143,20 @@ def _build_query_spec(request: Request) -> QuerySpec:
             value = _coerce_scalar(raw_value)
 
         filters.append(FilterSpec(field=field, op=op, value=value))
+    return filters
 
+
+def _build_query_spec(request: Request) -> QuerySpec:
+    query_params = request.query_params
+    page = int(query_params.get("page", "1"))
+    limit = int(query_params.get("limit", "50"))
+    cursor = query_params.get("after") or query_params.get("cursor")
+    pagination = _parse_pagination_mode(query_params.get("pagination"), cursor)
+    sort = _parse_sort(
+        query_params.get("sort"),
+        query_params.get("direction", "ASC"),
+    )
+    filters = _parse_filter_specs(query_params)
     filter_group = FilterGroup(filters=tuple(filters)) if filters else None
     return QuerySpec(
         filters=filter_group,
