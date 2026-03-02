@@ -47,7 +47,7 @@ async def flush_pending_dispatches() -> None:
     Async callables (inline runner) are awaited.
     """
     fns = _pending.get()
-    _pending.set([])
+    _pending.set(None)
     if not fns:
         return
     for fn in fns:
@@ -62,4 +62,4 @@ def clear_pending_dispatches() -> None:
     Called by the executor after a UoW rollback.  Jobs registered during
     a failed transaction must not be sent to the broker.
     """
-    _pending.set([])
+    _pending.set(None)
