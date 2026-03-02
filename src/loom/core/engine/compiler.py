@@ -4,6 +4,7 @@ import inspect
 import typing
 from typing import Any
 
+from loom.core.engine.compilable import Compilable
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import (
@@ -24,7 +25,6 @@ from loom.core.use_case.markers import (
     _LoadByIdMarker,
     _LoadMarker,
 )
-from loom.core.use_case.use_case import UseCase
 
 
 class CompilationError(Exception):
@@ -64,20 +64,22 @@ class UseCaseCompiler:
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
 
-    def compile(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan:
+    def compile(self, use_case_type: type[Compilable]) -> ExecutionPlan:
         """Return the ExecutionPlan for ``use_case_type``, compiling if needed.
 
         Compilation is idempotent: calling this method multiple times with
         the same class returns the cached plan without re-inspection.
+        Accepts any class satisfying the :class:`~loom.core.engine.compilable.Compilable`
+        protocol — both ``UseCase`` and ``Job`` subclasses are valid.
 
         Args:
-            use_case_type: Concrete UseCase subclass to compile.
+            use_case_type: Concrete compilable class to compile.
 
         Returns:
             Immutable ExecutionPlan.
 
         Raises:
-            CompilationError: If the UseCase signature violates constraints.
+            CompilationError: If the signature violates structural constraints.
         """
         if use_case_type in self._cache:
             return self._cache[use_case_type]
@@ -85,7 +87,7 @@ class UseCaseCompiler:
         self._cache[use_case_type] = plan
         return plan
 
-    def get_plan(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan | None:
+    def get_plan(self, use_case_type: type[Compilable]) -> ExecutionPlan | None:
         """Return the cached plan for ``use_case_type``, or ``None``.
 
         Args:
@@ -100,7 +102,7 @@ class UseCaseCompiler:
         if self._metrics is not None:
             self._metrics.on_event(event)
 
-    def _build_plan(self, use_case_type: type[UseCase[Any, Any]]) -> ExecutionPlan:
+    def _build_plan(self, use_case_type: type[Compilable]) -> ExecutionPlan:
         uc_name = use_case_type.__qualname__
         self._logger.info(f"[BOOT] Compiling UseCase: {uc_name}", usecase=uc_name)
         self._emit(RuntimeEvent(kind=EventKind.COMPILE_START, use_case_name=uc_name))
@@ -141,7 +143,7 @@ class UseCaseCompiler:
 
     def _inspect_execute(
         self,
-        use_case_type: type[UseCase[Any, Any]],
+        use_case_type: type[Compilable],
     ) -> tuple[list[ParamBinding], InputBinding | None, list[LoadStep], list[ExistsStep]]:
         execute_fn = use_case_type.execute
 
@@ -216,7 +218,7 @@ class UseCaseCompiler:
     def _handle_input_marker(
         self,
         *,
-        use_case_type: type[UseCase[Any, Any]],
+        use_case_type: type[Compilable],
         name: str,
         annotation: Any,
         input_binding: InputBinding | None,
@@ -225,8 +227,7 @@ class UseCaseCompiler:
         next_count = input_count + 1
         if next_count > 1:
             raise CompilationError(
-                f"{use_case_type.__qualname__}.execute: "
-                "only one Input() parameter is allowed"
+                f"{use_case_type.__qualname__}.execute: only one Input() parameter is allowed"
             )
         next_binding = InputBinding(name=name, command_type=annotation)
         cmd_name = getattr(annotation, "__name__", repr(annotation))
@@ -278,20 +279,18 @@ class UseCaseCompiler:
     def _log_load(self, marker: _LoadMarker[Any]) -> None:
         src = f"{marker.from_kind.value}:{marker.from_name}"
         self._logger.info(
-            "[BOOT]  - Detected Load: "
-            f"{marker.entity_type.__name__} {marker.against} <- {src}"
+            f"[BOOT]  - Detected Load: {marker.entity_type.__name__} {marker.against} <- {src}"
         )
 
     def _log_exists(self, marker: _ExistsMarker[Any]) -> None:
         src = f"{marker.from_kind.value}:{marker.from_name}"
         self._logger.info(
-            "[BOOT]  - Detected Exists: "
-            f"{marker.entity_type.__name__} {marker.against} <- {src}"
+            f"[BOOT]  - Detected Exists: {marker.entity_type.__name__} {marker.against} <- {src}"
         )
 
     def _validate_marker_refs(
         self,
-        use_case_type: type[UseCase[Any, Any]],
+        use_case_type: type[Compilable],
         param_bindings: list[ParamBinding],
         input_binding: InputBinding | None,
         load_steps: list[LoadStep],

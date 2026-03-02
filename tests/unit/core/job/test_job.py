@@ -91,8 +91,25 @@ def test_rules_defaults_to_empty_tuple() -> None:
 
 
 def test_computes_and_rules_overridable_per_subclass() -> None:
-    dummy_compute: ComputeFn[None] = object()  # type: ignore[assignment]
-    dummy_rule: RuleFn = object()  # type: ignore[assignment]
+    # Use minimal callables that satisfy the ComputeFn and RuleFn contracts.
+    def _identity(cmd: object, fields: frozenset[str]) -> object:
+        return cmd
+
+    class _AlwaysOk:
+        def __call__(self, cmd: object, fields: frozenset[str]) -> None:
+            return None
+
+        def from_command(self, *args: object) -> _AlwaysOk:
+            return self
+
+        def from_params(self, *names: str) -> _AlwaysOk:
+            return self
+
+        def when_present(self, predicate: object) -> _AlwaysOk:
+            return self
+
+    dummy_compute: ComputeFn[object] = _identity
+    dummy_rule: RuleFn = _AlwaysOk()
 
     class RichJob(Job[None]):
         computes = (dummy_compute,)

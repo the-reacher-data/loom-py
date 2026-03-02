@@ -244,7 +244,7 @@ def _make_handler(
 
         uc = factory.build(uc_type)
         try:
-            result = await executor.execute(uc, params=params, payload=payload)
+            result: Any = await executor.execute(uc, params=params, payload=payload)
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
         return MsgspecJSONResponse(content=result, status_code=status_code)

@@ -5,6 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar, cast
 
+from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
@@ -16,7 +17,6 @@ from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.uow.context import _active_uow
 from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.rule import RuleViolation, RuleViolations
-from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
 
@@ -84,14 +84,18 @@ class RuntimeExecutor:
 
     async def execute(
         self,
-        use_case: UseCase[Any, ResultT],
+        compilable: Compilable,
         *,
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
         dependencies: dict[type[Any], Any] | None = None,
         load_overrides: dict[type[Any], Any] | None = None,
     ) -> ResultT:
-        """Execute the UseCase via its compiled plan.
+        """Execute a compiled instance via its ExecutionPlan.
+
+        Accepts any object satisfying the :class:`~loom.core.engine.compilable.Compilable`
+        protocol — both :class:`~loom.core.use_case.use_case.UseCase` and
+        :class:`~loom.core.job.job.Job` instances are valid inputs.
 
         When a ``uow_factory`` was provided at construction and no UoW is
         already active in the current async context, opens a fresh UoW
@@ -99,22 +103,22 @@ class RuntimeExecutor:
         any exception.  Nested calls reuse the existing UoW transparently.
 
         Args:
-            use_case: Constructed UseCase instance to execute.
+            compilable: Constructed instance to execute.
             params: Primitive parameter values keyed by name.
             payload: Raw dict for command construction via ``Input()``.
             dependencies: Mapping of entity type to repository, used for
-                ``LoadById()`` / ``LoadById()`` / ``Exists()`` steps.
+                ``LoadById()`` / ``Load()`` / ``Exists()`` steps.
             load_overrides: Pre-loaded entities by type, bypassing repo
                 calls. Used by test harnesses.
 
         Returns:
-            The result produced by the UseCase.
+            The result produced by ``execute()``.
 
         Raises:
-            RuleViolations: If one or more rule steps fail.
+            loom.core.errors.RuleViolations: If one or more rule steps fail.
             NotFound: If a Load step finds no entity in the repository.
         """
-        uc_type = type(use_case)
+        uc_type = type(compilable)
         plan = uc_type.__execution_plan__
         if plan is None:
             plan = self._compiler.compile(uc_type)
@@ -126,7 +130,7 @@ class RuntimeExecutor:
 
         if not _owns_uow:
             return await self._run_pipeline(
-                plan, use_case, uc_name, start, params, payload, dependencies, load_overrides
+                plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
             )
 
         uow = self._uow_factory.create()  # type: ignore[union-attr]
@@ -134,7 +138,7 @@ class RuntimeExecutor:
         try:
             async with uow:
                 return await self._run_pipeline(
-                    plan, use_case, uc_name, start, params, payload, dependencies, load_overrides
+                    plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
                 )
         finally:
             _active_uow.reset(token)
@@ -146,7 +150,7 @@ class RuntimeExecutor:
     async def _run_pipeline(
         self,
         plan: ExecutionPlan,
-        use_case: UseCase[Any, ResultT],
+        compilable: Compilable,
         uc_name: str,
         start: float,
         params: dict[str, Any] | None,
@@ -177,7 +181,11 @@ class RuntimeExecutor:
             self._check_rules(plan, bound, fields_set)
 
             self._log_step("Execute core logic")
-            result: ResultT = await use_case.execute(**bound)
+            execute_fn = compilable.execute
+            if inspect.iscoroutinefunction(execute_fn):
+                result: ResultT = cast(ResultT, await execute_fn(**bound))
+            else:
+                result = cast(ResultT, execute_fn(**bound))
 
         except RuleViolations as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000
