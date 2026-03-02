@@ -206,9 +206,44 @@ def _build_bootstrap(
     return result, session_manager, discovered
 
 
-def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
-    """Create a FastAPI application from YAML config and discovered components."""
-    raw = load_config(config_path)
+def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
+    """Create a FastAPI application from one or more YAML config files.
+
+    Config files are merged left-to-right — later files override earlier ones.
+    Each file may also declare a top-level ``includes`` list to pull in
+    additional base files before its own values (see :func:`load_config`).
+
+    Prometheus middleware is mounted automatically when ``metrics.enabled``
+    is ``true`` in the config.  No extra code is needed in application code.
+
+    Args:
+        *config_paths: One or more paths to YAML configuration files.
+        code_path: Optional override for ``app.code_path``.  Resolved relative
+            to the first config file when not absolute.
+
+    Returns:
+        Configured :class:`fastapi.FastAPI` application, ready to serve.
+
+    Example — single config::
+
+        app = create_app("config/app.yaml")
+
+    Example — base + environment override::
+
+        app = create_app("config/base.yaml", "config/production.yaml")
+
+    Example — single file using inline includes::
+
+        # config/app.yaml
+        # includes:
+        #   - base.yaml
+        #   - secrets.yaml
+        app = create_app("config/app.yaml")
+    """
+    if not config_paths:
+        raise ConfigError("create_app requires at least one config file path.")
+
+    raw = load_config(*config_paths)
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
@@ -218,7 +253,7 @@ def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
         logger_cfg = _LoggerConfig()
     _configure_logger(logger_cfg)
 
-    config_file = Path(config_path).resolve()
+    config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
     if not effective_code_path.is_absolute():
         effective_code_path = (config_file.parent / effective_code_path).resolve()

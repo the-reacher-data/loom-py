@@ -215,3 +215,99 @@ def test_section_nested_key_missing_intermediate_raises(tmp_path: Path) -> None:
     cfg = load_config(str(f))
     with pytest.raises(ConfigError, match="not found"):
         section(cfg, "services.cache", CacheConfig)
+
+
+# ---------------------------------------------------------------------------
+# load_config — includes directive
+# ---------------------------------------------------------------------------
+
+
+def test_includes_merges_base_into_declaring_file(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    base.write_text("database:\n  url: sqlite:///base.db\n  pool_size: 5\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - base.yaml\napp:\n  name: myapp\n")
+
+    cfg = load_config(str(main))
+    assert cfg.app.name == "myapp"
+    assert cfg.database.url == "sqlite:///base.db"
+    assert cfg.database.pool_size == 5
+
+
+def test_includes_key_stripped_from_result(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    base.write_text("x: 1\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - base.yaml\ny: 2\n")
+
+    cfg = load_config(str(main))
+    assert not hasattr(cfg, "includes")
+    assert cfg.x == 1
+    assert cfg.y == 2
+
+
+def test_declaring_file_overrides_included_values(tmp_path: Path) -> None:
+    base = tmp_path / "base.yaml"
+    base.write_text("database:\n  url: sqlite:///base.db\n  pool_size: 5\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - base.yaml\ndatabase:\n  url: postgresql://prod/db\n")
+
+    cfg = load_config(str(main))
+    assert cfg.database.url == "postgresql://prod/db"
+    assert cfg.database.pool_size == 5  # from base
+
+
+def test_includes_multiple_files_in_order(tmp_path: Path) -> None:
+    a = tmp_path / "a.yaml"
+    a.write_text("x: 1\ny: 1\n")
+    b = tmp_path / "b.yaml"
+    b.write_text("y: 2\nz: 2\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - a.yaml\n  - b.yaml\nz: 3\n")
+
+    cfg = load_config(str(main))
+    assert cfg.x == 1
+    assert cfg.y == 2  # b overrides a
+    assert cfg.z == 3  # main overrides b
+
+
+def test_includes_resolved_relative_to_declaring_file(tmp_path: Path) -> None:
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    base = sub / "base.yaml"
+    base.write_text("key: from_sub\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - sub/base.yaml\n")
+
+    cfg = load_config(str(main))
+    assert cfg.key == "from_sub"
+
+
+def test_includes_recursive(tmp_path: Path) -> None:
+    grandparent = tmp_path / "grandparent.yaml"
+    grandparent.write_text("level: grandparent\n")
+    parent = tmp_path / "parent.yaml"
+    parent.write_text("includes:\n  - grandparent.yaml\nlevel: parent\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - parent.yaml\n")
+
+    cfg = load_config(str(main))
+    assert cfg.level == "parent"  # parent overrides grandparent
+
+
+def test_includes_circular_reference_raises(tmp_path: Path) -> None:
+    a = tmp_path / "a.yaml"
+    b = tmp_path / "b.yaml"
+    a.write_text("includes:\n  - b.yaml\n")
+    b.write_text("includes:\n  - a.yaml\n")
+
+    with pytest.raises(ConfigError, match="[Cc]ircular"):
+        load_config(str(a))
+
+
+def test_includes_missing_file_raises(tmp_path: Path) -> None:
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - nonexistent.yaml\n")
+
+    with pytest.raises(ConfigError, match="not found"):
+        load_config(str(main))
