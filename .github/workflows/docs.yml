@@ -19,8 +19,17 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# pages: write + id-token: write are required for OIDC-based Pages deployment.
+# contents: read covers checkout. No secret tokens needed for Pages.
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+# Prevent concurrent deploys; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -49,9 +58,22 @@ jobs:
             --with 'myst-parser>=3.0' \
             sphinx-build -W -b html docs docs/_build/html
 
-      - name: Upload docs artifact
-        if: ${{ always() && hashFiles('docs/_build/html/**') != '' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      # upload-pages-artifact creates the zip format required by deploy-pages.
+      # Used instead of upload-artifact so the deploy job can consume it directly.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: docs-html
           path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # Only deploy on push to master, not on PRs.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
