@@ -5,10 +5,14 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any
 
-# IMPORTANT — default=None, not default=[].
-# A mutable list as ContextVar default is shared across all contexts that have
-# not called .set(), causing cross-request contamination.  Lazy initialisation
-# via _get_or_init() gives every async context its own independent list.
+# IMPORTANT — default=None, not default=[].  Flush and clear must also reset
+# to None, never to [].  The invariant is: None ↔ "no active queue";
+# a list ↔ "active queue for this context".
+# A mutable list as ContextVar default would be shared across all contexts that
+# have not called .set(), causing cross-request contamination.  Resetting to []
+# (instead of None) has the same effect: asyncio tasks copy the context shallowly,
+# so all siblings would share the same list object.  Resetting to None ensures
+# each task creates its own list on first access via _get_or_init().
 _pending: ContextVar[list[Callable[[], Any]] | None] = ContextVar(
     "_loom_pending_dispatches", default=None
 )
