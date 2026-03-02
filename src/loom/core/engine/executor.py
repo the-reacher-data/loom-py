@@ -11,6 +11,7 @@ from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, ExistsStep, LoadStep
 from loom.core.errors import NotFound
+from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.tracing import get_trace_id
 from loom.core.uow.abc import UnitOfWorkFactory
@@ -136,10 +137,17 @@ class RuntimeExecutor:
         uow = self._uow_factory.create()  # type: ignore[union-attr]
         token = _active_uow.set(uow)
         try:
-            async with uow:
-                return await self._run_pipeline(
-                    plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
-                )
+            await uow.begin()
+            result: ResultT = await self._run_pipeline(
+                plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
+            )
+            await uow.commit()
+            await flush_pending_dispatches()
+            return result
+        except Exception:
+            await uow.rollback()
+            clear_pending_dispatches()
+            raise
         finally:
             _active_uow.reset(token)
 
