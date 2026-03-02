@@ -31,6 +31,9 @@ pyspark = [
 prometheus = [
     "prometheus-client>=0.20",
 ]
+celery = [
+    "celery>=5.3,<6.0",
+]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -41,6 +44,7 @@ dev = [
     "aiocache>=0.12,<1.0",
     "aiosqlite>=0.20.0",
     "commitizen>=3.30.0",
+    "celery>=5.3,<6.0",
     "fakeredis>=2.23.0",
     "fastapi>=0.115,<1.0",
     "greenlet>=3.0.0",
