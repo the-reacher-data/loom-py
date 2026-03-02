@@ -52,6 +52,8 @@ jobs:
             --with 'sphinx>=8.0' \
             --with 'furo>=2024.8.6' \
             --with 'myst-parser>=3.0' \
+            --with 'sphinx-copybutton>=0.5' \
+            --with 'sphinx-design>=0.6' \
             sphinx-build -W -b html docs docs/_build/html
 
       # upload-pages-artifact creates the zip format required by deploy-pages.

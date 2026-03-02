@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/_static/logo.svg" alt="loom-kernel" width="280" />
+</p>
+
 # loom-kernel
 
 [![CI](https://img.shields.io/github/actions/workflow/status/the-reacher-data/loom-py/ci-main.yml?branch=master&label=ci)](https://github.com/the-reacher-data/loom-py/actions/workflows/ci-main.yml)

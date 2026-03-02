@@ -23,6 +23,8 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
+    "sphinx_copybutton",
+    "sphinx_design",
 ]
 
 templates_path = ["_templates"]
@@ -31,6 +33,11 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "loom-kernel docs"
+html_logo = "_static/logo.svg"
+html_theme_options = {
+    "light_logo": "logo.svg",
+    "dark_logo": "logo.svg",
+}
 
 autosummary_generate = True
 autosummary_imported_members = False
