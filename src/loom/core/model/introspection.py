@@ -86,7 +86,10 @@ def _with_struct_default(field: Field, struct_default: Any) -> Field:
         return field
     if struct_default is msgspec.NODEFAULT:
         return field
-    return replace(field, default=struct_default)
+    # Explicit annotation helps static analysers (e.g. Sonar) infer the
+    # concrete return type; dataclasses.replace() is generically typed as _T.
+    result: Field = replace(field, default=struct_default)
+    return result
 
 
 def get_relations(cls: type) -> dict[str, Relation]:
