@@ -19,13 +19,6 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# pages: write + id-token: write are required for OIDC-based Pages deployment.
-# contents: read covers checkout. No secret tokens needed for Pages.
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 # Prevent concurrent deploys; let an in-progress run finish.
 concurrency:
   group: pages
@@ -34,6 +27,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # contents: read is scoped here — build does not need pages or id-token.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -70,6 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     # Only deploy on push to master, not on PRs.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # pages: write + id-token: write are required for OIDC-based Pages deployment.
+    # Scoped here — deploy does not need contents read.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
