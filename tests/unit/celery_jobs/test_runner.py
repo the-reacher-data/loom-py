@@ -393,7 +393,8 @@ class TestMakeCallbackTask:
             side_effect=lambda **kw: registered_name.append(kw["name"]) or (lambda fn: fn)
         )
         _make_callback_task(app, _SyncCallback, MagicMock(), MagicMock())
-        assert registered_name[0] == f"loom.callback.{_SyncCallback.__qualname__}"
+        task_name = next(iter(registered_name), None)
+        assert task_name == f"loom.callback.{_SyncCallback.__qualname__}"
 
     def test_sync_on_success_called_with_result_and_job_id(self) -> None:
         cb = MagicMock(spec=_SyncCallback)
@@ -435,7 +436,8 @@ class TestMakeCallbackErrorTask:
             side_effect=lambda **kw: registered_name.append(kw["name"]) or (lambda fn: fn)
         )
         _make_callback_error_task(app, _SyncCallback, MagicMock())
-        assert registered_name[0] == f"loom.callback_error.{_SyncCallback.__qualname__}"
+        task_name = next(iter(registered_name), None)
+        assert task_name == f"loom.callback_error.{_SyncCallback.__qualname__}"
 
     def test_on_failure_called_with_exc_info_from_backend(self) -> None:
         cb = MagicMock(spec=_SyncCallback)

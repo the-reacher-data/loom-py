@@ -35,7 +35,10 @@ class FieldRef:
 
     @property
     def leaf(self) -> str:
-        return self.path[-1]
+        leaf = next(reversed(self.path), None)
+        if leaf is None:
+            raise ValueError("FieldRef.path cannot be empty.")
+        return leaf
 
 
 @dataclass(frozen=True, slots=True)

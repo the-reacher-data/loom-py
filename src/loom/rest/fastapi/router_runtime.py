@@ -239,12 +239,12 @@ def _route_docs(compiled_route: CompiledRoute) -> tuple[str | None, str | None]:
         return summary or None, description or None
 
     uc_doc = inspect.getdoc(compiled_route.route.use_case) or ""
-    lines = [line.strip() for line in uc_doc.splitlines() if line.strip()]
-    if not lines:
+    cleaned_lines = tuple(line.strip() for line in uc_doc.splitlines() if line.strip())
+    if not cleaned_lines:
         return None, None
 
-    auto_summary = lines[0]
-    auto_description = "\n".join(lines[1:]) if len(lines) > 1 else None
+    auto_summary, *rest = cleaned_lines
+    auto_description = "\n".join(rest) if rest else None
     return auto_summary, auto_description
 
 
