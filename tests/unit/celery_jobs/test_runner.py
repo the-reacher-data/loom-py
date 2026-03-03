@@ -235,7 +235,7 @@ class TestMakeJobTaskExecution:
             task_fn(_mock_self(), payload={"msg": "hello"})
             mock_loop.run.assert_called_once()
             _, kwargs = mock_loop.run.call_args
-            assert kwargs["timeout"] == 300.0
+            assert kwargs["timeout"] == pytest.approx(300.0)
 
     def test_task_returns_loop_run_result(self) -> None:
         instance = _SyncJob()
