@@ -20,6 +20,7 @@ sync methods are called directly from the task thread.
 
 from __future__ import annotations
 
+import asyncio
 from contextvars import Token
 from typing import TYPE_CHECKING, Any
 
@@ -55,6 +56,44 @@ def _uninstall_trace(token: Token[str | None] | None) -> None:
     """Restore the trace context to its prior value using *token*."""
     if token is not None:
         reset_trace_id(token)
+
+
+def _is_eager_request(task_self: Any) -> bool:
+    request = getattr(task_self, "request", None)
+    is_eager = getattr(request, "is_eager", None)
+    if isinstance(is_eager, bool):
+        return is_eager
+
+    app = getattr(task_self, "app", None)
+    conf = getattr(app, "conf", None)
+    return bool(getattr(conf, "task_always_eager", False))
+
+
+def _run_coroutine(
+    coro: Any,
+    *,
+    timeout: float | None = None,
+    eager_fallback: bool,
+) -> Any:
+    if WorkerEventLoop.is_initialized():
+        return WorkerEventLoop.run(coro, timeout=timeout)
+
+    if eager_fallback:
+        if timeout is None:
+            return asyncio.run(coro)
+
+        async def _with_timeout() -> Any:
+            return await asyncio.wait_for(coro, timeout=timeout)
+
+        return asyncio.run(_with_timeout())
+
+    close = getattr(coro, "close", None)
+    if callable(close):
+        close()
+    raise RuntimeError(
+        "WorkerEventLoop is not initialized and eager fallback is disabled. "
+        "Use a Celery worker process or enable task_always_eager."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +192,7 @@ def _make_job_task(
         # TODO(piece-9): emit JOB_STARTED via metrics
         try:
             instance = factory.build(job_type)
-            result = WorkerEventLoop.run(
+            result = _run_coroutine(
                 _run_job(
                     instance,
                     payload=payload or {},
@@ -161,6 +200,7 @@ def _make_job_task(
                     executor=executor,
                 ),
                 timeout=run_timeout,
+                eager_fallback=_is_eager_request(self),
             )
             # TODO(piece-9): emit JOB_SUCCEEDED via metrics
             return result
@@ -219,7 +259,10 @@ def _make_callback_task(
         try:
             cb = factory.build(callback_type)
             if inspect.iscoroutinefunction(cb.on_success):
-                WorkerEventLoop.run(cb.on_success(job_id=job_id, result=result, **context))
+                _run_coroutine(
+                    cb.on_success(job_id=job_id, result=result, **context),
+                    eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
+                )
             else:
                 cb.on_success(job_id=job_id, result=result, **context)
         finally:
@@ -285,13 +328,14 @@ def _make_callback_error_task(
             exc_type, exc_msg = _resolve_error_info(job_id)
             cb = factory.build(callback_type)
             if inspect.iscoroutinefunction(cb.on_failure):
-                WorkerEventLoop.run(
+                _run_coroutine(
                     cb.on_failure(
                         job_id=job_id,
                         exc_type=exc_type,
                         exc_msg=exc_msg,
                         **context,
-                    )
+                    ),
+                    eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
                 )
             else:
                 cb.on_failure(job_id=job_id, exc_type=exc_type, exc_msg=exc_msg, **context)

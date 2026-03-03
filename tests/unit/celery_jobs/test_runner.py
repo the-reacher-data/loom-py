@@ -63,6 +63,7 @@ class _AsyncCallback:
 def _mock_celery_app() -> MagicMock:
     app = MagicMock()
     app.task = MagicMock(side_effect=lambda **kw: lambda fn: fn)
+    app.conf.task_always_eager = False
     return app
 
 
@@ -205,7 +206,9 @@ def _mock_self(retries: int = 0, max_retries: int = 0) -> MagicMock:
     """Return a mock representing Celery's bound task self."""
     ms = MagicMock()
     ms.request.retries = retries
+    ms.request.is_eager = False
     ms.max_retries = max_retries
+    ms.app.conf.task_always_eager = False
     return ms
 
 
@@ -240,8 +243,27 @@ class TestMakeJobTaskExecution:
         task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
         with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
             mock_loop.run = MagicMock(return_value=42)
+            mock_loop.is_initialized = MagicMock(return_value=True)
             result = task_fn(_mock_self(), payload={"value": 4})
         assert result == 42
+
+    def test_job_task_uses_asyncio_run_when_eager_and_loop_not_initialized(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
+        task_self = _mock_self()
+        task_self.request.is_eager = True
+
+        with (
+            patch("loom.celery.runner.WorkerEventLoop") as mock_loop,
+            patch("loom.celery.runner.asyncio.run", return_value=10) as mock_asyncio_run,
+        ):
+            mock_loop.is_initialized = MagicMock(return_value=False)
+            result = task_fn(task_self, payload={"value": 5})
+
+        assert result == 10
+        mock_loop.run.assert_not_called()
+        mock_asyncio_run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +394,25 @@ class TestMakeCallbackTask:
         task_fn = _make_callback_task(_mock_celery_app(), _AsyncCallback, factory)
         with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
             mock_loop.run = MagicMock(return_value=None)
+            mock_loop.is_initialized = MagicMock(return_value=True)
             task_fn("r", job_id="x", context={})
             mock_loop.run.assert_called_once()
+
+    def test_async_on_success_uses_asyncio_run_when_eager_without_loop(self) -> None:
+        cb = MagicMock()
+        cb.on_success = AsyncMock()
+        app = _mock_celery_app()
+        app.conf.task_always_eager = True
+        factory = _mock_factory(cb)
+        task_fn = _make_callback_task(app, _AsyncCallback, factory)
+        with (
+            patch("loom.celery.runner.WorkerEventLoop") as mock_loop,
+            patch("loom.celery.runner.asyncio.run", return_value=None) as mock_asyncio_run,
+        ):
+            mock_loop.is_initialized = MagicMock(return_value=False)
+            task_fn("r", job_id="x", context={})
+            mock_loop.run.assert_not_called()
+            mock_asyncio_run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
