@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import msgspec
 
-from loom.core.model.enums import OnDelete, ServerDefault
+from loom.core.model.enums import OnDelete, ServerDefault, ServerOnUpdate
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,7 @@ class Field:
     nullable: bool = False
     autoincrement: bool = False
     server_default: ServerDefault | None = None
-    server_onupdate: str | None = None
+    server_onupdate: ServerOnUpdate | str | None = None
     foreign_key: str | None = None
     on_delete: OnDelete | None = None
     default: Any = msgspec.UNSET
@@ -52,7 +52,7 @@ def ColumnField(
     nullable: bool = False,
     autoincrement: bool = False,
     server_default: ServerDefault | None = None,
-    server_onupdate: str | None = None,
+    server_onupdate: ServerOnUpdate | str | None = None,
     foreign_key: str | None = None,
     on_delete: OnDelete | None = None,
     default: Any = msgspec.UNSET,

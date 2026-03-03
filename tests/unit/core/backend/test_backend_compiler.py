@@ -50,6 +50,12 @@ class _AuditEntity(TimestampedModel):
     name: str = ColumnField(length=80)
 
 
+class _LegacyAuditEntity(BaseModel):
+    __tablename__ = "test_legacy_audit_entities"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    updated_at: str = ColumnField(server_onupdate="now", nullable=True)
+
+
 @fixture(autouse=True)
 def _clean_registry() -> Generator[None, None, None]:
     reset_registry()
@@ -81,6 +87,12 @@ class TestCompileModel:
         assert updated.default is None
         assert created.server_default is not None
         assert updated.server_default is not None
+        assert updated.onupdate is not None
+
+    def test_server_onupdate_string_now_is_supported_for_backward_compatibility(self) -> None:
+        sa_cls = cast(Any, compile_model(_LegacyAuditEntity))
+        updated = sa_cls.__table__.c.updated_at
+        assert updated.onupdate is not None
 
 
 class TestCompileAll:

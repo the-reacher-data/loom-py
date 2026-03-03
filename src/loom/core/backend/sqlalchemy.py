@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import TSVECTOR as PG_TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, mapped_column, relationship
 
-from loom.core.model.enums import Cardinality, ServerDefault
+from loom.core.model.enums import Cardinality, ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnType, Field
 from loom.core.model.introspection import (
     get_column_fields,
@@ -67,6 +67,14 @@ class SABase(DeclarativeBase):
 _registry: dict[type, type] = {}
 
 
+def _uses_now_onupdate(value: ServerOnUpdate | str | None) -> bool:
+    if value is ServerOnUpdate.NOW:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() == ServerOnUpdate.NOW.value
+    return False
+
+
 def _build_sa_column_type(col_type: ColumnType) -> Any:
     if col_type.type_name == "Postgres.ARRAY":
         if len(col_type.args) != 1:
@@ -106,8 +114,10 @@ def _build_mapped_column(field_info: Any) -> Any:
         if factory is not None:
             kwargs["server_default"] = factory()
 
-    if field.server_onupdate is not None and field.server_onupdate == "now":
-        kwargs["server_onupdate"] = func.now()
+    if _uses_now_onupdate(field.server_onupdate):
+        now_expr = func.now()
+        kwargs["onupdate"] = now_expr
+        kwargs["server_onupdate"] = now_expr
 
     if field.foreign_key is not None:
         fk_kwargs: dict[str, Any] = {}

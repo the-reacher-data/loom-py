@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from loom.core.model.base import BaseModel
-from loom.core.model.enums import ServerDefault
+from loom.core.model.enums import ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnField
 
 
@@ -56,5 +56,6 @@ class TimestampedModel(BaseModel):
     )
     updated_at: datetime | None = ColumnField(
         server_default=ServerDefault.NOW,
+        server_onupdate=ServerOnUpdate.NOW,
         nullable=True,
     )
