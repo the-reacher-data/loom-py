@@ -80,21 +80,6 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
-class _LoggerConfig(LoggerConfig):
-    """Backward-compatible alias for legacy tests/private imports."""
-
-
-def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment,
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        handlers=logger_cfg.handlers,
-    )
-
-
 def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return InterfacesDiscoveryEngine(
         discovery_cfg.interfaces.modules,
@@ -283,10 +268,17 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
     try:
-        logger_cfg = section(raw, "logger", _LoggerConfig)
+        logger_cfg = section(raw, "logger", LoggerConfig)
     except ConfigError:
-        logger_cfg = _LoggerConfig()
-    _configure_logger(logger_cfg)
+        logger_cfg = LoggerConfig()
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment,
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
+    )
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
