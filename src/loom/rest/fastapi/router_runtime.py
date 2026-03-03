@@ -47,7 +47,13 @@ from loom.core.repository.abc.query import (
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
 from loom.rest.errors import HttpErrorMapper
-from loom.rest.fastapi.openapi import build_request_body_schema, build_success_response_schema
+from loom.rest.fastapi.openapi import (
+    QUERY_PARAM_PROFILE,
+    QUERY_SPEC_PARAMETER_NAMES,
+    build_query_parameters_schema,
+    build_request_body_schema,
+    build_success_response_schema,
+)
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _error_mapper = HttpErrorMapper()
@@ -66,9 +72,7 @@ def _extract_path_params(path: str) -> list[str]:
     return re.findall(r"\{(\w+)\}", path)
 
 
-_RESERVED_QUERY_KEYS = frozenset(
-    {"page", "limit", "cursor", "after", "pagination", "sort", "direction", "profile"}
-)
+_RESERVED_QUERY_KEYS = frozenset((*QUERY_SPEC_PARAMETER_NAMES, QUERY_PARAM_PROFILE))
 _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 
@@ -376,8 +380,13 @@ def bind_interfaces(
             responses = {cr.route.status_code: success_response}
 
         openapi_extra: dict[str, Any] | None = None
-        if request_body is not None:
-            openapi_extra = {"requestBody": request_body}
+        query_parameters = build_query_parameters_schema(cr)
+        if request_body is not None or query_parameters:
+            openapi_extra = {}
+            if request_body is not None:
+                openapi_extra["requestBody"] = request_body
+            if query_parameters:
+                openapi_extra["parameters"] = query_parameters
 
         app.add_api_route(
             path=cr.full_path,

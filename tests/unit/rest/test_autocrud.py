@@ -1,6 +1,6 @@
 """Unit tests for loom.rest.autocrud."""
 
-from __future__ import annotations
+from typing import Any
 
 import msgspec
 import pytest
@@ -163,6 +163,13 @@ class TestAutoCrudUseCaseCompilation:
                 assert args[0] is _IntItem
                 return
         pytest.fail("No UseCase[_IntItem, ...] found in __orig_bases__")
+
+    def test_generated_use_cases_have_typed_return_annotations(self) -> None:
+        ucs = _get_or_create(_IntItem)
+        for use_case in ucs.values():
+            return_hint = use_case.execute.__annotations__.get("return")
+            assert return_hint is not None
+            assert return_hint is not Any
 
 
 # ---------------------------------------------------------------------------

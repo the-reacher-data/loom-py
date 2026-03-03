@@ -118,6 +118,11 @@ class _ExistsCheckEmailUseCase(UseCase[_ExistsUserRecord, bool]):
         return email_exists
 
 
+class _AutoItem(msgspec.Struct):
+    id: int
+    name: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -487,6 +492,40 @@ def test_openapi_request_schema_for_plain_command_type() -> None:
     ]["schema"]
     assert request_schema["type"] == "object"
     assert "full_name" in request_schema["properties"]
+
+
+def test_openapi_autocrud_list_has_response_schema_and_query_parameters() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-items"
+        auto = True
+        include = ("list",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-items/"]["get"]
+
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema
+
+    parameter_names = {parameter["name"] for parameter in operation["parameters"]}
+    expected_params = {"page", "limit", "pagination", "after", "cursor", "sort", "direction"}
+    assert expected_params <= parameter_names
+
+
+def test_openapi_autocrud_summary_uses_generated_docstring() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-docs"
+        auto = True
+        include = ("list",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-docs/"]["get"]
+    assert operation["summary"] == "List _AutoItem with filtering, sorting and pagination."
 
 
 # ---------------------------------------------------------------------------

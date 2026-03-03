@@ -23,7 +23,7 @@ Usage::
 from collections.abc import Callable
 from typing import Any, cast, get_type_hints
 
-from loom.core.repository.abc.query import QuerySpec
+from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
 from loom.core.use_case.markers import Input
 from loom.core.use_case.use_case import UseCase
 
@@ -89,12 +89,13 @@ def _make_create(model: type[Any]) -> type[UseCase[Any, Any]]:
     """
 
     class AutoCreate(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, cmd: model = Input()) -> Any:  # type: ignore[valid-type]
-            return cast(Any, await self.main_repo.create(cmd))
+        async def execute(self, cmd: model = Input()) -> model:  # type: ignore[valid-type]
+            return cast(Any, await self.main_repo.create(cmd))  # type: ignore[no-any-return]
 
     AutoCreate.__name__ = f"AutoCreate{model.__name__}"
     AutoCreate.__qualname__ = f"AutoCreate{model.__name__}"
     AutoCreate.__module__ = __name__
+    AutoCreate.__doc__ = f"Create a new {model.__name__}."
     return AutoCreate
 
 
@@ -110,12 +111,13 @@ def _make_get(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[An
     """
 
     class AutoGet(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, id: str, profile: str = "default") -> Any:
+        async def execute(self, id: str, profile: str = "default") -> model | None:  # type: ignore[valid-type]
             return await self.main_repo.get_by_id(coerce(id), profile=profile)
 
     AutoGet.__name__ = f"AutoGet{model.__name__}"
     AutoGet.__qualname__ = f"AutoGet{model.__name__}"
     AutoGet.__module__ = __name__
+    AutoGet.__doc__ = f"Get a {model.__name__} by id."
     return AutoGet
 
 
@@ -130,13 +132,18 @@ def _make_list(model: type[Any]) -> type[UseCase[Any, Any]]:
     """
 
     class AutoList(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, query: QuerySpec, profile: str = "default") -> Any:
+        async def execute(
+            self,
+            query: QuerySpec,
+            profile: str = "default",
+        ) -> PageResult[model] | CursorResult[model]:  # type: ignore[valid-type]
             repo: Any = self.main_repo
-            return await repo.list_with_query(query, profile=profile)
+            return await repo.list_with_query(query, profile=profile)  # type: ignore[no-any-return]
 
     AutoList.__name__ = f"AutoList{model.__name__}"
     AutoList.__qualname__ = f"AutoList{model.__name__}"
     AutoList.__module__ = __name__
+    AutoList.__doc__ = f"List {model.__name__} with filtering, sorting and pagination."
     return AutoList
 
 
@@ -152,12 +159,17 @@ def _make_update(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
     """
 
     class AutoUpdate(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, id: str, cmd: model = Input()) -> Any:  # type: ignore[valid-type]
+        async def execute(
+            self,
+            id: str,
+            cmd: model = Input(),  # type: ignore[valid-type]
+        ) -> model | None:  # type: ignore[valid-type]
             return await self.main_repo.update(coerce(id), cmd)
 
     AutoUpdate.__name__ = f"AutoUpdate{model.__name__}"
     AutoUpdate.__qualname__ = f"AutoUpdate{model.__name__}"
     AutoUpdate.__module__ = __name__
+    AutoUpdate.__doc__ = f"Partially update an existing {model.__name__}."
     return AutoUpdate
 
 
@@ -173,12 +185,13 @@ def _make_delete(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
     """
 
     class AutoDelete(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, id: str) -> Any:
+        async def execute(self, id: str) -> bool:
             return await self.main_repo.delete(coerce(id))
 
     AutoDelete.__name__ = f"AutoDelete{model.__name__}"
     AutoDelete.__qualname__ = f"AutoDelete{model.__name__}"
     AutoDelete.__module__ = __name__
+    AutoDelete.__doc__ = f"Delete a {model.__name__} by id."
     return AutoDelete
 
 
