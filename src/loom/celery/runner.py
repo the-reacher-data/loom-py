@@ -21,6 +21,7 @@ sync methods are called directly from the task thread.
 from __future__ import annotations
 
 import asyncio
+import time
 from contextvars import Token
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
 
 from loom.celery.event_loop import WorkerEventLoop
+from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.tracing import reset_trace_id, set_trace_id
 
@@ -36,6 +38,27 @@ if TYPE_CHECKING:
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
     from loom.core.use_case.factory import UseCaseFactory
+
+
+# ---------------------------------------------------------------------------
+# Metrics helpers
+# ---------------------------------------------------------------------------
+
+
+def _emit(metrics: MetricsAdapter | None, event: RuntimeEvent) -> None:
+    """Forward *event* to *metrics* when an adapter is configured."""
+    if metrics is not None:
+        metrics.on_event(event)
+
+
+def _job_event(
+    kind: EventKind,
+    use_case_name: str,
+    trace_id: str | None,
+    **kwargs: Any,
+) -> RuntimeEvent:
+    """Build a :class:`~loom.core.engine.events.RuntimeEvent` for a job lifecycle step."""
+    return RuntimeEvent(kind=kind, use_case_name=use_case_name, trace_id=trace_id, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +211,10 @@ def _make_job_task(
         params: dict[str, Any] | None = None,
         trace_id: str | None = None,
     ) -> Any:
+        name = job_type.__qualname__
         token = _install_trace(trace_id)
-        # TODO(piece-9): emit JOB_STARTED via metrics
+        _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
+        t0 = time.monotonic()
         try:
             instance = factory.build(job_type)
             result = _run_coroutine(
@@ -202,14 +227,38 @@ def _make_job_task(
                 timeout=run_timeout,
                 eager_fallback=_is_eager_request(self),
             )
-            # TODO(piece-9): emit JOB_SUCCEEDED via metrics
+            _emit(
+                metrics,
+                _job_event(
+                    EventKind.JOB_SUCCEEDED,
+                    name,
+                    trace_id,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                    status="success",
+                ),
+            )
             return result
         except Exception as exc:
             if self.request.retries < self.max_retries:
                 countdown = backoff**self.request.retries
-                # TODO(piece-9): emit JOB_RETRYING via metrics
+                _emit(
+                    metrics,
+                    _job_event(
+                        EventKind.JOB_RETRYING, name, trace_id, status="retrying", error=exc
+                    ),
+                )
                 raise self.retry(exc=exc, countdown=countdown) from exc
-            # TODO(piece-9): emit JOB_EXHAUSTED via metrics
+            _emit(
+                metrics,
+                _job_event(
+                    EventKind.JOB_EXHAUSTED,
+                    name,
+                    trace_id,
+                    duration_ms=(time.monotonic() - t0) * 1000,
+                    status="exhausted",
+                    error=exc,
+                ),
+            )
             raise
         finally:
             _uninstall_trace(token)

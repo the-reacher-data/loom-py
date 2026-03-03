@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from loom.celery.runner import (
+    _emit,
     _install_trace,
+    _job_event,
     _make_callback_error_task,
     _make_callback_task,
     _make_job_task,
@@ -15,6 +17,7 @@ from loom.celery.runner import (
     _run_job,
     _uninstall_trace,
 )
+from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.job import Job
 
 # ---------------------------------------------------------------------------
@@ -316,6 +319,68 @@ class TestMakeJobTaskRetry:
         # backoff=3, retries=2 → countdown = 3**2 = 9
         assert kwargs["countdown"] == 9
 
+    def test_job_started_event_emitted_before_execution(self) -> None:
+        """JOB_STARTED must arrive before WorkerEventLoop.run() is called."""
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=0)
+            task_fn(_mock_self())
+        first_event = metrics.on_event.call_args_list[0].args[0]
+        assert first_event.kind == EventKind.JOB_STARTED
+
+    def test_job_succeeded_event_emitted_on_success(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=0)
+            task_fn(_mock_self())
+        kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
+        assert EventKind.JOB_SUCCEEDED in kinds
+
+    def test_job_succeeded_event_has_duration_ms(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=0)
+            task_fn(_mock_self())
+        succeeded = next(
+            c.args[0]
+            for c in metrics.on_event.call_args_list
+            if c.args[0].kind == EventKind.JOB_SUCCEEDED
+        )
+        assert succeeded.duration_ms is not None
+        assert succeeded.duration_ms >= 0
+
+    def test_job_started_event_carries_trace_id(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=0)
+            task_fn(_mock_self(), trace_id="tid-999")
+        started = next(
+            c.args[0]
+            for c in metrics.on_event.call_args_list
+            if c.args[0].kind == EventKind.JOB_STARTED
+        )
+        assert started.trace_id == "tid-999"
+
+    def test_no_metrics_does_not_raise(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics=None)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=0)
+            task_fn(_mock_self())  # must not raise
+
     def test_raises_original_exc_when_retries_exhausted(self) -> None:
         instance = MagicMock()
         factory = _mock_factory(instance)
@@ -331,6 +396,68 @@ class TestMakeJobTaskRetry:
             with pytest.raises(ValueError, match="final"):
                 raw_fn(mock_self, payload={"value": 1})
         mock_self.retry.assert_not_called()
+
+    def test_job_retrying_event_emitted_on_retry(self) -> None:
+        instance = MagicMock()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        mock_self = MagicMock()
+        mock_self.request.retries = 0
+        mock_self.request.is_eager = False
+        mock_self.max_retries = 2
+        mock_self.app.conf.task_always_eager = False
+
+        class _RetryError(Exception):
+            pass
+
+        mock_self.retry = MagicMock(side_effect=_RetryError)
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(side_effect=ValueError("boom"))
+            with pytest.raises(_RetryError):
+                task_fn(mock_self)
+        kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
+        assert EventKind.JOB_RETRYING in kinds
+
+    def test_job_exhausted_event_emitted_when_retries_exhausted(self) -> None:
+        instance = MagicMock()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        mock_self = MagicMock()
+        mock_self.request.retries = 2
+        mock_self.max_retries = 2
+        mock_self.request.is_eager = False
+        mock_self.app.conf.task_always_eager = False
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), metrics)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(side_effect=ValueError("final"))
+            with pytest.raises(ValueError):
+                task_fn(mock_self)
+        kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
+        assert EventKind.JOB_EXHAUSTED in kinds
+
+
+# ---------------------------------------------------------------------------
+# _emit / _job_event helpers
+# ---------------------------------------------------------------------------
+
+
+class TestEmitHelpers:
+    def test_emit_calls_on_event_when_metrics_present(self) -> None:
+        metrics = MagicMock()
+        event = RuntimeEvent(kind=EventKind.JOB_STARTED, use_case_name="TestJob")
+        _emit(metrics, event)
+        metrics.on_event.assert_called_once_with(event)
+
+    def test_emit_is_noop_when_metrics_is_none(self) -> None:
+        _emit(None, RuntimeEvent(kind=EventKind.JOB_STARTED, use_case_name="X"))
+
+    def test_job_event_returns_runtime_event_with_correct_kind(self) -> None:
+        event = _job_event(EventKind.JOB_SUCCEEDED, "MyJob", "tid-1", status="success")
+        assert event.kind == EventKind.JOB_SUCCEEDED
+        assert event.use_case_name == "MyJob"
+        assert event.trace_id == "tid-1"
+        assert event.status == "success"
 
 
 # ---------------------------------------------------------------------------

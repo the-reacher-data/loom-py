@@ -101,6 +101,7 @@ def _build_success_link(
     callback_type: type[Any],
     payload: dict[str, Any],
     task_id: str,
+    trace_id: str | None = None,
 ) -> Any:
     """Build a Celery success-callback signature.
 
@@ -112,13 +113,14 @@ def _build_success_link(
         callback_type: Callback class whose registered task name is used.
         payload: Dispatch payload forwarded as execution context.
         task_id: Parent task UUID for correlation.
+        trace_id: Distributed trace ID propagated to the callback worker.
 
     Returns:
         Celery ``Signature`` with ``immutable=False``.
     """
     return celery_app.signature(
         f"loom.callback.{callback_type.__qualname__}",
-        kwargs={"job_id": task_id, "context": payload},
+        kwargs={"job_id": task_id, "context": payload, "trace_id": trace_id},
         immutable=False,
     )
 
@@ -128,6 +130,7 @@ def _build_failure_link(
     callback_type: type[Any],
     payload: dict[str, Any],
     task_id: str,
+    trace_id: str | None = None,
 ) -> Any:
     """Build a Celery failure-callback signature.
 
@@ -140,13 +143,14 @@ def _build_failure_link(
         callback_type: Callback class whose registered task name is used.
         payload: Dispatch payload forwarded as execution context.
         task_id: Parent task UUID for correlation.
+        trace_id: Distributed trace ID propagated to the callback worker.
 
     Returns:
         Celery ``Signature`` with ``immutable=True``.
     """
     return celery_app.signature(
         f"loom.callback_error.{callback_type.__qualname__}",
-        kwargs={"job_id": task_id, "context": payload},
+        kwargs={"job_id": task_id, "context": payload, "trace_id": trace_id},
         immutable=True,
     )
 
@@ -266,17 +270,18 @@ class CeleryJobService:
             matches the ``task_id`` that will be passed to ``send_task``.
         """
         task_id = str(uuid.uuid4())
+        trace_id = get_trace_id()
         eff_queue = queue or job_type.__queue__
         eff_countdown = countdown if countdown is not None else job_type.__countdown__
         eff_priority = priority if priority is not None else job_type.__priority__
 
         link = (
-            _build_success_link(self._app, on_success, payload or {}, task_id)
+            _build_success_link(self._app, on_success, payload or {}, task_id, trace_id)
             if on_success
             else None
         )
         link_error = (
-            _build_failure_link(self._app, on_failure, payload or {}, task_id)
+            _build_failure_link(self._app, on_failure, payload or {}, task_id, trace_id)
             if on_failure
             else None
         )
@@ -287,7 +292,7 @@ class CeleryJobService:
             task_id=task_id,
             payload=payload or {},
             params=params,
-            trace_id=get_trace_id(),
+            trace_id=trace_id,
             queue=eff_queue,
             countdown=eff_countdown,
             priority=eff_priority,

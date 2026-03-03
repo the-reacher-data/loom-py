@@ -258,6 +258,50 @@ class TestLinkBuilders:
         kwargs = mock_app.signature.call_args.kwargs["kwargs"]
         assert kwargs["context"] == {"order_id": 99}
 
+    def test_success_link_includes_trace_id(self) -> None:
+        mock_app = MagicMock()
+        _build_success_link(mock_app, _SuccessCallback, {}, "uuid", "trace-abc")
+        kwargs = mock_app.signature.call_args.kwargs["kwargs"]
+        assert kwargs["trace_id"] == "trace-abc"
+
+    def test_failure_link_includes_trace_id(self) -> None:
+        mock_app = MagicMock()
+        _build_failure_link(mock_app, _FailureCallback, {}, "uuid", "trace-xyz")
+        kwargs = mock_app.signature.call_args.kwargs["kwargs"]
+        assert kwargs["trace_id"] == "trace-xyz"
+
+    def test_success_link_trace_id_defaults_to_none(self) -> None:
+        mock_app = MagicMock()
+        _build_success_link(mock_app, _SuccessCallback, {}, "uuid")
+        kwargs = mock_app.signature.call_args.kwargs["kwargs"]
+        assert kwargs["trace_id"] is None
+
+    def test_dispatch_propagates_trace_id_to_success_link(self) -> None:
+        from loom.core.tracing import reset_trace_id, set_trace_id
+
+        mock_app = MagicMock()
+        service = CeleryJobService(mock_app)
+        token = set_trace_id("my-trace-123")
+        try:
+            service.dispatch(_EmailJob, on_success=_SuccessCallback)
+        finally:
+            reset_trace_id(token)
+        sig_kwargs = mock_app.signature.call_args.kwargs["kwargs"]
+        assert sig_kwargs["trace_id"] == "my-trace-123"
+
+    def test_dispatch_propagates_trace_id_to_failure_link(self) -> None:
+        from loom.core.tracing import reset_trace_id, set_trace_id
+
+        mock_app = MagicMock()
+        service = CeleryJobService(mock_app)
+        token = set_trace_id("err-trace-456")
+        try:
+            service.dispatch(_EmailJob, on_failure=_FailureCallback)
+        finally:
+            reset_trace_id(token)
+        sig_kwargs = mock_app.signature.call_args.kwargs["kwargs"]
+        assert sig_kwargs["trace_id"] == "err-trace-456"
+
 
 # ---------------------------------------------------------------------------
 # dispatch_parallel()
