@@ -115,6 +115,46 @@ class RotatingFileHandlerConfig(msgspec.Struct, frozen=True, tag="rotating_file"
 HandlerConfig = StreamHandlerConfig | FileHandlerConfig | RotatingFileHandlerConfig
 
 
+class LoggerConfig(msgspec.Struct, kw_only=True):
+    """YAML configuration struct for the ``logger:`` section.
+
+    Use with :func:`~loom.core.config.loader.section` to parse the
+    ``logger:`` block from an OmegaConf config, then pass directly to
+    :func:`configure_logging_from_values`.
+
+    Attributes:
+        name: Logger name.  Empty string targets the root logger.
+        environment: Deployment environment (``"dev"``, ``"prod"``).
+            When empty, :func:`configure_logging_from_values` falls back to
+            the ``ENVIRONMENT`` env var, then ``"dev"``.
+        renderer: Output renderer (``"json"`` or ``"console"``).
+            ``None`` auto-detects from ``environment``.
+        colors: Enable ANSI colours.  ``None`` auto-detects from
+            ``environment``.
+        level: Minimum log level (``"DEBUG"``, ``"INFO"``, etc.).
+        handlers: Additional stdlib handler configurations.
+
+    Example::
+
+        cfg = section(raw, "logger", LoggerConfig)
+        configure_logging_from_values(
+            name=cfg.name,
+            environment=cfg.environment,
+            renderer=cfg.renderer,
+            colors=cfg.colors,
+            level=cfg.level,
+            handlers=cfg.handlers,
+        )
+    """
+
+    name: str = ""
+    environment: str = ""
+    renderer: str | None = None
+    colors: bool | None = None
+    level: str = "INFO"
+    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class LogConfig:
     """Immutable logging configuration for the framework.
@@ -213,7 +253,7 @@ def configure_logging_from_values(
     Intended for bootstrap layers that parse config structs and want to avoid
     duplicating ``Environment``/``Renderer`` conversion logic.
     """
-    env_str = environment.strip() if environment.strip() else "dev"
+    env_str = environment.strip() or "dev"
     configure_logging(
         LogConfig(
             name=name,

@@ -49,7 +49,6 @@ Typical YAML layout::
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -66,10 +65,7 @@ from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.logger import (
-    HandlerConfig,
-    configure_logging_from_values,
-)
+from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
@@ -98,37 +94,6 @@ class _WorkerDbConfig(msgspec.Struct, kw_only=True):
     url: str
     echo: bool = False
     pool_pre_ping: bool = True
-
-
-class _LoggerConfig(msgspec.Struct, kw_only=True):
-    """Logger settings for the worker process.
-
-    Attributes:
-        name: Logger name.
-        environment: Deployment environment string (``"dev"``, ``"prod"``).
-        renderer: Log renderer (``"json"`` or ``"console"``).
-        colors: Enable ANSI colours in console output.
-        level: Minimum log level (``"DEBUG"``, ``"INFO"``, etc.).
-        handlers: Additional handler configurations.
-    """
-
-    name: str = ""
-    environment: str = ""
-    renderer: str | None = None
-    colors: bool | None = None
-    level: str = "INFO"
-    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
-
-
-def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment or os.getenv("ENVIRONMENT", "dev"),
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        handlers=logger_cfg.handlers,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -293,10 +258,17 @@ def bootstrap_worker(
     db_cfg = section(raw, "database", _WorkerDbConfig)
 
     try:
-        logger_cfg = section(raw, "logger", _LoggerConfig)
+        logger_cfg = section(raw, "logger", LoggerConfig)
     except ConfigError:
-        logger_cfg = _LoggerConfig()
-    _configure_logger(logger_cfg)
+        logger_cfg = LoggerConfig()
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment,
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
+    )
 
     container = LoomContainer()
     container.register(type(raw), lambda: raw, scope=Scope.APPLICATION)

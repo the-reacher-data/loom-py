@@ -27,10 +27,7 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
-from loom.core.logger import (
-    HandlerConfig,
-    configure_logging_from_values,
-)
+from loom.core.logger import HandlerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
