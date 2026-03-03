@@ -25,6 +25,7 @@ from loom.core.repository.abc import (
     build_page_result,
 )
 from loom.core.repository.mutation import MutationEvent
+from loom.core.repository.sqlalchemy.integrity import handle_integrity_errors
 from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCompiler
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
@@ -194,6 +195,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``create`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def create(self, data: msgspec.Struct) -> OutputT:
         """Persist one entity and return its output struct."""
         async with self._session_scope() as scoped_session:
@@ -418,6 +420,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
 class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``update`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
         """Apply partial updates and return updated output struct."""
         async with self._session_scope() as scoped_session:
@@ -455,6 +458,7 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
 class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``delete`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def delete(self, obj_id: IdT) -> bool:
         """Delete one entity by id."""
         async with self._session_scope() as scoped_session:
