@@ -5,6 +5,8 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
+import msgspec
+
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
@@ -321,7 +323,19 @@ class RuntimeExecutor:
                 f"{plan.use_case_type.__qualname__}: payload is required for a UseCase with Input()"
             )
 
-        command, fields_set = plan.input_binding.command_type.from_payload(payload)
+        cmd_type = plan.input_binding.command_type
+        if hasattr(cmd_type, "from_payload"):
+            command, fields_set = cmd_type.from_payload(payload)
+        elif isinstance(cmd_type, type) and issubclass(cmd_type, msgspec.Struct):
+            command = msgspec.convert(payload, cmd_type)
+            fields_set = frozenset(
+                payload.keys() & {f.name for f in msgspec.structs.fields(cmd_type)}
+            )
+        else:
+            raise TypeError(
+                f"{plan.use_case_type.__qualname__}: "
+                f"command type {cmd_type!r} must implement from_payload() or be a msgspec.Struct"
+            )
         bound[plan.input_binding.name] = command
         self._log_step("Bind Input")
         return cast(frozenset[str], fields_set)

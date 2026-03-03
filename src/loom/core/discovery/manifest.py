@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from typing import Any, cast
 
+from loom.core.discovery._utils import _append_unique, collect_use_cases_from_interfaces
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
@@ -18,6 +19,21 @@ class ManifestDiscoveryEngine:
         self._manifest_module = manifest_module
 
     def discover(self) -> DiscoveryResult:
+        """Load components from manifest lists and supplement auto-CRUD use cases.
+
+        The manifest module is expected to expose ``MODELS``, ``USE_CASES``,
+        and ``INTERFACES`` lists.  When ``USE_CASES`` is empty but
+        ``INTERFACES`` contain ``auto=True`` interfaces, the generated use
+        cases are discovered automatically from the interface routes.
+
+        Returns:
+            :class:`~loom.core.discovery.base.DiscoveryResult` with all
+            discovered models, use cases, and interfaces.
+
+        Raises:
+            ValueError: When no manifest module path is provided, or when the
+                manifest exposes no components at all.
+        """
         if not self._manifest_module:
             raise ValueError("manifest discovery requires a module path.")
 
@@ -29,6 +45,10 @@ class ManifestDiscoveryEngine:
         models = [cast(type[BaseModel], item) for item in raw_models]
         use_cases = [cast(type[UseCase[object, object]], item) for item in raw_use_cases]
         interfaces = [cast(type[RestInterface[object]], item) for item in raw_interfaces]
+
+        seen_ucs: set[type[UseCase[object, object]]] = set(use_cases)
+        for uc in collect_use_cases_from_interfaces(interfaces):
+            _append_unique(use_cases, seen_ucs, uc)
 
         if not interfaces and not use_cases and not models:
             raise ValueError(

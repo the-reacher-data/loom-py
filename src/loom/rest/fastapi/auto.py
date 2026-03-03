@@ -7,7 +7,10 @@ import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 import msgspec
 from fastapi import FastAPI
@@ -172,6 +175,58 @@ def _configure_logger(logger_cfg: _LoggerConfig) -> None:
     )
 
 
+def _configure_job_service(
+    raw: DictConfig,
+    result: BootstrapResult,
+    session_manager: SessionManager,
+) -> None:
+    """Register a ``JobService`` implementation in the container.
+
+    Registers :class:`~loom.celery.service.CeleryJobService` when a
+    ``celery`` config section is present and the ``loom[celery]`` extra is
+    installed.  Falls back to
+    :class:`~loom.core.job.service.InlineJobService` otherwise — enabling
+    local development and tests without a broker.
+
+    The registration uses ``APPLICATION`` scope so the service is created
+    once and shared across all requests.
+
+    Args:
+        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        result: Bootstrap result carrying the container, compiler, and
+            factory.
+        session_manager: Live ``SessionManager`` for the inline fallback
+            path (used to build a ``UoW`` factory for the executor).
+    """
+    try:
+        from loom.celery.config import (
+            CeleryConfig as _CC,  # type: ignore[import-untyped,unused-ignore]
+        )
+        from loom.celery.config import (
+            create_celery_app,  # type: ignore[import-untyped,unused-ignore]
+        )
+        from loom.celery.service import (
+            CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
+        )
+
+        celery_cfg = section(raw, "celery", _CC)
+        celery_app = create_celery_app(celery_cfg)
+        svc: Any = CeleryJobService(celery_app)
+    except (ConfigError, ImportError):
+        from loom.core.engine.executor import RuntimeExecutor as _Exec
+        from loom.core.job.service import InlineJobService
+        from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+        from loom.core.uow.abc import UnitOfWorkFactory as _UoWFactory
+
+        uow_factory: _UoWFactory = cast(Any, SQLAlchemyUnitOfWorkFactory(session_manager))
+        executor = _Exec(result.compiler, uow_factory=uow_factory, metrics=result.metrics)
+        svc = InlineJobService(result.factory, executor)
+
+    from loom.core.job.service import JobService
+
+    result.container.register(cast(type[Any], JobService), lambda: svc, scope=Scope.APPLICATION)
+
+
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
@@ -260,6 +315,7 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
     _ensure_code_path(effective_code_path)
 
     result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg)
+    _configure_job_service(raw, result, session_manager)
 
     middleware: list[type[Any]] = []
     if metrics_cfg.enabled:

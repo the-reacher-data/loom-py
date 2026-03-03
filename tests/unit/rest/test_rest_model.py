@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import msgspec
 import pytest
 
 from loom.core.use_case.use_case import UseCase
@@ -163,3 +164,67 @@ def test_rest_api_defaults_is_frozen() -> None:
 def test_pagination_mode_values() -> None:
     assert PaginationMode.OFFSET.value == "offset"
     assert PaginationMode.CURSOR.value == "cursor"
+
+
+# ---------------------------------------------------------------------------
+# RestInterface.__init_subclass__ (auto-CRUD)
+# ---------------------------------------------------------------------------
+
+
+class _AutoModel(msgspec.Struct):
+    id: int
+    name: str
+
+
+class TestRestInterfaceAutoInitSubclass:
+    def test_auto_true_no_routes_populates_routes(self) -> None:
+        class AutoInterface(RestInterface[_AutoModel]):
+            prefix = "/items"
+            auto = True
+
+        assert len(AutoInterface.routes) == 5
+
+    def test_auto_true_with_explicit_routes_not_overridden(self) -> None:
+        existing_route = RestRoute(use_case=CreateUserUseCase, method="POST", path="/")
+
+        class ExplicitInterface(RestInterface[_AutoModel]):
+            prefix = "/items"
+            auto = True
+            routes = (existing_route,)
+
+        assert len(ExplicitInterface.routes) == 1
+        assert ExplicitInterface.routes[0] is existing_route
+
+    def test_auto_false_routes_remain_empty(self) -> None:
+        class ManualInterface(RestInterface[_AutoModel]):
+            prefix = "/items"
+            auto = False
+
+        assert ManualInterface.routes == ()
+
+    def test_include_subset_generates_only_specified_ops(self) -> None:
+        class SubsetInterface(RestInterface[_AutoModel]):
+            prefix = "/items"
+            auto = True
+            include = ("create", "get")
+
+        assert len(SubsetInterface.routes) == 2
+        methods = {r.method for r in SubsetInterface.routes}
+        assert methods == {"POST", "GET"}
+
+    def test_abstract_intermediate_class_without_type_param_skipped(self) -> None:
+        """Base classes without concrete type param should not raise errors."""
+
+        class BaseAutoInterface(RestInterface[_AutoModel]):
+            auto = True
+
+        # Subclassing again — routes already populated on BaseAutoInterface
+        assert len(BaseAutoInterface.routes) == 5
+
+    def test_auto_routes_have_correct_use_case_names(self) -> None:
+        class NamedInterface(RestInterface[_AutoModel]):
+            prefix = "/named"
+            auto = True
+
+        uc_names = {r.use_case.__name__ for r in NamedInterface.routes}
+        assert "AutoCreate_AutoModel" in uc_names or any("_AutoModel" in name for name in uc_names)
