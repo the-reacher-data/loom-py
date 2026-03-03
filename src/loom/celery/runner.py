@@ -131,6 +131,9 @@ def _make_job_task(
         The registered Celery task object.
     """
 
+    timeout_value = job_type.__timeout__
+    run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
+
     @celery_app.task(  # type: ignore[untyped-decorator]
         name=f"loom.job.{job_type.__qualname__}",
         bind=True,
@@ -156,7 +159,8 @@ def _make_job_task(
                     payload=payload or {},
                     params=params,
                     executor=executor,
-                )
+                ),
+                timeout=run_timeout,
             )
             # TODO(piece-9): emit JOB_SUCCEEDED via metrics
             return result

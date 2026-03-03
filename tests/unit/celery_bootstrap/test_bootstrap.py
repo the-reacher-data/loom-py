@@ -216,6 +216,7 @@ class TestWorkerSignals:
         mock_sm.dispose.return_value = dispose_coro
 
         with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            mock_loop.is_initialized.return_value = True
             _connect_worker_signals(mock_sm)
             worker_process_init.send(sender=None)
             worker_process_shutdown.send(sender=None)
@@ -233,8 +234,44 @@ class TestWorkerSignals:
         mock_sm = MagicMock()
 
         with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            mock_loop.is_initialized.return_value = True
             _connect_worker_signals(mock_sm)
             worker_process_init.send(sender=None)
             worker_process_shutdown.send(sender=None)
 
+        mock_loop.shutdown.assert_called_once()
+
+    def test_on_shutdown_skips_dispose_when_loop_not_initialized(
+        self, isolated_celery_signals: Any
+    ) -> None:
+        from celery.signals import worker_process_shutdown  # type: ignore[import-untyped]
+
+        mock_sm = MagicMock()
+
+        with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            mock_loop.is_initialized.return_value = False
+            _connect_worker_signals(mock_sm)
+            worker_process_shutdown.send(sender=None)
+
+        mock_sm.dispose.assert_not_called()
+        mock_loop.run.assert_not_called()
+        mock_loop.shutdown.assert_called_once()
+
+    def test_on_shutdown_always_calls_shutdown_when_dispose_fails(
+        self, isolated_celery_signals: Any
+    ) -> None:
+        from celery.signals import worker_process_shutdown  # type: ignore[import-untyped]
+
+        mock_sm = MagicMock()
+        dispose_coro = MagicMock()
+        mock_sm.dispose.return_value = dispose_coro
+
+        with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            mock_loop.is_initialized.return_value = True
+            mock_loop.run.side_effect = RuntimeError("loop stopped")
+            _connect_worker_signals(mock_sm)
+            worker_process_shutdown.send(sender=None)
+
+        mock_loop.run.assert_called_once_with(dispose_coro)
+        dispose_coro.close.assert_called_once()
         mock_loop.shutdown.assert_called_once()

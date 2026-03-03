@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -91,7 +92,7 @@ class WorkerEventLoop:
             cls._thread = thread
 
     @classmethod
-    def run(cls, coro: Any) -> Any:
+    def run(cls, coro: Any, *, timeout: float | None = None) -> Any:
         """Submit *coro* to the background loop and block until done.
 
         The calling thread (Celery task thread) blocks on a
@@ -101,22 +102,37 @@ class WorkerEventLoop:
 
         Args:
             coro: An awaitable coroutine to execute on the background loop.
+            timeout: Maximum seconds to wait for completion. ``None`` waits
+                indefinitely.
 
         Returns:
             Whatever the coroutine returns.
 
         Raises:
             RuntimeError: If :meth:`initialize` has not been called first.
+            TimeoutError: If ``timeout`` elapses before completion.
             Exception: Any exception raised by *coro* is propagated.
         """
         if cls._loop is None:
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
             raise RuntimeError(
                 "WorkerEventLoop is not initialized. "
                 "Call WorkerEventLoop.initialize() from the "
                 "worker_process_init signal handler before running tasks."
             )
         future = asyncio.run_coroutine_threadsafe(coro, cls._loop)
-        return future.result()
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            raise
+
+    @classmethod
+    def is_initialized(cls) -> bool:
+        """Return whether the worker event loop is currently available."""
+        return cls._loop is not None
 
     @classmethod
     def shutdown(cls, *, timeout: float = 10.0) -> None:

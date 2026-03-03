@@ -79,7 +79,7 @@ def mock_worker_loop() -> Any:
     adds thread lifecycle complexity without additional coverage benefit.
     """
     with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
-        mock_loop.run = lambda coro: asyncio.run(coro)
+        mock_loop.run = lambda coro, timeout=None: asyncio.run(coro)
         yield mock_loop
 
 

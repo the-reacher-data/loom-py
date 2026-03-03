@@ -28,11 +28,8 @@ from loom.core.discovery import (
 )
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.logger import (
-    Environment,
     HandlerConfig,
-    LogConfig,
-    Renderer,
-    configure_logging,
+    configure_logging_from_values,
 )
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
@@ -157,21 +154,14 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
-def _parse_renderer(value: str | None) -> Renderer | None:
-    return Renderer.from_str(value) if value is not None else None
-
-
 def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    env_str = logger_cfg.environment.strip() or os.getenv("ENVIRONMENT", "dev")
-    configure_logging(
-        LogConfig(
-            name=logger_cfg.name,
-            environment=Environment.from_str(env_str),
-            renderer=_parse_renderer(logger_cfg.renderer),
-            colors=logger_cfg.colors,
-            level=logger_cfg.level,
-            handlers=tuple(logger_cfg.handlers),
-        )
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment or os.getenv("ENVIRONMENT", "dev"),
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
     )
 
 
@@ -216,9 +206,8 @@ def _configure_job_service(
         from loom.core.engine.executor import RuntimeExecutor as _Exec
         from loom.core.job.service import InlineJobService
         from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
-        from loom.core.uow.abc import UnitOfWorkFactory as _UoWFactory
 
-        uow_factory: _UoWFactory = cast(Any, SQLAlchemyUnitOfWorkFactory(session_manager))
+        uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
         executor = _Exec(result.compiler, uow_factory=uow_factory, metrics=result.metrics)
         svc = InlineJobService(result.factory, executor)
 

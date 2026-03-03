@@ -67,11 +67,8 @@ from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.logger import (
-    Environment,
     HandlerConfig,
-    LogConfig,
-    Renderer,
-    configure_logging,
+    configure_logging_from_values,
 )
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
@@ -123,26 +120,14 @@ class _LoggerConfig(msgspec.Struct, kw_only=True):
     handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Logger helpers
-# ---------------------------------------------------------------------------
-
-
-def _parse_renderer(value: str | None) -> Renderer | None:
-    return Renderer.from_str(value) if value is not None else None
-
-
 def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    env_str = logger_cfg.environment.strip() or os.getenv("ENVIRONMENT", "dev")
-    configure_logging(
-        LogConfig(
-            name=logger_cfg.name,
-            environment=Environment.from_str(env_str),
-            renderer=_parse_renderer(logger_cfg.renderer),
-            colors=logger_cfg.colors,
-            level=logger_cfg.level,
-            handlers=tuple(logger_cfg.handlers),
-        )
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment or os.getenv("ENVIRONMENT", "dev"),
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
     )
 
 
@@ -177,8 +162,19 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
         WorkerEventLoop.initialize()
 
     def _on_shutdown(**kwargs: Any) -> None:
-        WorkerEventLoop.run(session_manager.dispose())
-        WorkerEventLoop.shutdown()
+        dispose_coro: Any | None = None
+        try:
+            if WorkerEventLoop.is_initialized():
+                dispose_coro = session_manager.dispose()
+                WorkerEventLoop.run(dispose_coro)
+        except Exception:
+            if dispose_coro is not None:
+                close = getattr(dispose_coro, "close", None)
+                if callable(close):
+                    close()
+            raise
+        finally:
+            WorkerEventLoop.shutdown()
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
@@ -329,7 +325,7 @@ def bootstrap_worker(
     uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
 
     celery_app = create_celery_app(celery_cfg)
-    executor = RuntimeExecutor(compiler, uow_factory=uow_factory, metrics=metrics)  # type: ignore[arg-type]
+    executor = RuntimeExecutor(compiler, uow_factory=uow_factory, metrics=metrics)
 
     for job_type in jobs:
         _make_job_task(celery_app, job_type, factory, executor, metrics)

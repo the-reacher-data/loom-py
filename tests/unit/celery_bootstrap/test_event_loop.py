@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -125,6 +126,18 @@ class TestRun:
 
         assert not errors
         assert sorted(results) == [i * 2 for i in range(10)]
+
+    def test_timeout_raises_and_returns_quickly(self) -> None:
+        WorkerEventLoop.initialize()
+
+        async def _sleep_long() -> None:
+            await asyncio.sleep(0.5)
+
+        started = time.perf_counter()
+        with pytest.raises(TimeoutError):
+            WorkerEventLoop.run(_sleep_long(), timeout=0.01)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 0.3
 
 
 # ---------------------------------------------------------------------------

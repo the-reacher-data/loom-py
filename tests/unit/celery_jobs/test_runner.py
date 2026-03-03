@@ -219,6 +219,8 @@ class TestMakeJobTaskExecution:
             mock_loop.run = MagicMock(return_value=10)
             task_fn(_mock_self(), payload={"value": 5})
             mock_loop.run.assert_called_once()
+            _, kwargs = mock_loop.run.call_args
+            assert kwargs["timeout"] is None
 
     def test_async_job_also_calls_worker_event_loop_run(self) -> None:
         instance = MagicMock()
@@ -229,6 +231,8 @@ class TestMakeJobTaskExecution:
             mock_loop.run = MagicMock(return_value="ok")
             task_fn(_mock_self(), payload={"msg": "hello"})
             mock_loop.run.assert_called_once()
+            _, kwargs = mock_loop.run.call_args
+            assert kwargs["timeout"] == 300.0
 
     def test_task_returns_loop_run_result(self) -> None:
         instance = _SyncJob()

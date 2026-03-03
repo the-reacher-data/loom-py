@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -197,6 +197,33 @@ def _setup_stdlib(config: LogConfig, level: int) -> None:
 
 
 _DEFAULT_LOG_CONFIG = LogConfig()
+
+
+def configure_logging_from_values(
+    *,
+    name: str = "",
+    environment: str = "",
+    renderer: str | None = None,
+    colors: bool | None = None,
+    level: str = "INFO",
+    handlers: Sequence[HandlerConfig] = (),
+) -> None:
+    """Configure logging from plain scalar values.
+
+    Intended for bootstrap layers that parse config structs and want to avoid
+    duplicating ``Environment``/``Renderer`` conversion logic.
+    """
+    env_str = environment.strip() if environment.strip() else "dev"
+    configure_logging(
+        LogConfig(
+            name=name,
+            environment=Environment.from_str(env_str),
+            renderer=Renderer.from_str(renderer) if renderer is not None else None,
+            colors=colors,
+            level=level,
+            handlers=tuple(handlers),
+        )
+    )
 
 
 def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:

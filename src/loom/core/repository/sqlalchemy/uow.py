@@ -37,6 +37,7 @@ from loom.core.repository.sqlalchemy.transactional import (
     set_active_mutations,
     set_active_session,
 )
+from loom.core.uow.abc import UnitOfWork
 
 _log = get_logger(__name__).bind(component="uow")
 
@@ -178,11 +179,11 @@ class SQLAlchemyUnitOfWorkFactory:
     def __init__(self, session_manager: SessionManager) -> None:
         self._session_manager = session_manager
 
-    def create(self) -> SQLAlchemyUnitOfWork:
-        """Return a fresh, not-yet-begun :class:`SQLAlchemyUnitOfWork`.
+    def create(self) -> UnitOfWork:
+        """Return a fresh, not-yet-begun :class:`UnitOfWork`.
 
         Returns:
-            A new :class:`SQLAlchemyUnitOfWork` backed by the shared
+            A new :class:`UnitOfWork` backed by the shared
             session manager.
         """
         return SQLAlchemyUnitOfWork(self._session_manager)
