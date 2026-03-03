@@ -211,8 +211,8 @@ class RuntimeExecutor:
 
             self._bind_params(plan, params or {}, bound)
             fields_set = self._build_command(plan, payload, bound)
-            await self._execute_loads(plan, bound, dependencies, load_overrides)
-            await self._execute_exists(plan, bound, dependencies)
+            await self._execute_loads(plan, compilable, bound, dependencies, load_overrides)
+            await self._execute_exists(plan, compilable, bound, dependencies)
             self._apply_computes(plan, bound, fields_set)
             self._check_rules(plan, bound, fields_set)
 
@@ -327,10 +327,8 @@ class RuntimeExecutor:
         if hasattr(cmd_type, "from_payload"):
             command, fields_set = cmd_type.from_payload(payload)
         elif isinstance(cmd_type, type) and issubclass(cmd_type, msgspec.Struct):
-            command = msgspec.convert(payload, cmd_type)
-            fields_set = frozenset(
-                payload.keys() & {f.name for f in msgspec.structs.fields(cmd_type)}
-            )
+            normalized_payload, fields_set = _normalize_struct_payload(payload, cmd_type)
+            command = msgspec.convert(normalized_payload, cmd_type)
         else:
             raise TypeError(
                 f"{plan.use_case_type.__qualname__}: "
@@ -343,23 +341,32 @@ class RuntimeExecutor:
     async def _execute_loads(
         self,
         plan: ExecutionPlan,
+        compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> None:
         for ls in plan.load_steps:
-            entity = await self._resolve_load(ls, plan, bound, dependencies, load_overrides)
+            entity = await self._resolve_load(
+                ls,
+                plan,
+                compilable,
+                bound,
+                dependencies,
+                load_overrides,
+            )
             bound[ls.name] = entity
             self._log_step(f"Load {ls.entity_type.__name__}")
 
     async def _execute_exists(
         self,
         plan: ExecutionPlan,
+        compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
     ) -> None:
         for es in plan.exists_steps:
-            result = await self._resolve_exists(es, plan, bound, dependencies)
+            result = await self._resolve_exists(es, plan, compilable, bound, dependencies)
             bound[es.name] = result
             self._log_step(f"Exists {es.entity_type.__name__}")
 
@@ -423,6 +430,7 @@ class RuntimeExecutor:
         self,
         step: LoadStep,
         plan: ExecutionPlan,
+        compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
@@ -431,11 +439,15 @@ class RuntimeExecutor:
             return load_overrides[step.entity_type]
 
         if dependencies is None:
-            raise RuntimeError(
-                f"No dependencies provided for LoadById({step.entity_type.__name__})"
-            )
-
-        repo = dependencies.get(step.entity_type)
+            repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
+            if repo is None:
+                raise RuntimeError(
+                    f"No dependencies provided for LoadById({step.entity_type.__name__})"
+                )
+        else:
+            repo = dependencies.get(step.entity_type)
+            if repo is None:
+                repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
         if repo is None:
             raise RuntimeError(
                 f"No repository registered for entity type '{step.entity_type.__name__}'"
@@ -457,13 +469,20 @@ class RuntimeExecutor:
         self,
         step: ExistsStep,
         plan: ExecutionPlan,
+        compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
     ) -> bool:
         if dependencies is None:
-            raise RuntimeError(f"No dependencies provided for Exists({step.entity_type.__name__})")
-
-        repo = dependencies.get(step.entity_type)
+            repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
+            if repo is None:
+                raise RuntimeError(
+                    f"No dependencies provided for Exists({step.entity_type.__name__})"
+                )
+        else:
+            repo = dependencies.get(step.entity_type)
+            if repo is None:
+                repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
         if repo is None:
             raise RuntimeError(
                 f"No repository registered for entity type '{step.entity_type.__name__}'"
@@ -515,6 +534,16 @@ class RuntimeExecutor:
             raise RuntimeError(f"Command '{type(command).__name__}' has no field '{source_name}'")
         return getattr(command, source_name)
 
+    @staticmethod
+    def _resolve_repo_from_use_case(
+        compilable: Compilable,
+        entity_type: type[Any],
+    ) -> Any | None:
+        for candidate in vars(compilable).values():
+            if getattr(candidate, "model", None) is entity_type:
+                return candidate
+        return None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -548,3 +577,33 @@ class RuntimeExecutor:
     def _log_step(self, label: str) -> None:
         if self._debug:
             self._logger.info(f"[STEP] {label}")
+
+
+def _normalize_struct_payload(
+    payload: dict[str, Any],
+    cmd_type: type[msgspec.Struct],
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """Normalize input payload keys for msgspec structs.
+
+    Accepts both internal field names (snake_case) and encoded field names
+    (e.g. camelCase), then returns a payload keyed by encoded names for
+    ``msgspec.convert`` plus a normalized ``fields_set`` in internal names.
+    """
+    normalized_payload = dict(payload)
+    internal_names: set[str] = set()
+    encoded_to_internal: dict[str, str] = {}
+
+    for field in msgspec.structs.fields(cmd_type):
+        internal_name = field.name
+        encoded_name = field.encode_name or field.name
+        internal_names.add(internal_name)
+        encoded_to_internal[encoded_name] = internal_name
+        if internal_name in payload and encoded_name not in normalized_payload:
+            normalized_payload[encoded_name] = payload[internal_name]
+
+    fields_set = frozenset(
+        key if key in internal_names else encoded_to_internal[key]
+        for key in payload
+        if key in internal_names or key in encoded_to_internal
+    )
+    return normalized_payload, fields_set

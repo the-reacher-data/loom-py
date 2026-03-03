@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import msgspec
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,11 +13,12 @@ from fastapi.testclient import TestClient
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
 from loom.core.command import Command, Internal
 from loom.core.di.container import LoomContainer
+from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
-from loom.core.use_case.markers import Input
+from loom.core.use_case.markers import Exists, Input
 from loom.core.use_case.use_case import UseCase
 from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
 from loom.rest.fastapi.app import create_fastapi_app
@@ -97,6 +99,23 @@ class DocUseCase(UseCase[Any, str]):
 
     async def execute(self, **kwargs: Any) -> str:
         return "ok"
+
+
+class _ExistsUserRecord(msgspec.Struct):
+    email: str
+
+
+class _ExistsCheckEmailCmd(Command, frozen=True):
+    email: str
+
+
+class _ExistsCheckEmailUseCase(UseCase[_ExistsUserRecord, bool]):
+    async def execute(
+        self,
+        cmd: _ExistsCheckEmailCmd = Input(),
+        email_exists: bool = Exists(_ExistsUserRecord, from_command="email", against="email"),
+    ) -> bool:
+        return email_exists
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +468,7 @@ def test_openapi_request_schema_from_command_excludes_internal_fields() -> None:
     request_schema = schema["paths"]["/items/"]["post"]["requestBody"]["content"][
         "application/json"
     ]["schema"]
-    properties = request_schema["$defs"]["CreateItemCmdRequest"]["properties"]
+    properties = request_schema["properties"]
     assert "fullName" in properties
     assert "tenant_id" not in properties
 
@@ -553,3 +572,34 @@ def test_create_fastapi_app_accepts_defaults() -> None:
     defaults = RestApiDefaults(pagination_mode=PaginationMode.CURSOR)
     app = create_fastapi_app(result, interfaces=[IFace], defaults=defaults)
     assert isinstance(app, FastAPI)
+
+
+def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
+    class _UsersIFace(RestInterface[bool]):
+        prefix = "/users"
+        routes = (RestRoute(use_case=_ExistsCheckEmailUseCase, method="POST", path="/exists"),)
+
+    class _FakeRepo:
+        model = _ExistsUserRecord
+
+        async def exists_by(self, field: str, value: Any) -> bool:
+            return field == "email" and value == "taken@example.com"
+
+    _repo = _FakeRepo()
+    _token = type("_UserRecordRepoToken", (), {})
+
+    def _register_repo(container: LoomContainer) -> None:
+        container.register(_token, lambda: _repo, scope=Scope.APPLICATION)
+        container.register_repo(_ExistsUserRecord, _token)
+
+    result = bootstrap_app(
+        config=_FakeConfig(),
+        use_cases=[_ExistsCheckEmailUseCase],
+        modules=[_register_repo],
+    )
+    app = create_fastapi_app(result, interfaces=[_UsersIFace])
+    client = TestClient(app)
+
+    response = client.post("/users/exists", json={"email": "taken@example.com"})
+    assert response.status_code == 200
+    assert response.json() is True

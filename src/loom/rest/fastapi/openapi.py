@@ -6,8 +6,9 @@ keeping runtime execution transport-agnostic.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import NoneType, UnionType
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import msgspec
 from pydantic import TypeAdapter
@@ -133,8 +134,11 @@ def _safe_pydantic_schema(annotation: Any) -> JsonSchema | None:
 def _safe_schema(annotation: Any) -> JsonSchema | None:
     msgspec_schema = _safe_msgspec_schema(annotation)
     if msgspec_schema is not None:
-        return msgspec_schema
-    return _safe_pydantic_schema(annotation)
+        return _inline_local_defs(msgspec_schema)
+    pydantic_schema = _safe_pydantic_schema(annotation)
+    if pydantic_schema is not None:
+        return _inline_local_defs(pydantic_schema)
+    return None
 
 
 def _without_unset_type(annotation: Any) -> Any:
@@ -164,3 +168,46 @@ def _with_optional_none(annotation: Any) -> Any:
     if annotation is NoneType:
         return annotation
     return annotation | None
+
+
+def _inline_local_defs(schema: JsonSchema) -> JsonSchema:
+    """Inline ``#/$defs/...`` references so OpenAPI can resolve schemas.
+
+    OpenAPI resolves ``$ref`` from the document root. JSON Schema fragments
+    returned by msgspec/pydantic may use local ``$defs`` references, which
+    become invalid once embedded under ``requestBody``/``responses``.
+    """
+    raw_defs = schema.get("$defs")
+    if not isinstance(raw_defs, dict):
+        return schema
+
+    defs: dict[str, Any] = {name: deepcopy(value) for name, value in raw_defs.items()}
+
+    def _resolve(node: Any, stack: tuple[str, ...] = ()) -> Any:
+        if isinstance(node, list):
+            return [_resolve(item, stack) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            name = ref.removeprefix("#/$defs/")
+            target = defs.get(name)
+            if target is None or name in stack:
+                return {k: _resolve(v, stack) for k, v in node.items() if k != "$defs"}
+
+            resolved_target = _resolve(deepcopy(target), (*stack, name))
+            siblings = {k: v for k, v in node.items() if k != "$ref"}
+            if not siblings:
+                return resolved_target
+
+            merged = deepcopy(resolved_target)
+            if isinstance(merged, dict):
+                for key, value in siblings.items():
+                    merged[key] = _resolve(value, stack)
+                return merged
+            return _resolve(siblings, stack)
+
+        return {key: _resolve(value, stack) for key, value in node.items() if key != "$defs"}
+
+    return cast(JsonSchema, _resolve({k: v for k, v in schema.items() if k != "$defs"}))

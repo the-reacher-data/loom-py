@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import msgspec
 import pytest
 
 from loom.core.command import Command
@@ -79,6 +80,16 @@ class _NoMarkersUseCase(UseCase[Any, str]):
 class _InputOnlyUseCase(UseCase[Any, str]):
     async def execute(self, cmd: CreateUserCommand = Input()) -> str:
         return cmd.email
+
+
+class _RenamedInputStruct(msgspec.Struct, rename="camel"):
+    price_cents: int
+    stock: int
+
+
+class _RenamedInputUseCase(UseCase[Any, tuple[int, frozenset[str]]]):
+    async def execute(self, cmd: _RenamedInputStruct = Input()) -> tuple[int, frozenset[str]]:
+        return cmd.price_cents, frozenset({"price_cents", "stock"})
 
 
 class _ParamsAndInputUseCase(UseCase[Any, UserResult]):
@@ -247,6 +258,22 @@ class TestExecuteWithInput:
             payload={"email": "a@b.com", "name": "A"},
         )
         assert result.id == 99
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_price"),
+        [
+            ({"price_cents": 123, "stock": 2}, 123),
+            ({"priceCents": 321, "stock": 2}, 321),
+        ],
+    )
+    async def test_msgspec_struct_input_accepts_snake_and_camel_case_keys(
+        self,
+        payload: dict[str, int],
+        expected_price: int,
+    ) -> None:
+        ex = _make_executor()
+        price, _ = await ex.execute(_RenamedInputUseCase(), payload=payload)
+        assert price == expected_price
 
 
 # ---------------------------------------------------------------------------
