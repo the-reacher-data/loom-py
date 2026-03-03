@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import msgspec
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -97,7 +98,7 @@ def _build_mapped_column(field_info: Any) -> Any:
         kwargs["unique"] = True
     if field.index:
         kwargs["index"] = True
-    if field.default is not None:
+    if field.default not in (None, msgspec.UNSET):
         kwargs["default"] = field.default
 
     if field.server_default is not None:

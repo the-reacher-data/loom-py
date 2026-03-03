@@ -36,6 +36,7 @@ def test_fake_repo_app_bootstrap_without_metrics(
             json={"name": "keyboard", "price": 120.0},
         )
         assert create_response.status_code == 201
+        assert "x-request-id" in create_response.headers
         created = create_response.json()
         assert created["id"] == 1
         assert created["name"] == "keyboard"
@@ -88,6 +89,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
             json={"name": "keyboard", "price": 120.0},
         )
         assert create_response.status_code == 201
+        assert "x-request-id" in create_response.headers
         created = create_response.json()
         assert created["id"] == 1
         assert created["name"] == "keyboard"

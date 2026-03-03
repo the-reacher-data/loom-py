@@ -30,7 +30,7 @@ class SessionManager:
         pool_timeout: int | None = 30,
         pool_recycle: int | None = 1800,
         connect_args: dict[str, object] | None = None,
-        inject_trace_id: bool = False,
+        inject_trace_id: bool = True,
         **engine_kwargs: object,
     ) -> None:
         """Create a session manager backed by an async SQLAlchemy engine.
@@ -47,7 +47,7 @@ class SessionManager:
             inject_trace_id: When ``True``, prefixes every SQL statement with a
                 ``/* trace_id=<id> */`` comment when a trace identifier is active
                 in the current async context.  Visible in database slow-query logs
-                and ``pg_stat_activity``.  Defaults to ``False``.
+                and ``pg_stat_activity``.  Defaults to ``True``.
             **engine_kwargs: Additional keyword arguments forwarded to ``create_async_engine``.
         """
         engine_config: dict[str, object] = {

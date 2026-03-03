@@ -24,9 +24,19 @@ class ColumnFieldInfo:
     field: Field
 
 
+def _collect_inherited_dict_metadata(cls: type, attr: str) -> dict[str, Any]:
+    """Merge dict metadata from the full MRO (base -> subclass)."""
+    merged: dict[str, Any] = {}
+    for current in reversed(cls.__mro__):
+        raw = getattr(current, attr, None)
+        if isinstance(raw, dict):
+            merged.update(raw)
+    return merged
+
+
 def get_column_fields(cls: type) -> dict[str, ColumnFieldInfo]:
     """Extract column fields from a model class."""
-    declared_columns = dict(getattr(cls, "__loom_columns__", {}))
+    declared_columns = _collect_inherited_dict_metadata(cls, "__loom_columns__")
     hints = get_type_hints(cls, include_extras=True)
     struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
     relations = set(get_relations(cls))
@@ -94,12 +104,12 @@ def _with_struct_default(field: Field, struct_default: Any) -> Field:
 
 def get_relations(cls: type) -> dict[str, Relation]:
     """Return relations registered by ``LoomStructMeta``."""
-    return dict(getattr(cls, "__loom_relations__", {}))
+    return _collect_inherited_dict_metadata(cls, "__loom_relations__")
 
 
 def get_projections(cls: type) -> dict[str, Projection]:
     """Return projections registered by ``LoomStructMeta``."""
-    return dict(getattr(cls, "__loom_projections__", {}))
+    return _collect_inherited_dict_metadata(cls, "__loom_projections__")
 
 
 def get_id_attribute(cls: type) -> str:

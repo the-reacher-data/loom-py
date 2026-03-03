@@ -32,6 +32,7 @@ from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.middleware import TraceIdMiddleware
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -289,7 +290,7 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
     result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg)
     _configure_job_service(raw, result, session_manager)
 
-    middleware: list[type[Any]] = []
+    middleware: list[type[Any]] = [TraceIdMiddleware]
     if metrics_cfg.enabled:
         middleware.append(PrometheusMiddleware)
 
