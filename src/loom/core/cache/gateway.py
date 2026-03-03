@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar, cast, overload
 
 import msgspec
 
@@ -31,6 +31,12 @@ class CacheGateway:
         caches = importlib.import_module("aiocache").caches
         caches.set_config(dict(raw_config))
 
+    @overload
+    async def get_value(self, key: str, *, type: type[T]) -> T | None: ...
+
+    @overload
+    async def get_value(self, key: str, *, type: None = ...) -> Any: ...
+
     async def get_value(self, key: str, *, type: type[T] | None = None) -> T | Any | None:
         """Retrieve a cached value, optionally converting it to the given type.
 
@@ -39,7 +45,7 @@ class CacheGateway:
             type: Optional target type for ``msgspec.convert``.
 
         Returns:
-            The cached value or ``None`` on miss.
+            The cached value (converted to ``type`` if given) or ``None`` on miss.
         """
         value = await self._cache.get(key)
         if value is None:
@@ -131,7 +137,7 @@ class CacheGateway:
         await self._cache.clear()
 
     async def incr(self, key: str, delta: int = 1) -> int:
-        """Atomically increment a numeric value at the given key.
+        """Increment a numeric value at the given key.
 
         Args:
             key: Cache key holding an integer value.

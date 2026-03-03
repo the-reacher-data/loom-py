@@ -97,6 +97,23 @@ class _PendingCeleryDispatch:
 # ---------------------------------------------------------------------------
 
 
+def _build_link(
+    celery_app: Celery,
+    callback_type: type[Any],
+    payload: dict[str, Any],
+    task_id: str,
+    trace_id: str | None,
+    *,
+    name_prefix: str,
+    immutable: bool,
+) -> Any:
+    return celery_app.signature(
+        f"{name_prefix}.{callback_type.__qualname__}",
+        kwargs={"job_id": task_id, "context": payload, "trace_id": trace_id},
+        immutable=immutable,
+    )
+
+
 def _build_success_link(
     celery_app: Celery,
     callback_type: type[Any],
@@ -104,10 +121,7 @@ def _build_success_link(
     task_id: str,
     trace_id: str | None = None,
 ) -> Any:
-    """Build a Celery success-callback signature.
-
-    The signature is attached as ``link`` on the parent task so Celery
-    passes the task return value to the callback as its first argument.
+    """Build a Celery success-callback signature (``immutable=False``).
 
     Args:
         celery_app: Celery application used to create the signature.
@@ -117,11 +131,15 @@ def _build_success_link(
         trace_id: Distributed trace ID propagated to the callback worker.
 
     Returns:
-        Celery ``Signature`` with ``immutable=False``.
+        Celery ``Signature`` passed as ``link`` on the parent task.
     """
-    return celery_app.signature(
-        f"loom.callback.{callback_type.__qualname__}",
-        kwargs={"job_id": task_id, "context": payload, "trace_id": trace_id},
+    return _build_link(
+        celery_app,
+        callback_type,
+        payload,
+        task_id,
+        trace_id,
+        name_prefix="loom.callback",
         immutable=False,
     )
 
@@ -133,11 +151,7 @@ def _build_failure_link(
     task_id: str,
     trace_id: str | None = None,
 ) -> Any:
-    """Build a Celery failure-callback signature.
-
-    The signature is attached as ``link_error`` on the parent task.
-    Celery does not pass the task return value to error callbacks, so
-    ``immutable=True`` is required.
+    """Build a Celery failure-callback signature (``immutable=True``).
 
     Args:
         celery_app: Celery application used to create the signature.
@@ -147,11 +161,15 @@ def _build_failure_link(
         trace_id: Distributed trace ID propagated to the callback worker.
 
     Returns:
-        Celery ``Signature`` with ``immutable=True``.
+        Celery ``Signature`` passed as ``link_error`` on the parent task.
     """
-    return celery_app.signature(
-        f"loom.callback_error.{callback_type.__qualname__}",
-        kwargs={"job_id": task_id, "context": payload, "trace_id": trace_id},
+    return _build_link(
+        celery_app,
+        callback_type,
+        payload,
+        task_id,
+        trace_id,
+        name_prefix="loom.callback_error",
         immutable=True,
     )
 

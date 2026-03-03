@@ -198,9 +198,6 @@ class RestInterfaceCompiler:
             raise InterfaceCompilationError(
                 f"{iface_name}: RestRoute for {route.use_case.__qualname__!r} is missing 'method'."
             )
-        if route.path == "" and route.path is not None:
-            # path="" is treated as "/" — allowed, but warn via compilation for clarity
-            pass
         plan = self._uc_compiler.get_plan(route.use_case)
         if plan is None:
             raise InterfaceCompilationError(

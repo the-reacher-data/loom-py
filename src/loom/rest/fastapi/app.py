@@ -31,7 +31,6 @@ from typing import Any
 
 from fastapi import FastAPI
 from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
@@ -39,6 +38,7 @@ from loom.core.logger import get_logger
 from loom.core.tracing import get_trace_id
 from loom.rest.compiler import RestInterfaceCompiler
 from loom.rest.errors import ErrorField
+from loom.rest.fastapi.response import MsgspecJSONResponse
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
 
@@ -111,10 +111,10 @@ def create_fastapi_app(
     app = FastAPI(**fastapi_kwargs)
 
     @app.exception_handler(Exception)
-    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    async def _unhandled_exception(request: Request, exc: Exception) -> MsgspecJSONResponse:
         trace_id = get_trace_id()
         _log.error("UnhandledException", error=repr(exc), trace_id=trace_id)
-        return JSONResponse(
+        return MsgspecJSONResponse(
             status_code=500,
             content={
                 ErrorField.CODE: "internal_error",

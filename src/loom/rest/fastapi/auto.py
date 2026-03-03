@@ -81,25 +81,13 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
-def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return InterfacesDiscoveryEngine(
-        discovery_cfg.interfaces.modules,
-        warn_recommended=discovery_cfg.interfaces.warn_recommended,
-    ).discover()
-
-
-def _discover_modules(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
-
-
-def _discover_manifest(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
-
-
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
-    "interfaces": _discover_interfaces,
-    "modules": _discover_modules,
-    "manifest": _discover_manifest,
+    "interfaces": lambda cfg: InterfacesDiscoveryEngine(
+        cfg.interfaces.modules,
+        warn_recommended=cfg.interfaces.warn_recommended,
+    ).discover(),
+    "modules": lambda cfg: ModulesDiscoveryEngine(cfg.modules.include).discover(),
+    "manifest": lambda cfg: ManifestDiscoveryEngine(cfg.manifest.module).discover(),
 }
 
 

@@ -167,25 +167,22 @@ def _is_classvar(annotation: Any) -> bool:
     return get_origin(annotation) is ClassVar
 
 
+_SCALAR_TYPE_MAP: dict[type, ColumnType] = {
+    int: Integer,
+    float: Float,
+    bool: Boolean,
+    datetime: DateTime(tz=True),
+    Decimal: Numeric(),
+}
+
+
 def _infer_column_type(annotation: Any, *, field: Field) -> ColumnType:
     base = _unwrap_optional(annotation)
-    origin = get_origin(base)
-    if origin in (list, tuple, set, dict):
+    if get_origin(base) in (list, tuple, set, dict):
         return JSON
-
     python_type = _extract_origin_type(base)
-    if python_type is int:
-        return Integer
-    if python_type is float:
-        return Float
-    if python_type is bool:
-        return Boolean
     if python_type is str:
         return String(field.length)
-    if python_type is datetime:
-        return DateTime(tz=True)
     if python_type in (date, time):
         return String(None)
-    if python_type is Decimal:
-        return Numeric()
-    return JSON
+    return _SCALAR_TYPE_MAP.get(python_type, JSON)

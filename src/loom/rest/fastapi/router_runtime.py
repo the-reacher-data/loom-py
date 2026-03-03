@@ -58,6 +58,9 @@ from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _error_mapper = HttpErrorMapper()
 
+_DEFAULT_PAGE = 1
+_DEFAULT_LIMIT = 50
+
 
 def _extract_path_params(path: str) -> list[str]:
     """Return ordered path-parameter names from a FastAPI path template.
@@ -194,8 +197,8 @@ def _build_query_spec(
     allow_pagination_override: bool,
 ) -> QuerySpec:
     query_params = request.query_params
-    page = int(query_params.get("page", "1"))
-    limit = int(query_params.get("limit", "50"))
+    page = int(query_params.get("page", _DEFAULT_PAGE))
+    limit = int(query_params.get("limit", _DEFAULT_LIMIT))
     cursor = query_params.get("after") or query_params.get("cursor")
     pagination = _parse_pagination_mode(
         query_params.get("pagination"),

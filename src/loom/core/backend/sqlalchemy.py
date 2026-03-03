@@ -65,6 +65,7 @@ class SABase(DeclarativeBase):
 
 
 _registry: dict[type, type] = {}
+_table_registry: dict[str, type] = {}
 
 
 def _uses_now_onupdate(value: ServerOnUpdate | str | None) -> bool:
@@ -90,14 +91,8 @@ def _build_sa_column_type(col_type: ColumnType) -> Any:
     return sa_type_cls(*col_type.args, **col_type.kwargs)
 
 
-def _build_mapped_column(field_info: Any) -> Any:
-    col_type = _build_sa_column_type(field_info.column_type)
-    field: Field = field_info.field
-
-    kwargs: dict[str, Any] = {
-        "nullable": field.nullable,
-    }
-
+def _build_field_kwargs(field: Field) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"nullable": field.nullable}
     if field.primary_key:
         kwargs["primary_key"] = True
     if field.autoincrement:
@@ -108,16 +103,21 @@ def _build_mapped_column(field_info: Any) -> Any:
         kwargs["index"] = True
     if field.default not in (None, msgspec.UNSET):
         kwargs["default"] = field.default
-
     if field.server_default is not None:
         factory = _SERVER_DEFAULT_MAP.get(field.server_default)
         if factory is not None:
             kwargs["server_default"] = factory()
-
     if _uses_now_onupdate(field.server_onupdate):
         now_expr = func.now()
         kwargs["onupdate"] = now_expr
         kwargs["server_onupdate"] = now_expr
+    return kwargs
+
+
+def _build_mapped_column(field_info: Any) -> Any:
+    col_type = _build_sa_column_type(field_info.column_type)
+    field: Field = field_info.field
+    kwargs = _build_field_kwargs(field)
 
     if field.foreign_key is not None:
         fk_kwargs: dict[str, Any] = {}
@@ -134,11 +134,12 @@ def _resolve_fk_target_table(foreign_key: str) -> str:
 
 
 def _find_target_sa_class(target_table: str) -> type | None:
-    """Find compiled SA class by table name."""
-    for _struct_cls, sa_cls in _registry.items():
-        if getattr(sa_cls, "__tablename__", None) == target_table:
-            return sa_cls
-    return None
+    """Find compiled SA class by table name (O(1) via inverse index)."""
+    return _table_registry.get(target_table)
+
+
+# Deferred relationship queue — resolved by compile_all or configure_relationships
+_pending_relations: dict[type, dict[str, Relation]] = {}
 
 
 def compile_model(struct_cls: type) -> type:
@@ -161,15 +162,12 @@ def compile_model(struct_cls: type) -> type:
     # Register early so FK-target lookups can find this class
     sa_cls = type(struct_cls.__name__ + "SA", (SABase,), attrs)
     _registry[struct_cls] = sa_cls
+    _table_registry[table_name] = sa_cls
 
     # Relationships are added after all column-based setup
     _pending_relations[struct_cls] = relations
 
     return sa_cls
-
-
-# Deferred relationship queue — resolved by compile_all or configure_relationships
-_pending_relations: dict[type, dict[str, Relation]] = {}
 
 
 def _configure_relationships() -> None:
@@ -287,6 +285,7 @@ def get_metadata() -> MetaData:
 def reset_registry() -> None:
     """Clear compiled models — primarily for testing."""
     _registry.clear()
+    _table_registry.clear()
     _pending_relations.clear()
     SABase.metadata.clear()
     SABase.registry.dispose()
