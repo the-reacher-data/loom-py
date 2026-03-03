@@ -189,7 +189,7 @@ class TestAutoInterfaceCRUD:
         resp = client.patch(f"/auto-products/{item_id}", json={"name": "New"})
         assert resp.status_code == 200
         updated = resp.json()
-        assert updated is None or updated["name"] == "New"
+        assert updated["name"] == "New"
 
     def test_delete_returns_bool(self, client: TestClient) -> None:
         create = client.post("/auto-products/", json={"name": "ToDelete"})
@@ -199,6 +199,14 @@ class TestAutoInterfaceCRUD:
         resp = client.delete(f"/auto-products/{item_id}")
         assert resp.status_code == 200
         assert resp.json() is True
+
+    def test_get_missing_returns_404(self, client: TestClient) -> None:
+        resp = client.get("/auto-products/999")
+        assert resp.status_code == 404
+
+    def test_patch_missing_returns_404(self, client: TestClient) -> None:
+        resp = client.patch("/auto-products/999", json={"name": "ghost"})
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

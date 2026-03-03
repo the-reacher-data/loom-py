@@ -23,8 +23,9 @@ Usage::
 from collections.abc import Callable
 from typing import Any, cast, get_type_hints
 
+from loom.core.errors import NotFound
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
-from loom.core.use_case.markers import Input
+from loom.core.use_case.markers import Exists, Input, OnMissing
 from loom.core.use_case.use_case import UseCase
 
 __all__ = ["build_auto_routes"]
@@ -111,8 +112,21 @@ def _make_get(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[An
     """
 
     class AutoGet(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, id: str, profile: str = "default") -> model | None:  # type: ignore[valid-type]
-            return await self.main_repo.get_by_id(coerce(id), profile=profile)
+        async def execute(
+            self,
+            id: str,
+            profile: str = "default",
+            _exists: bool = Exists(
+                model,
+                from_param="id",
+                against="id",
+                on_missing=OnMissing.RAISE,
+            ),
+        ) -> model:  # type: ignore[valid-type]
+            entity = await self.main_repo.get_by_id(coerce(id), profile=profile)
+            if entity is None:
+                raise NotFound(model.__name__, id=coerce(id))
+            return cast(model, entity)  # type: ignore[valid-type]
 
     AutoGet.__name__ = f"AutoGet{model.__name__}"
     AutoGet.__qualname__ = f"AutoGet{model.__name__}"
@@ -162,9 +176,18 @@ def _make_update(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
         async def execute(
             self,
             id: str,
+            _exists: bool = Exists(
+                model,
+                from_param="id",
+                against="id",
+                on_missing=OnMissing.RAISE,
+            ),
             cmd: model = Input(),  # type: ignore[valid-type]
-        ) -> model | None:  # type: ignore[valid-type]
-            return await self.main_repo.update(coerce(id), cmd)
+        ) -> model:  # type: ignore[valid-type]
+            updated = await self.main_repo.update(coerce(id), cmd)
+            if updated is None:
+                raise NotFound(model.__name__, id=coerce(id))
+            return cast(model, updated)  # type: ignore[valid-type]
 
     AutoUpdate.__name__ = f"AutoUpdate{model.__name__}"
     AutoUpdate.__qualname__ = f"AutoUpdate{model.__name__}"
