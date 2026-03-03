@@ -79,10 +79,9 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 
     def _serialize_input(self, data: msgspec.Struct | dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, msgspec.Struct):
-            builtins = msgspec.to_builtins(data)
-            if not isinstance(builtins, dict):
-                raise TypeError("Struct payload must serialize to dict")
-            return builtins
+            # ORM constructors expect Python attribute names (snake_case),
+            # while JSON contracts may expose camelCase via ``rename``.
+            return msgspec.structs.asdict(data)
         return dict(data)
 
     def _get_profile_options(self, profile: str) -> list[Any]:
