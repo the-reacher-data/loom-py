@@ -79,9 +79,10 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 
     def _serialize_input(self, data: msgspec.Struct | dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, msgspec.Struct):
-            # ORM constructors expect Python attribute names (snake_case),
-            # while JSON contracts may expose camelCase via ``rename``.
-            return msgspec.structs.asdict(data)
+            builtins = msgspec.to_builtins(data)
+            if not isinstance(builtins, dict):
+                raise TypeError("Struct payload must serialize to dict")
+            return _to_internal_field_names(type(data), builtins)
         return dict(data)
 
     def _get_profile_options(self, profile: str) -> list[Any]:
@@ -473,3 +474,15 @@ class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                 )
             )
             return True
+
+
+def _to_internal_field_names(
+    struct_type: type[msgspec.Struct],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Map external encoded names (camelCase) to internal field names (snake_case)."""
+    encoded_to_internal = {
+        (field.encode_name or field.name): field.name
+        for field in msgspec.structs.fields(struct_type)
+    }
+    return {encoded_to_internal.get(key, key): value for key, value in payload.items()}
