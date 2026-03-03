@@ -66,6 +66,9 @@ class RestRoute:
             inherits from the interface or global default.
         expose_profile: Whether to expose ``?profile=`` as a public query
             parameter for this route.  Defaults to ``False``.
+        allow_pagination_override: Whether callers may override the resolved
+            pagination mode using query parameters.  When ``None``, inherits
+            from the interface or global default.
 
     Example::
 
@@ -85,6 +88,7 @@ class RestRoute:
     description: str = ""
     status_code: int = 200
     pagination_mode: PaginationMode | None = None
+    allow_pagination_override: bool | None = None
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
@@ -135,6 +139,8 @@ class RestInterface(Generic[T]):
             interface.
         expose_profile: Whether this interface publicly accepts
             ``?profile=...`` by default. Can be overridden per-route.
+        allow_pagination_override: Whether list endpoints may switch
+            pagination mode from query parameters by default.
 
     Example::
 
@@ -156,6 +162,7 @@ class RestInterface(Generic[T]):
     include: tuple[str, ...] = ()
     routes: tuple[RestRoute, ...] = ()
     pagination_mode: PaginationMode | None = None
+    allow_pagination_override: bool | None = None
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
@@ -192,6 +199,9 @@ class RestApiDefaults:
             ``"default"``.
         allowed_profiles: Globally allowed profiles.  Defaults to empty
             (no restriction imposed at global level).
+        allow_pagination_override: Whether query parameters may override the
+            configured pagination mode.  Defaults to ``True`` for backwards
+            compatibility.
 
     Example::
 
@@ -202,5 +212,6 @@ class RestApiDefaults:
     """
 
     pagination_mode: PaginationMode = PaginationMode.OFFSET
+    allow_pagination_override: bool = True
     profile_default: str = "default"
     allowed_profiles: tuple[str, ...] = field(default_factory=tuple)

@@ -47,6 +47,7 @@ from loom.core.repository.abc.query import (
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
 from loom.rest.errors import HttpErrorMapper
+from loom.rest.fastapi.openapi import build_request_body_schema, build_success_response_schema
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _error_mapper = HttpErrorMapper()
@@ -71,6 +72,16 @@ _RESERVED_QUERY_KEYS = frozenset(
 _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 
+def _camel_to_snake(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+
+
+def _normalize_field_name(value: str) -> str:
+    if any(char.isupper() for char in value):
+        return _camel_to_snake(value)
+    return value
+
+
 def _coerce_scalar(value: str) -> Any:
     lowered = value.lower()
     if lowered == "true":
@@ -92,9 +103,35 @@ def _parse_filter_op(op: str) -> FilterOp:
         raise HTTPException(status_code=400, detail=f"Unsupported filter operator: {op!r}") from exc
 
 
-def _parse_pagination_mode(raw: str | None, cursor: str | None) -> PaginationMode:
+def _parse_pagination_mode(
+    raw: str | None,
+    cursor: str | None,
+    *,
+    default_mode: PaginationMode,
+    allow_override: bool,
+) -> PaginationMode:
+    if not allow_override:
+        if raw is not None and raw.lower() != default_mode.value:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'pagination' cannot override this route's "
+                    f"default mode ({default_mode.value!r})."
+                ),
+            )
+        if cursor is not None and default_mode is PaginationMode.OFFSET:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cursor parameters are not allowed when pagination mode is fixed to 'offset'."
+                ),
+            )
+        return default_mode
+
     if raw is None:
-        return PaginationMode.CURSOR if cursor is not None else PaginationMode.OFFSET
+        if cursor is not None:
+            return PaginationMode.CURSOR
+        return default_mode
     try:
         return PaginationMode(raw.lower())
     except ValueError as exc:
@@ -110,7 +147,9 @@ def _parse_sort(sort_field: str | None, direction_raw: str) -> tuple[SortSpec, .
         raise HTTPException(status_code=400, detail="direction must be 'ASC' or 'DESC'.")
     if sort_field is None or sort_field == "":
         return ()
-    return (SortSpec(field=sort_field, direction=typing.cast(Any, direction)),)
+    return (
+        SortSpec(field=_normalize_field_name(sort_field), direction=typing.cast(Any, direction)),
+    )
 
 
 def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
@@ -133,7 +172,7 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
 
         if not field_parts:
             raise HTTPException(status_code=400, detail=f"Invalid filter field: {key!r}.")
-        field = ".".join(field_parts)
+        field = ".".join(_normalize_field_name(part) for part in field_parts)
 
         if op == FilterOp.IN:
             value = [_coerce_scalar(item) for item in raw_value.split(",") if item != ""]
@@ -144,12 +183,22 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
     return filters
 
 
-def _build_query_spec(request: Request) -> QuerySpec:
+def _build_query_spec(
+    request: Request,
+    *,
+    default_pagination_mode: PaginationMode,
+    allow_pagination_override: bool,
+) -> QuerySpec:
     query_params = request.query_params
     page = int(query_params.get("page", "1"))
     limit = int(query_params.get("limit", "50"))
     cursor = query_params.get("after") or query_params.get("cursor")
-    pagination = _parse_pagination_mode(query_params.get("pagination"), cursor)
+    pagination = _parse_pagination_mode(
+        query_params.get("pagination"),
+        cursor,
+        default_mode=default_pagination_mode,
+        allow_override=allow_pagination_override,
+    )
     sort = _parse_sort(
         query_params.get("sort"),
         query_params.get("direction", "ASC"),
@@ -180,6 +229,23 @@ def _resolve_query_param_name(uc_type: type[Any]) -> str | None:
         if origin in {typing.Union, types.UnionType} and QuerySpec in args:
             return name
     return None
+
+
+def _route_docs(compiled_route: CompiledRoute) -> tuple[str | None, str | None]:
+    """Resolve OpenAPI summary/description from route metadata or UseCase docs."""
+    summary = compiled_route.route.summary.strip()
+    description = compiled_route.route.description.strip()
+    if summary or description:
+        return summary or None, description or None
+
+    uc_doc = inspect.getdoc(compiled_route.route.use_case) or ""
+    lines = [line.strip() for line in uc_doc.splitlines() if line.strip()]
+    if not lines:
+        return None, None
+
+    auto_summary = lines[0]
+    auto_description = "\n".join(lines[1:]) if len(lines) > 1 else None
+    return auto_summary, auto_description
 
 
 def _make_handler(
@@ -232,7 +298,11 @@ def _make_handler(
         if accepts_profile_param:
             params["profile"] = selected_profile
         if query_param_name is not None:
-            params[query_param_name] = _build_query_spec(request)
+            params[query_param_name] = _build_query_spec(
+                request,
+                default_pagination_mode=compiled_route.effective_pagination_mode,
+                allow_pagination_override=compiled_route.effective_allow_pagination_override,
+            )
 
         payload: dict[str, Any] | None = None
         body = await request.body()
@@ -298,12 +368,25 @@ def bind_interfaces(
     """
     for cr in compiled_routes:
         handler = _make_handler(cr, factory, executor)
+        summary, description = _route_docs(cr)
+        request_body = build_request_body_schema(cr)
+        success_response = build_success_response_schema(cr)
+        responses: dict[int | str, dict[str, Any]] | None = None
+        if success_response is not None:
+            responses = {cr.route.status_code: success_response}
+
+        openapi_extra: dict[str, Any] | None = None
+        if request_body is not None:
+            openapi_extra = {"requestBody": request_body}
+
         app.add_api_route(
             path=cr.full_path,
             endpoint=handler,
             methods=[cr.route.method.upper()],
-            summary=cr.route.summary or None,
-            description=cr.route.description or None,
+            summary=summary,
+            description=description,
             status_code=cr.route.status_code,
             tags=list(cr.interface_tags) if cr.interface_tags else [],
+            responses=responses,
+            openapi_extra=openapi_extra,
         )

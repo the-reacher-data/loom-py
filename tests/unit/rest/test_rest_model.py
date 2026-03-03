@@ -48,6 +48,7 @@ def test_rest_route_defaults() -> None:
     assert route.description == ""
     assert route.status_code == 200
     assert route.pagination_mode is None
+    assert route.allow_pagination_override is None
     assert route.profile_default == ""
     assert route.allowed_profiles == ()
     assert route.expose_profile is False
@@ -68,12 +69,14 @@ def test_rest_route_with_all_fields() -> None:
         description="Creates a new user account",
         status_code=201,
         pagination_mode=PaginationMode.CURSOR,
+        allow_pagination_override=False,
         profile_default="detail",
         allowed_profiles=("detail", "summary"),
         expose_profile=True,
     )
     assert route.status_code == 201
     assert route.pagination_mode == PaginationMode.CURSOR
+    assert route.allow_pagination_override is False
     assert route.expose_profile is True
 
 
@@ -92,6 +95,7 @@ def test_rest_interface_defaults() -> None:
     assert EmptyInterface.include == ()
     assert EmptyInterface.routes == ()
     assert EmptyInterface.pagination_mode is None
+    assert EmptyInterface.allow_pagination_override is None
     assert EmptyInterface.profile_default == ""
     assert EmptyInterface.allowed_profiles == ()
     assert EmptyInterface.expose_profile is False
@@ -108,6 +112,7 @@ def test_rest_interface_subclass_overrides() -> None:
         include = ("create", "list")
         routes = (create, list_route)
         pagination_mode = PaginationMode.CURSOR
+        allow_pagination_override = False
         profile_default = "summary"
         allowed_profiles = ("summary", "detail")
         expose_profile = True
@@ -116,6 +121,7 @@ def test_rest_interface_subclass_overrides() -> None:
     assert UserInterface.tags == ("Users",)
     assert UserInterface.auto is True
     assert UserInterface.pagination_mode == PaginationMode.CURSOR
+    assert UserInterface.allow_pagination_override is False
     assert len(UserInterface.routes) == 2
     assert UserInterface.expose_profile is True
 
@@ -136,6 +142,7 @@ def test_rest_interface_is_generic() -> None:
 def test_rest_api_defaults_default_values() -> None:
     d = RestApiDefaults()
     assert d.pagination_mode == PaginationMode.OFFSET
+    assert d.allow_pagination_override is True
     assert d.profile_default == "default"
     assert d.allowed_profiles == ()
 
@@ -143,10 +150,12 @@ def test_rest_api_defaults_default_values() -> None:
 def test_rest_api_defaults_custom() -> None:
     d = RestApiDefaults(
         pagination_mode=PaginationMode.CURSOR,
+        allow_pagination_override=False,
         profile_default="summary",
         allowed_profiles=("summary", "detail"),
     )
     assert d.pagination_mode == PaginationMode.CURSOR
+    assert d.allow_pagination_override is False
     assert d.profile_default == "summary"
 
 

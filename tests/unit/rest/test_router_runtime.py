@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -9,11 +10,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.command import Command, Internal
 from loom.core.di.container import LoomContainer
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
+from loom.core.use_case.markers import Input
 from loom.core.use_case.use_case import UseCase
 from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
 from loom.rest.fastapi.app import create_fastapi_app
@@ -33,6 +36,30 @@ class PingUseCase(UseCase[Any, str]):
 class EchoUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         return {"status": "received"}
+
+
+class CreateItemCmd(Command, frozen=True):
+    full_name: str
+    tenant_id: Internal[int] = 0
+
+
+class CreateItemUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, cmd: CreateItemCmd = Input()) -> dict[str, Any]:
+        return {"full_name": cmd.full_name}
+
+
+@dataclass(frozen=True)
+class PlainCreateCmd:
+    full_name: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> tuple[PlainCreateCmd, frozenset[str]]:
+        return cls(full_name=str(payload["full_name"])), frozenset({"full_name"})
+
+
+class PlainCreateUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, cmd: PlainCreateCmd = Input()) -> dict[str, Any]:
+        return {"full_name": cmd.full_name}
 
 
 class ItemUseCase(UseCase[Any, dict[str, Any]]):
@@ -60,6 +87,16 @@ class QueryAwareUseCase(UseCase[Any, dict[str, Any]]):
             "sort_field": first_sort.field if first_sort else None,
             "sort_direction": first_sort.direction if first_sort else None,
         }
+
+
+class DocUseCase(UseCase[Any, str]):
+    """Doc summary from use case.
+
+    Extended documentation for OpenAPI description.
+    """
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +345,49 @@ def test_bind_interfaces_builds_query_spec_from_cursor_url_params() -> None:
     }
 
 
+def test_bind_interfaces_uses_compiled_default_pagination_mode() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        pagination_mode = PaginationMode.CURSOR
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?limit=1")
+    assert response.status_code == 200
+    assert response.json()["pagination"] == PaginationMode.CURSOR.value
+
+
+def test_bind_interfaces_rejects_pagination_override_when_disabled() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        pagination_mode = PaginationMode.OFFSET
+        allow_pagination_override = False
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?pagination=cursor")
+    assert response.status_code == 400
+    assert "cannot override" in response.json()["detail"]
+
+
+def test_bind_interfaces_normalizes_camelcase_query_fields() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?sort=createdAt&priceTotal__gte=20")
+    assert response.status_code == 200
+    assert response.json()["sort_field"] == "created_at"
+    assert response.json()["filter_field"] == "price_total"
+
+
 # ---------------------------------------------------------------------------
 # bind_interfaces — tags propagated to OpenAPI
 # ---------------------------------------------------------------------------
@@ -326,6 +406,68 @@ def test_bind_interfaces_tags_on_routes() -> None:
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/ping/"]["get"]
     assert "Pings" in operation.get("tags", [])
+
+
+def test_bind_interfaces_uses_use_case_docstring_for_route_docs() -> None:
+    class IFace(RestInterface[str]):
+        prefix = "/docs"
+        routes = (RestRoute(use_case=DocUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/docs/"]["get"]
+    assert operation["summary"] == "Doc summary from use case."
+    assert "Extended documentation" in operation["description"]
+
+
+def test_openapi_response_schema_inferred_from_use_case_return_type() -> None:
+    class IFace(RestInterface[str]):
+        prefix = "/ping"
+        routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    response_schema = schema["paths"]["/ping/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert response_schema["type"] == "string"
+
+
+def test_openapi_request_schema_from_command_excludes_internal_fields() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=CreateItemUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    request_schema = schema["paths"]["/items/"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    properties = request_schema["$defs"]["CreateItemCmdRequest"]["properties"]
+    assert "fullName" in properties
+    assert "tenant_id" not in properties
+
+
+def test_openapi_request_schema_for_plain_command_type() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/plain"
+        routes = (RestRoute(use_case=PlainCreateUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    request_schema = schema["paths"]["/plain/"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+    assert request_schema["type"] == "object"
+    assert "full_name" in request_schema["properties"]
 
 
 # ---------------------------------------------------------------------------

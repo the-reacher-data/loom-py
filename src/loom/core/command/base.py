@@ -15,7 +15,7 @@ import msgspec
 from loom.core.command.field import CommandField
 
 
-class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True):
+class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True, rename="camel"):
     """Base for all command structs."""
 
     __command_fields__: ClassVar[dict[str, CommandField]] = {}
@@ -27,12 +27,33 @@ class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True):
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> tuple[Self, frozenset[str]]:
-        normalized = dict(payload)
+        normalized: dict[str, Any] = {}
         struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
-        fields_set = frozenset(normalized.keys() & struct_fields.keys())
+        internal_to_external = {
+            name: field.encode_name or name for name, field in struct_fields.items()
+        }
+        external_to_internal = {
+            field.encode_name: field.name
+            for field in struct_fields.values()
+            if field.encode_name and field.encode_name != field.name
+        }
+
+        seen_internal_keys: set[str] = set()
+        for raw_key, value in payload.items():
+            if raw_key in external_to_internal:
+                normalized[raw_key] = value
+                seen_internal_keys.add(external_to_internal[raw_key])
+                continue
+            if raw_key in struct_fields:
+                normalized[internal_to_external[raw_key]] = value
+                seen_internal_keys.add(raw_key)
+                continue
+            normalized[raw_key] = value
+
+        fields_set = frozenset(key for key in seen_internal_keys if key in struct_fields)
 
         for name, meta in cls.__command_fields__.items():
-            if name in normalized:
+            if name in seen_internal_keys:
                 continue
             field = struct_fields.get(name)
             if field is None:
@@ -40,7 +61,7 @@ class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True):
             if field.default is msgspec.NODEFAULT and (
                 meta.patch or meta.internal or meta.calculated
             ):
-                normalized[name] = None
+                normalized[internal_to_external[name]] = None
 
         instance = msgspec.convert(normalized, cls)
         return instance, fields_set

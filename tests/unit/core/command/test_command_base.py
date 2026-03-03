@@ -5,7 +5,7 @@ from typing import Any, cast
 import msgspec
 import pytest
 
-from loom.core.command import Command, Computed, Internal
+from loom.core.command import Command, Computed, Internal, Patch
 
 
 class CreateUser(Command, frozen=True):
@@ -18,6 +18,10 @@ class CreateWithInternal(Command, frozen=True):
     email: str
     tenant_id: Internal[int] = 0
     is_adult: Computed[bool] = False
+
+
+class UpdateUserCamel(Command, frozen=True, rename="camel"):
+    full_name: Patch[str | None]
 
 
 class TestCommandCreation:
@@ -79,3 +83,8 @@ class TestCommandFromPayload:
         )
         assert "unknown" not in fields_set
         assert fields_set == frozenset({"email", "name"})
+
+    def test_fields_set_maps_camelcase_keys_to_internal_names(self) -> None:
+        cmd, fields_set = UpdateUserCamel.from_payload({"fullName": "Alice"})
+        assert cmd.full_name == "Alice"
+        assert fields_set == frozenset({"full_name"})

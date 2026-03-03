@@ -58,6 +58,8 @@ class CompiledRoute:
         effective_allowed_profiles: Resolved set of allowed profiles.
         effective_expose_profile: Whether ``?profile=...`` is publicly
             accepted for this route.
+        effective_allow_pagination_override: Whether callers may override
+            pagination mode via query parameters for this route.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
     """
 
@@ -68,6 +70,7 @@ class CompiledRoute:
     effective_profile_default: str
     effective_allowed_profiles: tuple[str, ...]
     effective_expose_profile: bool
+    effective_allow_pagination_override: bool
     interface_tags: tuple[str, ...] = ()
 
 
@@ -162,6 +165,9 @@ class RestInterfaceCompiler:
                     effective_profile_default=self._resolve_profile_default(route, interface),
                     effective_allowed_profiles=self._resolve_allowed_profiles(route, interface),
                     effective_expose_profile=self._resolve_expose_profile(route, interface),
+                    effective_allow_pagination_override=self._resolve_allow_pagination_override(
+                        route, interface
+                    ),
                     interface_tags=interface.tags,
                 )
             )
@@ -228,3 +234,12 @@ class RestInterfaceCompiler:
         if route.expose_profile:
             return True
         return interface.expose_profile
+
+    def _resolve_allow_pagination_override(
+        self, route: RestRoute, interface: type[RestInterface[Any]]
+    ) -> bool:
+        if route.allow_pagination_override is not None:
+            return route.allow_pagination_override
+        if interface.allow_pagination_override is not None:
+            return interface.allow_pagination_override
+        return self._defaults.allow_pagination_override
