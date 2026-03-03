@@ -577,7 +577,10 @@ name = "loom-kernel"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiocache" },
     { name = "msgspec" },
+    { name = "omegaconf" },
+    { name = "prometheus-client" },
     { name = "structlog" },
 ]
 
@@ -633,12 +636,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
     { name = "msgspec", specifier = ">=0.18,<1.0" },
+    { name = "omegaconf", specifier = ">=2.3,<3.0" },
     { name = "omegaconf", marker = "extra == 'cache'", specifier = ">=2.3,<3.0" },
     { name = "omegaconf", marker = "extra == 'config'", specifier = ">=2.3,<3.0" },
+    { name = "prometheus-client", specifier = ">=0.20" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "prometheus-client", marker = "extra == 'rest'", specifier = ">=0.20" },
     { name = "pydantic", marker = "extra == 'rest'", specifier = ">=2.0,<3.0" },
