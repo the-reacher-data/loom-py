@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from celery import Celery  # type: ignore[import-untyped]
 
+from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import add_pending_dispatch
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
@@ -181,8 +182,10 @@ class CeleryJobService:
 
     Args:
         celery_app: Configured Celery application instance.
-        metrics: Optional metrics adapter.  Receives job lifecycle events
-            once the new ``EventKind`` values from Piece 9 are wired in.
+        metrics: Optional metrics adapter.  Receives a ``JOB_DISPATCHED``
+            event from the web process each time a job is registered for
+            deferred dispatch — before the UoW commits and the broker call
+            is made.
 
     Example::
 
@@ -302,6 +305,13 @@ class CeleryJobService:
             link_error=link_error,
         )
         add_pending_dispatch(pending)
+        self._emit(
+            RuntimeEvent(
+                kind=EventKind.JOB_DISPATCHED,
+                use_case_name=job_type.__qualname__,
+                trace_id=trace_id,
+            )
+        )
 
         return JobHandle(
             job_id=task_id,
@@ -352,10 +362,6 @@ class CeleryJobService:
         )
         return JobGroup(handles=handles)
 
-    # ------------------------------------------------------------------
-    # Metrics hook — wired by Piece 9
-    # ------------------------------------------------------------------
-
-    def _emit(self, event: Any) -> None:
+    def _emit(self, event: RuntimeEvent) -> None:
         if self._metrics is not None:
             self._metrics.on_event(event)

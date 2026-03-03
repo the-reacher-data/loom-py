@@ -186,7 +186,9 @@ def _make_job_task(
         job_type: Concrete :class:`~loom.core.job.job.Job` subclass.
         factory: Used to build the Job instance via DI.
         executor: RuntimeExecutor driving the compiled ExecutionPlan.
-        metrics: Optional metrics adapter.  Events emitted in Piece 9.
+        metrics: Optional metrics adapter.  Emits ``JOB_STARTED``,
+            ``JOB_SUCCEEDED``, ``JOB_RETRYING``, and ``JOB_EXHAUSTED``
+            events during task execution in the worker process.
         backoff: Base for exponential retry delay (seconds).  Defaults to 2.
 
     Returns:

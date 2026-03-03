@@ -7,9 +7,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from loom.celery.service import CeleryJobService, _build_failure_link, _build_success_link
+from loom.core.engine.events import EventKind
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
+from loom.core.tracing import reset_trace_id, set_trace_id
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -277,8 +279,6 @@ class TestLinkBuilders:
         assert kwargs["trace_id"] is None
 
     def test_dispatch_propagates_trace_id_to_success_link(self) -> None:
-        from loom.core.tracing import reset_trace_id, set_trace_id
-
         mock_app = MagicMock()
         service = CeleryJobService(mock_app)
         token = set_trace_id("my-trace-123")
@@ -290,8 +290,6 @@ class TestLinkBuilders:
         assert sig_kwargs["trace_id"] == "my-trace-123"
 
     def test_dispatch_propagates_trace_id_to_failure_link(self) -> None:
-        from loom.core.tracing import reset_trace_id, set_trace_id
-
         mock_app = MagicMock()
         service = CeleryJobService(mock_app)
         token = set_trace_id("err-trace-456")
@@ -347,6 +345,35 @@ class TestDispatchParallel:
 # ---------------------------------------------------------------------------
 # run() — not supported
 # ---------------------------------------------------------------------------
+
+
+class TestDispatchMetrics:
+    def test_dispatch_emits_job_dispatched_event(self) -> None:
+        mock_app = MagicMock()
+        metrics = MagicMock()
+        service = CeleryJobService(mock_app, metrics=metrics)
+        service.dispatch(_EmailJob)
+        assert metrics.on_event.call_count == 1
+        event = metrics.on_event.call_args.args[0]
+        assert event.kind == EventKind.JOB_DISPATCHED
+        assert event.use_case_name == _EmailJob.__qualname__
+
+    def test_dispatch_no_metrics_does_not_raise(self) -> None:
+        mock_app = MagicMock()
+        service = CeleryJobService(mock_app, metrics=None)
+        service.dispatch(_EmailJob)  # must not raise
+
+    def test_dispatch_emits_trace_id_in_event(self) -> None:
+        mock_app = MagicMock()
+        metrics = MagicMock()
+        service = CeleryJobService(mock_app, metrics=metrics)
+        token = set_trace_id("dispatch-trace")
+        try:
+            service.dispatch(_EmailJob)
+        finally:
+            reset_trace_id(token)
+        event = metrics.on_event.call_args.args[0]
+        assert event.trace_id == "dispatch-trace"
 
 
 class TestRunNotSupported:

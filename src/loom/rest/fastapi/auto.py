@@ -177,7 +177,7 @@ def _configure_job_service(
 
         celery_cfg = section(raw, "celery", _CC)
         celery_app = create_celery_app(celery_cfg)
-        svc: Any = CeleryJobService(celery_app)
+        svc: Any = CeleryJobService(celery_app, metrics=result.metrics)
     except (ConfigError, ImportError):
         from loom.core.engine.executor import RuntimeExecutor as _Exec
         from loom.core.job.service import InlineJobService
