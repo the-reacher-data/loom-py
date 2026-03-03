@@ -317,19 +317,31 @@ class CeleryJobService:
         will be executed in parallel by the available workers once the
         Unit of Work commits.
 
-        ``on_all_success`` and ``on_any_failure`` are accepted for
-        interface compatibility but currently ignored.  Native Celery
-        chord support (``celery.chord``) will be wired in a future piece.
+        ``on_all_success`` and ``on_any_failure`` require native Celery
+        chord support which is not yet implemented.  Passing either raises
+        :class:`NotImplementedError`.  Parallel dispatch without callbacks
+        works as expected.
 
         Args:
             jobs: Sequence of ``(job_type, payload)`` pairs.
-            on_all_success: Ignored.  Reserved for chord support.
-            on_any_failure: Ignored.  Reserved for chord support.
+            on_all_success: Not yet supported.  Pass ``None``.
+            on_any_failure: Not yet supported.  Pass ``None``.
 
         Returns:
             A :class:`~loom.core.job.handle.JobGroup` with one handle
             per dispatched job.
+
+        Raises:
+            NotImplementedError: When *on_all_success* or *on_any_failure*
+                is provided.  Celery chord support is reserved for a
+                future release.
         """
+        if on_all_success is not None or on_any_failure is not None:
+            raise NotImplementedError(
+                "dispatch_parallel() callbacks (on_all_success / on_any_failure) "
+                "require Celery chord support, which is not yet implemented. "
+                "Pass None for both callback arguments."
+            )
         handles = tuple(
             self.dispatch(job_type, payload=job_payload) for job_type, job_payload in jobs
         )

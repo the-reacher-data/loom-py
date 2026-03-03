@@ -5,25 +5,28 @@ Each ``_make_*`` function registers one Celery task against a given
 worker bootstrap (see :func:`~loom.celery.bootstrap.bootstrap_worker`)
 and never again.
 
-Async jobs are executed via :func:`asyncio.run` so the Celery worker
-(typically using the ``prefork`` pool) can run them without a persistent
-event loop.  Sync jobs are executed inline without spinning up an event loop.
+All jobs — both sync and async ``execute()`` — are executed through the
+:class:`~loom.core.engine.executor.RuntimeExecutor` via
+:class:`~loom.celery.event_loop.WorkerEventLoop`.  This gives every job
+access to the Unit of Work, injection markers (``Input()``, ``Load()``,
+etc.), and the ability to dispatch further jobs post-commit.  It also
+keeps a single, persistent asyncio event loop per worker process so
+SQLAlchemy's async connection pool is reused across tasks.
 
-Callbacks use the same async-detection logic: if ``on_success`` /
-``on_failure`` is an ``async def``, it is awaited inside ``asyncio.run``;
-otherwise it is called directly.
+Callbacks follow the same pattern: async ``on_success`` / ``on_failure``
+methods are submitted to :class:`~loom.celery.event_loop.WorkerEventLoop`;
+sync methods are called directly from the task thread.
 """
 
 from __future__ import annotations
 
-import asyncio
-import inspect
 from contextvars import Token
 from typing import TYPE_CHECKING, Any
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
 
+from loom.celery.event_loop import WorkerEventLoop
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.tracing import reset_trace_id, set_trace_id
 
@@ -31,7 +34,6 @@ if TYPE_CHECKING:
     from loom.core.engine.executor import RuntimeExecutor
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
-    from loom.core.uow.abc import UnitOfWorkFactory
     from loom.core.use_case.factory import UseCaseFactory
 
 
@@ -56,47 +58,24 @@ def _uninstall_trace(token: Token[str | None] | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sync and async job execution helpers
+# Job execution helper
 # ---------------------------------------------------------------------------
 
 
-def _run_sync_job(
-    instance: Job[Any],
-    *,
-    payload: dict[str, Any],
-    params: dict[str, Any] | None,
-) -> Any:
-    """Execute a synchronous Job directly without an event loop.
-
-    The combined ``payload`` and ``params`` dicts are forwarded as kwargs to
-    ``execute()``.  Sync Jobs should declare a flat, primitive signature and
-    avoid framework injection markers (``Input()``, ``Load()``, etc.).
-
-    Args:
-        instance: Constructed Job instance.
-        payload: Raw payload dict forwarded as kwargs.
-        params: Optional primitive params forwarded as kwargs.
-
-    Returns:
-        The value returned by ``instance.execute()``.
-    """
-    kwargs: dict[str, Any] = {**(payload or {}), **(params or {})}
-    return instance.execute(**kwargs)
-
-
-async def _run_async_job(
+async def _run_job(
     instance: Job[Any],
     *,
     payload: dict[str, Any],
     params: dict[str, Any] | None,
     executor: RuntimeExecutor,
 ) -> Any:
-    """Execute an async Job through the executor and flush pending dispatches.
+    """Execute a Job through the executor and flush pending dispatches.
 
-    The executor opens a UoW, runs the compiled execution plan, and commits.
-    Pending dispatches (jobs enqueued during execution) are flushed on success
-    and discarded on failure so downstream tasks are not sent for a rolled-back
-    transaction.
+    The executor opens a UoW, runs the compiled execution plan (handling
+    both sync and async ``execute()`` methods), and commits.  Pending
+    dispatches (jobs enqueued during execution) are flushed on success
+    and discarded on failure so downstream tasks are never sent for a
+    rolled-back transaction.
 
     Args:
         instance: Constructed Job instance.
@@ -125,26 +104,25 @@ def _make_job_task(
     celery_app: Celery,
     job_type: type[Job[Any]],
     factory: UseCaseFactory,
-    uow_factory: UnitOfWorkFactory,
     executor: RuntimeExecutor,
     metrics: MetricsAdapter | None = None,
     backoff: int = 2,
 ) -> Any:
     """Register and return a Celery task that executes *job_type* on the worker.
 
-    The returned task is bound (``bind=True``) so it can access retry context
-    via ``self``.  Exponential back-off uses ``backoff ** retries`` seconds
-    (default ``2 ** 0 = 1``, ``2 ** 1 = 2``, …).
+    The returned task is bound (``bind=True``) so it can access retry
+    context via ``self``.  Exponential back-off uses ``backoff ** retries``
+    seconds (default ``2 ** 0 = 1``, ``2 ** 1 = 2``, …).
 
-    Async ``execute()`` methods are driven by :func:`asyncio.run` + the
-    RuntimeExecutor (which manages the UoW).  Sync ``execute()`` methods
-    are called inline without an event loop.
+    Both sync and async ``execute()`` methods are driven by the
+    :class:`~loom.core.engine.executor.RuntimeExecutor` via
+    :class:`~loom.celery.event_loop.WorkerEventLoop`, giving every job
+    access to the full framework (UoW, injection markers, dispatch).
 
     Args:
         celery_app: Celery application to register the task on.
         job_type: Concrete :class:`~loom.core.job.job.Job` subclass.
         factory: Used to build the Job instance via DI.
-        uow_factory: Passed to the executor for UoW lifecycle management.
         executor: RuntimeExecutor driving the compiled ExecutionPlan.
         metrics: Optional metrics adapter.  Events emitted in Piece 9.
         backoff: Base for exponential retry delay (seconds).  Defaults to 2.
@@ -152,7 +130,6 @@ def _make_job_task(
     Returns:
         The registered Celery task object.
     """
-    is_async = inspect.iscoroutinefunction(job_type.execute)
 
     @celery_app.task(  # type: ignore[untyped-decorator]
         name=f"loom.job.{job_type.__qualname__}",
@@ -173,17 +150,14 @@ def _make_job_task(
         # TODO(piece-9): emit JOB_STARTED via metrics
         try:
             instance = factory.build(job_type)
-            if is_async:
-                result = asyncio.run(
-                    _run_async_job(
-                        instance,
-                        payload=payload or {},
-                        params=params,
-                        executor=executor,
-                    )
+            result = WorkerEventLoop.run(
+                _run_job(
+                    instance,
+                    payload=payload or {},
+                    params=params,
+                    executor=executor,
                 )
-            else:
-                result = _run_sync_job(instance, payload=payload or {}, params=params)
+            )
             # TODO(piece-9): emit JOB_SUCCEEDED via metrics
             return result
         except Exception as exc:
@@ -208,7 +182,6 @@ def _make_callback_task(
     celery_app: Celery,
     callback_type: type[Any],
     factory: UseCaseFactory,
-    uow_factory: UnitOfWorkFactory,
 ) -> Any:
     """Register and return a Celery task for the ``on_success`` callback.
 
@@ -216,18 +189,19 @@ def _make_callback_task(
     argument (``result``) because the link signature uses ``immutable=False``.
     The callback receives ``job_id`` and ``context`` via kwargs.
 
-    Async ``on_success`` methods are run inside :func:`asyncio.run`.
+    Async ``on_success`` methods are submitted to
+    :class:`~loom.celery.event_loop.WorkerEventLoop`.
 
     Args:
         celery_app: Celery application to register the task on.
         callback_type: Concrete :class:`~loom.core.job.callback.JobCallback`
             subclass.
         factory: Used to build the callback instance via DI.
-        uow_factory: Reserved for async callbacks that need a UoW.
 
     Returns:
         The registered Celery task object.
     """
+    import inspect
 
     @celery_app.task(name=f"loom.callback.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_task(
@@ -241,7 +215,7 @@ def _make_callback_task(
         try:
             cb = factory.build(callback_type)
             if inspect.iscoroutinefunction(cb.on_success):
-                asyncio.run(cb.on_success(job_id=job_id, result=result, **context))
+                WorkerEventLoop.run(cb.on_success(job_id=job_id, result=result, **context))
             else:
                 cb.on_success(job_id=job_id, result=result, **context)
         finally:
@@ -275,12 +249,14 @@ def _make_callback_error_task(
 ) -> Any:
     """Register and return a Celery task for the ``on_failure`` callback.
 
-    The link was registered with ``immutable=True`` so Celery does not prepend
-    additional positional arguments.  Exception details are retrieved from the
-    result backend via :func:`_resolve_error_info`; a configured backend is
-    therefore required for full ``exc_type`` / ``exc_msg`` propagation.
+    The link was registered with ``immutable=True`` so Celery does not
+    prepend additional positional arguments.  Exception details are
+    retrieved from the result backend via :func:`_resolve_error_info`; a
+    configured backend is therefore required for full ``exc_type`` /
+    ``exc_msg`` propagation.
 
-    Async ``on_failure`` methods are run inside :func:`asyncio.run`.
+    Async ``on_failure`` methods are submitted to
+    :class:`~loom.celery.event_loop.WorkerEventLoop`.
 
     Args:
         celery_app: Celery application to register the task on.
@@ -291,6 +267,7 @@ def _make_callback_error_task(
     Returns:
         The registered Celery task object.
     """
+    import inspect
 
     @celery_app.task(name=f"loom.callback_error.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_error_task(
@@ -304,7 +281,7 @@ def _make_callback_error_task(
             exc_type, exc_msg = _resolve_error_info(job_id)
             cb = factory.build(callback_type)
             if inspect.iscoroutinefunction(cb.on_failure):
-                asyncio.run(
+                WorkerEventLoop.run(
                     cb.on_failure(
                         job_id=job_id,
                         exc_type=exc_type,

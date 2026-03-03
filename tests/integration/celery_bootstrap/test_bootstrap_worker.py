@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -63,7 +62,7 @@ def worker_config(tmp_path: Path) -> str:
             "result_backend": "cache+memory://",
             "task_always_eager": True,
         },
-        "database": {"url": "sqlite+aiosqlite:///test_worker.db"},
+        "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
     }
     config_file = tmp_path / "worker.yaml"
     config_file.write_text(yaml.dump(cfg))
@@ -71,17 +70,17 @@ def worker_config(tmp_path: Path) -> str:
 
 
 @pytest.fixture(autouse=True)
-def reset_worker_session() -> Iterator[None]:
-    """Reset module-level _worker_session around each test."""
-    boot._worker_session.session_manager = None
-    boot._worker_session.uow_factory = None
-    yield
-    # Only dispose real SessionManagers — mocks return non-coroutines from dispose()
-    sm = boot._worker_session.session_manager
-    if sm is not None and asyncio.iscoroutinefunction(sm.dispose):
-        asyncio.run(sm.dispose())
-    boot._worker_session.session_manager = None
-    boot._worker_session.uow_factory = None
+def mock_worker_loop() -> Any:
+    """Replace WorkerEventLoop.run() with asyncio.run() for test isolation.
+
+    Integration tests verify bootstrap and task execution pipelines; the
+    WorkerEventLoop itself is covered by dedicated unit tests in
+    ``test_event_loop.py``.  Running the real loop in integration tests
+    adds thread lifecycle complexity without additional coverage benefit.
+    """
+    with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+        mock_loop.run = lambda coro: asyncio.run(coro)
+        yield mock_loop
 
 
 # ---------------------------------------------------------------------------
@@ -117,15 +116,25 @@ class TestBootstrapWorkerResult:
         assert f"loom.job.{_DoubleSyncJob.__qualname__}" in result.celery_app.tasks
         assert f"loom.job.{_UpperJob.__qualname__}" in result.celery_app.tasks
 
+    def test_celery_conf_has_json_serializer(self, worker_config: str) -> None:
+        result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
+        assert result.celery_app.conf.task_serializer == "json"
+        assert result.celery_app.conf.result_serializer == "json"
+
 
 class TestBootstrapWorkerTaskExecution:
     def test_sync_task_executes_with_task_always_eager(self, worker_config: str) -> None:
-        """A registered sync task runs inline when task_always_eager is True."""
+        """A registered sync task runs inline when task_always_eager is True.
+
+        Primitive parameters (no ``Input()`` marker) must be passed via
+        ``params``, not ``payload``.  ``payload`` is reserved for
+        ``Input()`` command construction by the executor.
+        """
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         task_name = f"loom.job.{_DoubleSyncJob.__qualname__}"
         task = result.celery_app.tasks[task_name]
 
-        eager_result = task.apply(kwargs={"payload": {"value": 5}})
+        eager_result = task.apply(kwargs={"params": {"value": 5}})
         assert eager_result.result == 10
 
     def test_second_sync_task_executes_correctly(self, worker_config: str) -> None:
@@ -133,7 +142,7 @@ class TestBootstrapWorkerTaskExecution:
         task_name = f"loom.job.{_UpperJob.__qualname__}"
         task = result.celery_app.tasks[task_name]
 
-        eager_result = task.apply(kwargs={"payload": {"text": "hello"}})
+        eager_result = task.apply(kwargs={"params": {"text": "hello"}})
         assert eager_result.result == "HELLO"
 
 
@@ -159,7 +168,7 @@ class TestBootstrapWorkerJobConfigOverride:
                     "result_backend": "cache+memory://",
                     "task_always_eager": True,
                 },
-                "database": {"url": "sqlite+aiosqlite:///test_worker.db"},
+                "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
                 "jobs": {"_DoubleSyncJob": {"retries": 3}},
             }
             config_file = tmp_path / "worker_with_override.yaml"

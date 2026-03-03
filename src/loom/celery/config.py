@@ -52,6 +52,12 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
             calling process.  Set to ``True`` in integration tests.
         timezone: Celery timezone string.
         enable_utc: Whether Celery stores datetimes in UTC.
+        task_serializer: Serialization format for task arguments.
+            Defaults to ``"json"``.
+        result_serializer: Serialization format for task results.
+            Defaults to ``"json"``.
+        accept_content: List of accepted content types.  Defaults to
+            ``["json"]``.
         queues: Explicit queue names to declare.  Celery creates them on
             demand when empty.
 
@@ -68,6 +74,9 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
     task_always_eager: bool = False
     timezone: str = "UTC"
     enable_utc: bool = True
+    task_serializer: str = "json"
+    result_serializer: str = "json"
+    accept_content: list[str] = msgspec.field(default_factory=lambda: ["json"])
     queues: list[str] = msgspec.field(default_factory=list)
 
 
@@ -161,6 +170,9 @@ def create_celery_app(cfg: CeleryConfig) -> Celery:
         task_always_eager=cfg.task_always_eager,
         timezone=cfg.timezone,
         enable_utc=cfg.enable_utc,
+        task_serializer=cfg.task_serializer,
+        result_serializer=cfg.result_serializer,
+        accept_content=cfg.accept_content,
     )
     if cfg.queues:
         app.conf.task_queues = [Queue(name) for name in cfg.queues]

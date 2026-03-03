@@ -13,18 +13,24 @@ registration:
 5. Register :class:`~loom.core.use_case.factory.UseCaseFactory` in the
    container.
 6. Apply per-job ``JobConfig`` overrides from YAML.
-7. Build the Celery application and register tasks.
-8. Connect Celery worker lifecycle signals for per-process
-   :class:`~SessionManager` management.
-9. Validate the container (fail-fast).
-10. Return :class:`WorkerBootstrapResult`.
+7. Build the ``SessionManager`` and ``UnitOfWorkFactory`` (pre-fork; the
+   engine is lazy so no TCP connections are opened yet).
+8. Build the Celery application and register tasks.
+9. Connect Celery worker lifecycle signals for per-process event loop
+   management via :class:`~loom.celery.event_loop.WorkerEventLoop`.
+10. Validate the container (fail-fast).
+11. Return :class:`WorkerBootstrapResult`.
 
-The critical design constraint is Celery's ``prefork`` pool: after
-``fork()``, the parent process's asyncio event loop and SQLAlchemy
-connections are unusable in child processes.  The ``worker_process_init``
-and ``worker_process_shutdown`` signals create and dispose a fresh
-:class:`~SessionManager` in each forked worker process via the
-module-level :data:`_worker_session` state.
+Fork-safety design
+------------------
+``create_async_engine`` is lazy: it creates Python objects but opens no
+TCP connections until the first ``async with session`` call.  It is
+therefore safe to create the :class:`~SessionManager` in the parent
+process before ``fork()``.  After ``fork()``, each child inherits the
+engine object but starts with an empty connection pool — connections are
+only opened after :class:`~loom.celery.event_loop.WorkerEventLoop`
+starts the background asyncio loop in the child process (via the
+``worker_process_init`` Celery signal).
 
 Typical YAML layout::
 
@@ -43,7 +49,6 @@ Typical YAML layout::
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -53,6 +58,7 @@ import msgspec
 from celery import Celery  # type: ignore[import-untyped]
 
 from loom.celery.config import CeleryConfig, JobConfig, apply_job_config, create_celery_app
+from loom.celery.event_loop import WorkerEventLoop
 from loom.celery.runner import _make_callback_error_task, _make_callback_task, _make_job_task
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
@@ -69,7 +75,6 @@ from loom.core.logger import (
 )
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
-from loom.core.uow.abc import UnitOfWork
 from loom.core.use_case.factory import UseCaseFactory
 
 if TYPE_CHECKING:
@@ -119,66 +124,6 @@ class _LoggerConfig(msgspec.Struct, kw_only=True):
 
 
 # ---------------------------------------------------------------------------
-# Per-process worker state
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _WorkerSession:
-    """Holds the per-process session manager and UoW factory.
-
-    One instance lives at module level.  After ``fork()``, each child
-    process gets its own copy with ``session_manager = None``.  The
-    ``worker_process_init`` signal handler populates it; the
-    ``worker_process_shutdown`` handler disposes and clears it.
-    """
-
-    session_manager: SessionManager | None = None
-    uow_factory: SQLAlchemyUnitOfWorkFactory | None = None
-
-
-_worker_session = _WorkerSession()
-
-
-# ---------------------------------------------------------------------------
-# _DeferredUoWFactory
-# ---------------------------------------------------------------------------
-
-
-class _DeferredUoWFactory:
-    """Proxy that delegates to the per-process UoW factory.
-
-    Allows passing a stable factory object to :func:`_make_job_task` at
-    bootstrap time — before the child process is forked and
-    ``worker_process_init`` populates :data:`_worker_session`.
-
-    The factory itself carries no state; every :meth:`create` call reads
-    from :data:`_worker_session` at invocation time.
-
-    Example::
-
-        deferred = _DeferredUoWFactory()
-        executor = RuntimeExecutor(compiler, uow_factory=deferred)
-        # after fork, worker_process_init sets _worker_session.uow_factory
-        uow = deferred.create()  # delegates to the real factory
-    """
-
-    def create(self) -> UnitOfWork:
-        """Return a fresh UoW from the per-process factory.
-
-        Returns:
-            A new :class:`~loom.core.uow.abc.UnitOfWork` instance.
-
-        Raises:
-            RuntimeError: If the worker has not been initialised by the
-                ``worker_process_init`` signal.
-        """
-        if _worker_session.uow_factory is None:
-            raise RuntimeError("Worker not initialized. Ensure worker_process_init signal fired.")
-        return _worker_session.uow_factory.create()  # type: ignore[return-value]
-
-
-# ---------------------------------------------------------------------------
 # Logger helpers
 # ---------------------------------------------------------------------------
 
@@ -206,23 +151,22 @@ def _configure_logger(logger_cfg: _LoggerConfig) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _connect_worker_signals(db_url: str, echo: bool, pool_pre_ping: bool) -> None:
-    """Connect Celery worker lifecycle signals for per-process session management.
+def _connect_worker_signals(session_manager: SessionManager) -> None:
+    """Connect Celery worker lifecycle signals for per-process loop management.
 
     Registers two signal handlers:
 
-    * ``worker_process_init`` — creates a fresh :class:`~SessionManager`
-      and :class:`~SQLAlchemyUnitOfWorkFactory` in the forked child process
-      and stores them in :data:`_worker_session`.
-    * ``worker_process_shutdown`` — disposes the session manager and clears
-      :data:`_worker_session`.
+    * ``worker_process_init`` — starts :class:`~WorkerEventLoop` in the
+      forked child process.
+    * ``worker_process_shutdown`` — disposes the session manager through
+      the event loop, then shuts the loop down.
 
     Must be called once during :func:`bootstrap_worker`.
 
     Args:
-        db_url: Database connection URL forwarded to ``SessionManager``.
-        echo: Echo SQL statements when ``True``.
-        pool_pre_ping: Test connections before checkout.
+        session_manager: The shared :class:`~SessionManager` instance
+            (created pre-fork with a lazy engine).  Disposed per-process
+            on shutdown.
     """
     from celery.signals import (  # type: ignore[import-untyped]
         worker_process_init,
@@ -230,16 +174,11 @@ def _connect_worker_signals(db_url: str, echo: bool, pool_pre_ping: bool) -> Non
     )
 
     def _on_init(**kwargs: Any) -> None:
-        _worker_session.session_manager = SessionManager(
-            db_url, echo=echo, pool_pre_ping=pool_pre_ping
-        )
-        _worker_session.uow_factory = SQLAlchemyUnitOfWorkFactory(_worker_session.session_manager)
+        WorkerEventLoop.initialize()
 
     def _on_shutdown(**kwargs: Any) -> None:
-        if _worker_session.session_manager is not None:
-            asyncio.run(_worker_session.session_manager.dispose())
-            _worker_session.session_manager = None
-            _worker_session.uow_factory = None
+        WorkerEventLoop.run(session_manager.dispose())
+        WorkerEventLoop.shutdown()
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
@@ -309,12 +248,17 @@ def bootstrap_worker(
 
     Loads configuration from ``config_paths``, compiles all ``Job``
     subclasses, registers Celery tasks, and connects worker lifecycle
-    signals for per-process session management.
+    signals for per-process event loop management.
 
     This function is **independent** of
     :func:`~loom.core.bootstrap.bootstrap.bootstrap_app` — it targets the
     worker process only and does not perform REST discovery or model
     compilation.
+
+    Fork-safety note: the :class:`~SessionManager` is created here
+    (pre-fork) using a lazy async engine.  No TCP connections are
+    established until the background asyncio loop is started in each
+    child process via ``worker_process_init``.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -376,18 +320,25 @@ def bootstrap_worker(
     for job_type in jobs:
         _apply_job_config_if_present(raw, job_type)
 
+    # SessionManager is created pre-fork. The async engine is lazy — no TCP
+    # connections are opened until the first async context manager usage in
+    # the child process after WorkerEventLoop.initialize() runs.
+    session_manager = SessionManager(
+        db_cfg.url, echo=db_cfg.echo, pool_pre_ping=db_cfg.pool_pre_ping
+    )
+    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
+
     celery_app = create_celery_app(celery_cfg)
-    deferred = _DeferredUoWFactory()
-    executor = RuntimeExecutor(compiler, uow_factory=deferred, metrics=metrics)
+    executor = RuntimeExecutor(compiler, uow_factory=uow_factory, metrics=metrics)  # type: ignore[arg-type]
 
     for job_type in jobs:
-        _make_job_task(celery_app, job_type, factory, deferred, executor, metrics)
+        _make_job_task(celery_app, job_type, factory, executor, metrics)
 
     for callback_type in callbacks:
-        _make_callback_task(celery_app, callback_type, factory, deferred)
+        _make_callback_task(celery_app, callback_type, factory)
         _make_callback_error_task(celery_app, callback_type, factory)
 
-    _connect_worker_signals(db_cfg.url, db_cfg.echo, db_cfg.pool_pre_ping)
+    _connect_worker_signals(session_manager)
 
     container.validate()
 

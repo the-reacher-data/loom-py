@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
-from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +13,6 @@ from loom.celery.bootstrap import (
     WorkerBootstrapResult,
     _apply_job_config_if_present,
     _connect_worker_signals,
-    _DeferredUoWFactory,
 )
 from loom.core.job.job import Job
 
@@ -50,50 +47,6 @@ def _make_raw_config(extra: dict[str, Any] | None = None) -> Any:
     if extra:
         base.update(extra)
     return OmegaConf.create(base)
-
-
-# ---------------------------------------------------------------------------
-# Fixture: reset module-level _worker_session before/after each test
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def reset_worker_session() -> Iterator[None]:
-    """Ensure _worker_session is clean before and after each test."""
-    boot._worker_session.session_manager = None
-    boot._worker_session.uow_factory = None
-    yield
-    # Only dispose real SessionManagers — mocks return non-coroutines from dispose()
-    sm = boot._worker_session.session_manager
-    if sm is not None and asyncio.iscoroutinefunction(sm.dispose):
-        asyncio.run(sm.dispose())
-    boot._worker_session.session_manager = None
-    boot._worker_session.uow_factory = None
-
-
-# ---------------------------------------------------------------------------
-# _DeferredUoWFactory
-# ---------------------------------------------------------------------------
-
-
-class TestDeferredUoWFactory:
-    def test_create_raises_when_not_initialized(self) -> None:
-        factory = _DeferredUoWFactory()
-        with pytest.raises(RuntimeError, match="Worker not initialized"):
-            factory.create()
-
-    def test_create_delegates_to_worker_session_factory(self) -> None:
-        mock_uow = MagicMock()
-        mock_factory = MagicMock()
-        mock_factory.create.return_value = mock_uow
-
-        boot._worker_session.uow_factory = mock_factory  # type: ignore[assignment]
-        try:
-            result = _DeferredUoWFactory().create()
-            assert result is mock_uow
-            mock_factory.create.assert_called_once()
-        finally:
-            boot._worker_session.uow_factory = None
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +140,7 @@ class TestBootstrapWorkerTaskRegistration:
         """JobConfig overrides must be applied before task registration.
 
         Verifies ordering by spying on _make_job_task and capturing the value
-        of job_type.__retries__ at the moment of registration.  Querying
-        celery_app.tasks[name].max_retries is unreliable across tests because
-        Celery maintains a global task registry shared between Celery instances.
+        of job_type.__retries__ at the moment of registration.
         """
         import loom.celery.runner as _runner
 
@@ -216,68 +167,74 @@ class TestBootstrapWorkerTaskRegistration:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def isolated_celery_signals() -> Any:
+    """Save and restore Celery worker signal receivers around each test.
+
+    ``_connect_worker_signals`` registers closures with ``weak=False``.
+    Without isolation, receivers accumulate across tests and assertions
+    like ``assert_called_once()`` see multiple calls (one per handler).
+    """
+    from celery.signals import (  # type: ignore[import-untyped]
+        worker_process_init,
+        worker_process_shutdown,
+    )
+
+    saved_init = list(worker_process_init.receivers)
+    saved_shutdown = list(worker_process_shutdown.receivers)
+    # Start each test with a clean slate so accumulated handlers from prior
+    # bootstrap_worker() calls do not inflate assertion call counts.
+    worker_process_init.receivers[:] = []
+    worker_process_shutdown.receivers[:] = []
+    yield
+    worker_process_init.receivers[:] = saved_init
+    worker_process_shutdown.receivers[:] = saved_shutdown
+
+
 class TestWorkerSignals:
-    def test_on_init_creates_session_manager_and_uow_factory(self) -> None:
+    def test_on_init_calls_worker_event_loop_initialize(self, isolated_celery_signals: Any) -> None:
         from celery.signals import worker_process_init  # type: ignore[import-untyped]
 
-        with (
-            patch.object(boot, "SessionManager") as mock_sm_cls,
-            patch.object(boot, "SQLAlchemyUnitOfWorkFactory") as mock_factory_cls,
-        ):
-            mock_sm_instance = MagicMock()
-            mock_sm_cls.return_value = mock_sm_instance
-            mock_factory_cls.return_value = MagicMock()
+        mock_sm = MagicMock()
 
-            _connect_worker_signals("sqlite+aiosqlite:///test.db", False, True)
+        with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            _connect_worker_signals(mock_sm)
             worker_process_init.send(sender=None)
 
-        assert boot._worker_session.session_manager is not None
-        assert boot._worker_session.uow_factory is not None
+        mock_loop.initialize.assert_called_once()
 
-    def test_on_shutdown_clears_worker_session(self) -> None:
+    def test_on_shutdown_disposes_session_manager_via_loop(
+        self, isolated_celery_signals: Any
+    ) -> None:
         from celery.signals import (  # type: ignore[import-untyped]
             worker_process_init,
             worker_process_shutdown,
         )
 
-        with (
-            patch.object(boot, "SessionManager") as mock_sm_cls,
-            patch.object(boot, "SQLAlchemyUnitOfWorkFactory") as mock_factory_cls,
-            patch.object(boot, "asyncio") as mock_asyncio,
-        ):
-            mock_sm_instance = MagicMock()
-            mock_sm_cls.return_value = mock_sm_instance
-            mock_factory_cls.return_value = MagicMock()
-            mock_asyncio.run = MagicMock()
+        mock_sm = MagicMock()
+        dispose_coro = MagicMock()
+        mock_sm.dispose.return_value = dispose_coro
 
-            _connect_worker_signals("sqlite+aiosqlite:///test.db", False, True)
+        with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            _connect_worker_signals(mock_sm)
             worker_process_init.send(sender=None)
-
-            assert boot._worker_session.session_manager is not None
-
             worker_process_shutdown.send(sender=None)
 
-        assert boot._worker_session.session_manager is None
-        assert boot._worker_session.uow_factory is None
+        mock_loop.run.assert_called_once_with(dispose_coro)
 
-    def test_on_shutdown_calls_asyncio_run_with_dispose(self) -> None:
+    def test_on_shutdown_calls_worker_event_loop_shutdown(
+        self, isolated_celery_signals: Any
+    ) -> None:
         from celery.signals import (  # type: ignore[import-untyped]
             worker_process_init,
             worker_process_shutdown,
         )
 
-        with (
-            patch.object(boot, "SessionManager") as mock_sm_cls,
-            patch.object(boot, "SQLAlchemyUnitOfWorkFactory") as mock_factory_cls,
-            patch.object(boot, "asyncio") as mock_asyncio,
-        ):
-            mock_sm_instance = MagicMock()
-            mock_sm_cls.return_value = mock_sm_instance
-            mock_factory_cls.return_value = MagicMock()
-            mock_asyncio.run = MagicMock()
+        mock_sm = MagicMock()
 
-            _connect_worker_signals("sqlite+aiosqlite:///test.db", False, True)
+        with patch.object(boot, "WorkerEventLoop") as mock_loop:
+            _connect_worker_signals(mock_sm)
             worker_process_init.send(sender=None)
             worker_process_shutdown.send(sender=None)
 
-        mock_asyncio.run.assert_called_once()
+        mock_loop.shutdown.assert_called_once()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,8 +12,7 @@ from loom.celery.runner import (
     _make_callback_task,
     _make_job_task,
     _resolve_error_info,
-    _run_async_job,
-    _run_sync_job,
+    _run_job,
     _uninstall_trace,
 )
 from loom.core.job.job import Job
@@ -94,40 +92,16 @@ class TestTraceLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# _run_sync_job
+# _run_job
 # ---------------------------------------------------------------------------
 
 
-class TestRunSyncJob:
-    def test_calls_execute_with_payload_as_kwargs(self) -> None:
-        instance = _SyncJob()
-        result = _run_sync_job(instance, payload={"value": 3}, params=None)
-        assert result == 6
-
-    def test_merges_payload_and_params(self) -> None:
-        instance = MagicMock()
-        instance.execute = MagicMock(return_value=42)
-        _run_sync_job(instance, payload={"a": 1}, params={"b": 2})
-        instance.execute.assert_called_once_with(a=1, b=2)
-
-    def test_handles_none_payload_and_params(self) -> None:
-        instance = MagicMock()
-        instance.execute = MagicMock(return_value=0)
-        _run_sync_job(instance, payload=None, params=None)
-        instance.execute.assert_called_once_with()
-
-
-# ---------------------------------------------------------------------------
-# _run_async_job
-# ---------------------------------------------------------------------------
-
-
-class TestRunAsyncJob:
+class TestRunJob:
     async def test_returns_executor_result(self) -> None:
         instance = MagicMock()
         executor = MagicMock()
         executor.execute = AsyncMock(return_value="done")
-        result = await _run_async_job(instance, payload={}, params=None, executor=executor)
+        result = await _run_job(instance, payload={}, params=None, executor=executor)
         assert result == "done"
 
     async def test_flushes_pending_dispatches_on_success(self) -> None:
@@ -137,7 +111,7 @@ class TestRunAsyncJob:
         with patch(
             "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
         ) as mock_flush:
-            await _run_async_job(instance, payload={}, params=None, executor=executor)
+            await _run_job(instance, payload={}, params=None, executor=executor)
             mock_flush.assert_awaited_once()
 
     async def test_clears_pending_dispatches_on_failure(self) -> None:
@@ -146,7 +120,7 @@ class TestRunAsyncJob:
         executor.execute = AsyncMock(side_effect=ValueError("boom"))
         with patch("loom.celery.runner.clear_pending_dispatches") as mock_clear:
             with pytest.raises(ValueError):
-                await _run_async_job(instance, payload={}, params=None, executor=executor)
+                await _run_job(instance, payload={}, params=None, executor=executor)
             mock_clear.assert_called_once()
 
     async def test_does_not_flush_on_failure(self) -> None:
@@ -157,7 +131,7 @@ class TestRunAsyncJob:
             "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
         ) as mock_flush:
             with pytest.raises(RuntimeError):
-                await _run_async_job(instance, payload={}, params=None, executor=executor)
+                await _run_job(instance, payload={}, params=None, executor=executor)
             mock_flush.assert_not_awaited()
 
 
@@ -173,7 +147,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _SyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _SyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["name"] == f"loom.job.{_SyncJob.__qualname__}"
 
     def test_task_registered_with_correct_name_async(self) -> None:
@@ -182,7 +156,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _AsyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _AsyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["name"] == f"loom.job.{_AsyncJob.__qualname__}"
 
     def test_acks_late_is_true(self) -> None:
@@ -191,7 +165,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _SyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _SyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["acks_late"] is True
 
     def test_reject_on_worker_lost_is_true(self) -> None:
@@ -200,7 +174,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _SyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _SyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["reject_on_worker_lost"] is True
 
     def test_max_retries_uses_job_classvar(self) -> None:
@@ -209,7 +183,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _SyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _SyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["max_retries"] == _SyncJob.__retries__
 
     def test_soft_time_limit_uses_job_classvar(self) -> None:
@@ -218,7 +192,7 @@ class TestMakeJobTaskRegistration:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
-        _make_job_task(app, _AsyncJob, MagicMock(), MagicMock(), MagicMock())
+        _make_job_task(app, _AsyncJob, MagicMock(), MagicMock())
         assert registered_kwargs["soft_time_limit"] == _AsyncJob.__timeout__
 
 
@@ -236,32 +210,34 @@ def _mock_self(retries: int = 0, max_retries: int = 0) -> MagicMock:
 
 
 class TestMakeJobTaskExecution:
-    def test_sync_job_does_not_call_asyncio_run(self) -> None:
+    def test_job_task_calls_worker_event_loop_run(self) -> None:
+        """Every job (sync or async) is submitted to WorkerEventLoop.run()."""
         instance = _SyncJob()
         factory = _mock_factory(instance)
-        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock())
-        with patch("loom.celery.runner.asyncio") as mock_asyncio:
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=10)
             task_fn(_mock_self(), payload={"value": 5})
-            mock_asyncio.run.assert_not_called()
+            mock_loop.run.assert_called_once()
 
-    def test_async_job_calls_asyncio_run(self) -> None:
+    def test_async_job_also_calls_worker_event_loop_run(self) -> None:
         instance = MagicMock()
-        instance.execute = AsyncMock(return_value="ok")
         factory = _mock_factory(instance)
         executor = MagicMock()
-        executor.execute = AsyncMock(return_value="ok")
-        task_fn = _make_job_task(_mock_celery_app(), _AsyncJob, factory, MagicMock(), executor)
-        with patch("loom.celery.runner.asyncio") as mock_asyncio:
-            mock_asyncio.run = MagicMock(return_value="ok")
+        task_fn = _make_job_task(_mock_celery_app(), _AsyncJob, factory, executor)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value="ok")
             task_fn(_mock_self(), payload={"msg": "hello"})
-            mock_asyncio.run.assert_called_once()
+            mock_loop.run.assert_called_once()
 
-    def test_sync_job_returns_correct_result(self) -> None:
+    def test_task_returns_loop_run_result(self) -> None:
         instance = _SyncJob()
         factory = _mock_factory(instance)
-        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock())
-        result = task_fn(_mock_self(), payload={"value": 4})
-        assert result == 8
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=42)
+            result = task_fn(_mock_self(), payload={"value": 4})
+        assert result == 42
 
 
 # ---------------------------------------------------------------------------
@@ -270,34 +246,8 @@ class TestMakeJobTaskExecution:
 
 
 class TestMakeJobTaskRetry:
-    def _make_bound_task(self, retries: int = 0, max_retries: int = 2) -> tuple[Any, Any]:
-        """Return (task_fn, mock_self) with retry context wired up."""
-        instance = MagicMock()
-        instance.execute = MagicMock(side_effect=ValueError("transient"))
-        factory = _mock_factory(instance)
-
-        mock_self = MagicMock()
-        mock_self.request.retries = retries
-        mock_self.max_retries = max_retries
-
-        class RetryError(Exception):
-            pass
-
-        mock_self.retry = MagicMock(side_effect=RetryError)
-
-        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock())
-
-        # Bind self manually (task is registered without bind in mock app)
-        import functools
-
-        bound = functools.partial(
-            task_fn.__wrapped__ if hasattr(task_fn, "__wrapped__") else task_fn, mock_self
-        )
-        return bound, mock_self
-
     def test_retries_when_below_max(self) -> None:
         instance = MagicMock()
-        instance.execute = MagicMock(side_effect=ValueError("err"))
         factory = _mock_factory(instance)
 
         mock_self = MagicMock()
@@ -309,17 +259,16 @@ class TestMakeJobTaskRetry:
 
         mock_self.retry = MagicMock(side_effect=RetryError)
 
-        # Simulate bound task call
-        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock())
-        # Access the raw function before the mock wrapper
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
         raw_fn = task_fn if callable(task_fn) else task_fn.__func__
-        with pytest.raises(RetryError):
-            raw_fn(mock_self, payload={"value": 1})
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(side_effect=ValueError("err"))
+            with pytest.raises(RetryError):
+                raw_fn(mock_self, payload={"value": 1})
         mock_self.retry.assert_called_once()
 
     def test_retry_countdown_uses_exponential_backoff(self) -> None:
         instance = MagicMock()
-        instance.execute = MagicMock(side_effect=ValueError("err"))
         factory = _mock_factory(instance)
 
         mock_self = MagicMock()
@@ -331,29 +280,30 @@ class TestMakeJobTaskRetry:
 
         mock_self.retry = MagicMock(side_effect=RetryError)
 
-        task_fn = _make_job_task(
-            _mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock(), backoff=3
-        )
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), backoff=3)
         raw_fn = task_fn if callable(task_fn) else task_fn.__func__
-        with pytest.raises(RetryError):
-            raw_fn(mock_self, payload={"value": 1})
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(side_effect=ValueError("err"))
+            with pytest.raises(RetryError):
+                raw_fn(mock_self, payload={"value": 1})
         _, kwargs = mock_self.retry.call_args
         # backoff=3, retries=2 → countdown = 3**2 = 9
         assert kwargs["countdown"] == 9
 
     def test_raises_original_exc_when_retries_exhausted(self) -> None:
         instance = MagicMock()
-        instance.execute = MagicMock(side_effect=ValueError("final"))
         factory = _mock_factory(instance)
 
         mock_self = MagicMock()
         mock_self.request.retries = 2
         mock_self.max_retries = 2
 
-        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock(), MagicMock())
+        task_fn = _make_job_task(_mock_celery_app(), _SyncJob, factory, MagicMock())
         raw_fn = task_fn if callable(task_fn) else task_fn.__func__
-        with pytest.raises(ValueError, match="final"):
-            raw_fn(mock_self, payload={"value": 1})
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(side_effect=ValueError("final"))
+            with pytest.raises(ValueError, match="final"):
+                raw_fn(mock_self, payload={"value": 1})
         mock_self.retry.assert_not_called()
 
 
@@ -392,35 +342,34 @@ class TestMakeCallbackTask:
         app.task = MagicMock(
             side_effect=lambda **kw: registered_name.append(kw["name"]) or (lambda fn: fn)
         )
-        _make_callback_task(app, _SyncCallback, MagicMock(), MagicMock())
+        _make_callback_task(app, _SyncCallback, MagicMock())
         task_name = next(iter(registered_name), None)
         assert task_name == f"loom.callback.{_SyncCallback.__qualname__}"
 
     def test_sync_on_success_called_with_result_and_job_id(self) -> None:
         cb = MagicMock(spec=_SyncCallback)
         factory = _mock_factory(cb)
-        task_fn = _make_callback_task(_mock_celery_app(), _SyncCallback, factory, MagicMock())
+        task_fn = _make_callback_task(_mock_celery_app(), _SyncCallback, factory)
         task_fn("result_value", job_id="uuid-1", context={})
         cb.on_success.assert_called_once_with(job_id="uuid-1", result="result_value")
 
     def test_sync_on_success_forwards_context_as_kwargs(self) -> None:
         cb = MagicMock(spec=_SyncCallback)
         factory = _mock_factory(cb)
-        task_fn = _make_callback_task(_mock_celery_app(), _SyncCallback, factory, MagicMock())
+        task_fn = _make_callback_task(_mock_celery_app(), _SyncCallback, factory)
         task_fn("r", job_id="uuid-2", context={"order_id": 99})
         _, kwargs = cb.on_success.call_args
         assert kwargs["order_id"] == 99
 
-    def test_async_on_success_is_run_via_asyncio(self) -> None:
+    def test_async_on_success_is_run_via_worker_event_loop(self) -> None:
         cb = MagicMock()
         cb.on_success = AsyncMock()
         factory = _mock_factory(cb)
-        task_fn = _make_callback_task(_mock_celery_app(), _AsyncCallback, factory, MagicMock())
-        with patch("loom.celery.runner.asyncio") as mock_asyncio:
-            mock_asyncio.run = MagicMock()
-            mock_asyncio.run.return_value = None
+        task_fn = _make_callback_task(_mock_celery_app(), _AsyncCallback, factory)
+        with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
+            mock_loop.run = MagicMock(return_value=None)
             task_fn("r", job_id="x", context={})
-            mock_asyncio.run.assert_called_once()
+            mock_loop.run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -461,15 +410,15 @@ class TestMakeCallbackErrorTask:
         _, kwargs = cb.on_failure.call_args
         assert kwargs["user_id"] == 7
 
-    def test_async_on_failure_is_run_via_asyncio(self) -> None:
+    def test_async_on_failure_is_run_via_worker_event_loop(self) -> None:
         cb = MagicMock()
         cb.on_failure = AsyncMock()
         factory = _mock_factory(cb)
         task_fn = _make_callback_error_task(_mock_celery_app(), _AsyncCallback, factory)
         with (
             patch("loom.celery.runner._resolve_error_info", return_value=("E", "m")),
-            patch("loom.celery.runner.asyncio") as mock_asyncio,
+            patch("loom.celery.runner.WorkerEventLoop") as mock_loop,
         ):
-            mock_asyncio.run = MagicMock()
+            mock_loop.run = MagicMock()
             task_fn(job_id="uuid-5", context={})
-            mock_asyncio.run.assert_called_once()
+            mock_loop.run.assert_called_once()
