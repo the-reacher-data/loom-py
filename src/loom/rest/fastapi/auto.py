@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -27,7 +26,7 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
-from loom.core.logger import HandlerConfig, configure_logging_from_values
+from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -81,13 +80,19 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
-class _LoggerConfig(msgspec.Struct, kw_only=True):
-    name: str = ""
-    environment: str = ""
-    renderer: str | None = None
-    colors: bool | None = None
-    level: str = "INFO"
-    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
+class _LoggerConfig(LoggerConfig):
+    """Backward-compatible alias for legacy tests/private imports."""
+
+
+def _configure_logger(logger_cfg: _LoggerConfig) -> None:
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment,
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
+    )
 
 
 def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -149,17 +154,6 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     if engine is None:
         raise ValueError(f"Unsupported discovery mode: {discovery_cfg.mode!r}")
     return engine(discovery_cfg)
-
-
-def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment or os.getenv("ENVIRONMENT", "dev"),
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        handlers=logger_cfg.handlers,
-    )
 
 
 def _configure_job_service(

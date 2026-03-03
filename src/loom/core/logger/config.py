@@ -253,11 +253,11 @@ def configure_logging_from_values(
     Intended for bootstrap layers that parse config structs and want to avoid
     duplicating ``Environment``/``Renderer`` conversion logic.
     """
-    env_str = environment.strip() or "dev"
+    env = Environment.from_str(environment.strip()) if environment.strip() else Environment.DEV
     configure_logging(
         LogConfig(
             name=name,
-            environment=Environment.from_str(env_str),
+            environment=env,
             renderer=Renderer.from_str(renderer) if renderer is not None else None,
             colors=colors,
             level=level,
