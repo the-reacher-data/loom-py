@@ -110,7 +110,11 @@ def create_fastapi_app(
         result.compiler,
         defaults=defaults,
     )
-    executor = RuntimeExecutor(result.compiler, metrics=result.metrics)
+    executor = RuntimeExecutor(
+        result.compiler,
+        metrics=result.metrics,
+        repo_resolver=result.container.resolve_repo,
+    )
 
     all_routes = []
     for iface in interfaces:

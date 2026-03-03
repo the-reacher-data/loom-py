@@ -59,6 +59,9 @@ class RuntimeExecutor:
         logger: Optional logger. Defaults to the framework logger.
         metrics: Optional metrics adapter. When provided, receives
             ``EXEC_START``, ``EXEC_DONE``, and ``EXEC_ERROR`` events.
+        repo_resolver: Optional callable that resolves a repository instance
+            from an entity model type. Used by ``Load``/``Exists`` when
+            ``dependencies`` override is not passed to :meth:`execute`.
 
     Example::
 
@@ -82,12 +85,14 @@ class RuntimeExecutor:
         debug_execution: bool = False,
         logger: LoggerPort | None = None,
         metrics: MetricsAdapter | None = None,
+        repo_resolver: Callable[[type[Any]], Any] | None = None,
     ) -> None:
         self._compiler = compiler
         self._uow_factory = uow_factory
         self._debug = debug_execution
         self._logger = logger or get_logger(__name__)
         self._metrics = metrics
+        self._repo_resolver = repo_resolver
 
     @overload
     async def execute(
@@ -435,19 +440,20 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> Any:
+        del compilable
         if load_overrides and step.entity_type in load_overrides:
             return load_overrides[step.entity_type]
 
         if dependencies is None:
-            repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
-            if repo is None:
+            repo = self._resolve_repo(step.entity_type)
+            if repo is None and self._repo_resolver is None:
                 raise RuntimeError(
                     f"No dependencies provided for LoadById({step.entity_type.__name__})"
                 )
         else:
             repo = dependencies.get(step.entity_type)
             if repo is None:
-                repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
+                repo = self._resolve_repo(step.entity_type)
         if repo is None:
             raise RuntimeError(
                 f"No repository registered for entity type '{step.entity_type.__name__}'"
@@ -473,16 +479,17 @@ class RuntimeExecutor:
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
     ) -> bool:
+        del compilable
         if dependencies is None:
-            repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
-            if repo is None:
+            repo = self._resolve_repo(step.entity_type)
+            if repo is None and self._repo_resolver is None:
                 raise RuntimeError(
                     f"No dependencies provided for Exists({step.entity_type.__name__})"
                 )
         else:
             repo = dependencies.get(step.entity_type)
             if repo is None:
-                repo = self._resolve_repo_from_use_case(compilable, step.entity_type)
+                repo = self._resolve_repo(step.entity_type)
         if repo is None:
             raise RuntimeError(
                 f"No repository registered for entity type '{step.entity_type.__name__}'"
@@ -534,15 +541,13 @@ class RuntimeExecutor:
             raise RuntimeError(f"Command '{type(command).__name__}' has no field '{source_name}'")
         return getattr(command, source_name)
 
-    @staticmethod
-    def _resolve_repo_from_use_case(
-        compilable: Compilable,
-        entity_type: type[Any],
-    ) -> Any | None:
-        for candidate in vars(compilable).values():
-            if getattr(candidate, "model", None) is entity_type:
-                return candidate
-        return None
+    def _resolve_repo(self, entity_type: type[Any]) -> Any | None:
+        if self._repo_resolver is None:
+            return None
+        try:
+            return self._repo_resolver(entity_type)
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Helpers
