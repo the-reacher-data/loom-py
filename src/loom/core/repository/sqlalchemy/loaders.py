@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
 from sqlalchemy import Select, func, select
@@ -62,6 +63,70 @@ class ProjectionLoader(Protocol):
             Mapping from parent id to the computed value.
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class ComputedFromRelationLoader:
+    """Derives projection values from an already-loaded ORM relation.
+
+    Avoids extra DB queries by computing derived values (counts, flags,
+    snippets) from relation data already in memory via ``selectinload``,
+    instead of firing additional ``SELECT`` statements.
+
+    The referenced relation must be eagerly loaded in every profile where
+    the owning ``ProjectionField`` is active.  This contract is validated
+    at repository initialisation time by
+    :meth:`~loom.core.repository.sqlalchemy.mixins.SQLAlchemyContextMixin.\
+_validate_computed_relation_loaders`.
+
+    Args:
+        relation: Name of the ORM relationship attribute on the parent SA object.
+        fn: Callable that receives the list of related ORM objects and
+            returns the derived projection value.
+
+    Example::
+
+        notes_count: int = ProjectionField(
+            loader=ComputedFromRelationLoader(relation="notes", fn=len),
+            profiles=("with_details",),
+            default=0,
+        )
+        has_notes: bool = ProjectionField(
+            loader=ComputedFromRelationLoader(
+                relation="notes", fn=lambda rows: len(rows) > 0
+            ),
+            profiles=("with_details",),
+            default=False,
+        )
+    """
+
+    relation: str
+    fn: Callable[[list[Any]], Any]
+
+    def load_from_object(self, obj: Any) -> Any:
+        """Compute the derived value from the already-loaded relation on ``obj``.
+
+        Args:
+            obj: SQLAlchemy ORM instance with the relation attribute already
+                populated by ``selectinload``.
+
+        Returns:
+            The value returned by ``fn`` applied to the list of related objects.
+
+        Raises:
+            RuntimeError: If the relation attribute is not present in
+                ``obj.__dict__``, indicating it was not eagerly loaded.
+        """
+        if self.relation not in obj.__dict__:
+            raise RuntimeError(
+                f"ComputedFromRelationLoader: relation '{self.relation}' is not "
+                f"loaded on {type(obj).__name__}. Ensure it is included in the "
+                f"active profile's selectinload options."
+            )
+        related: list[Any] = getattr(obj, self.relation) or []
+        if not isinstance(related, list):
+            related = [related]
+        return self.fn(related)
 
 
 class CountLoader:

@@ -1,4 +1,9 @@
-from loom.core.repository.sqlalchemy.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
+from loom.core.repository.sqlalchemy.loaders import (
+    ComputedFromRelationLoader,
+    CountLoader,
+    ExistsLoader,
+    JoinFieldsLoader,
+)
 from loom.core.repository.sqlalchemy.model import (
     AuditableModel,
     AuditActorMixin,
@@ -17,6 +22,7 @@ __all__ = [
     "AuditableModel",
     "Base",
     "BaseModel",
+    "ComputedFromRelationLoader",
     "CountLoader",
     "ExistsLoader",
     "JoinFieldsLoader",

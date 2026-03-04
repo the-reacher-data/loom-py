@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
@@ -67,6 +68,48 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             col.key for col in sa_mapper.column_attrs if col.key in column_field_names
         )
         self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
+        self._validate_computed_relation_loaders()
+
+    def _validate_computed_relation_loaders(self) -> None:
+        """Validate ComputedFromRelationLoader references at repository init time.
+
+        Ensures every ``ProjectionField`` backed by a
+        :class:`~loom.core.repository.sqlalchemy.loaders.ComputedFromRelationLoader`
+        references an existing relation that is eagerly loaded in all profiles
+        where the projection is active.
+
+        Raises:
+            ValueError: If the referenced relation does not exist on the model,
+                or if the projection is active in profiles where the relation
+                is not loaded.
+        """
+        from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
+
+        projections = self._projections_cache or {}
+        relations = self._relations_cache or {}
+        model_name = self.model.__name__
+
+        for proj_name, proj in projections.items():
+            loader = proj.loader
+            if not isinstance(loader, ComputedFromRelationLoader):
+                continue
+
+            rel_name = loader.relation
+            if rel_name not in relations:
+                raise ValueError(
+                    f"'{model_name}.{proj_name}': ComputedFromRelationLoader references "
+                    f"relation '{rel_name}' which does not exist on this model."
+                )
+
+            unsupported = frozenset(proj.profiles) - frozenset(relations[rel_name].profiles)
+            if unsupported:
+                raise ValueError(
+                    f"'{model_name}.{proj_name}': "
+                    f"ComputedFromRelationLoader(relation='{rel_name}') "
+                    f"is active in profiles {sorted(unsupported)} where '{rel_name}' is not "
+                    f"loaded. Add {sorted(unsupported)} to '{rel_name}'.profiles or restrict "
+                    f"'{proj_name}'.profiles to {sorted(relations[rel_name].profiles)}."
+                )
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -196,25 +239,55 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         objs: list[Any],
         profile: str,
     ) -> dict[int, dict[str, Any]]:
-        """Batch-load projection values for a list of ORM objects."""
+        """Batch-load projection values for a list of ORM objects.
+
+        :class:`~loom.core.repository.sqlalchemy.loaders.ComputedFromRelationLoader`
+        projections are resolved synchronously from already-loaded relation
+        data on each ORM object (no DB round-trip).  All remaining DB-backed
+        loaders are fired concurrently via :func:`asyncio.gather`.
+        """
         if not objs:
             return {}
         projections = self._projections_for_profile(profile)
         if not projections:
             return {}
 
+        from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
+
         id_attr = self._effective_id_attribute
         obj_ids = [getattr(obj, id_attr) for obj in objs]
         values_by_index: dict[int, dict[str, Any]] = {i: {} for i in range(len(objs))}
 
-        for field_name, projection in projections.items():
-            loader = projection.loader
-            if loader is None:
-                continue
-            rows = await loader.load_many(scoped_session, obj_ids)
-            default = projection.default
-            for i, oid in enumerate(obj_ids):
-                values_by_index[i][field_name] = rows.get(oid, default)
+        memory_projections = {
+            name: proj
+            for name, proj in projections.items()
+            if isinstance(proj.loader, ComputedFromRelationLoader)
+        }
+        db_projections = {
+            name: proj
+            for name, proj in projections.items()
+            if proj.loader is not None and not isinstance(proj.loader, ComputedFromRelationLoader)
+        }
+
+        for field_name, projection in memory_projections.items():
+            for i, obj in enumerate(objs):
+                values_by_index[i][field_name] = projection.loader.load_from_object(obj)
+
+        if db_projections:
+            results = await asyncio.gather(
+                *(
+                    proj.loader.load_many(scoped_session, obj_ids)
+                    for proj in db_projections.values()
+                )
+            )
+            for (field_name, proj), rows in zip(
+                db_projections.items(),
+                results,
+                strict=False,
+            ):
+                default = proj.default
+                for i, oid in enumerate(obj_ids):
+                    values_by_index[i][field_name] = rows.get(oid, default)
 
         return values_by_index
 
