@@ -388,7 +388,7 @@ class RuntimeExecutor:
         for cs in plan.compute_steps:
             compute_fn = cast(Any, cs.fn)
             label = getattr(cs.fn, "__name__", type(cs.fn).__name__)
-            if self._accepts_context(cs.fn):
+            if cs.accepts_context:
                 command = compute_fn(command, fields_set, bound)
             else:
                 command = compute_fn(command, fields_set)
@@ -411,7 +411,7 @@ class RuntimeExecutor:
         for rs in plan.rule_steps:
             label = getattr(rs.fn, "__name__", type(rs.fn).__name__)
             try:
-                if self._accepts_context(rs.fn):
+                if rs.accepts_context:
                     rs.fn(command, fields_set, bound)
                 else:
                     rs.fn(command, fields_set)
@@ -556,28 +556,6 @@ class RuntimeExecutor:
     def _emit(self, event: RuntimeEvent) -> None:
         if self._metrics is not None:
             self._metrics.on_event(event)
-
-    @staticmethod
-    def _accepts_context(fn: Any) -> bool:
-        """Return True when callable accepts a third positional context arg."""
-        try:
-            params = tuple(inspect.signature(fn).parameters.values())
-        except (TypeError, ValueError):
-            return False
-
-        positional = [
-            p
-            for p in params
-            if p.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        ]
-        if len(positional) >= 3:
-            return True
-
-        return any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params)
 
     def _log_step(self, label: str) -> None:
         if self._debug:

@@ -39,6 +39,11 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _sa_model: type[Any] | None = None
     _id_attr: str | None = None
     _column_field_names: frozenset[str] | None = None
+    # Pre-computed at init to avoid per-request/per-object reflection.
+    _output_column_keys: tuple[str, ...] | None = None
+    _all_sa_column_keys: tuple[str, ...] | None = None
+    _relations_cache: dict[str, Any] | None = None
+    _projections_cache: dict[str, Any] | None = None
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
@@ -52,7 +57,16 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             )
         self._sa_model = sa
         self._id_attr = get_id_attribute(self.model)
-        self._column_field_names = frozenset(get_column_fields(self.model).keys())
+        column_field_names = frozenset(get_column_fields(self.model).keys())
+        self._column_field_names = column_field_names
+        self._relations_cache = get_relations(self.model)
+        self._projections_cache = get_projections(self.model)
+
+        sa_mapper: Any = inspect(sa).mapper
+        self._output_column_keys = tuple(
+            col.key for col in sa_mapper.column_attrs if col.key in column_field_names
+        )
+        self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -84,13 +98,17 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             if not isinstance(builtins, dict):
                 raise TypeError("Struct payload must serialize to dict")
             return _to_internal_field_names(type(data), builtins)
-        return dict(data)
+        return data
 
     def _get_profile_options(self, profile: str) -> list[Any]:
         from sqlalchemy.orm import selectinload
 
         sa_model = self._effective_sa_model
-        relations = get_relations(self.model)
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
         options: list[Any] = []
         for rel_name, rel in relations.items():
             if profile in rel.profiles:
@@ -106,15 +124,23 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         projection_values: dict[str, Any] | None = None,
     ) -> Any:
         """Convert an SA ORM object to the Struct model."""
-        mapper = inspect(obj).mapper
-        column_names = self._column_field_names or frozenset()
+        output_keys = self._output_column_keys
+        if output_keys is not None:
+            kwargs: dict[str, Any] = {key: getattr(obj, key) for key in output_keys}
+        else:
+            mapper = inspect(obj).mapper
+            column_names = self._column_field_names or frozenset()
+            kwargs = {
+                col.key: getattr(obj, col.key)
+                for col in mapper.column_attrs
+                if col.key in column_names
+            }
 
-        kwargs: dict[str, Any] = {}
-        for col in mapper.column_attrs:
-            if col.key in column_names:
-                kwargs[col.key] = getattr(obj, col.key)
-
-        relations = get_relations(self.model)
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
         for rel_name, rel in relations.items():
             if profile in rel.profiles and rel_name in obj.__dict__:
                 kwargs[rel_name] = self._serialize_related(getattr(obj, rel_name))
@@ -146,16 +172,22 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         if obj_id is not None:
             tags.add(f"{table_name}:id:{obj_id}")
 
-        mapper = inspect(obj).mapper
-        for column in mapper.column_attrs:
-            value = getattr(obj, column.key, None)
+        column_keys = self._all_sa_column_keys
+        if column_keys is None:
+            column_keys = tuple(col.key for col in inspect(obj).mapper.column_attrs)
+        for key in column_keys:
+            value = getattr(obj, key, None)
             if value is not None:
-                tags.add(f"{table_name}:{column.key}:{value}")
+                tags.add(f"{table_name}:{key}:{value}")
         return frozenset(tags)
 
     def _projections_for_profile(self, profile: str) -> dict[str, Any]:
         """Return projections active for the given profile."""
-        struct_projections = get_projections(self.model)
+        struct_projections = (
+            self._projections_cache
+            if self._projections_cache is not None
+            else get_projections(self.model)
+        )
         return {name: proj for name, proj in struct_projections.items() if profile in proj.profiles}
 
     async def _collect_projection_values(
@@ -198,9 +230,10 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
     @handle_integrity_errors
     async def create(self, data: msgspec.Struct) -> OutputT:
         """Persist one entity and return its output struct."""
+        serialized = self._serialize_input(data)
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
-            obj = sa_model(**self._serialize_input(data))
+            obj = sa_model(**serialized)
             scoped_session.add(obj)
             await scoped_session.flush()
             await scoped_session.refresh(obj)
@@ -212,7 +245,7 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                     entity=self.entity_name,
                     op="create",
                     ids=(obj_id,),
-                    changed_fields=frozenset(self._serialize_input(data).keys()),
+                    changed_fields=frozenset(serialized.keys()),
                     tags=self._mutation_tags(obj),
                 )
             )

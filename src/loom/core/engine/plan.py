@@ -90,9 +90,13 @@ class ComputeStep:
 
     Args:
         fn: The compute function to apply.
+        accepts_context: Pre-computed flag; ``True`` when ``fn`` accepts a
+            third positional ``context`` argument.  Resolved at compile time
+            to avoid per-request signature inspection.
     """
 
     fn: ComputeFn[Any]
+    accepts_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,9 +108,13 @@ class RuleStep:
 
     Args:
         fn: The rule function to evaluate.
+        accepts_context: Pre-computed flag; ``True`` when ``fn`` accepts a
+            third positional ``context`` argument.  Resolved at compile time
+            to avoid per-request signature inspection.
     """
 
     fn: RuleFn
+    accepts_context: bool = False
 
 
 @dataclass(frozen=True)

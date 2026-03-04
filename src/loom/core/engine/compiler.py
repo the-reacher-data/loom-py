@@ -110,8 +110,13 @@ class UseCaseCompiler:
         param_bindings, input_binding, load_steps, exists_steps = self._inspect_execute(
             use_case_type
         )
-        compute_steps = tuple(ComputeStep(fn=fn) for fn in use_case_type.computes)
-        rule_steps = tuple(RuleStep(fn=fn) for fn in use_case_type.rules)
+        compute_steps = tuple(
+            ComputeStep(fn=fn, accepts_context=_fn_accepts_context(fn))
+            for fn in use_case_type.computes
+        )
+        rule_steps = tuple(
+            RuleStep(fn=fn, accepts_context=_fn_accepts_context(fn)) for fn in use_case_type.rules
+        )
 
         self._logger.info(
             f"[BOOT]  - Validated {len(compute_steps)} compute steps",
@@ -322,3 +327,31 @@ class UseCaseCompiler:
                     f"{use_case_type.__qualname__}.execute: "
                     f"Exists({es.entity_type.__name__}): from_command requires Input() parameter"
                 )
+
+
+def _fn_accepts_context(fn: Any) -> bool:
+    """Return ``True`` when *fn* accepts a third positional context argument.
+
+    Called once per compute/rule function at compile time so the executor
+    never needs to call ``inspect.signature`` on the hot request path.
+
+    Args:
+        fn: Callable to introspect.
+
+    Returns:
+        ``True`` if *fn* has three or more positional parameters, or uses
+        ``*args`` (``VAR_POSITIONAL``).
+    """
+    try:
+        params = tuple(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+
+    positional_kinds = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    positional = [p for p in params if p.kind in positional_kinds]
+    if len(positional) >= 3:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params)
