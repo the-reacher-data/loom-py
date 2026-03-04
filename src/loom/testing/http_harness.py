@@ -133,16 +133,15 @@ class HttpTestHarness:
                     method: err for (m, method), err in error_overrides.items() if m is model
                 }
                 effective = _ErrorProxy(fake, overrides) if overrides else fake
-                # Each model gets a unique sentinel class as its DI key to
-                # avoid collisions when multiple models use the same fake type
-                # (e.g. InMemoryRepository).
-                sentinel: type[Any] = type(f"_Repo_{model.__name__}", (), {})
+                # Use an explicit per-model token to avoid DI key collisions
+                # when multiple models share the same fake repository type.
+                token = ("repo", model)
                 container.register(
-                    sentinel,
+                    token,
                     _make_provider(effective),
                     scope=Scope.APPLICATION,
                 )
-                container.register_repo(model, sentinel)
+                container.register_repo(model, token)
 
         return _module
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
+    from prometheus_client import CollectorRegistry
 
 import msgspec
 from fastapi import FastAPI
@@ -18,7 +20,7 @@ from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_regist
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
-from loom.core.di.container import LoomContainer
+from loom.core.di.container import BindingKey, LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.discovery import (
     InterfacesDiscoveryEngine,
@@ -33,6 +35,15 @@ from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+@dataclass(frozen=True)
+class _RepoToken(Generic[ModelT]):
+    """Typed DI token used to bind repository instances by model."""
+
+    model: type[ModelT]
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -72,13 +83,18 @@ class _AppConfig(msgspec.Struct, kw_only=True):
 
 class _DatabaseConfig(msgspec.Struct, kw_only=True):
     url: str
-    echo: bool = False
+    echo: bool | None = None  # None = inherit from trace.enabled
     pool_pre_ping: bool = True
 
 
 class _MetricsConfig(msgspec.Struct, kw_only=True):
     enabled: bool = False
     path: str = "/metrics"
+
+
+class _TraceConfig(msgspec.Struct, kw_only=True):
+    enabled: bool = True
+    header: str = "x-request-id"
 
 
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
@@ -116,9 +132,9 @@ def _register_repositories(
 
     def register(container: LoomContainer) -> None:
         for model, repository in repositories.items():
-            sentinel: type[Any] = type(f"_Repo_{model.__name__}", (), {})
-            container.register(sentinel, _provider_for(repository), scope=Scope.APPLICATION)
-            container.register_repo(model, sentinel)
+            token: BindingKey = _RepoToken(model)
+            container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
+            container.register_repo(model, token)
 
     return register
 
@@ -181,9 +197,23 @@ def _configure_job_service(
     result.container.register(cast(type[Any], JobService), lambda: svc, scope=Scope.APPLICATION)
 
 
+def _resolve_effective_echo(db_cfg: _DatabaseConfig, trace_cfg: _TraceConfig) -> bool:
+    """Return the effective SQLAlchemy echo setting.
+
+    Args:
+        db_cfg: Database configuration.
+        trace_cfg: Trace configuration.
+
+    Returns:
+        ``db_cfg.echo`` when explicitly set; ``trace_cfg.enabled`` otherwise.
+    """
+    return db_cfg.echo if db_cfg.echo is not None else trace_cfg.enabled
+
+
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
+    echo: bool,
 ) -> tuple[BootstrapResult, SessionManager, DiscoveryResult]:
     discovered = _build_discovery_result(app_cfg.discovery)
     if not discovered.use_cases:
@@ -198,7 +228,7 @@ def _build_bootstrap(
 
     session_manager = SessionManager(
         db_cfg.url,
-        echo=db_cfg.echo,
+        echo=echo,
         pool_pre_ping=db_cfg.pool_pre_ping,
         pool_size=None,
         max_overflow=None,
@@ -215,20 +245,32 @@ def _build_bootstrap(
     return result, session_manager, discovered
 
 
-def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
+def create_app(
+    *config_paths: str,
+    code_path: str | None = None,
+    metrics_registry: CollectorRegistry | None = None,
+) -> FastAPI:
     """Create a FastAPI application from one or more YAML config files.
 
     Config files are merged left-to-right — later files override earlier ones.
     Each file may also declare a top-level ``includes`` list to pull in
     additional base files before its own values (see :func:`load_config`).
 
-    Prometheus middleware is mounted automatically when ``metrics.enabled``
-    is ``true`` in the config.  No extra code is needed in application code.
+    :class:`~loom.rest.middleware.TraceIdMiddleware` is mounted
+    automatically when ``trace.enabled`` is ``true`` (the default).
+    SQLAlchemy SQL echo inherits ``trace.enabled`` unless ``database.echo``
+    is set explicitly.  Prometheus middleware is mounted when
+    ``metrics.enabled`` is ``true``.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
         code_path: Optional override for ``app.code_path``.  Resolved relative
             to the first config file when not absolute.
+        metrics_registry: Optional Prometheus ``CollectorRegistry`` used for
+            ``PrometheusMiddleware`` and the scrape endpoint.  Defaults to the
+            global registry.  Pass a fresh ``CollectorRegistry()`` in tests to
+            avoid ``ValueError: Duplicated timeseries`` when multiple apps with
+            ``metrics.enabled: true`` are created in the same process.
 
     Returns:
         Configured :class:`fastapi.FastAPI` application, ready to serve.
@@ -257,6 +299,10 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
     try:
+        trace_cfg = section(raw, "trace", _TraceConfig)
+    except ConfigError:
+        trace_cfg = _TraceConfig()
+    try:
         logger_cfg = section(raw, "logger", LoggerConfig)
     except ConfigError:
         logger_cfg = LoggerConfig()
@@ -275,12 +321,9 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
         effective_code_path = (config_file.parent / effective_code_path).resolve()
     _ensure_code_path(effective_code_path)
 
-    result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg)
+    effective_echo = _resolve_effective_echo(db_cfg, trace_cfg)
+    result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg, effective_echo)
     _configure_job_service(raw, result, session_manager)
-
-    middleware: list[type[Any]] = [TraceIdMiddleware]
-    if metrics_cfg.enabled:
-        middleware.append(PrometheusMiddleware)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -295,7 +338,6 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
     app = create_fastapi_app(
         result,
         interfaces=tuple(type_i for type_i in discovered.interfaces),
-        middleware=middleware,
         title=app_cfg.rest.title,
         version=app_cfg.rest.version,
         docs_url=app_cfg.rest.docs_url,
@@ -303,9 +345,18 @@ def create_app(*config_paths: str, code_path: str | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    if trace_cfg.enabled:
+        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
+
     if metrics_cfg.enabled:
         import prometheus_client
 
-        app.mount(metrics_cfg.path, prometheus_client.make_asgi_app())
+        app.add_middleware(PrometheusMiddleware, registry=metrics_registry)
+        app.mount(
+            metrics_cfg.path,
+            prometheus_client.make_asgi_app(
+                registry=metrics_registry or prometheus_client.REGISTRY,
+            ),
+        )
 
     return app

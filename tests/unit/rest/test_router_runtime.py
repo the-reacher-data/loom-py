@@ -625,7 +625,7 @@ def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
             return field == "email" and value == "taken@example.com"
 
     _repo = _FakeRepo()
-    _token = type("_UserRecordRepoToken", (), {})
+    _token = ("repo", _ExistsUserRecord)
 
     def _register_repo(container: LoomContainer) -> None:
         container.register(_token, lambda: _repo, scope=Scope.APPLICATION)

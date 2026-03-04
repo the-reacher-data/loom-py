@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import prometheus_client
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, mark
@@ -81,7 +82,8 @@ def test_fake_repo_app_bootstrap_with_metrics(
     monkeypatch.setenv("LOOM_TEST_DATABASE_URL", database_url)
 
     config_path = Path("tests/integration/fake_repo/config/conf.interfaces.yaml")
-    app = create_app_from_config(str(config_path))
+    registry = prometheus_client.CollectorRegistry()
+    app = create_app_from_config(str(config_path), metrics_registry=registry)
 
     with TestClient(app) as client:
         create_response = client.post(

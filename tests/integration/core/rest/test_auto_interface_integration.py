@@ -64,11 +64,11 @@ def _make_register_repos(
     def _provider() -> RepositorySQLAlchemy[Any, int]:
         return repo
 
-    sentinel: type[Any] = type("_AutoProductRepo", (), {})
+    token = ("repo", AutoProduct)
 
     def register(container: LoomContainer) -> None:
-        container.register(sentinel, _provider, scope=Scope.APPLICATION)
-        container.register_repo(AutoProduct, sentinel)
+        container.register(token, _provider, scope=Scope.APPLICATION)
+        container.register_repo(AutoProduct, token)
 
     return register
 
