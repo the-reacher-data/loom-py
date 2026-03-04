@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loom.core.job.callback import JobCallback, NullJobCallback
@@ -39,12 +40,10 @@ def test_null_callback_on_failure_returns_none() -> None:
 def test_async_on_success_satisfies_protocol() -> None:
     class AsyncCallback:
         async def on_success(self, job_id: str, result: Any, **ctx: Any) -> None:
-            # Intentionally empty: protocol conformance test only.
-            return None
+            await asyncio.sleep(0)
 
         async def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: Any) -> None:
-            # Intentionally empty: protocol conformance test only.
-            return None
+            await asyncio.sleep(0)
 
     assert isinstance(AsyncCallback(), JobCallback)
 
