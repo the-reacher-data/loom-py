@@ -23,7 +23,10 @@ Usage::
 from collections.abc import Callable
 from typing import Any, cast, get_type_hints
 
+import msgspec
+
 from loom.core.errors import NotFound
+from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
 from loom.core.use_case.markers import Exists, Input, OnMissing
 from loom.core.use_case.use_case import UseCase
@@ -75,22 +78,147 @@ def _id_coerce(model: type[Any]) -> Callable[[str], Any]:
 
 
 # ---------------------------------------------------------------------------
+# Input struct derivation
+# ---------------------------------------------------------------------------
+
+
+def _server_generated_names(model: type[Any]) -> frozenset[str]:
+    """Return field names that are server-assigned and must not appear in write inputs.
+
+    Excludes primary keys, autoincrement columns, and columns with server defaults.
+
+    Args:
+        model: Domain model type to inspect.
+
+    Returns:
+        Frozenset of field names that the server generates automatically.
+    """
+    excluded: set[str] = set()
+    for name, info in get_column_fields(model).items():
+        f = info.field
+        if f.primary_key or f.autoincrement or f.server_default is not None:
+            excluded.add(name)
+    return frozenset(excluded)
+
+
+def _field_tuple(
+    name: str,
+    typ: Any,
+    sf: msgspec.structs.FieldInfo,
+) -> tuple[Any, ...]:
+    """Build a ``defstruct`` field specification from a struct field's default.
+
+    ``UNSET`` and ``NODEFAULT`` are both treated as "no default" (required field),
+    because ``UNSET`` on a column field whose type does not include ``UnsetType``
+    is msgspec's sentinel for a required field.
+
+    Args:
+        name: Field name.
+        typ: Resolved Python type (``Annotated`` metadata stripped).
+        sf: Struct field info from ``msgspec.structs.fields``.
+
+    Returns:
+        ``(name, type)`` for required fields, ``(name, type, default)`` or
+        ``(name, type, msgspec.field(...))`` for fields with a default.
+    """
+    if sf.default is msgspec.NODEFAULT or sf.default is msgspec.UNSET:
+        return (name, typ)
+    if sf.default_factory is not msgspec.NODEFAULT:
+        return (name, typ, msgspec.field(default_factory=sf.default_factory))
+    return (name, typ, sf.default)
+
+
+def _derive_create_struct(model: type[Any]) -> type[msgspec.Struct]:
+    """Derive a ``{ModelName}CreateInput`` struct with only user-writable fields.
+
+    Excluded: primary keys, autoincrement columns, server-default columns,
+    relations, and projections.  Types are taken from ``get_type_hints(model)``
+    without ``include_extras`` so that ``Annotated`` metadata is stripped while
+    ``Optional`` unions are preserved.
+
+    Args:
+        model: Domain model type.
+
+    Returns:
+        A ``msgspec.Struct`` subclass named ``{ModelName}CreateInput``.
+
+    Example::
+
+        CreateInput = _derive_create_struct(User)
+        # CreateInput has only writable fields — not id or server timestamps
+    """
+    excluded = _server_generated_names(model)
+    writable_names = set(get_column_fields(model).keys()) - excluded
+    hints = get_type_hints(model)
+    field_defs: list[tuple[Any, ...]] = [
+        _field_tuple(name, hints[name], sf)
+        for sf in msgspec.structs.fields(model)
+        for name in (sf.name,)
+        if name in writable_names and name in hints
+    ]
+    return msgspec.defstruct(
+        f"{model.__name__}CreateInput",
+        field_defs,
+        kw_only=True,
+        rename="camel",
+        omit_defaults=True,
+    )
+
+
+def _derive_update_struct(model: type[Any]) -> type[msgspec.Struct]:
+    """Derive a ``{ModelName}UpdateInput`` struct with all writable fields optional.
+
+    Every included field has its type widened to ``T | UnsetType`` and its default
+    set to ``msgspec.UNSET``, giving PATCH semantics: fields absent from the
+    request body remain ``UNSET`` and are not written to the database.
+
+    Args:
+        model: Domain model type.
+
+    Returns:
+        A ``msgspec.Struct`` subclass named ``{ModelName}UpdateInput``.
+
+    Example::
+
+        UpdateInput = _derive_update_struct(User)
+        # UpdateInput(name="Alice") leaves all other fields UNSET (not updated)
+    """
+    excluded = _server_generated_names(model)
+    writable_names = set(get_column_fields(model).keys()) - excluded
+    hints = get_type_hints(model)
+    field_defs: list[tuple[Any, ...]] = [
+        (name, hints[name] | msgspec.UnsetType, msgspec.UNSET)
+        for sf in msgspec.structs.fields(model)
+        for name in (sf.name,)
+        if name in writable_names and name in hints
+    ]
+    return msgspec.defstruct(
+        f"{model.__name__}UpdateInput",
+        field_defs,
+        kw_only=True,
+        rename="camel",
+        omit_defaults=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # UseCase class factories
 # ---------------------------------------------------------------------------
 
 
-def _make_create(model: type[Any]) -> type[UseCase[Any, Any]]:
+def _make_create(model: type[Any], create_input: type[Any]) -> type[UseCase[Any, Any]]:
     """Generate a UseCase that creates a new entity via the main repository.
 
     Args:
-        model: Domain model type used as both TModel and TResult.
+        model: Domain model type used as TModel and TResult.
+        create_input: Derived struct containing only user-writable fields.
 
     Returns:
         A concrete UseCase subclass named ``AutoCreate<ModelName>``.
     """
 
     class AutoCreate(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, cmd: model = Input()) -> model:  # type: ignore[valid-type]
+        async def execute(self, cmd: create_input = Input()) -> model:  # type: ignore[valid-type]
             return cast(Any, await self.main_repo.create(cmd))  # type: ignore[no-any-return]
 
     AutoCreate.__name__ = f"AutoCreate{model.__name__}"
@@ -161,11 +289,16 @@ def _make_list(model: type[Any]) -> type[UseCase[Any, Any]]:
     return AutoList
 
 
-def _make_update(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[Any, Any]]:
+def _make_update(
+    model: type[Any],
+    update_input: type[Any],
+    coerce: Callable[[str], Any],
+) -> type[UseCase[Any, Any]]:
     """Generate a UseCase that applies a partial update to an entity.
 
     Args:
         model: Domain model type.
+        update_input: Derived struct with all fields optional (PATCH semantics).
         coerce: Callable that converts the raw path-param string to the id type.
 
     Returns:
@@ -182,7 +315,7 @@ def _make_update(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
                 against="id",
                 on_missing=OnMissing.RAISE,
             ),
-            cmd: model = Input(),  # type: ignore[valid-type]
+            cmd: update_input = Input(),  # type: ignore[valid-type]
         ) -> model:  # type: ignore[valid-type]
             updated = await self.main_repo.update(coerce(id), cmd)
             if updated is None:
@@ -222,27 +355,35 @@ def _make_delete(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
 # Per-model cache
 # ---------------------------------------------------------------------------
 
-_UC_CACHE: dict[type[Any], dict[str, type[UseCase[Any, Any]]]] = {}
+_UC_CACHE: dict[type[Any], dict[str, Any]] = {}
 
 
-def _get_or_create(model: type[Any]) -> dict[str, type[UseCase[Any, Any]]]:
+def _get_or_create(model: type[Any]) -> dict[str, Any]:
     """Return cached (or freshly built) UseCase classes for all five operations.
+
+    The returned dict contains the five operation keys (``"create"``, ``"get"``,
+    ``"list"``, ``"update"``, ``"delete"``) plus ``"create_input"`` and
+    ``"update_input"`` holding the derived write-input structs.
 
     Args:
         model: Domain model type.
 
     Returns:
-        Mapping of operation name to UseCase class.
+        Mapping of operation name to UseCase class, plus input struct entries.
     """
     if model in _UC_CACHE:
         return _UC_CACHE[model]
     coerce = _id_coerce(model)
-    result: dict[str, type[UseCase[Any, Any]]] = {
-        "create": _make_create(model),
+    create_input = _derive_create_struct(model)
+    update_input = _derive_update_struct(model)
+    result: dict[str, Any] = {
+        "create": _make_create(model, create_input),
         "get": _make_get(model, coerce),
         "list": _make_list(model),
-        "update": _make_update(model, coerce),
+        "update": _make_update(model, update_input, coerce),
         "delete": _make_delete(model, coerce),
+        "create_input": create_input,
+        "update_input": update_input,
     }
     _UC_CACHE[model] = result
     return result
@@ -287,5 +428,5 @@ def build_auto_routes(
             status_code=_OP_STATUS.get(op, 200),
         )
         for op in ops
-        if op in use_cases
+        if op in _OP_METHOD
     )
