@@ -37,6 +37,25 @@ from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+_CfgT = TypeVar("_CfgT")
+
+
+def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
+    """Load *key* from config, returning ``cls()`` when the section is absent.
+
+    Args:
+        raw: Root OmegaConf DictConfig produced by :func:`load_config`.
+        key: Top-level YAML key to look up.
+        cls: Config struct class.  Must be instantiable with no arguments
+            (all fields optional or have defaults).
+
+    Returns:
+        Parsed instance of *cls*, or ``cls()`` if *key* is not present.
+    """
+    try:
+        return section(raw, key, cls)
+    except ConfigError:
+        return cls()
 
 
 @dataclass(frozen=True)
@@ -298,14 +317,8 @@ def create_app(
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
-    try:
-        trace_cfg = section(raw, "trace", _TraceConfig)
-    except ConfigError:
-        trace_cfg = _TraceConfig()
-    try:
-        logger_cfg = section(raw, "logger", LoggerConfig)
-    except ConfigError:
-        logger_cfg = LoggerConfig()
+    trace_cfg = _section_or_default(raw, "trace", _TraceConfig)
+    logger_cfg = _section_or_default(raw, "logger", LoggerConfig)
     configure_logging_from_values(
         name=logger_cfg.name,
         environment=logger_cfg.environment,
