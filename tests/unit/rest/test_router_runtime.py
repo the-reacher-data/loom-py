@@ -644,6 +644,7 @@ def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
         model = _ExistsUserRecord
 
         async def exists_by(self, field: str, value: Any) -> bool:
+            await asyncio.sleep(0)
             return field == "email" and value == "taken@example.com"
 
     _repo = _FakeRepo()
