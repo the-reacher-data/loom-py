@@ -38,14 +38,16 @@ html_css_files = [
 ]
 
 autosummary_generate = True
-autosummary_generate_overwrite = False
+autosummary_generate_overwrite = True
 autosummary_imported_members = False
 autodoc_typehints = "description"
+autodoc_typehints_format = "short"
 autodoc_member_order = "bysource"
 autodoc_default_options = {
     "members": True,
     "show-inheritance": True,
 }
+autodoc_preserve_defaults = True
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
