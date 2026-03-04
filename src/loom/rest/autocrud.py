@@ -46,12 +46,13 @@ _OP_METHOD: dict[str, str] = {
     "update": "PATCH",
     "delete": "DELETE",
 }
+_ID_ROUTE_PATH = "/{id}"
 _OP_PATH: dict[str, str] = {
     "create": "/",
-    "get": "/{id}",
+    "get": _ID_ROUTE_PATH,
     "list": "/",
-    "update": "/{id}",
-    "delete": "/{id}",
+    "update": _ID_ROUTE_PATH,
+    "delete": _ID_ROUTE_PATH,
 }
 _OP_STATUS: dict[str, int] = {"create": 201}
 

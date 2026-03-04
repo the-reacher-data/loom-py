@@ -102,7 +102,8 @@ async def test_dispatch_calls_on_success_callback_after_flush() -> None:
             success_calls.append(job_id)
 
         def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: Any) -> None:
-            pass
+            # No-op by design: this test validates the success callback path.
+            return None
 
     factory = MagicMock()
     executor = MagicMock()
@@ -124,7 +125,8 @@ async def test_dispatch_calls_on_failure_callback_on_exception() -> None:
 
     class ErrCallback:
         def on_success(self, job_id: str, result: Any, **ctx: Any) -> None:
-            pass
+            # No-op by design: this test validates the failure callback path.
+            return None
 
         def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: Any) -> None:
             failure_calls.append(exc_type)

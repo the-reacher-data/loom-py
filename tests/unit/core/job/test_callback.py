@@ -39,10 +39,12 @@ def test_null_callback_on_failure_returns_none() -> None:
 def test_async_on_success_satisfies_protocol() -> None:
     class AsyncCallback:
         async def on_success(self, job_id: str, result: Any, **ctx: Any) -> None:
-            pass
+            # Intentionally empty: protocol conformance test only.
+            return None
 
         async def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: Any) -> None:
-            pass
+            # Intentionally empty: protocol conformance test only.
+            return None
 
     assert isinstance(AsyncCallback(), JobCallback)
 
@@ -50,7 +52,8 @@ def test_async_on_success_satisfies_protocol() -> None:
 def test_partial_implementation_does_not_satisfy_protocol() -> None:
     class MissingOnFailure:
         def on_success(self, job_id: str, result: Any, **ctx: Any) -> None:
-            pass
+            # Intentionally empty: the test asserts missing on_failure.
+            return None
 
     assert not isinstance(MissingOnFailure(), JobCallback)
 

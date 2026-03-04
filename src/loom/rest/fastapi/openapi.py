@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from types import NoneType, UnionType
-from typing import Any, Union, cast, get_args, get_origin, get_type_hints
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import msgspec
 
@@ -48,6 +48,11 @@ QUERY_SPEC_PARAMETER_NAMES: tuple[str, ...] = (
     QUERY_PARAM_SORT,
     QUERY_PARAM_DIRECTION,
 )
+
+_SCHEMA_DEFS_KEY = "$defs"
+_SCHEMA_REF_KEY = "$ref"
+_LOCAL_DEFS_REF_PREFIX = "#/$defs/"
+_COMPONENT_REF_PREFIX = "#/components/schemas/"
 
 
 def build_request_body_schema(
@@ -301,10 +306,10 @@ def _rewrite_to_component_refs(node: Any) -> Any:
         return node
     result: dict[str, Any] = {}
     for k, v in node.items():
-        if k == "$defs":
+        if k == _SCHEMA_DEFS_KEY:
             continue
-        if k == "$ref" and isinstance(v, str) and v.startswith("#/$defs/"):
-            result[k] = "#/components/schemas/" + v.removeprefix("#/$defs/")
+        if k == _SCHEMA_REF_KEY and isinstance(v, str) and v.startswith(_LOCAL_DEFS_REF_PREFIX):
+            result[k] = _COMPONENT_REF_PREFIX + v.removeprefix(_LOCAL_DEFS_REF_PREFIX)
         else:
             result[k] = _rewrite_to_component_refs(v)
     return result
@@ -331,7 +336,7 @@ def _safe_schema(
         return None
 
     if component_registry is not None:
-        defs = raw.get("$defs")
+        defs = raw.get(_SCHEMA_DEFS_KEY)
         if isinstance(defs, dict):
             for name, def_schema in defs.items():
                 component_registry[name] = _rewrite_to_component_refs(def_schema)
@@ -377,37 +382,79 @@ def _inline_local_defs(schema: JsonSchema) -> JsonSchema:
     returned by msgspec/pydantic may use local ``$defs`` references, which
     become invalid once embedded under ``requestBody``/``responses``.
     """
-    raw_defs = schema.get("$defs")
+    raw_defs = schema.get(_SCHEMA_DEFS_KEY)
     if not isinstance(raw_defs, dict):
         return schema
 
     defs: dict[str, Any] = {name: deepcopy(value) for name, value in raw_defs.items()}
+    return _resolve_schema_root(schema, defs)
 
-    def _resolve(node: Any, stack: tuple[str, ...] = ()) -> Any:
-        if isinstance(node, list):
-            return [_resolve(item, stack) for item in node]
-        if not isinstance(node, dict):
-            return node
 
-        ref = node.get("$ref")
-        if isinstance(ref, str) and ref.startswith("#/$defs/"):
-            name = ref.removeprefix("#/$defs/")
-            target = defs.get(name)
-            if target is None or name in stack:
-                return {k: _resolve(v, stack) for k, v in node.items() if k != "$defs"}
+def _resolve_schema_root(schema: JsonSchema, defs: dict[str, Any]) -> JsonSchema:
+    resolved = _resolve_local_def_node(_drop_defs_key(schema), defs, ())
+    if isinstance(resolved, dict):
+        return resolved
+    return {}
 
-            resolved_target = _resolve(deepcopy(target), (*stack, name))
-            siblings = {k: v for k, v in node.items() if k != "$ref"}
-            if not siblings:
-                return resolved_target
 
-            merged = deepcopy(resolved_target)
-            if isinstance(merged, dict):
-                for key, value in siblings.items():
-                    merged[key] = _resolve(value, stack)
-                return merged
-            return _resolve(siblings, stack)
+def _resolve_local_def_node(node: Any, defs: dict[str, Any], stack: tuple[str, ...]) -> Any:
+    if isinstance(node, list):
+        return [_resolve_local_def_node(item, defs, stack) for item in node]
+    if not isinstance(node, dict):
+        return node
+    ref_name = _extract_local_ref_name(node)
+    if ref_name is None:
+        return _resolve_plain_schema_object(node, defs, stack)
+    return _resolve_ref_schema_object(node, defs, stack, ref_name)
 
-        return {key: _resolve(value, stack) for key, value in node.items() if key != "$defs"}
 
-    return cast(JsonSchema, _resolve({k: v for k, v in schema.items() if k != "$defs"}))
+def _resolve_plain_schema_object(
+    node: dict[str, Any],
+    defs: dict[str, Any],
+    stack: tuple[str, ...],
+) -> dict[str, Any]:
+    cleaned = _drop_defs_key(node)
+    return {key: _resolve_local_def_node(value, defs, stack) for key, value in cleaned.items()}
+
+
+def _resolve_ref_schema_object(
+    node: dict[str, Any],
+    defs: dict[str, Any],
+    stack: tuple[str, ...],
+    ref_name: str,
+) -> Any:
+    target = defs.get(ref_name)
+    if target is None or ref_name in stack:
+        return _resolve_plain_schema_object(node, defs, stack)
+    resolved_target = _resolve_local_def_node(deepcopy(target), defs, (*stack, ref_name))
+    siblings = {k: v for k, v in node.items() if k != _SCHEMA_REF_KEY}
+    if not siblings:
+        return resolved_target
+    return _merge_resolved_with_siblings(resolved_target, siblings, defs, stack)
+
+
+def _merge_resolved_with_siblings(
+    resolved_target: Any,
+    siblings: dict[str, Any],
+    defs: dict[str, Any],
+    stack: tuple[str, ...],
+) -> Any:
+    merged = deepcopy(resolved_target)
+    if isinstance(merged, dict):
+        for key, value in siblings.items():
+            merged[key] = _resolve_local_def_node(value, defs, stack)
+        return merged
+    return _resolve_local_def_node(siblings, defs, stack)
+
+
+def _drop_defs_key(node: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in node.items() if key != _SCHEMA_DEFS_KEY}
+
+
+def _extract_local_ref_name(node: dict[str, Any]) -> str | None:
+    ref = node.get(_SCHEMA_REF_KEY)
+    if not isinstance(ref, str):
+        return None
+    if not ref.startswith(_LOCAL_DEFS_REF_PREFIX):
+        return None
+    return ref.removeprefix(_LOCAL_DEFS_REF_PREFIX)

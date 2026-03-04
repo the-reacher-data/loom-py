@@ -42,18 +42,22 @@ class _HeavyJob(Job[int]):
 
 class _SuccessCallback:
     def on_success(self, job_id: str, result: object, **ctx: object) -> None:
-        pass
+        # No-op callback used only to assert link wiring in dispatch kwargs.
+        return None
 
     def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: object) -> None:
-        pass
+        # No-op callback used only to satisfy the callback protocol in tests.
+        return None
 
 
 class _FailureCallback:
     def on_success(self, job_id: str, result: object, **ctx: object) -> None:
-        pass
+        # No-op callback used only to satisfy the callback protocol in tests.
+        return None
 
     def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **ctx: object) -> None:
-        pass
+        # No-op callback used only to assert link_error wiring in dispatch kwargs.
+        return None
 
 
 def _make_service() -> tuple[CeleryJobService, MagicMock]:
