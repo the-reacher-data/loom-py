@@ -28,6 +28,10 @@ async def cached_integration_repo(
     cache_backend_kind: str,
 ) -> AsyncGenerator[CachedRepository[Product, CreateProduct, UpdateProduct, int], None]:
     namespace = "integration_cache"
+    counter_namespace = "integration_cache_counters"
+
+    # "test_cache"    — data backend with MsgspecSerializer (entity / list storage)
+    # "test_counters" — counter backend without serializer (native atomic increment)
     aiocache_config: dict[str, object] = {
         "default": {
             "cache": "aiocache.SimpleMemoryCache",
@@ -38,6 +42,11 @@ async def cached_integration_repo(
             "cache": "aiocache.SimpleMemoryCache",
             "serializer": {"class": "loom.core.cache.serializer.MsgspecSerializer"},
             "namespace": namespace,
+        },
+        "test_counters": {
+            "cache": "aiocache.SimpleMemoryCache",
+            # No serializer — raw integer storage, asyncio-safe increment
+            "namespace": counter_namespace,
         },
     }
 
@@ -51,18 +60,27 @@ async def cached_integration_repo(
             "port": 6379,
             "db": 0,
             "namespace": namespace,
-            "connection_pool_kwargs": {
-                "connection_class": fake_connection,
-            },
+            "connection_pool_kwargs": {"connection_class": fake_connection},
+        }
+        aiocache_config["test_counters"] = {
+            "cache": "aiocache.RedisCache",
+            # No serializer — atomic Redis INCR
+            "endpoint": "127.0.0.1",
+            "port": 6379,
+            "db": 0,
+            "namespace": counter_namespace,
+            "connection_pool_kwargs": {"connection_class": fake_connection},
         }
 
     CacheGateway.configure(aiocache_config)
 
-    cache_gateway = CacheGateway(alias="test_cache")
-    resolver = GenerationalDependencyResolver(cache_gateway)
+    data_gateway = CacheGateway(alias="test_cache")
+    counter_gateway = CacheGateway(alias="test_counters")
+    resolver = GenerationalDependencyResolver(counter_gateway)
     cache_config = CacheConfig(
         enabled=True,
         aiocache_alias="test_cache",
+        counter_alias="test_counters",
         default_ttl=120,
         default_list_ttl=60,
     )
@@ -72,14 +90,16 @@ async def cached_integration_repo(
             integration_context.product.repository,
         ),
         config=cache_config,
-        cache=cache_gateway,
+        cache=data_gateway,
         dependency_resolver=resolver,
     )
     try:
         yield repository
     finally:
-        await cache_gateway.clear()
-        await cache_gateway.close()
+        await data_gateway.clear()
+        await counter_gateway.clear()
+        await data_gateway.close()
+        await counter_gateway.close()
 
 
 @fixture(params=["memory", "redis-fake"])
