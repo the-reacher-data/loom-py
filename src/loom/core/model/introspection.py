@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from types import UnionType
-from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Union, cast, get_args, get_origin, get_type_hints
 
 import msgspec
 
@@ -96,10 +96,7 @@ def _with_struct_default(field: Field, struct_default: Any) -> Field:
         return field
     if struct_default is msgspec.NODEFAULT:
         return field
-    # Explicit annotation helps static analysers (e.g. Sonar) infer the
-    # concrete return type; dataclasses.replace() is generically typed as _T.
-    result: Field = replace(field, default=struct_default)
-    return result
+    return cast(Field, replace(field, default=struct_default))  # type: ignore[redundant-cast]
 
 
 def get_relations(cls: type) -> dict[str, Relation]:

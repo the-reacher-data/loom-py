@@ -278,6 +278,7 @@ class InlineJobService:
             A :class:`~loom.core.job.handle.JobHandle` whose ``wait()``
             returns the result once the queue is flushed.
         """
+        _ = (countdown, priority, eta)  # accepted for API compat; inline ignores scheduling hints
         task_id = str(uuid.uuid4())
         result_holder: list[Any] = []
         pending = _PendingDispatch(
@@ -319,5 +320,9 @@ class InlineJobService:
         Returns:
             A :class:`~loom.core.job.handle.JobGroup` with one handle per job.
         """
+        _ = (
+            on_all_success,
+            on_any_failure,
+        )  # accepted for API compat; chord semantics require Celery
         handles = tuple(self.dispatch(job_type, payload=payload) for job_type, payload in jobs)
         return JobGroup(handles=handles)

@@ -9,6 +9,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -34,12 +35,15 @@ class _StubUoW:
         self.rolled_back = False
 
     async def begin(self) -> None:
+        await asyncio.sleep(0)
         self.begun = True
 
     async def commit(self) -> None:
+        await asyncio.sleep(0)
         self.committed = True
 
     async def rollback(self) -> None:
+        await asyncio.sleep(0)
         self.rolled_back = True
 
     async def __aenter__(self) -> _StubUoW:

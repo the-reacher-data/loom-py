@@ -55,13 +55,13 @@ async def test_run_executes_immediately_and_returns_result() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_dispatch_does_not_execute_immediately() -> None:
+def test_dispatch_does_not_execute_immediately() -> None:
     service = _make_service()
     service.dispatch(DoubleJob, payload={})
     service._executor.execute.assert_not_awaited()  # type: ignore[attr-defined]
 
 
-async def test_dispatch_returns_handle_with_uuid() -> None:
+def test_dispatch_returns_handle_with_uuid() -> None:
     service = _make_service()
     handle = service.dispatch(DoubleJob)
     assert isinstance(handle, JobHandle)
@@ -77,13 +77,13 @@ async def test_dispatch_then_flush_executes_and_fills_result_holder() -> None:
     assert handle.wait() == 99
 
 
-async def test_dispatch_respects_queue_override() -> None:
+def test_dispatch_respects_queue_override() -> None:
     service = _make_service()
     handle = service.dispatch(DoubleJob, queue="custom-queue")
     assert handle.queue == "custom-queue"
 
 
-async def test_dispatch_uses_job_default_queue_when_not_overridden() -> None:
+def test_dispatch_uses_job_default_queue_when_not_overridden() -> None:
     service = _make_service()
     handle = service.dispatch(DoubleJob)
     assert handle.queue == DoubleJob.__queue__
@@ -152,7 +152,7 @@ async def test_dispatch_calls_on_failure_callback_on_exception() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_dispatch_parallel_returns_job_group() -> None:
+def test_dispatch_parallel_returns_job_group() -> None:
     service = _make_service(return_value=1)
     group = service.dispatch_parallel([(DoubleJob, {}), (SyncJob, {})])
     assert isinstance(group, JobGroup)

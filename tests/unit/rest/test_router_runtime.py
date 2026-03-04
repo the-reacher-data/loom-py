@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,11 +33,13 @@ from loom.rest.model import RestApiDefaults, RestInterface, RestRoute
 
 class PingUseCase(UseCase[Any, str]):
     async def execute(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
         return "pong"
 
 
 class EchoUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"status": "received"}
 
 
@@ -47,6 +50,7 @@ class CreateItemCmd(Command, frozen=True):
 
 class CreateItemUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, cmd: CreateItemCmd = Input()) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"full_name": cmd.full_name}
 
 
@@ -61,16 +65,19 @@ class PlainCreateCmd:
 
 class PlainCreateUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, cmd: PlainCreateCmd = Input()) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"full_name": cmd.full_name}
 
 
 class ItemUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, item_id: str, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"item_id": item_id}
 
 
 class ProfileAwareUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, profile: str, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"profile": profile}
 
 
@@ -98,6 +105,7 @@ class DocUseCase(UseCase[Any, str]):
     """
 
     async def execute(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
         return "ok"
 
 
@@ -115,6 +123,7 @@ class _ExistsCheckEmailUseCase(UseCase[_ExistsUserRecord, bool]):
         cmd: _ExistsCheckEmailCmd = Input(),
         email_exists: bool = Exists(_ExistsUserRecord, from_command="email", against="email"),
     ) -> bool:
+        await asyncio.sleep(0)
         return email_exists
 
 

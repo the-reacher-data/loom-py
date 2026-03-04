@@ -35,6 +35,7 @@ async def test_flush_async_callable_is_awaited() -> None:
     calls: list[str] = []
 
     async def _async_fn() -> None:
+        await asyncio.sleep(0)
         calls.append("async")
 
     add_pending_dispatch(_async_fn)

@@ -68,7 +68,9 @@ class _FieldRefFactory:
         return FieldRef(root=self._root, path=(item,))
 
 
-def F(root: FieldRoot) -> Any:
+def F(
+    root: FieldRoot,
+) -> Any:  # NOSONAR — intentional uppercase shorthand (convention: F(Model).field)
     """Build a typed field-reference factory.
 
     Example:

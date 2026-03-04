@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Generator
 
 import pytest
 
@@ -16,7 +17,7 @@ from loom.celery.event_loop import WorkerEventLoop
 
 
 @pytest.fixture(autouse=True)
-def reset_worker_loop() -> None:
+def reset_worker_loop() -> Generator[None, None, None]:
     """Ensure WorkerEventLoop is shut down after every test."""
     yield
     WorkerEventLoop.shutdown()
@@ -89,6 +90,7 @@ class TestRun:
         WorkerEventLoop.initialize()
 
         async def _add(a: int, b: int) -> int:
+            await asyncio.sleep(0)
             return a + b
 
         result = WorkerEventLoop.run(_add(3, 4))
