@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -356,7 +357,9 @@ class CachedRepository(
             self._resolver.entity_tags(self.entity_name, eid) + self._entity_dependency_tags(eid)
             for eid in ids
         ]
-        fingerprints = [await self._resolver.fingerprint(tags) for tags in tags_by_id]
+        fingerprints = list(
+            await asyncio.gather(*(self._resolver.fingerprint(tags) for tags in tags_by_id))
+        )
         entity_keys = [
             entity_key(self.entity_name, eid, profile, fp)
             for eid, fp in zip(ids, fingerprints, strict=False)
@@ -401,12 +404,18 @@ class CachedRepository(
         if not items:
             return
         ttl = self._config.ttl_for_single(self.entity_name)
+        entity_ids = [getattr(item, "id", None) for item in items]
+        tags_by_id = [
+            self._resolver.entity_tags(self.entity_name, entity_id)
+            + self._entity_dependency_tags(entity_id)
+            for entity_id in entity_ids
+        ]
+        fingerprints = await asyncio.gather(
+            *(self._resolver.fingerprint(tags) for tags in tags_by_id)
+        )
+
         pairs: list[tuple[str, Any]] = []
-        for item in items:
-            entity_id = getattr(item, "id", None)
-            tags = self._resolver.entity_tags(self.entity_name, entity_id)
-            tags.extend(self._entity_dependency_tags(entity_id))
-            fingerprint = await self._resolver.fingerprint(tags)
+        for item, entity_id, fingerprint in zip(items, entity_ids, fingerprints, strict=False):
             key = entity_key(self.entity_name, entity_id, profile, fingerprint)
             pairs.append((key, self._to_builtins(item)))
         await self._cache.multi_set_values(pairs, ttl=ttl)
