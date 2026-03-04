@@ -17,6 +17,8 @@ rest = [
     "fastapi>=0.115,<1.0",
     "pydantic>=2.0,<3.0",
     "uvicorn>=0.30,<1.0",
+    "httptools>=0.6,<1.0",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
 ]
 sqlalchemy = [
@@ -63,6 +65,8 @@ dev = [
     "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
     "httpx>=0.28.1",
+    "httptools>=0.6,<1.0",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
 ]
 
