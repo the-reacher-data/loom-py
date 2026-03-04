@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -20,7 +20,7 @@ from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_regist
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
-from loom.core.di.container import BindingKey, LoomContainer
+from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.discovery import (
     InterfacesDiscoveryEngine,
@@ -132,7 +132,7 @@ def _register_repositories(
 
     def register(container: LoomContainer) -> None:
         for model, repository in repositories.items():
-            token: BindingKey = _RepoToken(model)
+            token = _RepoToken(model)
             container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
             container.register_repo(model, token)
 
@@ -194,7 +194,7 @@ def _configure_job_service(
 
     from loom.core.job.service import JobService
 
-    result.container.register(cast(type[Any], JobService), lambda: svc, scope=Scope.APPLICATION)
+    result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
 def _resolve_effective_echo(db_cfg: _DatabaseConfig, trace_cfg: _TraceConfig) -> bool:

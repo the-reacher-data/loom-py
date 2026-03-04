@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from loom.core.di.scope import Scope
 
@@ -91,7 +91,15 @@ class LoomContainer:
             container.register(UserRepository, SQLAlchemyUserRepository)
             container.register(AppConfig, lambda: load_config(MyCfg), scope=Scope.APPLICATION)
         """
-        factory: Callable[[], Any] = cast(Callable[[], Any], provider)
+        if isinstance(provider, type):
+
+            def _factory() -> Any:
+                return provider()
+
+            self._bindings[interface] = _Binding(provider=_factory, scope=scope)
+            return
+
+        factory = provider
         self._bindings[interface] = _Binding(provider=factory, scope=scope)
 
     def resolve(self, interface: BindingKey) -> Any:
