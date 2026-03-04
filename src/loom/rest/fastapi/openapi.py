@@ -11,7 +11,6 @@ from types import NoneType, UnionType
 from typing import Any, Union, cast, get_args, get_origin, get_type_hints
 
 import msgspec
-from pydantic import TypeAdapter
 
 from loom.core.command.introspection import (
     get_calculated_fields,
@@ -51,13 +50,27 @@ QUERY_SPEC_PARAMETER_NAMES: tuple[str, ...] = (
 )
 
 
-def build_request_body_schema(compiled_route: CompiledRoute) -> JsonSchema | None:
-    """Return OpenAPI ``requestBody`` schema for the route, if it has Input()."""
+def build_request_body_schema(
+    compiled_route: CompiledRoute,
+    component_registry: dict[str, JsonSchema] | None = None,
+) -> JsonSchema | None:
+    """Return OpenAPI ``requestBody`` schema for the route, if it has Input().
+
+    Args:
+        compiled_route: Fully resolved route from ``RestInterfaceCompiler``.
+        component_registry: Optional mutable dict that accumulates shared
+            component schemas.  When provided, nested ``$defs`` are extracted
+            as ``#/components/schemas/`` entries instead of being inlined.
+
+    Returns:
+        OpenAPI ``requestBody`` fragment, or ``None`` when the route has no
+        ``Input()`` binding.
+    """
     plan = _get_execution_plan(compiled_route)
     if plan is None or plan.input_binding is None:
         return None
 
-    request_schema = _command_request_schema(plan.input_binding.command_type)
+    request_schema = _command_request_schema(plan.input_binding.command_type, component_registry)
     if request_schema is None:
         return None
 
@@ -71,9 +84,23 @@ def build_request_body_schema(compiled_route: CompiledRoute) -> JsonSchema | Non
     }
 
 
-def build_success_response_schema(compiled_route: CompiledRoute) -> JsonSchema | None:
-    """Return OpenAPI response entry for the route success status, if resolvable."""
-    response_schema = _use_case_response_schema(compiled_route.route.use_case)
+def build_success_response_schema(
+    compiled_route: CompiledRoute,
+    component_registry: dict[str, JsonSchema] | None = None,
+) -> JsonSchema | None:
+    """Return OpenAPI response entry for the route success status, if resolvable.
+
+    Args:
+        compiled_route: Fully resolved route from ``RestInterfaceCompiler``.
+        component_registry: Optional mutable dict that accumulates shared
+            component schemas.  When provided, nested ``$defs`` are extracted
+            as ``#/components/schemas/`` entries instead of being inlined.
+
+    Returns:
+        OpenAPI response schema fragment, or ``None`` when the return type
+        cannot be resolved to a JSON Schema.
+    """
+    response_schema = _use_case_response_schema(compiled_route.route.use_case, component_registry)
     if response_schema is None:
         return None
 
@@ -188,24 +215,30 @@ def _query_spec_openapi_parameters(default_mode: PaginationMode) -> list[JsonSch
     ]
 
 
-def _use_case_response_schema(use_case_type: type[Any]) -> JsonSchema | None:
+def _use_case_response_schema(
+    use_case_type: type[Any],
+    component_registry: dict[str, JsonSchema] | None = None,
+) -> JsonSchema | None:
     hints = get_type_hints(use_case_type.execute)
     return_type = hints.get("return")
     if return_type is None or return_type is Any:
         return None
 
-    return _safe_schema(return_type)
+    return _safe_schema(return_type, component_registry)
 
 
-def _command_request_schema(command_type: type[Any]) -> JsonSchema | None:
+def _command_request_schema(
+    command_type: type[Any],
+    component_registry: dict[str, JsonSchema] | None = None,
+) -> JsonSchema | None:
     if not isinstance(command_type, type):
         return None
     if issubclass(command_type, msgspec.Struct):
         public_struct = _build_public_command_struct(command_type)
-        return _safe_schema(public_struct)
+        return _safe_schema(public_struct, component_registry)
 
     # Fallback for user-defined plain types (dataclass/pydantic/typing).
-    return _safe_pydantic_schema(command_type)
+    return _safe_schema(command_type, component_registry)
 
 
 def _build_public_command_struct(command_type: type[Any]) -> type[Any]:
@@ -247,16 +280,45 @@ def _safe_msgspec_schema(annotation: Any) -> JsonSchema | None:
 
 def _safe_pydantic_schema(annotation: Any) -> JsonSchema | None:
     try:
+        from pydantic import TypeAdapter  # lazy — only when pydantic is installed
+
         adapter = TypeAdapter(annotation)
         return adapter.json_schema()
     except Exception:
         return None
 
 
-def _safe_schema(annotation: Any) -> JsonSchema | None:
+def _rewrite_to_component_refs(node: Any) -> Any:
+    """Rewrite ``#/$defs/X`` references to ``#/components/schemas/X`` recursively.
+
+    Strips ``$defs`` keys and rewrites every ``$ref`` value that points to a
+    local definition so the resulting fragment is valid at the OpenAPI document
+    root where ``#/components/schemas/`` is resolvable.
+    """
+    if isinstance(node, list):
+        return [_rewrite_to_component_refs(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    result: dict[str, Any] = {}
+    for k, v in node.items():
+        if k == "$defs":
+            continue
+        if k == "$ref" and isinstance(v, str) and v.startswith("#/$defs/"):
+            result[k] = "#/components/schemas/" + v.removeprefix("#/$defs/")
+        else:
+            result[k] = _rewrite_to_component_refs(v)
+    return result
+
+
+def _safe_schema(
+    annotation: Any,
+    component_registry: dict[str, JsonSchema] | None = None,
+) -> JsonSchema | None:
     origin = get_origin(annotation)
     if origin in (UnionType, Union):
-        union_members = [_safe_schema(member) for member in get_args(annotation)]
+        union_members = [
+            _safe_schema(member, component_registry) for member in get_args(annotation)
+        ]
         if any(member is None for member in union_members):
             return None
         members = [member for member in union_members if member is not None]
@@ -264,13 +326,19 @@ def _safe_schema(annotation: Any) -> JsonSchema | None:
             return members[0]
         return {"anyOf": members}
 
-    msgspec_schema = _safe_msgspec_schema(annotation)
-    if msgspec_schema is not None:
-        return _inline_local_defs(msgspec_schema)
-    pydantic_schema = _safe_pydantic_schema(annotation)
-    if pydantic_schema is not None:
-        return _inline_local_defs(pydantic_schema)
-    return None
+    raw = _safe_msgspec_schema(annotation) or _safe_pydantic_schema(annotation)
+    if raw is None:
+        return None
+
+    if component_registry is not None:
+        defs = raw.get("$defs")
+        if isinstance(defs, dict):
+            for name, def_schema in defs.items():
+                component_registry[name] = _rewrite_to_component_refs(def_schema)
+        rewritten: JsonSchema = _rewrite_to_component_refs(raw)
+        return rewritten
+
+    return _inline_local_defs(raw)
 
 
 def _without_unset_type(annotation: Any) -> Any:

@@ -140,6 +140,26 @@ def create_fastapi_app(
     for iface in interfaces:
         all_routes.extend(interface_compiler.compile(iface))
 
-    bind_interfaces(app, all_routes, result.factory, executor)
+    component_registry = bind_interfaces(app, all_routes, result.factory, executor)
+    if component_registry:
+        _register_openapi_components(app, component_registry)
 
     return app
+
+
+def _register_openapi_components(app: FastAPI, schemas: dict[str, Any]) -> None:
+    """Patch ``app.openapi`` to inject ``schemas`` into ``components.schemas``.
+
+    Args:
+        app: FastAPI application whose OpenAPI generator to patch.
+        schemas: Mapping of component name → JSON Schema fragment collected
+            during route binding (nested ``$defs`` from msgspec/pydantic).
+    """
+    original_openapi = app.openapi
+
+    def _openapi() -> dict[str, Any]:
+        doc = original_openapi()
+        doc.setdefault("components", {}).setdefault("schemas", {}).update(schemas)
+        return doc
+
+    app.openapi = _openapi  # type: ignore[method-assign]

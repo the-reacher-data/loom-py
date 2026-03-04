@@ -280,6 +280,10 @@ def _make_handler(
     accepts_profile_param = "profile" in execute_sig.parameters
     query_param_name = _resolve_query_param_name(uc_type)
 
+    # Resolved at startup — avoids per-request attribute lookup.
+    plan = getattr(uc_type, "__execution_plan__", None)
+    has_input_binding = plan is not None and plan.input_binding is not None
+
     def _resolve_profile(request: Request) -> str:
         requested = request.query_params.get("profile")
         if requested is None:
@@ -312,10 +316,10 @@ def _make_handler(
             )
 
         payload: dict[str, Any] | None = None
-        body = await request.body()
-        if body:
-            raw: Any = msgspec.json.decode(body)
-            payload = raw
+        if has_input_binding:
+            body = await request.body()
+            if body:
+                payload = msgspec.json.decode(body)
 
         uc = factory.build(uc_type)
         try:
@@ -352,13 +356,17 @@ def bind_interfaces(
     compiled_routes: Sequence[CompiledRoute],
     factory: UseCaseFactory,
     executor: RuntimeExecutor,
-) -> None:
+) -> dict[str, Any]:
     """Register compiled routes on a FastAPI application.
 
     For each :class:`~loom.rest.compiler.CompiledRoute`, creates a dynamic
     async handler and registers it via ``app.add_api_route``.  Path parameters
     are inferred from the route path template and exposed in the handler
     signature so FastAPI validates and documents them correctly.
+
+    Nested JSON Schema ``$defs`` produced by msgspec/pydantic are collected
+    into a shared component registry and returned.  The caller is responsible
+    for injecting these into ``components.schemas`` of the OpenAPI document.
 
     Args:
         app: FastAPI application instance to register routes on.
@@ -367,17 +375,23 @@ def bind_interfaces(
         factory: Use-case factory for constructing instances per request.
         executor: Runtime executor that drives the use-case pipeline.
 
+    Returns:
+        Mapping of schema name → JSON Schema fragment for all collected
+        ``$defs`` that should appear under ``components.schemas``.
+
     Example::
 
         compiler = RestInterfaceCompiler(use_case_compiler)
         routes = compiler.compile(UserRestInterface)
-        bind_interfaces(app, routes, factory, executor)
+        component_schemas = bind_interfaces(app, routes, factory, executor)
     """
+    component_registry: dict[str, Any] = {}
+
     for cr in compiled_routes:
         handler = _make_handler(cr, factory, executor)
         summary, description = _route_docs(cr)
-        request_body = build_request_body_schema(cr)
-        success_response = build_success_response_schema(cr)
+        request_body = build_request_body_schema(cr, component_registry)
+        success_response = build_success_response_schema(cr, component_registry)
         responses: dict[int | str, dict[str, Any]] | None = None
         if success_response is not None:
             responses = {cr.route.status_code: success_response}
@@ -402,3 +416,5 @@ def bind_interfaces(
             responses=responses,
             openapi_extra=openapi_extra,
         )
+
+    return component_registry

@@ -21,7 +21,7 @@ from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.markers import Exists, Input
 from loom.core.use_case.use_case import UseCase
 from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
-from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.fastapi.app import _register_openapi_components, create_fastapi_app
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface, RestRoute
 
@@ -143,6 +143,15 @@ def _factory(uc_compiler: UseCaseCompiler, *types: type[UseCase[Any, Any]]) -> U
     return factory
 
 
+def _resolve_schema(schema_ref: dict[str, Any], openapi_doc: dict[str, Any]) -> dict[str, Any]:
+    """Follow a ``$ref`` to its component definition when present."""
+    ref = schema_ref.get("$ref", "")
+    if ref.startswith("#/components/schemas/"):
+        name = ref.removeprefix("#/components/schemas/")
+        return openapi_doc["components"]["schemas"][name]  # type: ignore[no-any-return]
+    return schema_ref
+
+
 def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
     """Build a minimal FastAPI app from pre-compiled routes."""
     # Extract use case types from compiled routes
@@ -151,7 +160,9 @@ def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
     factory = _factory(uc_comp, *types)
     executor = RuntimeExecutor(uc_comp)
     app = FastAPI()
-    bind_interfaces(app, list(compiled_routes), factory, executor)
+    component_registry = bind_interfaces(app, list(compiled_routes), factory, executor)
+    if component_registry:
+        _register_openapi_components(app, component_registry)
     return app
 
 
@@ -470,9 +481,10 @@ def test_openapi_request_schema_from_command_excludes_internal_fields() -> None:
     app = _make_app(*routes)
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
-    request_schema = schema["paths"]["/items/"]["post"]["requestBody"]["content"][
-        "application/json"
-    ]["schema"]
+    raw_schema = schema["paths"]["/items/"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    request_schema = _resolve_schema(raw_schema, schema)
     properties = request_schema["properties"]
     assert "fullName" in properties
     assert "tenant_id" not in properties
@@ -487,9 +499,10 @@ def test_openapi_request_schema_for_plain_command_type() -> None:
     app = _make_app(*routes)
     client = TestClient(app)
     schema = client.get("/openapi.json").json()
-    request_schema = schema["paths"]["/plain/"]["post"]["requestBody"]["content"][
-        "application/json"
-    ]["schema"]
+    raw_schema = schema["paths"]["/plain/"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    request_schema = _resolve_schema(raw_schema, schema)
     assert request_schema["type"] == "object"
     assert "full_name" in request_schema["properties"]
 
