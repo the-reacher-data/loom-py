@@ -6,7 +6,6 @@ keeping runtime execution transport-agnostic.
 
 from __future__ import annotations
 
-from copy import deepcopy
 from types import NoneType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -64,8 +63,8 @@ def build_request_body_schema(
     Args:
         compiled_route: Fully resolved route from ``RestInterfaceCompiler``.
         component_registry: Optional mutable dict that accumulates shared
-            component schemas.  When provided, nested ``$defs`` are extracted
-            as ``#/components/schemas/`` entries instead of being inlined.
+            component schemas. When provided, nested ``$defs`` are extracted
+            as ``#/components/schemas/`` entries.
 
     Returns:
         OpenAPI ``requestBody`` fragment, or ``None`` when the route has no
@@ -98,8 +97,8 @@ def build_success_response_schema(
     Args:
         compiled_route: Fully resolved route from ``RestInterfaceCompiler``.
         component_registry: Optional mutable dict that accumulates shared
-            component schemas.  When provided, nested ``$defs`` are extracted
-            as ``#/components/schemas/`` entries instead of being inlined.
+            component schemas. When provided, nested ``$defs`` are extracted
+            as ``#/components/schemas/`` entries.
 
     Returns:
         OpenAPI response schema fragment, or ``None`` when the return type
@@ -335,15 +334,15 @@ def _safe_schema(
     if raw is None:
         return None
 
-    if component_registry is not None:
-        defs = raw.get(_SCHEMA_DEFS_KEY)
-        if isinstance(defs, dict):
-            for name, def_schema in defs.items():
-                component_registry[name] = _rewrite_to_component_refs(def_schema)
-        rewritten: JsonSchema = _rewrite_to_component_refs(raw)
-        return rewritten
+    if component_registry is None:
+        return raw
 
-    return _inline_local_defs(raw)
+    defs = raw.get(_SCHEMA_DEFS_KEY)
+    if isinstance(defs, dict):
+        for name, def_schema in defs.items():
+            component_registry[name] = _rewrite_to_component_refs(def_schema)
+    rewritten: JsonSchema = _rewrite_to_component_refs(raw)
+    return rewritten
 
 
 def _without_unset_type(annotation: Any) -> Any:
@@ -373,88 +372,3 @@ def _with_optional_none(annotation: Any) -> Any:
     if annotation is NoneType:
         return annotation
     return annotation | None
-
-
-def _inline_local_defs(schema: JsonSchema) -> JsonSchema:
-    """Inline ``#/$defs/...`` references so OpenAPI can resolve schemas.
-
-    OpenAPI resolves ``$ref`` from the document root. JSON Schema fragments
-    returned by msgspec/pydantic may use local ``$defs`` references, which
-    become invalid once embedded under ``requestBody``/``responses``.
-    """
-    raw_defs = schema.get(_SCHEMA_DEFS_KEY)
-    if not isinstance(raw_defs, dict):
-        return schema
-
-    defs: dict[str, Any] = {name: deepcopy(value) for name, value in raw_defs.items()}
-    return _resolve_schema_root(schema, defs)
-
-
-def _resolve_schema_root(schema: JsonSchema, defs: dict[str, Any]) -> JsonSchema:
-    resolved = _resolve_local_def_node(_drop_defs_key(schema), defs, ())
-    if isinstance(resolved, dict):
-        return resolved
-    return {}
-
-
-def _resolve_local_def_node(node: Any, defs: dict[str, Any], stack: tuple[str, ...]) -> Any:
-    if isinstance(node, list):
-        return [_resolve_local_def_node(item, defs, stack) for item in node]
-    if not isinstance(node, dict):
-        return node
-    ref_name = _extract_local_ref_name(node)
-    if ref_name is None:
-        return _resolve_plain_schema_object(node, defs, stack)
-    return _resolve_ref_schema_object(node, defs, stack, ref_name)
-
-
-def _resolve_plain_schema_object(
-    node: dict[str, Any],
-    defs: dict[str, Any],
-    stack: tuple[str, ...],
-) -> dict[str, Any]:
-    cleaned = _drop_defs_key(node)
-    return {key: _resolve_local_def_node(value, defs, stack) for key, value in cleaned.items()}
-
-
-def _resolve_ref_schema_object(
-    node: dict[str, Any],
-    defs: dict[str, Any],
-    stack: tuple[str, ...],
-    ref_name: str,
-) -> Any:
-    target = defs.get(ref_name)
-    if target is None or ref_name in stack:
-        return _resolve_plain_schema_object(node, defs, stack)
-    resolved_target = _resolve_local_def_node(deepcopy(target), defs, (*stack, ref_name))
-    siblings = {k: v for k, v in node.items() if k != _SCHEMA_REF_KEY}
-    if not siblings:
-        return resolved_target
-    return _merge_resolved_with_siblings(resolved_target, siblings, defs, stack)
-
-
-def _merge_resolved_with_siblings(
-    resolved_target: Any,
-    siblings: dict[str, Any],
-    defs: dict[str, Any],
-    stack: tuple[str, ...],
-) -> Any:
-    merged = deepcopy(resolved_target)
-    if isinstance(merged, dict):
-        for key, value in siblings.items():
-            merged[key] = _resolve_local_def_node(value, defs, stack)
-        return merged
-    return _resolve_local_def_node(siblings, defs, stack)
-
-
-def _drop_defs_key(node: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in node.items() if key != _SCHEMA_DEFS_KEY}
-
-
-def _extract_local_ref_name(node: dict[str, Any]) -> str | None:
-    ref = node.get(_SCHEMA_REF_KEY)
-    if not isinstance(ref, str):
-        return None
-    if not ref.startswith(_LOCAL_DEFS_REF_PREFIX):
-        return None
-    return ref.removeprefix(_LOCAL_DEFS_REF_PREFIX)
