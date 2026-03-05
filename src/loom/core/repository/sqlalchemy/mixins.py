@@ -14,7 +14,7 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
-from loom.core.model.projection import ProjectionSource
+from loom.core.model.projection import ProjectionAutoPolicy, ProjectionSource
 from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 from loom.core.repository.abc import (
     CursorResult,
@@ -32,6 +32,57 @@ from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCom
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
+
+
+def _projected_relation_name(projection: Any) -> str | None:
+    loader = projection.loader
+    if projection.source is ProjectionSource.BACKEND:
+        return None
+
+    has_memory_loader = hasattr(loader, "load_from_object")
+    has_backend_loader = hasattr(loader, "load_many")
+    if (
+        projection.source is ProjectionSource.AUTO
+        and has_backend_loader
+        and projection.auto_policy is ProjectionAutoPolicy.BACKEND_THEN_PRELOADED
+    ):
+        return None
+    if not has_memory_loader:
+        return None
+
+    relation_name = getattr(loader, "relation", None)
+    if not isinstance(relation_name, str) or not relation_name:
+        return None
+    return relation_name
+
+
+def _validate_projection_relation(
+    *,
+    model_name: str,
+    projection_name: str,
+    projection_profiles: tuple[str, ...],
+    relation_name: str,
+    relations: dict[str, Any],
+) -> None:
+    if relation_name not in relations:
+        raise ValueError(
+            f"'{model_name}.{projection_name}': relation-based loader references "
+            f"relation '{relation_name}' which does not exist on this model."
+        )
+
+    unsupported_profiles = frozenset(projection_profiles) - frozenset(
+        relations[relation_name].profiles
+    )
+    if not unsupported_profiles:
+        return
+
+    raise ValueError(
+        f"'{model_name}.{projection_name}': "
+        f"Relation loader(relation='{relation_name}') "
+        f"is active in profiles {sorted(unsupported_profiles)} where '{relation_name}' is not "
+        f"loaded. Add {sorted(unsupported_profiles)} to '{relation_name}'.profiles or restrict "
+        f"'{projection_name}'.profiles to {sorted(relations[relation_name].profiles)}."
+    )
 
 
 class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
@@ -74,10 +125,9 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         self._validate_computed_relation_loaders()
 
     def _validate_computed_relation_loaders(self) -> None:
-        """Validate ComputedFromRelationLoader references at repository init time.
+        """Validate relation-based projection loaders at repository init time.
 
-        Ensures every ``ProjectionField`` backed by a
-        :class:`~loom.core.repository.sqlalchemy.loaders.ComputedFromRelationLoader`
+        Ensures every ``ProjectionField`` backed by a relation loader
         references an existing relation that is eagerly loaded in all profiles
         where the projection is active.
 
@@ -91,35 +141,16 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         model_name = self.model.__name__
 
         for proj_name, proj in projections.items():
-            loader = proj.loader
-            if proj.source is ProjectionSource.BACKEND:
+            relation_name = _projected_relation_name(proj)
+            if relation_name is None:
                 continue
-            has_memory_loader = hasattr(loader, "load_from_object")
-            has_backend_loader = hasattr(loader, "load_many")
-            if proj.source is ProjectionSource.AUTO and has_backend_loader:
-                continue
-            if not has_memory_loader:
-                continue
-
-            rel_name = getattr(loader, "relation", None)
-            if not isinstance(rel_name, str) or not rel_name:
-                continue
-
-            if rel_name not in relations:
-                raise ValueError(
-                    f"'{model_name}.{proj_name}': ComputedFromRelationLoader references "
-                    f"relation '{rel_name}' which does not exist on this model."
-                )
-
-            unsupported = frozenset(proj.profiles) - frozenset(relations[rel_name].profiles)
-            if unsupported:
-                raise ValueError(
-                    f"'{model_name}.{proj_name}': "
-                    f"ComputedFromRelationLoader(relation='{rel_name}') "
-                    f"is active in profiles {sorted(unsupported)} where '{rel_name}' is not "
-                    f"loaded. Add {sorted(unsupported)} to '{rel_name}'.profiles or restrict "
-                    f"'{proj_name}'.profiles to {sorted(relations[rel_name].profiles)}."
-                )
+            _validate_projection_relation(
+                model_name=model_name,
+                projection_name=proj_name,
+                projection_profiles=proj.profiles,
+                relation_name=relation_name,
+                relations=relations,
+            )
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -251,10 +282,10 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     ) -> dict[int, dict[str, Any]]:
         """Batch-load projection values for a list of ORM objects.
 
-        :class:`~loom.core.repository.sqlalchemy.loaders.ComputedFromRelationLoader`
-        projections are resolved synchronously from already-loaded relation
-        data on each ORM object (no DB round-trip). Remaining DB-backed
-        loaders are resolved by the compiled projection plan runtime.
+        Relation-based projections are resolved from already-loaded relation
+        data on each ORM object (no DB round-trip) when configured to do so.
+        Remaining DB-backed loaders are resolved by the compiled projection
+        plan runtime.
         """
         if not objs:
             return {}

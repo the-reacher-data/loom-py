@@ -1,5 +1,4 @@
 from loom.core.repository.sqlalchemy.loaders import (
-    ComputedFromRelationLoader,
     CountLoader,
     ExistsLoader,
     JoinFieldsLoader,
@@ -22,7 +21,6 @@ __all__ = [
     "AuditableModel",
     "Base",
     "BaseModel",
-    "ComputedFromRelationLoader",
     "CountLoader",
     "ExistsLoader",
     "JoinFieldsLoader",

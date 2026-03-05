@@ -1,4 +1,4 @@
-"""Unit tests for ComputedFromRelationLoader."""
+"""Unit tests for relation-based projection loaders."""
 
 from __future__ import annotations
 
@@ -11,9 +11,13 @@ import pytest
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.model import BaseModel, Cardinality
 from loom.core.model.field import ColumnField
-from loom.core.model.projection import Projection, ProjectionField
+from loom.core.model.projection import Projection, ProjectionField, ProjectionSource
 from loom.core.model.relation import Relation
-from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
+from loom.core.projection.loaders import (
+    RelationCountLoader,
+    RelationExistsLoader,
+    RelationJoinFieldsLoader,
+)
 from loom.core.repository.sqlalchemy.mixins import SQLAlchemyContextMixin
 
 # ---------------------------------------------------------------------------
@@ -50,13 +54,14 @@ class _RecordWithValidConfig(BaseModel):
     __tablename__ = "test_records_crl"
     id: int = ColumnField(primary_key=True, autoincrement=True)
 
-    notes: list[dict[str, Any]] = Relation(
+    notes: Any = Relation(
         foreign_key="record_id",
         cardinality=Cardinality.ONE_TO_MANY,
         profiles=("with_details",),
     )
     notes_count: int = ProjectionField(
-        loader=ComputedFromRelationLoader(relation="notes", fn=len),
+        loader=RelationCountLoader(relation="notes"),
+        source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         default=0,
     )
@@ -67,32 +72,36 @@ class _RecordWithValidConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TestComputedFromRelationLoaderLoadFromObject:
+class TestRelationLoadersLoadFromObject:
     def test_fn_applied_to_related_list(self) -> None:
         notes = [_FakeNote(1, "a"), _FakeNote(2, "b")]
-        loader = ComputedFromRelationLoader(relation="notes", fn=len)
+        loader = RelationCountLoader(relation="notes")
         obj = _obj_with_relation("notes", notes)
 
         assert loader.load_from_object(obj) == 2
 
     def test_fn_receives_full_list(self) -> None:
         notes = [_FakeNote(1, "x"), _FakeNote(2, "y"), _FakeNote(3, "z")]
-        loader = ComputedFromRelationLoader(
+        loader = RelationJoinFieldsLoader(
             relation="notes",
-            fn=lambda rows: [r.title for r in rows],
+            value_columns=("title",),
         )
         obj = _obj_with_relation("notes", notes)
 
-        assert loader.load_from_object(obj) == ["x", "y", "z"]
+        assert loader.load_from_object(obj) == [
+            {"title": "x"},
+            {"title": "y"},
+            {"title": "z"},
+        ]
 
     def test_empty_relation_passes_empty_list_to_fn(self) -> None:
-        loader = ComputedFromRelationLoader(relation="notes", fn=lambda rows: len(rows) > 0)
+        loader = RelationExistsLoader(relation="notes")
         obj = _obj_with_relation("notes", [])
 
         assert loader.load_from_object(obj) is False
 
     def test_none_relation_treated_as_empty_list(self) -> None:
-        loader = ComputedFromRelationLoader(relation="notes", fn=len)
+        loader = RelationCountLoader(relation="notes")
         obj = MagicMock()
         obj.__dict__["notes"] = None
         obj.notes = None
@@ -101,15 +110,15 @@ class TestComputedFromRelationLoaderLoadFromObject:
 
     def test_single_object_relation_wrapped_in_list(self) -> None:
         owner = _FakeNote(7, "owner")
-        loader = ComputedFromRelationLoader(
+        loader = RelationJoinFieldsLoader(
             relation="owner",
-            fn=lambda rows: rows[0].id if rows else None,
+            value_columns=("id",),
         )
         obj = MagicMock()
         obj.__dict__["owner"] = owner
         obj.owner = owner
 
-        assert loader.load_from_object(obj) == 7
+        assert loader.load_from_object(obj) == [{"id": 7}]
 
 
 # ---------------------------------------------------------------------------
@@ -117,18 +126,18 @@ class TestComputedFromRelationLoaderLoadFromObject:
 # ---------------------------------------------------------------------------
 
 
-class TestComputedFromRelationLoaderSafetyCheck:
+class TestRelationLoadersSafetyCheck:
     def test_raises_when_relation_not_in_dict(self) -> None:
-        loader = ComputedFromRelationLoader(relation="notes", fn=len)
+        loader = RelationCountLoader(relation="notes")
 
         class _Bare:
             pass
 
-        with pytest.raises(RuntimeError, match="notes.*not loaded"):
+        with pytest.raises(RuntimeError, match="notes.*__dict__"):
             loader.load_from_object(_Bare())
 
     def test_error_includes_model_class_name(self) -> None:
-        loader = ComputedFromRelationLoader(relation="items", fn=len)
+        loader = RelationCountLoader(relation="items")
 
         class MyEntity:
             pass
@@ -137,7 +146,7 @@ class TestComputedFromRelationLoaderSafetyCheck:
             loader.load_from_object(MyEntity())
 
     def test_error_includes_relation_name(self) -> None:
-        loader = ComputedFromRelationLoader(relation="attachments", fn=len)
+        loader = RelationCountLoader(relation="attachments")
 
         class SomeModel:
             pass
@@ -161,10 +170,10 @@ def _make_validation_mixin(
     relations: dict[str, Relation],
 ) -> SQLAlchemyContextMixin[Any, Any]:
     mixin: SQLAlchemyContextMixin[Any, Any] = object.__new__(SQLAlchemyContextMixin)
-    mixin.model = type(model_name, (), {})  # type: ignore[assignment]
+    mixin.model = type(model_name, (), {})
     mixin.model.__name__ = model_name
-    mixin._projections_cache = projections  # type: ignore[assignment]
-    mixin._relations_cache = relations  # type: ignore[assignment]
+    mixin._projections_cache = projections
+    mixin._relations_cache = relations
     return mixin
 
 
@@ -179,7 +188,8 @@ class TestValidateComputedRelationLoaders:
         }
         projections = {
             "notes_count": Projection(
-                loader=ComputedFromRelationLoader(relation="notes", fn=len),
+                loader=RelationCountLoader(relation="notes"),
+                source=ProjectionSource.PRELOADED,
                 profiles=("with_details",),
                 default=0,
             )
@@ -190,7 +200,8 @@ class TestValidateComputedRelationLoaders:
     def test_missing_relation_raises_value_error(self) -> None:
         projections = {
             "bad_count": Projection(
-                loader=ComputedFromRelationLoader(relation="ghost", fn=len),
+                loader=RelationCountLoader(relation="ghost"),
+                source=ProjectionSource.PRELOADED,
                 profiles=("with_details",),
                 default=0,
             )
@@ -210,7 +221,8 @@ class TestValidateComputedRelationLoaders:
         }
         projections = {
             "has_notes": Projection(
-                loader=ComputedFromRelationLoader(relation="notes", fn=lambda r: len(r) > 0),
+                loader=RelationExistsLoader(relation="notes"),
+                source=ProjectionSource.PRELOADED,
                 profiles=("with_details", "summary"),
                 default=False,
             )
@@ -223,7 +235,8 @@ class TestValidateComputedRelationLoaders:
     def test_error_includes_projection_field_name(self) -> None:
         projections = {
             "bad_count": Projection(
-                loader=ComputedFromRelationLoader(relation="ghost", fn=len),
+                loader=RelationCountLoader(relation="ghost"),
+                source=ProjectionSource.PRELOADED,
                 profiles=("p",),
                 default=0,
             )
@@ -243,7 +256,8 @@ class TestValidateComputedRelationLoaders:
         }
         projections = {
             "has_notes": Projection(
-                loader=ComputedFromRelationLoader(relation="notes", fn=lambda r: len(r) > 0),
+                loader=RelationExistsLoader(relation="notes"),
+                source=ProjectionSource.PRELOADED,
                 profiles=("with_details", "summary"),
                 default=False,
             )
@@ -257,7 +271,7 @@ class TestValidateComputedRelationLoaders:
         """Regular DB-backed projections must not trigger relation validation."""
         projections = {
             "notes_count": Projection(
-                loader=MagicMock(),  # any non-ComputedFromRelationLoader loader
+                loader=MagicMock(),  # any non-relation memory loader
                 profiles=("with_details",),
                 default=0,
             )

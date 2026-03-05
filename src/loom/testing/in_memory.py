@@ -78,7 +78,7 @@ class InMemoryRepository(Generic[T]):
         self._creator = creator
         self._store: dict[Any, T] = {}
         self._next_id: int = 1
-        self._projection_plans: dict[str, ProjectionPlan] = {}
+        self._projection_plans: dict[str, ProjectionPlan | None] = {}
 
     def seed(self, *entities: T) -> None:
         """Pre-load entities into the store.
@@ -224,9 +224,8 @@ class InMemoryRepository(Generic[T]):
         return msgspec.convert(data, self._entity_type)
 
     def _projection_plan_for_profile(self, profile: str) -> ProjectionPlan | None:
-        cached = self._projection_plans.get(profile)
-        if cached is not None:
-            return cached
+        if profile in self._projection_plans:
+            return self._projection_plans[profile]
 
         model_projections = get_projections(self._entity_type)
         active = {
@@ -235,6 +234,7 @@ class InMemoryRepository(Generic[T]):
             if profile in projection.profiles
         }
         if not active:
+            self._projection_plans[profile] = None
             return None
 
         compiled = build_projection_plan(active)
