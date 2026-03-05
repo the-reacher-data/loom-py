@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import msgspec
@@ -35,7 +36,11 @@ class _Repo:
         self._next = 1
         self._data: dict[int, _Item] = {}
 
+    async def _tick(self) -> None:
+        await asyncio.sleep(0)
+
     async def create(self, cmd: Any) -> _Item:
+        await self._tick()
         data = msgspec.to_builtins(cmd)
         item = _Item(id=self._next, name=str(data.get("name", "")))
         self._data[item.id] = item
@@ -43,10 +48,12 @@ class _Repo:
         return item
 
     async def get_by_id(self, id_value: Any, profile: str = "default") -> _Item | None:
+        await self._tick()
         del profile
         return self._data.get(int(id_value))
 
     async def update(self, id_value: Any, cmd: Any) -> _Item | None:
+        await self._tick()
         item = self._data.get(int(id_value))
         if item is None:
             return None
@@ -57,9 +64,11 @@ class _Repo:
         return updated
 
     async def delete(self, id_value: Any) -> bool:
+        await self._tick()
         return self._data.pop(int(id_value), None) is not None
 
     async def exists_by(self, field: str, value: Any) -> bool:
+        await self._tick()
         if field != "id":
             return False
         return int(value) in self._data
