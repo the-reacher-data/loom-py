@@ -154,6 +154,7 @@ def _register_repositories(
             token = _RepoToken(model)
             container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
             container.register_repo(model, token)
+        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
 
     return register
 

@@ -259,12 +259,6 @@ def _make_get(
             self,
             id: id_type,  # pyright: ignore[reportInvalidTypeForm]
             profile: str = "default",
-            _exists: bool = Exists(
-                model,
-                from_param="id",
-                against="id",
-                on_missing=OnMissing.RAISE,
-            ),
         ) -> model:  # type: ignore[valid-type]
             entity = await self.main_repo.get_by_id(coerce(id), profile=profile)
             if entity is None:
