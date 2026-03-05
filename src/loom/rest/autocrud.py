@@ -29,7 +29,9 @@ from loom.core.command import Command
 from loom.core.errors import NotFound
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
+from loom.core.use_case.keys import set_use_case_key
 from loom.core.use_case.markers import Exists, Input, OnMissing
+from loom.core.use_case.registry import model_entity_key
 from loom.core.use_case.use_case import UseCase
 
 __all__ = ["build_auto_routes"]
@@ -409,6 +411,10 @@ def _get_or_create(model: type[Any]) -> dict[str, Any]:
         "create_input": create_input,
         "update_input": update_input,
     }
+    entity = model_entity_key(model)
+    for operation in _ALL_OPS:
+        use_case_type = cast(type[Any], result[operation])
+        set_use_case_key(use_case_type, f"{entity}:{operation}")
     _UC_CACHE[model] = result
     return result
 

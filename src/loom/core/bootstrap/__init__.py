@@ -6,5 +6,12 @@ coupling to any web framework.
 """
 
 from loom.core.bootstrap.bootstrap import BootstrapError, BootstrapResult, bootstrap_app
+from loom.core.bootstrap.kernel import KernelRuntime, create_kernel
 
-__all__ = ["BootstrapError", "BootstrapResult", "bootstrap_app"]
+__all__ = [
+    "BootstrapError",
+    "BootstrapResult",
+    "KernelRuntime",
+    "bootstrap_app",
+    "create_kernel",
+]

@@ -17,7 +17,7 @@ import msgspec
 from fastapi import FastAPI
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
-from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.bootstrap import KernelRuntime, create_kernel
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
@@ -32,6 +32,7 @@ from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
@@ -168,8 +169,7 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
 
 def _configure_job_service(
     raw: DictConfig,
-    result: BootstrapResult,
-    session_manager: SessionManager,
+    result: KernelRuntime,
 ) -> None:
     """Register a ``JobService`` implementation in the container.
 
@@ -184,10 +184,7 @@ def _configure_job_service(
 
     Args:
         raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
-        result: Bootstrap result carrying the container, compiler, and
-            factory.
-        session_manager: Live ``SessionManager`` for the inline fallback
-            path (used to build a ``UoW`` factory for the executor).
+        result: Kernel runtime carrying container, factory and executor.
     """
     try:
         from loom.celery.config import (
@@ -204,13 +201,9 @@ def _configure_job_service(
         celery_app = create_celery_app(celery_cfg)
         svc: Any = CeleryJobService(celery_app, metrics=result.metrics)
     except (ConfigError, ImportError):
-        from loom.core.engine.executor import RuntimeExecutor as _Exec
         from loom.core.job.service import InlineJobService
-        from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 
-        uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
-        executor = _Exec(result.compiler, uow_factory=uow_factory, metrics=result.metrics)
-        svc = InlineJobService(result.factory, executor)
+        svc = InlineJobService(result.factory, result.executor)
 
     from loom.core.job.service import JobService
 
@@ -234,7 +227,7 @@ def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
     echo: bool,
-) -> tuple[BootstrapResult, SessionManager, DiscoveryResult]:
+) -> tuple[KernelRuntime, SessionManager, DiscoveryResult]:
     discovered = _build_discovery_result(app_cfg.discovery)
     if not discovered.use_cases:
         raise RuntimeError("No UseCase classes discovered.")
@@ -256,11 +249,13 @@ def _build_bootstrap(
         pool_recycle=None,
         connect_args={},
     )
+    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
 
-    result = bootstrap_app(
+    result = create_kernel(
         config=app_cfg,
         use_cases=discovered.use_cases,
         modules=[_register_repositories(session_manager, discovered.models)],
+        uow_factory=uow_factory,
     )
     return result, session_manager, discovered
 
@@ -337,7 +332,7 @@ def create_app(
 
     effective_echo = _resolve_effective_echo(db_cfg, trace_cfg)
     result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg, effective_echo)
-    _configure_job_service(raw, result, session_manager)
+    _configure_job_service(raw, result)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

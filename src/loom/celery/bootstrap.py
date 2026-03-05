@@ -59,12 +59,10 @@ from celery import Celery  # type: ignore[import-untyped]
 from loom.celery.config import CeleryConfig, JobConfig, apply_job_config, create_celery_app
 from loom.celery.event_loop import WorkerEventLoop
 from loom.celery.runner import _make_callback_error_task, _make_callback_task, _make_job_task
+from loom.core.bootstrap import create_kernel
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
-from loom.core.di.scope import Scope
-from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.engine.executor import RuntimeExecutor
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
@@ -270,21 +268,6 @@ def bootstrap_worker(
         handlers=logger_cfg.handlers,
     )
 
-    container = LoomContainer()
-    container.register(type(raw), lambda: raw, scope=Scope.APPLICATION)
-
-    for module in modules:
-        module(container)
-
-    compiler = UseCaseCompiler(metrics=metrics)
-    for job_type in jobs:
-        compiler.compile(job_type)
-
-    factory = UseCaseFactory(container)
-    for job_type in jobs:
-        factory.register(job_type)  # type: ignore[arg-type]
-    container.register(UseCaseFactory, lambda: factory, scope=Scope.APPLICATION)
-
     for job_type in jobs:
         _apply_job_config_if_present(raw, job_type)
 
@@ -296,22 +279,26 @@ def bootstrap_worker(
     )
     uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
 
+    kernel = create_kernel(
+        config=raw,
+        use_cases=jobs,
+        modules=modules,
+        metrics=metrics,
+        uow_factory=uow_factory,
+    )
     celery_app = create_celery_app(celery_cfg)
-    executor = RuntimeExecutor(compiler, uow_factory=uow_factory, metrics=metrics)
 
     for job_type in jobs:
-        _make_job_task(celery_app, job_type, factory, executor, metrics)
+        _make_job_task(celery_app, job_type, kernel.factory, kernel.executor, metrics)
 
     for callback_type in callbacks:
-        _make_callback_task(celery_app, callback_type, factory)
-        _make_callback_error_task(celery_app, callback_type, factory)
+        _make_callback_task(celery_app, callback_type, kernel.factory)
+        _make_callback_error_task(celery_app, callback_type, kernel.factory)
 
     _connect_worker_signals(session_manager)
 
-    container.validate()
-
     return WorkerBootstrapResult(
-        container=container,
-        factory=factory,
+        container=kernel.container,
+        factory=kernel.factory,
         celery_app=celery_app,
     )

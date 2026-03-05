@@ -26,15 +26,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
+from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.use_case.factory import UseCaseFactory
-from loom.core.use_case.use_case import UseCase
 
 
 class BootstrapError(Exception):
@@ -73,7 +72,7 @@ class BootstrapResult:
 
 def bootstrap_app(
     config: object,
-    use_cases: Sequence[type[UseCase[Any, Any]]],
+    use_cases: Sequence[type[Compilable]],
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     logger: LoggerPort | None = None,
     metrics: MetricsAdapter | None = None,
@@ -88,7 +87,9 @@ def bootstrap_app(
     Args:
         config: Application configuration object.  Registered as an
             ``APPLICATION``-scope singleton under ``type(config)``.
-        use_cases: Concrete ``UseCase`` subclasses to compile at startup.
+        use_cases: Concrete compilable classes to compile at startup.
+            Any class implementing the ``Compilable`` protocol is accepted,
+            including ``UseCase`` and ``Job`` subclasses.
             All plans are cached in the returned compiler.
         modules: Callables that receive the container and register
             infrastructure bindings (repositories, services, etc.).
