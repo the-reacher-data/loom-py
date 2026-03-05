@@ -176,35 +176,17 @@ class UseCaseCompiler:
             if self._should_skip_parameter(name, param):
                 continue
 
-            default = param.default
-            annotation = hints.get(name, Any)
-
-            if isinstance(default, _InputMarker):
-                input_binding, input_count = self._handle_input_marker(
-                    use_case_type=use_case_type,
-                    name=name,
-                    annotation=annotation,
-                    input_binding=input_binding,
-                    input_count=input_count,
-                )
-
-            elif isinstance(default, _LoadByIdMarker):
-                ls = self._build_load_by_id_step(name, default)
-                load_steps.append(ls)
-                self._log_load_by_id(default)
-
-            elif isinstance(default, _LoadMarker):
-                ls = self._build_load_step(name, default)
-                load_steps.append(ls)
-                self._log_load(default)
-
-            elif isinstance(default, _ExistsMarker):
-                es = self._build_exists_step(name, default)
-                exists_steps.append(es)
-                self._log_exists(default)
-
-            else:
-                param_bindings.append(ParamBinding(name=name, annotation=annotation))
+            input_binding, input_count = self._collect_binding_from_parameter(
+                use_case_type=use_case_type,
+                name=name,
+                param=param,
+                annotation=hints.get(name, Any),
+                input_binding=input_binding,
+                input_count=input_count,
+                param_bindings=param_bindings,
+                load_steps=load_steps,
+                exists_steps=exists_steps,
+            )
 
         self._validate_marker_refs(
             use_case_type,
@@ -214,6 +196,96 @@ class UseCaseCompiler:
             exists_steps,
         )
         return param_bindings, input_binding, load_steps, exists_steps
+
+    def _collect_binding_from_parameter(
+        self,
+        *,
+        use_case_type: type[Compilable],
+        name: str,
+        param: inspect.Parameter,
+        annotation: Any,
+        input_binding: InputBinding | None,
+        input_count: int,
+        param_bindings: list[ParamBinding],
+        load_steps: list[LoadStep],
+        exists_steps: list[ExistsStep],
+    ) -> tuple[InputBinding | None, int]:
+        marker_default = param.default
+
+        if isinstance(marker_default, _InputMarker):
+            return self._handle_input_marker(
+                use_case_type=use_case_type,
+                name=name,
+                annotation=annotation,
+                input_binding=input_binding,
+                input_count=input_count,
+            )
+
+        if isinstance(marker_default, _LoadByIdMarker):
+            self._handle_load_by_id_marker(
+                name=name,
+                marker=marker_default,
+                load_steps=load_steps,
+                exists_steps=exists_steps,
+            )
+            return input_binding, input_count
+
+        if isinstance(marker_default, _LoadMarker):
+            self._handle_load_marker(
+                name=name,
+                marker=marker_default,
+                load_steps=load_steps,
+                exists_steps=exists_steps,
+            )
+            return input_binding, input_count
+
+        if isinstance(marker_default, _ExistsMarker):
+            self._handle_exists_marker(
+                name=name,
+                marker=marker_default,
+                load_steps=load_steps,
+                exists_steps=exists_steps,
+            )
+            return input_binding, input_count
+
+        param_bindings.append(ParamBinding(name=name, annotation=annotation))
+        return input_binding, input_count
+
+    def _handle_load_by_id_marker(
+        self,
+        *,
+        name: str,
+        marker: _LoadByIdMarker[Any],
+        load_steps: list[LoadStep],
+        exists_steps: list[ExistsStep],
+    ) -> None:
+        del exists_steps
+        load_steps.append(self._build_load_by_id_step(name, marker))
+        self._log_load_by_id(marker)
+
+    def _handle_load_marker(
+        self,
+        *,
+        name: str,
+        marker: _LoadMarker[Any],
+        load_steps: list[LoadStep],
+        exists_steps: list[ExistsStep],
+    ) -> None:
+        del exists_steps
+        load_steps.append(self._build_load_step(name, marker))
+        self._log_load(marker)
+
+    def _handle_exists_marker(
+        self,
+        *,
+        name: str,
+        marker: _ExistsMarker[Any],
+        load_steps: list[LoadStep],
+        exists_steps: list[ExistsStep],
+    ) -> None:
+        del load_steps
+        exists_steps.append(self._build_exists_step(name, marker))
+        self._log_exists(marker)
 
     @staticmethod
     def _should_skip_parameter(name: str, param: inspect.Parameter) -> bool:

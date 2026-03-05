@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect as py_inspect
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
@@ -14,7 +15,7 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
-from loom.core.model.projection import ProjectionAutoPolicy, ProjectionSource
+from loom.core.model.projection import ProjectionSource
 from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 from loom.core.repository.abc import (
     CursorResult,
@@ -39,14 +40,7 @@ def _projected_relation_name(projection: Any) -> str | None:
     if projection.source is ProjectionSource.BACKEND:
         return None
 
-    has_memory_loader = hasattr(loader, "load_from_object")
-    has_backend_loader = hasattr(loader, "load_many")
-    if (
-        projection.source is ProjectionSource.AUTO
-        and has_backend_loader
-        and projection.auto_policy is ProjectionAutoPolicy.BACKEND_THEN_PRELOADED
-    ):
-        return None
+    has_memory_loader = _has_declared_callable(loader, "load_from_object")
     if not has_memory_loader:
         return None
 
@@ -63,6 +57,7 @@ def _validate_projection_relation(
     projection_profiles: tuple[str, ...],
     relation_name: str,
     relations: dict[str, Any],
+    allow_backend_fallback: bool,
 ) -> None:
     if relation_name not in relations:
         raise ValueError(
@@ -73,7 +68,7 @@ def _validate_projection_relation(
     unsupported_profiles = frozenset(projection_profiles) - frozenset(
         relations[relation_name].profiles
     )
-    if not unsupported_profiles:
+    if not unsupported_profiles or allow_backend_fallback:
         return
 
     raise ValueError(
@@ -83,6 +78,14 @@ def _validate_projection_relation(
         f"loaded. Add {sorted(unsupported_profiles)} to '{relation_name}'.profiles or restrict "
         f"'{projection_name}'.profiles to {sorted(relations[relation_name].profiles)}."
     )
+
+
+def _has_declared_callable(obj: Any, attr_name: str) -> bool:
+    try:
+        candidate = py_inspect.getattr_static(obj, attr_name)
+    except AttributeError:
+        return False
+    return callable(candidate)
 
 
 class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
@@ -128,13 +131,15 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         """Validate relation-based projection loaders at repository init time.
 
         Ensures every ``ProjectionField`` backed by a relation loader
-        references an existing relation that is eagerly loaded in all profiles
-        where the projection is active.
+        references an existing relation. For ``PRELOADED`` sources, relation
+        profiles must cover projection profiles. For ``AUTO`` sources with a
+        backend-capable loader, profile mismatches are allowed because runtime
+        can fall back to backend loading.
 
         Raises:
             ValueError: If the referenced relation does not exist on the model,
-                or if the projection is active in profiles where the relation
-                is not loaded.
+                or if a memory-only projection is active in profiles where the
+                relation is not loaded.
         """
         projections = self._projections_cache or {}
         relations = self._relations_cache or {}
@@ -150,6 +155,10 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 projection_profiles=proj.profiles,
                 relation_name=relation_name,
                 relations=relations,
+                allow_backend_fallback=(
+                    proj.source is ProjectionSource.AUTO
+                    and _has_declared_callable(proj.loader, "load_many")
+                ),
             )
 
     @property

@@ -19,6 +19,8 @@ Compilation steps per interface:
 
 from __future__ import annotations
 
+import inspect
+import typing
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +74,7 @@ class CompiledRoute:
     effective_expose_profile: bool
     effective_allow_pagination_override: bool
     interface_tags: tuple[str, ...] = ()
+    execute_param_types: tuple[tuple[str, Any], ...] = ()
 
 
 class RestInterfaceCompiler:
@@ -169,6 +172,7 @@ class RestInterfaceCompiler:
                         route, interface
                     ),
                     interface_tags=interface.tags,
+                    execute_param_types=self._resolve_execute_param_types(route.use_case),
                 )
             )
 
@@ -240,3 +244,23 @@ class RestInterfaceCompiler:
         if interface.allow_pagination_override is not None:
             return interface.allow_pagination_override
         return self._defaults.allow_pagination_override
+
+    def _resolve_execute_param_types(
+        self,
+        use_case_type: type[Any],
+    ) -> tuple[tuple[str, Any], ...]:
+        execute_fn = use_case_type.execute
+        signature = inspect.signature(execute_fn)
+        try:
+            hints = typing.get_type_hints(execute_fn)
+        except Exception:
+            hints = {}
+
+        result: list[tuple[str, Any]] = []
+        variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for name, param in signature.parameters.items():
+            if name == "self" or param.kind in variadic:
+                continue
+            annotation = hints.get(name, param.annotation)
+            result.append((name, annotation))
+        return tuple(result)

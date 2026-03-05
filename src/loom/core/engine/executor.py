@@ -27,6 +27,17 @@ if TYPE_CHECKING:
 
 ResultT = TypeVar("ResultT")
 
+_LOG_EXEC = "[EXEC]"
+_LOG_DONE = "[DONE]"
+_LOG_FAIL = "[FAIL]"
+_STATUS_SUCCESS = "success"
+_STATUS_FAILURE = "failure"
+_STATUS_RULE_FAILURE = "rule_failure"
+
+
+class ParameterBindingError(ValueError):
+    """Raised when a primitive execute parameter cannot be coerced to its declared type."""
+
 
 class RuntimeExecutor:
     """Executes UseCases from their compiled ExecutionPlan without reflection.
@@ -199,93 +210,168 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> Any:
-        trace_id = get_trace_id()
-        logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
-
-        logger.info(f"[EXEC] {uc_name}", usecase=uc_name)
-        self._emit(
-            RuntimeEvent(
-                kind=EventKind.EXEC_START,
-                use_case_name=uc_name,
-                trace_id=trace_id,
-            )
-        )
+        trace_id, logger = self._begin_execution(uc_name)
 
         try:
-            bound: dict[str, Any] = {}
-
-            self._bind_params(plan, params or {}, bound)
-            fields_set = self._build_command(plan, payload, bound)
-            await self._execute_loads(plan, compilable, bound, dependencies, load_overrides)
-            await self._execute_exists(plan, compilable, bound, dependencies)
-            self._apply_computes(plan, bound, fields_set)
-            self._check_rules(plan, bound, fields_set)
-
-            self._log_step("Execute core logic")
-            execute_fn = compilable.execute
-            if inspect.iscoroutinefunction(execute_fn):
-                result: Any = await execute_fn(**bound)
-            else:
-                result = execute_fn(**bound)
+            result = await self._run_core_pipeline(
+                plan=plan,
+                compilable=compilable,
+                params=params,
+                payload=payload,
+                dependencies=dependencies,
+                load_overrides=load_overrides,
+            )
 
         except RuleViolations as exc:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.warning(
-                f"[FAIL] {uc_name}",
-                usecase=uc_name,
-                duration_ms=elapsed_ms,
-                status="rule_failure",
-            )
-            self._emit(
-                RuntimeEvent(
-                    kind=EventKind.EXEC_ERROR,
-                    use_case_name=uc_name,
-                    duration_ms=elapsed_ms,
-                    status="rule_failure",
-                    error=exc,
-                    trace_id=trace_id,
-                )
+            self._handle_rule_failure(
+                logger=logger,
+                use_case_name=uc_name,
+                start=start,
+                error=exc,
+                trace_id=trace_id,
             )
             raise
 
         except Exception as exc:
-            elapsed_ms = (time.perf_counter() - start) * 1000
-            logger.error(
-                f"[FAIL] {uc_name}",
-                usecase=uc_name,
-                duration_ms=elapsed_ms,
-                status="failure",
-                error=str(exc),
-            )
-            self._emit(
-                RuntimeEvent(
-                    kind=EventKind.EXEC_ERROR,
-                    use_case_name=uc_name,
-                    duration_ms=elapsed_ms,
-                    status="failure",
-                    error=exc,
-                    trace_id=trace_id,
-                )
+            self._handle_failure(
+                logger=logger,
+                use_case_name=uc_name,
+                start=start,
+                error=exc,
+                trace_id=trace_id,
             )
             raise
 
+        self._handle_success(
+            logger=logger,
+            use_case_name=uc_name,
+            start=start,
+            trace_id=trace_id,
+        )
+        return result
+
+    def _begin_execution(self, use_case_name: str) -> tuple[str | None, LoggerPort]:
+        trace_id = get_trace_id()
+        logger = self._logger.bind(trace_id=trace_id) if trace_id else self._logger
+        logger.info(f"{_LOG_EXEC} {use_case_name}", usecase=use_case_name)
+        self._emit(
+            RuntimeEvent(
+                kind=EventKind.EXEC_START,
+                use_case_name=use_case_name,
+                trace_id=trace_id,
+            )
+        )
+        return trace_id, logger
+
+    async def _run_core_pipeline(
+        self,
+        *,
+        plan: ExecutionPlan,
+        compilable: Compilable,
+        params: dict[str, Any] | None,
+        payload: dict[str, Any] | None,
+        dependencies: dict[type[Any], Any] | None,
+        load_overrides: dict[type[Any], Any] | None,
+    ) -> Any:
+        bound: dict[str, Any] = {}
+        self._bind_params(plan, params or {}, bound)
+        fields_set = self._build_command(plan, payload, bound)
+        await self._execute_loads(plan, compilable, bound, dependencies, load_overrides)
+        await self._execute_exists(plan, compilable, bound, dependencies)
+        self._apply_computes(plan, bound, fields_set)
+        self._check_rules(plan, bound, fields_set)
+        return await self._invoke_execute(compilable, bound)
+
+    async def _invoke_execute(
+        self,
+        compilable: Compilable,
+        bound: dict[str, Any],
+    ) -> Any:
+        self._log_step("Execute core logic")
+        execute_fn = compilable.execute
+        if inspect.iscoroutinefunction(execute_fn):
+            return await execute_fn(**bound)
+        return execute_fn(**bound)
+
+    def _handle_rule_failure(
+        self,
+        *,
+        logger: LoggerPort,
+        use_case_name: str,
+        start: float,
+        error: RuleViolations,
+        trace_id: str | None,
+    ) -> None:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.warning(
+            f"{_LOG_FAIL} {use_case_name}",
+            usecase=use_case_name,
+            duration_ms=elapsed_ms,
+            status=_STATUS_RULE_FAILURE,
+        )
+        self._emit(
+            RuntimeEvent(
+                kind=EventKind.EXEC_ERROR,
+                use_case_name=use_case_name,
+                duration_ms=elapsed_ms,
+                status=_STATUS_RULE_FAILURE,
+                error=error,
+                trace_id=trace_id,
+            )
+        )
+
+    def _handle_failure(
+        self,
+        *,
+        logger: LoggerPort,
+        use_case_name: str,
+        start: float,
+        error: Exception,
+        trace_id: str | None,
+    ) -> None:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        logger.error(
+            f"{_LOG_FAIL} {use_case_name}",
+            usecase=use_case_name,
+            duration_ms=elapsed_ms,
+            status=_STATUS_FAILURE,
+            error=str(error),
+        )
+        self._emit(
+            RuntimeEvent(
+                kind=EventKind.EXEC_ERROR,
+                use_case_name=use_case_name,
+                duration_ms=elapsed_ms,
+                status=_STATUS_FAILURE,
+                error=error,
+                trace_id=trace_id,
+            )
+        )
+
+    def _handle_success(
+        self,
+        *,
+        logger: LoggerPort,
+        use_case_name: str,
+        start: float,
+        trace_id: str | None,
+    ) -> None:
         elapsed_ms = (time.perf_counter() - start) * 1000
         logger.info(
-            f"[DONE] {elapsed_ms:.1f}ms",
-            usecase=uc_name,
+            f"{_LOG_DONE} {elapsed_ms:.1f}ms",
+            usecase=use_case_name,
             duration_ms=elapsed_ms,
-            status="success",
+            status=_STATUS_SUCCESS,
         )
         self._emit(
             RuntimeEvent(
                 kind=EventKind.EXEC_DONE,
-                use_case_name=uc_name,
+                use_case_name=use_case_name,
                 duration_ms=elapsed_ms,
-                status="success",
+                status=_STATUS_SUCCESS,
                 trace_id=trace_id,
             )
         )
-        return result
 
     # ------------------------------------------------------------------
     # Pipeline stages
@@ -303,16 +389,34 @@ class RuntimeExecutor:
                     f"{plan.use_case_type.__qualname__}: missing required parameter '{pb.name}'"
                 )
             raw = params[pb.name]
-            if isinstance(pb.annotation, type):
-                try:
-                    if not isinstance(raw, pb.annotation):
-                        bound[pb.name] = pb.annotation(raw)
-                    else:
-                        bound[pb.name] = raw
-                except (TypeError, ValueError):
-                    bound[pb.name] = raw
-            else:
-                bound[pb.name] = raw
+            bound[pb.name] = self._coerce_param(
+                param_name=pb.name,
+                annotation=pb.annotation,
+                raw=raw,
+                use_case_name=plan.use_case_type.__qualname__,
+            )
+
+    @staticmethod
+    def _coerce_param(
+        *,
+        param_name: str,
+        annotation: Any,
+        raw: Any,
+        use_case_name: str,
+    ) -> Any:
+        if annotation is Any:
+            return raw
+        if not isinstance(annotation, type):
+            return raw
+        if isinstance(raw, annotation):
+            return raw
+        try:
+            return annotation(raw)
+        except (TypeError, ValueError) as exc:
+            raise ParameterBindingError(
+                f"{use_case_name}: invalid value for parameter '{param_name}': "
+                f"expected {annotation.__name__}, got {type(raw).__name__} ({raw!r})"
+            ) from exc
 
     def _build_command(
         self,
@@ -544,10 +648,7 @@ class RuntimeExecutor:
     def _resolve_repo(self, entity_type: type[Any]) -> Any | None:
         if self._repo_resolver is None:
             return None
-        try:
-            return self._repo_resolver(entity_type)
-        except Exception:
-            return None
+        return self._repo_resolver(entity_type)
 
     # ------------------------------------------------------------------
     # Helpers

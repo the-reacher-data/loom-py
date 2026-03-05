@@ -75,6 +75,12 @@ class ItemUseCase(UseCase[Any, dict[str, Any]]):
         return {"item_id": item_id}
 
 
+class IntItemUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, item_id: int, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"item_id": item_id}
+
+
 class ProfileAwareUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, profile: str, **kwargs: Any) -> dict[str, Any]:
         await asyncio.sleep(0)
@@ -226,6 +232,31 @@ def test_bind_interfaces_path_param_extracted() -> None:
     response = client.get("/items/42")
     assert response.status_code == 200
     assert response.json()["item_id"] == "42"
+
+
+def test_bind_interfaces_path_param_typed_from_execute_signature() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/typed-items"
+        routes = (RestRoute(use_case=IntItemUseCase, method="GET", path="/{item_id}"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/typed-items/42")
+    assert response.status_code == 200
+    assert response.json()["item_id"] == 42
+
+
+def test_bind_interfaces_path_param_validation_uses_typed_signature() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/typed-items"
+        routes = (RestRoute(use_case=IntItemUseCase, method="GET", path="/{item_id}"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/typed-items/not-an-int")
+    assert response.status_code == 422
 
 
 def test_bind_interfaces_status_code_respected() -> None:
@@ -548,6 +579,21 @@ def test_openapi_autocrud_summary_uses_generated_docstring() -> None:
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/auto-docs/"]["get"]
     assert operation["summary"] == "List _AutoItem with filtering, sorting and pagination."
+
+
+def test_openapi_autocrud_get_path_param_uses_model_id_type() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-item"
+        auto = True
+        include = ("get",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-item/{id}"]["get"]
+    id_param = next(param for param in operation["parameters"] if param["name"] == "id")
+    assert id_param["schema"]["type"] == "integer"
 
 
 # ---------------------------------------------------------------------------

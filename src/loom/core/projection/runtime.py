@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
@@ -9,7 +10,6 @@ from typing import Any, Protocol, cast
 from loom.core.model.projection import (
     PROJECTION_DEFAULT_MISSING,
     Projection,
-    ProjectionAutoPolicy,
     ProjectionSource,
 )
 
@@ -119,7 +119,11 @@ async def execute_projection_plan(
     values_by_index: dict[int, dict[str, Any]] = {index: {} for index in range(len(objs))}
 
     for level in plan.levels:
-        buckets = _partition_execution_steps(level, backend_context=backend_context)
+        buckets = _partition_execution_steps(
+            level,
+            objs=objs,
+            backend_context=backend_context,
+        )
         await _execute_backend_steps(
             steps=buckets.backend,
             backend_context=backend_context,
@@ -153,26 +157,39 @@ def _merge_rows(
 
 
 def _backend_loader(loader: Any) -> BackendProjectionLoader | None:
-    if hasattr(loader, "load_many"):
+    if _has_declared_callable(loader, "load_many"):
         return cast(BackendProjectionLoader, loader)
     return None
 
 
 def _memory_loader(loader: Any) -> MemoryProjectionLoader | None:
-    if hasattr(loader, "load_from_object"):
+    if _has_declared_callable(loader, "load_from_object"):
         return cast(MemoryProjectionLoader, loader)
     return None
+
+
+def _has_declared_callable(obj: Any, attr_name: str) -> bool:
+    try:
+        candidate = inspect.getattr_static(obj, attr_name)
+    except AttributeError:
+        return False
+    return callable(candidate)
 
 
 def _partition_execution_steps(
     level: tuple[ProjectionStep, ...],
     *,
+    objs: Sequence[Any],
     backend_context: Any | None,
 ) -> _ExecutionBuckets:
     backend_steps: list[ProjectionStep] = []
     memory_steps: list[ProjectionStep] = []
     for step in level:
-        target = _resolve_step_target(step, backend_context=backend_context)
+        target = _resolve_step_target(
+            step,
+            objs=objs,
+            backend_context=backend_context,
+        )
         if target == "backend":
             backend_steps.append(step)
             continue
@@ -186,6 +203,7 @@ def _partition_execution_steps(
 def _resolve_step_target(
     step: ProjectionStep,
     *,
+    objs: Sequence[Any],
     backend_context: Any | None,
 ) -> str:
     source_resolvers = {
@@ -193,7 +211,11 @@ def _resolve_step_target(
         ProjectionSource.PRELOADED: _resolve_preloaded_target,
         ProjectionSource.AUTO: _resolve_auto_target,
     }
-    return source_resolvers[step.projection.source](step, backend_context=backend_context)
+    return source_resolvers[step.projection.source](
+        step,
+        objs=objs,
+        backend_context=backend_context,
+    )
 
 
 async def _execute_backend_steps(
@@ -283,8 +305,10 @@ def _validate_step_configuration(
 def _resolve_backend_target(
     step: ProjectionStep,
     *,
+    objs: Sequence[Any],
     backend_context: Any | None,
 ) -> str:
+    del objs
     if backend_context is None:
         raise RuntimeError(f"Projection '{step.name}' requires backend context")
     return _ExecutionTarget.BACKEND
@@ -293,37 +317,43 @@ def _resolve_backend_target(
 def _resolve_preloaded_target(
     step: ProjectionStep,
     *,
+    objs: Sequence[Any],
     backend_context: Any | None,
 ) -> str:
-    del step, backend_context
+    del step, objs, backend_context
     return _ExecutionTarget.MEMORY
 
 
 def _resolve_auto_target(
     step: ProjectionStep,
     *,
+    objs: Sequence[Any],
     backend_context: Any | None,
 ) -> str:
-    order = _auto_policy_order(step.projection.auto_policy)
-    for target in order:
-        if target == _ExecutionTarget.BACKEND:
-            if step.backend_loader is None:
-                continue
-            if backend_context is None:
-                continue
-            return _ExecutionTarget.BACKEND
+    if _should_use_memory(step=step, objs=objs):
+        return _ExecutionTarget.MEMORY
 
-        if target == _ExecutionTarget.MEMORY and step.memory_loader is not None:
-            return _ExecutionTarget.MEMORY
+    if step.backend_loader is not None:
+        if backend_context is None:
+            raise RuntimeError(f"Projection '{step.name}' requires backend context")
+        return _ExecutionTarget.BACKEND
 
-    if step.backend_loader is not None and backend_context is None:
-        raise RuntimeError(f"Projection '{step.name}' requires backend context")
-    raise TypeError(
-        f"Projection '{step.name}' loader must implement load_many() or load_from_object()"
+    raise RuntimeError(
+        f"Projection '{step.name}' requires loaded relation data "
+        "or a loader implementing load_many()"
     )
 
 
-def _auto_policy_order(policy: ProjectionAutoPolicy) -> tuple[str, str]:
-    if policy is ProjectionAutoPolicy.PRELOADED_THEN_BACKEND:
-        return (_ExecutionTarget.MEMORY, _ExecutionTarget.BACKEND)
-    return (_ExecutionTarget.BACKEND, _ExecutionTarget.MEMORY)
+def _should_use_memory(
+    *,
+    step: ProjectionStep,
+    objs: Sequence[Any],
+) -> bool:
+    if step.memory_loader is None:
+        return False
+
+    relation_name = getattr(step.memory_loader, "relation", None)
+    if not isinstance(relation_name, str) or not relation_name:
+        return True
+
+    return all(hasattr(obj, "__dict__") and relation_name in obj.__dict__ for obj in objs)

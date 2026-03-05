@@ -10,7 +10,6 @@ import pytest
 from loom.core.model.projection import (
     PROJECTION_DEFAULT_MISSING,
     Projection,
-    ProjectionAutoPolicy,
     ProjectionSource,
 )
 from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
@@ -162,7 +161,7 @@ async def test_runtime_backend_source_requires_backend_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_auto_default_prefers_backend_when_available() -> None:
+async def test_runtime_auto_prefers_memory_when_relation_is_loaded() -> None:
     plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
     values = await execute_projection_plan(
         plan,
@@ -170,23 +169,17 @@ async def test_runtime_auto_default_prefers_backend_when_available() -> None:
         id_attr="id",
         backend_context=object(),
     )
-    assert values[0]["score"] == 101
+    assert values[0]["score"] == 12
 
 
 @pytest.mark.asyncio
-async def test_runtime_auto_preloaded_policy_prefers_memory() -> None:
-    plan = build_projection_plan(
-        {
-            "score": Projection(
-                loader=_HybridLoader(),
-                auto_policy=ProjectionAutoPolicy.PRELOADED_THEN_BACKEND,
-            )
-        }
-    )
+async def test_runtime_auto_falls_back_to_backend_when_relation_not_loaded() -> None:
+    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
+    obj = type("_ObjNoRel", (), {"id": 1})()
     values = await execute_projection_plan(
         plan,
-        objs=[_Obj(id=1, value=0, rel=[1, 2])],
+        objs=[obj],
         id_attr="id",
         backend_context=object(),
     )
-    assert values[0]["score"] == 12
+    assert values[0]["score"] == 101

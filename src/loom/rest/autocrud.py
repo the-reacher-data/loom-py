@@ -61,7 +61,7 @@ _OP_STATUS: dict[str, int] = {"create": 201}
 # ---------------------------------------------------------------------------
 
 
-def _id_coerce(model: type[Any]) -> Callable[[str], Any]:
+def _id_coerce(model: type[Any]) -> Callable[[Any], Any]:
     """Return ``int`` coercer when model declares ``id: int``, else identity.
 
     Args:
@@ -76,6 +76,16 @@ def _id_coerce(model: type[Any]) -> Callable[[str], Any]:
     except Exception:
         return lambda x: x
     return int if hints.get("id") is int else (lambda x: x)
+
+
+def _id_annotation(model: type[Any]) -> Any:
+    """Return the declared ``id`` annotation for path-parameter typing."""
+    try:
+        hints = get_type_hints(model)
+    except Exception:
+        return str
+    annotation = hints.get("id", str)
+    return annotation if annotation is not Any else str
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +239,11 @@ def _make_create(model: type[Any], create_input: type[Any]) -> type[UseCase[Any,
     return AutoCreate
 
 
-def _make_get(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[Any, Any]]:
+def _make_get(
+    model: type[Any],
+    id_type: Any,
+    coerce: Callable[[Any], Any],
+) -> type[UseCase[Any, Any]]:
     """Generate a UseCase that fetches a single entity by id.
 
     Args:
@@ -243,7 +257,7 @@ def _make_get(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[An
     class AutoGet(UseCase[model, model]):  # type: ignore[valid-type]
         async def execute(
             self,
-            id: str,
+            id: id_type,  # pyright: ignore[reportInvalidTypeForm]
             profile: str = "default",
             _exists: bool = Exists(
                 model,
@@ -293,7 +307,8 @@ def _make_list(model: type[Any]) -> type[UseCase[Any, Any]]:
 def _make_update(
     model: type[Any],
     update_input: type[Any],
-    coerce: Callable[[str], Any],
+    id_type: Any,
+    coerce: Callable[[Any], Any],
 ) -> type[UseCase[Any, Any]]:
     """Generate a UseCase that applies a partial update to an entity.
 
@@ -309,7 +324,7 @@ def _make_update(
     class AutoUpdate(UseCase[model, model]):  # type: ignore[valid-type]
         async def execute(
             self,
-            id: str,
+            id: id_type,  # pyright: ignore[reportInvalidTypeForm]
             _exists: bool = Exists(
                 model,
                 from_param="id",
@@ -330,7 +345,11 @@ def _make_update(
     return AutoUpdate
 
 
-def _make_delete(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase[Any, Any]]:
+def _make_delete(
+    model: type[Any],
+    id_type: Any,
+    coerce: Callable[[Any], Any],
+) -> type[UseCase[Any, Any]]:
     """Generate a UseCase that deletes an entity by id.
 
     Args:
@@ -342,7 +361,7 @@ def _make_delete(model: type[Any], coerce: Callable[[str], Any]) -> type[UseCase
     """
 
     class AutoDelete(UseCase[model, model]):  # type: ignore[valid-type]
-        async def execute(self, id: str) -> bool:
+        async def execute(self, id: id_type) -> bool:  # pyright: ignore[reportInvalidTypeForm]
             return await self.main_repo.delete(coerce(id))
 
     AutoDelete.__name__ = f"AutoDelete{model.__name__}"
@@ -375,14 +394,15 @@ def _get_or_create(model: type[Any]) -> dict[str, Any]:
     if model in _UC_CACHE:
         return _UC_CACHE[model]
     coerce = _id_coerce(model)
+    id_type = _id_annotation(model)
     create_input = _derive_create_struct(model)
     update_input = _derive_update_struct(model)
     result: dict[str, Any] = {
         "create": _make_create(model, create_input),
-        "get": _make_get(model, coerce),
+        "get": _make_get(model, id_type, coerce),
         "list": _make_list(model),
-        "update": _make_update(model, update_input, coerce),
-        "delete": _make_delete(model, coerce),
+        "update": _make_update(model, update_input, id_type, coerce),
+        "delete": _make_delete(model, id_type, coerce),
         "create_input": create_input,
         "update_input": update_input,
     }

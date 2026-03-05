@@ -75,6 +75,28 @@ def _extract_path_params(path: str) -> list[str]:
     return re.findall(r"\{(\w+)\}", path)
 
 
+def _normalize_path_param_annotation(annotation: Any) -> Any:
+    if annotation is inspect._empty or annotation is Any:
+        return str
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Annotated:
+        args = typing.get_args(annotation)
+        if not args:
+            return str
+        return _normalize_path_param_annotation(args[0])
+
+    if origin in {typing.Union, types.UnionType}:
+        args = tuple(arg for arg in typing.get_args(annotation) if arg is not type(None))
+        if len(args) != 1:
+            return str
+        return _normalize_path_param_annotation(args[0])
+
+    if isinstance(annotation, type):
+        return annotation
+    return str
+
+
 _RESERVED_QUERY_KEYS = frozenset((*QUERY_SPEC_PARAMETER_NAMES, QUERY_PARAM_PROFILE))
 _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
@@ -274,6 +296,7 @@ def _make_handler(
         Async callable suitable for ``FastAPI.add_api_route``.
     """
     path_params = _extract_path_params(compiled_route.route.path)
+    execute_param_types = dict(compiled_route.execute_param_types)
     uc_type = compiled_route.route.use_case
     status_code = compiled_route.route.status_code
     execute_sig = inspect.signature(uc_type.execute)
@@ -336,11 +359,12 @@ def _make_handler(
         )
     ]
     for p_name in path_params:
+        annotation = _normalize_path_param_annotation(execute_param_types.get(p_name, str))
         sig_params.append(
             inspect.Parameter(
                 p_name,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=str,
+                annotation=annotation,
             )
         )
     _handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]

@@ -8,7 +8,7 @@ import pytest
 
 from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.engine.executor import RuntimeExecutor
+from loom.core.engine.executor import ParameterBindingError, RuntimeExecutor
 from loom.core.errors import NotFound
 from loom.core.use_case.markers import Exists, Input, Load, LoadById, OnMissing
 from loom.core.use_case.rule import RuleViolation, RuleViolations
@@ -230,6 +230,11 @@ class TestExecuteNoMarkers:
         with pytest.raises(ValueError, match="missing required parameter"):
             await ex.execute(_NoMarkersUseCase(), params={})
 
+    async def test_invalid_param_type_raises_binding_error(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(ParameterBindingError, match="invalid value for parameter 'value'"):
+            await ex.execute(_NoMarkersUseCase(), params={"value": "not-an-int"})
+
 
 # ---------------------------------------------------------------------------
 # Tests: Input binding
@@ -369,6 +374,16 @@ class TestExecuteWithLoad:
                 params={"user_id": 1},
                 dependencies={},
             )
+
+    async def test_repo_resolver_error_is_not_silenced(self) -> None:
+        compiler = UseCaseCompiler()
+        ex = RuntimeExecutor(
+            compiler,
+            logger=_RecordingLogger(),
+            repo_resolver=lambda _: (_ for _ in ()).throw(RuntimeError("resolver exploded")),
+        )
+        with pytest.raises(RuntimeError, match="resolver exploded"):
+            await ex.execute(_WithLoadUseCase(), params={"user_id": 1})
 
 
 class TestExecuteWithExists:

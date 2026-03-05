@@ -232,6 +232,29 @@ class TestValidateComputedRelationLoaders:
         with pytest.raises(ValueError, match="summary.*notes.*not loaded"):
             mixin._validate_computed_relation_loaders()
 
+    def test_auto_hybrid_loader_allows_profile_mismatch_with_backend_fallback(self) -> None:
+        loader = MagicMock()
+        loader.relation = "notes"
+        loader.load_from_object = MagicMock(return_value=True)
+        loader.load_many = AsyncMock(return_value={})
+        relations = {
+            "notes": Relation(
+                foreign_key="record_id",
+                cardinality=Cardinality.ONE_TO_MANY,
+                profiles=("with_details",),
+            )
+        }
+        projections = {
+            "has_notes": Projection(
+                loader=loader,
+                source=ProjectionSource.AUTO,
+                profiles=("with_details", "summary"),
+                default=False,
+            )
+        }
+        mixin = _make_validation_mixin("MyModel", projections, relations)
+        mixin._validate_computed_relation_loaders()
+
     def test_error_includes_projection_field_name(self) -> None:
         projections = {
             "bad_count": Projection(
