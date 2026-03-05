@@ -25,6 +25,7 @@ from typing import Any, cast, get_type_hints
 
 import msgspec
 
+from loom.core.command import Command
 from loom.core.errors import NotFound
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
@@ -139,8 +140,8 @@ def _field_tuple(
     return (name, typ, sf.default)
 
 
-def _derive_create_struct(model: type[Any]) -> type[msgspec.Struct]:
-    """Derive a ``{ModelName}CreateInput`` struct with only user-writable fields.
+def _derive_create_struct(model: type[Any]) -> type[Command]:
+    """Derive a ``{ModelName}CreateInput`` command with only user-writable fields.
 
     Excluded: primary keys, autoincrement columns, server-default columns,
     relations, and projections.  Types are taken from ``get_type_hints(model)``
@@ -151,7 +152,7 @@ def _derive_create_struct(model: type[Any]) -> type[msgspec.Struct]:
         model: Domain model type.
 
     Returns:
-        A ``msgspec.Struct`` subclass named ``{ModelName}CreateInput``.
+        A ``Command`` subclass named ``{ModelName}CreateInput``.
 
     Example::
 
@@ -167,17 +168,21 @@ def _derive_create_struct(model: type[Any]) -> type[msgspec.Struct]:
         for name in (sf.name,)
         if name in writable_names and name in hints
     ]
-    return msgspec.defstruct(
-        f"{model.__name__}CreateInput",
-        field_defs,
-        kw_only=True,
-        rename="camel",
-        omit_defaults=True,
+    return cast(
+        type[Command],
+        msgspec.defstruct(
+            f"{model.__name__}CreateInput",
+            field_defs,
+            bases=(Command,),
+            module=__name__,
+            kw_only=True,
+            frozen=True,
+        ),
     )
 
 
-def _derive_update_struct(model: type[Any]) -> type[msgspec.Struct]:
-    """Derive a ``{ModelName}UpdateInput`` struct with all writable fields optional.
+def _derive_update_struct(model: type[Any]) -> type[Command]:
+    """Derive a ``{ModelName}UpdateInput`` command with all writable fields optional.
 
     Every included field has its type widened to ``T | UnsetType`` and its default
     set to ``msgspec.UNSET``, giving PATCH semantics: fields absent from the
@@ -187,7 +192,7 @@ def _derive_update_struct(model: type[Any]) -> type[msgspec.Struct]:
         model: Domain model type.
 
     Returns:
-        A ``msgspec.Struct`` subclass named ``{ModelName}UpdateInput``.
+        A ``Command`` subclass named ``{ModelName}UpdateInput``.
 
     Example::
 
@@ -203,12 +208,16 @@ def _derive_update_struct(model: type[Any]) -> type[msgspec.Struct]:
         for name in (sf.name,)
         if name in writable_names and name in hints
     ]
-    return msgspec.defstruct(
-        f"{model.__name__}UpdateInput",
-        field_defs,
-        kw_only=True,
-        rename="camel",
-        omit_defaults=True,
+    return cast(
+        type[Command],
+        msgspec.defstruct(
+            f"{model.__name__}UpdateInput",
+            field_defs,
+            bases=(Command,),
+            module=__name__,
+            kw_only=True,
+            frozen=True,
+        ),
     )
 
 

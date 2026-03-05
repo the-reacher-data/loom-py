@@ -306,6 +306,12 @@ class UseCaseCompiler:
             raise CompilationError(
                 f"{use_case_type.__qualname__}.execute: only one Input() parameter is allowed"
             )
+        from_payload = getattr(annotation, "from_payload", None)
+        if not callable(from_payload):
+            raise CompilationError(
+                f"{use_case_type.__qualname__}.execute: "
+                f"Input() parameter '{name}' type must implement from_payload(payload)"
+            )
         next_binding = InputBinding(name=name, command_type=annotation)
         cmd_name = getattr(annotation, "__name__", repr(annotation))
         self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")

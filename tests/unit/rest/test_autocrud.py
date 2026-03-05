@@ -5,6 +5,7 @@ from typing import Any
 import msgspec
 import pytest
 
+from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.model import BaseModel, ColumnField
 from loom.core.model.enums import Cardinality, ServerDefault
@@ -141,8 +142,8 @@ class TestAutoCrudCache:
         ucs = _get_or_create(_Cached)
         assert "create_input" in ucs
         assert "update_input" in ucs
-        assert issubclass(ucs["create_input"], msgspec.Struct)
-        assert issubclass(ucs["update_input"], msgspec.Struct)
+        assert issubclass(ucs["create_input"], Command)
+        assert issubclass(ucs["update_input"], Command)
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +272,10 @@ class TestDeriveCreateStruct:
         field_names = {f.name for f in msgspec.structs.fields(create_input)}
         assert "name" in field_names
 
-    def test_create_input_is_msgspec_struct(self) -> None:
+    def test_create_input_is_command(self) -> None:
         create_input = _derive_create_struct(_RichModel)
-        assert issubclass(create_input, msgspec.Struct)
+        assert issubclass(create_input, Command)
+        assert callable(getattr(create_input, "from_payload", None))
 
     def test_create_input_name(self) -> None:
         create_input = _derive_create_struct(_RichModel)

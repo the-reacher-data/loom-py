@@ -5,8 +5,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
-import msgspec
-
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
@@ -435,13 +433,10 @@ class RuntimeExecutor:
         cmd_type = plan.input_binding.command_type
         if hasattr(cmd_type, "from_payload"):
             command, fields_set = cmd_type.from_payload(payload)
-        elif isinstance(cmd_type, type) and issubclass(cmd_type, msgspec.Struct):
-            normalized_payload, fields_set = _normalize_struct_payload(payload, cmd_type)
-            command = msgspec.convert(normalized_payload, cmd_type)
         else:
             raise TypeError(
                 f"{plan.use_case_type.__qualname__}: "
-                f"command type {cmd_type!r} must implement from_payload() or be a msgspec.Struct"
+                f"command type {cmd_type!r} must implement from_payload()"
             )
         bound[plan.input_binding.name] = command
         self._log_step("Bind Input")
@@ -661,33 +656,3 @@ class RuntimeExecutor:
     def _log_step(self, label: str) -> None:
         if self._debug:
             self._logger.info(f"[STEP] {label}")
-
-
-def _normalize_struct_payload(
-    payload: dict[str, Any],
-    cmd_type: type[msgspec.Struct],
-) -> tuple[dict[str, Any], frozenset[str]]:
-    """Normalize input payload keys for msgspec structs.
-
-    Accepts both internal field names (snake_case) and encoded field names
-    (e.g. camelCase), then returns a payload keyed by encoded names for
-    ``msgspec.convert`` plus a normalized ``fields_set`` in internal names.
-    """
-    normalized_payload = dict(payload)
-    internal_names: set[str] = set()
-    encoded_to_internal: dict[str, str] = {}
-
-    for field in msgspec.structs.fields(cmd_type):
-        internal_name = field.name
-        encoded_name = field.encode_name or field.name
-        internal_names.add(internal_name)
-        encoded_to_internal[encoded_name] = internal_name
-        if internal_name in payload and encoded_name not in normalized_payload:
-            normalized_payload[encoded_name] = payload[internal_name]
-
-    fields_set = frozenset(
-        key if key in internal_names else encoded_to_internal[key]
-        for key in payload
-        if key in internal_names or key in encoded_to_internal
-    )
-    return normalized_payload, fields_set

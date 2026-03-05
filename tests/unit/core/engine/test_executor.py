@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import msgspec
 import pytest
 
 from loom.core.command import Command
@@ -82,7 +81,7 @@ class _InputOnlyUseCase(UseCase[Any, str]):
         return cmd.email
 
 
-class _RenamedInputStruct(msgspec.Struct, rename="camel"):
+class _RenamedInputStruct(Command, frozen=True, rename="camel"):
     price_cents: int
     stock: int
 
@@ -271,7 +270,7 @@ class TestExecuteWithInput:
             ({"priceCents": 321, "stock": 2}, 321),
         ],
     )
-    async def test_msgspec_struct_input_accepts_snake_and_camel_case_keys(
+    async def test_input_command_accepts_snake_and_camel_case_keys(
         self,
         payload: dict[str, int],
         expected_price: int,

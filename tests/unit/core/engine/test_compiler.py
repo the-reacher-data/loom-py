@@ -88,6 +88,11 @@ class _WithInputUseCase(UseCase[Any, str]):
         return "ok"
 
 
+class _InputWithoutFromPayloadUseCase(UseCase[Any, str]):
+    async def execute(self, cmd: int = Input()) -> str:
+        return f"{cmd}"
+
+
 class _WithLoadUseCase(UseCase[Any, str]):
     async def execute(
         self,
@@ -202,6 +207,10 @@ class TestCompileWithInput:
         plan = UseCaseCompiler().compile(_WithInputUseCase)
         names = [pb.name for pb in plan.param_bindings]
         assert "cmd" not in names
+
+    def test_input_type_must_implement_from_payload(self) -> None:
+        with pytest.raises(CompilationError, match="must implement from_payload"):
+            UseCaseCompiler().compile(_InputWithoutFromPayloadUseCase)
 
 
 # ---------------------------------------------------------------------------

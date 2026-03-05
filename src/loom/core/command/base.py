@@ -20,15 +20,22 @@ class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True, ren
 
     __command_fields__: ClassVar[dict[str, CommandField]] = {}
     __patch__: ClassVar[bool] = False
+    __payload_struct_fields__: ClassVar[dict[str, msgspec.structs.FieldInfo]] = {}
+    __internal_to_external__: ClassVar[dict[str, str]] = {}
+    __external_to_internal__: ClassVar[dict[str, str]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls.__command_fields__ = _extract_command_fields(cls)
+        cls.__payload_struct_fields__ = {}
+        cls.__internal_to_external__ = {}
+        cls.__external_to_internal__ = {}
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> tuple[Self, frozenset[str]]:
-        struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
-        internal_to_external, external_to_internal = _build_field_mappings(struct_fields)
+        struct_fields, internal_to_external, external_to_internal = _get_cached_payload_mappings(
+            cls
+        )
         normalized, seen_internal_keys = _normalize_payload(
             payload=payload,
             struct_fields=struct_fields,
@@ -120,3 +127,25 @@ def _extract_command_fields(cls: type[Any]) -> dict[str, CommandField]:
                 result[name] = metadata
                 break
     return result
+
+
+def _get_cached_payload_mappings(
+    cls: type[Command],
+) -> tuple[
+    dict[str, msgspec.structs.FieldInfo],
+    dict[str, str],
+    dict[str, str],
+]:
+    if cls.__payload_struct_fields__:
+        return (
+            cls.__payload_struct_fields__,
+            cls.__internal_to_external__,
+            cls.__external_to_internal__,
+        )
+
+    struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
+    internal_to_external, external_to_internal = _build_field_mappings(struct_fields)
+    cls.__payload_struct_fields__ = struct_fields
+    cls.__internal_to_external__ = internal_to_external
+    cls.__external_to_internal__ = external_to_internal
+    return struct_fields, internal_to_external, external_to_internal
