@@ -377,10 +377,14 @@ class TestExecuteWithLoad:
 
     async def test_repo_resolver_error_is_not_silenced(self) -> None:
         compiler = UseCaseCompiler()
+
+        def _resolver(_: type[Any]) -> Any:
+            raise RuntimeError("resolver exploded")
+
         ex = RuntimeExecutor(
             compiler,
             logger=_RecordingLogger(),
-            repo_resolver=lambda _: (_ for _ in ()).throw(RuntimeError("resolver exploded")),
+            repo_resolver=_resolver,
         )
         with pytest.raises(RuntimeError, match="resolver exploded"):
             await ex.execute(_WithLoadUseCase(), params={"user_id": 1})
