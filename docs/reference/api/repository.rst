@@ -8,7 +8,6 @@ Contracts
    :toctree: generated
 
    loom.core.repository.abc
-   loom.core.repository.abc.repository
    loom.core.repository.abc.query
 
 SQLAlchemy adapter
@@ -18,10 +17,6 @@ SQLAlchemy adapter
    :toctree: generated
 
    loom.core.repository.sqlalchemy
-   loom.core.repository.sqlalchemy.repository
-   loom.core.repository.sqlalchemy.session_manager
-   loom.core.repository.sqlalchemy.transactional
-   loom.core.repository.sqlalchemy.loaders
 
 Cache layer
 -----------

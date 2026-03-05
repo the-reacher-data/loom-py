@@ -57,6 +57,8 @@ def _skip_duplicate_reexports(app, what, name, obj, skip, options):
     del what, obj, options
     current_module = app.env.temp_data.get("autodoc:module")
     duplicated_reexports = {
+        ("loom.core.errors", "RuleViolation"),
+        ("loom.core.errors", "RuleViolations"),
         ("loom.core.use_case", "RuleViolation"),
         ("loom.core.use_case", "RuleViolations"),
         ("loom.rest.model", "PaginationMode"),

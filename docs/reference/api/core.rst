@@ -12,7 +12,6 @@ Use Case DSL
    loom.core.use_case.compute
    loom.core.use_case.rule
    loom.core.use_case.field_ref
-   loom.core.use_case.use_case
 
 Command and Model
 -----------------
