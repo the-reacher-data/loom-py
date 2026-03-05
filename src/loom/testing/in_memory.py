@@ -26,6 +26,13 @@ from typing import Any, Generic, TypeVar
 
 import msgspec
 
+from loom.core.model.introspection import get_projections
+from loom.core.projection.runtime import (
+    ProjectionPlan,
+    build_projection_plan,
+    execute_projection_plan,
+)
+
 T = TypeVar("T", bound=msgspec.Struct)
 
 
@@ -71,6 +78,7 @@ class InMemoryRepository(Generic[T]):
         self._creator = creator
         self._store: dict[Any, T] = {}
         self._next_id: int = 1
+        self._projection_plans: dict[str, ProjectionPlan] = {}
 
     def seed(self, *entities: T) -> None:
         """Pre-load entities into the store.
@@ -101,7 +109,10 @@ class InMemoryRepository(Generic[T]):
         Returns:
             Entity instance, or ``None`` if no entity has that id.
         """
-        return self._store.get(obj_id)
+        entity = self._store.get(obj_id)
+        if entity is None:
+            return None
+        return await self._with_projections(entity, profile=profile)
 
     async def create(self, cmd: Any) -> T:
         """Create and store a new entity from ``cmd``.
@@ -180,7 +191,25 @@ class InMemoryRepository(Generic[T]):
         Returns:
             List of all entities in insertion order.
         """
-        return list(self._store.values())
+        profile = kwargs.get("profile", "default")
+        entities = list(self._store.values())
+        if not entities:
+            return []
+
+        plan = self._projection_plan_for_profile(profile)
+        if plan is None:
+            return entities
+
+        projection_values = await execute_projection_plan(
+            plan,
+            objs=entities,
+            id_attr=self._id_field,
+            backend_context=None,
+        )
+        return [
+            self._apply_projection_values(entity, projection_values.get(i))
+            for i, entity in enumerate(entities)
+        ]
 
     def _auto_create(self, cmd: Any) -> T:
         """Derive entity from command attributes and auto-increment id."""
@@ -193,3 +222,41 @@ class InMemoryRepository(Generic[T]):
                 data[f_name] = getattr(cmd, f_name)
         self._next_id += 1
         return msgspec.convert(data, self._entity_type)
+
+    def _projection_plan_for_profile(self, profile: str) -> ProjectionPlan | None:
+        cached = self._projection_plans.get(profile)
+        if cached is not None:
+            return cached
+
+        model_projections = get_projections(self._entity_type)
+        active = {
+            name: projection
+            for name, projection in model_projections.items()
+            if profile in projection.profiles
+        }
+        if not active:
+            return None
+
+        compiled = build_projection_plan(active)
+        self._projection_plans[profile] = compiled
+        return compiled
+
+    async def _with_projections(self, entity: T, *, profile: str) -> T:
+        plan = self._projection_plan_for_profile(profile)
+        if plan is None:
+            return entity
+
+        result = await execute_projection_plan(
+            plan,
+            objs=[entity],
+            id_attr=self._id_field,
+            backend_context=None,
+        )
+        return self._apply_projection_values(entity, result.get(0))
+
+    def _apply_projection_values(self, entity: T, values: dict[str, Any] | None) -> T:
+        if not values:
+            return entity
+        data = msgspec.structs.asdict(entity)
+        data.update(values)
+        return self._entity_type(**data)

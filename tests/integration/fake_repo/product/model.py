@@ -8,10 +8,14 @@ from loom.core.model import (
     ColumnField,
     OnDelete,
     ProjectionField,
+    ProjectionSource,
     RelationField,
 )
-from loom.core.repository.sqlalchemy.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
-from tests.integration.fake_repo.product.review.model import ProductReview
+from loom.core.projection.loaders import (
+    RelationCountLoader,
+    RelationExistsLoader,
+    RelationJoinFieldsLoader,
+)
 
 
 class Product(BaseModel):
@@ -38,29 +42,32 @@ class Product(BaseModel):
     )
 
     has_reviews: bool = ProjectionField(
-        loader=ExistsLoader(
-            model=ProductReview,
+        loader=RelationExistsLoader(
+            relation="reviews",
             foreign_key="product_id",
         ),
+        source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         depends_on=("product_reviews:product_id",),
         default=False,
     )
     count_reviews: int = ProjectionField(
-        loader=CountLoader(
-            model=ProductReview,
+        loader=RelationCountLoader(
+            relation="reviews",
             foreign_key="product_id",
         ),
+        source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         depends_on=("product_reviews:product_id",),
         default=0,
     )
     review_snippets: list[dict[str, Any]] = ProjectionField(
-        loader=JoinFieldsLoader(
-            model=ProductReview,
+        loader=RelationJoinFieldsLoader(
+            relation="reviews",
             foreign_key="product_id",
             value_columns=("id", "rating", "comment"),
         ),
+        source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         depends_on=("product_reviews:product_id",),
         default=[],

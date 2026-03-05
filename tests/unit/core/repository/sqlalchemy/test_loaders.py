@@ -11,7 +11,7 @@ import pytest
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.model import BaseModel, Cardinality
 from loom.core.model.field import ColumnField
-from loom.core.model.projection import Projection
+from loom.core.model.projection import Projection, ProjectionField
 from loom.core.model.relation import Relation
 from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
 from loom.core.repository.sqlalchemy.mixins import SQLAlchemyContextMixin
@@ -55,7 +55,7 @@ class _RecordWithValidConfig(BaseModel):
         cardinality=Cardinality.ONE_TO_MANY,
         profiles=("with_details",),
     )
-    notes_count: int = Projection(
+    notes_count: int = ProjectionField(
         loader=ComputedFromRelationLoader(relation="notes", fn=len),
         profiles=("with_details",),
         default=0,
@@ -314,12 +314,12 @@ class TestCollectProjectionValues:
             __tablename__ = "test_multi_db_crl"
             id: int = ColumnField(primary_key=True, autoincrement=True)
 
-            cnt: int = Projection(
+            cnt: int = ProjectionField(
                 loader=MagicMock(load_many=AsyncMock(return_value={1: 3})),
                 profiles=("detail",),
                 default=0,
             )
-            flag: bool = Projection(
+            flag: bool = ProjectionField(
                 loader=MagicMock(load_many=AsyncMock(return_value={1: True})),
                 profiles=("detail",),
                 default=False,
@@ -344,7 +344,7 @@ class TestCollectProjectionValues:
         obj.id = 1
 
         with patch(
-            "loom.core.repository.sqlalchemy.mixins.asyncio.gather",
+            "loom.core.projection.runtime.asyncio.gather",
             wraps=asyncio.gather,
         ) as mock_gather:
             result = await mixin._collect_projection_values(session, [obj], "detail")
@@ -370,7 +370,7 @@ class TestCollectProjectionValues:
             __tablename__ = "test_with_default_crl"
             id: int = ColumnField(primary_key=True, autoincrement=True)
 
-            score: int = Projection(
+            score: int = ProjectionField(
                 loader=MagicMock(load_many=AsyncMock(return_value={})),
                 profiles=("p",),
                 default=-1,
@@ -394,3 +394,63 @@ class TestCollectProjectionValues:
         obj.id = 99
         result = await mixin._collect_projection_values(AsyncMock(), [obj], "p")
         assert result[0]["score"] == -1
+
+    async def test_projection_without_default_is_omitted_when_loader_returns_no_entry(self) -> None:
+        class _WithoutDefault(BaseModel):
+            __tablename__ = "test_without_default_crl"
+            id: int = ColumnField(primary_key=True, autoincrement=True)
+
+            score: int = ProjectionField(
+                loader=MagicMock(load_many=AsyncMock(return_value={})),
+                profiles=("p",),
+            )
+
+        reset_registry()
+        compile_all(_WithoutDefault)
+
+        mixin: SQLAlchemyContextMixin[Any, Any] = object.__new__(SQLAlchemyContextMixin)
+        mixin.model = _WithoutDefault
+        mixin._sa_model = None
+        mixin._id_attr = None
+        mixin._column_field_names = None
+        mixin._output_column_keys = None
+        mixin._all_sa_column_keys = None
+        mixin._relations_cache = None
+        mixin._projections_cache = None
+        mixin._init_struct_model()
+
+        obj = MagicMock()
+        obj.id = 101
+        result = await mixin._collect_projection_values(AsyncMock(), [obj], "p")
+        assert "score" not in result[0]
+
+    async def test_projection_with_explicit_none_default_is_included(self) -> None:
+        class _WithNoneDefault(BaseModel):
+            __tablename__ = "test_with_none_default_crl"
+            id: int = ColumnField(primary_key=True, autoincrement=True)
+
+            score: int | None = ProjectionField(
+                loader=MagicMock(load_many=AsyncMock(return_value={})),
+                profiles=("p",),
+                default=None,
+            )
+
+        reset_registry()
+        compile_all(_WithNoneDefault)
+
+        mixin: SQLAlchemyContextMixin[Any, Any] = object.__new__(SQLAlchemyContextMixin)
+        mixin.model = _WithNoneDefault
+        mixin._sa_model = None
+        mixin._id_attr = None
+        mixin._column_field_names = None
+        mixin._output_column_keys = None
+        mixin._all_sa_column_keys = None
+        mixin._relations_cache = None
+        mixin._projections_cache = None
+        mixin._init_struct_model()
+
+        obj = MagicMock()
+        obj.id = 102
+        result = await mixin._collect_projection_values(AsyncMock(), [obj], "p")
+        assert "score" in result[0]
+        assert result[0]["score"] is None

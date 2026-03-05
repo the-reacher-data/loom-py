@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
@@ -15,6 +14,8 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
+from loom.core.model.projection import ProjectionSource
+from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 from loom.core.repository.abc import (
     CursorResult,
     FilterParams,
@@ -45,6 +46,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _all_sa_column_keys: tuple[str, ...] | None = None
     _relations_cache: dict[str, Any] | None = None
     _projections_cache: dict[str, Any] | None = None
+    _projection_plan_cache: dict[str, Any] | None = None
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
@@ -62,6 +64,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         self._column_field_names = column_field_names
         self._relations_cache = get_relations(self.model)
         self._projections_cache = get_projections(self.model)
+        self._projection_plan_cache = {}
 
         sa_mapper: Any = inspect(sa).mapper
         self._output_column_keys = tuple(
@@ -83,18 +86,25 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 or if the projection is active in profiles where the relation
                 is not loaded.
         """
-        from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
-
         projections = self._projections_cache or {}
         relations = self._relations_cache or {}
         model_name = self.model.__name__
 
         for proj_name, proj in projections.items():
             loader = proj.loader
-            if not isinstance(loader, ComputedFromRelationLoader):
+            if proj.source is ProjectionSource.BACKEND:
+                continue
+            has_memory_loader = hasattr(loader, "load_from_object")
+            has_backend_loader = hasattr(loader, "load_many")
+            if proj.source is ProjectionSource.AUTO and has_backend_loader:
+                continue
+            if not has_memory_loader:
                 continue
 
-            rel_name = loader.relation
+            rel_name = getattr(loader, "relation", None)
+            if not isinstance(rel_name, str) or not rel_name:
+                continue
+
             if rel_name not in relations:
                 raise ValueError(
                     f"'{model_name}.{proj_name}': ComputedFromRelationLoader references "
@@ -243,8 +253,8 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 
         :class:`~loom.core.repository.sqlalchemy.loaders.ComputedFromRelationLoader`
         projections are resolved synchronously from already-loaded relation
-        data on each ORM object (no DB round-trip).  All remaining DB-backed
-        loaders are fired concurrently via :func:`asyncio.gather`.
+        data on each ORM object (no DB round-trip). Remaining DB-backed
+        loaders are resolved by the compiled projection plan runtime.
         """
         if not objs:
             return {}
@@ -252,44 +262,22 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         if not projections:
             return {}
 
-        from loom.core.repository.sqlalchemy.loaders import ComputedFromRelationLoader
+        plan_cache = self._projection_plan_cache
+        if plan_cache is None:
+            plan_cache = {}
+            self._projection_plan_cache = plan_cache
 
-        id_attr = self._effective_id_attribute
-        obj_ids = [getattr(obj, id_attr) for obj in objs]
-        values_by_index: dict[int, dict[str, Any]] = {i: {} for i in range(len(objs))}
+        plan = plan_cache.get(profile)
+        if plan is None:
+            plan = build_projection_plan(projections)
+            plan_cache[profile] = plan
 
-        memory_projections = {
-            name: proj
-            for name, proj in projections.items()
-            if isinstance(proj.loader, ComputedFromRelationLoader)
-        }
-        db_projections = {
-            name: proj
-            for name, proj in projections.items()
-            if proj.loader is not None and not isinstance(proj.loader, ComputedFromRelationLoader)
-        }
-
-        for field_name, projection in memory_projections.items():
-            for i, obj in enumerate(objs):
-                values_by_index[i][field_name] = projection.loader.load_from_object(obj)
-
-        if db_projections:
-            results = await asyncio.gather(
-                *(
-                    proj.loader.load_many(scoped_session, obj_ids)
-                    for proj in db_projections.values()
-                )
-            )
-            for (field_name, proj), rows in zip(
-                db_projections.items(),
-                results,
-                strict=False,
-            ):
-                default = proj.default
-                for i, oid in enumerate(obj_ids):
-                    values_by_index[i][field_name] = rows.get(oid, default)
-
-        return values_by_index
+        return await execute_projection_plan(
+            plan,
+            objs=objs,
+            id_attr=self._effective_id_attribute,
+            backend_context=scoped_session,
+        )
 
     def _session_scope(
         self, session: AsyncSession | None = None

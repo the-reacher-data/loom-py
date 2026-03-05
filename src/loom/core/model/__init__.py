@@ -9,7 +9,7 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
-from loom.core.model.projection import Projection, ProjectionField
+from loom.core.model.projection import Projection, ProjectionField, ProjectionSource
 from loom.core.model.relation import Relation, RelationField
 from loom.core.model.timestamped import TimestampedModel
 from loom.core.model.types import (
@@ -41,6 +41,7 @@ __all__ = [
     "JSON",
     "Postgres",
     "ProjectionField",
+    "ProjectionSource",
     "LoomStructMeta",
     "Numeric",
     "OnDelete",

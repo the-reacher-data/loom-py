@@ -103,7 +103,11 @@ _validate_computed_relation_loaders`.
     relation: str
     fn: Callable[[list[Any]], Any]
 
-    def load_from_object(self, obj: Any) -> Any:
+    def load_from_object(
+        self,
+        obj: Any,
+        context: dict[str, Any] | None = None,
+    ) -> Any:
         """Compute the derived value from the already-loaded relation on ``obj``.
 
         Args:
@@ -117,6 +121,7 @@ _validate_computed_relation_loaders`.
             RuntimeError: If the relation attribute is not present in
                 ``obj.__dict__``, indicating it was not eagerly loaded.
         """
+        _ = context
         if self.relation not in obj.__dict__:
             raise RuntimeError(
                 f"ComputedFromRelationLoader: relation '{self.relation}' is not "
