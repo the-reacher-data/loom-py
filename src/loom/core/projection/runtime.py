@@ -106,11 +106,13 @@ async def execute_projection_plan(
     objs: Sequence[Any],
     id_attr: str,
     backend_context: Any | None,
+    loaded_relations: frozenset[str] = frozenset(),
 ) -> dict[int, dict[str, Any]]:
     """Execute projection plan for the given objects.
 
-    Memory loaders are executed on object data; backend loaders are batched
-    through ``load_many`` when ``backend_context`` is provided.
+    Memory loaders are executed when their required relation name is present
+    in ``loaded_relations``; backend loaders are batched through ``load_many``
+    when ``backend_context`` is provided.
     """
     if not objs or not plan.levels:
         return {}
@@ -121,8 +123,8 @@ async def execute_projection_plan(
     for level in plan.levels:
         buckets = _partition_execution_steps(
             level,
-            objs=objs,
             backend_context=backend_context,
+            loaded_relations=loaded_relations,
         )
         await _execute_backend_steps(
             steps=buckets.backend,
@@ -179,16 +181,16 @@ def _has_declared_callable(obj: Any, attr_name: str) -> bool:
 def _partition_execution_steps(
     level: tuple[ProjectionStep, ...],
     *,
-    objs: Sequence[Any],
     backend_context: Any | None,
+    loaded_relations: frozenset[str],
 ) -> _ExecutionBuckets:
     backend_steps: list[ProjectionStep] = []
     memory_steps: list[ProjectionStep] = []
     for step in level:
         target = _resolve_step_target(
             step,
-            objs=objs,
             backend_context=backend_context,
+            loaded_relations=loaded_relations,
         )
         if target == "backend":
             backend_steps.append(step)
@@ -203,8 +205,8 @@ def _partition_execution_steps(
 def _resolve_step_target(
     step: ProjectionStep,
     *,
-    objs: Sequence[Any],
     backend_context: Any | None,
+    loaded_relations: frozenset[str],
 ) -> str:
     source_resolvers = {
         ProjectionSource.BACKEND: _resolve_backend_target,
@@ -213,8 +215,8 @@ def _resolve_step_target(
     }
     return source_resolvers[step.projection.source](
         step,
-        objs=objs,
         backend_context=backend_context,
+        loaded_relations=loaded_relations,
     )
 
 
@@ -305,10 +307,10 @@ def _validate_step_configuration(
 def _resolve_backend_target(
     step: ProjectionStep,
     *,
-    objs: Sequence[Any],
     backend_context: Any | None,
+    loaded_relations: frozenset[str],
 ) -> str:
-    del objs
+    del loaded_relations
     if backend_context is None:
         raise RuntimeError(f"Projection '{step.name}' requires backend context")
     return _ExecutionTarget.BACKEND
@@ -317,20 +319,20 @@ def _resolve_backend_target(
 def _resolve_preloaded_target(
     step: ProjectionStep,
     *,
-    objs: Sequence[Any],
     backend_context: Any | None,
+    loaded_relations: frozenset[str],
 ) -> str:
-    del step, objs, backend_context
+    del step, backend_context, loaded_relations
     return _ExecutionTarget.MEMORY
 
 
 def _resolve_auto_target(
     step: ProjectionStep,
     *,
-    objs: Sequence[Any],
     backend_context: Any | None,
+    loaded_relations: frozenset[str],
 ) -> str:
-    if _should_use_memory(step=step, objs=objs):
+    if _should_use_memory(step=step, loaded_relations=loaded_relations):
         return _ExecutionTarget.MEMORY
 
     if step.backend_loader is not None:
@@ -347,7 +349,7 @@ def _resolve_auto_target(
 def _should_use_memory(
     *,
     step: ProjectionStep,
-    objs: Sequence[Any],
+    loaded_relations: frozenset[str],
 ) -> bool:
     if step.memory_loader is None:
         return False
@@ -356,4 +358,4 @@ def _should_use_memory(
     if not isinstance(relation_name, str) or not relation_name:
         return True
 
-    return all(hasattr(obj, "__dict__") and relation_name in obj.__dict__ for obj in objs)
+    return relation_name in loaded_relations

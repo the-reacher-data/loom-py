@@ -26,7 +26,7 @@ from typing import Any, Generic, TypeVar
 
 import msgspec
 
-from loom.core.model.introspection import get_projections
+from loom.core.model.introspection import get_projections, get_relations
 from loom.core.projection.runtime import (
     ProjectionPlan,
     build_projection_plan,
@@ -79,6 +79,7 @@ class InMemoryRepository(Generic[T]):
         self._store: dict[Any, T] = {}
         self._next_id: int = 1
         self._projection_plans: dict[str, ProjectionPlan | None] = {}
+        self._loaded_relations: dict[str, frozenset[str]] = {}
 
     def seed(self, *entities: T) -> None:
         """Pre-load entities into the store.
@@ -205,6 +206,7 @@ class InMemoryRepository(Generic[T]):
             objs=entities,
             id_attr=self._id_field,
             backend_context=None,
+            loaded_relations=self._relations_for_profile(profile),
         )
         return [
             self._apply_projection_values(entity, projection_values.get(i))
@@ -251,8 +253,20 @@ class InMemoryRepository(Generic[T]):
             objs=[entity],
             id_attr=self._id_field,
             backend_context=None,
+            loaded_relations=self._relations_for_profile(profile),
         )
         return self._apply_projection_values(entity, result.get(0))
+
+    def _relations_for_profile(self, profile: str) -> frozenset[str]:
+        cached = self._loaded_relations.get(profile)
+        if cached is not None:
+            return cached
+        relations = get_relations(self._entity_type)
+        loaded = frozenset(
+            rel_name for rel_name, relation in relations.items() if profile in relation.profiles
+        )
+        self._loaded_relations[profile] = loaded
+        return loaded
 
     def _apply_projection_values(self, entity: T, values: dict[str, Any] | None) -> T:
         if not values:

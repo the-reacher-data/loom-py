@@ -312,11 +312,21 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             plan = build_projection_plan(projections)
             plan_cache[profile] = plan
 
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
+        loaded_relations = frozenset(
+            rel_name for rel_name, rel in relations.items() if profile in rel.profiles
+        )
+
         return await execute_projection_plan(
             plan,
             objs=objs,
             id_attr=self._effective_id_attribute,
             backend_context=scoped_session,
+            loaded_relations=loaded_relations,
         )
 
     def _session_scope(
