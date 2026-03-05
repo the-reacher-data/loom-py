@@ -17,6 +17,11 @@ class EventKind(StrEnum):
     STEP_DONE = "step_done"
     EXEC_DONE = "exec_done"
     EXEC_ERROR = "exec_error"
+    JOB_DISPATCHED = "job_dispatched"
+    JOB_STARTED = "job_started"
+    JOB_SUCCEEDED = "job_succeeded"
+    JOB_RETRYING = "job_retrying"
+    JOB_EXHAUSTED = "job_exhausted"
 
 
 @dataclass(frozen=True)

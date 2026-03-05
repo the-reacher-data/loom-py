@@ -35,6 +35,7 @@ _Scope = dict[str, Any]
 _Receive = Callable[[], Awaitable[dict[str, Any]]]
 _Send = Callable[[dict[str, Any]], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
+_UNMATCHED_PATH_TEMPLATE = "__unmatched__"
 
 
 def _make_http_instruments(
@@ -42,30 +43,19 @@ def _make_http_instruments(
 ) -> tuple[Counter, Histogram]:
     from prometheus_client import Counter, Histogram
 
-    if registry is not None:
-        requests_total: Counter = Counter(
-            "http_requests",
-            "Total HTTP requests by method, path template, and status code.",
-            ["method", "path_template", "status_code"],
-            registry=registry,
-        )
-        duration_seconds: Histogram = Histogram(
-            "http_request_duration_seconds",
-            "HTTP request duration in seconds by method and path template.",
-            ["method", "path_template"],
-            registry=registry,
-        )
-    else:
-        requests_total = Counter(
-            "http_requests",
-            "Total HTTP requests by method, path template, and status code.",
-            ["method", "path_template", "status_code"],
-        )
-        duration_seconds = Histogram(
-            "http_request_duration_seconds",
-            "HTTP request duration in seconds by method and path template.",
-            ["method", "path_template"],
-        )
+    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
+    requests_total: Counter = Counter(
+        "http_requests",
+        "Total HTTP requests by method, path template, and status code.",
+        ["method", "path_template", "status_code"],
+        **reg,
+    )
+    duration_seconds: Histogram = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request duration in seconds by method and path template.",
+        ["method", "path_template"],
+        **reg,
+    )
     return requests_total, duration_seconds
 
 
@@ -149,17 +139,19 @@ def _get_path_template(scope: _Scope) -> str:
     """Extract the route path template from the ASGI scope.
 
     Starlette/FastAPI expose the matched route under ``scope["route"]``.
-    Falls back to the raw ``scope["path"]`` when unavailable.
+    Falls back to a fixed ``"__unmatched__"`` label when unavailable to keep
+    metric cardinality bounded.
 
     Args:
         scope: ASGI connection scope dict.
 
     Returns:
-        Path template string, e.g. ``"/products/{product_id}"``.
+        Path template string, e.g. ``"/products/{product_id}"``. Returns
+        ``"__unmatched__"`` when no route template is available.
     """
     route = scope.get("route")
     if route is not None:
         path: str = str(getattr(route, "path", "") or "")
         if path:
             return path
-    return str(scope.get("path", "/"))
+    return _UNMATCHED_PATH_TEMPLATE

@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from typing import Any
 
+import msgspec
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.command import Command, Internal
 from loom.core.di.container import LoomContainer
+from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
+from loom.core.use_case.markers import Exists, Input
 from loom.core.use_case.use_case import UseCase
 from loom.rest.compiler import CompiledRoute, InterfaceCompilationError, RestInterfaceCompiler
-from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.fastapi.app import _register_openapi_components, create_fastapi_app
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface, RestRoute
 
@@ -27,21 +33,57 @@ from loom.rest.model import RestApiDefaults, RestInterface, RestRoute
 
 class PingUseCase(UseCase[Any, str]):
     async def execute(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
         return "pong"
 
 
 class EchoUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"status": "received"}
+
+
+class CreateItemCmd(Command, frozen=True):
+    full_name: str
+    tenant_id: Internal[int] = 0
+
+
+class CreateItemUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, cmd: CreateItemCmd = Input()) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"full_name": cmd.full_name}
+
+
+@dataclass(frozen=True)
+class PlainCreateCmd:
+    full_name: str
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> tuple[PlainCreateCmd, frozenset[str]]:
+        return cls(full_name=str(payload["full_name"])), frozenset({"full_name"})
+
+
+class PlainCreateUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, cmd: PlainCreateCmd = Input()) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"full_name": cmd.full_name}
 
 
 class ItemUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, item_id: str, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
+        return {"item_id": item_id}
+
+
+class IntItemUseCase(UseCase[Any, dict[str, Any]]):
+    async def execute(self, item_id: int, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"item_id": item_id}
 
 
 class ProfileAwareUseCase(UseCase[Any, dict[str, Any]]):
     async def execute(self, profile: str, **kwargs: Any) -> dict[str, Any]:
+        await asyncio.sleep(0)
         return {"profile": profile}
 
 
@@ -60,6 +102,40 @@ class QueryAwareUseCase(UseCase[Any, dict[str, Any]]):
             "sort_field": first_sort.field if first_sort else None,
             "sort_direction": first_sort.direction if first_sort else None,
         }
+
+
+class DocUseCase(UseCase[Any, str]):
+    """Doc summary from use case.
+
+    Extended documentation for OpenAPI description.
+    """
+
+    async def execute(self, **kwargs: Any) -> str:
+        await asyncio.sleep(0)
+        return "ok"
+
+
+class _ExistsUserRecord(msgspec.Struct):
+    email: str
+
+
+class _ExistsCheckEmailCmd(Command, frozen=True):
+    email: str
+
+
+class _ExistsCheckEmailUseCase(UseCase[_ExistsUserRecord, bool]):
+    async def execute(
+        self,
+        cmd: _ExistsCheckEmailCmd = Input(),
+        email_exists: bool = Exists(_ExistsUserRecord, from_command="email", against="email"),
+    ) -> bool:
+        await asyncio.sleep(0)
+        return email_exists
+
+
+class _AutoItem(msgspec.Struct):
+    id: int
+    name: str
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +158,15 @@ def _factory(uc_compiler: UseCaseCompiler, *types: type[UseCase[Any, Any]]) -> U
     return factory
 
 
+def _resolve_schema(schema_ref: dict[str, Any], openapi_doc: dict[str, Any]) -> dict[str, Any]:
+    """Follow a ``$ref`` to its component definition when present."""
+    ref = schema_ref.get("$ref", "")
+    if ref.startswith("#/components/schemas/"):
+        name = ref.removeprefix("#/components/schemas/")
+        return openapi_doc["components"]["schemas"][name]  # type: ignore[no-any-return]
+    return schema_ref
+
+
 def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
     """Build a minimal FastAPI app from pre-compiled routes."""
     # Extract use case types from compiled routes
@@ -90,7 +175,9 @@ def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
     factory = _factory(uc_comp, *types)
     executor = RuntimeExecutor(uc_comp)
     app = FastAPI()
-    bind_interfaces(app, list(compiled_routes), factory, executor)
+    component_registry = bind_interfaces(app, list(compiled_routes), factory, executor)
+    if component_registry:
+        _register_openapi_components(app, component_registry)
     return app
 
 
@@ -145,6 +232,31 @@ def test_bind_interfaces_path_param_extracted() -> None:
     response = client.get("/items/42")
     assert response.status_code == 200
     assert response.json()["item_id"] == "42"
+
+
+def test_bind_interfaces_path_param_typed_from_execute_signature() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/typed-items"
+        routes = (RestRoute(use_case=IntItemUseCase, method="GET", path="/{item_id}"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/typed-items/42")
+    assert response.status_code == 200
+    assert response.json()["item_id"] == 42
+
+
+def test_bind_interfaces_path_param_validation_uses_typed_signature() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/typed-items"
+        routes = (RestRoute(use_case=IntItemUseCase, method="GET", path="/{item_id}"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/typed-items/not-an-int")
+    assert response.status_code == 422
 
 
 def test_bind_interfaces_status_code_respected() -> None:
@@ -308,6 +420,49 @@ def test_bind_interfaces_builds_query_spec_from_cursor_url_params() -> None:
     }
 
 
+def test_bind_interfaces_uses_compiled_default_pagination_mode() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        pagination_mode = PaginationMode.CURSOR
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?limit=1")
+    assert response.status_code == 200
+    assert response.json()["pagination"] == PaginationMode.CURSOR.value
+
+
+def test_bind_interfaces_rejects_pagination_override_when_disabled() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        pagination_mode = PaginationMode.OFFSET
+        allow_pagination_override = False
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?pagination=cursor")
+    assert response.status_code == 400
+    assert "cannot override" in response.json()["detail"]
+
+
+def test_bind_interfaces_normalizes_camelcase_query_fields() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=QueryAwareUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    response = client.get("/items/?sort=createdAt&priceTotal__gte=20")
+    assert response.status_code == 200
+    assert response.json()["sort_field"] == "created_at"
+    assert response.json()["filter_field"] == "price_total"
+
+
 # ---------------------------------------------------------------------------
 # bind_interfaces — tags propagated to OpenAPI
 # ---------------------------------------------------------------------------
@@ -326,6 +481,119 @@ def test_bind_interfaces_tags_on_routes() -> None:
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/ping/"]["get"]
     assert "Pings" in operation.get("tags", [])
+
+
+def test_bind_interfaces_uses_use_case_docstring_for_route_docs() -> None:
+    class IFace(RestInterface[str]):
+        prefix = "/docs"
+        routes = (RestRoute(use_case=DocUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/docs/"]["get"]
+    assert operation["summary"] == "Doc summary from use case."
+    assert "Extended documentation" in operation["description"]
+
+
+def test_openapi_response_schema_inferred_from_use_case_return_type() -> None:
+    class IFace(RestInterface[str]):
+        prefix = "/ping"
+        routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    response_schema = schema["paths"]["/ping/"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert response_schema["type"] == "string"
+
+
+def test_openapi_request_schema_from_command_excludes_internal_fields() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/items"
+        routes = (RestRoute(use_case=CreateItemUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    raw_schema = schema["paths"]["/items/"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    request_schema = _resolve_schema(raw_schema, schema)
+    properties = request_schema["properties"]
+    assert "fullName" in properties
+    assert "tenant_id" not in properties
+
+
+def test_openapi_request_schema_for_plain_command_type() -> None:
+    class IFace(RestInterface[dict[str, Any]]):
+        prefix = "/plain"
+        routes = (RestRoute(use_case=PlainCreateUseCase, method="POST", path="/"),)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    raw_schema = schema["paths"]["/plain/"]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ]
+    request_schema = _resolve_schema(raw_schema, schema)
+    assert request_schema["type"] == "object"
+    assert "full_name" in request_schema["properties"]
+
+
+def test_openapi_autocrud_list_has_response_schema_and_query_parameters() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-items"
+        auto = True
+        include = ("list",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-items/"]["get"]
+
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert response_schema
+
+    parameter_names = {parameter["name"] for parameter in operation["parameters"]}
+    expected_params = {"page", "limit", "pagination", "after", "cursor", "sort", "direction"}
+    assert expected_params <= parameter_names
+
+
+def test_openapi_autocrud_summary_uses_generated_docstring() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-docs"
+        auto = True
+        include = ("list",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-docs/"]["get"]
+    assert operation["summary"] == "List _AutoItem with filtering, sorting and pagination."
+
+
+def test_openapi_autocrud_get_path_param_uses_model_id_type() -> None:
+    class IFace(RestInterface[_AutoItem]):
+        prefix = "/auto-item"
+        auto = True
+        include = ("get",)
+
+    routes = _compile_routes(IFace)
+    app = _make_app(*routes)
+    client = TestClient(app)
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/auto-item/{id}"]["get"]
+    id_param = next(param for param in operation["parameters"] if param["name"] == "id")
+    assert id_param["schema"]["type"] == "integer"
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +679,35 @@ def test_create_fastapi_app_accepts_defaults() -> None:
     defaults = RestApiDefaults(pagination_mode=PaginationMode.CURSOR)
     app = create_fastapi_app(result, interfaces=[IFace], defaults=defaults)
     assert isinstance(app, FastAPI)
+
+
+def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
+    class _UsersIFace(RestInterface[bool]):
+        prefix = "/users"
+        routes = (RestRoute(use_case=_ExistsCheckEmailUseCase, method="POST", path="/exists"),)
+
+    class _FakeRepo:
+        model = _ExistsUserRecord
+
+        async def exists_by(self, field: str, value: Any) -> bool:
+            await asyncio.sleep(0)
+            return field == "email" and value == "taken@example.com"
+
+    _repo = _FakeRepo()
+    _token = ("repo", _ExistsUserRecord)
+
+    def _register_repo(container: LoomContainer) -> None:
+        container.register(_token, lambda: _repo, scope=Scope.APPLICATION)
+        container.register_repo(_ExistsUserRecord, _token)
+
+    result = bootstrap_app(
+        config=_FakeConfig(),
+        use_cases=[_ExistsCheckEmailUseCase],
+        modules=[_register_repo],
+    )
+    app = create_fastapi_app(result, interfaces=[_UsersIFace])
+    client = TestClient(app)
+
+    response = client.post("/users/exists", json={"email": "taken@example.com"})
+    assert response.status_code == 200
+    assert response.json() is True

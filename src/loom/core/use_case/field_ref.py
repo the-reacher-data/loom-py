@@ -5,6 +5,9 @@ from enum import StrEnum
 from typing import Any
 
 from loom.core.command.base import Command
+from loom.core.model.base import BaseModel
+
+FieldRoot = type[Command] | type[BaseModel] | str
 
 
 class PredicateOp(StrEnum):
@@ -16,7 +19,7 @@ class PredicateOp(StrEnum):
 class FieldRef:
     """Declarative reference to a field path on a command (or loaded alias)."""
 
-    root: type[Command] | str
+    root: FieldRoot
     path: tuple[str, ...]
 
     def __getattr__(self, item: str) -> FieldRef:
@@ -32,7 +35,10 @@ class FieldRef:
 
     @property
     def leaf(self) -> str:
-        return self.path[-1]
+        leaf = next(reversed(self.path), None)
+        if leaf is None:
+            raise ValueError("FieldRef.path cannot be empty.")
+        return leaf
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +59,7 @@ class FieldExpr:
 class _FieldRefFactory:
     __slots__ = ("_root",)
 
-    def __init__(self, root: type[Command] | str) -> None:
+    def __init__(self, root: FieldRoot) -> None:
         self._root = root
 
     def __getattr__(self, item: str) -> FieldRef:
@@ -62,10 +68,16 @@ class _FieldRefFactory:
         return FieldRef(root=self._root, path=(item,))
 
 
-def F(root: type[Command] | str) -> Any:
+def field_ref(
+    root: FieldRoot,
+) -> Any:
     """Build a typed field-reference factory.
 
     Example:
         ``F(UpdateUserCommand).birthdate``
     """
     return _FieldRefFactory(root)
+
+
+# Public shorthand kept for DSL ergonomics: F(Model).field
+F = field_ref

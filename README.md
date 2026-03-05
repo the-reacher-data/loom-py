@@ -1,6 +1,8 @@
-<p align="center">
-  <img src="docs/_static/logo.svg" alt="loom-kernel" width="280" />
-</p>
+<div style="width:100%;background:#fff;padding:4px 0;box-sizing:border-box;">
+  <p align="center" style="margin:0;">
+    <img src="docs/_static/logo-transparent.png" alt="loom-kernel" style="display:block;width:100%;max-width:none;height:auto;margin:0 auto;" />
+  </p>
+</div>
 
 # loom-kernel
 

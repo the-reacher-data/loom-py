@@ -7,7 +7,7 @@ import pytest
 
 from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.engine.executor import RuntimeExecutor
+from loom.core.engine.executor import ParameterBindingError, RuntimeExecutor
 from loom.core.errors import NotFound
 from loom.core.use_case.markers import Exists, Input, Load, LoadById, OnMissing
 from loom.core.use_case.rule import RuleViolation, RuleViolations
@@ -79,6 +79,16 @@ class _NoMarkersUseCase(UseCase[Any, str]):
 class _InputOnlyUseCase(UseCase[Any, str]):
     async def execute(self, cmd: CreateUserCommand = Input()) -> str:
         return cmd.email
+
+
+class _RenamedInputStruct(Command, frozen=True, rename="camel"):
+    price_cents: int
+    stock: int
+
+
+class _RenamedInputUseCase(UseCase[Any, tuple[int, frozenset[str]]]):
+    async def execute(self, cmd: _RenamedInputStruct = Input()) -> tuple[int, frozenset[str]]:
+        return cmd.price_cents, frozenset({"price_cents", "stock"})
 
 
 class _ParamsAndInputUseCase(UseCase[Any, UserResult]):
@@ -219,6 +229,11 @@ class TestExecuteNoMarkers:
         with pytest.raises(ValueError, match="missing required parameter"):
             await ex.execute(_NoMarkersUseCase(), params={})
 
+    async def test_invalid_param_type_raises_binding_error(self) -> None:
+        ex = _make_executor()
+        with pytest.raises(ParameterBindingError, match="invalid value for parameter 'value'"):
+            await ex.execute(_NoMarkersUseCase(), params={"value": "not-an-int"})
+
 
 # ---------------------------------------------------------------------------
 # Tests: Input binding
@@ -247,6 +262,22 @@ class TestExecuteWithInput:
             payload={"email": "a@b.com", "name": "A"},
         )
         assert result.id == 99
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_price"),
+        [
+            ({"price_cents": 123, "stock": 2}, 123),
+            ({"priceCents": 321, "stock": 2}, 321),
+        ],
+    )
+    async def test_input_command_accepts_snake_and_camel_case_keys(
+        self,
+        payload: dict[str, int],
+        expected_price: int,
+    ) -> None:
+        ex = _make_executor()
+        price, _ = await ex.execute(_RenamedInputUseCase(), payload=payload)
+        assert price == expected_price
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +373,20 @@ class TestExecuteWithLoad:
                 params={"user_id": 1},
                 dependencies={},
             )
+
+    async def test_repo_resolver_error_is_not_silenced(self) -> None:
+        compiler = UseCaseCompiler()
+
+        def _resolver(_: type[Any]) -> Any:
+            raise RuntimeError("resolver exploded")
+
+        ex = RuntimeExecutor(
+            compiler,
+            logger=_RecordingLogger(),
+            repo_resolver=_resolver,
+        )
+        with pytest.raises(RuntimeError, match="resolver exploded"):
+            await ex.execute(_WithLoadUseCase(), params={"user_id": 1})
 
 
 class TestExecuteWithExists:

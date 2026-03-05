@@ -112,10 +112,14 @@ class TestCompute:
         assert provided_result.slug == "patched"
 
     def test_dsl_when_present_supports_or_expression(self) -> None:
-        compute = Compute.set(F(UpdateArticleMulti).slug).from_command(
-            F(UpdateArticleMulti).title,
-            via=normalize_patch_slug,
-        ).when_present(F(UpdateArticleMulti).title | F(UpdateArticleMulti).subtitle)
+        compute = (
+            Compute.set(F(UpdateArticleMulti).slug)
+            .from_command(
+                F(UpdateArticleMulti).title,
+                via=normalize_patch_slug,
+            )
+            .when_present(F(UpdateArticleMulti).title | F(UpdateArticleMulti).subtitle)
+        )
 
         missing, _ = UpdateArticleMulti.from_payload({})
         missing_result = compute(missing, frozenset())

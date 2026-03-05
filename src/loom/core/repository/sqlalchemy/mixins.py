@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect as py_inspect
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
@@ -14,6 +15,8 @@ from loom.core.model.introspection import (
     get_relations,
     get_table_name,
 )
+from loom.core.model.projection import ProjectionSource
+from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 from loom.core.repository.abc import (
     CursorResult,
     FilterParams,
@@ -25,10 +28,64 @@ from loom.core.repository.abc import (
     build_page_result,
 )
 from loom.core.repository.mutation import MutationEvent
+from loom.core.repository.sqlalchemy.integrity import handle_integrity_errors
 from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCompiler
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
+
+
+def _projected_relation_name(projection: Any) -> str | None:
+    loader = projection.loader
+    if projection.source is ProjectionSource.BACKEND:
+        return None
+
+    has_memory_loader = _has_declared_callable(loader, "load_from_object")
+    if not has_memory_loader:
+        return None
+
+    relation_name = getattr(loader, "relation", None)
+    if not isinstance(relation_name, str) or not relation_name:
+        return None
+    return relation_name
+
+
+def _validate_projection_relation(
+    *,
+    model_name: str,
+    projection_name: str,
+    projection_profiles: tuple[str, ...],
+    relation_name: str,
+    relations: dict[str, Any],
+    allow_backend_fallback: bool,
+) -> None:
+    if relation_name not in relations:
+        raise ValueError(
+            f"'{model_name}.{projection_name}': relation-based loader references "
+            f"relation '{relation_name}' which does not exist on this model."
+        )
+
+    unsupported_profiles = frozenset(projection_profiles) - frozenset(
+        relations[relation_name].profiles
+    )
+    if not unsupported_profiles or allow_backend_fallback:
+        return
+
+    raise ValueError(
+        f"'{model_name}.{projection_name}': "
+        f"Relation loader(relation='{relation_name}') "
+        f"is active in profiles {sorted(unsupported_profiles)} where '{relation_name}' is not "
+        f"loaded. Add {sorted(unsupported_profiles)} to '{relation_name}'.profiles or restrict "
+        f"'{projection_name}'.profiles to {sorted(relations[relation_name].profiles)}."
+    )
+
+
+def _has_declared_callable(obj: Any, attr_name: str) -> bool:
+    try:
+        candidate = py_inspect.getattr_static(obj, attr_name)
+    except AttributeError:
+        return False
+    return callable(candidate)
 
 
 class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
@@ -38,6 +95,12 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _sa_model: type[Any] | None = None
     _id_attr: str | None = None
     _column_field_names: frozenset[str] | None = None
+    # Pre-computed at init to avoid per-request/per-object reflection.
+    _output_column_keys: tuple[str, ...] | None = None
+    _all_sa_column_keys: tuple[str, ...] | None = None
+    _relations_cache: dict[str, Any] | None = None
+    _projections_cache: dict[str, Any] | None = None
+    _projection_plan_cache: dict[str, Any] | None = None
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
@@ -51,7 +114,52 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             )
         self._sa_model = sa
         self._id_attr = get_id_attribute(self.model)
-        self._column_field_names = frozenset(get_column_fields(self.model).keys())
+        column_field_names = frozenset(get_column_fields(self.model).keys())
+        self._column_field_names = column_field_names
+        self._relations_cache = get_relations(self.model)
+        self._projections_cache = get_projections(self.model)
+        self._projection_plan_cache = {}
+
+        sa_mapper: Any = inspect(sa).mapper
+        self._output_column_keys = tuple(
+            col.key for col in sa_mapper.column_attrs if col.key in column_field_names
+        )
+        self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
+        self._validate_computed_relation_loaders()
+
+    def _validate_computed_relation_loaders(self) -> None:
+        """Validate relation-based projection loaders at repository init time.
+
+        Ensures every ``ProjectionField`` backed by a relation loader
+        references an existing relation. For ``PRELOADED`` sources, relation
+        profiles must cover projection profiles. For ``AUTO`` sources with a
+        backend-capable loader, profile mismatches are allowed because runtime
+        can fall back to backend loading.
+
+        Raises:
+            ValueError: If the referenced relation does not exist on the model,
+                or if a memory-only projection is active in profiles where the
+                relation is not loaded.
+        """
+        projections = self._projections_cache or {}
+        relations = self._relations_cache or {}
+        model_name = self.model.__name__
+
+        for proj_name, proj in projections.items():
+            relation_name = _projected_relation_name(proj)
+            if relation_name is None:
+                continue
+            _validate_projection_relation(
+                model_name=model_name,
+                projection_name=proj_name,
+                projection_profiles=proj.profiles,
+                relation_name=relation_name,
+                relations=relations,
+                allow_backend_fallback=(
+                    proj.source is ProjectionSource.AUTO
+                    and _has_declared_callable(proj.loader, "load_many")
+                ),
+            )
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -82,14 +190,18 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             builtins = msgspec.to_builtins(data)
             if not isinstance(builtins, dict):
                 raise TypeError("Struct payload must serialize to dict")
-            return builtins
-        return dict(data)
+            return _to_internal_field_names(type(data), builtins)
+        return data
 
     def _get_profile_options(self, profile: str) -> list[Any]:
         from sqlalchemy.orm import selectinload
 
         sa_model = self._effective_sa_model
-        relations = get_relations(self.model)
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
         options: list[Any] = []
         for rel_name, rel in relations.items():
             if profile in rel.profiles:
@@ -105,15 +217,23 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         projection_values: dict[str, Any] | None = None,
     ) -> Any:
         """Convert an SA ORM object to the Struct model."""
-        mapper = inspect(obj).mapper
-        column_names = self._column_field_names or frozenset()
+        output_keys = self._output_column_keys
+        if output_keys is not None:
+            kwargs: dict[str, Any] = {key: getattr(obj, key) for key in output_keys}
+        else:
+            mapper = inspect(obj).mapper
+            column_names = self._column_field_names or frozenset()
+            kwargs = {
+                col.key: getattr(obj, col.key)
+                for col in mapper.column_attrs
+                if col.key in column_names
+            }
 
-        kwargs: dict[str, Any] = {}
-        for col in mapper.column_attrs:
-            if col.key in column_names:
-                kwargs[col.key] = getattr(obj, col.key)
-
-        relations = get_relations(self.model)
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
         for rel_name, rel in relations.items():
             if profile in rel.profiles and rel_name in obj.__dict__:
                 kwargs[rel_name] = self._serialize_related(getattr(obj, rel_name))
@@ -145,16 +265,22 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         if obj_id is not None:
             tags.add(f"{table_name}:id:{obj_id}")
 
-        mapper = inspect(obj).mapper
-        for column in mapper.column_attrs:
-            value = getattr(obj, column.key, None)
+        column_keys = self._all_sa_column_keys
+        if column_keys is None:
+            column_keys = tuple(col.key for col in inspect(obj).mapper.column_attrs)
+        for key in column_keys:
+            value = getattr(obj, key, None)
             if value is not None:
-                tags.add(f"{table_name}:{column.key}:{value}")
+                tags.add(f"{table_name}:{key}:{value}")
         return frozenset(tags)
 
     def _projections_for_profile(self, profile: str) -> dict[str, Any]:
         """Return projections active for the given profile."""
-        struct_projections = get_projections(self.model)
+        struct_projections = (
+            self._projections_cache
+            if self._projections_cache is not None
+            else get_projections(self.model)
+        )
         return {name: proj for name, proj in struct_projections.items() if profile in proj.profiles}
 
     async def _collect_projection_values(
@@ -163,27 +289,45 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         objs: list[Any],
         profile: str,
     ) -> dict[int, dict[str, Any]]:
-        """Batch-load projection values for a list of ORM objects."""
+        """Batch-load projection values for a list of ORM objects.
+
+        Relation-based projections are resolved from already-loaded relation
+        data on each ORM object (no DB round-trip) when configured to do so.
+        Remaining DB-backed loaders are resolved by the compiled projection
+        plan runtime.
+        """
         if not objs:
             return {}
         projections = self._projections_for_profile(profile)
         if not projections:
             return {}
 
-        id_attr = self._effective_id_attribute
-        obj_ids = [getattr(obj, id_attr) for obj in objs]
-        values_by_index: dict[int, dict[str, Any]] = {i: {} for i in range(len(objs))}
+        plan_cache = self._projection_plan_cache
+        if plan_cache is None:
+            plan_cache = {}
+            self._projection_plan_cache = plan_cache
 
-        for field_name, projection in projections.items():
-            loader = projection.loader
-            if loader is None:
-                continue
-            rows = await loader.load_many(scoped_session, obj_ids)
-            default = projection.default
-            for i, oid in enumerate(obj_ids):
-                values_by_index[i][field_name] = rows.get(oid, default)
+        plan = plan_cache.get(profile)
+        if plan is None:
+            plan = build_projection_plan(projections)
+            plan_cache[profile] = plan
 
-        return values_by_index
+        relations = (
+            self._relations_cache
+            if self._relations_cache is not None
+            else get_relations(self.model)
+        )
+        loaded_relations = frozenset(
+            rel_name for rel_name, rel in relations.items() if profile in rel.profiles
+        )
+
+        return await execute_projection_plan(
+            plan,
+            objs=objs,
+            id_attr=self._effective_id_attribute,
+            backend_context=scoped_session,
+            loaded_relations=loaded_relations,
+        )
 
     def _session_scope(
         self, session: AsyncSession | None = None
@@ -194,11 +338,13 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``create`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def create(self, data: msgspec.Struct) -> OutputT:
         """Persist one entity and return its output struct."""
+        serialized = self._serialize_input(data)
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
-            obj = sa_model(**self._serialize_input(data))
+            obj = sa_model(**serialized)
             scoped_session.add(obj)
             await scoped_session.flush()
             await scoped_session.refresh(obj)
@@ -210,7 +356,7 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                     entity=self.entity_name,
                     op="create",
                     ids=(obj_id,),
-                    changed_fields=frozenset(self._serialize_input(data).keys()),
+                    changed_fields=frozenset(serialized.keys()),
                     tags=self._mutation_tags(obj),
                 )
             )
@@ -418,6 +564,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
 class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``update`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
         """Apply partial updates and return updated output struct."""
         async with self._session_scope() as scoped_session:
@@ -455,6 +602,7 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
 class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``delete`` operation for SQLAlchemy repositories."""
 
+    @handle_integrity_errors
     async def delete(self, obj_id: IdT) -> bool:
         """Delete one entity by id."""
         async with self._session_scope() as scoped_session:
@@ -474,3 +622,15 @@ class SQLAlchemyDeleteMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                 )
             )
             return True
+
+
+def _to_internal_field_names(
+    struct_type: type[msgspec.Struct],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Map external encoded names (camelCase) to internal field names (snake_case)."""
+    encoded_to_internal = {
+        (field.encode_name or field.name): field.name
+        for field in msgspec.structs.fields(struct_type)
+    }
+    return {encoded_to_internal.get(key, key): value for key, value in payload.items()}

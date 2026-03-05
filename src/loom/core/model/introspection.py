@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from types import UnionType
-from typing import Any, ClassVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, ClassVar, Union, cast, get_args, get_origin, get_type_hints
 
 import msgspec
 
@@ -24,9 +24,19 @@ class ColumnFieldInfo:
     field: Field
 
 
+def _collect_inherited_dict_metadata(cls: type, attr: str) -> dict[str, Any]:
+    """Merge dict metadata from the full MRO (base -> subclass)."""
+    merged: dict[str, Any] = {}
+    for current in reversed(cls.__mro__):
+        raw = getattr(current, attr, None)
+        if isinstance(raw, dict):
+            merged.update(raw)
+    return merged
+
+
 def get_column_fields(cls: type) -> dict[str, ColumnFieldInfo]:
     """Extract column fields from a model class."""
-    declared_columns = dict(getattr(cls, "__loom_columns__", {}))
+    declared_columns = _collect_inherited_dict_metadata(cls, "__loom_columns__")
     hints = get_type_hints(cls, include_extras=True)
     struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
     relations = set(get_relations(cls))
@@ -86,29 +96,17 @@ def _with_struct_default(field: Field, struct_default: Any) -> Field:
         return field
     if struct_default is msgspec.NODEFAULT:
         return field
-    return Field(
-        primary_key=field.primary_key,
-        unique=field.unique,
-        index=field.index,
-        nullable=field.nullable,
-        autoincrement=field.autoincrement,
-        server_default=field.server_default,
-        server_onupdate=field.server_onupdate,
-        foreign_key=field.foreign_key,
-        on_delete=field.on_delete,
-        default=struct_default,
-        length=field.length,
-    )
+    return cast(Field, replace(field, default=struct_default))  # type: ignore[redundant-cast]
 
 
 def get_relations(cls: type) -> dict[str, Relation]:
     """Return relations registered by ``LoomStructMeta``."""
-    return dict(getattr(cls, "__loom_relations__", {}))
+    return _collect_inherited_dict_metadata(cls, "__loom_relations__")
 
 
 def get_projections(cls: type) -> dict[str, Projection]:
     """Return projections registered by ``LoomStructMeta``."""
-    return dict(getattr(cls, "__loom_projections__", {}))
+    return _collect_inherited_dict_metadata(cls, "__loom_projections__")
 
 
 def get_id_attribute(cls: type) -> str:
@@ -166,25 +164,22 @@ def _is_classvar(annotation: Any) -> bool:
     return get_origin(annotation) is ClassVar
 
 
+_SCALAR_TYPE_MAP: dict[type, ColumnType] = {
+    int: Integer,
+    float: Float,
+    bool: Boolean,
+    datetime: DateTime(tz=True),
+    Decimal: Numeric(),
+}
+
+
 def _infer_column_type(annotation: Any, *, field: Field) -> ColumnType:
     base = _unwrap_optional(annotation)
-    origin = get_origin(base)
-    if origin in (list, tuple, set, dict):
+    if get_origin(base) in (list, tuple, set, dict):
         return JSON
-
     python_type = _extract_origin_type(base)
-    if python_type is int:
-        return Integer
-    if python_type is float:
-        return Float
-    if python_type is bool:
-        return Boolean
     if python_type is str:
         return String(field.length)
-    if python_type is datetime:
-        return DateTime(tz=True)
     if python_type in (date, time):
         return String(None)
-    if python_type is Decimal:
-        return Numeric()
-    return JSON
+    return _SCALAR_TYPE_MAP.get(python_type, JSON)

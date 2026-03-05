@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run \
-            --extra fastapi \
+            --extra rest \
             --extra sqlalchemy \
             --extra cache \
             --extra config \

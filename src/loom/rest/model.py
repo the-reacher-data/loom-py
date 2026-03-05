@@ -28,7 +28,7 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, get_args, get_origin
 
 from loom.core.repository.abc.query import PaginationMode
 from loom.core.use_case.use_case import UseCase
@@ -66,6 +66,9 @@ class RestRoute:
             inherits from the interface or global default.
         expose_profile: Whether to expose ``?profile=`` as a public query
             parameter for this route.  Defaults to ``False``.
+        allow_pagination_override: Whether callers may override the resolved
+            pagination mode using query parameters.  When ``None``, inherits
+            from the interface or global default.
 
     Example::
 
@@ -85,9 +88,33 @@ class RestRoute:
     description: str = ""
     status_code: int = 200
     pagination_mode: PaginationMode | None = None
+    allow_pagination_override: bool | None = None
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
+
+
+def _extract_model_type(cls: type[Any]) -> type[Any] | None:
+    """Return the concrete model type from ``RestInterface[Model]``.
+
+    Walks ``__orig_bases__`` to find the parameterised ``RestInterface``
+    and extracts its first type argument.  Returns ``None`` when the class
+    does not carry a concrete type parameter (e.g. intermediate abstract
+    bases).
+
+    Args:
+        cls: ``RestInterface`` subclass to inspect.
+
+    Returns:
+        Concrete model type, or ``None`` if not resolvable.
+    """
+    for base in getattr(cls, "__orig_bases__", ()):
+        if get_origin(base) is not RestInterface:
+            continue
+        args = get_args(base)
+        if args and isinstance(args[0], type):
+            return args[0]
+    return None
 
 
 class RestInterface(Generic[T]):
@@ -112,6 +139,8 @@ class RestInterface(Generic[T]):
             interface.
         expose_profile: Whether this interface publicly accepts
             ``?profile=...`` by default. Can be overridden per-route.
+        allow_pagination_override: Whether list endpoints may switch
+            pagination mode from query parameters by default.
 
     Example::
 
@@ -133,9 +162,30 @@ class RestInterface(Generic[T]):
     include: tuple[str, ...] = ()
     routes: tuple[RestRoute, ...] = ()
     pagination_mode: PaginationMode | None = None
+    allow_pagination_override: bool | None = None
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Auto-populate routes when ``auto=True`` and no routes are declared.
+
+        Fires whenever a subclass of ``RestInterface`` is defined.  Calls
+        :func:`~loom.rest.autocrud.build_auto_routes` only when:
+
+        - ``cls.auto`` is ``True``
+        - ``cls.routes`` is empty (user-declared routes take precedence)
+        - The class carries a concrete model type parameter
+        """
+        super().__init_subclass__(**kwargs)
+        if not cls.auto or cls.routes:
+            return
+        model_type = _extract_model_type(cls)
+        if model_type is None:
+            return
+        from loom.rest.autocrud import build_auto_routes  # lazy — avoids circular import
+
+        cls.routes = build_auto_routes(model_type, cls.include)
 
 
 @dataclass(frozen=True)
@@ -149,6 +199,9 @@ class RestApiDefaults:
             ``"default"``.
         allowed_profiles: Globally allowed profiles.  Defaults to empty
             (no restriction imposed at global level).
+        allow_pagination_override: Whether query parameters may override the
+            configured pagination mode.  Defaults to ``True`` for backwards
+            compatibility.
 
     Example::
 
@@ -159,5 +212,6 @@ class RestApiDefaults:
     """
 
     pagination_mode: PaginationMode = PaginationMode.OFFSET
+    allow_pagination_override: bool = True
     profile_default: str = "default"
     allowed_profiles: tuple[str, ...] = field(default_factory=tuple)

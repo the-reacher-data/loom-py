@@ -70,7 +70,7 @@ class LoomRestAdapter:
             HTTPException: When the UseCase raises a ``LoomError``.
         """
         try:
-            result = await self._executor.execute(
+            result: Any = await self._executor.execute(
                 use_case,
                 params=request.params,
                 payload=request.payload,

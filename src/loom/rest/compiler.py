@@ -19,6 +19,8 @@ Compilation steps per interface:
 
 from __future__ import annotations
 
+import inspect
+import typing
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,6 +60,8 @@ class CompiledRoute:
         effective_allowed_profiles: Resolved set of allowed profiles.
         effective_expose_profile: Whether ``?profile=...`` is publicly
             accepted for this route.
+        effective_allow_pagination_override: Whether callers may override
+            pagination mode via query parameters for this route.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
     """
 
@@ -68,7 +72,9 @@ class CompiledRoute:
     effective_profile_default: str
     effective_allowed_profiles: tuple[str, ...]
     effective_expose_profile: bool
+    effective_allow_pagination_override: bool
     interface_tags: tuple[str, ...] = ()
+    execute_param_types: tuple[tuple[str, Any], ...] = ()
 
 
 class RestInterfaceCompiler:
@@ -162,7 +168,11 @@ class RestInterfaceCompiler:
                     effective_profile_default=self._resolve_profile_default(route, interface),
                     effective_allowed_profiles=self._resolve_allowed_profiles(route, interface),
                     effective_expose_profile=self._resolve_expose_profile(route, interface),
+                    effective_allow_pagination_override=self._resolve_allow_pagination_override(
+                        route, interface
+                    ),
                     interface_tags=interface.tags,
+                    execute_param_types=self._resolve_execute_param_types(route.use_case),
                 )
             )
 
@@ -192,9 +202,6 @@ class RestInterfaceCompiler:
             raise InterfaceCompilationError(
                 f"{iface_name}: RestRoute for {route.use_case.__qualname__!r} is missing 'method'."
             )
-        if route.path == "" and route.path is not None:
-            # path="" is treated as "/" — allowed, but warn via compilation for clarity
-            pass
         plan = self._uc_compiler.get_plan(route.use_case)
         if plan is None:
             raise InterfaceCompilationError(
@@ -228,3 +235,32 @@ class RestInterfaceCompiler:
         if route.expose_profile:
             return True
         return interface.expose_profile
+
+    def _resolve_allow_pagination_override(
+        self, route: RestRoute, interface: type[RestInterface[Any]]
+    ) -> bool:
+        if route.allow_pagination_override is not None:
+            return route.allow_pagination_override
+        if interface.allow_pagination_override is not None:
+            return interface.allow_pagination_override
+        return self._defaults.allow_pagination_override
+
+    def _resolve_execute_param_types(
+        self,
+        use_case_type: type[Any],
+    ) -> tuple[tuple[str, Any], ...]:
+        execute_fn = use_case_type.execute
+        signature = inspect.signature(execute_fn)
+        try:
+            hints = typing.get_type_hints(execute_fn)
+        except Exception:
+            hints = {}
+
+        result: list[tuple[str, Any]] = []
+        variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        for name, param in signature.parameters.items():
+            if name == "self" or param.kind in variadic:
+                continue
+            annotation = hints.get(name, param.annotation)
+            result.append((name, annotation))
+        return tuple(result)

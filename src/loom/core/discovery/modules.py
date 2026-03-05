@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from loom.core.discovery._utils import collect_from_modules, import_modules
+from loom.core.discovery._utils import (
+    _append_unique,
+    collect_from_modules,
+    collect_use_cases_from_interfaces,
+    import_modules,
+)
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.use_case.use_case import UseCase
 
 
 class ModulesDiscoveryEngine:
@@ -13,11 +19,25 @@ class ModulesDiscoveryEngine:
         self._module_paths = module_paths
 
     def discover(self) -> DiscoveryResult:
+        """Scan modules and supplement use cases found in auto interfaces.
+
+        Returns:
+            :class:`~loom.core.discovery.base.DiscoveryResult` with all
+            discovered models, use cases, and interfaces.
+
+        Raises:
+            ValueError: When no module paths are provided.
+        """
         if not self._module_paths:
             raise ValueError("modules discovery requires at least one module path.")
 
         modules = import_modules(self._module_paths)
         models, use_cases, interfaces = collect_from_modules(modules)
+
+        seen_ucs: set[type[UseCase[object, object]]] = set(use_cases)
+        for uc in collect_use_cases_from_interfaces(interfaces):
+            _append_unique(use_cases, seen_ucs, uc)
+
         return DiscoveryResult(
             models=tuple(models),
             use_cases=tuple(use_cases),

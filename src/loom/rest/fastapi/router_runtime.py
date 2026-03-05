@@ -47,9 +47,19 @@ from loom.core.repository.abc.query import (
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
 from loom.rest.errors import HttpErrorMapper
+from loom.rest.fastapi.openapi import (
+    QUERY_PARAM_PROFILE,
+    QUERY_SPEC_PARAMETER_NAMES,
+    build_query_parameters_schema,
+    build_request_body_schema,
+    build_success_response_schema,
+)
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _error_mapper = HttpErrorMapper()
+
+_DEFAULT_PAGE = 1
+_DEFAULT_LIMIT = 50
 
 
 def _extract_path_params(path: str) -> list[str]:
@@ -65,10 +75,40 @@ def _extract_path_params(path: str) -> list[str]:
     return re.findall(r"\{(\w+)\}", path)
 
 
-_RESERVED_QUERY_KEYS = frozenset(
-    {"page", "limit", "cursor", "after", "pagination", "sort", "direction", "profile"}
-)
+def _normalize_path_param_annotation(annotation: Any) -> Any:
+    if annotation is inspect._empty or annotation is Any:
+        return str
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Annotated:
+        args = typing.get_args(annotation)
+        if not args:
+            return str
+        return _normalize_path_param_annotation(args[0])
+
+    if origin in {typing.Union, types.UnionType}:
+        args = tuple(arg for arg in typing.get_args(annotation) if arg is not type(None))
+        if len(args) != 1:
+            return str
+        return _normalize_path_param_annotation(args[0])
+
+    if isinstance(annotation, type):
+        return annotation
+    return str
+
+
+_RESERVED_QUERY_KEYS = frozenset((*QUERY_SPEC_PARAMETER_NAMES, QUERY_PARAM_PROFILE))
 _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
+
+
+def _camel_to_snake(value: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+
+
+def _normalize_field_name(value: str) -> str:
+    if any(char.isupper() for char in value):
+        return _camel_to_snake(value)
+    return value
 
 
 def _coerce_scalar(value: str) -> Any:
@@ -92,9 +132,35 @@ def _parse_filter_op(op: str) -> FilterOp:
         raise HTTPException(status_code=400, detail=f"Unsupported filter operator: {op!r}") from exc
 
 
-def _parse_pagination_mode(raw: str | None, cursor: str | None) -> PaginationMode:
+def _parse_pagination_mode(
+    raw: str | None,
+    cursor: str | None,
+    *,
+    default_mode: PaginationMode,
+    allow_override: bool,
+) -> PaginationMode:
+    if not allow_override:
+        if raw is not None and raw.lower() != default_mode.value:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'pagination' cannot override this route's "
+                    f"default mode ({default_mode.value!r})."
+                ),
+            )
+        if cursor is not None and default_mode is PaginationMode.OFFSET:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cursor parameters are not allowed when pagination mode is fixed to 'offset'."
+                ),
+            )
+        return default_mode
+
     if raw is None:
-        return PaginationMode.CURSOR if cursor is not None else PaginationMode.OFFSET
+        if cursor is not None:
+            return PaginationMode.CURSOR
+        return default_mode
     try:
         return PaginationMode(raw.lower())
     except ValueError as exc:
@@ -110,7 +176,9 @@ def _parse_sort(sort_field: str | None, direction_raw: str) -> tuple[SortSpec, .
         raise HTTPException(status_code=400, detail="direction must be 'ASC' or 'DESC'.")
     if sort_field is None or sort_field == "":
         return ()
-    return (SortSpec(field=sort_field, direction=typing.cast(Any, direction)),)
+    return (
+        SortSpec(field=_normalize_field_name(sort_field), direction=typing.cast(Any, direction)),
+    )
 
 
 def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
@@ -133,12 +201,10 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
 
         if not field_parts:
             raise HTTPException(status_code=400, detail=f"Invalid filter field: {key!r}.")
-        field = ".".join(field_parts)
+        field = ".".join(_normalize_field_name(part) for part in field_parts)
 
         if op == FilterOp.IN:
             value = [_coerce_scalar(item) for item in raw_value.split(",") if item != ""]
-        elif op in {FilterOp.EXISTS, FilterOp.NOT_EXISTS, FilterOp.IS_NULL}:
-            value = _coerce_scalar(raw_value)
         else:
             value = _coerce_scalar(raw_value)
 
@@ -146,12 +212,22 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
     return filters
 
 
-def _build_query_spec(request: Request) -> QuerySpec:
+def _build_query_spec(
+    request: Request,
+    *,
+    default_pagination_mode: PaginationMode,
+    allow_pagination_override: bool,
+) -> QuerySpec:
     query_params = request.query_params
-    page = int(query_params.get("page", "1"))
-    limit = int(query_params.get("limit", "50"))
+    page = int(query_params.get("page", _DEFAULT_PAGE))
+    limit = int(query_params.get("limit", _DEFAULT_LIMIT))
     cursor = query_params.get("after") or query_params.get("cursor")
-    pagination = _parse_pagination_mode(query_params.get("pagination"), cursor)
+    pagination = _parse_pagination_mode(
+        query_params.get("pagination"),
+        cursor,
+        default_mode=default_pagination_mode,
+        allow_override=allow_pagination_override,
+    )
     sort = _parse_sort(
         query_params.get("sort"),
         query_params.get("direction", "ASC"),
@@ -184,6 +260,23 @@ def _resolve_query_param_name(uc_type: type[Any]) -> str | None:
     return None
 
 
+def _route_docs(compiled_route: CompiledRoute) -> tuple[str | None, str | None]:
+    """Resolve OpenAPI summary/description from route metadata or UseCase docs."""
+    summary = compiled_route.route.summary.strip()
+    description = compiled_route.route.description.strip()
+    if summary or description:
+        return summary or None, description or None
+
+    uc_doc = inspect.getdoc(compiled_route.route.use_case) or ""
+    cleaned_lines = tuple(line.strip() for line in uc_doc.splitlines() if line.strip())
+    if not cleaned_lines:
+        return None, None
+
+    auto_summary, *rest = cleaned_lines
+    auto_description = "\n".join(rest) if rest else None
+    return auto_summary, auto_description
+
+
 def _make_handler(
     compiled_route: CompiledRoute,
     factory: UseCaseFactory,
@@ -203,11 +296,16 @@ def _make_handler(
         Async callable suitable for ``FastAPI.add_api_route``.
     """
     path_params = _extract_path_params(compiled_route.route.path)
+    execute_param_types = dict(compiled_route.execute_param_types)
     uc_type = compiled_route.route.use_case
     status_code = compiled_route.route.status_code
     execute_sig = inspect.signature(uc_type.execute)
     accepts_profile_param = "profile" in execute_sig.parameters
     query_param_name = _resolve_query_param_name(uc_type)
+
+    # Resolved at startup — avoids per-request attribute lookup.
+    plan = getattr(uc_type, "__execution_plan__", None)
+    has_input_binding = plan is not None and plan.input_binding is not None
 
     def _resolve_profile(request: Request) -> str:
         requested = request.query_params.get("profile")
@@ -234,17 +332,21 @@ def _make_handler(
         if accepts_profile_param:
             params["profile"] = selected_profile
         if query_param_name is not None:
-            params[query_param_name] = _build_query_spec(request)
+            params[query_param_name] = _build_query_spec(
+                request,
+                default_pagination_mode=compiled_route.effective_pagination_mode,
+                allow_pagination_override=compiled_route.effective_allow_pagination_override,
+            )
 
         payload: dict[str, Any] | None = None
-        body = await request.body()
-        if body:
-            raw: Any = msgspec.json.decode(body)
-            payload = raw
+        if has_input_binding:
+            body = await request.body()
+            if body:
+                payload = msgspec.json.decode(body)
 
         uc = factory.build(uc_type)
         try:
-            result = await executor.execute(uc, params=params, payload=payload)
+            result: Any = await executor.execute(uc, params=params, payload=payload)
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
         return MsgspecJSONResponse(content=result, status_code=status_code)
@@ -257,11 +359,12 @@ def _make_handler(
         )
     ]
     for p_name in path_params:
+        annotation = _normalize_path_param_annotation(execute_param_types.get(p_name, str))
         sig_params.append(
             inspect.Parameter(
                 p_name,
                 inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=str,
+                annotation=annotation,
             )
         )
     _handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
@@ -277,13 +380,17 @@ def bind_interfaces(
     compiled_routes: Sequence[CompiledRoute],
     factory: UseCaseFactory,
     executor: RuntimeExecutor,
-) -> None:
+) -> dict[str, Any]:
     """Register compiled routes on a FastAPI application.
 
     For each :class:`~loom.rest.compiler.CompiledRoute`, creates a dynamic
     async handler and registers it via ``app.add_api_route``.  Path parameters
     are inferred from the route path template and exposed in the handler
     signature so FastAPI validates and documents them correctly.
+
+    Nested JSON Schema ``$defs`` produced by msgspec/pydantic are collected
+    into a shared component registry and returned.  The caller is responsible
+    for injecting these into ``components.schemas`` of the OpenAPI document.
 
     Args:
         app: FastAPI application instance to register routes on.
@@ -292,20 +399,46 @@ def bind_interfaces(
         factory: Use-case factory for constructing instances per request.
         executor: Runtime executor that drives the use-case pipeline.
 
+    Returns:
+        Mapping of schema name → JSON Schema fragment for all collected
+        ``$defs`` that should appear under ``components.schemas``.
+
     Example::
 
         compiler = RestInterfaceCompiler(use_case_compiler)
         routes = compiler.compile(UserRestInterface)
-        bind_interfaces(app, routes, factory, executor)
+        component_schemas = bind_interfaces(app, routes, factory, executor)
     """
+    component_registry: dict[str, Any] = {}
+
     for cr in compiled_routes:
         handler = _make_handler(cr, factory, executor)
+        summary, description = _route_docs(cr)
+        request_body = build_request_body_schema(cr, component_registry)
+        success_response = build_success_response_schema(cr, component_registry)
+        responses: dict[int | str, dict[str, Any]] | None = None
+        if success_response is not None:
+            responses = {cr.route.status_code: success_response}
+
+        openapi_extra: dict[str, Any] | None = None
+        query_parameters = build_query_parameters_schema(cr)
+        if request_body is not None or query_parameters:
+            openapi_extra = {}
+            if request_body is not None:
+                openapi_extra["requestBody"] = request_body
+            if query_parameters:
+                openapi_extra["parameters"] = query_parameters
+
         app.add_api_route(
             path=cr.full_path,
             endpoint=handler,
             methods=[cr.route.method.upper()],
-            summary=cr.route.summary or None,
-            description=cr.route.description or None,
+            summary=summary,
+            description=description,
             status_code=cr.route.status_code,
             tags=list(cr.interface_tags) if cr.interface_tags else [],
+            responses=responses,
+            openapi_extra=openapi_extra,
         )
+
+    return component_registry

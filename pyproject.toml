@@ -7,13 +7,19 @@ requires-python = ">=3.11"
 dependencies = [
     "msgspec>=0.18,<1.0",
     "structlog>=24.4,<26.0",
+    "omegaconf>=2.3,<3.0",
+    "prometheus-client>=0.20",
+    "aiocache>=0.12,<1.0",
 ]
 
 [project.optional-dependencies]
-fastapi = [
+rest = [
     "fastapi>=0.115,<1.0",
     "pydantic>=2.0,<3.0",
     "uvicorn>=0.30,<1.0",
+    "httptools>=0.6,<1.0",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
+    "prometheus-client>=0.20",
 ]
 sqlalchemy = [
     "sqlalchemy>=2.0,<3.0",
@@ -31,6 +37,9 @@ pyspark = [
 prometheus = [
     "prometheus-client>=0.20",
 ]
+celery = [
+    "celery>=5.3,<6.0",
+]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -41,6 +50,7 @@ dev = [
     "aiocache>=0.12,<1.0",
     "aiosqlite>=0.20.0",
     "commitizen>=3.30.0",
+    "celery>=5.3,<6.0",
     "fakeredis>=2.23.0",
     "fastapi>=0.115,<1.0",
     "greenlet>=3.0.0",
@@ -55,6 +65,8 @@ dev = [
     "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
     "httpx>=0.28.1",
+    "httptools>=0.6,<1.0",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
 ]
 

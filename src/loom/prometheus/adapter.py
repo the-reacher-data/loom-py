@@ -23,7 +23,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loom.core.engine.events import EventKind, RuntimeEvent
 
@@ -39,41 +39,25 @@ def _make_instruments(
     """
     from prometheus_client import Counter, Histogram
 
-    if registry is not None:
-        requests_total: Counter = Counter(
-            "loom_usecase_requests",
-            "Total number of use-case executions by outcome.",
-            ["usecase", "status"],
-            registry=registry,
-        )
-        duration_seconds: Histogram = Histogram(
-            "loom_usecase_duration_seconds",
-            "Use-case execution wall-clock time in seconds.",
-            ["usecase"],
-            registry=registry,
-        )
-        errors_total: Counter = Counter(
-            "loom_usecase_errors",
-            "Total number of use-case execution errors by error kind.",
-            ["usecase", "error_kind"],
-            registry=registry,
-        )
-    else:
-        requests_total = Counter(
-            "loom_usecase_requests",
-            "Total number of use-case executions by outcome.",
-            ["usecase", "status"],
-        )
-        duration_seconds = Histogram(
-            "loom_usecase_duration_seconds",
-            "Use-case execution wall-clock time in seconds.",
-            ["usecase"],
-        )
-        errors_total = Counter(
-            "loom_usecase_errors",
-            "Total number of use-case execution errors by error kind.",
-            ["usecase", "error_kind"],
-        )
+    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
+    requests_total: Counter = Counter(
+        "loom_usecase_requests",
+        "Total number of use-case executions by outcome.",
+        ["usecase", "status"],
+        **reg,
+    )
+    duration_seconds: Histogram = Histogram(
+        "loom_usecase_duration_seconds",
+        "Use-case execution wall-clock time in seconds.",
+        ["usecase"],
+        **reg,
+    )
+    errors_total: Counter = Counter(
+        "loom_usecase_errors",
+        "Total number of use-case execution errors by error kind.",
+        ["usecase", "error_kind"],
+        **reg,
+    )
     return requests_total, duration_seconds, errors_total
 
 
@@ -112,8 +96,8 @@ class PrometheusMetricsAdapter:
     """
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
-        self._requests_total, self._duration_seconds, self._errors_total = (
-            _make_instruments(registry)
+        self._requests_total, self._duration_seconds, self._errors_total = _make_instruments(
+            registry
         )
 
     def on_event(self, event: RuntimeEvent) -> None:

@@ -82,25 +82,26 @@ async def test_uow_factory_creates_uow_per_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uow_aenter_called_on_execution() -> None:
+async def test_uow_begin_called_on_execution() -> None:
     factory, uow = _make_uow_factory()
     compiler = _compiler(_SimpleUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     await executor.execute(_SimpleUC())
 
-    uow.__aenter__.assert_awaited_once()
+    uow.begin.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_uow_aexit_called_with_no_exception_on_success() -> None:
+async def test_uow_commit_called_on_success() -> None:
     factory, uow = _make_uow_factory()
     compiler = _compiler(_SimpleUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     await executor.execute(_SimpleUC())
 
-    uow.__aexit__.assert_awaited_once_with(None, None, None)
+    uow.commit.assert_awaited_once()
+    uow.rollback.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -109,21 +110,16 @@ async def test_uow_aexit_called_with_no_exception_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uow_aexit_called_with_exception_on_failure() -> None:
+async def test_uow_rollback_called_on_failure() -> None:
     factory, uow = _make_uow_factory()
-    # Make __aexit__ actually propagate the exception
-    uow.__aexit__ = AsyncMock(return_value=None)
     compiler = _compiler(_FailingUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     with pytest.raises(RuntimeError, match="intentional"):
         await executor.execute(_FailingUC())
 
-    # __aexit__ should have been called with the exception type
-    call_args = uow.__aexit__.await_args
-    assert call_args is not None
-    exc_type = call_args.args[0]
-    assert exc_type is RuntimeError
+    uow.rollback.assert_awaited_once()
+    uow.commit.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

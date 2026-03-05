@@ -88,6 +88,31 @@ def collect_from_modules(
     return models, use_cases, interfaces
 
 
+def collect_use_cases_from_interfaces(
+    interfaces: list[type[RestInterface[object]]],
+) -> list[type[UseCase[object, object]]]:
+    """Extract unique UseCases referenced in interface routes.
+
+    Required because auto-generated UseCase classes live in
+    ``loom.rest.autocrud``, not in user modules, so
+    :func:`collect_from_modules` cannot discover them via module scanning.
+
+    Args:
+        interfaces: List of concrete ``RestInterface`` subclasses to inspect.
+
+    Returns:
+        Ordered list of unique UseCase classes found across all routes,
+        preserving first-seen order.
+    """
+    result: list[type[UseCase[object, object]]] = []
+    seen: set[type[UseCase[object, object]]] = set()
+    for iface in interfaces:
+        for route in iface.routes:
+            uc = typing.cast(type[UseCase[object, object]], route.use_case)
+            _append_unique(result, seen, uc)
+    return result
+
+
 def infer_model_from_use_case(
     use_case_type: type[UseCase[object, object]],
 ) -> type[BaseModel] | None:

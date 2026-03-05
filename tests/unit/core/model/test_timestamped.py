@@ -6,7 +6,7 @@ import msgspec
 import pytest
 
 from loom.core.model import TimestampedModel
-from loom.core.model.enums import ServerDefault
+from loom.core.model.enums import ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnField
 
 
@@ -31,6 +31,10 @@ class TestTimestampedModelFields:
     def test_updated_at_server_default_is_now(self) -> None:
         spec = TimestampedModel.__loom_columns__["updated_at"]
         assert spec.field.server_default == ServerDefault.NOW
+
+    def test_updated_at_server_onupdate_is_now(self) -> None:
+        spec = TimestampedModel.__loom_columns__["updated_at"]
+        assert spec.field.server_onupdate == ServerOnUpdate.NOW
 
     def test_created_at_is_nullable(self) -> None:
         spec = TimestampedModel.__loom_columns__["created_at"]

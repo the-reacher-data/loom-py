@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -115,6 +115,46 @@ class RotatingFileHandlerConfig(msgspec.Struct, frozen=True, tag="rotating_file"
 HandlerConfig = StreamHandlerConfig | FileHandlerConfig | RotatingFileHandlerConfig
 
 
+class LoggerConfig(msgspec.Struct, kw_only=True):
+    """YAML configuration struct for the ``logger:`` section.
+
+    Use with :func:`~loom.core.config.loader.section` to parse the
+    ``logger:`` block from an OmegaConf config, then pass directly to
+    :func:`configure_logging_from_values`.
+
+    Attributes:
+        name: Logger name.  Empty string targets the root logger.
+        environment: Deployment environment (``"dev"``, ``"prod"``).
+            When empty, :func:`configure_logging_from_values` falls back to
+            the ``ENVIRONMENT`` env var, then ``"dev"``.
+        renderer: Output renderer (``"json"`` or ``"console"``).
+            ``None`` auto-detects from ``environment``.
+        colors: Enable ANSI colours.  ``None`` auto-detects from
+            ``environment``.
+        level: Minimum log level (``"DEBUG"``, ``"INFO"``, etc.).
+        handlers: Additional stdlib handler configurations.
+
+    Example::
+
+        cfg = section(raw, "logger", LoggerConfig)
+        configure_logging_from_values(
+            name=cfg.name,
+            environment=cfg.environment,
+            renderer=cfg.renderer,
+            colors=cfg.colors,
+            level=cfg.level,
+            handlers=cfg.handlers,
+        )
+    """
+
+    name: str = ""
+    environment: str = ""
+    renderer: str | None = None
+    colors: bool | None = None
+    level: str = "INFO"
+    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class LogConfig:
     """Immutable logging configuration for the framework.
@@ -197,6 +237,33 @@ def _setup_stdlib(config: LogConfig, level: int) -> None:
 
 
 _DEFAULT_LOG_CONFIG = LogConfig()
+
+
+def configure_logging_from_values(
+    *,
+    name: str = "",
+    environment: str = "",
+    renderer: str | None = None,
+    colors: bool | None = None,
+    level: str = "INFO",
+    handlers: Sequence[HandlerConfig] = (),
+) -> None:
+    """Configure logging from plain scalar values.
+
+    Intended for bootstrap layers that parse config structs and want to avoid
+    duplicating ``Environment``/``Renderer`` conversion logic.
+    """
+    env = Environment.from_str(environment.strip()) if environment.strip() else Environment.DEV
+    configure_logging(
+        LogConfig(
+            name=name,
+            environment=env,
+            renderer=Renderer.from_str(renderer) if renderer is not None else None,
+            colors=colors,
+            level=level,
+            handlers=tuple(handlers),
+        )
+    )
 
 
 def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:

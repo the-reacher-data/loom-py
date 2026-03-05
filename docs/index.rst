@@ -1,8 +1,17 @@
 loom-kernel documentation
 =========================
 
+.. raw:: html
+
+   <div class="loom-hero">
+     <img src="_static/logo-transparent.png" alt="loom-kernel logo" />
+   </div>
+
 Framework-agnostic toolkit to build backend applications with typed use cases,
 repository contracts, and transport adapters.
+
+Official hosted documentation:
+`loom-py.readthedocs.io <https://loom-py.readthedocs.io/en/latest/>`_.
 
 .. toctree::
    :maxdepth: 2

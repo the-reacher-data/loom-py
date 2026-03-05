@@ -4,10 +4,12 @@ from loom.core.logger.config import (
     FileHandlerConfig,
     HandlerConfig,
     LogConfig,
+    LoggerConfig,
     Renderer,
     RotatingFileHandlerConfig,
     StreamHandlerConfig,
     configure_logging,
+    configure_logging_from_values,
 )
 from loom.core.logger.registry import (
     LoggerFactory,
@@ -22,6 +24,7 @@ __all__ = [
     "FileHandlerConfig",
     "HandlerConfig",
     "LogConfig",
+    "LoggerConfig",
     "LoggerFactory",
     "LoggerPort",
     "Renderer",
@@ -29,6 +32,7 @@ __all__ = [
     "StreamHandlerConfig",
     "StructLogger",
     "configure_logger_factory",
+    "configure_logging_from_values",
     "configure_logging",
     "get_logger",
     "reset_logger_factory",

@@ -15,35 +15,104 @@ import msgspec
 from loom.core.command.field import CommandField
 
 
-class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True):
+class Command(msgspec.Struct, frozen=True, kw_only=True, omit_defaults=True, rename="camel"):
     """Base for all command structs."""
 
     __command_fields__: ClassVar[dict[str, CommandField]] = {}
     __patch__: ClassVar[bool] = False
+    __payload_struct_fields__: ClassVar[dict[str, msgspec.structs.FieldInfo]] = {}
+    __internal_to_external__: ClassVar[dict[str, str]] = {}
+    __external_to_internal__: ClassVar[dict[str, str]] = {}
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls.__command_fields__ = _extract_command_fields(cls)
+        cls.__payload_struct_fields__ = {}
+        cls.__internal_to_external__ = {}
+        cls.__external_to_internal__ = {}
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> tuple[Self, frozenset[str]]:
-        normalized = dict(payload)
-        struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
-        fields_set = frozenset(normalized.keys() & struct_fields.keys())
+        struct_fields, internal_to_external, external_to_internal = _get_cached_payload_mappings(
+            cls
+        )
+        normalized, seen_internal_keys = _normalize_payload(
+            payload=payload,
+            struct_fields=struct_fields,
+            internal_to_external=internal_to_external,
+            external_to_internal=external_to_internal,
+        )
+        fields_set = frozenset(seen_internal_keys)
 
-        for name, meta in cls.__command_fields__.items():
-            if name in normalized:
-                continue
-            field = struct_fields.get(name)
-            if field is None:
-                continue
-            if field.default is msgspec.NODEFAULT and (
-                meta.patch or meta.internal or meta.calculated
-            ):
-                normalized[name] = None
+        _fill_metadata_required_defaults(
+            normalized=normalized,
+            seen_internal_keys=seen_internal_keys,
+            command_fields=cls.__command_fields__,
+            struct_fields=struct_fields,
+            internal_to_external=internal_to_external,
+        )
 
         instance = msgspec.convert(normalized, cls)
         return instance, fields_set
+
+
+def _build_field_mappings(
+    struct_fields: dict[str, msgspec.structs.FieldInfo],
+) -> tuple[dict[str, str], dict[str, str]]:
+    internal_to_external = {
+        name: field.encode_name or name for name, field in struct_fields.items()
+    }
+    external_to_internal = {
+        field.encode_name: field.name
+        for field in struct_fields.values()
+        if field.encode_name and field.encode_name != field.name
+    }
+    return internal_to_external, external_to_internal
+
+
+def _normalize_payload(
+    *,
+    payload: dict[str, Any],
+    struct_fields: dict[str, msgspec.structs.FieldInfo],
+    internal_to_external: dict[str, str],
+    external_to_internal: dict[str, str],
+) -> tuple[dict[str, Any], set[str]]:
+    normalized: dict[str, Any] = {}
+    seen_internal_keys: set[str] = set()
+
+    for raw_key, value in payload.items():
+        if raw_key in external_to_internal:
+            normalized[raw_key] = value
+            seen_internal_keys.add(external_to_internal[raw_key])
+            continue
+        if raw_key in struct_fields:
+            normalized[internal_to_external[raw_key]] = value
+            seen_internal_keys.add(raw_key)
+            continue
+        normalized[raw_key] = value
+
+    return normalized, seen_internal_keys
+
+
+def _fill_metadata_required_defaults(
+    *,
+    normalized: dict[str, Any],
+    seen_internal_keys: set[str],
+    command_fields: dict[str, CommandField],
+    struct_fields: dict[str, msgspec.structs.FieldInfo],
+    internal_to_external: dict[str, str],
+) -> None:
+    for name, meta in command_fields.items():
+        if name in seen_internal_keys:
+            continue
+        field = struct_fields.get(name)
+        if field is None:
+            continue
+        if field.default is not msgspec.NODEFAULT:
+            continue
+        if not (meta.patch or meta.internal or meta.calculated):
+            continue
+        normalized[internal_to_external[name]] = None
 
 
 def _extract_command_fields(cls: type[Any]) -> dict[str, CommandField]:
@@ -58,3 +127,25 @@ def _extract_command_fields(cls: type[Any]) -> dict[str, CommandField]:
                 result[name] = metadata
                 break
     return result
+
+
+def _get_cached_payload_mappings(
+    cls: type[Command],
+) -> tuple[
+    dict[str, msgspec.structs.FieldInfo],
+    dict[str, str],
+    dict[str, str],
+]:
+    if cls.__payload_struct_fields__:
+        return (
+            cls.__payload_struct_fields__,
+            cls.__internal_to_external__,
+            cls.__external_to_internal__,
+        )
+
+    struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
+    internal_to_external, external_to_internal = _build_field_mappings(struct_fields)
+    cls.__payload_struct_fields__ = struct_fields
+    cls.__internal_to_external__ = internal_to_external
+    cls.__external_to_internal__ = external_to_internal
+    return struct_fields, internal_to_external, external_to_internal

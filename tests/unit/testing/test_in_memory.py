@@ -7,6 +7,8 @@ from typing import Any
 import msgspec
 import pytest
 
+from loom.core.model import BaseModel, Cardinality, ColumnField, ProjectionField, RelationField
+from loom.core.projection.loaders import RelationCountLoader
 from loom.testing.in_memory import InMemoryRepository
 
 # ---------------------------------------------------------------------------
@@ -25,6 +27,23 @@ class CreateWidgetCmd(msgspec.Struct):
 
 class UpdateWidgetCmd(msgspec.Struct):
     name: str
+
+
+class _Product(BaseModel):
+    __tablename__ = "in_memory_products"
+
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=120)
+    reviews: list[dict[str, Any]] = RelationField(
+        foreign_key="product_id",
+        cardinality=Cardinality.ONE_TO_MANY,
+        profiles=("with_details",),
+    )
+    review_count: int = ProjectionField(
+        loader=RelationCountLoader(relation="reviews"),
+        profiles=("with_details",),
+        default=0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +234,28 @@ class TestListPaginated:
         repo.seed(Widget(id=1, name="A"))
         result = await repo.list_paginated(page=1, limit=10, profile="default")
         assert len(result) == 1
+
+
+class TestProjectionProfiles:
+    @pytest.mark.asyncio
+    async def test_projection_not_included_outside_profile_even_with_default(self) -> None:
+        repo: InMemoryRepository[_Product] = InMemoryRepository(_Product)
+        repo.seed(_Product(id=1, name="p"))
+
+        loaded = await repo.get_by_id(1, profile="default")
+        assert loaded is not None
+        payload = msgspec.to_builtins(loaded)
+        assert isinstance(payload, dict)
+        assert "reviewCount" not in payload
+
+    @pytest.mark.asyncio
+    async def test_projection_included_when_profile_is_active(self) -> None:
+        repo: InMemoryRepository[_Product] = InMemoryRepository(_Product)
+        repo.seed(_Product(id=1, name="p", reviews=[]))
+
+        loaded = await repo.get_by_id(1, profile="with_details")
+        assert loaded is not None
+        assert loaded.review_count == 0
+        payload = msgspec.to_builtins(loaded)
+        assert isinstance(payload, dict)
+        assert payload["reviewCount"] == 0

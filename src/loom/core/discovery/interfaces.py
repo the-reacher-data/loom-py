@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import warnings
-from typing import cast
 
 from loom.core.discovery._utils import (
     collect_from_modules,
+    collect_use_cases_from_interfaces,
     import_modules,
     infer_model_from_use_case,
 )
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel
-from loom.core.use_case.use_case import UseCase
 
 
 class InterfacesDiscoveryEngine:
@@ -28,6 +27,20 @@ class InterfacesDiscoveryEngine:
         self._warn_recommended = warn_recommended
 
     def discover(self) -> DiscoveryResult:
+        """Scan interface modules and extract all UseCases referenced by routes.
+
+        Auto-generated UseCases (from ``auto=True`` interfaces) are included
+        because they are registered on the interface class at definition time
+        via :func:`~loom.rest.model.RestInterface.__init_subclass__`.
+
+        Returns:
+            :class:`~loom.core.discovery.base.DiscoveryResult` with all
+            discovered models, use cases, and interfaces.
+
+        Raises:
+            ValueError: When no interface module paths are provided, or when
+                no ``RestInterface`` subclasses are found.
+        """
         if not self._interface_modules:
             raise ValueError("interfaces discovery requires at least one module path.")
 
@@ -36,14 +49,7 @@ class InterfacesDiscoveryEngine:
         if not interfaces:
             raise ValueError("No RestInterface subclasses discovered in interface modules.")
 
-        use_cases: list[type[UseCase[object, object]]] = []
-        seen_use_cases: set[type[UseCase[object, object]]] = set()
-        for interface in interfaces:
-            for route in interface.routes:
-                uc = cast(type[UseCase[object, object]], route.use_case)
-                if uc not in seen_use_cases:
-                    use_cases.append(uc)
-                    seen_use_cases.add(uc)
+        use_cases = collect_use_cases_from_interfaces(list(interfaces))
 
         models: list[type[BaseModel]] = []
         seen_models: set[type[BaseModel]] = set()

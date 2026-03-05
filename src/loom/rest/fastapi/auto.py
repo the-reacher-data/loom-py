@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
+    from prometheus_client import CollectorRegistry
 
 import msgspec
 from fastapi import FastAPI
@@ -24,18 +28,41 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
-from loom.core.logger import (
-    Environment,
-    HandlerConfig,
-    LogConfig,
-    Renderer,
-    configure_logging,
-)
+from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.middleware import TraceIdMiddleware
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
+_CfgT = TypeVar("_CfgT")
+
+
+def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
+    """Load *key* from config, returning ``cls()`` when the section is absent.
+
+    Args:
+        raw: Root OmegaConf DictConfig produced by :func:`load_config`.
+        key: Top-level YAML key to look up.
+        cls: Config struct class.  Must be instantiable with no arguments
+            (all fields optional or have defaults).
+
+    Returns:
+        Parsed instance of *cls*, or ``cls()`` if *key* is not present.
+    """
+    try:
+        return section(raw, key, cls)
+    except ConfigError:
+        return cls()
+
+
+@dataclass(frozen=True)
+class _RepoToken(Generic[ModelT]):
+    """Typed DI token used to bind repository instances by model."""
+
+    model: type[ModelT]
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -75,7 +102,7 @@ class _AppConfig(msgspec.Struct, kw_only=True):
 
 class _DatabaseConfig(msgspec.Struct, kw_only=True):
     url: str
-    echo: bool = False
+    echo: bool | None = None  # None = inherit from trace.enabled
     pool_pre_ping: bool = True
 
 
@@ -84,34 +111,18 @@ class _MetricsConfig(msgspec.Struct, kw_only=True):
     path: str = "/metrics"
 
 
-class _LoggerConfig(msgspec.Struct, kw_only=True):
-    name: str = ""
-    environment: str = ""
-    renderer: str | None = None
-    colors: bool | None = None
-    level: str = "INFO"
-    handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
-
-
-def _discover_interfaces(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return InterfacesDiscoveryEngine(
-        discovery_cfg.interfaces.modules,
-        warn_recommended=discovery_cfg.interfaces.warn_recommended,
-    ).discover()
-
-
-def _discover_modules(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return ModulesDiscoveryEngine(discovery_cfg.modules.include).discover()
-
-
-def _discover_manifest(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
-    return ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
+class _TraceConfig(msgspec.Struct, kw_only=True):
+    enabled: bool = True
+    header: str = "x-request-id"
 
 
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
-    "interfaces": _discover_interfaces,
-    "modules": _discover_modules,
-    "manifest": _discover_manifest,
+    "interfaces": lambda cfg: InterfacesDiscoveryEngine(
+        cfg.interfaces.modules,
+        warn_recommended=cfg.interfaces.warn_recommended,
+    ).discover(),
+    "modules": lambda cfg: ModulesDiscoveryEngine(cfg.modules.include).discover(),
+    "manifest": lambda cfg: ManifestDiscoveryEngine(cfg.manifest.module).discover(),
 }
 
 
@@ -140,9 +151,10 @@ def _register_repositories(
 
     def register(container: LoomContainer) -> None:
         for model, repository in repositories.items():
-            sentinel: type[Any] = type(f"_Repo_{model.__name__}", (), {})
-            container.register(sentinel, _provider_for(repository), scope=Scope.APPLICATION)
-            container.register_repo(model, sentinel)
+            token = _RepoToken(model)
+            container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
+            container.register_repo(model, token)
+        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
 
     return register
 
@@ -154,27 +166,74 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
-def _parse_renderer(value: str | None) -> Renderer | None:
-    return Renderer.from_str(value) if value is not None else None
+def _configure_job_service(
+    raw: DictConfig,
+    result: BootstrapResult,
+    session_manager: SessionManager,
+) -> None:
+    """Register a ``JobService`` implementation in the container.
 
+    Registers :class:`~loom.celery.service.CeleryJobService` when a
+    ``celery`` config section is present and the ``loom[celery]`` extra is
+    installed.  Falls back to
+    :class:`~loom.core.job.service.InlineJobService` otherwise — enabling
+    local development and tests without a broker.
 
-def _configure_logger(logger_cfg: _LoggerConfig) -> None:
-    env_str = logger_cfg.environment.strip() or os.getenv("ENVIRONMENT", "dev")
-    configure_logging(
-        LogConfig(
-            name=logger_cfg.name,
-            environment=Environment.from_str(env_str),
-            renderer=_parse_renderer(logger_cfg.renderer),
-            colors=logger_cfg.colors,
-            level=logger_cfg.level,
-            handlers=tuple(logger_cfg.handlers),
+    The registration uses ``APPLICATION`` scope so the service is created
+    once and shared across all requests.
+
+    Args:
+        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        result: Bootstrap result carrying the container, compiler, and
+            factory.
+        session_manager: Live ``SessionManager`` for the inline fallback
+            path (used to build a ``UoW`` factory for the executor).
+    """
+    try:
+        from loom.celery.config import (
+            CeleryConfig as _CC,  # type: ignore[import-untyped,unused-ignore]
         )
-    )
+        from loom.celery.config import (
+            create_celery_app,  # type: ignore[import-untyped,unused-ignore]
+        )
+        from loom.celery.service import (
+            CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
+        )
+
+        celery_cfg = section(raw, "celery", _CC)
+        celery_app = create_celery_app(celery_cfg)
+        svc: Any = CeleryJobService(celery_app, metrics=result.metrics)
+    except (ConfigError, ImportError):
+        from loom.core.engine.executor import RuntimeExecutor as _Exec
+        from loom.core.job.service import InlineJobService
+        from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+
+        uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
+        executor = _Exec(result.compiler, uow_factory=uow_factory, metrics=result.metrics)
+        svc = InlineJobService(result.factory, executor)
+
+    from loom.core.job.service import JobService
+
+    result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
+
+
+def _resolve_effective_echo(db_cfg: _DatabaseConfig, trace_cfg: _TraceConfig) -> bool:
+    """Return the effective SQLAlchemy echo setting.
+
+    Args:
+        db_cfg: Database configuration.
+        trace_cfg: Trace configuration.
+
+    Returns:
+        ``db_cfg.echo`` when explicitly set; ``trace_cfg.enabled`` otherwise.
+    """
+    return db_cfg.echo if db_cfg.echo is not None else trace_cfg.enabled
 
 
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
+    echo: bool,
 ) -> tuple[BootstrapResult, SessionManager, DiscoveryResult]:
     discovered = _build_discovery_result(app_cfg.discovery)
     if not discovered.use_cases:
@@ -189,7 +248,7 @@ def _build_bootstrap(
 
     session_manager = SessionManager(
         db_cfg.url,
-        echo=db_cfg.echo,
+        echo=echo,
         pool_pre_ping=db_cfg.pool_pre_ping,
         pool_size=None,
         max_overflow=None,
@@ -206,29 +265,79 @@ def _build_bootstrap(
     return result, session_manager, discovered
 
 
-def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
-    """Create a FastAPI application from YAML config and discovered components."""
-    raw = load_config(config_path)
+def create_app(
+    *config_paths: str,
+    code_path: str | None = None,
+    metrics_registry: CollectorRegistry | None = None,
+) -> FastAPI:
+    """Create a FastAPI application from one or more YAML config files.
+
+    Config files are merged left-to-right — later files override earlier ones.
+    Each file may also declare a top-level ``includes`` list to pull in
+    additional base files before its own values (see :func:`load_config`).
+
+    :class:`~loom.rest.middleware.TraceIdMiddleware` is mounted
+    automatically when ``trace.enabled`` is ``true`` (the default).
+    SQLAlchemy SQL echo inherits ``trace.enabled`` unless ``database.echo``
+    is set explicitly.  Prometheus middleware is mounted when
+    ``metrics.enabled`` is ``true``.
+
+    Args:
+        *config_paths: One or more paths to YAML configuration files.
+        code_path: Optional override for ``app.code_path``.  Resolved relative
+            to the first config file when not absolute.
+        metrics_registry: Optional Prometheus ``CollectorRegistry`` used for
+            ``PrometheusMiddleware`` and the scrape endpoint.  Defaults to the
+            global registry.  Pass a fresh ``CollectorRegistry()`` in tests to
+            avoid ``ValueError: Duplicated timeseries`` when multiple apps with
+            ``metrics.enabled: true`` are created in the same process.
+
+    Returns:
+        Configured :class:`fastapi.FastAPI` application, ready to serve.
+
+    Example — single config::
+
+        app = create_app("config/app.yaml")
+
+    Example — base + environment override::
+
+        app = create_app("config/base.yaml", "config/production.yaml")
+
+    Example — single file using inline includes::
+
+        # config/app.yaml
+        # includes:
+        #   - base.yaml
+        #   - secrets.yaml
+        app = create_app("config/app.yaml")
+    """
+    if not config_paths:
+        raise ConfigError("create_app requires at least one config file path.")
+
+    raw = load_config(*config_paths)
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
-    try:
-        logger_cfg = section(raw, "logger", _LoggerConfig)
-    except ConfigError:
-        logger_cfg = _LoggerConfig()
-    _configure_logger(logger_cfg)
+    trace_cfg = _section_or_default(raw, "trace", _TraceConfig)
+    logger_cfg = _section_or_default(raw, "logger", LoggerConfig)
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment,
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
+    )
 
-    config_file = Path(config_path).resolve()
+    config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
     if not effective_code_path.is_absolute():
         effective_code_path = (config_file.parent / effective_code_path).resolve()
     _ensure_code_path(effective_code_path)
 
-    result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg)
-
-    middleware: list[type[Any]] = []
-    if metrics_cfg.enabled:
-        middleware.append(PrometheusMiddleware)
+    effective_echo = _resolve_effective_echo(db_cfg, trace_cfg)
+    result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg, effective_echo)
+    _configure_job_service(raw, result, session_manager)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -243,7 +352,6 @@ def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
     app = create_fastapi_app(
         result,
         interfaces=tuple(type_i for type_i in discovered.interfaces),
-        middleware=middleware,
         title=app_cfg.rest.title,
         version=app_cfg.rest.version,
         docs_url=app_cfg.rest.docs_url,
@@ -251,9 +359,18 @@ def create_app(config_path: str, code_path: str | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    if trace_cfg.enabled:
+        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
+
     if metrics_cfg.enabled:
         import prometheus_client
 
-        app.mount(metrics_cfg.path, prometheus_client.make_asgi_app())
+        app.add_middleware(PrometheusMiddleware, registry=metrics_registry)
+        app.mount(
+            metrics_cfg.path,
+            prometheus_client.make_asgi_app(
+                registry=metrics_registry or prometheus_client.REGISTRY,
+            ),
+        )
 
     return app

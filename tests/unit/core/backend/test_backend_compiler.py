@@ -18,6 +18,7 @@ from loom.core.model import (
     ColumnField,
     OnDelete,
     RelationField,
+    TimestampedModel,
 )
 
 
@@ -43,6 +44,18 @@ class _Review(BaseModel):
     comment: str = ColumnField(length=255)
 
 
+class _AuditEntity(TimestampedModel):
+    __tablename__ = "test_audit_entities"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=80)
+
+
+class _LegacyAuditEntity(BaseModel):
+    __tablename__ = "test_legacy_audit_entities"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    updated_at: str = ColumnField(server_onupdate="now", nullable=True)
+
+
 @fixture(autouse=True)
 def _clean_registry() -> Generator[None, None, None]:
     reset_registry()
@@ -64,6 +77,22 @@ class TestCompileModel:
         fk = next(iter(sa_cls.__table__.c.product_id.foreign_keys))
         assert fk.column.table.name == "test_products"
         assert fk.ondelete == "CASCADE"
+
+    def test_timestamped_model_does_not_emit_unset_defaults(self) -> None:
+        sa_cls = cast(Any, compile_model(_AuditEntity))
+        created = sa_cls.__table__.c.created_at
+        updated = sa_cls.__table__.c.updated_at
+
+        assert created.default is None
+        assert updated.default is None
+        assert created.server_default is not None
+        assert updated.server_default is not None
+        assert updated.onupdate is not None
+
+    def test_server_onupdate_string_now_is_supported_for_backward_compatibility(self) -> None:
+        sa_cls = cast(Any, compile_model(_LegacyAuditEntity))
+        updated = sa_cls.__table__.c.updated_at
+        assert updated.onupdate is not None
 
 
 class TestCompileAll:

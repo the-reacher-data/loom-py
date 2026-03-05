@@ -1,22 +1,24 @@
 """Minimal dependency injection container.
 
-Provides type-based registration and resolution with application and request
-scopes.  The resolution graph is validated at startup (via :meth:`LoomContainer.validate`)
-so missing bindings are caught before the first request.
+Provides key-based registration and resolution with application and request
+scopes. The resolution graph is validated at startup
+(via :meth:`LoomContainer.validate`) so missing bindings are caught before the
+first request.
 
-No reflection occurs after :meth:`LoomContainer.validate` — all providers
-are resolved eagerly for ``APPLICATION`` scope during validation.
+No reflection occurs after :meth:`LoomContainer.validate` - all providers are
+resolved eagerly for ``APPLICATION`` scope during validation.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from loom.core.di.scope import Scope
 
 T = TypeVar("T")
+BindingKey = object
 
 
 class ResolutionError(Exception):
@@ -40,11 +42,18 @@ class _Binding:
     _instance: Any | None = field(default=None, repr=False)
 
 
+def _describe_key(interface: BindingKey) -> str:
+    """Return a stable human-readable name for a DI binding key."""
+    if isinstance(interface, type):
+        return interface.__qualname__
+    return repr(interface)
+
+
 class LoomContainer:
-    """Lightweight type-based dependency injection container.
+    """Lightweight key-based dependency injection container.
 
     Dependencies are registered at startup and resolved at runtime without
-    dynamic reflection per request.  Application-scope instances are
+    dynamic reflection per request. Application-scope instances are
     singletons; request-scope instances are created fresh per
     :meth:`resolve` call.
 
@@ -59,33 +68,41 @@ class LoomContainer:
     """
 
     def __init__(self) -> None:
-        self._bindings: dict[type[Any], _Binding] = {}
-        self._repo_bindings: dict[type[Any], type[Any]] = {}
+        self._bindings: dict[BindingKey, _Binding] = {}
+        self._repo_bindings: dict[type[Any], BindingKey] = {}
 
     def register(
         self,
-        interface: type[T],
-        provider: Callable[[], T] | type[T],
+        interface: BindingKey,
+        provider: Callable[[], Any] | type[Any],
         scope: Scope = Scope.REQUEST,
     ) -> None:
         """Register a provider for ``interface``.
 
         Args:
-            interface: The abstract type (protocol, ABC, or concrete class)
-                used as the resolution key.
+            interface: A hashable DI key (typically an abstract type, protocol,
+                or concrete class) used as the resolution key.
             provider: A zero-argument callable that returns an instance of
                 ``interface``, or a concrete class to instantiate directly.
-            scope: Lifetime scope.  Defaults to :attr:`~Scope.REQUEST`.
+            scope: Lifetime scope. Defaults to :attr:`~Scope.REQUEST`.
 
         Example::
 
             container.register(UserRepository, SQLAlchemyUserRepository)
             container.register(AppConfig, lambda: load_config(MyCfg), scope=Scope.APPLICATION)
         """
-        factory: Callable[[], T] = cast(Callable[[], T], provider)
+        if isinstance(provider, type):
+
+            def _factory() -> Any:
+                return provider()
+
+            self._bindings[interface] = _Binding(provider=_factory, scope=scope)
+            return
+
+        factory = provider
         self._bindings[interface] = _Binding(provider=factory, scope=scope)
 
-    def resolve(self, interface: type[T]) -> T:
+    def resolve(self, interface: BindingKey) -> Any:
         """Return an instance bound to ``interface``.
 
         For ``APPLICATION`` scope, the same instance is returned on every call.
@@ -93,7 +110,7 @@ class LoomContainer:
         each time.
 
         Args:
-            interface: The type to resolve.
+            interface: The DI key to resolve.
 
         Returns:
             An instance satisfying ``interface``.
@@ -103,20 +120,18 @@ class LoomContainer:
         """
         binding = self._bindings.get(interface)
         if binding is None:
-            raise ResolutionError(
-                f"No binding registered for: {interface.__qualname__}"
-            )
+            raise ResolutionError(f"No binding registered for: {_describe_key(interface)}")
         if binding.scope is Scope.APPLICATION:
             if binding._instance is None:
                 binding._instance = binding.provider()
-            return binding._instance  # type: ignore[no-any-return]
-        return binding.provider()  # type: ignore[no-any-return]
+            return binding._instance
+        return binding.provider()
 
     def validate(self) -> None:
         """Eagerly validate and instantiate all ``APPLICATION`` scope bindings.
 
         Ensures that application-scope singletons can be created without error
-        at startup (fail-fast).  Request-scope bindings are verified to have a
+        at startup (fail-fast). Request-scope bindings are verified to have a
         registered provider but are not instantiated.
 
         Raises:
@@ -132,23 +147,23 @@ class LoomContainer:
                 except Exception as exc:
                     raise ResolutionError(
                         f"Failed to instantiate APPLICATION-scope binding "
-                        f"for {interface.__qualname__}: {exc}"
+                        f"for {_describe_key(interface)}: {exc}"
                     ) from exc
 
-    def is_registered(self, interface: type[Any]) -> bool:
+    def is_registered(self, interface: BindingKey) -> bool:
         """Return ``True`` if ``interface`` has a registered binding.
 
         Args:
-            interface: The type to check.
+            interface: The DI key to check.
         """
         return interface in self._bindings
 
-    def register_repo(self, model: type[Any], interface: type[Any]) -> None:
+    def register_repo(self, model: type[Any], interface: BindingKey) -> None:
         """Register a model-to-repository interface mapping.
 
         Args:
             model: Domain/struct model type.
-            interface: DI interface key previously bound via :meth:`register`.
+            interface: DI key previously bound via :meth:`register`.
         """
         self._repo_bindings[model] = interface
 

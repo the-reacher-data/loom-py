@@ -137,6 +137,42 @@ class TestPaginationPolicy:
         result = RestInterfaceCompiler(use_case_compiler, defaults=defaults).compile(IFace)
         assert result[0].effective_pagination_mode == PaginationMode.CURSOR
 
+    def test_pagination_override_route_level(self, use_case_compiler: UseCaseCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/items"
+            allow_pagination_override = True
+            routes = (
+                RestRoute(
+                    use_case=ListUsersUseCase,
+                    method="GET",
+                    path="/",
+                    allow_pagination_override=False,
+                ),
+            )
+
+        defaults = RestApiDefaults(allow_pagination_override=True)
+        result = RestInterfaceCompiler(use_case_compiler, defaults=defaults).compile(IFace)
+        assert result[0].effective_allow_pagination_override is False
+
+    def test_pagination_override_interface_level(self, use_case_compiler: UseCaseCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/items"
+            allow_pagination_override = False
+            routes = (RestRoute(use_case=ListUsersUseCase, method="GET", path="/"),)
+
+        defaults = RestApiDefaults(allow_pagination_override=True)
+        result = RestInterfaceCompiler(use_case_compiler, defaults=defaults).compile(IFace)
+        assert result[0].effective_allow_pagination_override is False
+
+    def test_pagination_override_global_default(self, use_case_compiler: UseCaseCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/items"
+            routes = (RestRoute(use_case=ListUsersUseCase, method="GET", path="/"),)
+
+        defaults = RestApiDefaults(allow_pagination_override=False)
+        result = RestInterfaceCompiler(use_case_compiler, defaults=defaults).compile(IFace)
+        assert result[0].effective_allow_pagination_override is False
+
 
 class TestProfilePolicy:
     def test_profile_default_route_level(self, rest_compiler: RestInterfaceCompiler) -> None:

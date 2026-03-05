@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import cast
 
 import pytest
@@ -159,3 +160,17 @@ class TestRepoResolution:
     ) -> None:
         with pytest.raises(ResolutionError, match="Product"):
             container.resolve_repo(Product)
+
+
+class TestTokenResolution:
+    def test_resolve_with_non_type_token(self, container: LoomContainer) -> None:
+        @dataclass(frozen=True)
+        class _Token:
+            name: str
+
+        token = _Token("repo:product")
+        repo = ProductRepo()
+        container.register(token, lambda: repo, scope=Scope.APPLICATION)
+
+        resolved = container.resolve(token)
+        assert resolved is repo

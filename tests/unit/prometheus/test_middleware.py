@@ -9,6 +9,8 @@ from prometheus_client import CollectorRegistry
 
 from loom.prometheus import PrometheusMiddleware
 
+_UNMATCHED_PATH_TEMPLATE = "__unmatched__"
+
 
 def _make_scope(
     path: str = "/",
@@ -90,7 +92,7 @@ class TestPrometheusMiddlewareHTTP:
         count = _metric_value(
             registry,
             "http_request_duration_seconds_count",
-            {"method": "GET", "path_template": "/"},
+            {"method": "GET", "path_template": _UNMATCHED_PATH_TEMPLATE},
         )
         assert count == pytest.approx(1.0)
 
@@ -115,10 +117,30 @@ class TestPrometheusMiddlewareHTTP:
         real_val = _metric_value(
             registry,
             "http_requests_total",
-            {"path_template": "/products/42", "status_code": "200"},
+            {"path_template": _UNMATCHED_PATH_TEMPLATE, "status_code": "200"},
         )
         assert template_val == pytest.approx(1.0)
         assert real_val == pytest.approx(0.0)
+
+    @pytest.mark.asyncio
+    async def test_unmatched_route_uses_fixed_path_template(self) -> None:
+        registry = CollectorRegistry()
+
+        async def app(scope: Any, receive: Any, send: Any) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        mw = PrometheusMiddleware(app, registry=registry)
+        sent: list[Any] = []
+        scope = _make_scope("/products/550e8400-e29b-41d4-a716-446655440000")
+        await mw(scope, _null_receive, _make_async_sink(sent))
+
+        unmatched_val = _metric_value(
+            registry,
+            "http_requests_total",
+            {"path_template": _UNMATCHED_PATH_TEMPLATE, "status_code": "200"},
+        )
+        assert unmatched_val == pytest.approx(1.0)
 
     @pytest.mark.asyncio
     async def test_records_status_code(self) -> None:
@@ -135,7 +157,7 @@ class TestPrometheusMiddlewareHTTP:
         val = _metric_value(
             registry,
             "http_requests_total",
-            {"method": "GET", "path_template": "/", "status_code": "404"},
+            {"method": "GET", "path_template": _UNMATCHED_PATH_TEMPLATE, "status_code": "404"},
         )
         assert val == pytest.approx(1.0)
 

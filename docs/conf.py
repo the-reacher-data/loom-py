@@ -33,18 +33,40 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "loom-kernel docs"
-html_logo = "_static/logo.svg"
-html_theme_options = {
-    "light_logo": "logo.svg",
-    "dark_logo": "logo.svg",
-}
+html_css_files = [
+    "custom.css",
+]
 
 autosummary_generate = True
+autosummary_generate_overwrite = True
 autosummary_imported_members = False
 autodoc_typehints = "description"
+autodoc_typehints_format = "short"
 autodoc_member_order = "bysource"
+autodoc_default_options = {
+    "members": True,
+    "show-inheritance": True,
+}
+autodoc_preserve_defaults = True
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
+
+
+def _skip_duplicate_reexports(app, what, name, obj, skip, options):
+    """Skip known re-exported symbols that duplicate canonical API objects."""
+    del what, obj, options
+    current_module = app.env.temp_data.get("autodoc:module")
+    duplicated_reexports = {
+        ("loom.core.errors", "RuleViolation"),
+        ("loom.core.errors", "RuleViolations"),
+        ("loom.core.use_case", "RuleViolation"),
+        ("loom.core.use_case", "RuleViolations"),
+        ("loom.rest.model", "PaginationMode"),
+    }
+    if (current_module, name) in duplicated_reexports:
+        return True
+    return skip
+
 
 source_suffix = {
     ".rst": "restructuredtext",
@@ -66,3 +88,8 @@ autodoc_mock_imports = [
     "sqlalchemy",
     "uvicorn",
 ]
+
+
+def setup(app):
+    """Register Sphinx hooks."""
+    app.connect("autodoc-skip-member", _skip_duplicate_reexports)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, cast
 
@@ -66,6 +67,7 @@ class FakeProductRepo:
         return Product(id=1, name="existing")
 
     async def exists_by(self, field: str, value: Any) -> bool:
+        await asyncio.sleep(0)
         return True
 
     async def update(self, obj_id: Any, data: Any) -> Product | None:

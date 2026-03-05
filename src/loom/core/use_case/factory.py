@@ -19,6 +19,7 @@ from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
 
 ResultT = TypeVar("ResultT")
+_T = TypeVar("_T")
 DepToken = type[Any] | tuple[str, type[Any]]
 
 # Sentinel params that are never treated as injectable dependencies.
@@ -56,12 +57,15 @@ class UseCaseFactory:
         # - ("repo_for", model_type) for model-centric repo resolution
         self._dep_cache: dict[type[Any], list[tuple[str, DepToken]]] = {}
 
-    def build(self, use_case_type: type[UseCase[Any, ResultT]]) -> UseCase[Any, ResultT]:
-        """Construct a UseCase instance with dependencies injected from the container.
+    def build(self, use_case_type: type[_T]) -> _T:
+        """Construct an instance with dependencies injected from the container.
+
+        Accepts any class whose constructor dependencies are resolvable from
+        the container — both :class:`~loom.core.use_case.use_case.UseCase`
+        and :class:`~loom.core.job.job.Job` subclasses are valid inputs.
 
         Args:
-            use_case_type: Concrete :class:`~loom.core.use_case.use_case.UseCase`
-                subclass to instantiate.
+            use_case_type: Concrete class to instantiate.
 
         Returns:
             A fully constructed instance of ``use_case_type``.

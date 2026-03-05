@@ -7,6 +7,7 @@ import msgspec
 
 T = TypeVar("T")
 
+
 @dataclass(frozen=True, slots=True)
 class CommandField:
     """Metadata descriptor for command fields.

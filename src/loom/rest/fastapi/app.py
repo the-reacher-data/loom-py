@@ -30,12 +30,19 @@ from collections.abc import Sequence
 from typing import Any
 
 from fastapi import FastAPI
+from starlette.requests import Request
 
 from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
+from loom.core.logger import get_logger
+from loom.core.tracing import get_trace_id
 from loom.rest.compiler import RestInterfaceCompiler
+from loom.rest.errors import ErrorField
+from loom.rest.fastapi.response import MsgspecJSONResponse
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
+
+_log = get_logger(__name__)
 
 # Type alias for ASGI middleware classes accepted by FastAPI.add_middleware.
 _MiddlewareClass = Any
@@ -103,6 +110,19 @@ def create_fastapi_app(
     """
     app = FastAPI(**fastapi_kwargs)
 
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> MsgspecJSONResponse:
+        trace_id = get_trace_id()
+        _log.error("UnhandledException", error=repr(exc), trace_id=trace_id)
+        return MsgspecJSONResponse(
+            status_code=500,
+            content={
+                ErrorField.CODE: "internal_error",
+                ErrorField.MESSAGE: "An unexpected error occurred",
+                ErrorField.TRACE_ID: trace_id,
+            },
+        )
+
     for mw_class in middleware:
         app.add_middleware(mw_class)
 
@@ -110,12 +130,36 @@ def create_fastapi_app(
         result.compiler,
         defaults=defaults,
     )
-    executor = RuntimeExecutor(result.compiler, metrics=result.metrics)
+    executor = RuntimeExecutor(
+        result.compiler,
+        metrics=result.metrics,
+        repo_resolver=result.container.resolve_repo,
+    )
 
     all_routes = []
     for iface in interfaces:
         all_routes.extend(interface_compiler.compile(iface))
 
-    bind_interfaces(app, all_routes, result.factory, executor)
+    component_registry = bind_interfaces(app, all_routes, result.factory, executor)
+    if component_registry:
+        _register_openapi_components(app, component_registry)
 
     return app
+
+
+def _register_openapi_components(app: FastAPI, schemas: dict[str, Any]) -> None:
+    """Patch ``app.openapi`` to inject ``schemas`` into ``components.schemas``.
+
+    Args:
+        app: FastAPI application whose OpenAPI generator to patch.
+        schemas: Mapping of component name → JSON Schema fragment collected
+            during route binding (nested ``$defs`` from msgspec/pydantic).
+    """
+    original_openapi = app.openapi
+
+    def _openapi() -> dict[str, Any]:
+        doc = original_openapi()
+        doc.setdefault("components", {}).setdefault("schemas", {}).update(schemas)
+        return doc
+
+    app.openapi = _openapi  # type: ignore[method-assign]
