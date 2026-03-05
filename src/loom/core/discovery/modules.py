@@ -32,7 +32,7 @@ class ModulesDiscoveryEngine:
             raise ValueError("modules discovery requires at least one module path.")
 
         modules = import_modules(self._module_paths)
-        models, use_cases, interfaces = collect_from_modules(modules)
+        models, use_cases, interfaces, _ = collect_from_modules(modules)
 
         seen_ucs: set[type[UseCase[object, object]]] = set(use_cases)
         for uc in collect_use_cases_from_interfaces(interfaces):

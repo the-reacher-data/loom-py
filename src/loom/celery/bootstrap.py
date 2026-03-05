@@ -32,14 +32,14 @@ only opened after :class:`~loom.celery.event_loop.WorkerEventLoop`
 starts the background asyncio loop in the child process (via the
 ``worker_process_init`` Celery signal).
 
-Typical YAML layout::
+Typical YAML layout (database optional for pure in-memory jobs)::
 
     celery:
       broker_url: "redis://redis:6379/0"
       result_backend: "redis://redis:6379/1"
 
     database:
-      url: "postgresql+asyncpg://user:pass@db/mydb"
+      url: "postgresql+asyncpg://user:pass@db/mydb"  # optional
 
     jobs:
       RecalcPricesJob:
@@ -49,9 +49,10 @@ Typical YAML layout::
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -63,9 +64,13 @@ from loom.core.bootstrap import create_kernel
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
+from loom.core.discovery._utils import collect_from_modules, import_modules
+from loom.core.discovery.manifest import ManifestDiscoveryEngine
+from loom.core.engine.compilable import Compilable
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
 
 if TYPE_CHECKING:
@@ -92,6 +97,24 @@ class _WorkerDbConfig(msgspec.Struct, kw_only=True):
     url: str
     echo: bool = False
     pool_pre_ping: bool = True
+
+
+class _DiscoveryModules(msgspec.Struct, kw_only=True):
+    include: list[str] = msgspec.field(default_factory=list)
+
+
+class _DiscoveryManifest(msgspec.Struct, kw_only=True):
+    module: str = ""
+
+
+class _DiscoveryConfig(msgspec.Struct, kw_only=True):
+    mode: str = "modules"
+    modules: _DiscoveryModules = msgspec.field(default_factory=_DiscoveryModules)
+    manifest: _DiscoveryManifest = msgspec.field(default_factory=_DiscoveryManifest)
+
+
+class _WorkerAppConfig(msgspec.Struct, kw_only=True):
+    discovery: _DiscoveryConfig = msgspec.field(default_factory=_DiscoveryConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +166,25 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
     worker_process_shutdown.connect(_on_shutdown, weak=False)
 
 
+def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
+    """Return SQLAlchemy UoW factory when database config is present.
+
+    This keeps worker bootstrap lightweight for pure jobs that do not use DB.
+    """
+    try:
+        db_cfg = section(raw, "database", _WorkerDbConfig)
+    except ConfigError:
+        return None, None
+
+    # SessionManager is created pre-fork. The async engine is lazy — no TCP
+    # connections are opened until the first async context manager usage in
+    # the child process after WorkerEventLoop.initialize() runs.
+    session_manager = SessionManager(
+        db_cfg.url, echo=db_cfg.echo, pool_pre_ping=db_cfg.pool_pre_ping
+    )
+    return SQLAlchemyUnitOfWorkFactory(session_manager), session_manager
+
+
 # ---------------------------------------------------------------------------
 # Job config override helper
 # ---------------------------------------------------------------------------
@@ -164,6 +206,63 @@ def _apply_job_config_if_present(raw: DictConfig, job_type: type[Job[Any]]) -> N
         apply_job_config(job_type, cfg)
     except ConfigError:
         pass  # no override for this job — use ClassVar defaults
+
+
+def _merge_compilables(
+    use_cases: Sequence[type[Compilable]],
+    jobs: Sequence[type[Job[Any]]],
+) -> tuple[type[Compilable], ...]:
+    merged: list[type[Compilable]] = []
+    seen: set[type[Compilable]] = set()
+    for item in (*use_cases, *jobs):
+        if item in seen:
+            continue
+        merged.append(item)
+        seen.add(item)
+    return tuple(merged)
+
+
+def _load_jobs_from_manifest(module_path: str) -> tuple[type[Job[Any]], ...]:
+    module = importlib.import_module(module_path)
+    raw_jobs = cast(list[Any], getattr(module, "JOBS", []))
+    return tuple(cast(type[Job[Any]], item) for item in raw_jobs)
+
+
+def _discover_compilables_from_config(
+    discovery_cfg: _DiscoveryConfig,
+) -> tuple[tuple[type[Compilable], ...], tuple[type[Job[Any]], ...]]:
+    if discovery_cfg.mode == "modules":
+        modules = import_modules(discovery_cfg.modules.include)
+        _, use_cases, _, discovered_jobs = collect_from_modules(modules)
+        return _merge_compilables(use_cases, discovered_jobs), tuple(discovered_jobs)
+    if discovery_cfg.mode == "manifest":
+        discovered = ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
+        jobs = _load_jobs_from_manifest(discovery_cfg.manifest.module)
+        return _merge_compilables(discovered.use_cases, jobs), jobs
+    raise ValueError(f"Unsupported worker discovery mode: {discovery_cfg.mode!r}")
+
+
+def _resolve_compilables_and_jobs(
+    raw: DictConfig,
+    explicit_jobs: Sequence[type[Job[Any]]],
+) -> tuple[tuple[type[Compilable], ...], tuple[type[Job[Any]], ...]]:
+    if explicit_jobs:
+        jobs = tuple(explicit_jobs)
+        return tuple(jobs), jobs
+
+    try:
+        app_cfg = section(raw, "app", _WorkerAppConfig)
+    except ConfigError as exc:
+        raise RuntimeError(
+            "No jobs provided and no app.discovery configured for worker bootstrap."
+        ) from exc
+    compilables, jobs = _discover_compilables_from_config(app_cfg.discovery)
+    if not jobs:
+        raise RuntimeError(
+            "No Job classes discovered. "
+            "Add JOBS to manifest or include job modules in app.discovery."
+        )
+    return compilables, jobs
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +297,7 @@ class WorkerBootstrapResult:
 
 def bootstrap_worker(
     *config_paths: str,
-    jobs: Sequence[type[Job[Any]]],
+    jobs: Sequence[type[Job[Any]]] = (),
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
@@ -219,12 +318,18 @@ def bootstrap_worker(
     established until the background asyncio loop is started in each
     child process via ``worker_process_init``.
 
+    Database note: the ``database`` section is optional. When absent, no
+    SQLAlchemy ``SessionManager``/UoW is created; this is suitable for
+    pure jobs that don't use repository-backed markers or transactional
+    persistence.
+
     Args:
         *config_paths: One or more paths to YAML configuration files.
             Files are merged left-to-right.  Later files override earlier
             ones.
-        jobs: Concrete ``Job`` subclasses to compile and register as
-            Celery tasks.
+        jobs: Concrete ``Job`` subclasses to compile/register.  When
+            omitted, jobs are discovered from ``app.discovery`` using
+            mode ``modules`` or ``manifest``.
         callbacks: Concrete ``JobCallback`` subclasses to register as
             Celery callback (success / error) tasks.
         modules: Callables that receive the container and register
@@ -253,7 +358,6 @@ def bootstrap_worker(
     """
     raw = load_config(*config_paths)
     celery_cfg = section(raw, "celery", CeleryConfig)
-    db_cfg = section(raw, "database", _WorkerDbConfig)
 
     try:
         logger_cfg = section(raw, "logger", LoggerConfig)
@@ -268,34 +372,31 @@ def bootstrap_worker(
         handlers=logger_cfg.handlers,
     )
 
-    for job_type in jobs:
+    compilables, resolved_jobs = _resolve_compilables_and_jobs(raw, jobs)
+
+    for job_type in resolved_jobs:
         _apply_job_config_if_present(raw, job_type)
 
-    # SessionManager is created pre-fork. The async engine is lazy — no TCP
-    # connections are opened until the first async context manager usage in
-    # the child process after WorkerEventLoop.initialize() runs.
-    session_manager = SessionManager(
-        db_cfg.url, echo=db_cfg.echo, pool_pre_ping=db_cfg.pool_pre_ping
-    )
-    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
+    uow_factory, session_manager = _resolve_uow_factory(raw)
 
     kernel = create_kernel(
         config=raw,
-        use_cases=jobs,
+        use_cases=compilables,
         modules=modules,
         metrics=metrics,
         uow_factory=uow_factory,
     )
     celery_app = create_celery_app(celery_cfg)
 
-    for job_type in jobs:
+    for job_type in resolved_jobs:
         _make_job_task(celery_app, job_type, kernel.factory, kernel.executor, metrics)
 
     for callback_type in callbacks:
         _make_callback_task(celery_app, callback_type, kernel.factory)
         _make_callback_error_task(celery_app, callback_type, kernel.factory)
 
-    _connect_worker_signals(session_manager)
+    if session_manager is not None:
+        _connect_worker_signals(session_manager)
 
     return WorkerBootstrapResult(
         container=kernel.container,

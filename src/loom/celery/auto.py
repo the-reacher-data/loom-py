@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 def create_app(
     *config_paths: str,
-    jobs: Sequence[type[Job[Any]]],
+    jobs: Sequence[type[Job[Any]]] = (),
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
@@ -27,6 +27,7 @@ def create_app(
     Args:
         *config_paths: One or more YAML config files merged left-to-right.
         jobs: Concrete ``Job`` subclasses to register as Celery tasks.
+            Optional when ``app.discovery`` (modules/manifest) is configured.
         callbacks: Optional callback classes for success/failure hooks.
         modules: Optional DI registration modules.
         metrics: Optional metrics adapter.

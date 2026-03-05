@@ -10,6 +10,7 @@ from typing import Any
 
 import msgspec
 
+from loom.core.job.job import Job
 from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface
@@ -50,20 +51,29 @@ def _as_interface(cls: type[Any]) -> type[RestInterface[object]] | None:
     return None
 
 
+def _as_job(cls: type[Any]) -> type[Job[Any]] | None:
+    if issubclass(cls, Job) and cls is not Job:
+        return cls
+    return None
+
+
 def collect_from_modules(
     modules: list[ModuleType],
 ) -> tuple[
     list[type[BaseModel]],
     list[type[UseCase[object, object]]],
     list[type[RestInterface[object]]],
+    list[type[Job[Any]]],
 ]:
     models: list[type[BaseModel]] = []
     use_cases: list[type[UseCase[object, object]]] = []
     interfaces: list[type[RestInterface[object]]] = []
+    jobs: list[type[Job[Any]]] = []
 
     seen_models: set[type[BaseModel]] = set()
     seen_use_cases: set[type[UseCase[object, object]]] = set()
     seen_interfaces: set[type[RestInterface[object]]] = set()
+    seen_jobs: set[type[Job[Any]]] = set()
 
     for module in modules:
         module_name = module.__name__
@@ -84,8 +94,13 @@ def collect_from_modules(
             interface = _as_interface(cls)
             if interface is not None:
                 _append_unique(interfaces, seen_interfaces, interface)
+                continue
 
-    return models, use_cases, interfaces
+            job = _as_job(cls)
+            if job is not None:
+                _append_unique(jobs, seen_jobs, job)
+
+    return models, use_cases, interfaces, jobs
 
 
 def collect_use_cases_from_interfaces(

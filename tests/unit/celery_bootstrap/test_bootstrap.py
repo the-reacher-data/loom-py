@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
+import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -101,7 +103,13 @@ class TestWorkerBootstrapResult:
 
 
 class TestBootstrapWorkerTaskRegistration:
-    def _run(self, tmp_path: Any, extra_cfg: dict[str, Any] | None = None) -> WorkerBootstrapResult:
+    def _run(
+        self,
+        tmp_path: Any,
+        extra_cfg: dict[str, Any] | None = None,
+        *,
+        jobs: tuple[type[Job[Any]], ...] | None = (_SyncJob,),
+    ) -> WorkerBootstrapResult:
         """Write a minimal YAML config and call bootstrap_worker."""
         import yaml
 
@@ -121,7 +129,10 @@ class TestBootstrapWorkerTaskRegistration:
 
         from loom.celery.bootstrap import bootstrap_worker
 
-        return bootstrap_worker(str(config_path), jobs=[_SyncJob])
+        kwargs: dict[str, Any] = {}
+        if jobs is not None:
+            kwargs["jobs"] = list(jobs)
+        return bootstrap_worker(str(config_path), **kwargs)
 
     def test_task_registered_with_correct_name(self, tmp_path: Any) -> None:
         result = self._run(tmp_path)
@@ -160,6 +171,61 @@ class TestBootstrapWorkerTaskRegistration:
             assert _SyncJob.__retries__ == 7
         finally:
             _SyncJob.__retries__ = original_retries  # type: ignore[assignment]
+
+    def test_pure_job_bootstrap_without_database_section(self, tmp_path: Any) -> None:
+        """Database config is optional for jobs that do not access repositories."""
+        import yaml
+
+        cfg: dict[str, Any] = {
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+            }
+        }
+        config_path = tmp_path / "worker_no_db.yaml"
+        config_path.write_text(yaml.dump(cfg))
+
+        with patch.object(boot, "_connect_worker_signals") as mock_signals:
+            result = boot.bootstrap_worker(str(config_path), jobs=[_SyncJob])
+
+        assert isinstance(result, WorkerBootstrapResult)
+        mock_signals.assert_not_called()
+
+    def test_discovers_jobs_from_modules_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg)
+        expected = f"loom.job.{_SyncJob.__qualname__}"
+        assert expected in result.celery_app.tasks
+
+    def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        module_name = "tests.unit.celery_bootstrap._manifest_jobs_for_test"
+        module = types.ModuleType(module_name)
+        module.JOBS = [_SyncJob]
+        module.USE_CASES = []
+        module.INTERFACES = []
+        module.MODELS = []
+        sys.modules[module_name] = module
+
+        cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
+        try:
+            result = self._run(tmp_path, extra_cfg=cfg)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        expected = f"loom.job.{_SyncJob.__qualname__}"
+        assert expected in result.celery_app.tasks
+
+    def test_raises_when_no_jobs_and_no_discovery(self, tmp_path: Any) -> None:
+        with pytest.raises(RuntimeError):
+            self._run(tmp_path, jobs=None)
 
 
 # ---------------------------------------------------------------------------

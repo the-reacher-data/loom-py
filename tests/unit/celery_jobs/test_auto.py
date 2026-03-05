@@ -30,6 +30,21 @@ def test_create_app_delegates_to_bootstrap_worker() -> None:
     )
 
 
+def test_create_app_allows_discovery_without_explicit_jobs() -> None:
+    expected = MagicMock()
+    result = SimpleNamespace(celery_app=expected)
+    with patch("loom.celery.auto.bootstrap_worker", return_value=result) as mock_bootstrap:
+        app = create_app("config/worker.yaml")
+    assert app is expected
+    mock_bootstrap.assert_called_once_with(
+        "config/worker.yaml",
+        jobs=(),
+        callbacks=(),
+        modules=(),
+        metrics=None,
+    )
+
+
 def test_create_app_passes_optional_arguments() -> None:
     expected = MagicMock()
     result = SimpleNamespace(celery_app=expected)
