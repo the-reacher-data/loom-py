@@ -10,15 +10,24 @@ from loom.core.engine.compilable import Compilable
 from loom.core.use_case.keys import get_use_case_key
 
 _CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+_ENTITY_KEY_CACHE: dict[type[Any], str] = {}
 
 
 def model_entity_key(model: type[Any]) -> str:
     """Return canonical entity key from a model type.
 
+    Result is cached — the mapping from class to key is deterministic and
+    computed at most once per model type.
+
     Example:
         ``ProductReview -> "product_review"``
     """
-    return _CAMEL_BOUNDARY.sub("_", model.__name__).lower()
+    cached = _ENTITY_KEY_CACHE.get(model)
+    if cached is not None:
+        return cached
+    key = _CAMEL_BOUNDARY.sub("_", model.__name__).lower()
+    _ENTITY_KEY_CACHE[model] = key
+    return key
 
 
 @dataclass(frozen=True)
