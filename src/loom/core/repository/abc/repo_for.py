@@ -4,7 +4,13 @@ from typing import Any, Protocol, TypeVar
 
 import msgspec
 
-from loom.core.repository.abc.query import FilterParams, PageParams, PageResult
+from loom.core.repository.abc.query import (
+    CursorResult,
+    FilterParams,
+    PageParams,
+    PageResult,
+    QuerySpec,
+)
 
 ModelT = TypeVar("ModelT", bound=msgspec.Struct, covariant=True)
 
@@ -41,6 +47,14 @@ class RepoFor(Protocol[ModelT]):
         profile: str = "default",
     ) -> PageResult[ModelT]:
         """Fetch entities with pagination."""
+        ...
+
+    async def list_with_query(
+        self,
+        query: QuerySpec,
+        profile: str = "default",
+    ) -> PageResult[ModelT] | CursorResult[ModelT]:
+        """Fetch entities using a structured query (offset or cursor mode)."""
         ...
 
     async def create(self, data: msgspec.Struct) -> ModelT:

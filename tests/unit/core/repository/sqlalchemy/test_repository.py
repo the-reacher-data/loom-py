@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import msgspec
 import pytest
 from pytest import mark
 
+from loom.core.repository.abc import PageParams, PageResult, PaginationMode, QuerySpec, SortSpec
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy, with_session_scope
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
@@ -132,3 +133,90 @@ class TestWithSessionScopeDecorator:
         explicit_session.flush.assert_awaited_once()
         explicit_session.commit.assert_not_awaited()
         explicit_session.rollback.assert_not_awaited()
+
+
+class TestRepositoryCoreReadFastPath:
+    @mark.asyncio
+    async def test_get_by_id_uses_core_row_mapping_path(
+        self,
+        mock_session_manager: Any,
+        mock_session: AsyncMock,
+        dummy_model: type,
+    ) -> None:
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
+            session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
+        )
+        mock_session.get = AsyncMock(side_effect=AssertionError("ORM get should not be used"))
+
+        mappings = Mock()
+        mappings.first.return_value = {"id": 7}
+        execute_result = Mock()
+        execute_result.mappings.return_value = mappings
+        mock_session.execute = AsyncMock(return_value=execute_result)
+
+        loaded = await repo.get_by_id(7)
+
+        assert loaded is not None
+        assert getattr(loaded, "id", None) == 7
+        mock_session.execute.assert_awaited_once()
+        mock_session.get.assert_not_awaited()
+
+    @mark.asyncio
+    async def test_list_paginated_uses_core_row_mapping_path(
+        self,
+        mock_session_manager: Any,
+        mock_session: AsyncMock,
+        dummy_model: type,
+    ) -> None:
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
+            session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
+        )
+
+        item_mappings = Mock()
+        item_mappings.__iter__ = Mock(
+            return_value=iter(
+                [
+                    {"id": 1, "__loom_total_count": 2},
+                    {"id": 2, "__loom_total_count": 2},
+                ]
+            )
+        )
+        item_result = Mock()
+        item_result.mappings.return_value = item_mappings
+        mock_session.execute = AsyncMock(return_value=item_result)
+
+        page = await repo.list_paginated(PageParams(page=1, limit=10))
+
+        assert [getattr(item, "id", None) for item in page.items] == [1, 2]
+        assert page.total_count == 2
+        assert mock_session.execute.await_count == 1
+
+    @mark.asyncio
+    async def test_list_with_query_uses_core_read_path(
+        self,
+        mock_session_manager: Any,
+        mock_session: AsyncMock,
+        dummy_model: type,
+    ) -> None:
+        repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
+            session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
+        )
+        mappings = Mock()
+        mappings.__iter__ = Mock(return_value=iter([{"id": 1, "__loom_total_count": 1}]))
+        execute_result = Mock()
+        execute_result.mappings.return_value = mappings
+        mock_session.execute = AsyncMock(return_value=execute_result)
+
+        page = await repo.list_with_query(
+            QuerySpec(
+                sort=(SortSpec(field="id", direction="ASC"),),
+                pagination=PaginationMode.OFFSET,
+                limit=10,
+                page=1,
+            )
+        )
+
+        assert isinstance(page, PageResult)
+        assert [getattr(item, "id", None) for item in page.items] == [1]
+        assert page.total_count == 1
+        assert mock_session.execute.await_count == 1

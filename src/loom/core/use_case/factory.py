@@ -84,7 +84,7 @@ class UseCaseFactory:
             kwargs[name] = self._container.resolve(dep)
         return use_case_type(**kwargs)
 
-    def register(self, use_case_type: type[UseCase[Any, Any]]) -> None:
+    def register(self, use_case_type: type[Any]) -> None:
         """Pre-warm the dependency cache for ``use_case_type`` at startup.
 
         Calling this during bootstrap ensures any missing bindings surface
@@ -92,7 +92,8 @@ class UseCaseFactory:
         request rather than at runtime.
 
         Args:
-            use_case_type: UseCase subclass to inspect and cache.
+            use_case_type: Class to inspect and cache. Supports both
+                ``UseCase`` and ``Job`` subclasses.
         """
         self._get_deps(use_case_type)
 

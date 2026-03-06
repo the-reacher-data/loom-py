@@ -21,6 +21,7 @@ sync methods are called directly from the task thread.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from contextvars import Token
 from typing import TYPE_CHECKING, Any
@@ -296,7 +297,7 @@ def _make_callback_task(
     Returns:
         The registered Celery task object.
     """
-    import inspect
+    _on_success_is_async = inspect.iscoroutinefunction(callback_type.on_success)
 
     @celery_app.task(name=f"loom.callback.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_task(
@@ -309,7 +310,7 @@ def _make_callback_task(
         token = _install_trace(trace_id)
         try:
             cb = factory.build(callback_type)
-            if inspect.iscoroutinefunction(cb.on_success):
+            if _on_success_is_async:
                 _run_coroutine(
                     cb.on_success(job_id=job_id, result=result, **context),
                     eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
@@ -365,7 +366,7 @@ def _make_callback_error_task(
     Returns:
         The registered Celery task object.
     """
-    import inspect
+    _on_failure_is_async = inspect.iscoroutinefunction(callback_type.on_failure)
 
     @celery_app.task(name=f"loom.callback_error.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_error_task(
@@ -378,7 +379,7 @@ def _make_callback_error_task(
         try:
             exc_type, exc_msg = _resolve_error_info(job_id)
             cb = factory.build(callback_type)
-            if inspect.iscoroutinefunction(cb.on_failure):
+            if _on_failure_is_async:
                 _run_coroutine(
                     cb.on_failure(
                         job_id=job_id,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import msgspec
 import pytest
 from pytest import mark
@@ -14,9 +16,25 @@ from loom.core.repository.abc import (
     QuerySpec,
     SortSpec,
 )
+from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy, with_session_scope
 from loom.testing import RepositoryIntegrationHarness, ScenarioDict
 from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
+
+
+class _CustomProductRepository(RepositorySQLAlchemy[Product, int]):
+    """Example custom repository using the compiled CoreModel read path."""
+
+    @with_session_scope
+    async def list_ids_with_price_gt(self, session: Any, *, min_price: float) -> list[int]:
+        core_model = self._effective_core_model
+        stmt = (
+            core_model.select("default")
+            .where(self._column_for_field("price") > min_price)
+            .order_by(self._id_column())
+        )
+        rows = await core_model.fetch_all(session, stmt, profile="default")
+        return [int(item.id) for item in rows]
 
 
 class TestRepositorySQLAlchemyIntegration:
@@ -165,9 +183,24 @@ class TestRepositorySQLAlchemyIntegration:
 
         categories = loaded.categories
         assert isinstance(categories, list)
-        assert {category_item["name"] for category_item in categories} == {"electronics"}
+        assert {category_item.name for category_item in categories} == {"electronics"}
 
         assert loaded.has_reviews is True
         assert loaded.count_reviews == 2
         assert isinstance(loaded.review_snippets, list)
         assert {snippet["comment"] for snippet in loaded.review_snippets} == {"great", "solid"}
+
+    @mark.asyncio
+    async def test_custom_repository_can_use_core_model_for_custom_read(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+        scenario_catalog_with_price_20: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_catalog_with_price_20)
+        custom_repo = _CustomProductRepository(
+            session_manager=integration_context.session_manager,
+            model=Product,
+        )
+
+        ids = await custom_repo.list_ids_with_price_gt(min_price=15.0)
+        assert ids == [2, 3]

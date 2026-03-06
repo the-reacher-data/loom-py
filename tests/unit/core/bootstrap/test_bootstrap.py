@@ -9,6 +9,7 @@ import pytest
 from loom.core.bootstrap.bootstrap import BootstrapError, BootstrapResult, bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.use_case import UseCase
 
@@ -84,6 +85,13 @@ def test_bootstrap_result_has_compiler() -> None:
 def test_bootstrap_result_has_factory() -> None:
     result = bootstrap_app(config=_FakeConfig(), use_cases=[NoDepsUseCase])
     assert isinstance(result.factory, UseCaseFactory)
+
+
+def test_bootstrap_registers_runtime_executor() -> None:
+    result = bootstrap_app(config=_FakeConfig(), use_cases=[NoDepsUseCase])
+    assert result.container.is_registered(RuntimeExecutor)
+    executor = result.container.resolve(RuntimeExecutor)
+    assert isinstance(executor, RuntimeExecutor)
 
 
 def test_bootstrap_compiles_all_use_cases() -> None:

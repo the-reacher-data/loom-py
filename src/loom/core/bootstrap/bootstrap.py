@@ -26,15 +26,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
+from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.use_case.factory import UseCaseFactory
-from loom.core.use_case.use_case import UseCase
 
 
 class BootstrapError(Exception):
@@ -73,7 +73,7 @@ class BootstrapResult:
 
 def bootstrap_app(
     config: object,
-    use_cases: Sequence[type[UseCase[Any, Any]]],
+    use_cases: Sequence[type[Compilable]],
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     logger: LoggerPort | None = None,
     metrics: MetricsAdapter | None = None,
@@ -88,7 +88,9 @@ def bootstrap_app(
     Args:
         config: Application configuration object.  Registered as an
             ``APPLICATION``-scope singleton under ``type(config)``.
-        use_cases: Concrete ``UseCase`` subclasses to compile at startup.
+        use_cases: Concrete compilable classes to compile at startup.
+            Any class implementing the ``Compilable`` protocol is accepted,
+            including ``UseCase`` and ``Job`` subclasses.
             All plans are cached in the returned compiler.
         modules: Callables that receive the container and register
             infrastructure bindings (repositories, services, etc.).
@@ -139,7 +141,15 @@ def bootstrap_app(
             factory.register(uc_type)
         container.register(UseCaseFactory, lambda: factory, scope=Scope.APPLICATION)
 
-        # Step 5 — Validate container (fail-fast for APPLICATION scope)
+        # Step 5 — Runtime executor (transport adapters consume this singleton)
+        executor = RuntimeExecutor(
+            compiler,
+            metrics=metrics,
+            repo_resolver=container.resolve_repo,
+        )
+        container.register(RuntimeExecutor, lambda: executor, scope=Scope.APPLICATION)
+
+        # Step 6 — Validate container (fail-fast for APPLICATION scope)
         _logger.info("[BOOT] Validating container bindings")
         container.validate()
 

@@ -125,6 +125,17 @@ class RuntimeExecutor:
         load_overrides: dict[type[Any], Any] | None = ...,
     ) -> ResultT: ...
 
+    @overload
+    async def execute(
+        self,
+        compilable: Compilable,
+        *,
+        params: dict[str, Any] | None = ...,
+        payload: dict[str, Any] | None = ...,
+        dependencies: dict[type[Any], Any] | None = ...,
+        load_overrides: dict[type[Any], Any] | None = ...,
+    ) -> Any: ...
+
     async def execute(
         self,
         compilable: Compilable,

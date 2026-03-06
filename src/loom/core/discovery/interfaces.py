@@ -45,7 +45,7 @@ class InterfacesDiscoveryEngine:
             raise ValueError("interfaces discovery requires at least one module path.")
 
         modules = import_modules(self._interface_modules)
-        _, _, interfaces = collect_from_modules(modules)
+        _, _, interfaces, _ = collect_from_modules(modules)
         if not interfaces:
             raise ValueError("No RestInterface subclasses discovered in interface modules.")
 
