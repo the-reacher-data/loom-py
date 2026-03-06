@@ -22,11 +22,19 @@ Usage::
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Generic, TypeVar
 
 import msgspec
 
 from loom.core.model.introspection import get_projections
+from loom.core.projection.loaders import (
+    CountLoader,
+    ExistsLoader,
+    JoinFieldsLoader,
+    find_relation_name_for_loader,
+    make_memory_loader,
+)
 from loom.core.projection.runtime import (
     ProjectionPlan,
     build_projection_plan,
@@ -237,9 +245,28 @@ class InMemoryRepository(Generic[T]):
             self._projection_plans[profile] = None
             return None
 
-        compiled = build_projection_plan(active)
+        resolved = self._resolve_memory_loaders(active)
+        compiled = build_projection_plan(resolved)
         self._projection_plans[profile] = compiled
         return compiled
+
+    def _resolve_memory_loaders(self, projections: dict[str, Any]) -> dict[str, Any]:
+        """Replace public loader descriptors with memory-path loaders."""
+        result: dict[str, Any] = {}
+        for name, proj in projections.items():
+            loader = proj.loader
+            if isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+                rel_name = find_relation_name_for_loader(loader, self._entity_type)
+                if rel_name is None:
+                    raise ValueError(
+                        f"InMemoryRepository: cannot resolve '{name}' loader "
+                        f"({type(loader).__name__}(model={loader.model.__name__})). "
+                        "Provide 'via' on the loader or annotate the relation with the target type."
+                    )
+                result[name] = replace(proj, loader=make_memory_loader(loader, rel_name))
+            else:
+                result[name] = proj
+        return result
 
     async def _with_projections(self, entity: T, *, profile: str) -> T:
         plan = self._projection_plan_for_profile(profile)

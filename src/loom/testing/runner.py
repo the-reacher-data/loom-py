@@ -148,15 +148,18 @@ class UseCaseTest(Generic[ResultT]):
             NotFound: If a Load step finds no entity.
             CompilationError: If the UseCase fails structural validation.
         """
+        from typing import cast
+
         compiler = UseCaseCompiler()
         executor = RuntimeExecutor(compiler)
-        return await executor.execute(
+        result = await executor.execute(
             self._use_case,
             params=self._params,
             payload=self._payload,
             dependencies=self._dependencies if self._dependencies else None,
             load_overrides=self._load_overrides if self._load_overrides else None,
         )
+        return cast(ResultT, result)
 
     # ------------------------------------------------------------------
     # Inspection

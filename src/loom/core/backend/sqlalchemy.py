@@ -35,7 +35,7 @@ from loom.core.model.introspection import (
     get_table_name,
 )
 from loom.core.model.relation import Relation
-from loom.core.projection.runtime import build_projection_plan
+from loom.core.projection.runtime import ProjectionStep, build_projection_plan_from_steps
 
 _SA_TYPE_MAP: dict[str, type] = {
     "String": String,
@@ -68,8 +68,8 @@ class SABase(DeclarativeBase):
     """Shared declarative base for all compiled SQLAlchemy models."""
 
 
-_registry: dict[type, type] = {}
-_table_registry: dict[str, type] = {}
+_registry: dict[type, Any] = {}
+_table_registry: dict[str, Any] = {}
 _core_registry: dict[type, CoreModel] = {}
 
 
@@ -138,7 +138,7 @@ def _resolve_fk_target_table(foreign_key: str) -> str:
     return foreign_key.rsplit(".", 1)[0]
 
 
-def _find_target_sa_class(target_table: str) -> type | None:
+def _find_target_sa_class(target_table: str) -> Any:
     """Find compiled SA class by table name (O(1) via inverse index)."""
     return _table_registry.get(target_table)
 
@@ -147,7 +147,7 @@ def _find_target_sa_class(target_table: str) -> type | None:
 _pending_relations: dict[type, dict[str, Relation]] = {}
 
 
-def compile_model(struct_cls: type) -> type:
+def compile_model(struct_cls: type) -> Any:
     """Compile a loom ``BaseModel`` Struct into a SQLAlchemy declarative class."""
     if struct_cls in _registry:
         return _registry[struct_cls]
@@ -214,7 +214,7 @@ def _configure_relationships() -> None:
             if rel.secondary:
                 kwargs["secondary"] = _resolve_secondary_table(rel.secondary)
 
-            sa_cls.__mapper__.add_property(  # type: ignore[attr-defined]
+            sa_cls.__mapper__.add_property(
                 rel_name,
                 relationship(target_sa, **kwargs),
             )
@@ -222,7 +222,7 @@ def _configure_relationships() -> None:
     _pending_relations.clear()
 
 
-def _find_target_sa_by_fk_column(foreign_key: str) -> type | None:
+def _find_target_sa_by_fk_column(foreign_key: str) -> Any:
     """For ONE_TO_MANY: the FK column (e.g. 'product_id') lives on the target table.
     We search all compiled SA classes for one that has that column as a FK pointing to the parent.
     """
@@ -236,7 +236,7 @@ def _find_target_sa_by_fk_column(foreign_key: str) -> type | None:
     return None
 
 
-def _find_target_sa_by_secondary(secondary_name: str | None, foreign_key: str) -> type | None:
+def _find_target_sa_by_secondary(secondary_name: str | None, foreign_key: str) -> Any:
     """For MANY_TO_MANY: find the target class that is NOT the secondary table
     and is referenced by the secondary's FK columns.
     """
@@ -335,7 +335,7 @@ def _compile_core_model(struct_cls: type) -> None:
     profiles = _collect_profiles(relations, projections)
     relation_steps = _compile_relation_steps(struct_cls, relations)
     profile_plans = _build_profile_plans(
-        profiles, all_columns, id_attr, relations, relation_steps, projections
+        profiles, all_columns, id_attr, relations, relation_steps, projections, struct_cls
     )
 
     core_model = CoreModel(struct_cls, table, id_attr, profile_plans)
@@ -364,6 +364,7 @@ def _build_profile_plans(
     relations: dict[str, Any],
     relation_steps: dict[str, CoreRelationStep],
     projections: dict[str, Any],
+    struct_cls: type,
 ) -> dict[str, CoreProfilePlan]:
     plans: dict[str, CoreProfilePlan] = {}
     for profile in profiles:
@@ -372,16 +373,125 @@ def _build_profile_plans(
             for name, rel in relations.items()
             if name in relation_steps and profile in rel.profiles
         )
+        profile_relation_names = frozenset(step.attr for step in profile_steps)
         profile_projections = {
             name: proj for name, proj in projections.items() if profile in proj.profiles
         }
+        resolved_steps = _resolve_projection_steps(
+            profile_projections, profile_relation_names, relation_steps, struct_cls
+        )
         plans[profile] = CoreProfilePlan(
             columns=all_columns,
             relation_steps=profile_steps,
-            projection_plan=build_projection_plan(profile_projections),
+            projection_plan=build_projection_plan_from_steps(resolved_steps),
             id_attr=id_attr,
         )
     return plans
+
+
+def _resolve_projection_steps(
+    projections: dict[str, Any],
+    profile_relation_names: frozenset[str],
+    all_relation_steps: dict[str, CoreRelationStep],
+    struct_cls: type,
+) -> dict[str, ProjectionStep]:
+    """Resolve each projection to a ``ProjectionStep`` with the right loader strategy.
+
+    For ``CountLoader``, ``ExistsLoader``, and ``JoinFieldsLoader`` descriptors the
+    compiler picks between memory-path (when the target relation is loaded in this
+    profile) and SQL-path (when it is not).  Custom loaders are auto-detected via
+    capability inspection (``load_from_object`` vs ``load_many``).
+
+    Args:
+        projections: Profile-filtered projection metadata.
+        profile_relation_names: Relation attribute names loaded in this profile.
+        all_relation_steps: Compiled relation steps for all relations on the model.
+
+    Returns:
+        Mapping of field name to resolved :class:`ProjectionStep`.
+
+    Raises:
+        ValueError: If a descriptor loader cannot be matched to a relation step.
+    """
+    import inspect as _inspect
+
+    from loom.core.projection.loaders import (
+        CountLoader,
+        ExistsLoader,
+        JoinFieldsLoader,
+        find_relation_name_for_loader,
+        make_memory_loader,
+    )
+    from loom.core.repository.sqlalchemy.loaders import make_sql_loader
+
+    steps: dict[str, ProjectionStep] = {}
+    for name, proj in projections.items():
+        loader = proj.loader
+        if isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+            rel_step = _find_relation_for_loader(loader, all_relation_steps)
+            if rel_step is None:
+                # Related model not compiled — fall back to memory path via type hints.
+                rel_name = find_relation_name_for_loader(loader, struct_cls)
+                if rel_name is None:
+                    raise ValueError(
+                        f"Projection '{name}': no relation found for "
+                        f"{type(loader).__name__}(model={loader.model.__name__}) "
+                        f"on {struct_cls.__name__}. "
+                        "Ensure the model has a relation typed with the target class."
+                    )
+                resolved_loader = make_memory_loader(loader, rel_name)
+                prefer_memory = True
+            elif rel_step.attr in profile_relation_names:
+                resolved_loader = make_memory_loader(loader, rel_step.attr)
+                prefer_memory = True
+            else:
+                resolved_loader = make_sql_loader(loader, rel_step)
+                prefer_memory = False
+        else:
+
+            def _has_cap(obj: Any, attr: str) -> bool:
+                try:
+                    candidate = _inspect.getattr_static(obj, attr)
+                except AttributeError:
+                    return False
+                return callable(candidate)
+
+            prefer_memory = _has_cap(loader, "load_from_object")
+            resolved_loader = loader
+
+        steps[name] = ProjectionStep(
+            name=name,
+            projection=proj,
+            prefer_memory=prefer_memory,
+            loader=resolved_loader,
+        )
+    return steps
+
+
+def _find_relation_for_loader(
+    loader: Any,
+    all_relation_steps: dict[str, CoreRelationStep],
+) -> CoreRelationStep | None:
+    """Find the compiled relation step matching a public loader descriptor.
+
+    Uses ``loader.via`` if provided, otherwise matches by ``related_struct``.
+
+    Args:
+        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader``.
+        all_relation_steps: All compiled relation steps for the parent model.
+
+    Returns:
+        Matching :class:`CoreRelationStep`, or ``None`` if not found.
+    """
+    via = getattr(loader, "via", None)
+    if via is not None:
+        return all_relation_steps.get(via)
+
+    target_model = loader.model
+    for step in all_relation_steps.values():
+        if step.related_struct is target_model:
+            return step
+    return None
 
 
 def _compile_relation_steps(

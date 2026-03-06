@@ -5,12 +5,11 @@ import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from loom.core.model.projection import (
     PROJECTION_DEFAULT_MISSING,
     Projection,
-    ProjectionSource,
 )
 
 PROJECTION_DEP_PREFIX = "projection:"
@@ -25,8 +24,6 @@ class BackendProjectionLoader(Protocol):
 
 
 class MemoryProjectionLoader(Protocol):
-    relation: str
-
     def load_from_object(
         self,
         obj: Any,
@@ -38,8 +35,8 @@ class MemoryProjectionLoader(Protocol):
 class ProjectionStep:
     name: str
     projection: Projection
-    backend_loader: BackendProjectionLoader | None
-    memory_loader: MemoryProjectionLoader | None
+    prefer_memory: bool
+    loader: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +68,22 @@ def _projection_dependencies(
 
 
 def build_projection_plan(projections: Mapping[str, Projection]) -> ProjectionPlan:
-    """Compile a deterministic projection plan from projection metadata."""
+    """Compile a deterministic projection plan from projection metadata.
+
+    Routing (memory vs backend) is auto-detected from loader capabilities:
+    loaders with ``load_from_object`` use the memory path; those with only
+    ``load_many`` use the backend (SQL) path.
+
+    Args:
+        projections: Mapping of field name to :class:`~loom.core.model.projection.Projection`.
+
+    Returns:
+        :class:`ProjectionPlan` with topologically ordered levels.
+
+    Raises:
+        ValueError: If a dependency cycle is detected.
+        TypeError: If a loader exposes neither ``load_from_object`` nor ``load_many``.
+    """
     if not projections:
         return ProjectionPlan(levels=())
 
@@ -95,6 +107,41 @@ def build_projection_plan(projections: Mapping[str, Projection]) -> ProjectionPl
     return ProjectionPlan(levels=tuple(levels))
 
 
+def build_projection_plan_from_steps(steps: Mapping[str, ProjectionStep]) -> ProjectionPlan:
+    """Build a projection plan from pre-resolved steps.
+
+    Used by the SA compiler which has already determined loader strategy
+    (memory vs SQL) for each projection at compile time.
+
+    Args:
+        steps: Pre-built projection steps keyed by field name.
+
+    Returns:
+        :class:`ProjectionPlan` with topologically ordered levels.
+
+    Raises:
+        ValueError: If a dependency cycle is detected.
+    """
+    if not steps:
+        return ProjectionPlan(levels=())
+
+    names = frozenset(steps)
+    sorter: TopologicalSorter[str] = TopologicalSorter()
+    for name, step in steps.items():
+        sorter.add(name, *_projection_dependencies(name, step.projection, names))
+
+    sorter.prepare()
+    levels: list[tuple[ProjectionStep, ...]] = []
+    while sorter.is_active():
+        ready = tuple(sorter.get_ready())
+        if not ready:
+            raise ValueError("Projection dependency cycle detected")
+        levels.append(tuple(steps[name] for name in ready))
+        sorter.done(*ready)
+
+    return ProjectionPlan(levels=tuple(levels))
+
+
 async def execute_projection_plan(
     plan: ProjectionPlan,
     *,
@@ -102,11 +149,20 @@ async def execute_projection_plan(
     id_attr: str,
     backend_context: Any | None,
 ) -> dict[int, dict[str, Any]]:
-    """Execute projection plan for the given objects.
+    """Execute a projection plan for the given objects.
 
-    ``BACKEND`` loaders are batched through ``load_many`` when
-    ``backend_context`` is provided.  ``PRELOADED`` loaders run synchronously
-    via ``load_from_object`` against each object.
+    Steps with ``prefer_memory=True`` run synchronously via ``load_from_object``.
+    Steps with ``prefer_memory=False`` are batched through ``load_many`` and
+    require a non-``None`` ``backend_context``.
+
+    Args:
+        plan: Compiled :class:`ProjectionPlan`.
+        objs: Domain objects to project over.
+        id_attr: Attribute name of the primary key on each object.
+        backend_context: SQLAlchemy session passed to SQL loaders, or ``None``.
+
+    Returns:
+        Mapping from object index to a dict of computed field values.
     """
     if not objs or not plan.levels:
         return {}
@@ -148,26 +204,6 @@ def _merge_rows(
         values_by_index[index][field_name] = loaded
 
 
-def _backend_loader(loader: Any) -> BackendProjectionLoader | None:
-    if _has_declared_callable(loader, "load_many"):
-        return cast(BackendProjectionLoader, loader)
-    return None
-
-
-def _memory_loader(loader: Any) -> MemoryProjectionLoader | None:
-    if _has_declared_callable(loader, "load_from_object"):
-        return cast(MemoryProjectionLoader, loader)
-    return None
-
-
-def _has_declared_callable(obj: Any, attr_name: str) -> bool:
-    try:
-        candidate = inspect.getattr_static(obj, attr_name)
-    except AttributeError:
-        return False
-    return callable(candidate)
-
-
 def _partition_execution_steps(
     level: tuple[ProjectionStep, ...],
     *,
@@ -176,12 +212,12 @@ def _partition_execution_steps(
     backend_steps: list[ProjectionStep] = []
     memory_steps: list[ProjectionStep] = []
     for step in level:
-        if step.projection.source is ProjectionSource.BACKEND:
+        if step.prefer_memory:
+            memory_steps.append(step)
+        else:
             if backend_context is None:
                 raise RuntimeError(f"Projection '{step.name}' requires backend context")
             backend_steps.append(step)
-        else:
-            memory_steps.append(step)
     return _ExecutionBuckets(
         backend=tuple(backend_steps),
         memory=tuple(memory_steps),
@@ -199,13 +235,7 @@ async def _execute_backend_steps(
         return
 
     backend_results = await asyncio.gather(
-        *(
-            cast(BackendProjectionLoader, step.backend_loader).load_many(
-                backend_context,
-                parent_ids,
-            )
-            for step in steps
-        )
+        *(step.loader.load_many(backend_context, parent_ids) for step in steps)
     )
     for step, rows in zip(steps, backend_results, strict=False):
         _merge_rows(
@@ -228,8 +258,7 @@ def _execute_memory_steps(
     for index, obj in enumerate(objs):
         row_context = values_by_index[index]
         for step in steps:
-            loader = cast(MemoryProjectionLoader, step.memory_loader)
-            computed = loader.load_from_object(obj, row_context)
+            computed = step.loader.load_from_object(obj, row_context)
             row_context[step.name] = computed
 
 
@@ -239,30 +268,24 @@ def _build_projection_step(
     projection: Projection,
 ) -> ProjectionStep:
     loader = projection.loader
-    backend_loader = _backend_loader(loader)
-    memory_loader = _memory_loader(loader)
-    _validate_step_configuration(
-        name=name,
-        source=projection.source,
-        backend_loader=backend_loader,
-        memory_loader=memory_loader,
-    )
+    prefer_memory = _has_declared_callable(loader, "load_from_object")
+    if not prefer_memory and not _has_declared_callable(loader, "load_many"):
+        raise TypeError(
+            f"Projection '{name}': loader must implement 'load_from_object' or 'load_many'. "
+            f"Got {type(loader).__name__}. Use CountLoader/ExistsLoader/JoinFieldsLoader "
+            f"and call compile_all() before creating a repository."
+        )
     return ProjectionStep(
         name=name,
         projection=projection,
-        backend_loader=backend_loader,
-        memory_loader=memory_loader,
+        prefer_memory=prefer_memory,
+        loader=loader,
     )
 
 
-def _validate_step_configuration(
-    *,
-    name: str,
-    source: ProjectionSource,
-    backend_loader: BackendProjectionLoader | None,
-    memory_loader: MemoryProjectionLoader | None,
-) -> None:
-    if source is ProjectionSource.BACKEND and backend_loader is None:
-        raise TypeError(f"Projection '{name}' requires a loader with load_many()")
-    if source is ProjectionSource.PRELOADED and memory_loader is None:
-        raise TypeError(f"Projection '{name}' requires a loader with load_from_object()")
+def _has_declared_callable(obj: Any, attr_name: str) -> bool:
+    try:
+        candidate = inspect.getattr_static(obj, attr_name)
+    except AttributeError:
+        return False
+    return callable(candidate)

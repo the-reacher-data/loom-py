@@ -11,7 +11,6 @@ import pytest
 from loom.core.model.projection import (
     PROJECTION_DEFAULT_MISSING,
     Projection,
-    ProjectionSource,
 )
 from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 
@@ -101,10 +100,9 @@ class _HybridLoader:
 @pytest.mark.asyncio
 async def test_runtime_respects_projection_dependencies() -> None:
     projections = {
-        "base": Projection(loader=_BackendLoader(), source=ProjectionSource.BACKEND),
+        "base": Projection(loader=_BackendLoader()),
         "derived": Projection(
             loader=_MemoryDependsOnBackend(),
-            source=ProjectionSource.PRELOADED,
             depends_on=("projection:base",),
         ),
     }
@@ -128,7 +126,6 @@ async def test_runtime_omits_value_when_default_not_defined() -> None:
     projections = {
         "score": Projection(
             loader=_EmptyBackendLoader(),
-            source=ProjectionSource.BACKEND,
             default=PROJECTION_DEFAULT_MISSING,
         )
     }
@@ -146,12 +143,10 @@ def test_runtime_detects_projection_cycles() -> None:
     projections = {
         "a": Projection(
             loader=_MemoryDependsOnBackend(),
-            source=ProjectionSource.PRELOADED,
             depends_on=("projection:b",),
         ),
         "b": Projection(
             loader=_MemoryDependsOnBackend(),
-            source=ProjectionSource.PRELOADED,
             depends_on=("projection:a",),
         ),
     }
@@ -161,10 +156,8 @@ def test_runtime_detects_projection_cycles() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_backend_source_requires_backend_context() -> None:
-    plan = build_projection_plan(
-        {"base": Projection(loader=_BackendLoader(), source=ProjectionSource.BACKEND)}
-    )
+async def test_runtime_backend_loader_requires_backend_context() -> None:
+    plan = build_projection_plan({"base": Projection(loader=_BackendLoader())})
     with pytest.raises(RuntimeError, match="requires backend context"):
         await execute_projection_plan(
             plan,
@@ -175,10 +168,8 @@ async def test_runtime_backend_source_requires_backend_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_preloaded_uses_memory_loader() -> None:
-    plan = build_projection_plan(
-        {"score": Projection(loader=_HybridLoader(), source=ProjectionSource.PRELOADED)}
-    )
+async def test_runtime_memory_loader_used_when_load_from_object_present() -> None:
+    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
     values = await execute_projection_plan(
         plan,
         objs=[_Obj(id=1, value=0, rel=[1, 2])],
@@ -189,10 +180,8 @@ async def test_runtime_preloaded_uses_memory_loader() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_preloaded_works_for_msgspec_struct() -> None:
-    plan = build_projection_plan(
-        {"score": Projection(loader=_HybridLoader(), source=ProjectionSource.PRELOADED)}
-    )
+async def test_runtime_memory_loader_works_for_msgspec_struct() -> None:
+    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
     values = await execute_projection_plan(
         plan,
         objs=[_StructObj(id=1, rel=[1, 2])],

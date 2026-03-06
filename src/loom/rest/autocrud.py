@@ -30,7 +30,7 @@ from loom.core.errors import NotFound
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
 from loom.core.use_case.keys import set_use_case_key
-from loom.core.use_case.markers import Exists, Input, OnMissing
+from loom.core.use_case.markers import Input
 from loom.core.use_case.registry import model_entity_key
 from loom.core.use_case.use_case import UseCase
 
@@ -330,12 +330,6 @@ def _make_update(
         async def execute(
             self,
             id: id_type,  # pyright: ignore[reportInvalidTypeForm]
-            _exists: bool = Exists(
-                model,
-                from_param="id",
-                against="id",
-                on_missing=OnMissing.RAISE,
-            ),
             cmd: update_input = Input(),  # type: ignore[valid-type]
         ) -> model:  # type: ignore[valid-type]
             updated = await self.main_repo.update(coerce(id), cmd)

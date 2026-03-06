@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect as py_inspect
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
@@ -12,12 +11,9 @@ from loom.core.backend.sqlalchemy import get_compiled_core
 from loom.core.model.introspection import (
     get_column_fields,
     get_id_attribute,
-    get_projections,
     get_relations,
     get_table_name,
 )
-from loom.core.model.projection import ProjectionSource
-from loom.core.projection.runtime import build_projection_plan, execute_projection_plan
 from loom.core.repository.abc import (
     CursorResult,
     FilterParams,
@@ -39,58 +35,6 @@ _SENTINEL = object()
 _TOTAL_COUNT_ALIAS = "__loom_total_count"
 
 
-def _projected_relation_name(projection: Any) -> str | None:
-    loader = projection.loader
-    if projection.source is ProjectionSource.BACKEND:
-        return None
-
-    has_memory_loader = _has_declared_callable(loader, "load_from_object")
-    if not has_memory_loader:
-        return None
-
-    relation_name = getattr(loader, "relation", None)
-    if not isinstance(relation_name, str) or not relation_name:
-        return None
-    return relation_name
-
-
-def _validate_projection_relation(
-    *,
-    model_name: str,
-    projection_name: str,
-    projection_profiles: tuple[str, ...],
-    relation_name: str,
-    relations: dict[str, Any],
-) -> None:
-    if relation_name not in relations:
-        raise ValueError(
-            f"'{model_name}.{projection_name}': relation-based loader references "
-            f"relation '{relation_name}' which does not exist on this model."
-        )
-
-    unsupported_profiles = frozenset(projection_profiles) - frozenset(
-        relations[relation_name].profiles
-    )
-    if not unsupported_profiles:
-        return
-
-    raise ValueError(
-        f"'{model_name}.{projection_name}': "
-        f"Relation loader(relation='{relation_name}') "
-        f"is active in profiles {sorted(unsupported_profiles)} where '{relation_name}' is not "
-        f"loaded. Add {sorted(unsupported_profiles)} to '{relation_name}'.profiles or restrict "
-        f"'{projection_name}'.profiles to {sorted(relations[relation_name].profiles)}."
-    )
-
-
-def _has_declared_callable(obj: Any, attr_name: str) -> bool:
-    try:
-        candidate = py_inspect.getattr_static(obj, attr_name)
-    except AttributeError:
-        return False
-    return callable(candidate)
-
-
 class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     """Shared context and helper methods for all SQLAlchemy repository mixins."""
 
@@ -104,8 +48,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _output_sa_columns: tuple[Any, ...] | None = None
     _core_model: Any | None = None
     _relations_cache: dict[str, Any] | None = None
-    _projections_cache: dict[str, Any] | None = None
-    _projection_plan_cache: dict[str, Any] | None = None
+    _needs_refresh_after_flush: bool = False
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
@@ -119,11 +62,10 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             )
         self._sa_model = sa
         self._id_attr = get_id_attribute(self.model)
-        column_field_names = frozenset(get_column_fields(self.model).keys())
+        column_fields = get_column_fields(self.model)
+        column_field_names = frozenset(column_fields.keys())
         self._column_field_names = column_field_names
         self._relations_cache = get_relations(self.model)
-        self._projections_cache = get_projections(self.model)
-        self._projection_plan_cache = {}
         self._core_model = get_compiled_core(self.model)
         if self._core_model is None:
             raise RuntimeError(
@@ -131,39 +73,16 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 "Call compile_all() before creating a repository."
             )
 
+        self._needs_refresh_after_flush = any(
+            info.field.server_onupdate is not None for info in column_fields.values()
+        )
+
         sa_mapper: Any = inspect(sa).mapper
         self._output_column_keys = tuple(
             col.key for col in sa_mapper.column_attrs if col.key in column_field_names
         )
         self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
         self._output_sa_columns = tuple(getattr(sa, key) for key in self._output_column_keys)
-        self._validate_computed_relation_loaders()
-
-    def _validate_computed_relation_loaders(self) -> None:
-        """Validate relation-based projection loaders at repository init time.
-
-        Ensures every ``PRELOADED`` projection backed by a relation loader
-        references an existing relation whose profiles cover all projection profiles.
-
-        Raises:
-            ValueError: If the referenced relation does not exist on the model,
-                or if a projection is active in profiles where the relation is not loaded.
-        """
-        projections = self._projections_cache or {}
-        relations = self._relations_cache or {}
-        model_name = self.model.__name__
-
-        for proj_name, proj in projections.items():
-            relation_name = _projected_relation_name(proj)
-            if relation_name is None:
-                continue
-            _validate_projection_relation(
-                model_name=model_name,
-                projection_name=proj_name,
-                projection_profiles=proj.profiles,
-                relation_name=relation_name,
-                relations=relations,
-            )
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -288,45 +207,6 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 tags.add(f"{table_name}:{key}:{value}")
         return frozenset(tags)
 
-    def _projections_for_profile(self, profile: str) -> dict[str, Any]:
-        """Return projections active for the given profile."""
-        struct_projections = (
-            self._projections_cache
-            if self._projections_cache is not None
-            else get_projections(self.model)
-        )
-        return {name: proj for name, proj in struct_projections.items() if profile in proj.profiles}
-
-    async def _collect_projection_values(
-        self,
-        scoped_session: AsyncSession,
-        objs: list[Any],
-        profile: str,
-    ) -> dict[int, dict[str, Any]]:
-        """Batch-load projection values for a list of objects."""
-        if not objs:
-            return {}
-        projections = self._projections_for_profile(profile)
-        if not projections:
-            return {}
-
-        plan_cache = self._projection_plan_cache
-        if plan_cache is None:
-            plan_cache = {}
-            self._projection_plan_cache = plan_cache
-
-        plan = plan_cache.get(profile)
-        if plan is None:
-            plan = build_projection_plan(projections)
-            plan_cache[profile] = plan
-
-        return await execute_projection_plan(
-            plan,
-            objs=objs,
-            id_attr=self._effective_id_attribute,
-            backend_context=scoped_session,
-        )
-
     def _session_scope(
         self, session: AsyncSession | None = None
     ) -> AbstractAsyncContextManager[AsyncSession]:
@@ -409,9 +289,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
             stmt = self._apply_offset_page_filters(stmt, filter_params)
 
             paged_stmt = stmt.offset(page_params.offset).limit(page_params.limit)
-            paged_stmt = paged_stmt.add_columns(
-                func.count().over().label(_TOTAL_COUNT_ALIAS)
-            )
+            paged_stmt = paged_stmt.add_columns(func.count().over().label(_TOTAL_COUNT_ALIAS))
             loaded_items, total_count = await core_model.fetch_all_with_total(
                 scoped_session,
                 paged_stmt,
@@ -502,9 +380,7 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
             query,
             base_stmt=core_model.select(profile),
         )
-        offset_stmt = offset_stmt.add_columns(
-            func.count().over().label(_TOTAL_COUNT_ALIAS)
-        )
+        offset_stmt = offset_stmt.add_columns(func.count().over().label(_TOTAL_COUNT_ALIAS))
         loaded_items, total_count = await core_model.fetch_all_with_total(
             scoped_session,
             offset_stmt,
@@ -551,7 +427,8 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
 
             if changed_fields:
                 await scoped_session.flush()
-                await scoped_session.refresh(obj)
+                if self._needs_refresh_after_flush:
+                    await scoped_session.refresh(obj)
                 record_mutation(
                     MutationEvent(
                         entity=self.entity_name,

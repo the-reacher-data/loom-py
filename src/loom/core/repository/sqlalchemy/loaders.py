@@ -1,49 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Sequence
-from typing import Any, Protocol, TypeAlias
+from collections.abc import Sequence
+from typing import Any, Protocol
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.selectable import FromClause
-
-from loom.core.backend.sqlalchemy import get_compiled
-
-TableRef: TypeAlias = "FromClause | type[Any] | Callable[[], FromClause | type[Any]]"
-
-
-def _coalesce_table_ref(*, table: TableRef | None, model: type[Any] | None) -> TableRef:
-    if table is not None:
-        return table
-    if model is not None:
-        return model
-    raise ValueError("A loader requires either 'table' or 'model'.")
-
-
-def _resolve_table_ref(table_ref: TableRef) -> FromClause:
-    if isinstance(table_ref, FromClause):
-        return table_ref
-
-    resolved: FromClause | type[Any] = table_ref if isinstance(table_ref, type) else table_ref()
-
-    if isinstance(resolved, FromClause):
-        return resolved
-
-    direct_table = getattr(resolved, "__table__", None)
-    if isinstance(direct_table, FromClause):
-        return direct_table
-
-    compiled = get_compiled(resolved)
-    compiled_table = getattr(compiled, "__table__", None) if compiled is not None else None
-    if isinstance(compiled_table, FromClause):
-        return compiled_table
-
-    raise TypeError(
-        "Invalid table reference. Use a SQLAlchemy table/from clause "
-        "or a compiled/uncompiled model class.",
-    )
 
 
 class ProjectionLoader(Protocol):
@@ -64,172 +27,108 @@ class ProjectionLoader(Protocol):
         ...
 
 
-class CountLoader:
-    """Projection loader that counts related rows per parent entity."""
+# ---------------------------------------------------------------------------
+# Internal SQL-path loaders — synthesized at compile_all() time
+# ---------------------------------------------------------------------------
 
-    def __init__(
-        self,
-        *,
-        table: TableRef | None = None,
-        model: type | None = None,
-        foreign_key: str,
-        where_clauses: Sequence[ColumnElement[bool]] = (),
-    ) -> None:
-        """Initialise the count loader.
 
-        Args:
-            table: Target table or callable returning it (for deferred resolution).
-            model: Model class associated with the table (preferred API for framework users).
-            foreign_key: Column name in ``table`` referencing the parent id.
-            where_clauses: Additional SQL filter conditions.
-        """
-        self.table = _coalesce_table_ref(table=table, model=model)
-        self.foreign_key = foreign_key
-        self.where_clauses = tuple(where_clauses)
+class _SqlCountLoader:
+    """SQL loader that counts related rows per parent id."""
 
-    def _table(self) -> FromClause:
-        return _resolve_table_ref(self.table)
+    __slots__ = ("_table", "_fk_col")
+
+    def __init__(self, *, table: FromClause, fk_col: str) -> None:
+        self._table = table
+        self._fk_col = fk_col
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
     ) -> dict[object, int]:
-        """Count related rows grouped by parent id.
-
-        Args:
-            session: Active SQLAlchemy async session.
-            parent_ids: Primary keys of the parent entities.
-
-        Returns:
-            Mapping from parent id to the count of related rows.
-        """
         if not parent_ids:
             return {}
-        table = self._table()
-        fk_column = table.c[self.foreign_key]
+        fk_column = self._table.c[self._fk_col]
         stmt = (
             select(fk_column, func.count().label("count"))
             .where(fk_column.in_(list(parent_ids)))
             .group_by(fk_column)
         )
-        for clause in self.where_clauses:
-            stmt = stmt.where(clause)
         rows = await session.execute(stmt)
         return {row[0]: int(row[1]) for row in rows.all()}
 
 
-class ExistsLoader:
-    """Projection loader that checks for the existence of related rows per parent entity."""
+class _SqlExistsLoader:
+    """SQL loader that checks existence of related rows per parent id."""
 
-    def __init__(
-        self,
-        *,
-        table: TableRef | None = None,
-        model: type | None = None,
-        foreign_key: str,
-        where_clauses: Sequence[ColumnElement[bool]] = (),
-    ) -> None:
-        """Initialise the exists loader.
+    __slots__ = ("_table", "_fk_col")
 
-        Args:
-            table: Target table or callable returning it (for deferred resolution).
-            model: Model class associated with the table (preferred API for framework users).
-            foreign_key: Column name in ``table`` referencing the parent id.
-            where_clauses: Additional SQL filter conditions.
-        """
-        self.table = _coalesce_table_ref(table=table, model=model)
-        self.foreign_key = foreign_key
-        self.where_clauses = tuple(where_clauses)
-
-    def _table(self) -> FromClause:
-        return _resolve_table_ref(self.table)
+    def __init__(self, *, table: FromClause, fk_col: str) -> None:
+        self._table = table
+        self._fk_col = fk_col
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
     ) -> dict[object, bool]:
-        """Check existence of related rows for each parent id.
-
-        Args:
-            session: Active SQLAlchemy async session.
-            parent_ids: Primary keys of the parent entities.
-
-        Returns:
-            Mapping from parent id to ``True`` for those with at least one related row.
-        """
         if not parent_ids:
             return {}
-        table = self._table()
-        fk_column = table.c[self.foreign_key]
+        fk_column = self._table.c[self._fk_col]
         stmt = select(fk_column).where(fk_column.in_(list(parent_ids))).distinct()
-        for clause in self.where_clauses:
-            stmt = stmt.where(clause)
         rows = await session.execute(stmt)
         return {row[0]: True for row in rows.all()}
 
 
-class JoinFieldsLoader:
-    """Projection loader that fetches selected columns from a related table, grouped by parent."""
+class _SqlJoinFieldsLoader:
+    """SQL loader that fetches selected columns from a related table, grouped by parent."""
+
+    __slots__ = ("_table", "_fk_col", "_value_columns")
 
     def __init__(
         self,
         *,
-        table: TableRef | None = None,
-        model: type | None = None,
-        foreign_key: str,
-        value_columns: Sequence[str],
-        where_clauses: Sequence[ColumnElement[bool]] = (),
-        order_by: Sequence[Any] = (),
+        table: FromClause,
+        fk_col: str,
+        value_columns: tuple[str, ...],
     ) -> None:
-        """Initialise the join-fields loader.
-
-        Args:
-            table: Target table or callable returning it (for deferred resolution).
-            model: Model class associated with the table (preferred API for framework users).
-            foreign_key: Column name in ``table`` referencing the parent id.
-            value_columns: Column names to select from the related table.
-            where_clauses: Additional SQL filter conditions.
-            order_by: SQLAlchemy ordering clauses applied to the result rows.
-        """
-        self.table = _coalesce_table_ref(table=table, model=model)
-        self.foreign_key = foreign_key
-        self.value_columns = tuple(value_columns)
-        self.where_clauses = tuple(where_clauses)
-        self.order_by = tuple(order_by)
-
-    def _table(self) -> FromClause:
-        return _resolve_table_ref(self.table)
+        self._table = table
+        self._fk_col = fk_col
+        self._value_columns = value_columns
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
     ) -> dict[object, list[dict[str, Any]]]:
-        """Fetch related rows and group them by parent id.
-
-        Args:
-            session: Active SQLAlchemy async session.
-            parent_ids: Primary keys of the parent entities.
-
-        Returns:
-            Mapping from parent id to a list of dicts with the selected column values.
-        """
         if not parent_ids:
             return {}
-
-        table = self._table()
-        fk_column = table.c[self.foreign_key]
-        selected_columns = [fk_column]
-        selected_columns.extend(table.c[column_name] for column_name in self.value_columns)
-
-        stmt: Select[Any] = select(*selected_columns).where(fk_column.in_(list(parent_ids)))
-        for clause in self.where_clauses:
-            stmt = stmt.where(clause)
-        if self.order_by:
-            stmt = stmt.order_by(*self.order_by)
-
+        fk_column = self._table.c[self._fk_col]
+        selected = [fk_column] + [self._table.c[col] for col in self._value_columns]
+        stmt = select(*selected).where(fk_column.in_(list(parent_ids)))
         rows = await session.execute(stmt)
         grouped: dict[object, list[dict[str, Any]]] = defaultdict(list)
         for row in rows.all():
             parent_id = row[0]
-            payload: dict[str, Any] = {}
-            for index, name in enumerate(self.value_columns, start=1):
-                payload[name] = row[index]
+            payload = {name: row[i + 1] for i, name in enumerate(self._value_columns)}
             grouped[parent_id].append(payload)
         return dict(grouped)
+
+
+def make_sql_loader(loader: Any, rel_step: Any) -> Any:
+    """Create an SQL-path loader from a public descriptor and a compiled relation step.
+
+    Args:
+        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader`` descriptor.
+        rel_step: A ``CoreRelationStep`` providing ``target_table`` and ``fk_col``.
+
+    Returns:
+        The corresponding ``_Sql*`` loader instance, or ``loader`` unchanged
+        if it is not a recognised descriptor type.
+    """
+    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
+
+    table: FromClause = rel_step.target_table
+    fk_col: str = rel_step.fk_col
+
+    if isinstance(loader, CountLoader):
+        return _SqlCountLoader(table=table, fk_col=fk_col)
+    if isinstance(loader, ExistsLoader):
+        return _SqlExistsLoader(table=table, fk_col=fk_col)
+    if isinstance(loader, JoinFieldsLoader):
+        return _SqlJoinFieldsLoader(table=table, fk_col=fk_col, value_columns=loader.value_columns)
+    return loader
