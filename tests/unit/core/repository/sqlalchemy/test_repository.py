@@ -7,7 +7,7 @@ import msgspec
 import pytest
 from pytest import mark
 
-from loom.core.repository.abc import PageParams
+from loom.core.repository.abc import PageParams, PageResult, PaginationMode, QuerySpec, SortSpec
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy, with_session_scope
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
@@ -173,38 +173,50 @@ class TestRepositoryCoreReadFastPath:
         )
 
         item_mappings = Mock()
-        item_mappings.all.return_value = [{"id": 1}, {"id": 2}]
+        item_mappings.__iter__ = Mock(
+            return_value=iter(
+                [
+                    {"id": 1, "__loom_total_count": 2},
+                    {"id": 2, "__loom_total_count": 2},
+                ]
+            )
+        )
         item_result = Mock()
         item_result.mappings.return_value = item_mappings
-
-        count_result = Mock()
-        count_result.scalar.return_value = 2
-
-        mock_session.execute = AsyncMock(side_effect=[item_result, count_result])
+        mock_session.execute = AsyncMock(return_value=item_result)
 
         page = await repo.list_paginated(PageParams(page=1, limit=10))
 
         assert [getattr(item, "id", None) for item in page.items] == [1, 2]
         assert page.total_count == 2
-        assert mock_session.execute.await_count == 2
+        assert mock_session.execute.await_count == 1
 
-    def test_can_use_core_read_is_cached_per_profile(
+    @mark.asyncio
+    async def test_list_with_query_uses_core_read_path(
         self,
         mock_session_manager: Any,
+        mock_session: AsyncMock,
         dummy_model: type,
     ) -> None:
         repo: RepositorySQLAlchemy[msgspec.Struct, int] = RepositorySQLAlchemy(
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
-        options = Mock(return_value=[])
-        projections = Mock(return_value={})
-        repo._get_profile_options = options  # type: ignore[method-assign]
-        repo._projections_for_profile = projections  # type: ignore[method-assign]
+        mappings = Mock()
+        mappings.__iter__ = Mock(return_value=iter([{"id": 1, "__loom_total_count": 1}]))
+        execute_result = Mock()
+        execute_result.mappings.return_value = mappings
+        mock_session.execute = AsyncMock(return_value=execute_result)
 
-        first = repo._can_use_core_read("default")
-        second = repo._can_use_core_read("default")
+        page = await repo.list_with_query(
+            QuerySpec(
+                sort=(SortSpec(field="id", direction="ASC"),),
+                pagination=PaginationMode.OFFSET,
+                limit=10,
+                page=1,
+            )
+        )
 
-        assert first is True
-        assert second is True
-        assert options.call_count == 1
-        assert projections.call_count == 1
+        assert isinstance(page, PageResult)
+        assert [getattr(item, "id", None) for item in page.items] == [1]
+        assert page.total_count == 1
+        assert mock_session.execute.await_count == 1

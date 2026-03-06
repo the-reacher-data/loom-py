@@ -220,6 +220,30 @@ class CoreModel:
             return []
         return await self._assemble(session, rows, plan)
 
+    async def fetch_all_with_total(
+        self,
+        session: AsyncSession,
+        stmt: Select,  # type: ignore[type-arg]
+        profile: str = "default",
+        *,
+        total_alias: str = "__loom_total_count",
+    ) -> tuple[list[Any], int]:
+        """Execute a paged statement that includes a window total-count column.
+
+        The statement must include a labeled column matching ``total_alias``
+        (for example ``func.count().over().label("__loom_total_count")``).
+        Returns assembled entities plus the total count extracted from the first row.
+        """
+        plan = self._get_plan(profile)
+        result = await session.execute(stmt)
+        rows = list(result.mappings())
+        if not rows:
+            return [], 0
+
+        total_count = int(rows[0][total_alias] or 0)
+        stripped_rows = [{k: value for k, value in row.items() if k != total_alias} for row in rows]
+        return await self._assemble(session, stripped_rows, plan), total_count
+
     # ------------------------------------------------------------------
     # Internal assembly
     # ------------------------------------------------------------------

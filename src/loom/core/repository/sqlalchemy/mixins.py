@@ -8,6 +8,7 @@ import msgspec
 from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from loom.core.backend import get_compiled_core
 from loom.core.model.introspection import (
     get_column_fields,
     get_id_attribute,
@@ -24,15 +25,18 @@ from loom.core.repository.abc import (
     OutputT,
     PageParams,
     PageResult,
+    PaginationMode,
     QuerySpec,
     build_page_result,
 )
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.integrity import handle_integrity_errors
 from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCompiler
+from loom.core.repository.sqlalchemy.query_compiler.cursor import extract_next_cursor
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
+_TOTAL_COUNT_ALIAS = "__loom_total_count"
 
 
 def _projected_relation_name(projection: Any) -> str | None:
@@ -57,7 +61,6 @@ def _validate_projection_relation(
     projection_profiles: tuple[str, ...],
     relation_name: str,
     relations: dict[str, Any],
-    allow_backend_fallback: bool,
 ) -> None:
     if relation_name not in relations:
         raise ValueError(
@@ -68,7 +71,7 @@ def _validate_projection_relation(
     unsupported_profiles = frozenset(projection_profiles) - frozenset(
         relations[relation_name].profiles
     )
-    if not unsupported_profiles or allow_backend_fallback:
+    if not unsupported_profiles:
         return
 
     raise ValueError(
@@ -99,14 +102,14 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _output_column_keys: tuple[str, ...] | None = None
     _all_sa_column_keys: tuple[str, ...] | None = None
     _output_sa_columns: tuple[Any, ...] | None = None
-    _core_read_profile_cache: dict[str, bool] | None = None
+    _core_model: Any | None = None
     _relations_cache: dict[str, Any] | None = None
     _projections_cache: dict[str, Any] | None = None
     _projection_plan_cache: dict[str, Any] | None = None
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
-        from loom.core.backend.sqlalchemy import get_compiled
+        from loom.core.backend import get_compiled
 
         sa = get_compiled(self.model)
         if sa is None:
@@ -121,6 +124,12 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         self._relations_cache = get_relations(self.model)
         self._projections_cache = get_projections(self.model)
         self._projection_plan_cache = {}
+        self._core_model = get_compiled_core(self.model)
+        if self._core_model is None:
+            raise RuntimeError(
+                f"Model {self.model.__name__} core read artifact was not compiled. "
+                "Call compile_all() before creating a repository."
+            )
 
         sa_mapper: Any = inspect(sa).mapper
         self._output_column_keys = tuple(
@@ -128,22 +137,17 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         )
         self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
         self._output_sa_columns = tuple(getattr(sa, key) for key in self._output_column_keys)
-        self._core_read_profile_cache = {}
         self._validate_computed_relation_loaders()
 
     def _validate_computed_relation_loaders(self) -> None:
         """Validate relation-based projection loaders at repository init time.
 
-        Ensures every ``ProjectionField`` backed by a relation loader
-        references an existing relation. For ``PRELOADED`` sources, relation
-        profiles must cover projection profiles. For ``AUTO`` sources with a
-        backend-capable loader, profile mismatches are allowed because runtime
-        can fall back to backend loading.
+        Ensures every ``PRELOADED`` projection backed by a relation loader
+        references an existing relation whose profiles cover all projection profiles.
 
         Raises:
             ValueError: If the referenced relation does not exist on the model,
-                or if a memory-only projection is active in profiles where the
-                relation is not loaded.
+                or if a projection is active in profiles where the relation is not loaded.
         """
         projections = self._projections_cache or {}
         relations = self._relations_cache or {}
@@ -159,10 +163,6 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 projection_profiles=proj.profiles,
                 relation_name=relation_name,
                 relations=relations,
-                allow_backend_fallback=(
-                    proj.source is ProjectionSource.AUTO
-                    and _has_declared_callable(proj.loader, "load_many")
-                ),
             )
 
     @property
@@ -176,6 +176,12 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         if self._id_attr is not None:
             return self._id_attr
         return "id"
+
+    @property
+    def _effective_core_model(self) -> Any:
+        if self._core_model is not None:
+            return self._core_model
+        raise RuntimeError("Core model metadata is not initialized")
 
     def create_object(self, data: msgspec.Struct) -> Any:
         """Create a model instance from a struct without persisting it."""
@@ -211,37 +217,12 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     def _apply_offset_page_filters(
         self,
         items_stmt: Any,
-        count_stmt: Any,
         filter_params: FilterParams | None,
-    ) -> tuple[Any, Any]:
-        """Apply page-mode filters to item and total-count statements.
-
-        This helper is only used by offset/page pagination flows where
-        ``total_count`` is required.
-        """
+    ) -> Any:
+        """Apply page-mode filters to an offset items statement."""
         if not filter_params or not filter_params.filters:
-            return items_stmt, count_stmt
-        return (
-            items_stmt.filter_by(**filter_params.filters),
-            count_stmt.filter_by(**filter_params.filters),
-        )
-
-    def _get_profile_options(self, profile: str) -> list[Any]:
-        from sqlalchemy.orm import selectinload
-
-        sa_model = self._effective_sa_model
-        relations = (
-            self._relations_cache
-            if self._relations_cache is not None
-            else get_relations(self.model)
-        )
-        options: list[Any] = []
-        for rel_name, rel in relations.items():
-            if profile in rel.profiles:
-                attr = getattr(sa_model, rel_name, None)
-                if attr is not None:
-                    options.append(selectinload(attr))
-        return options
+            return items_stmt
+        return items_stmt.filter_by(**filter_params.filters)
 
     def _to_output(
         self,
@@ -316,67 +297,13 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         )
         return {name: proj for name, proj in struct_projections.items() if profile in proj.profiles}
 
-    def _can_use_core_read(self, profile: str) -> bool:
-        """Return whether read can be served from Core rows without ORM objects."""
-        cache = self._core_read_profile_cache
-        if cache is None:
-            cache = {}
-            self._core_read_profile_cache = cache
-        cached = cache.get(profile)
-        if cached is not None:
-            return cached
-
-        result = not self._get_profile_options(profile) and not self._projections_for_profile(
-            profile
-        )
-        cache[profile] = result
-        return result
-
-    def _core_output_columns(self) -> tuple[Any, ...]:
-        columns = self._output_sa_columns
-        if columns is None:
-            raise RuntimeError("Output column metadata is not initialized")
-        return columns
-
-    def _to_output_from_row(self, row: dict[str, Any]) -> OutputT:
-        """Build output struct directly from a SQLAlchemy Core row mapping."""
-        output_keys = self._output_column_keys
-        if output_keys is None:
-            raise RuntimeError("Output column metadata is not initialized")
-        payload = {key: row[key] for key in output_keys}
-        return cast(OutputT, self.model(**payload))
-
-    async def _core_fetch_one(
-        self,
-        scoped_session: AsyncSession,
-        stmt: Any,
-    ) -> OutputT | None:
-        row = (await scoped_session.execute(stmt)).mappings().first()
-        if row is None:
-            return None
-        return self._to_output_from_row(dict(row))
-
-    async def _core_fetch_all(
-        self,
-        scoped_session: AsyncSession,
-        stmt: Any,
-    ) -> list[OutputT]:
-        rows = (await scoped_session.execute(stmt)).mappings().all()
-        return [self._to_output_from_row(dict(row)) for row in rows]
-
     async def _collect_projection_values(
         self,
         scoped_session: AsyncSession,
         objs: list[Any],
         profile: str,
     ) -> dict[int, dict[str, Any]]:
-        """Batch-load projection values for a list of ORM objects.
-
-        Relation-based projections are resolved from already-loaded relation
-        data on each ORM object (no DB round-trip) when configured to do so.
-        Remaining DB-backed loaders are resolved by the compiled projection
-        plan runtime.
-        """
+        """Batch-load projection values for a list of objects."""
         if not objs:
             return {}
         projections = self._projections_for_profile(profile)
@@ -393,21 +320,11 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
             plan = build_projection_plan(projections)
             plan_cache[profile] = plan
 
-        relations = (
-            self._relations_cache
-            if self._relations_cache is not None
-            else get_relations(self.model)
-        )
-        loaded_relations = frozenset(
-            rel_name for rel_name, rel in relations.items() if profile in rel.profiles
-        )
-
         return await execute_projection_plan(
             plan,
             objs=objs,
             id_attr=self._effective_id_attribute,
             backend_context=scoped_session,
-            loaded_relations=loaded_relations,
         )
 
     def _session_scope(
@@ -444,160 +361,8 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
             return cast(OutputT, self._to_output(obj))
 
 
-class SQLAlchemyReadCoreMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
-    """Core-row based read operations for SQLAlchemy repositories."""
-
-    async def _core_get_by_id(self, obj_id: IdT) -> OutputT | None:
-        async with self._session_scope() as scoped_session:
-            stmt = select(*self._core_output_columns()).where(self._id_column() == obj_id).limit(1)
-            return await self._core_fetch_one(scoped_session, stmt)
-
-    async def _core_get_by(self, field: str, value: Any) -> OutputT | None:
-        async with self._session_scope() as scoped_session:
-            column = self._column_for_field(field)
-            stmt = select(*self._core_output_columns()).where(column == value).limit(1)
-            return await self._core_fetch_one(scoped_session, stmt)
-
-    async def _core_list_paginated(
-        self,
-        page_params: PageParams,
-        filter_params: FilterParams | None,
-    ) -> PageResult[OutputT]:
-        async with self._session_scope() as scoped_session:
-            sa_model = self._effective_sa_model
-            stmt = select(*self._core_output_columns()).order_by(self._id_column())
-            count_stmt = select(func.count()).select_from(sa_model)
-            stmt, count_stmt = self._apply_offset_page_filters(stmt, count_stmt, filter_params)
-
-            paged_stmt = stmt.offset(page_params.offset).limit(page_params.limit)
-            items = await self._core_fetch_all(scoped_session, paged_stmt)
-            total_count = int((await scoped_session.execute(count_stmt)).scalar() or 0)
-            return build_page_result(items, total_count, page_params)
-
-
-class SQLAlchemyReadOrmMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
-    """ORM-object based read operations for SQLAlchemy repositories."""
-
-    async def _orm_get_by_id(
-        self,
-        obj_id: IdT,
-        profile: str,
-    ) -> OutputT | None:
-        async with self._session_scope() as scoped_session:
-            sa_model = self._effective_sa_model
-            options = self._get_profile_options(profile)
-
-            if options:
-                stmt = (
-                    select(sa_model)
-                    .where(self._id_column() == obj_id)
-                    .options(*options)
-                    .execution_options(populate_existing=True)
-                )
-                result = await scoped_session.execute(stmt)
-                obj = result.scalar_one_or_none()
-            else:
-                obj = await scoped_session.get(sa_model, obj_id)
-
-            if obj is None:
-                return None
-
-            projection_values = await self._collect_projection_values(
-                scoped_session,
-                [obj],
-                profile,
-            )
-            return cast(
-                OutputT,
-                self._to_output(
-                    obj,
-                    profile=profile,
-                    projection_values=projection_values.get(0),
-                ),
-            )
-
-    async def _orm_get_by(
-        self,
-        field: str,
-        value: Any,
-        profile: str,
-    ) -> OutputT | None:
-        async with self._session_scope() as scoped_session:
-            sa_model = self._effective_sa_model
-            column = self._column_for_field(field)
-            options = self._get_profile_options(profile)
-            stmt = select(sa_model).where(column == value).limit(1)
-            if options:
-                stmt = stmt.options(*options).execution_options(populate_existing=True)
-
-            result = await scoped_session.execute(stmt)
-            obj = result.scalar_one_or_none()
-            if obj is None:
-                return None
-
-            projection_values = await self._collect_projection_values(
-                scoped_session,
-                [obj],
-                profile,
-            )
-            return cast(
-                OutputT,
-                self._to_output(
-                    obj,
-                    profile=profile,
-                    projection_values=projection_values.get(0),
-                ),
-            )
-
-    async def _orm_list_paginated(
-        self,
-        page_params: PageParams,
-        filter_params: FilterParams | None,
-        profile: str,
-    ) -> PageResult[OutputT]:
-        async with self._session_scope() as scoped_session:
-            sa_model = self._effective_sa_model
-            options = self._get_profile_options(profile)
-            stmt = select(sa_model).order_by(self._id_column())
-            if options:
-                stmt = stmt.options(*options)
-
-            count_stmt = select(func.count()).select_from(sa_model)
-            stmt, count_stmt = self._apply_offset_page_filters(stmt, count_stmt, filter_params)
-
-            items_result = await scoped_session.execute(
-                stmt.offset(page_params.offset).limit(page_params.limit)
-            )
-            total_result = await scoped_session.execute(count_stmt)
-            loaded_items = list(items_result.scalars().all())
-
-            projection_values = await self._collect_projection_values(
-                scoped_session,
-                loaded_items,
-                profile,
-            )
-            items: list[OutputT] = [
-                cast(
-                    OutputT,
-                    self._to_output(
-                        item,
-                        profile=profile,
-                        projection_values=projection_values.get(index),
-                    ),
-                )
-                for index, item in enumerate(loaded_items)
-            ]
-
-            total_count = int(total_result.scalar() or 0)
-            return build_page_result(items, total_count, page_params)
-
-
-class SQLAlchemyReadMixin(
-    SQLAlchemyReadCoreMixin[OutputT, IdT],
-    SQLAlchemyReadOrmMixin[OutputT, IdT],
-    Generic[OutputT, IdT],
-):
-    """Facade selecting Core or ORM read strategy while preserving public API.
+class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
+    """Read operations for SQLAlchemy repositories.
 
     Class attributes:
         allowed_filter_fields: Whitelist of field names permitted in
@@ -612,9 +377,11 @@ class SQLAlchemyReadMixin(
         profile: str = "default",
     ) -> OutputT | None:
         """Fetch one entity by id with optional profile-aware loading."""
-        if self._can_use_core_read(profile):
-            return await self._core_get_by_id(obj_id)
-        return await self._orm_get_by_id(obj_id, profile)
+        async with self._session_scope() as scoped_session:
+            core_model = self._effective_core_model
+            stmt = core_model.select(profile).where(self._id_column() == obj_id).limit(1)
+            loaded = await core_model.fetch_one(scoped_session, stmt, profile=profile)
+            return cast(OutputT | None, loaded)
 
     async def get_by(
         self,
@@ -623,9 +390,11 @@ class SQLAlchemyReadMixin(
         profile: str = "default",
     ) -> OutputT | None:
         """Fetch one entity by equality over an arbitrary column field."""
-        if self._can_use_core_read(profile):
-            return await self._core_get_by(field, value)
-        return await self._orm_get_by(field, value, profile)
+        async with self._session_scope() as scoped_session:
+            core_model = self._effective_core_model
+            stmt = core_model.select(profile).where(self._column_for_field(field) == value).limit(1)
+            loaded = await core_model.fetch_one(scoped_session, stmt, profile=profile)
+            return cast(OutputT | None, loaded)
 
     async def list_paginated(
         self,
@@ -634,9 +403,23 @@ class SQLAlchemyReadMixin(
         profile: str = "default",
     ) -> PageResult[OutputT]:
         """Fetch a paginated entity list and total count."""
-        if self._can_use_core_read(profile):
-            return await self._core_list_paginated(page_params, filter_params)
-        return await self._orm_list_paginated(page_params, filter_params, profile)
+        async with self._session_scope() as scoped_session:
+            core_model = self._effective_core_model
+            stmt = core_model.select(profile).order_by(self._id_column())
+            stmt = self._apply_offset_page_filters(stmt, filter_params)
+
+            paged_stmt = stmt.offset(page_params.offset).limit(page_params.limit)
+            paged_stmt = paged_stmt.add_columns(
+                func.count().over().label(_TOTAL_COUNT_ALIAS)
+            )
+            loaded_items, total_count = await core_model.fetch_all_with_total(
+                scoped_session,
+                paged_stmt,
+                profile=profile,
+                total_alias=_TOTAL_COUNT_ALIAS,
+            )
+            items = cast(list[OutputT], loaded_items)
+            return build_page_result(items, total_count, page_params)
 
     async def list_with_query(
         self,
@@ -658,42 +441,79 @@ class SQLAlchemyReadMixin(
             queries, :class:`~loom.core.repository.abc.query.CursorResult`
             for cursor queries.
         """
-        from loom.core.repository.abc.query import PaginationMode
-
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
             id_col = self._id_column()
-            options = self._get_profile_options(profile)
-
             compiler = QuerySpecCompiler(sa_model, id_col, self.allowed_filter_fields)
-            raw_items, total_count, next_cursor, has_next = await compiler.execute(
-                scoped_session, query, options
-            )
-
-            proj_map = await self._collect_projection_values(scoped_session, raw_items, profile)
-            items: list[OutputT] = [
-                cast(
-                    OutputT,
-                    self._to_output(
-                        item,
-                        profile=profile,
-                        projection_values=proj_map.get(i),
-                    ),
-                )
-                for i, item in enumerate(raw_items)
-            ]
+            core_model = self._effective_core_model
 
             if query.pagination == PaginationMode.CURSOR:
-                return CursorResult(
-                    items=tuple(items),
-                    next_cursor=next_cursor,
-                    has_next=has_next,
+                return await self._list_with_query_cursor(
+                    scoped_session,
+                    query=query,
+                    profile=profile,
+                    compiler=compiler,
+                    core_model=core_model,
                 )
 
-            from loom.core.repository.abc.query import PageParams
+            return await self._list_with_query_offset(
+                scoped_session,
+                query=query,
+                profile=profile,
+                compiler=compiler,
+                core_model=core_model,
+            )
 
-            page_params = PageParams(page=query.page, limit=query.limit)
-            return build_page_result(items, total_count or 0, page_params)
+    async def _list_with_query_cursor(
+        self,
+        scoped_session: AsyncSession,
+        *,
+        query: QuerySpec,
+        profile: str,
+        compiler: QuerySpecCompiler,
+        core_model: Any,
+    ) -> CursorResult[OutputT]:
+        cursor_stmt, cursor_field = compiler.compile_cursor(
+            query,
+            base_stmt=core_model.select(profile),
+        )
+        loaded = await core_model.fetch_all(scoped_session, cursor_stmt, profile=profile)
+        items, next_cursor, has_next = extract_next_cursor(
+            cast(list[Any], loaded),
+            cursor_field,
+            query.limit,
+        )
+        return CursorResult(
+            items=tuple(cast(list[OutputT], items)),
+            next_cursor=next_cursor,
+            has_next=has_next,
+        )
+
+    async def _list_with_query_offset(
+        self,
+        scoped_session: AsyncSession,
+        *,
+        query: QuerySpec,
+        profile: str,
+        compiler: QuerySpecCompiler,
+        core_model: Any,
+    ) -> PageResult[OutputT]:
+        offset_stmt = compiler.compile_offset(
+            query,
+            base_stmt=core_model.select(profile),
+        )
+        offset_stmt = offset_stmt.add_columns(
+            func.count().over().label(_TOTAL_COUNT_ALIAS)
+        )
+        loaded_items, total_count = await core_model.fetch_all_with_total(
+            scoped_session,
+            offset_stmt,
+            profile=profile,
+            total_alias=_TOTAL_COUNT_ALIAS,
+        )
+        items = cast(list[OutputT], loaded_items)
+        page_params = PageParams(page=query.page, limit=query.limit)
+        return build_page_result(items, total_count or 0, page_params)
 
     async def exists(self, obj_id: IdT) -> bool:
         """Check whether an entity exists by id."""

@@ -48,6 +48,42 @@ class QuerySpecCompiler:
         self._id_column = id_column
         self._allowed_fields = allowed_fields
 
+    def compile_offset(self, query: QuerySpec, *, base_stmt: Any | None = None) -> Any:
+        """Compile offset pagination statement."""
+        sa_model = self._sa_model
+        stmt = base_stmt if base_stmt is not None else select(sa_model)
+
+        if query.filters:
+            clause = compile_filter_group(sa_model, query.filters, self._allowed_fields)
+            stmt = stmt.where(clause)
+
+        order_clauses = compile_order_by(sa_model, query.sort)
+        stmt = stmt.order_by(*(order_clauses or [self._id_column]))
+
+        offset = (query.page - 1) * query.limit
+        stmt = stmt.offset(offset).limit(query.limit)
+
+        return stmt
+
+    def compile_cursor(self, query: QuerySpec, *, base_stmt: Any | None = None) -> tuple[Any, str]:
+        """Compile cursor pagination statement (N+1 applied) and cursor field."""
+        sa_model = self._sa_model
+        cursor_field = query.sort[0].field if query.sort else self._id_column.key
+        stmt = base_stmt if base_stmt is not None else select(sa_model)
+
+        if query.filters:
+            clause = compile_filter_group(sa_model, query.filters, self._allowed_fields)
+            stmt = stmt.where(clause)
+
+        if query.cursor:
+            cursor_predicate = compile_cursor_predicate(sa_model, query.cursor)
+            stmt = stmt.where(cursor_predicate)
+
+        order_clauses = compile_order_by(sa_model, query.sort)
+        stmt = stmt.order_by(*(order_clauses or [self._id_column]))
+        stmt = stmt.limit(query.limit + 1)
+        return stmt, cursor_field
+
     async def execute(
         self,
         session: AsyncSession,
@@ -80,29 +116,17 @@ class QuerySpecCompiler:
         query: QuerySpec,
         profile_options: list[Any],
     ) -> tuple[list[Any], int, None, bool]:
-        sa_model = self._sa_model
-        stmt = select(sa_model)
-        count_stmt = select(func.count()).select_from(sa_model)
-
-        if query.filters:
-            clause = compile_filter_group(sa_model, query.filters, self._allowed_fields)
-            stmt = stmt.where(clause)
-            count_stmt = count_stmt.where(clause)
-
-        order_clauses = compile_order_by(sa_model, query.sort)
-        stmt = stmt.order_by(*(order_clauses or [self._id_column]))
-
+        stmt = self.compile_offset(query).add_columns(
+            func.count().over().label("__loom_total_count")
+        )
         if profile_options:
             stmt = stmt.options(*profile_options)
 
+        result = await session.execute(stmt)
+        rows = list(result.mappings().all())
+        total_count = int(rows[0]["__loom_total_count"] or 0) if rows else 0
+        items = [row[self._sa_model] for row in rows]
         offset = (query.page - 1) * query.limit
-        stmt = stmt.offset(offset).limit(query.limit)
-
-        items_result = await session.execute(stmt)
-        total_result = await session.execute(count_stmt)
-
-        items = list(items_result.scalars().all())
-        total_count = int(total_result.scalar() or 0)
         has_next = (offset + len(items)) < total_count
 
         return items, total_count, None, has_next
@@ -117,29 +141,9 @@ class QuerySpecCompiler:
         query: QuerySpec,
         profile_options: list[Any],
     ) -> tuple[list[Any], None, str | None, bool]:
-        sa_model = self._sa_model
-
-        # Determine cursor field from the first sort spec, fallback to id
-        cursor_field = query.sort[0].field if query.sort else self._id_column.key
-
-        stmt = select(sa_model)
-
-        if query.filters:
-            clause = compile_filter_group(sa_model, query.filters, self._allowed_fields)
-            stmt = stmt.where(clause)
-
-        if query.cursor:
-            cursor_predicate = compile_cursor_predicate(sa_model, query.cursor)
-            stmt = stmt.where(cursor_predicate)
-
-        order_clauses = compile_order_by(sa_model, query.sort)
-        stmt = stmt.order_by(*(order_clauses or [self._id_column]))
-
+        stmt, cursor_field = self.compile_cursor(query)
         if profile_options:
             stmt = stmt.options(*profile_options)
-
-        # N+1 trick
-        stmt = stmt.limit(query.limit + 1)
 
         result = await session.execute(stmt)
         raw_items = list(result.scalars().all())
