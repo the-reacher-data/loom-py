@@ -8,7 +8,7 @@ import msgspec
 from sqlalchemy import exists, func, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.core.backend import get_compiled_core
+from loom.core.backend.sqlalchemy import get_compiled_core
 from loom.core.model.introspection import (
     get_column_fields,
     get_id_attribute,
@@ -109,7 +109,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
-        from loom.core.backend import get_compiled
+        from loom.core.backend.sqlalchemy import get_compiled
 
         sa = get_compiled(self.model)
         if sa is None:
