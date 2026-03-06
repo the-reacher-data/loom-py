@@ -55,11 +55,6 @@ class _ExecutionBuckets:
     memory: tuple[ProjectionStep, ...]
 
 
-class _ExecutionTarget:
-    BACKEND = "backend"
-    MEMORY = "memory"
-
-
 def _projection_dependencies(
     name: str,
     projection: Projection,
@@ -106,13 +101,12 @@ async def execute_projection_plan(
     objs: Sequence[Any],
     id_attr: str,
     backend_context: Any | None,
-    loaded_relations: frozenset[str] = frozenset(),
 ) -> dict[int, dict[str, Any]]:
     """Execute projection plan for the given objects.
 
-    Memory loaders are executed when their required relation name is present
-    in ``loaded_relations``; backend loaders are batched through ``load_many``
-    when ``backend_context`` is provided.
+    ``BACKEND`` loaders are batched through ``load_many`` when
+    ``backend_context`` is provided.  ``PRELOADED`` loaders run synchronously
+    via ``load_from_object`` against each object.
     """
     if not objs or not plan.levels:
         return {}
@@ -121,11 +115,7 @@ async def execute_projection_plan(
     values_by_index: dict[int, dict[str, Any]] = {index: {} for index in range(len(objs))}
 
     for level in plan.levels:
-        buckets = _partition_execution_steps(
-            level,
-            backend_context=backend_context,
-            loaded_relations=loaded_relations,
-        )
+        buckets = _partition_execution_steps(level, backend_context=backend_context)
         await _execute_backend_steps(
             steps=buckets.backend,
             backend_context=backend_context,
@@ -182,41 +172,19 @@ def _partition_execution_steps(
     level: tuple[ProjectionStep, ...],
     *,
     backend_context: Any | None,
-    loaded_relations: frozenset[str],
 ) -> _ExecutionBuckets:
     backend_steps: list[ProjectionStep] = []
     memory_steps: list[ProjectionStep] = []
     for step in level:
-        target = _resolve_step_target(
-            step,
-            backend_context=backend_context,
-            loaded_relations=loaded_relations,
-        )
-        if target == "backend":
+        if step.projection.source is ProjectionSource.BACKEND:
+            if backend_context is None:
+                raise RuntimeError(f"Projection '{step.name}' requires backend context")
             backend_steps.append(step)
-            continue
-        memory_steps.append(step)
+        else:
+            memory_steps.append(step)
     return _ExecutionBuckets(
         backend=tuple(backend_steps),
         memory=tuple(memory_steps),
-    )
-
-
-def _resolve_step_target(
-    step: ProjectionStep,
-    *,
-    backend_context: Any | None,
-    loaded_relations: frozenset[str],
-) -> str:
-    source_resolvers = {
-        ProjectionSource.BACKEND: _resolve_backend_target,
-        ProjectionSource.PRELOADED: _resolve_preloaded_target,
-        ProjectionSource.AUTO: _resolve_auto_target,
-    }
-    return source_resolvers[step.projection.source](
-        step,
-        backend_context=backend_context,
-        loaded_relations=loaded_relations,
     )
 
 
@@ -298,64 +266,3 @@ def _validate_step_configuration(
         raise TypeError(f"Projection '{name}' requires a loader with load_many()")
     if source is ProjectionSource.PRELOADED and memory_loader is None:
         raise TypeError(f"Projection '{name}' requires a loader with load_from_object()")
-    if source is ProjectionSource.AUTO and backend_loader is None and memory_loader is None:
-        raise TypeError(
-            f"Projection '{name}' loader must implement load_many() or load_from_object()"
-        )
-
-
-def _resolve_backend_target(
-    step: ProjectionStep,
-    *,
-    backend_context: Any | None,
-    loaded_relations: frozenset[str],
-) -> str:
-    del loaded_relations
-    if backend_context is None:
-        raise RuntimeError(f"Projection '{step.name}' requires backend context")
-    return _ExecutionTarget.BACKEND
-
-
-def _resolve_preloaded_target(
-    step: ProjectionStep,
-    *,
-    backend_context: Any | None,
-    loaded_relations: frozenset[str],
-) -> str:
-    del step, backend_context, loaded_relations
-    return _ExecutionTarget.MEMORY
-
-
-def _resolve_auto_target(
-    step: ProjectionStep,
-    *,
-    backend_context: Any | None,
-    loaded_relations: frozenset[str],
-) -> str:
-    if _should_use_memory(step=step, loaded_relations=loaded_relations):
-        return _ExecutionTarget.MEMORY
-
-    if step.backend_loader is not None:
-        if backend_context is None:
-            raise RuntimeError(f"Projection '{step.name}' requires backend context")
-        return _ExecutionTarget.BACKEND
-
-    raise RuntimeError(
-        f"Projection '{step.name}' requires loaded relation data "
-        "or a loader implementing load_many()"
-    )
-
-
-def _should_use_memory(
-    *,
-    step: ProjectionStep,
-    loaded_relations: frozenset[str],
-) -> bool:
-    if step.memory_loader is None:
-        return False
-
-    relation_name = getattr(step.memory_loader, "relation", None)
-    if not isinstance(relation_name, str) or not relation_name:
-        return True
-
-    return relation_name in loaded_relations

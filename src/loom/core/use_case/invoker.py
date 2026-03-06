@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.executor import RuntimeExecutor
@@ -39,17 +39,16 @@ class EntityInvoker:
     """Convenience facade for entity-scoped AutoCRUD invocation."""
 
     _entity_key: str
-    _app: AppInvoker
+    _app: ApplicationInvoker
 
     def _key(self, action: str) -> str:
         return f"{self._entity_key}:{action}"
 
     @staticmethod
     def _with_default_profile(params: dict[str, Any]) -> dict[str, Any]:
-        merged = dict(params)
-        if "profile" not in merged:
-            merged["profile"] = "default"
-        return merged
+        if "profile" in params:
+            return params
+        return {**params, "profile": "default"}
 
     async def create(self, *, payload: dict[str, Any]) -> Any:
         return await self._app.invoke_name(self._key("create"), payload=payload)
@@ -89,7 +88,7 @@ class EntityInvoker:
 
 
 @dataclass(frozen=True)
-class AppInvoker(ApplicationInvoker):
+class AppInvoker:
     """Default implementation for app-level invocation."""
 
     factory: UseCaseFactory
@@ -103,9 +102,8 @@ class AppInvoker(ApplicationInvoker):
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> Any:
-        instance = self.factory.build(use_case)
-        compilable = cast(Any, instance)
-        return await self.executor.execute(compilable, params=params, payload=payload)
+        instance: Compilable = self.factory.build(use_case)
+        return await self.executor.execute(instance, params=params, payload=payload)
 
     async def invoke_name(
         self,

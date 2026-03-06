@@ -57,4 +57,5 @@ class CreateUserUseCase(UseCase[object, dict[str, str]]):
 - Full demo app repository: [dummy-loom](https://github.com/the-reacher-data/dummy-loom)
 - Use-case DSL details: `docs/guides/use-case-dsl.md`
 - AutoCRUD guide: `docs/guides/autocrud.md`
+- Celery worker bootstrap: `docs/guides/celery.md`
 - API reference: `docs/reference/index.rst`

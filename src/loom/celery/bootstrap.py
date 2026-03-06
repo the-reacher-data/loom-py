@@ -52,7 +52,7 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -108,7 +108,7 @@ class _DiscoveryManifest(msgspec.Struct, kw_only=True):
 
 
 class _DiscoveryConfig(msgspec.Struct, kw_only=True):
-    mode: str = "modules"
+    mode: Literal["modules", "manifest"] = "modules"
     modules: _DiscoveryModules = msgspec.field(default_factory=_DiscoveryModules)
     manifest: _DiscoveryManifest = msgspec.field(default_factory=_DiscoveryManifest)
 
@@ -235,11 +235,10 @@ def _discover_compilables_from_config(
         modules = import_modules(discovery_cfg.modules.include)
         _, use_cases, _, discovered_jobs = collect_from_modules(modules)
         return _merge_compilables(use_cases, discovered_jobs), tuple(discovered_jobs)
-    if discovery_cfg.mode == "manifest":
-        discovered = ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
-        jobs = _load_jobs_from_manifest(discovery_cfg.manifest.module)
-        return _merge_compilables(discovered.use_cases, jobs), jobs
-    raise ValueError(f"Unsupported worker discovery mode: {discovery_cfg.mode!r}")
+    # mode == "manifest" — Literal type guarantees no other value is possible
+    discovered = ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
+    jobs = _load_jobs_from_manifest(discovery_cfg.manifest.module)
+    return _merge_compilables(discovered.use_cases, jobs), jobs
 
 
 def _resolve_compilables_and_jobs(

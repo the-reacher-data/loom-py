@@ -33,7 +33,6 @@ class RelationCountLoader:
     """Compute count from an already-loaded relation."""
 
     relation: str
-    foreign_key: str | None = None
 
     def load_from_object(
         self,
@@ -49,7 +48,6 @@ class RelationExistsLoader:
     """Compute existence flag from an already-loaded relation."""
 
     relation: str
-    foreign_key: str | None = None
 
     def load_from_object(
         self,
@@ -66,18 +64,10 @@ class RelationJoinFieldsLoader:
 
     relation: str
     value_columns: tuple[str, ...]
-    foreign_key: str | None
 
-    def __init__(
-        self,
-        *,
-        relation: str,
-        value_columns: Sequence[str],
-        foreign_key: str | None = None,
-    ) -> None:
+    def __init__(self, *, relation: str, value_columns: Sequence[str]) -> None:
         object.__setattr__(self, "relation", relation)
         object.__setattr__(self, "value_columns", tuple(value_columns))
-        object.__setattr__(self, "foreign_key", foreign_key)
 
     def load_from_object(
         self,
@@ -86,9 +76,7 @@ class RelationJoinFieldsLoader:
     ) -> list[dict[str, Any]]:
         _ = context
         rows = _related_values(obj, self.relation)
-        payload: list[dict[str, Any]] = []
-        for row in rows:
-            payload.append(
-                {field_name: getattr(row, field_name, None) for field_name in self.value_columns}
-            )
-        return payload
+        return [
+            {field_name: getattr(row, field_name, None) for field_name in self.value_columns}
+            for row in rows
+        ]

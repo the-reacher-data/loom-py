@@ -20,6 +20,7 @@ Companion demo application:
    :caption: Guides
 
    guides/quickstart
+   guides/celery
    examples-repo/index
    guides/use-case-dsl
    guides/fake-repo-examples

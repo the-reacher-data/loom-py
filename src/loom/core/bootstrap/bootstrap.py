@@ -31,6 +31,7 @@ from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.use_case.factory import UseCaseFactory
@@ -140,7 +141,15 @@ def bootstrap_app(
             factory.register(uc_type)
         container.register(UseCaseFactory, lambda: factory, scope=Scope.APPLICATION)
 
-        # Step 5 — Validate container (fail-fast for APPLICATION scope)
+        # Step 5 — Runtime executor (transport adapters consume this singleton)
+        executor = RuntimeExecutor(
+            compiler,
+            metrics=metrics,
+            repo_resolver=container.resolve_repo,
+        )
+        container.register(RuntimeExecutor, lambda: executor, scope=Scope.APPLICATION)
+
+        # Step 6 — Validate container (fail-fast for APPLICATION scope)
         _logger.info("[BOOT] Validating container bindings")
         container.validate()
 

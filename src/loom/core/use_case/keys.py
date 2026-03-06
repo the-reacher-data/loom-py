@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
+
+_UC = TypeVar("_UC")
 
 _USE_CASE_KEY_ATTR = "__loom_use_case_key__"
 _VALID_KEY = re.compile(r"^[a-z0-9_.:-]+$")
@@ -35,7 +38,7 @@ def get_use_case_key(use_case_type: type[Any]) -> str | None:
     return None
 
 
-def use_case_key(key: str) -> Any:
+def use_case_key(key: str) -> Callable[[type[_UC]], type[_UC]]:
     """Decorator that binds an invocation key to a use-case class.
 
     Args:
@@ -45,7 +48,7 @@ def use_case_key(key: str) -> Any:
         Class decorator preserving the input type.
     """
 
-    def _decorator(use_case_type: type[Any]) -> type[Any]:
+    def _decorator(use_case_type: type[_UC]) -> type[_UC]:
         set_use_case_key(use_case_type, key)
         return use_case_type
 

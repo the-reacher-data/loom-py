@@ -59,7 +59,7 @@ def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
         return cls()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _RepoToken(Generic[ModelT]):
     """Typed DI token used to bind repository instances by model."""
 
@@ -200,7 +200,19 @@ def _configure_job_service(
         celery_cfg = section(raw, "celery", _CC)
         celery_app = create_celery_app(celery_cfg)
         svc: Any = CeleryJobService(celery_app, metrics=result.metrics)
-    except (ConfigError, ImportError):
+    except ImportError:
+        # loom[celery] extra not installed — inline execution is the expected fallback.
+        from loom.core.job.service import InlineJobService
+
+        svc = InlineJobService(result.factory, result.executor)
+    except ConfigError:
+        import warnings
+
+        warnings.warn(
+            "Celery config section is missing or malformed — falling back to InlineJobService. "
+            "Add a 'celery' section to your config or install loom[celery] to suppress this.",
+            stacklevel=2,
+        )
         from loom.core.job.service import InlineJobService
 
         svc = InlineJobService(result.factory, result.executor)
@@ -228,6 +240,14 @@ def _build_bootstrap(
     db_cfg: _DatabaseConfig,
     echo: bool,
 ) -> tuple[KernelRuntime, SessionManager, DiscoveryResult]:
+    discovered = _discover_components(app_cfg)
+    session_manager = _build_sqlalchemy_session_manager(db_cfg, echo)
+    _compile_discovered_models(discovered)
+    result = _build_kernel_runtime(app_cfg, discovered, session_manager)
+    return result, session_manager, discovered
+
+
+def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
     discovered = _build_discovery_result(app_cfg.discovery)
     if not discovered.use_cases:
         raise RuntimeError("No UseCase classes discovered.")
@@ -235,11 +255,19 @@ def _build_bootstrap(
         raise RuntimeError("No RestInterface classes discovered.")
     if not discovered.models:
         raise RuntimeError("No BaseModel classes discovered.")
+    return discovered
 
+
+def _compile_discovered_models(discovered: DiscoveryResult) -> None:
     reset_registry()
     compile_all(*discovered.models)
 
-    session_manager = SessionManager(
+
+def _build_sqlalchemy_session_manager(
+    db_cfg: _DatabaseConfig,
+    echo: bool,
+) -> SessionManager:
+    return SessionManager(
         db_cfg.url,
         echo=echo,
         pool_pre_ping=db_cfg.pool_pre_ping,
@@ -249,15 +277,20 @@ def _build_bootstrap(
         pool_recycle=None,
         connect_args={},
     )
-    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
 
-    result = create_kernel(
+
+def _build_kernel_runtime(
+    app_cfg: _AppConfig,
+    discovered: DiscoveryResult,
+    session_manager: SessionManager,
+) -> KernelRuntime:
+    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
+    return create_kernel(
         config=app_cfg,
         use_cases=discovered.use_cases,
         modules=[_register_repositories(session_manager, discovered.models)],
         uow_factory=uow_factory,
     )
-    return result, session_manager, discovered
 
 
 def create_app(

@@ -42,20 +42,14 @@ class Product(BaseModel):
     )
 
     has_reviews: bool = ProjectionField(
-        loader=RelationExistsLoader(
-            relation="reviews",
-            foreign_key="product_id",
-        ),
+        loader=RelationExistsLoader(relation="reviews"),
         source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         depends_on=("product_reviews:product_id",),
         default=False,
     )
     count_reviews: int = ProjectionField(
-        loader=RelationCountLoader(
-            relation="reviews",
-            foreign_key="product_id",
-        ),
+        loader=RelationCountLoader(relation="reviews"),
         source=ProjectionSource.PRELOADED,
         profiles=("with_details",),
         depends_on=("product_reviews:product_id",),
@@ -64,7 +58,6 @@ class Product(BaseModel):
     review_snippets: list[dict[str, Any]] = ProjectionField(
         loader=RelationJoinFieldsLoader(
             relation="reviews",
-            foreign_key="product_id",
             value_columns=("id", "rating", "comment"),
         ),
         source=ProjectionSource.PRELOADED,

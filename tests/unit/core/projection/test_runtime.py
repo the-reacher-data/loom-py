@@ -115,7 +115,6 @@ async def test_runtime_respects_projection_dependencies() -> None:
         objs=[_Obj(id=1, value=10, rel=[1, 2]), _Obj(id=2, value=20, rel=[1])],
         id_attr="id",
         backend_context=object(),
-        loaded_relations=frozenset({"rel"}),
     )
 
     assert values[0]["base"] == 2
@@ -145,8 +144,16 @@ async def test_runtime_omits_value_when_default_not_defined() -> None:
 
 def test_runtime_detects_projection_cycles() -> None:
     projections = {
-        "a": Projection(loader=_MemoryDependsOnBackend(), depends_on=("projection:b",)),
-        "b": Projection(loader=_MemoryDependsOnBackend(), depends_on=("projection:a",)),
+        "a": Projection(
+            loader=_MemoryDependsOnBackend(),
+            source=ProjectionSource.PRELOADED,
+            depends_on=("projection:b",),
+        ),
+        "b": Projection(
+            loader=_MemoryDependsOnBackend(),
+            source=ProjectionSource.PRELOADED,
+            depends_on=("projection:a",),
+        ),
     }
 
     with pytest.raises(ValueError, match="cycle"):
@@ -168,40 +175,28 @@ async def test_runtime_backend_source_requires_backend_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_auto_prefers_memory_when_relation_is_loaded() -> None:
-    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
+async def test_runtime_preloaded_uses_memory_loader() -> None:
+    plan = build_projection_plan(
+        {"score": Projection(loader=_HybridLoader(), source=ProjectionSource.PRELOADED)}
+    )
     values = await execute_projection_plan(
         plan,
         objs=[_Obj(id=1, value=0, rel=[1, 2])],
         id_attr="id",
         backend_context=object(),
-        loaded_relations=frozenset({"rel"}),
     )
     assert values[0]["score"] == 12
 
 
 @pytest.mark.asyncio
-async def test_runtime_auto_falls_back_to_backend_when_relation_not_loaded() -> None:
-    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
-    obj = type("_ObjNoRel", (), {"id": 1})()
-    values = await execute_projection_plan(
-        plan,
-        objs=[obj],
-        id_attr="id",
-        backend_context=object(),
-        loaded_relations=frozenset(),
+async def test_runtime_preloaded_works_for_msgspec_struct() -> None:
+    plan = build_projection_plan(
+        {"score": Projection(loader=_HybridLoader(), source=ProjectionSource.PRELOADED)}
     )
-    assert values[0]["score"] == 101
-
-
-@pytest.mark.asyncio
-async def test_runtime_auto_uses_memory_for_msgspec_struct_relation() -> None:
-    plan = build_projection_plan({"score": Projection(loader=_HybridLoader())})
     values = await execute_projection_plan(
         plan,
         objs=[_StructObj(id=1, rel=[1, 2])],
         id_attr="id",
         backend_context=object(),
-        loaded_relations=frozenset({"rel"}),
     )
     assert values[0]["score"] == 12

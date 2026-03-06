@@ -24,14 +24,18 @@ from sqlalchemy.dialects.postgresql import TSVECTOR as PG_TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, mapped_column, relationship
 
+from loom.core.backend.core_model import CoreModel, CoreProfilePlan, CoreRelationStep
 from loom.core.model.enums import Cardinality, ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnType, Field
 from loom.core.model.introspection import (
     get_column_fields,
+    get_id_attribute,
+    get_projections,
     get_relations,
     get_table_name,
 )
 from loom.core.model.relation import Relation
+from loom.core.projection.runtime import build_projection_plan
 
 _SA_TYPE_MAP: dict[str, type] = {
     "String": String,
@@ -66,6 +70,7 @@ class SABase(DeclarativeBase):
 
 _registry: dict[type, type] = {}
 _table_registry: dict[str, type] = {}
+_core_registry: dict[type, CoreModel] = {}
 
 
 def _uses_now_onupdate(value: ServerOnUpdate | str | None) -> bool:
@@ -266,15 +271,32 @@ def _resolve_secondary_table(name: str | None) -> Table | None:
 
 
 def compile_all(*classes: type) -> None:
-    """Batch-compile multiple model classes, then resolve deferred relationships."""
+    """Batch-compile multiple model classes, resolve relationships, build Core artifacts."""
     for cls in classes:
         compile_model(cls)
     _configure_relationships()
+    for cls in classes:
+        _compile_core_model(cls)
 
 
 def get_compiled(struct_cls: type) -> type | None:
     """Look up the compiled SA class for a given Struct model."""
     return _registry.get(struct_cls)
+
+
+def get_compiled_core(struct_cls: type) -> CoreModel | None:
+    """Look up the compiled :class:`~loom.core.backend.core_model.CoreModel` for a Struct model.
+
+    Returns ``None`` if the model has not been compiled via :func:`compile_all`.
+
+    Args:
+        struct_cls: The ``BaseModel`` Struct class.
+
+    Returns:
+        :class:`CoreModel` instance with column expressions and read methods,
+        or ``None``.
+    """
+    return _core_registry.get(struct_cls)
 
 
 def get_metadata() -> MetaData:
@@ -286,6 +308,224 @@ def reset_registry() -> None:
     """Clear compiled models — primarily for testing."""
     _registry.clear()
     _table_registry.clear()
+    _core_registry.clear()
     _pending_relations.clear()
     SABase.metadata.clear()
     SABase.registry.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Core model compilation
+# ---------------------------------------------------------------------------
+
+
+def _compile_core_model(struct_cls: type) -> None:
+    sa_cls = _registry.get(struct_cls)
+    if sa_cls is None:
+        return
+
+    table: Any = sa_cls.__table__
+    id_attr = get_id_attribute(struct_cls)
+    column_fields = get_column_fields(struct_cls)
+    relations = get_relations(struct_cls)
+    projections = get_projections(struct_cls)
+
+    all_columns = tuple(table.c[name] for name in column_fields if name in table.c)
+
+    profiles = _collect_profiles(relations, projections)
+    relation_steps = _compile_relation_steps(struct_cls, relations)
+    profile_plans = _build_profile_plans(
+        profiles, all_columns, id_attr, relations, relation_steps, projections
+    )
+
+    core_model = CoreModel(struct_cls, table, id_attr, profile_plans)
+    for name, col in zip(column_fields, all_columns, strict=False):
+        setattr(core_model, name, col)
+
+    _core_registry[struct_cls] = core_model
+
+
+def _collect_profiles(
+    relations: dict[str, Any],
+    projections: dict[str, Any],
+) -> set[str]:
+    profiles: set[str] = {"default"}
+    for rel in relations.values():
+        profiles.update(rel.profiles)
+    for proj in projections.values():
+        profiles.update(proj.profiles)
+    return profiles
+
+
+def _build_profile_plans(
+    profiles: set[str],
+    all_columns: tuple[Any, ...],
+    id_attr: str,
+    relations: dict[str, Any],
+    relation_steps: dict[str, CoreRelationStep],
+    projections: dict[str, Any],
+) -> dict[str, CoreProfilePlan]:
+    plans: dict[str, CoreProfilePlan] = {}
+    for profile in profiles:
+        profile_steps = tuple(
+            relation_steps[name]
+            for name, rel in relations.items()
+            if name in relation_steps and profile in rel.profiles
+        )
+        profile_projections = {
+            name: proj for name, proj in projections.items() if profile in proj.profiles
+        }
+        plans[profile] = CoreProfilePlan(
+            columns=all_columns,
+            relation_steps=profile_steps,
+            projection_plan=build_projection_plan(profile_projections),
+            id_attr=id_attr,
+        )
+    return plans
+
+
+def _compile_relation_steps(
+    struct_cls: type,
+    relations: dict[str, Any],
+) -> dict[str, CoreRelationStep]:
+    steps: dict[str, CoreRelationStep] = {}
+    for rel_name, rel in relations.items():
+        step = _compile_relation_step(struct_cls, rel_name, rel)
+        if step is not None:
+            steps[rel_name] = step
+    return steps
+
+
+def _compile_relation_step(
+    struct_cls: type,
+    rel_name: str,
+    rel: Relation,
+) -> CoreRelationStep | None:
+    if rel.cardinality in (Cardinality.ONE_TO_MANY, Cardinality.ONE_TO_ONE):
+        return _compile_one_to_x_step(struct_cls, rel_name, rel)
+    if rel.cardinality is Cardinality.MANY_TO_ONE:
+        return _compile_many_to_one_step(struct_cls, rel_name, rel)
+    if rel.cardinality is Cardinality.MANY_TO_MANY:
+        return _compile_many_to_many_step(struct_cls, rel_name, rel)
+    return None
+
+
+def _compile_one_to_x_step(
+    struct_cls: type,
+    rel_name: str,
+    rel: Relation,
+) -> CoreRelationStep | None:
+    target_sa = _find_target_sa_by_fk_column(rel.foreign_key)
+    if target_sa is None:
+        return None
+    related_struct = getattr(target_sa, "__struct_cls__", None)
+    if related_struct is None:
+        return None
+    target_table: Any = target_sa.__table__
+    target_cols = _target_cols(related_struct, target_table)
+    return CoreRelationStep(
+        attr=rel_name,
+        cardinality=rel.cardinality,
+        target_table=target_table,
+        target_cols=target_cols,
+        related_struct=related_struct,
+        owner_pk_col=get_id_attribute(struct_cls),
+        fk_col=rel.foreign_key,
+        pk_col=get_id_attribute(struct_cls),
+    )
+
+
+def _compile_many_to_one_step(
+    struct_cls: type,
+    rel_name: str,
+    rel: Relation,
+) -> CoreRelationStep | None:
+    target_table_name, target_pk_name = rel.foreign_key.rsplit(".", 1)
+    target_sa = _find_target_sa_class(target_table_name)
+    if target_sa is None:
+        return None
+    related_struct = getattr(target_sa, "__struct_cls__", None)
+    if related_struct is None:
+        return None
+    owner_fk_col = _find_owner_fk_col(struct_cls, rel.foreign_key)
+    if owner_fk_col is None:
+        return None
+    target_table: Any = target_sa.__table__
+    target_cols = _target_cols(related_struct, target_table)
+    return CoreRelationStep(
+        attr=rel_name,
+        cardinality=rel.cardinality,
+        target_table=target_table,
+        target_cols=target_cols,
+        related_struct=related_struct,
+        owner_pk_col=get_id_attribute(struct_cls),
+        fk_col=owner_fk_col,
+        pk_col=target_pk_name,
+    )
+
+
+def _compile_many_to_many_step(
+    struct_cls: type,
+    rel_name: str,
+    rel: Relation,
+) -> CoreRelationStep | None:
+    if rel.secondary is None:
+        return None
+    secondary_table: Any = SABase.metadata.tables.get(rel.secondary)
+    if secondary_table is None:
+        return None
+    owner_table_name = get_table_name(struct_cls)
+    secondary_owner_fk, secondary_target_fk, target_table_name = _inspect_secondary(
+        secondary_table, owner_table_name
+    )
+    if secondary_owner_fk is None or secondary_target_fk is None or target_table_name is None:
+        return None
+    target_sa = _find_target_sa_class(target_table_name)
+    if target_sa is None:
+        return None
+    related_struct = getattr(target_sa, "__struct_cls__", None)
+    if related_struct is None:
+        return None
+    target_table: Any = target_sa.__table__
+    target_cols = _target_cols(related_struct, target_table)
+    return CoreRelationStep(
+        attr=rel_name,
+        cardinality=rel.cardinality,
+        target_table=target_table,
+        target_cols=target_cols,
+        related_struct=related_struct,
+        owner_pk_col=get_id_attribute(struct_cls),
+        fk_col=secondary_owner_fk,
+        pk_col=get_id_attribute(related_struct),
+        secondary_table=secondary_table,
+        secondary_target_fk=secondary_target_fk,
+    )
+
+
+def _inspect_secondary(
+    secondary_table: Any,
+    owner_table_name: str,
+) -> tuple[str | None, str | None, str | None]:
+    owner_fk: str | None = None
+    target_fk: str | None = None
+    target_table_name: str | None = None
+    for col in secondary_table.columns:
+        for fk in col.foreign_keys:
+            if fk.column.table.name == owner_table_name:
+                owner_fk = col.name
+            else:
+                target_fk = col.name
+                target_table_name = fk.column.table.name
+    return owner_fk, target_fk, target_table_name
+
+
+def _target_cols(related_struct: type, target_table: Any) -> tuple[Any, ...]:
+    col_fields = get_column_fields(related_struct)
+    return tuple(target_table.c[name] for name in col_fields if name in target_table.c)
+
+
+def _find_owner_fk_col(struct_cls: type, foreign_key: str) -> str | None:
+    for name, col_info in get_column_fields(struct_cls).items():
+        if col_info.field.foreign_key == foreign_key:
+            return name
+    return None

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import msgspec
@@ -10,6 +9,7 @@ import pytest
 
 from loom.core.bootstrap import bootstrap_app
 from loom.core.engine.events import RuntimeEvent
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.use_case.use_case import UseCase
 
@@ -40,12 +40,9 @@ class TestBootstrapResultCarriesMetrics:
 
 class TestCreateFastapiAppWiresMetrics:
     def test_executor_receives_metrics_adapter(self) -> None:
-        """create_fastapi_app must wire result.metrics into the executor."""
+        """bootstrap_app must register RuntimeExecutor with the metrics adapter."""
         pytest.importorskip("fastapi")
 
-        from unittest.mock import patch
-
-        from loom.core.engine.executor import RuntimeExecutor
         from loom.rest.fastapi.app import create_fastapi_app
         from loom.rest.model import RestInterface, RestRoute
 
@@ -64,15 +61,24 @@ class TestCreateFastapiAppWiresMetrics:
             prefix = "/test"
             routes = (RestRoute(use_case=_SimpleUseCase, method="GET", path="/"),)
 
-        created_executors: list[RuntimeExecutor] = []
-        original_init = RuntimeExecutor.__init__
+        executor = result.container.resolve(RuntimeExecutor)
+        assert executor._metrics is adapter
+        app = create_fastapi_app(result, interfaces=[_Iface])
+        assert app is not None
 
-        def _capture_init(self: RuntimeExecutor, *args: Any, **kwargs: Any) -> None:
-            original_init(self, *args, **kwargs)
-            created_executors.append(self)
+    def test_reuses_registered_executor_when_present(self) -> None:
+        pytest.importorskip("fastapi")
 
-        with patch.object(RuntimeExecutor, "__init__", _capture_init):
-            create_fastapi_app(result, interfaces=[_Iface])
+        from loom.rest.fastapi.app import create_fastapi_app
+        from loom.rest.model import RestInterface, RestRoute
 
-        assert len(created_executors) == 1
-        assert created_executors[0]._metrics is adapter
+        result = bootstrap_app(config=object(), use_cases=[_SimpleUseCase])
+        shared_executor = result.container.resolve(RuntimeExecutor)
+
+        class _Iface(RestInterface[_Model]):
+            prefix = "/test"
+            routes = (RestRoute(use_case=_SimpleUseCase, method="GET", path="/"),)
+
+        app = create_fastapi_app(result, interfaces=[_Iface])
+        assert app is not None
+        assert result.container.resolve(RuntimeExecutor) is shared_executor

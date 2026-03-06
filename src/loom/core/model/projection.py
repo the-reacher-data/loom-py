@@ -10,12 +10,6 @@ PROJECTION_DEFAULT_MISSING = object()
 class ProjectionSource(StrEnum):
     BACKEND = "backend"
     PRELOADED = "preloaded"
-    AUTO = "auto"
-
-
-class ProjectionAutoPolicy(StrEnum):
-    BACKEND_THEN_PRELOADED = "backend_then_preloaded"
-    PRELOADED_THEN_BACKEND = "preloaded_then_backend"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,8 +17,7 @@ class Projection:
     """Derived-field metadata assigned as a class attribute on a ``BaseModel``."""
 
     loader: Any
-    source: ProjectionSource = ProjectionSource.AUTO
-    auto_policy: ProjectionAutoPolicy = ProjectionAutoPolicy.BACKEND_THEN_PRELOADED
+    source: ProjectionSource = ProjectionSource.PRELOADED
     profiles: tuple[str, ...] = ("default",)
     depends_on: tuple[str, ...] = ()
     default: Any = PROJECTION_DEFAULT_MISSING
@@ -33,8 +26,7 @@ class Projection:
 def ProjectionField(
     *,
     loader: Any,
-    source: ProjectionSource = ProjectionSource.AUTO,
-    auto_policy: ProjectionAutoPolicy = ProjectionAutoPolicy.BACKEND_THEN_PRELOADED,
+    source: ProjectionSource = ProjectionSource.PRELOADED,
     profiles: tuple[str, ...] = ("default",),
     depends_on: tuple[str, ...] = (),
     default: Any = PROJECTION_DEFAULT_MISSING,
@@ -45,7 +37,6 @@ def ProjectionField(
         Projection(
             loader=loader,
             source=source,
-            auto_policy=auto_policy,
             profiles=profiles,
             depends_on=depends_on,
             default=default,

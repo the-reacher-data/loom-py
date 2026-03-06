@@ -11,7 +11,6 @@ from loom.core.model.introspection import (
 )
 from loom.core.model.projection import (
     Projection,
-    ProjectionAutoPolicy,
     ProjectionField,
     ProjectionSource,
 )
@@ -52,7 +51,6 @@ __all__ = [
     "OnDelete",
     "OnUpdate",
     "Projection",
-    "ProjectionAutoPolicy",
     "Relation",
     "RelationField",
     "ServerDefault",
