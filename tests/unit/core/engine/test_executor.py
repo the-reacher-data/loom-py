@@ -634,3 +634,121 @@ class TestExecutorLogging:
             )
 
         assert any("[RULE]" in m for m in log.messages)
+
+
+# ---------------------------------------------------------------------------
+# Tests: parallel load / exists execution
+# ---------------------------------------------------------------------------
+
+
+class Order:
+    def __init__(self, id: int) -> None:
+        self.id = id
+
+
+class _MultiLoadUseCase(UseCase[Any, tuple[str, int]]):
+    """Two independent LoadById steps on different entity types."""
+
+    async def execute(
+        self,
+        user_id: int,
+        order_id: int,
+        user: User = LoadById(User, by="user_id"),
+        order: Order = LoadById(Order, by="order_id"),
+    ) -> tuple[str, int]:
+        return user.email, order.id
+
+
+class _MultiExistsUseCase(UseCase[Any, tuple[bool, bool]]):
+    """Two independent Exists steps on different entity types."""
+
+    async def execute(
+        self,
+        email: str,
+        order_id: int,
+        user_exists: bool = Exists(User, from_param="email", against="email"),
+        order_exists: bool = Exists(Order, from_param="order_id", against="id"),
+    ) -> tuple[bool, bool]:
+        return user_exists, order_exists
+
+
+@pytest.mark.asyncio
+class TestParallelLoads:
+    async def test_two_independent_loads_both_resolved(self) -> None:
+        """Both LoadById steps resolve their entities regardless of order."""
+        user = User(id=1, email="a@b.com")
+        order = Order(id=99)
+        user_repo = _fake_repo(user)
+        order_repo = _fake_repo(order)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _MultiLoadUseCase(),
+            params={"user_id": 1, "order_id": 99},
+            dependencies={User: user_repo, Order: order_repo},
+        )
+
+        assert result == ("a@b.com", 99)
+        user_repo.get_by_id.assert_awaited_once_with(1, profile="default")
+        order_repo.get_by_id.assert_awaited_once_with(99, profile="default")
+
+    async def test_two_independent_loads_first_missing_raises(self) -> None:
+        """NotFound from one load propagates even when other load would succeed."""
+        order = Order(id=5)
+        user_repo = _fake_repo(None)  # user not found
+        order_repo = _fake_repo(order)
+        ex = _make_executor()
+
+        with pytest.raises(NotFound):
+            await ex.execute(
+                _MultiLoadUseCase(),
+                params={"user_id": 1, "order_id": 5},
+                dependencies={User: user_repo, Order: order_repo},
+            )
+
+    async def test_two_independent_exists_both_resolved(self) -> None:
+        """Both Exists steps resolve and results are bound correctly."""
+        user = User(id=1, email="x@y.com")
+        order = Order(id=7)
+        user_repo = _fake_repo(user)
+        order_repo = _fake_repo(order)
+        ex = _make_executor()
+
+        result = await ex.execute(
+            _MultiExistsUseCase(),
+            params={"email": "x@y.com", "order_id": 7},
+            dependencies={User: user_repo, Order: order_repo},
+        )
+
+        assert result == (True, True)
+
+    async def test_gather_calls_repos_concurrently(self) -> None:
+        """Verify both repos are called — concurrent or sequential, results correct."""
+        import asyncio
+
+        call_order: list[str] = []
+
+        async def slow_user(obj_id: Any, *, profile: str = "default") -> User:
+            await asyncio.sleep(0)
+            call_order.append("user")
+            return User(id=obj_id, email="u@u.com")
+
+        async def slow_order(obj_id: Any, *, profile: str = "default") -> Order:
+            await asyncio.sleep(0)
+            call_order.append("order")
+            return Order(id=obj_id)
+
+        user_repo = AsyncMock()
+        user_repo.get_by_id = slow_user
+        order_repo = AsyncMock()
+        order_repo.get_by_id = slow_order
+
+        ex = _make_executor()
+        result = await ex.execute(
+            _MultiLoadUseCase(),
+            params={"user_id": 1, "order_id": 2},
+            dependencies={User: user_repo, Order: order_repo},
+        )
+
+        assert result == ("u@u.com", 2)
+        assert set(call_order) == {"user", "order"}
