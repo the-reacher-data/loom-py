@@ -62,6 +62,8 @@ class CompiledRoute:
             accepted for this route.
         effective_allow_pagination_override: Whether callers may override
             pagination mode via query parameters for this route.
+        read_only: ``True`` for GET routes — instructs the executor to skip
+            the ``UnitOfWork`` transaction for this request.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
     """
 
@@ -73,6 +75,7 @@ class CompiledRoute:
     effective_allowed_profiles: tuple[str, ...]
     effective_expose_profile: bool
     effective_allow_pagination_override: bool
+    read_only: bool = False
     interface_tags: tuple[str, ...] = ()
     execute_param_types: tuple[tuple[str, Any], ...] = ()
 
@@ -171,6 +174,7 @@ class RestInterfaceCompiler:
                     effective_allow_pagination_override=self._resolve_allow_pagination_override(
                         route, interface
                     ),
+                    read_only=route.method.upper() == "GET",
                     interface_tags=interface.tags,
                     execute_param_types=self._resolve_execute_param_types(route.use_case),
                 )

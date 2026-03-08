@@ -299,6 +299,7 @@ def _make_handler(
     execute_param_types = dict(compiled_route.execute_param_types)
     uc_type = compiled_route.route.use_case
     status_code = compiled_route.route.status_code
+    route_read_only = compiled_route.read_only
     execute_sig = inspect.signature(uc_type.execute)
     accepts_profile_param = "profile" in execute_sig.parameters
     query_param_name = _resolve_query_param_name(uc_type)
@@ -346,7 +347,9 @@ def _make_handler(
 
         uc = factory.build(uc_type)
         try:
-            result: Any = await executor.execute(uc, params=params, payload=payload)
+            result: Any = await executor.execute(
+                uc, params=params, payload=payload, read_only=route_read_only
+            )
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
         return MsgspecJSONResponse(content=result, status_code=status_code)

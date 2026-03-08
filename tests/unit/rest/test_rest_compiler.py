@@ -343,3 +343,53 @@ class TestErrors:
 
         with pytest.raises(InterfaceCompilationError, match="profile exposure"):
             rest_compiler.compile(IFace)
+
+
+class TestReadOnly:
+    def test_get_route_is_read_only(self, rest_compiler: RestInterfaceCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=GetUserUseCase, method="GET", path="/{id}"),)
+
+        result = rest_compiler.compile(IFace)
+        assert result[0].read_only is True
+
+    def test_post_route_is_not_read_only(self, rest_compiler: RestInterfaceCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),)
+
+        result = rest_compiler.compile(IFace)
+        assert result[0].read_only is False
+
+    def test_mixed_routes_read_only_per_method(self, rest_compiler: RestInterfaceCompiler) -> None:
+        class IFace(RestInterface[str]):
+            prefix = "/users"
+            routes = (
+                RestRoute(use_case=GetUserUseCase, method="GET", path="/{id}"),
+                RestRoute(use_case=CreateUserUseCase, method="POST", path="/"),
+                RestRoute(use_case=ListUsersUseCase, method="GET", path="/"),
+            )
+
+        result = rest_compiler.compile(IFace)
+        by_method = {cr.route.method: cr.read_only for cr in result}
+        assert by_method["GET"] is True
+        assert by_method["POST"] is False
+
+    def test_execution_plan_read_only_from_class_flag(
+        self, use_case_compiler: UseCaseCompiler
+    ) -> None:
+        class _ReadOnlyUC(UseCase[Any, str]):
+            read_only = True
+
+            async def execute(self) -> str:
+                return "ok"
+
+        plan = use_case_compiler.compile(_ReadOnlyUC)
+        assert plan.read_only is True
+
+    def test_execution_plan_read_only_defaults_false(
+        self, use_case_compiler: UseCaseCompiler
+    ) -> None:
+        plan = use_case_compiler.compile(GetUserUseCase)
+        assert plan.read_only is False

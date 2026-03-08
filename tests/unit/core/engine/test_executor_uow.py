@@ -5,6 +5,9 @@ Verifies that:
 - clear_pending_dispatches() is called after a rollback.
 - Dispatches registered during a failed execution are never flushed.
 - Nested executions (reusing an existing UoW) do NOT trigger flush/clear.
+- read_only=True (call-site) skips UoW entirely.
+- UseCase.read_only = True (class-level) also skips UoW via plan.
+- CompiledRoute.read_only propagates to the executor handler (GET routes).
 """
 
 from __future__ import annotations
@@ -206,6 +209,56 @@ async def test_no_flush_or_clear_without_uow_factory() -> None:
 # ---------------------------------------------------------------------------
 # Tests — nested execution reuses outer UoW
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tests — read_only skips UoW
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_only_call_site_skips_uow() -> None:
+    """Passing read_only=True at call-site bypasses begin/commit even with a factory."""
+    uow = _StubUoW()
+    executor = _make_executor(uow)
+
+    result = await executor.execute(_OkUseCase(), read_only=True)
+
+    assert result == "ok"
+    assert not uow.begun
+    assert not uow.committed
+    assert not uow.rolled_back
+
+
+@pytest.mark.asyncio
+async def test_read_only_class_flag_skips_uow() -> None:
+    """UseCase.read_only = True causes the plan to mark it read-only."""
+
+    class _ReadOnlyUseCase(UseCase[Any, str]):
+        read_only = True
+
+        async def execute(self) -> str:
+            return "read"
+
+    uow = _StubUoW()
+    executor = _make_executor(uow)
+
+    result = await executor.execute(_ReadOnlyUseCase())
+
+    assert result == "read"
+    assert not uow.begun
+
+
+@pytest.mark.asyncio
+async def test_read_only_false_still_opens_uow() -> None:
+    """Default (read_only=False) must still open the UoW as before."""
+    uow = _StubUoW()
+    executor = _make_executor(uow)
+
+    await executor.execute(_OkUseCase(), read_only=False)
+
+    assert uow.begun
+    assert uow.committed
 
 
 @pytest.mark.asyncio

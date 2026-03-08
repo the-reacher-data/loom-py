@@ -132,6 +132,10 @@ class ExecutionPlan:
         exists_steps: Boolean existence checks, in declaration order.
         compute_steps: Compute transformations, in declaration order.
         rule_steps: Rule validations, in declaration order.
+        read_only: When ``True``, the executor skips opening a
+            ``UnitOfWork`` transaction for this use case.  Set automatically
+            from ``UseCase.read_only`` at compile time.  The HTTP layer may
+            also override this at the handler level (e.g. GET routes).
 
     Example::
 
@@ -162,3 +166,4 @@ class ExecutionPlan:
     exists_steps: tuple[ExistsStep, ...]
     compute_steps: tuple[ComputeStep, ...]
     rule_steps: tuple[RuleStep, ...]
+    read_only: bool = False
