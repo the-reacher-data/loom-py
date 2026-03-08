@@ -222,16 +222,27 @@ def _configure_relationships() -> None:
     _pending_relations.clear()
 
 
-def _find_target_sa_by_fk_column(foreign_key: str) -> Any:
-    """For ONE_TO_MANY: the FK column (e.g. 'product_id') lives on the target table.
-    We search all compiled SA classes for one that has that column as a FK pointing to the parent.
+def _fk_col_name(foreign_key: str) -> str:
+    """Extract the bare column name from a possibly fully-qualified 'table.column' FK reference.
+
+    Both ``"record_id"`` and ``"bench_notes.record_id"`` return ``"record_id"``.
     """
-    # foreign_key in Relation is the column name, not fully qualified
+    return foreign_key.rsplit(".", 1)[-1]
+
+
+def _find_target_sa_by_fk_column(foreign_key: str) -> Any:
+    """For ONE_TO_MANY: the FK column lives on the target table.
+
+    Accepts both short (``"record_id"``) and fully-qualified
+    (``"bench_notes.record_id"``) forms — the column name is normalised
+    before the ``table.c`` lookup so either format finds the right class.
+    """
+    col_name = _fk_col_name(foreign_key)
     for _struct_cls, sa_cls in _registry.items():
         table = getattr(sa_cls, "__table__", None)
         if table is None:
             continue
-        if foreign_key in table.c:
+        if col_name in table.c:
             return sa_cls
     return None
 
@@ -270,12 +281,180 @@ def _resolve_secondary_table(name: str | None) -> Table | None:
     return SABase.metadata.tables.get(name)
 
 
+def _resolve_loader_model(loader: Any) -> type | None:
+    """Extract the concrete model type from a public loader descriptor.
+
+    Handles both direct references (``CountLoader(model=Note)``) and
+    lambda-wrapped forward references (``CountLoader(model=lambda: Note)``).
+    Returns ``None`` for custom loaders or when the lambda cannot be called.
+    """
+    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
+
+    if not isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+        return None
+    raw = loader.model
+    if isinstance(raw, type):
+        return raw
+    if callable(raw):
+        try:
+            resolved = raw()
+            return resolved if isinstance(resolved, type) else None
+        except Exception:
+            return None
+    return None
+
+
+def _collect_direct_deps(struct_cls: type) -> frozenset[type]:
+    """Return all ``BaseModel`` types that *struct_cls* references directly.
+
+    Scans two sources:
+
+    * **Relation annotations** — ``reviews: list[ProductReview]`` yields
+      ``ProductReview``.  The annotation is unwrapped through
+      :func:`~loom.core.projection.loaders._extract_model_from_hint` so
+      ``list[X]``, ``X | UnsetType``, etc. all resolve to ``X``.
+
+    * **Projection loaders** — ``CountLoader(model=ProductReview)`` yields
+      ``ProductReview``. Lambda-wrapped forward references are resolved by
+      calling the callable.
+
+    Pure ``dict`` annotations and non-``BaseModel`` types are ignored, so
+    many-to-many relations typed as ``list[dict[str, Any]]`` produce no
+    dependency.
+    """
+    import typing
+
+    from loom.core.model.base import BaseModel
+    from loom.core.projection.loaders import _extract_model_from_hint
+
+    deps: set[type] = set()
+
+    try:
+        hints = typing.get_type_hints(struct_cls)
+    except Exception:
+        hints = {}
+
+    for rel_name in get_relations(struct_cls):
+        hint = hints.get(rel_name)
+        if hint is None:
+            continue
+        model = _extract_model_from_hint(hint)
+        if model is not None and isinstance(model, type) and issubclass(model, BaseModel):
+            deps.add(model)
+
+    for proj in get_projections(struct_cls).values():
+        model = _resolve_loader_model(proj.loader)
+        if model is not None and issubclass(model, BaseModel):
+            deps.add(model)
+
+    return frozenset(deps)
+
+
+def _topological_sort(
+    models: list[type],
+    deps: dict[type, frozenset[type]],
+) -> list[type]:
+    """Kahn's algorithm: return *models* with dependency leaves first.
+
+    If a cycle is detected (remaining nodes after BFS exhaustion), the
+    cyclic models are appended in arbitrary order.  Circular references
+    are valid because ``compile_model`` is idempotent and relationships
+    are resolved after all models are registered.
+    """
+    from collections import deque
+
+    model_set = set(models)
+
+    # in_degree[m] = number of m's deps that are within our compilation set
+    in_degree: dict[type, int] = dict.fromkeys(models, 0)
+    # dependents[dep] = list of models that depend on dep
+    dependents: dict[type, list[type]] = {m: [] for m in models}
+
+    for m in models:
+        for dep in deps.get(m, frozenset()):
+            if dep in model_set:
+                in_degree[m] += 1
+                dependents[dep].append(m)
+
+    queue: deque[type] = deque(m for m in models if in_degree[m] == 0)
+    result: list[type] = []
+
+    while queue:
+        node = queue.popleft()
+        result.append(node)
+        for dependent in dependents[node]:
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+
+    # Cyclic nodes: append in original order
+    processed = set(result)
+    result.extend(m for m in models if m not in processed)
+    return result
+
+
+def _resolve_compile_closure(*roots: type) -> tuple[type, ...]:
+    """BFS from *roots* to collect all transitive model dependencies.
+
+    Follows relation annotations and projection loader ``model=`` references
+    recursively.  Returns all discovered models in topological order
+    (dependencies before dependants) so that ``compile_model`` sees each
+    child model before its parent when resolving FK targets.
+
+    Args:
+        *roots: Explicitly requested model classes.
+
+    Returns:
+        Tuple of all models (roots + transitive deps) in compilation order.
+    """
+    from collections import deque
+
+    seen: set[type] = set()
+    all_deps: dict[type, frozenset[type]] = {}
+    queue: deque[type] = deque(roots)
+
+    while queue:
+        cls = queue.popleft()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        direct = _collect_direct_deps(cls)
+        all_deps[cls] = direct
+        for dep in direct:
+            if dep not in seen:
+                queue.append(dep)
+
+    ordered = _topological_sort(list(seen), all_deps)
+    return tuple(ordered)
+
+
 def compile_all(*classes: type) -> None:
-    """Batch-compile multiple model classes, resolve relationships, build Core artifacts."""
-    for cls in classes:
+    """Batch-compile multiple model classes, resolve relationships, build Core artifacts.
+
+    Automatically discovers and compiles all transitive model dependencies
+    found via relation type annotations and projection loader ``model=``
+    references.  Passing only the root models is sufficient — related models
+    do not need to be listed explicitly.
+
+    Compilation order is topological: child models (dependency leaves) are
+    compiled before their parents so FK lookups during relationship
+    resolution always find the target SA class in the registry.
+
+    Args:
+        *classes: Root model classes to compile.  Transitive dependencies
+            are resolved automatically.
+
+    Example::
+
+        # ProductReview is compiled automatically because Product.reviews
+        # is annotated as list[ProductReview].
+        compile_all(Product)
+    """
+    ordered = _resolve_compile_closure(*classes)
+    for cls in ordered:
         compile_model(cls)
     _configure_relationships()
-    for cls in classes:
+    for cls in ordered:
         _compile_core_model(cls)
 
 
@@ -540,7 +719,7 @@ def _compile_one_to_x_step(
         target_cols=target_cols,
         related_struct=related_struct,
         owner_pk_col=get_id_attribute(struct_cls),
-        fk_col=rel.foreign_key,
+        fk_col=_fk_col_name(rel.foreign_key),
         pk_col=get_id_attribute(struct_cls),
     )
 
