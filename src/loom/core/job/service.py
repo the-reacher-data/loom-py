@@ -98,7 +98,6 @@ class _PendingDispatch:
                 await _invoke_failure_callback(
                     self.factory, self.on_failure, self.task_id, exc, self.payload
                 )
-            raise
 
 
 # ---------------------------------------------------------------------------

@@ -239,33 +239,38 @@ def _resolve_relation_target(rel: Relation, hint: Any) -> Any:
     return _find_target_sa_class(_resolve_fk_target_table(rel.foreign_key))
 
 
+def _union_inner_args(hint: Any) -> tuple[Any, ...] | None:
+    """Return the non-None, non-UnsetType args of a Union annotation.
+
+    Normalises both ``X | Y`` (Python 3.10+) and ``Union[X, Y]`` forms.
+    Returns ``None`` when *hint* is not a Union annotation.
+    """
+    if isinstance(hint, _types_mod.UnionType):
+        raw = hint.__args__
+    elif getattr(hint, "__origin__", None) is typing.Union:
+        raw = getattr(hint, "__args__", ())
+    else:
+        return None
+    return tuple(a for a in raw if a is not type(None) and a is not msgspec.UnsetType)
+
+
 def _extract_model_from_annotation(hint: Any) -> type | None:
     """Unwrap list/Union annotations to extract the concrete model type."""
-    if isinstance(hint, _types_mod.UnionType):
-        for arg in hint.__args__:
-            if arg is not type(None) and arg is not msgspec.UnsetType:
-                result = _extract_model_from_annotation(arg)
-                if result is not None:
-                    return result
+    union_args = _union_inner_args(hint)
+    if union_args is not None:
+        for arg in union_args:
+            result = _extract_model_from_annotation(arg)
+            if result is not None:
+                return result
         return None
 
     origin = getattr(hint, "__origin__", None)
     args: tuple[Any, ...] = getattr(hint, "__args__", ())
 
-    if origin is typing.Union:
-        for arg in args:
-            if arg is not type(None) and arg is not msgspec.UnsetType:
-                result = _extract_model_from_annotation(arg)
-                if result is not None:
-                    return result
-        return None
-
     if origin is list and len(args) == 1:
         return _extract_model_from_annotation(args[0])
 
-    if isinstance(hint, type):
-        return hint
-    return None
+    return hint if isinstance(hint, type) else None
 
 
 def _fk_col_name(foreign_key: str) -> str:
@@ -614,6 +619,73 @@ def _build_profile_plans(
     return plans
 
 
+def _custom_loader_prefers_memory(loader: Any) -> bool:
+    """Return True if the custom loader implements the memory-path protocol.
+
+    Checks for a callable ``load_from_object`` attribute without triggering
+    descriptors, using ``inspect.getattr_static``.
+
+    Args:
+        loader: Any projection loader object.
+
+    Returns:
+        ``True`` when ``loader.load_from_object`` exists and is callable.
+    """
+    import inspect as _inspect
+
+    try:
+        return callable(_inspect.getattr_static(loader, "load_from_object"))
+    except AttributeError:
+        return False
+
+
+def _resolve_descriptor_loader(
+    name: str,
+    loader: Any,
+    profile_relation_names: frozenset[str],
+    all_relation_steps: dict[str, CoreRelationStep],
+    struct_cls: type,
+) -> tuple[Any, bool]:
+    """Resolve a descriptor loader (Count/Exists/JoinFields) to ``(loader, prefer_memory)``.
+
+    Picks memory-path when the target relation is loaded in the active profile,
+    SQL-path when it is not.  Falls back to memory-path via type-hint scanning
+    when the related model has not been compiled yet.
+
+    Args:
+        name: Projection field name (used in error messages).
+        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader``.
+        profile_relation_names: Relation attributes loaded in the current profile.
+        all_relation_steps: All compiled relation steps for the parent model.
+        struct_cls: Parent model class (used for type-hint fallback).
+
+    Returns:
+        ``(resolved_loader, prefer_memory)`` tuple.
+
+    Raises:
+        ValueError: When no matching relation is found via compiled steps or type hints.
+    """
+    from loom.core.projection.loaders import find_relation_name_for_loader, make_memory_loader
+    from loom.core.repository.sqlalchemy.loaders import make_sql_loader
+
+    rel_step = _find_relation_for_loader(loader, all_relation_steps)
+    if rel_step is None:
+        rel_name = find_relation_name_for_loader(loader, struct_cls)
+        if rel_name is None:
+            raise ValueError(
+                f"Projection '{name}': no relation found for "
+                f"{type(loader).__name__}(model={loader.model.__name__}) "
+                f"on {struct_cls.__name__}. "
+                "Ensure the model has a relation typed with the target class."
+            )
+        return make_memory_loader(loader, rel_name), True
+
+    if rel_step.attr in profile_relation_names:
+        return make_memory_loader(loader, rel_step.attr), True
+
+    return make_sql_loader(loader, rel_step), False
+
+
 def _resolve_projection_steps(
     projections: dict[str, Any],
     profile_relation_names: frozenset[str],
@@ -631,6 +703,7 @@ def _resolve_projection_steps(
         projections: Profile-filtered projection metadata.
         profile_relation_names: Relation attribute names loaded in this profile.
         all_relation_steps: Compiled relation steps for all relations on the model.
+        struct_cls: Parent model class.
 
     Returns:
         Mapping of field name to resolved :class:`ProjectionStep`.
@@ -638,51 +711,17 @@ def _resolve_projection_steps(
     Raises:
         ValueError: If a descriptor loader cannot be matched to a relation step.
     """
-    import inspect as _inspect
-
-    from loom.core.projection.loaders import (
-        CountLoader,
-        ExistsLoader,
-        JoinFieldsLoader,
-        find_relation_name_for_loader,
-        make_memory_loader,
-    )
-    from loom.core.repository.sqlalchemy.loaders import make_sql_loader
+    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
 
     steps: dict[str, ProjectionStep] = {}
     for name, proj in projections.items():
         loader = proj.loader
         if isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
-            rel_step = _find_relation_for_loader(loader, all_relation_steps)
-            if rel_step is None:
-                # Related model not compiled — fall back to memory path via type hints.
-                rel_name = find_relation_name_for_loader(loader, struct_cls)
-                if rel_name is None:
-                    raise ValueError(
-                        f"Projection '{name}': no relation found for "
-                        f"{type(loader).__name__}(model={loader.model.__name__}) "
-                        f"on {struct_cls.__name__}. "
-                        "Ensure the model has a relation typed with the target class."
-                    )
-                resolved_loader = make_memory_loader(loader, rel_name)
-                prefer_memory = True
-            elif rel_step.attr in profile_relation_names:
-                resolved_loader = make_memory_loader(loader, rel_step.attr)
-                prefer_memory = True
-            else:
-                resolved_loader = make_sql_loader(loader, rel_step)
-                prefer_memory = False
+            resolved_loader, prefer_memory = _resolve_descriptor_loader(
+                name, loader, profile_relation_names, all_relation_steps, struct_cls
+            )
         else:
-
-            def _has_cap(obj: Any, attr: str) -> bool:
-                try:
-                    candidate = _inspect.getattr_static(obj, attr)
-                except AttributeError:
-                    return False
-                return callable(candidate)
-
-            prefer_memory = _has_cap(loader, "load_from_object")
-            resolved_loader = loader
+            resolved_loader, prefer_memory = loader, _custom_loader_prefers_memory(loader)
 
         steps[name] = ProjectionStep(
             name=name,

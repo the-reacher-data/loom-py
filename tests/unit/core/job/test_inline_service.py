@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from loom.core.job.context import flush_pending_dispatches
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
@@ -141,8 +139,8 @@ async def test_dispatch_calls_on_failure_callback_on_exception() -> None:
     service = InlineJobService(factory=factory, executor=executor)
     service.dispatch(DoubleJob, on_failure=ErrCallback)
 
-    with pytest.raises(ValueError, match="boom"):
-        await flush_pending_dispatches()
+    # fire-and-forget: exception is silenced after the failure callback runs
+    await flush_pending_dispatches()
 
     assert failure_calls == ["ValueError"]
 

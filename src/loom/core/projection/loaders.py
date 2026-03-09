@@ -231,33 +231,35 @@ def find_relation_name_for_loader(loader: Any, parent_model: type) -> str | None
     return None
 
 
+def _union_inner_args(hint: Any) -> tuple[Any, ...] | None:
+    """Return the non-None, non-UnsetType args of a Union annotation.
+
+    Normalises both ``X | Y`` (Python 3.10+) and ``Union[X, Y]`` forms.
+    Returns ``None`` when *hint* is not a Union annotation.
+    """
+    if isinstance(hint, types.UnionType):
+        raw = hint.__args__
+    elif getattr(hint, "__origin__", None) is typing.Union:
+        raw = getattr(hint, "__args__", ())
+    else:
+        return None
+    return tuple(a for a in raw if a is not type(None) and a is not msgspec.UnsetType)
+
+
 def _extract_model_from_hint(hint: Any) -> type | None:
     """Unwrap list/Union/UnsetType annotations to extract the concrete model type."""
-    # Python 3.10+ X | Y syntax (types.UnionType)
-    if isinstance(hint, types.UnionType):
-        for arg in hint.__args__:
-            if arg is not type(None) and arg is not msgspec.UnsetType:
-                result = _extract_model_from_hint(arg)
-                if result is not None:
-                    return result
+    union_args = _union_inner_args(hint)
+    if union_args is not None:
+        for arg in union_args:
+            result = _extract_model_from_hint(arg)
+            if result is not None:
+                return result
         return None
 
     origin = getattr(hint, "__origin__", None)
     args: tuple[Any, ...] = getattr(hint, "__args__", ())
 
-    # typing.Union[X, Y]
-    if origin is typing.Union:
-        for arg in args:
-            if arg is not type(None) and arg is not msgspec.UnsetType:
-                result = _extract_model_from_hint(arg)
-                if result is not None:
-                    return result
-        return None
-
-    # list[X]
     if origin is list and len(args) == 1:
         return _extract_model_from_hint(args[0])
 
-    if isinstance(hint, type):
-        return hint
-    return None
+    return hint if isinstance(hint, type) else None
