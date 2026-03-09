@@ -40,6 +40,10 @@ class RepoFor(Protocol[ModelT]):
         """Check whether any entity exists matching ``field == value``."""
         ...
 
+    async def count(self) -> int:
+        """Return the total number of entities in the repository."""
+        ...
+
     async def list_paginated(
         self,
         page_params: PageParams,

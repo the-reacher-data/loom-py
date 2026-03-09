@@ -55,6 +55,14 @@ class RepositoryRead(Protocol[OutputT, IdT]):
         """Check whether any entity exists matching ``field == value``."""
         ...
 
+    async def count(self) -> int:
+        """Return the total number of entities in the repository.
+
+        Returns:
+            Total row count as an integer.
+        """
+        ...
+
     async def list_paginated(
         self,
         page_params: PageParams,

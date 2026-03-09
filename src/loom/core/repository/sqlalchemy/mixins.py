@@ -5,6 +5,7 @@ from typing import Any, Generic, cast
 
 import msgspec
 from sqlalchemy import exists, func, inspect, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.backend.sqlalchemy import get_compiled_core
@@ -48,7 +49,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _output_sa_columns: tuple[Any, ...] | None = None
     _core_model: Any | None = None
     _relations_cache: dict[str, Any] | None = None
-    _needs_refresh_after_flush: bool = False
+    _onupdate_columns: dict[str, Any] | None = None
 
     def _init_struct_model(self) -> None:
         """Resolve SA model and metadata from a Struct-based model definition."""
@@ -73,16 +74,18 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 "Call compile_all() before creating a repository."
             )
 
-        self._needs_refresh_after_flush = any(
-            info.field.server_onupdate is not None for info in column_fields.values()
-        )
-
         sa_mapper: Any = inspect(sa).mapper
         self._output_column_keys = tuple(
             col.key for col in sa_mapper.column_attrs if col.key in column_field_names
         )
         self._all_sa_column_keys = tuple(col.key for col in sa_mapper.column_attrs)
         self._output_sa_columns = tuple(getattr(sa, key) for key in self._output_column_keys)
+        self._onupdate_columns = {
+            col_attr.key: col.onupdate.arg
+            for col_attr in sa_mapper.column_attrs
+            for col in col_attr.columns
+            if col.onupdate is not None
+        }
 
     @property
     def _effective_sa_model(self) -> type[Any]:
@@ -402,43 +405,71 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
             result = await scoped_session.execute(stmt)
             return bool(result.scalar())
 
+    async def count(self) -> int:
+        """Return the total number of entities in the repository.
+
+        Returns:
+            Total row count as an integer.
+        """
+        async with self._session_scope() as scoped_session:
+            stmt = select(func.count()).select_from(self._effective_sa_model)
+            result = await scoped_session.execute(stmt)
+            return int(result.scalar() or 0)
+
 
 class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
     """Mixin providing the ``update`` operation for SQLAlchemy repositories."""
 
     @handle_integrity_errors
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
-        """Apply partial updates and return updated output struct."""
+        """Apply partial updates using UPDATE RETURNING and return the updated output struct.
+
+        Executes a single round-trip ``UPDATE ... RETURNING`` statement instead of
+        a ``SELECT`` followed by a ``flush``.  Server-side ``onupdate`` expressions
+        (e.g. ``updated_at = func.now()``) are included automatically.
+
+        Args:
+            obj_id: Primary key of the entity to update.
+            data: Partial update payload struct.
+
+        Returns:
+            The updated entity output struct, or ``None`` if not found.
+        """
+        serialized = self._serialize_input(data)
+        id_attr = self._effective_id_attribute
+        values = {key: val for key, val in serialized.items() if key != id_attr}
+        onupdate = self._onupdate_columns or {}
+        full_values = {**values, **onupdate}
+
+        if not full_values:
+            async with self._session_scope() as scoped_session:
+                raw = await scoped_session.get(self._effective_sa_model, obj_id)
+                if raw is None:
+                    return None
+                return cast(OutputT, self._to_output(raw))
+
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
-            obj = await scoped_session.get(sa_model, obj_id)
+            stmt = (
+                sa_update(sa_model)
+                .where(getattr(sa_model, id_attr) == obj_id)
+                .values(**full_values)
+                .returning(sa_model)
+                .execution_options(synchronize_session=False)
+            )
+            result = await scoped_session.execute(stmt)
+            obj = result.scalars().one_or_none()
             if obj is None:
                 return None
-
-            input_data = self._serialize_input(data)
-            id_attr = self._effective_id_attribute
-            values = {key: value for key, value in input_data.items() if key != id_attr}
-
-            changed_fields: set[str] = set()
-            for field_name, field_value in values.items():
-                if getattr(obj, field_name, _SENTINEL) != field_value:
-                    setattr(obj, field_name, field_value)
-                    changed_fields.add(field_name)
-
-            if changed_fields:
-                await scoped_session.flush()
-                if self._needs_refresh_after_flush:
-                    await scoped_session.refresh(obj)
-                record_mutation(
-                    MutationEvent(
-                        entity=self.entity_name,
-                        op="update",
-                        ids=(obj_id,),
-                        changed_fields=frozenset(changed_fields),
-                        tags=self._mutation_tags(obj),
-                    )
+            record_mutation(
+                MutationEvent(
+                    entity=self.entity_name,
+                    op="update",
+                    ids=(obj_id,),
+                    changed_fields=frozenset(values.keys()),
+                    tags=self._mutation_tags(obj),
                 )
-
+            )
             return cast(OutputT, self._to_output(obj))
 
 
