@@ -213,19 +213,26 @@ result = bootstrap_worker(
 ```
 
 If any callback invokes `ApplicationInvoker` (e.g. `app.entity(Product).get(...)`),
-pass the required use-cases explicitly so they are registered in the worker process:
+the corresponding use-cases must be compiled in the worker process. Pass the interfaces
+whose routes the callbacks interact with via `interfaces=`:
 
 ```python
 result = bootstrap_worker(
     "config/worker.yaml",
     jobs=[SendRestockEmailJob],
-    use_cases=[GetProductUseCase, UpdateProductUseCase],
+    interfaces=[ProductInterface],
     callbacks=[RestockCallback],
 )
 ```
 
+The bootstrap extracts all use-case classes from the interface routes automatically —
+including AutoCRUD-generated ones that are not importable by name.
+
+For non-AutoCRUD use-cases you can also pass them directly via `use_cases=`.
+Both parameters can be combined.
+
 > **Note**: when using discovery (`app.discovery` in YAML), all use-cases are included
-> automatically and `use_cases=` is not needed.
+> automatically and neither `interfaces=` nor `use_cases=` is needed.
 
 ## Docker-compose stack
 

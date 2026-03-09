@@ -208,6 +208,28 @@ def _apply_job_config_if_present(raw: DictConfig, job_type: type[Job[Any]]) -> N
         pass  # no override for this job — use ClassVar defaults
 
 
+def _use_cases_from_interfaces(interfaces: Sequence[type[Any]]) -> tuple[type[Compilable], ...]:
+    """Extract UseCase classes declared on RestInterface routes.
+
+    Each ``RestInterface.routes`` entry carries a ``use_case`` class.
+    This helper flattens all routes across the given interfaces and
+    returns the unique use-case types so they can be compiled in the
+    worker process alongside explicit jobs.
+
+    Args:
+        interfaces: Sequence of ``RestInterface`` subclasses.
+
+    Returns:
+        Tuple of UseCase classes found across all route declarations.
+    """
+    return tuple(
+        route.use_case
+        for iface in interfaces
+        for route in getattr(iface, "routes", ())
+        if getattr(route, "use_case", None) is not None
+    )
+
+
 def _merge_compilables(
     use_cases: Sequence[type[Compilable]],
     jobs: Sequence[type[Job[Any]]],
@@ -299,6 +321,7 @@ def bootstrap_worker(
     *config_paths: str,
     jobs: Sequence[type[Job[Any]]] = (),
     use_cases: Sequence[type[Compilable]] = (),
+    interfaces: Sequence[type[Any]] = (),
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
@@ -338,6 +361,11 @@ def bootstrap_worker(
             corresponding use-case keys are registered in the worker
             process.  Ignored when jobs are discovered via ``app.discovery``
             (discovery already includes all compiled use-cases).
+        interfaces: ``RestInterface`` subclasses whose route use-cases
+            should be compiled in the worker.  Equivalent to passing the
+            same classes via ``use_cases=`` but without having to enumerate
+            individual use-case types — useful when callbacks interact with
+            AutoCRUD-generated use-cases that are not importable by name.
         callbacks: Concrete ``JobCallback`` subclasses to register as
             Celery callback (success / error) tasks.
         modules: Callables that receive the container and register
@@ -360,7 +388,7 @@ def bootstrap_worker(
             "config/base.yaml",
             "config/worker.yaml",
             jobs=[SendEmailJob, RecalcPricesJob],
-            use_cases=[GetProductUseCase, UpdateProductUseCase],
+            interfaces=[ProductInterface],
             callbacks=[EmailSentCallback],
         )
         result.celery_app.start()
@@ -382,6 +410,10 @@ def bootstrap_worker(
     )
 
     compilables, resolved_jobs = _resolve_compilables_and_jobs(raw, jobs, use_cases)
+    interface_use_cases = _use_cases_from_interfaces(interfaces)
+    if interface_use_cases:
+        seen = set(compilables)
+        compilables = (*compilables, *(uc for uc in interface_use_cases if uc not in seen))
 
     for job_type in resolved_jobs:
         _apply_job_config_if_present(raw, job_type)
