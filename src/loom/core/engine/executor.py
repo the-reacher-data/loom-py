@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
@@ -473,20 +472,10 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> None:
-        if not plan.load_steps:
-            return
-        # All load steps are mutually independent: each resolves its lookup
-        # value exclusively from params or command fields (both already bound).
-        # Running them concurrently is safe — results are written only after
-        # gather completes, so there is no write-read conflict on ``bound``.
-        entities = await asyncio.gather(
-            *(
-                self._resolve_load(ls, plan, compilable, bound, dependencies, load_overrides)
-                for ls in plan.load_steps
+        for ls in plan.load_steps:
+            bound[ls.name] = await self._resolve_load(
+                ls, plan, compilable, bound, dependencies, load_overrides
             )
-        )
-        for ls, entity in zip(plan.load_steps, entities, strict=False):
-            bound[ls.name] = entity
             self._log_step(f"Load {ls.entity_type.__name__}")
 
     async def _execute_exists(
@@ -496,18 +485,8 @@ class RuntimeExecutor:
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
     ) -> None:
-        if not plan.exists_steps:
-            return
-        # Same independence guarantee as load steps: each exists step reads
-        # only params or command fields — never another step's result.
-        flags = await asyncio.gather(
-            *(
-                self._resolve_exists(es, plan, compilable, bound, dependencies)
-                for es in plan.exists_steps
-            )
-        )
-        for es, flag in zip(plan.exists_steps, flags, strict=False):
-            bound[es.name] = flag
+        for es in plan.exists_steps:
+            bound[es.name] = await self._resolve_exists(es, plan, compilable, bound, dependencies)
             self._log_step(f"Exists {es.entity_type.__name__}")
 
     def _apply_computes(
