@@ -470,7 +470,7 @@ def _resolve_compile_closure(*roots: type) -> tuple[type, ...]:
             if dep not in seen:
                 queue.append(dep)
 
-    ordered = _topological_sort(list(seen), all_deps)
+    ordered = _topological_sort(list(all_deps.keys()), all_deps)
     return tuple(ordered)
 
 
@@ -750,7 +750,11 @@ def _compile_one_to_x_step(
     rel_name: str,
     rel: Relation,
 ) -> CoreRelationStep | None:
-    target_sa = _find_target_sa_by_fk_column(rel.foreign_key)
+    try:
+        hint = get_type_hints(struct_cls).get(rel_name)
+    except Exception:
+        hint = None
+    target_sa = _resolve_relation_target(rel, hint)
     if target_sa is None:
         return None
     related_struct = getattr(target_sa, "__struct_cls__", None)
