@@ -263,6 +263,38 @@ def _discover_compilables_from_config(
     return _merge_compilables(discovered.use_cases, jobs), jobs
 
 
+def _supplement_use_cases_from_discovery(
+    raw: DictConfig,
+    compilables: tuple[type[Compilable], ...],
+) -> tuple[type[Compilable], ...]:
+    """Add use-cases discovered via ``app.discovery`` to an explicit compilables set.
+
+    When explicit ``jobs=`` are provided to :func:`bootstrap_worker` the
+    discovery path is skipped, but callbacks may still require use-cases
+    registered in the ``UseCaseRegistry``.  When ``app.discovery`` is
+    present in the YAML (e.g. inherited from a base config), this helper
+    supplements the explicit compilables with the discovered use-cases so
+    callbacks can call ``ApplicationInvoker`` without any code change.
+
+    Silently returns *compilables* unchanged if ``app.discovery`` is absent
+    or fails to load.
+
+    Args:
+        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        compilables: Explicit compilables already resolved.
+
+    Returns:
+        Extended compilables tuple with discovered use-cases appended.
+    """
+    try:
+        app_cfg = section(raw, "app", _WorkerAppConfig)
+        discovered, _ = _discover_compilables_from_config(app_cfg.discovery)
+    except (ConfigError, RuntimeError):
+        return compilables
+    seen = set(compilables)
+    return (*compilables, *(c for c in discovered if c not in seen))
+
+
 def _resolve_compilables_and_jobs(
     raw: DictConfig,
     explicit_jobs: Sequence[type[Job[Any]]],
@@ -270,7 +302,9 @@ def _resolve_compilables_and_jobs(
 ) -> tuple[tuple[type[Compilable], ...], tuple[type[Job[Any]], ...]]:
     if explicit_jobs or explicit_use_cases:
         jobs = tuple(explicit_jobs)
-        return _merge_compilables(explicit_use_cases, jobs), jobs
+        compilables = _merge_compilables(explicit_use_cases, jobs)
+        compilables = _supplement_use_cases_from_discovery(raw, compilables)
+        return compilables, jobs
 
     try:
         app_cfg = section(raw, "app", _WorkerAppConfig)
