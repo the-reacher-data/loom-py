@@ -19,12 +19,12 @@ Companion demo application:
    :maxdepth: 2
    :caption: Guides
 
+   guides/autocrud
    guides/quickstart
-   guides/celery
    examples-repo/index
    guides/use-case-dsl
+   guides/celery
    guides/fake-repo-examples
-   guides/autocrud
 
 .. toctree::
    :maxdepth: 2
