@@ -37,8 +37,10 @@ from loom.core.job.job import Job
 from loom.core.tracing import get_trace_id
 
 if TYPE_CHECKING:
+    from loom.core.engine.executor import RuntimeExecutor
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.callback import JobCallback
+    from loom.core.use_case.factory import UseCaseFactory
 
 ResultT = TypeVar("ResultT")
 
@@ -193,10 +195,13 @@ class CeleryJobService:
     signatures so the broker manages delivery without framework
     intervention after dispatch.
 
-    .. note::
-        :meth:`run` is not supported in Celery mode.  Use
-        :class:`~loom.core.job.service.InlineJobService` for synchronous
-        execution in tests or local mode.
+    When *factory* and *executor* are provided, :meth:`run` executes the
+    job in-process (same as :class:`~loom.core.job.service.InlineJobService`)
+    without touching the broker.  This enables use cases that need an
+    immediate result — e.g. workflow steps that call a job synchronously —
+    while keeping broker dispatch for fire-and-forget paths.  Omitting both
+    preserves the previous behaviour where :meth:`run` raises
+    :class:`NotImplementedError`.
 
     Args:
         celery_app: Configured Celery application instance.
@@ -204,10 +209,12 @@ class CeleryJobService:
             event from the web process each time a job is registered for
             deferred dispatch — before the UoW commits and the broker call
             is made.
+        factory: Optional use-case factory.  Required for :meth:`run`.
+        executor: Optional runtime executor.  Required for :meth:`run`.
 
     Example::
 
-        service = CeleryJobService(celery_app)
+        service = CeleryJobService(celery_app, factory=factory, executor=executor)
         handle = service.dispatch(SendEmailJob, payload={"user_id": 1})
         # actual send_task happens after UoW commit via flush
     """
@@ -216,9 +223,13 @@ class CeleryJobService:
         self,
         celery_app: Celery,
         metrics: MetricsAdapter | None = None,
+        factory: UseCaseFactory | None = None,
+        executor: RuntimeExecutor | None = None,
     ) -> None:
         self._app = celery_app
         self._metrics = metrics
+        self._factory = factory
+        self._executor = executor
 
     # ------------------------------------------------------------------
     # JobService protocol
@@ -231,24 +242,33 @@ class CeleryJobService:
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> ResultT:
-        """Not supported in Celery mode.
+        """Execute a Job in-process and return its result immediately.
+
+        Requires *factory* and *executor* to have been supplied at
+        construction time.  This is the case when the service is built by
+        :func:`~loom.rest.fastapi.auto.create_app`.
+
+        Use :meth:`dispatch` for fire-and-forget broker delivery.
 
         Args:
-            job_type: Unused.
-            params: Unused.
-            payload: Unused.
+            job_type: Concrete ``Job`` subclass to run.
+            params: Primitive params bound to the execute signature.
+            payload: Raw dict for ``Input()`` command construction.
+
+        Returns:
+            The value returned by ``Job.execute()``.
 
         Raises:
-            NotImplementedError: Always.  Use :meth:`dispatch` for
-                broker-backed execution or
-                :class:`~loom.core.job.service.InlineJobService` for
-                synchronous runs.
+            NotImplementedError: When factory or executor were not supplied
+                at construction.
         """
-        raise NotImplementedError(
-            "CeleryJobService.run() is not supported. "
-            "Use dispatch() for broker-backed execution, "
-            "or InlineJobService.run() for synchronous execution."
-        )
+        if self._factory is None or self._executor is None:
+            raise NotImplementedError(
+                "CeleryJobService.run() requires factory and executor. "
+                "Pass them at construction or use InlineJobService."
+            )
+        instance = self._factory.build(job_type)
+        return await self._executor.execute(instance, params=params, payload=payload)
 
     def dispatch(
         self,

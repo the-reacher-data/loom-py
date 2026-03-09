@@ -39,6 +39,8 @@ prometheus = [
 ]
 celery = [
     "celery>=5.3,<6.0",
+    "kombu>=5.3,<6.0",
+    "redis>=5.0,<6.0",
 ]
 
 [build-system]

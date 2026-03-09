@@ -60,6 +60,10 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
             ``["json"]``.
         queues: Explicit queue names to declare.  Celery creates them on
             demand when empty.
+        task_default_queue: Default queue for tasks without an explicit
+            ``queue=`` argument — including callback signatures produced by
+            ``link`` / ``link_error``.  Must be one of ``queues`` when that
+            list is non-empty.  Defaults to ``"default"``.
 
     Example::
 
@@ -78,6 +82,7 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
     result_serializer: str = "json"
     accept_content: list[str] = msgspec.field(default_factory=lambda: ["json"])
     queues: list[str] = msgspec.field(default_factory=list)
+    task_default_queue: str = "default"
 
 
 class JobConfig(msgspec.Struct, kw_only=True):
@@ -149,17 +154,31 @@ def create_celery_app(cfg: CeleryConfig) -> Celery:
     application as :class:`kombu.Queue` objects.  If the list is empty,
     Celery creates queues on demand when tasks are first dispatched.
 
+    ``cfg.task_default_queue`` is validated against ``cfg.queues`` when the
+    latter is non-empty: routing callbacks to an undeclared queue would leave
+    them unconsumed silently.
+
     Args:
         cfg: Validated Celery configuration.
 
     Returns:
         Configured :class:`celery.Celery` application instance.
 
+    Raises:
+        ValueError: When ``task_default_queue`` is not listed in ``queues``
+            and ``queues`` is non-empty.
+
     Example::
 
         celery_app = create_celery_app(cfg)
         celery_app.start()
     """
+    if cfg.queues and cfg.task_default_queue not in cfg.queues:
+        raise ValueError(
+            f"task_default_queue={cfg.task_default_queue!r} is not declared in "
+            f"queues={cfg.queues}. Callbacks would be silently routed to an "
+            "unconsumed queue. Add the queue name to the 'queues' list."
+        )
     app = Celery()
     app.conf.update(
         broker_url=cfg.broker_url,
@@ -173,6 +192,7 @@ def create_celery_app(cfg: CeleryConfig) -> Celery:
         task_serializer=cfg.task_serializer,
         result_serializer=cfg.result_serializer,
         accept_content=cfg.accept_content,
+        task_default_queue=cfg.task_default_queue,
     )
     if cfg.queues:
         app.conf.task_queues = [Queue(name) for name in cfg.queues]

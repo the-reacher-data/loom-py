@@ -386,9 +386,9 @@ class TestRunNotSupported:
         with pytest.raises(NotImplementedError):
             await service.run(_EmailJob)
 
-    async def test_run_error_message_mentions_dispatch(self) -> None:
+    async def test_run_error_message_mentions_factory(self) -> None:
         service, _ = _make_service()
-        with pytest.raises(NotImplementedError, match="dispatch"):
+        with pytest.raises(NotImplementedError, match="factory"):
             await service.run(_EmailJob)
 
 

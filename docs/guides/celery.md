@@ -79,8 +79,14 @@ class DispatchRestockEmailUseCase(UseCase[Product, DispatchRestockEmailResponse]
 
 ## Run a job inline (no queue)
 
-`JobService.run()` executes a job immediately in the current async context — useful
-for jobs that must complete before the response is sent:
+`JobService.run()` executes a job immediately in the calling process — useful when
+you need the result before the response is returned, e.g. in a workflow step that
+must inspect the output before continuing.
+
+This works in **both** `InlineJobService` (local/test) and `CeleryJobService`
+(production with broker). When Celery is configured, `run()` bypasses the broker
+entirely: the job executes in the API worker process using the same DI container.
+Use `dispatch()` for fire-and-forget work; use `run()` when you need the result now.
 
 ```python
 class BuildProductSummaryUseCase(UseCase[Product, ProductSummaryResponse]):
@@ -134,7 +140,14 @@ celery:
   worker_prefetch_multiplier: 1
   task_serializer: json
   queues: [default, notifications, analytics, erp]
+  task_default_queue: default
 ```
+
+`task_default_queue` controls where tasks without an explicit `queue=` are routed —
+including the `link` / `link_error` callback signatures produced by `dispatch()`.
+It must be one of the declared `queues`; the framework raises `ValueError` at
+bootstrap if it is not. Defaulting to `"default"` ensures callbacks land on a queue
+the worker actually consumes.
 
 ## Worker entry point
 
