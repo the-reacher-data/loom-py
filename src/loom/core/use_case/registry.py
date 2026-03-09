@@ -68,7 +68,11 @@ class UseCaseRegistry:
         """
         use_case_type = self._by_name.get(key)
         if use_case_type is None:
-            raise KeyError(f"Use-case key {key!r} is not registered.")
+            raise KeyError(
+                f"Use-case key {key!r} is not registered. "
+                "If a callback uses ApplicationInvoker with explicit jobs= bootstrap, "
+                "pass the required UseCase classes via use_cases= in bootstrap_worker()."
+            )
         return use_case_type
 
     def key_for(self, use_case_type: type[Compilable]) -> str | None:

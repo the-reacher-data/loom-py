@@ -206,11 +206,26 @@ app:
 ### Option 3: Explicit job list in code
 
 ```python
-celery_app = create_app(
+result = bootstrap_worker(
     "config/worker.yaml",
     jobs=[SendRestockEmailJob, BuildProductSummaryJob],
 )
 ```
+
+If any callback invokes `ApplicationInvoker` (e.g. `app.entity(Product).get(...)`),
+pass the required use-cases explicitly so they are registered in the worker process:
+
+```python
+result = bootstrap_worker(
+    "config/worker.yaml",
+    jobs=[SendRestockEmailJob],
+    use_cases=[GetProductUseCase, UpdateProductUseCase],
+    callbacks=[RestockCallback],
+)
+```
+
+> **Note**: when using discovery (`app.discovery` in YAML), all use-cases are included
+> automatically and `use_cases=` is not needed.
 
 ## Docker-compose stack
 

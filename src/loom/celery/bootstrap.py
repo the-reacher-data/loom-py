@@ -244,10 +244,11 @@ def _discover_compilables_from_config(
 def _resolve_compilables_and_jobs(
     raw: DictConfig,
     explicit_jobs: Sequence[type[Job[Any]]],
+    explicit_use_cases: Sequence[type[Compilable]],
 ) -> tuple[tuple[type[Compilable], ...], tuple[type[Job[Any]], ...]]:
-    if explicit_jobs:
+    if explicit_jobs or explicit_use_cases:
         jobs = tuple(explicit_jobs)
-        return tuple(jobs), jobs
+        return _merge_compilables(explicit_use_cases, jobs), jobs
 
     try:
         app_cfg = section(raw, "app", _WorkerAppConfig)
@@ -297,6 +298,7 @@ class WorkerBootstrapResult:
 def bootstrap_worker(
     *config_paths: str,
     jobs: Sequence[type[Job[Any]]] = (),
+    use_cases: Sequence[type[Compilable]] = (),
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
@@ -329,6 +331,13 @@ def bootstrap_worker(
         jobs: Concrete ``Job`` subclasses to compile/register.  When
             omitted, jobs are discovered from ``app.discovery`` using
             mode ``modules`` or ``manifest``.
+        use_cases: Additional ``UseCase`` subclasses to compile alongside
+            ``jobs``.  Required when callbacks invoke
+            :class:`~loom.core.use_case.invoker.ApplicationInvoker`
+            (e.g. ``app.entity(Product).get(...)``), so that the
+            corresponding use-case keys are registered in the worker
+            process.  Ignored when jobs are discovered via ``app.discovery``
+            (discovery already includes all compiled use-cases).
         callbacks: Concrete ``JobCallback`` subclasses to register as
             Celery callback (success / error) tasks.
         modules: Callables that receive the container and register
@@ -351,6 +360,7 @@ def bootstrap_worker(
             "config/base.yaml",
             "config/worker.yaml",
             jobs=[SendEmailJob, RecalcPricesJob],
+            use_cases=[GetProductUseCase, UpdateProductUseCase],
             callbacks=[EmailSentCallback],
         )
         result.celery_app.start()
@@ -371,7 +381,7 @@ def bootstrap_worker(
         handlers=logger_cfg.handlers,
     )
 
-    compilables, resolved_jobs = _resolve_compilables_and_jobs(raw, jobs)
+    compilables, resolved_jobs = _resolve_compilables_and_jobs(raw, jobs, use_cases)
 
     for job_type in resolved_jobs:
         _apply_job_config_if_present(raw, job_type)
