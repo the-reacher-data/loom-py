@@ -438,18 +438,14 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
         serialized = self._serialize_input(data)
         id_attr = self._effective_id_attribute
         values = {key: val for key, val in serialized.items() if key != id_attr}
-        onupdate = self._onupdate_columns or {}
-        full_values = {**values, **onupdate}
-
-        if not full_values:
-            async with self._session_scope() as scoped_session:
-                raw = await scoped_session.get(self._effective_sa_model, obj_id)
-                if raw is None:
-                    return None
-                return cast(OutputT, self._to_output(raw))
+        full_values = {**values, **(self._onupdate_columns or {})}
 
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
+            if not full_values:
+                raw = await scoped_session.get(sa_model, obj_id)
+                return cast(OutputT, self._to_output(raw)) if raw is not None else None
+
             stmt = (
                 sa_update(sa_model)
                 .where(getattr(sa_model, id_attr) == obj_id)
@@ -457,8 +453,7 @@ class SQLAlchemyUpdateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                 .returning(sa_model)
                 .execution_options(synchronize_session=False)
             )
-            result = await scoped_session.execute(stmt)
-            obj = result.scalars().one_or_none()
+            obj = (await scoped_session.execute(stmt)).scalars().one_or_none()
             if obj is None:
                 return None
             record_mutation(
