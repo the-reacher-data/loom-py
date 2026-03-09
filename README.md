@@ -49,166 +49,332 @@ infrastructure (DB, cache, transport) without breaking business logic.
 | `src/loom/prometheus` | Middleware and adapter for runtime metrics. |
 | `src/loom/testing` | Harnesses for unit/integration tests and golden tests. |
 
-## Quick example
+## Quick start
 
-### Case 1: Configurable write use case (rules + computes)
+### 1. Define your model
 
 ```python
-from loom.core.command import Command, Patch
-from loom.core.model import BaseModel, ColumnField
-from loom.core.use_case import Compute, F, Input, Rule, UseCase
+from loom.core.model import ColumnField, OnDelete, TimestampedModel
 
-
-class CreateProduct(Command, frozen=True):
-    name: str
-    price: float
-
-
-class UpdateProduct(Command, frozen=True):
-    name: Patch[str] = None
-    price: Patch[float] = None
-
-
-class Product(BaseModel):
-    __tablename__ = "products"
-
+class User(TimestampedModel):
+    __tablename__ = "users"
     id: int = ColumnField(primary_key=True, autoincrement=True)
-    name: str = ColumnField(length=120)
-    price: float = ColumnField()
+    full_name: str = ColumnField(length=120)
+    email: str = ColumnField(length=255, unique=True, index=True)
 
+class Address(TimestampedModel):
+    __tablename__ = "addresses"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    user_id: int = ColumnField(foreign_key="users.id", on_delete=OnDelete.CASCADE, index=True)
+    city: str = ColumnField(length=120)
+    country: str = ColumnField(length=120)
+```
 
-def normalize_text(value: str) -> str:
-    return value.strip()
+### 2. Write use cases
 
+Use cases declare their inputs and invariants declaratively. The engine resolves them before `execute()` runs.
 
-def price_positive_error(value: float) -> str | None:
-    if value <= 0:
-        return "price must be greater than zero"
-    return None
+```python
+import re
+from loom.core.command import Command, Patch
+from loom.core.errors import NotFound
+from loom.core.use_case import Exists, F, Input, LoadById, OnMissing, Rule
+from loom.core.use_case.use_case import UseCase
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-def patch_is_empty(_cmd: UpdateProduct, fields_set: frozenset[str]) -> bool:
-    return len(fields_set) == 0
+class CreateUser(Command, frozen=True):
+    full_name: str
+    email: str
 
+class UpdateUser(Command, frozen=True):
+    full_name: Patch[str] = None
+    email: Patch[str] = None
 
-def system_name_change_forbidden(name: str | None, product_id: str) -> bool:
-    return product_id == "1" and name is not None
+def _name_must_not_be_blank(full_name: str) -> str | None:
+    return None if full_name.strip() else "full_name must not be blank"
 
+def _email_must_be_valid(email: str) -> str | None:
+    return None if _EMAIL_RE.fullmatch(email) else "email must be valid"
 
-def name_matches_price(name: str | None, price: float | None) -> bool:
-    if name is None or price is None:
-        return False
-    return name.strip() == str(price)
+class CreateUserUseCase(UseCase[User, User]):
+    rules = [
+        Rule.check(F(CreateUser).full_name, via=_name_must_not_be_blank),
+        Rule.check(F(CreateUser).email, via=_email_must_be_valid),
+        Rule.forbid(lambda _, __, exists: exists, message="email already exists").from_params("email_exists"),
+    ]
 
-
-normalize_create_name = Compute.set(F(CreateProduct).name).from_command(
-    F(CreateProduct).name,
-    via=normalize_text,
-)
-
-normalize_update_name = (
-    Compute.set(F(UpdateProduct).name)
-    .from_command(F(UpdateProduct).name, via=normalize_text)
-    .when_present(F(UpdateProduct).name)
-)
-
-create_price_rule = Rule.check(
-    F(CreateProduct).price,
-    via=price_positive_error,
-)
-
-update_not_empty_rule = Rule.forbid(
-    patch_is_empty,
-    message="at least one field must be provided",
-).from_command()
-
-update_system_name_immutable_rule = (
-    Rule.forbid(
-        system_name_change_forbidden,
-        message="system product name cannot be changed",
-    )
-    .from_command(F(UpdateProduct).name)
-    .from_params("product_id")
-    .when_present(F(UpdateProduct).name)
-)
-
-update_name_price_rule = (
-    Rule.forbid(
-        name_matches_price,
-        message="name cannot be equal to price",
-    )
-    .from_command(F(UpdateProduct).name, F(UpdateProduct).price)
-    .when_present(F(UpdateProduct).name & F(UpdateProduct).price)
-)
-
-update_price_rule = Rule.check(
-    F(UpdateProduct).price,
-    via=price_positive_error,
-).when_present(F(UpdateProduct).price)
-
-
-class CreateProductUseCase(UseCase[Product, Product]):
-    computes = (normalize_create_name,)
-    rules = (create_price_rule,)
-
-    async def execute(self, cmd: CreateProduct = Input()) -> Product:
+    async def execute(
+        self,
+        cmd: CreateUser = Input(),
+        email_exists: bool = Exists(User, from_command="email", against="email"),
+    ) -> User:
         return await self.main_repo.create(cmd)
 
+class UpdateUserUseCase(UseCase[User, User | None]):
+    rules = [Rule.check(F(UpdateUser).full_name, via=_name_must_not_be_blank).when_present(F(UpdateUser).full_name)]
 
-class UpdateProductUseCase(UseCase[Product, Product | None]):
-    computes = (normalize_update_name,)
-    rules = (
-        update_not_empty_rule,
-        update_system_name_immutable_rule,
-        update_name_price_rule,
-        update_price_rule,
-    )
-
-    async def execute(self, product_id: str, cmd: UpdateProduct = Input()) -> Product | None:
-        # product_id is available to rules via .from_params("product_id")
-        return await self.main_repo.update(int(product_id), cmd)
+    async def execute(
+        self,
+        user_id: int,
+        cmd: UpdateUser = Input(),
+        current_user: User = LoadById(User, by="user_id"),  # loaded automatically
+    ) -> User | None:
+        return await self.main_repo.update(user_id, cmd)
 ```
 
-### Case 2: Real AutoCRUD interface (no extra boilerplate)
+**`Exists`** checks a DB condition before execute runs — no boilerplate in the body.
+**`LoadById`** fetches an entity by a path/command parameter, available in rules and the body.
+**`Patch[T]`** marks a field as optional in partial updates; `.when_present(...)` gates rules on whether the field was sent.
+
+### 3. Scope resources under a parent
+
+Use `from_param` to guard nested routes (e.g. `/users/{user_id}/addresses/{address_id}`):
 
 ```python
-from loom.core.model import BaseModel, ColumnField
-from loom.core.use_case.autocrud import AutoCrud
-from loom.rest.model import RestInterface
+from loom.core.use_case import Exists, Input, OnMissing
 
-
-class Product(BaseModel):
-    __tablename__ = "products"
-    id: int = ColumnField(primary_key=True, autoincrement=True)
-    name: str = ColumnField(length=120)
-    price: float = ColumnField()
-
-
-class ProductApi(RestInterface[Product]):
-    prefix = "/products"
-    tags = ("Products",)
-    profile_default = "default"
-    autocrud = AutoCrud.create()
+class CreateAddressUseCase(UseCase[Address, Address]):
+    async def execute(
+        self,
+        user_id: int,
+        cmd: CreateUserAddress = Input(),
+        _user_exists: bool = Exists(User, from_param="user_id", against="id", on_missing=OnMissing.RAISE),
+    ) -> Address:
+        return await self.main_repo.create(CreateAddressRecord(user_id=user_id, **cmd.__dict__))
 ```
 
-This README includes both styles:
-- configurable write use cases when you need explicit business flow;
-- real AutoCRUD when you want a full API surface with minimal code.
+`OnMissing.RAISE` returns a structured 404 automatically — no `if` in the body.
 
-The configurable case shows:
-- `Compute.from_command(...)` for deterministic data normalization.
-- `Rule.check(...)` for field validation returning a message.
-- `Rule.forbid(...).from_command()` for full-command checks.
-- `Rule.forbid(...).from_params(...)` to use execute parameters (for example `product_id`).
-- `.when_present(...)` to run patch-aware logic only when selected fields are present.
+### 4. Structured queries
 
-With this setup, the framework can bootstrap a complete HTTP app
-(routes, dependency wiring, and runtime execution) from your interfaces,
-use cases, and discovered models.
+Build explicit queries without raw SQL:
+
+```python
+from loom.core.repository.abc.query import (
+    FilterGroup, FilterOp, FilterSpec, PageResult, PaginationMode, QuerySpec, SortSpec,
+)
+
+class ListLowStockProductsUseCase(UseCase[Product, PageResult[Product]]):
+    async def execute(self, profile: str = "default") -> PageResult[Product]:
+        query = QuerySpec(
+            filters=FilterGroup(filters=(FilterSpec(field="stock", op=FilterOp.LTE, value=5),)),
+            sort=(SortSpec(field="stock", direction="ASC"),),
+            pagination=PaginationMode.OFFSET,
+            limit=20,
+            page=1,
+        )
+        result = await self.main_repo.list_with_query(query, profile=profile)
+        if not isinstance(result, PageResult):
+            raise RuntimeError("expected offset result")
+        return result
+```
+
+### 5. Background jobs
+
+Jobs are use-case-like executors that run in a queue. `LoadById` works the same way:
+
+```python
+from loom.core.job.job import Job
+from loom.core.use_case import Input, LoadById
+
+class SendRestockEmailJob(Job[bool]):
+    __queue__ = "notifications"
+
+    async def execute(
+        self,
+        product_id: int,
+        cmd: SendRestockEmailCommand = Input(),
+        product: Product = LoadById(Product, by="product_id"),
+    ) -> bool:
+        if product.stock > 0:
+            return False
+        # send email to cmd.recipient_email ...
+        return True
+```
+
+### 6. Dispatch jobs from use cases + callbacks
+
+```python
+from loom.core.job.service import JobService
+from loom.core.use_case.use_case import UseCase
+
+class DispatchRestockEmailUseCase(UseCase[Product, DispatchRestockEmailResponse]):
+    def __init__(self, job_service: JobService) -> None:
+        self._jobs = job_service
+
+    async def execute(self, product_id: str, cmd: DispatchRestockEmailCommand = Input()) -> DispatchRestockEmailResponse:
+        handle = self._jobs.dispatch(
+            SendRestockEmailJob,
+            params={"product_id": int(product_id)},
+            payload={"product_id": int(product_id), "recipient_email": cmd.recipient_email},
+            on_success=RestockEmailSuccessCallback,
+            on_failure=RestockEmailFailureCallback,
+        )
+        return DispatchRestockEmailResponse(job_id=handle.job_id, queue=handle.queue)
+```
+
+Callbacks are resolved by the DI container and receive the job result + context:
+
+```python
+class RestockEmailSuccessCallback:
+    def __init__(self, app: ApplicationInvoker) -> None:
+        self._app = app
+
+    async def on_success(self, job_id: str, result: Any, **context: Any) -> None:
+        if not result:
+            return
+        entity = self._app.entity(Product)
+        product = await entity.get(params={"id": context["product_id"]})
+        if product:
+            await entity.update(params={"id": product.id}, payload={"category": f"{product.category}-notified"})
+```
+
+### 7. Chain use cases (workflow pattern)
+
+`ApplicationInvoker` lets a use case call another use case by type — no tight coupling:
+
+```python
+from loom.core.use_case.invoker import ApplicationInvoker
+
+class RestockWorkflowUseCase(UseCase[Product, RestockWorkflowResponse]):
+    def __init__(self, app: ApplicationInvoker, job_service: JobService) -> None:
+        self._app = app
+        self._jobs = job_service
+
+    async def execute(self, product_id: str, cmd: DispatchRestockEmailCommand = Input()) -> RestockWorkflowResponse:
+        summary = await self._app.invoke(BuildProductSummaryUseCase, params={"product_id": int(product_id)})
+        handle = self._jobs.dispatch(SendRestockEmailJob, params={"product_id": int(product_id)}, payload={...})
+        return RestockWorkflowResponse(summary=summary.summary, restock_job_id=handle.job_id, queue=handle.queue)
+```
+
+### 8. Declare REST interfaces
+
+```python
+from loom.rest.autocrud import build_auto_routes
+from loom.rest.model import PaginationMode, RestInterface, RestRoute
+
+class ProductRestInterface(RestInterface[Product]):
+    prefix = "/products"
+    tags = ("Products",)
+    pagination_mode = PaginationMode.CURSOR
+    routes = (
+        RestRoute(use_case=ListLowStockProductsUseCase, method="GET", path="/low-stock",
+                  summary="List low stock products"),
+        RestRoute(use_case=DispatchRestockEmailUseCase, method="POST",
+                  path="/{product_id}/jobs/restock-email", status_code=202,
+                  summary="Dispatch restock email"),
+        RestRoute(use_case=RestockWorkflowUseCase, method="POST",
+                  path="/{product_id}/workflows/restock", status_code=202,
+                  summary="Run restock workflow"),
+        *build_auto_routes(Product, ()),  # adds GET, POST, PATCH, DELETE automatically
+    )
+```
+
+Nested resource interfaces work the same way — routes mirror the URL hierarchy:
+
+```python
+class AddressRestInterface(RestInterface[Address]):
+    prefix = "/users"
+    tags = ("UserAddresses",)
+    routes = (
+        RestRoute(use_case=CreateAddressUseCase, method="POST", path="/{user_id}/addresses/", status_code=201),
+        RestRoute(use_case=ListAddressesUseCase, method="GET",  path="/{user_id}/addresses/"),
+        RestRoute(use_case=GetAddressUseCase,    method="GET",  path="/{user_id}/addresses/{address_id}"),
+        RestRoute(use_case=UpdateAddressUseCase, method="PATCH", path="/{user_id}/addresses/{address_id}"),
+        RestRoute(use_case=DeleteAddressUseCase, method="DELETE", path="/{user_id}/addresses/{address_id}"),
+    )
+```
+
+### 9. Bootstrap with YAML
+
+The `create_app()` factory wires everything — DB, cache, DI, routes — from a YAML config:
+
+```yaml
+# config/api.yaml
+app:
+  name: my_store
+  code_path: src
+  discovery:
+    mode: modules
+    modules:
+      include:
+        - app.user.model
+        - app.user.interface
+        - app.product.model
+        - app.product.interface
+  rest:
+    backend: fastapi
+    title: My Store API
+    version: 0.1.0
+
+database:
+  url: ${oc.env:DATABASE_URL,sqlite+aiosqlite:///store.db}
+
+metrics:
+  enabled: false
+```
+
+```python
+# main.py — 3 lines
+from loom.rest.fastapi.auto import create_app
+
+app = create_app("config/api.yaml")
+```
+
+For larger projects, use `mode: manifest` and a manifest module:
+
+```python
+# app/manifest.py
+from app.user.model import User
+from app.user.interface import UserRestInterface
+
+MODELS = [User, ...]
+INTERFACES = [UserRestInterface, ...]
+```
+
+```yaml
+discovery:
+  mode: manifest
+  manifest:
+    module: app.manifest
+```
+
+### 10. Rules + Computes (advanced)
+
+For compute-heavy write flows, declare field derivations and run them before rules:
+
+```python
+from loom.core.use_case import Compute, F
+
+class PricingPreviewUseCase(UseCase[Record, PricingPreviewResponse]):
+    computes = (
+        Compute.set(F(PricingCommand).normalized_email).from_command(
+            F(PricingCommand).email, via=lambda v: v.strip().lower(),
+        ),
+        Compute.set(F(PricingCommand).subtotal).from_command(
+            F(PricingCommand).unit_price, F(PricingCommand).quantity,
+            via=lambda price, qty: price * qty,
+        ),
+        Compute.set(F(PricingCommand).tax_amount).from_command(
+            F(PricingCommand).subtotal, F(PricingCommand).tax_rate,
+            via=lambda sub, rate: sub * rate,
+        ),
+    )
+    rules = (
+        Rule.check(F(PricingCommand).unit_price, via=lambda v: v <= 0, message="unit_price must be > 0"),
+        Rule.check(F(PricingCommand).country, via=lambda v: v not in TAX_RATES, message="Unsupported country"),
+    )
+
+    async def execute(self, record_id: int, cmd: PricingCommand = Input()) -> PricingPreviewResponse:
+        ...
+```
+
+Computes run in declaration order — later computes can reference fields set by earlier ones.
 
 For deeper references, review the integration examples under
 `tests/integration/fake_repo`.
-For a runnable full-stack sample, check the companion repository
+For a runnable full-stack sample with all patterns combined, check the companion repository
 [`dummy-loom`](https://github.com/the-reacher-data/dummy-loom).
 
 ## Status
