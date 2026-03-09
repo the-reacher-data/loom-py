@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+import types as _types_mod
+import typing
+from typing import Any, get_type_hints
 
 import msgspec
 from sqlalchemy import (
@@ -182,20 +184,13 @@ def _configure_relationships() -> None:
             continue
         sa_cls = _registry[struct_cls]
 
+        try:
+            hints = get_type_hints(struct_cls)
+        except Exception:
+            hints = {}
+
         for rel_name, rel in relations.items():
-            target_table = _resolve_fk_target_table(rel.foreign_key)
-
-            # Find the SA model that owns the FK column
-            # For ONE_TO_MANY: FK is on the target table, target references parent
-            # For MANY_TO_ONE: FK is on this table
-            # For MANY_TO_MANY: FK is on the secondary table
-            if rel.cardinality == Cardinality.MANY_TO_MANY:
-                target_sa = _find_target_sa_by_secondary(rel.secondary, rel.foreign_key)
-            elif rel.cardinality in (Cardinality.ONE_TO_MANY, Cardinality.ONE_TO_ONE):
-                target_sa = _find_target_sa_by_fk_column(rel.foreign_key)
-            else:
-                target_sa = _find_target_sa_class(target_table)
-
+            target_sa = _resolve_relation_target(rel, hints.get(rel_name))
             if target_sa is None:
                 continue
 
@@ -220,6 +215,57 @@ def _configure_relationships() -> None:
             )
 
     _pending_relations.clear()
+
+
+def _resolve_relation_target(rel: Relation, hint: Any) -> Any:
+    """Return the SA class for the given relation, using the field annotation as primary source.
+
+    Annotation-based lookup is exact and avoids ambiguity when multiple tables
+    share the same FK column name.  Column-name and table-name scans are kept
+    as fallbacks for relations without a resolvable annotation.
+    """
+    if rel.cardinality == Cardinality.MANY_TO_MANY:
+        return _find_target_sa_by_secondary(rel.secondary, rel.foreign_key)
+
+    target_model = _extract_model_from_annotation(hint)
+    if target_model is not None:
+        sa = _registry.get(target_model)
+        if sa is not None:
+            return sa
+
+    if rel.cardinality in (Cardinality.ONE_TO_MANY, Cardinality.ONE_TO_ONE):
+        return _find_target_sa_by_fk_column(rel.foreign_key)
+
+    return _find_target_sa_class(_resolve_fk_target_table(rel.foreign_key))
+
+
+def _extract_model_from_annotation(hint: Any) -> type | None:
+    """Unwrap list/Union annotations to extract the concrete model type."""
+    if isinstance(hint, _types_mod.UnionType):
+        for arg in hint.__args__:
+            if arg is not type(None) and arg is not msgspec.UnsetType:
+                result = _extract_model_from_annotation(arg)
+                if result is not None:
+                    return result
+        return None
+
+    origin = getattr(hint, "__origin__", None)
+    args: tuple[Any, ...] = getattr(hint, "__args__", ())
+
+    if origin is typing.Union:
+        for arg in args:
+            if arg is not type(None) and arg is not msgspec.UnsetType:
+                result = _extract_model_from_annotation(arg)
+                if result is not None:
+                    return result
+        return None
+
+    if origin is list and len(args) == 1:
+        return _extract_model_from_annotation(args[0])
+
+    if isinstance(hint, type):
+        return hint
+    return None
 
 
 def _fk_col_name(foreign_key: str) -> str:
