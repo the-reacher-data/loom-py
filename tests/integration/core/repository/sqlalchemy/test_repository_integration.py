@@ -191,6 +191,60 @@ class TestRepositorySQLAlchemyIntegration:
         assert {snippet["comment"] for snippet in loaded.review_snippets} == {"great", "solid"}
 
     @mark.asyncio
+    async def test_count_returns_zero_on_empty_table(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+    ) -> None:
+        total = await integration_context.product.repository.count()
+        assert total == 0
+
+    @mark.asyncio
+    async def test_count_returns_exact_row_count(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+        scenario_catalog_with_price_20: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_catalog_with_price_20)
+        total = await integration_context.product.repository.count()
+        assert total == 3
+
+    @mark.asyncio
+    async def test_update_returns_updated_entity_in_single_roundtrip(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+    ) -> None:
+        created = await integration_context.product.repository.create(
+            CreateProduct(name="desk", price=200.0)
+        )
+        assert created.id is not None
+
+        updated = await integration_context.product.repository.update(
+            created.id, UpdateProduct(price=150.0)
+        )
+        assert updated is not None
+        assert float(updated.price) == pytest.approx(150.0)
+        assert updated.name == "desk"
+
+    @mark.asyncio
+    async def test_update_returns_none_for_missing_id(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+    ) -> None:
+        result = await integration_context.product.repository.update(9999, UpdateProduct(price=1.0))
+        assert result is None
+
+    @mark.asyncio
+    async def test_count_after_delete_reflects_removal(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+        scenario_two_products: ScenarioDict,
+    ) -> None:
+        await integration_context.load(scenario_two_products)
+        assert await integration_context.product.repository.count() == 2
+        await integration_context.product.repository.delete(1)
+        assert await integration_context.product.repository.count() == 1
+
+    @mark.asyncio
     async def test_custom_repository_can_use_core_model_for_custom_read(
         self,
         integration_context: RepositoryIntegrationHarness,
