@@ -460,23 +460,40 @@ def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable
     return _merge_compilables(use_cases, manifest.jobs)
 
 
+def _resolved_from_parts(
+    *,
+    models: Sequence[type[Any]],
+    use_cases: Sequence[type[Compilable]],
+    interfaces: Sequence[type[Any]],
+    jobs: Sequence[type[Job[Any]]],
+    callbacks: Sequence[type[Any]],
+) -> _WorkerResolved:
+    """Build a normalized worker graph from discovered component collections."""
+    manifest = WorkerManifest(
+        models=tuple(models),
+        use_cases=tuple(use_cases),
+        interfaces=tuple(interfaces),
+        jobs=tuple(jobs),
+        callbacks=tuple(callbacks),
+    )
+    return _WorkerResolved(
+        compilables=_build_worker_compilables(manifest),
+        jobs=tuple(jobs),
+        models=tuple(models),
+        callbacks=tuple(callbacks),
+    )
+
+
 def _discover_from_modules(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
     """Discover worker components from module include paths."""
     modules = import_modules(discovery_cfg.modules.include)
     models, use_cases, interfaces, discovered_jobs = collect_from_modules(modules)
     callbacks = _discover_callbacks_from_modules(modules)
-    manifest = WorkerManifest(
-        models=tuple(models),
-        use_cases=tuple(use_cases),
-        interfaces=tuple(interfaces),
-        jobs=tuple(discovered_jobs),
-        callbacks=callbacks,
-    )
-    compilables = _build_worker_compilables(manifest)
-    return _WorkerResolved(
-        compilables=compilables,
-        jobs=tuple(discovered_jobs),
-        models=tuple(models),
+    return _resolved_from_parts(
+        models=models,
+        use_cases=use_cases,
+        interfaces=interfaces,
+        jobs=discovered_jobs,
         callbacks=callbacks,
     )
 
@@ -484,12 +501,12 @@ def _discover_from_modules(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
 def _discover_from_manifest(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
     """Discover worker components from a manifest module."""
     manifest = _read_worker_manifest(discovery_cfg.manifest.module)
-    compilables = _build_worker_compilables(manifest)
-    return _WorkerResolved(
-        compilables=compilables,
-        jobs=tuple(manifest.jobs),
-        models=tuple(manifest.models),
-        callbacks=tuple(manifest.callbacks),
+    return _resolved_from_parts(
+        models=manifest.models,
+        use_cases=manifest.use_cases,
+        interfaces=manifest.interfaces,
+        jobs=manifest.jobs,
+        callbacks=manifest.callbacks,
     )
 
 
