@@ -10,10 +10,12 @@ Example manifest module::
     from app.product.model import Product
     from app.product.use_cases import GetProductUseCase
     from app.product.interface import ProductInterface
+    from app.product.repository import ProductRepository
 
     MODELS = [Product]
     USE_CASES = [GetProductUseCase]
     INTERFACES = [ProductInterface]
+    REPOSITORIES = [ProductRepository]
 """
 
 from __future__ import annotations
@@ -33,3 +35,4 @@ class AppManifestAttr(StrEnum):
     MODELS = "MODELS"
     USE_CASES = "USE_CASES"
     INTERFACES = "INTERFACES"
+    REPOSITORIES = "REPOSITORIES"
