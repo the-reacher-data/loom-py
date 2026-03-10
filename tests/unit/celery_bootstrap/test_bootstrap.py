@@ -17,8 +17,9 @@ from loom.celery.bootstrap import (
     _apply_job_config_if_present,
     _connect_worker_signals,
 )
-from loom.celery.constants import TASK_JOB_PREFIX
+from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.job.job import Job
+from loom.core.model import BaseModel, ColumnField
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -34,6 +35,21 @@ class _SyncJob(Job[int]):
 
     def execute(self, value: int = 0) -> int:  # type: ignore[override]
         return value * 2
+
+
+class _DiscoveredModel(BaseModel):
+    __tablename__ = "discovered_model_bootstrap_test"
+
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=120)
+
+
+class _ObservedCallback:
+    def on_success(self, job_id: str, result: Any, **context: Any) -> None:
+        del job_id, result, context
+
+    def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **context: Any) -> None:
+        del job_id, exc_type, exc_msg, context
 
 
 def _make_raw_config(extra: dict[str, Any] | None = None) -> Any:
@@ -221,6 +237,58 @@ class TestBootstrapWorkerTaskRegistration:
 
         expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
+
+    def test_discovers_jobs_from_manifest_lists_when_manifest_struct_missing(
+        self, tmp_path: Any
+    ) -> None:
+        module_name = "tests.unit.celery_bootstrap._manifest_lists_for_test"
+        module = types.ModuleType(module_name)
+        module.JOBS = [_SyncJob]
+        module.CALLBACKS = [_ObservedCallback]
+        sys.modules[module_name] = module
+
+        cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
+        try:
+            result = self._run(tmp_path, extra_cfg=cfg)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        assert f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_CALLBACK_PREFIX}.{_ObservedCallback.__qualname__}" in result.celery_app.tasks
+        assert (
+            f"{TASK_CALLBACK_ERROR_PREFIX}.{_ObservedCallback.__qualname__}"
+            in result.celery_app.tasks
+        )
+
+    def test_discovers_callbacks_from_modules_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        assert f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_CALLBACK_PREFIX}.{_ObservedCallback.__qualname__}" in result.celery_app.tasks
+        assert (
+            f"{TASK_CALLBACK_ERROR_PREFIX}.{_ObservedCallback.__qualname__}"
+            in result.celery_app.tasks
+        )
+
+    def test_registers_repo_mapping_for_discovered_models(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        mapped_names = {model.__name__ for model in result.container._repo_bindings}
+        assert "_DiscoveredModel" in mapped_names
 
     def test_raises_when_no_jobs_and_no_discovery(self, tmp_path: Any) -> None:
         with pytest.raises(RuntimeError):
