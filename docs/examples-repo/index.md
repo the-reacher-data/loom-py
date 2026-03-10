@@ -161,6 +161,42 @@ class ListLowStockProductsUseCase(UseCase[Product, PageResult[Product]]):
         return result
 ```
 
+### Custom repository: override CRUD through `main_repo`
+
+Register a model-specific repository once and standard CRUD use cases will
+pick it up automatically as their `main_repo`.
+
+```python
+from typing import Protocol
+
+import msgspec
+
+from loom.core.repository.abc import RepoFor
+from loom.core.repository.sqlalchemy import (
+    RepositorySQLAlchemy,
+    repository_for,
+)
+
+
+class ProductRepo(RepoFor[Product], Protocol):
+    async def get_by_slug(self, slug: str) -> Product | None:
+        ...
+
+
+@repository_for(Product, contract=ProductRepo)
+class ProductRepository(RepositorySQLAlchemy[Product, int]):
+    async def create(self, data: msgspec.Struct) -> Product:
+        payload = msgspec.to_builtins(data)
+        payload["name"] = str(payload["name"]).strip()
+        return await super().create(payload)
+```
+
+```python
+class CreateProductUseCase(UseCase[Product, Product]):
+    async def execute(self, cmd: CreateProduct = Input()) -> Product:
+        return await self.main_repo.create(cmd)
+```
+
 ---
 
 ## 4. Background jobs

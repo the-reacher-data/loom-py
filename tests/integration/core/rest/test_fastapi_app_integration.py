@@ -34,13 +34,17 @@ def test_fake_repo_app_bootstrap_without_metrics(
     with TestClient(app) as client:
         create_response = client.post(
             "/products/",
-            json={"name": "keyboard", "price": 120.0},
+            json={"name": "  keyboard  ", "price": 120.0},
         )
         assert create_response.status_code == 201
         assert "x-request-id" in create_response.headers
         created = create_response.json()
         assert created["id"] == 1
         assert created["name"] == "keyboard"
+
+        by_name_response = client.get("/products/by-name/keyboard")
+        assert by_name_response.status_code == 200
+        assert by_name_response.json()["id"] == 1
 
         list_response = client.get("/products/")
         assert list_response.status_code == 200
@@ -88,13 +92,17 @@ def test_fake_repo_app_bootstrap_with_metrics(
     with TestClient(app) as client:
         create_response = client.post(
             "/products/",
-            json={"name": "keyboard", "price": 120.0},
+            json={"name": "  keyboard  ", "price": 120.0},
         )
         assert create_response.status_code == 201
         assert "x-request-id" in create_response.headers
         created = create_response.json()
         assert created["id"] == 1
         assert created["name"] == "keyboard"
+
+        by_name_response = client.get("/products/by-name/keyboard")
+        assert by_name_response.status_code == 200
+        assert by_name_response.json()["id"] == 1
 
         list_response = client.get("/products/")
         assert list_response.status_code == 200

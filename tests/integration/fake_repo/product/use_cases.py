@@ -6,6 +6,7 @@ from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
 from loom.core.use_case import Compute, F, Input, Rule
 from loom.core.use_case.use_case import UseCase
 from tests.integration.fake_repo.product.model import Product
+from tests.integration.fake_repo.product.repository_contract import ProductRepo
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
 
@@ -150,3 +151,12 @@ class UpdateProductUseCase(UseCase[Product, Product | None]):
 class DeleteProductUseCase(UseCase[Product, bool]):
     async def execute(self, product_id: str) -> bool:
         return await self.main_repo.delete(int(product_id))
+
+
+class FindProductByNameUseCase(UseCase[Product, Product | None]):
+    def __init__(self, product_repo: ProductRepo) -> None:
+        super().__init__()
+        self._product_repo = product_repo
+
+    async def execute(self, name: str) -> Product | None:
+        return await self._product_repo.get_by_name(name)

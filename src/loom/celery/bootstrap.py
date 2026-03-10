@@ -72,13 +72,12 @@ from loom.core.config.errors import ConfigError
 from loom.core.config.keys import ConfigKey
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
-from loom.core.di.scope import Scope
 from loom.core.discovery._utils import collect_from_modules, import_modules
 from loom.core.engine.compilable import Compilable
 from loom.core.job.job import Job
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy import build_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.uow.abc import UnitOfWorkFactory
@@ -183,11 +182,6 @@ class _WorkerResolved:
     jobs: tuple[type[Job[Any]], ...]
     models: tuple[type[BaseModel], ...]
     callbacks: tuple[type[Any], ...]
-
-
-@dataclass(frozen=True)
-class _RepoToken:
-    model: type[BaseModel]
 
 
 # ---------------------------------------------------------------------------
@@ -544,27 +538,7 @@ def _register_repositories(
     models: Sequence[type[BaseModel]],
 ) -> Callable[[LoomContainer], None]:
     """Build a container module that registers SQLAlchemy repositories."""
-    repositories: dict[type[BaseModel], RepositorySQLAlchemy[Any, int]] = {
-        model: RepositorySQLAlchemy(session_manager=session_manager, model=model)
-        for model in models
-    }
-
-    def _provider_for(
-        repo: RepositorySQLAlchemy[Any, int],
-    ) -> Callable[[], RepositorySQLAlchemy[Any, int]]:
-        def _provider() -> RepositorySQLAlchemy[Any, int]:
-            return repo
-
-        return _provider
-
-    def register(container: LoomContainer) -> None:
-        for model, repository in repositories.items():
-            token = _RepoToken(model)
-            container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
-            container.register_repo(model, token)
-        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
-
-    return register
+    return build_repository_registration_module(session_manager, models)
 
 
 def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel], ...]:

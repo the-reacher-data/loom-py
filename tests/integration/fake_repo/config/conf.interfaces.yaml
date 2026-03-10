@@ -6,6 +6,7 @@ app:
     mode: interfaces
     interfaces:
       modules:
+        - tests.integration.fake_repo.product.repository
         - tests.integration.fake_repo.product.interface
       warn_recommended: true
 

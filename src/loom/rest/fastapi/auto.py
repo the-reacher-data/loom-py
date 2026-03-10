@@ -6,9 +6,8 @@ import sys
 import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -33,7 +32,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy import build_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
@@ -41,7 +40,6 @@ from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
 
-ModelT = TypeVar("ModelT", bound=BaseModel)
 _CfgT = TypeVar("_CfgT")
 
 
@@ -61,13 +59,6 @@ def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
         return section(raw, key, cls)
     except ConfigError:
         return cls()
-
-
-@dataclass(frozen=True, slots=True)
-class _RepoToken(Generic[ModelT]):
-    """Typed DI token used to bind repository instances by model."""
-
-    model: type[ModelT]
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -141,27 +132,7 @@ def _register_repositories(
     session_manager: SessionManager,
     models: tuple[type[BaseModel], ...],
 ) -> Callable[[LoomContainer], None]:
-    repositories: dict[type[BaseModel], RepositorySQLAlchemy[Any, int]] = {
-        model: RepositorySQLAlchemy(session_manager=session_manager, model=model)
-        for model in models
-    }
-
-    def _provider_for(
-        repo: RepositorySQLAlchemy[Any, int],
-    ) -> Callable[[], RepositorySQLAlchemy[Any, int]]:
-        def _provider() -> RepositorySQLAlchemy[Any, int]:
-            return repo
-
-        return _provider
-
-    def register(container: LoomContainer) -> None:
-        for model, repository in repositories.items():
-            token = _RepoToken(model)
-            container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
-            container.register_repo(model, token)
-        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
-
-    return register
+    return build_repository_registration_module(session_manager, models)
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
