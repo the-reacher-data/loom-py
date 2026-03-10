@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "0.2.0.dev44"
+version = "0.2.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -121,7 +121,7 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.0.dev44"
+version = "0.2.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:project.version",
