@@ -51,11 +51,15 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
+from celery.signals import (  # type: ignore[import-untyped]
+    worker_process_init,
+    worker_process_shutdown,
+)
 
 from loom.celery.config import CeleryConfig, JobConfig, apply_job_config, create_celery_app
 from loom.celery.event_loop import WorkerEventLoop
@@ -65,19 +69,19 @@ from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.discovery._utils import collect_from_modules, import_modules
-from loom.core.discovery.manifest import ManifestDiscoveryEngine
 from loom.core.engine.compilable import Compilable
+from loom.core.job.job import Job
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
+from loom.rest.autocrud import build_auto_routes
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
 
     from loom.core.engine.metrics import MetricsAdapter
-    from loom.core.job.job import Job
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +122,52 @@ class _WorkerAppConfig(msgspec.Struct, kw_only=True):
 
 
 # ---------------------------------------------------------------------------
+# Worker manifest — public typed contract for manifest-mode discovery
+# ---------------------------------------------------------------------------
+
+_MANIFEST_ATTR = "MANIFEST"
+
+
+@dataclass(frozen=True)
+class WorkerManifest:
+    """Typed worker manifest for manifest-mode discovery.
+
+    Define a module-level ``MANIFEST`` attribute of this type in your
+    manifest module.  :func:`bootstrap_worker` reads it when
+    ``app.discovery.mode == "manifest"`` is configured in YAML.
+
+    All fields are optional — a manifest that only declares ``jobs``
+    is valid for workers that do not expose any use cases to callbacks.
+
+    Attributes:
+        jobs: Job subclasses to register as Celery tasks.
+        use_cases: UseCase subclasses to compile in the worker so that
+            callbacks can invoke them via ``ApplicationInvoker``.
+        interfaces: ``RestInterface`` subclasses whose route use-cases
+            are extracted and compiled automatically.
+        models: Model classes for which AutoCRUD use cases are compiled.
+
+    Example::
+
+        from loom.celery.bootstrap import WorkerManifest
+        from app.product.jobs import SendRestockEmailJob
+        from app.product.use_cases import GetProductUseCase
+        from app.product.model import Product
+
+        MANIFEST = WorkerManifest(
+            jobs=[SendRestockEmailJob],
+            use_cases=[GetProductUseCase],
+            models=[Product],
+        )
+    """
+
+    jobs: Sequence[type[Job[Any]]] = field(default_factory=list)
+    use_cases: Sequence[type[Compilable]] = field(default_factory=list)
+    interfaces: Sequence[type[Any]] = field(default_factory=list)
+    models: Sequence[type[Any]] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Celery worker lifecycle signals
 # ---------------------------------------------------------------------------
 
@@ -139,10 +189,6 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
             (created pre-fork with a lazy engine).  Disposed per-process
             on shutdown.
     """
-    from celery.signals import (  # type: ignore[import-untyped]
-        worker_process_init,
-        worker_process_shutdown,
-    )
 
     def _on_init(**kwargs: Any) -> None:
         WorkerEventLoop.initialize()
@@ -244,10 +290,86 @@ def _merge_compilables(
     return tuple(merged)
 
 
-def _load_jobs_from_manifest(module_path: str) -> tuple[type[Job[Any]], ...]:
+def _read_worker_manifest(module_path: str) -> WorkerManifest:
+    """Read a :class:`WorkerManifest` from a manifest module.
+
+    Args:
+        module_path: Dotted Python import path of the manifest module.
+
+    Returns:
+        The :class:`WorkerManifest` instance declared as
+        ``module.<_MANIFEST_ATTR>``.
+
+    Raises:
+        ValueError: When the module does not expose a ``MANIFEST``
+            attribute or it is not a :class:`WorkerManifest` instance.
+    """
     module = importlib.import_module(module_path)
-    raw_jobs = cast(list[Any], getattr(module, "JOBS", []))
-    return tuple(cast(type[Job[Any]], item) for item in raw_jobs)
+    manifest = getattr(module, _MANIFEST_ATTR, None)
+    if manifest is None:
+        raise ValueError(
+            f"Manifest module {module_path!r} must expose a "
+            f"{_MANIFEST_ATTR!r} attribute of type WorkerManifest."
+        )
+    if not isinstance(manifest, WorkerManifest):
+        raise TypeError(
+            f"{module_path!r}.{_MANIFEST_ATTR} must be a WorkerManifest, "
+            f"got {type(manifest).__name__!r}."
+        )
+    return manifest
+
+
+def _autocrud_use_cases_from_models(
+    models: Sequence[type[Any]],
+) -> tuple[type[Compilable], ...]:
+    """Extract AutoCRUD use-case classes for the given model types.
+
+    Calls ``build_auto_routes(model, ())`` for each model to generate
+    all five standard CRUD routes and returns their use-case classes.
+
+    Args:
+        models: Model classes to extract AutoCRUD use cases from.
+
+    Returns:
+        Unique use-case types from all generated routes.
+    """
+    seen: set[type[Compilable]] = set()
+    result: list[type[Compilable]] = []
+    for model in models:
+        for route in build_auto_routes(model, ()):
+            uc: type[Compilable] = route.use_case
+            if uc not in seen:
+                result.append(uc)
+                seen.add(uc)
+    return tuple(result)
+
+
+def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable], ...]:
+    """Build the full compilables set from a :class:`WorkerManifest`.
+
+    Merges use cases from explicit declarations, interface routes, and
+    AutoCRUD model generation — then folds in the job classes.
+
+    Args:
+        manifest: Typed worker manifest with all component declarations.
+
+    Returns:
+        Deduplicated tuple of all compilable types (use cases + jobs).
+    """
+    use_cases: list[type[Compilable]] = list(manifest.use_cases)
+    seen: set[type[Compilable]] = set(use_cases)
+
+    for uc in _use_cases_from_interfaces(manifest.interfaces):
+        if uc not in seen:
+            use_cases.append(uc)
+            seen.add(uc)
+
+    for uc in _autocrud_use_cases_from_models(manifest.models):
+        if uc not in seen:
+            use_cases.append(uc)
+            seen.add(uc)
+
+    return _merge_compilables(use_cases, manifest.jobs)
 
 
 def _discover_compilables_from_config(
@@ -258,9 +380,9 @@ def _discover_compilables_from_config(
         _, use_cases, _, discovered_jobs = collect_from_modules(modules)
         return _merge_compilables(use_cases, discovered_jobs), tuple(discovered_jobs)
     # mode == "manifest" — Literal type guarantees no other value is possible
-    discovered = ManifestDiscoveryEngine(discovery_cfg.manifest.module).discover()
-    jobs = _load_jobs_from_manifest(discovery_cfg.manifest.module)
-    return _merge_compilables(discovered.use_cases, jobs), jobs
+    manifest = _read_worker_manifest(discovery_cfg.manifest.module)
+    jobs = tuple(manifest.jobs)
+    return _build_worker_compilables(manifest), jobs
 
 
 def _supplement_use_cases_from_discovery(
@@ -289,7 +411,7 @@ def _supplement_use_cases_from_discovery(
     try:
         app_cfg = section(raw, "app", _WorkerAppConfig)
         discovered, _ = _discover_compilables_from_config(app_cfg.discovery)
-    except (ConfigError, RuntimeError):
+    except (ConfigError, RuntimeError, ValueError, TypeError):
         return compilables
     seen = set(compilables)
     return (*compilables, *(c for c in discovered if c not in seen))

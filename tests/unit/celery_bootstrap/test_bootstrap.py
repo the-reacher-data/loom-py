@@ -13,6 +13,7 @@ import pytest
 import loom.celery.bootstrap as boot
 from loom.celery.bootstrap import (
     WorkerBootstrapResult,
+    WorkerManifest,
     _apply_job_config_if_present,
     _connect_worker_signals,
 )
@@ -208,10 +209,7 @@ class TestBootstrapWorkerTaskRegistration:
     def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
         module_name = "tests.unit.celery_bootstrap._manifest_jobs_for_test"
         module = types.ModuleType(module_name)
-        module.JOBS = [_SyncJob]
-        module.USE_CASES = []
-        module.INTERFACES = []
-        module.MODELS = []
+        module.MANIFEST = WorkerManifest(jobs=[_SyncJob])
         sys.modules[module_name] = module
 
         cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
