@@ -463,9 +463,16 @@ def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable
 def _discover_from_modules(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
     """Discover worker components from module include paths."""
     modules = import_modules(discovery_cfg.modules.include)
-    models, use_cases, _, discovered_jobs = collect_from_modules(modules)
+    models, use_cases, interfaces, discovered_jobs = collect_from_modules(modules)
     callbacks = _discover_callbacks_from_modules(modules)
-    compilables = _merge_compilables(use_cases, discovered_jobs)
+    manifest = WorkerManifest(
+        models=tuple(models),
+        use_cases=tuple(use_cases),
+        interfaces=tuple(interfaces),
+        jobs=tuple(discovered_jobs),
+        callbacks=callbacks,
+    )
+    compilables = _build_worker_compilables(manifest)
     return _WorkerResolved(
         compilables=compilables,
         jobs=tuple(discovered_jobs),

@@ -20,6 +20,7 @@ from loom.celery.bootstrap import (
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.job.job import Job
 from loom.core.model import BaseModel, ColumnField
+from loom.core.use_case.registry import UseCaseRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -276,6 +277,24 @@ class TestBootstrapWorkerTaskRegistration:
             f"{TASK_CALLBACK_ERROR_PREFIX}.{_ObservedCallback.__qualname__}"
             in result.celery_app.tasks
         )
+
+    def test_modules_discovery_includes_autocrud_use_cases_for_models(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        registry = result.container.resolve(UseCaseRegistry)
+        expected_keys = {
+            "__discovered_model:create",
+            "__discovered_model:get",
+            "__discovered_model:list",
+        }
+        assert expected_keys.issubset(set(registry.keys()))
 
     def test_registers_repo_mapping_for_discovered_models(self, tmp_path: Any) -> None:
         cfg = {
