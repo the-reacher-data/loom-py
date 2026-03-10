@@ -240,18 +240,22 @@ class _DispatchChildJobUseCase(UseCase[_Record, bool]):
         self._jobs = jobs
 
     async def execute(self, cmd: _DispatchRecordCommand = Input()) -> bool:
+        on_success: type[JobCallback] | None = None
+        on_failure: type[JobCallback] | None = None
+        job_type: type[Job[Any]]
+
         if cmd.should_fail:
-            self._jobs.dispatch(
-                _AlwaysFailJob,
-                payload={"name": cmd.name},
-                on_failure=_RecordFailureCallback,
-            )
-            return True
+            job_type = _AlwaysFailJob
+            on_failure = _RecordFailureCallback
+        else:
+            job_type = _CreateRecordInlineJob
+            on_success = _RecordSuccessCallback
 
         self._jobs.dispatch(
-            _CreateRecordInlineJob,
+            job_type,
             payload={"name": cmd.name},
-            on_success=_RecordSuccessCallback,
+            on_success=on_success,
+            on_failure=on_failure,
         )
         return True
 
