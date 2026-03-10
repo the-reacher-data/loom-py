@@ -331,20 +331,13 @@ def _is_callback_class(value: type[Any]) -> bool:
 
 def _discover_callbacks_from_modules(modules: list[Any]) -> tuple[type[Any], ...]:
     """Collect local callback classes from imported modules."""
-    discovered: list[type[Any]] = []
-    seen: set[type[Any]] = set()
-    for module in modules:
-        module_name = module.__name__
-        for _, cls in inspect.getmembers(module, inspect.isclass):
-            if cls.__module__ != module_name:
-                continue
-            if not _is_callback_class(cls):
-                continue
-            if cls in seen:
-                continue
-            discovered.append(cls)
-            seen.add(cls)
-    return tuple(discovered)
+    flat: list[type[Any]] = [
+        cls
+        for module in modules
+        for _, cls in inspect.getmembers(module, inspect.isclass)
+        if cls.__module__ == module.__name__ and _is_callback_class(cls)
+    ]
+    return tuple(dict.fromkeys(flat))
 
 
 # ---------------------------------------------------------------------------
@@ -429,15 +422,10 @@ def _autocrud_use_cases_from_models(
     Returns:
         Unique use-case types from all generated routes.
     """
-    seen: set[type[Compilable]] = set()
-    result: list[type[Compilable]] = []
-    for model in models:
-        for route in build_auto_routes(model, ()):
-            uc: type[Compilable] = route.use_case
-            if uc not in seen:
-                result.append(uc)
-                seen.add(uc)
-    return tuple(result)
+    flat: list[type[Compilable]] = [
+        route.use_case for model in models for route in build_auto_routes(model, ())
+    ]
+    return tuple(dict.fromkeys(flat))
 
 
 def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable], ...]:
@@ -452,19 +440,10 @@ def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable
     Returns:
         Deduplicated tuple of all compilable types (use cases + jobs).
     """
-    use_cases: list[type[Compilable]] = list(manifest.use_cases)
-    seen: set[type[Compilable]] = set(use_cases)
-
-    for uc in _use_cases_from_interfaces(manifest.interfaces):
-        if uc not in seen:
-            use_cases.append(uc)
-            seen.add(uc)
-
-    for uc in _autocrud_use_cases_from_models(manifest.models):
-        if uc not in seen:
-            use_cases.append(uc)
-            seen.add(uc)
-
+    use_cases = _merge_unique(
+        _merge_unique(manifest.use_cases, _use_cases_from_interfaces(manifest.interfaces)),
+        _autocrud_use_cases_from_models(manifest.models),
+    )
     return _merge_unique(use_cases, manifest.jobs)
 
 
