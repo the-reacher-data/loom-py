@@ -78,7 +78,7 @@ class SendRestockEmailJob(Job[bool]):
 | `__priority__` | `int` | `0` | Task priority (broker-dependent) |
 
 All ClassVars can be overridden per-environment from YAML without touching code —
-see [Per-job overrides from YAML](#per-job-overrides-from-yaml).
+see {ref}`per-job-overrides-from-yaml`.
 
 ---
 
@@ -284,6 +284,7 @@ celery:
   task_always_eager: false
 ```
 
+(per-job-overrides-from-yaml)=
 ### `jobs` section — per-job overrides
 
 Override any Job ClassVar from YAML without touching Python code. Only the fields
@@ -318,6 +319,7 @@ jobs:
 
 ---
 
+(worker-bootstrap)=
 ## Worker bootstrap
 
 ### Option 1: Discovery from YAML (recommended)
@@ -453,7 +455,7 @@ its constructor, the container provides an `AppInvoker` backed by the worker's
 the registry. **The use-case must be compiled in the worker process** — if it is not,
 a `KeyError` is raised at callback execution time.
 
-The three ways to ensure this are described in [Worker bootstrap](#worker-bootstrap):
+The three ways to ensure this are described in {ref}`worker-bootstrap`:
 1. Use discovery — all use cases are included automatically
 2. Pass `interfaces=` — use cases are extracted from interface route declarations
 3. Pass `use_cases=` — declare use cases explicitly
