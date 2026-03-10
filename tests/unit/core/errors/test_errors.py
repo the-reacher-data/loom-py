@@ -14,6 +14,7 @@ from loom.core.errors import (
     RuleViolations,
     SystemError,
 )
+from loom.core.errors.codes import ErrorCode
 
 # ---------------------------------------------------------------------------
 # LoomError base
@@ -78,7 +79,7 @@ class TestNotFound:
         assert err.id == 42
 
     def test_code(self) -> None:
-        assert NotFound("User", id=1).code == "not_found"
+        assert NotFound("User", id=1).code == ErrorCode.NOT_FOUND
 
     def test_message_format(self) -> None:
         err = NotFound("Product", id="abc-123")
@@ -109,7 +110,7 @@ class TestForbidden:
         assert err.message == "You cannot update other users"
 
     def test_code(self) -> None:
-        assert Forbidden().code == "forbidden"
+        assert Forbidden().code == ErrorCode.FORBIDDEN
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,7 @@ class TestConflict:
         assert err.message == "Email already registered"
 
     def test_code(self) -> None:
-        assert Conflict("x").code == "conflict"
+        assert Conflict("x").code == ErrorCode.CONFLICT
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ class TestSystemError:
         assert err.message == "Database connection lost"
 
     def test_code(self) -> None:
-        assert SystemError("x").code == "system_error"
+        assert SystemError("x").code == ErrorCode.SYSTEM_ERROR
 
     def test_not_catchable_as_domain_error(self) -> None:
         with pytest.raises(SystemError):
@@ -165,7 +166,7 @@ class TestRuleViolation:
         assert err.message == "Invalid format"
 
     def test_code(self) -> None:
-        assert RuleViolation("f", "m").code == "rule_violation"
+        assert RuleViolation("f", "m").code == ErrorCode.RULE_VIOLATION
 
     def test_str_contains_field_and_message(self) -> None:
         err = RuleViolation("email", "Invalid format")
@@ -195,7 +196,7 @@ class TestRuleViolations:
         assert err.violations == (v1, v2)
 
     def test_code(self) -> None:
-        assert RuleViolations([]).code == "rule_violations"
+        assert RuleViolations([]).code == ErrorCode.RULE_VIOLATIONS
 
     def test_message_joins_violations(self) -> None:
         v1 = RuleViolation("email", "bad")
@@ -252,4 +253,4 @@ class TestExecutorUsesNotFound:
 
         assert exc_info.value.entity == "_Entity"
         assert exc_info.value.id == 7
-        assert exc_info.value.code == "not_found"
+        assert exc_info.value.code == ErrorCode.NOT_FOUND

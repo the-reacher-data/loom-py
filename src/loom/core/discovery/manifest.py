@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from typing import Any, cast
 
+from loom.core.contracts.manifest import AppManifestAttr
 from loom.core.discovery._utils import _append_unique, collect_use_cases_from_interfaces
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel
@@ -38,9 +39,9 @@ class ManifestDiscoveryEngine:
             raise ValueError("manifest discovery requires a module path.")
 
         module = importlib.import_module(self._manifest_module)
-        raw_models = cast(list[Any], getattr(module, "MODELS", []))
-        raw_use_cases = cast(list[Any], getattr(module, "USE_CASES", []))
-        raw_interfaces = cast(list[Any], getattr(module, "INTERFACES", []))
+        raw_models = cast(list[Any], getattr(module, AppManifestAttr.MODELS, []))
+        raw_use_cases = cast(list[Any], getattr(module, AppManifestAttr.USE_CASES, []))
+        raw_interfaces = cast(list[Any], getattr(module, AppManifestAttr.INTERFACES, []))
 
         models = [cast(type[BaseModel], item) for item in raw_models]
         use_cases = [cast(type[UseCase[object, object]], item) for item in raw_use_cases]
@@ -51,9 +52,12 @@ class ManifestDiscoveryEngine:
             _append_unique(use_cases, seen_ucs, uc)
 
         if not interfaces and not use_cases and not models:
+            expected = (
+                f"{AppManifestAttr.MODELS}/{AppManifestAttr.USE_CASES}/{AppManifestAttr.INTERFACES}"
+            )
             raise ValueError(
                 f"Manifest module {self._manifest_module!r} exposes no components. "
-                "Expected MODELS/USE_CASES/INTERFACES."
+                f"Expected {expected}."
             )
 
         return DiscoveryResult(

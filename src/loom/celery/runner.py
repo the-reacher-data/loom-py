@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
 
+from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.celery.event_loop import WorkerEventLoop
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
@@ -200,7 +201,7 @@ def _make_job_task(
     run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
 
     @celery_app.task(  # type: ignore[untyped-decorator]
-        name=f"loom.job.{job_type.__qualname__}",
+        name=f"{TASK_JOB_PREFIX}.{job_type.__qualname__}",
         bind=True,
         acks_late=True,
         reject_on_worker_lost=True,
@@ -299,7 +300,7 @@ def _make_callback_task(
     """
     _on_success_is_async = inspect.iscoroutinefunction(callback_type.on_success)
 
-    @celery_app.task(name=f"loom.callback.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
+    @celery_app.task(name=f"{TASK_CALLBACK_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_task(
         result: Any,
         *,
@@ -368,7 +369,7 @@ def _make_callback_error_task(
     """
     _on_failure_is_async = inspect.iscoroutinefunction(callback_type.on_failure)
 
-    @celery_app.task(name=f"loom.callback_error.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
+    @celery_app.task(name=f"{TASK_CALLBACK_ERROR_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_error_task(
         *,
         job_id: str,

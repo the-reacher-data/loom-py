@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from fastapi import HTTPException
 
 from loom.core.errors import LoomError, NotFound, RuleViolations
+from loom.core.errors.codes import ErrorCode
 from loom.core.tracing import get_trace_id
 
 
@@ -60,12 +61,12 @@ class HttpErrorMapper:
     """
 
     _STATUS: ClassVar[dict[str, int]] = {
-        "not_found": 404,
-        "forbidden": 403,
-        "conflict": 409,
-        "rule_violations": 422,
-        "rule_violation": 422,
-        "system_error": 500,
+        ErrorCode.NOT_FOUND: 404,
+        ErrorCode.FORBIDDEN: 403,
+        ErrorCode.CONFLICT: 409,
+        ErrorCode.RULE_VIOLATIONS: 422,
+        ErrorCode.RULE_VIOLATION: 422,
+        ErrorCode.SYSTEM_ERROR: 500,
     }
 
     def to_http(self, error: LoomError) -> HTTPException:

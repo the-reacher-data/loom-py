@@ -46,9 +46,9 @@ from loom.core.repository.abc.query import (
 )
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
+from loom.rest.constants import QueryParam
 from loom.rest.errors import HttpErrorMapper
 from loom.rest.fastapi.openapi import (
-    QUERY_PARAM_PROFILE,
     QUERY_SPEC_PARAMETER_NAMES,
     build_query_parameters_schema,
     build_request_body_schema,
@@ -97,7 +97,7 @@ def _normalize_path_param_annotation(annotation: Any) -> Any:
     return str
 
 
-_RESERVED_QUERY_KEYS = frozenset((*QUERY_SPEC_PARAMETER_NAMES, QUERY_PARAM_PROFILE))
+_RESERVED_QUERY_KEYS = frozenset((*QUERY_SPEC_PARAMETER_NAMES, QueryParam.PROFILE))
 _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 
@@ -219,18 +219,18 @@ def _build_query_spec(
     allow_pagination_override: bool,
 ) -> QuerySpec:
     query_params = request.query_params
-    page = int(query_params.get("page", _DEFAULT_PAGE))
-    limit = int(query_params.get("limit", _DEFAULT_LIMIT))
-    cursor = query_params.get("after") or query_params.get("cursor")
+    page = int(query_params.get(QueryParam.PAGE, _DEFAULT_PAGE))
+    limit = int(query_params.get(QueryParam.LIMIT, _DEFAULT_LIMIT))
+    cursor = query_params.get(QueryParam.AFTER) or query_params.get(QueryParam.CURSOR)
     pagination = _parse_pagination_mode(
-        query_params.get("pagination"),
+        query_params.get(QueryParam.PAGINATION),
         cursor,
         default_mode=default_pagination_mode,
         allow_override=allow_pagination_override,
     )
     sort = _parse_sort(
-        query_params.get("sort"),
-        query_params.get("direction", "ASC"),
+        query_params.get(QueryParam.SORT),
+        query_params.get(QueryParam.DIRECTION, "ASC"),
     )
     filters = _parse_filter_specs(query_params)
     filter_group = FilterGroup(filters=tuple(filters)) if filters else None
@@ -309,7 +309,7 @@ def _make_handler(
     has_input_binding = plan is not None and plan.input_binding is not None
 
     def _resolve_profile(request: Request) -> str:
-        requested = request.query_params.get("profile")
+        requested = request.query_params.get(QueryParam.PROFILE)
         if requested is None:
             return compiled_route.effective_profile_default
 

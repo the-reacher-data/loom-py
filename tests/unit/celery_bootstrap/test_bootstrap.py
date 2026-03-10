@@ -17,6 +17,7 @@ from loom.celery.bootstrap import (
     _apply_job_config_if_present,
     _connect_worker_signals,
 )
+from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
 
 # ---------------------------------------------------------------------------
@@ -137,7 +138,7 @@ class TestBootstrapWorkerTaskRegistration:
 
     def test_task_registered_with_correct_name(self, tmp_path: Any) -> None:
         result = self._run(tmp_path)
-        expected = f"loom.job.{_SyncJob.__qualname__}"
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
 
     def test_celery_app_is_configured(self, tmp_path: Any) -> None:
@@ -203,7 +204,7 @@ class TestBootstrapWorkerTaskRegistration:
             }
         }
         result = self._run(tmp_path, extra_cfg=cfg)
-        expected = f"loom.job.{_SyncJob.__qualname__}"
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
 
     def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
@@ -218,7 +219,7 @@ class TestBootstrapWorkerTaskRegistration:
         finally:
             sys.modules.pop(module_name, None)
 
-        expected = f"loom.job.{_SyncJob.__qualname__}"
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
 
     def test_raises_when_no_jobs_and_no_discovery(self, tmp_path: Any) -> None:

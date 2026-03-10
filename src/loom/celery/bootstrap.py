@@ -62,10 +62,12 @@ from celery.signals import (  # type: ignore[import-untyped]
 )
 
 from loom.celery.config import CeleryConfig, JobConfig, apply_job_config, create_celery_app
+from loom.celery.constants import MANIFEST_ATTR
 from loom.celery.event_loop import WorkerEventLoop
 from loom.celery.runner import _make_callback_error_task, _make_callback_task, _make_job_task
 from loom.core.bootstrap import create_kernel
 from loom.core.config.errors import ConfigError
+from loom.core.config.keys import ConfigKey
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.discovery._utils import collect_from_modules, import_modules
@@ -124,8 +126,6 @@ class _WorkerAppConfig(msgspec.Struct, kw_only=True):
 # ---------------------------------------------------------------------------
 # Worker manifest — public typed contract for manifest-mode discovery
 # ---------------------------------------------------------------------------
-
-_MANIFEST_ATTR = "MANIFEST"
 
 
 @dataclass(frozen=True)
@@ -218,7 +218,7 @@ def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, Ses
     This keeps worker bootstrap lightweight for pure jobs that do not use DB.
     """
     try:
-        db_cfg = section(raw, "database", _WorkerDbConfig)
+        db_cfg = section(raw, ConfigKey.DATABASE, _WorkerDbConfig)
     except ConfigError:
         return None, None
 
@@ -248,7 +248,7 @@ def _apply_job_config_if_present(raw: DictConfig, job_type: type[Job[Any]]) -> N
         job_type: Concrete ``Job`` subclass to configure.
     """
     try:
-        cfg = section(raw, f"jobs.{job_type.__name__}", JobConfig)
+        cfg = section(raw, f"{ConfigKey.JOBS}.{job_type.__name__}", JobConfig)
         apply_job_config(job_type, cfg)
     except ConfigError:
         pass  # no override for this job — use ClassVar defaults
@@ -298,22 +298,22 @@ def _read_worker_manifest(module_path: str) -> WorkerManifest:
 
     Returns:
         The :class:`WorkerManifest` instance declared as
-        ``module.<_MANIFEST_ATTR>``.
+        ``module.<MANIFEST_ATTR>``.
 
     Raises:
         ValueError: When the module does not expose a ``MANIFEST``
             attribute or it is not a :class:`WorkerManifest` instance.
     """
     module = importlib.import_module(module_path)
-    manifest = getattr(module, _MANIFEST_ATTR, None)
+    manifest = getattr(module, MANIFEST_ATTR, None)
     if manifest is None:
         raise ValueError(
             f"Manifest module {module_path!r} must expose a "
-            f"{_MANIFEST_ATTR!r} attribute of type WorkerManifest."
+            f"{MANIFEST_ATTR!r} attribute of type WorkerManifest."
         )
     if not isinstance(manifest, WorkerManifest):
         raise TypeError(
-            f"{module_path!r}.{_MANIFEST_ATTR} must be a WorkerManifest, "
+            f"{module_path!r}.{MANIFEST_ATTR} must be a WorkerManifest, "
             f"got {type(manifest).__name__!r}."
         )
     return manifest
@@ -409,7 +409,7 @@ def _supplement_use_cases_from_discovery(
         Extended compilables tuple with discovered use-cases appended.
     """
     try:
-        app_cfg = section(raw, "app", _WorkerAppConfig)
+        app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
         discovered, _ = _discover_compilables_from_config(app_cfg.discovery)
     except (ConfigError, RuntimeError, ValueError, TypeError):
         return compilables
@@ -429,7 +429,7 @@ def _resolve_compilables_and_jobs(
         return compilables, jobs
 
     try:
-        app_cfg = section(raw, "app", _WorkerAppConfig)
+        app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
     except ConfigError as exc:
         raise RuntimeError(
             "No jobs provided and no app.discovery configured for worker bootstrap."
@@ -550,10 +550,10 @@ def bootstrap_worker(
         result.celery_app.start()
     """
     raw = load_config(*config_paths)
-    celery_cfg = section(raw, "celery", CeleryConfig)
+    celery_cfg = section(raw, ConfigKey.CELERY, CeleryConfig)
 
     try:
-        logger_cfg = section(raw, "logger", LoggerConfig)
+        logger_cfg = section(raw, ConfigKey.LOGGER, LoggerConfig)
     except ConfigError:
         logger_cfg = LoggerConfig()
     configure_logging_from_values(

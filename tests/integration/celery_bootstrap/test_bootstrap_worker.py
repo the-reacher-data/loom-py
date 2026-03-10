@@ -15,6 +15,7 @@ from celery import Celery  # type: ignore[import-untyped]
 import loom.celery.bootstrap as boot
 import loom.celery.runner as _runner
 from loom.celery.bootstrap import WorkerBootstrapResult, bootstrap_worker
+from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
 
 # ---------------------------------------------------------------------------
@@ -108,13 +109,13 @@ class TestBootstrapWorkerResult:
 
     def test_job_task_registered(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
-        task_name = f"loom.job.{_DoubleSyncJob.__qualname__}"
+        task_name = f"{TASK_JOB_PREFIX}.{_DoubleSyncJob.__qualname__}"
         assert task_name in result.celery_app.tasks
 
     def test_multiple_jobs_all_registered(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob, _UpperJob])
-        assert f"loom.job.{_DoubleSyncJob.__qualname__}" in result.celery_app.tasks
-        assert f"loom.job.{_UpperJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_JOB_PREFIX}.{_DoubleSyncJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_JOB_PREFIX}.{_UpperJob.__qualname__}" in result.celery_app.tasks
 
     def test_celery_conf_has_json_serializer(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
@@ -131,7 +132,7 @@ class TestBootstrapWorkerTaskExecution:
         ``Input()`` command construction by the executor.
         """
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
-        task_name = f"loom.job.{_DoubleSyncJob.__qualname__}"
+        task_name = f"{TASK_JOB_PREFIX}.{_DoubleSyncJob.__qualname__}"
         task = result.celery_app.tasks[task_name]
 
         eager_result = task.apply(kwargs={"params": {"value": 5}})
@@ -139,7 +140,7 @@ class TestBootstrapWorkerTaskExecution:
 
     def test_second_sync_task_executes_correctly(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_UpperJob])
-        task_name = f"loom.job.{_UpperJob.__qualname__}"
+        task_name = f"{TASK_JOB_PREFIX}.{_UpperJob.__qualname__}"
         task = result.celery_app.tasks[task_name]
 
         eager_result = task.apply(kwargs={"params": {"text": "hello"}})

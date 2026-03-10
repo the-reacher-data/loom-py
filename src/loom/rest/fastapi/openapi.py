@@ -19,6 +19,7 @@ from loom.core.command.introspection import (
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.repository.abc.query import PaginationMode, QuerySpec
 from loom.rest.compiler import CompiledRoute
+from loom.rest.constants import QueryParam
 
 JsonSchema = dict[str, Any]
 
@@ -29,23 +30,24 @@ _PARAM_REQUIRED = "required"
 _PARAM_SCHEMA = "schema"
 _PARAM_DESCRIPTION = "description"
 
-QUERY_PARAM_PAGE = "page"
-QUERY_PARAM_LIMIT = "limit"
-QUERY_PARAM_PAGINATION = "pagination"
-QUERY_PARAM_AFTER = "after"
-QUERY_PARAM_CURSOR = "cursor"
-QUERY_PARAM_SORT = "sort"
-QUERY_PARAM_DIRECTION = "direction"
-QUERY_PARAM_PROFILE = "profile"
+# Re-export for backwards compatibility — consumers may import from this module.
+QUERY_PARAM_PAGE = QueryParam.PAGE
+QUERY_PARAM_LIMIT = QueryParam.LIMIT
+QUERY_PARAM_PAGINATION = QueryParam.PAGINATION
+QUERY_PARAM_AFTER = QueryParam.AFTER
+QUERY_PARAM_CURSOR = QueryParam.CURSOR
+QUERY_PARAM_SORT = QueryParam.SORT
+QUERY_PARAM_DIRECTION = QueryParam.DIRECTION
+QUERY_PARAM_PROFILE = QueryParam.PROFILE
 
 QUERY_SPEC_PARAMETER_NAMES: tuple[str, ...] = (
-    QUERY_PARAM_PAGE,
-    QUERY_PARAM_LIMIT,
-    QUERY_PARAM_PAGINATION,
-    QUERY_PARAM_AFTER,
-    QUERY_PARAM_CURSOR,
-    QUERY_PARAM_SORT,
-    QUERY_PARAM_DIRECTION,
+    QueryParam.PAGE,
+    QueryParam.LIMIT,
+    QueryParam.PAGINATION,
+    QueryParam.AFTER,
+    QueryParam.CURSOR,
+    QueryParam.SORT,
+    QueryParam.DIRECTION,
 )
 
 _SCHEMA_DEFS_KEY = "$defs"

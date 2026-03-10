@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from celery import Celery  # type: ignore[import-untyped]
 
+from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import add_pending_dispatch
 from loom.core.job.handle import JobGroup, JobHandle
@@ -141,7 +142,7 @@ def _build_success_link(
         payload,
         task_id,
         trace_id,
-        name_prefix="loom.callback",
+        name_prefix=TASK_CALLBACK_PREFIX,
         immutable=False,
     )
 
@@ -171,7 +172,7 @@ def _build_failure_link(
         payload,
         task_id,
         trace_id,
-        name_prefix="loom.callback_error",
+        name_prefix=TASK_CALLBACK_ERROR_PREFIX,
         immutable=True,
     )
 
@@ -329,7 +330,7 @@ class CeleryJobService:
 
         pending = _PendingCeleryDispatch(
             celery_app=self._app,
-            task_name=f"loom.job.{job_type.__qualname__}",
+            task_name=f"{TASK_JOB_PREFIX}.{job_type.__qualname__}",
             task_id=task_id,
             payload=payload or {},
             params=params,

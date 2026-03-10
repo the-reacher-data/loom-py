@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from loom.celery.constants import TASK_JOB_PREFIX
 from loom.celery.service import CeleryJobService, _build_failure_link, _build_success_link
 from loom.core.engine.events import EventKind
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
@@ -99,7 +100,7 @@ class TestDispatchDeferred:
         service, mock_app = _make_service()
         service.dispatch(_EmailJob)
         await flush_pending_dispatches()
-        assert mock_app.send_task.call_args.args[0] == "loom.job._EmailJob"
+        assert mock_app.send_task.call_args.args[0] == f"{TASK_JOB_PREFIX}.{_EmailJob.__qualname__}"
 
     async def test_send_task_receives_payload_in_kwargs(self) -> None:
         service, mock_app = _make_service()
@@ -332,7 +333,10 @@ class TestDispatchParallel:
         service.dispatch_parallel([(_EmailJob, {}), (_HeavyJob, {})])
         await flush_pending_dispatches()
         names = {c.args[0] for c in mock_app.send_task.call_args_list}
-        assert names == {"loom.job._EmailJob", "loom.job._HeavyJob"}
+        assert names == {
+            f"{TASK_JOB_PREFIX}.{_EmailJob.__qualname__}",
+            f"{TASK_JOB_PREFIX}.{_HeavyJob.__qualname__}",
+        }
 
     def test_handles_have_unique_job_ids(self) -> None:
         service, _ = _make_service()

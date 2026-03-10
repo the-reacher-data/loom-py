@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from loom.core.errors.codes import ErrorCode
+
 
 class LoomError(Exception):
     """Base class for all framework errors.
@@ -46,7 +48,7 @@ class SystemError(LoomError):
     """
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="system_error")
+        super().__init__(message, code=ErrorCode.SYSTEM_ERROR)
 
 
 class NotFound(DomainError):
@@ -68,7 +70,7 @@ class NotFound(DomainError):
     def __init__(self, entity: str, *, id: Any) -> None:
         self.entity = entity
         self.id = id
-        super().__init__(f"{entity} with id={id!r} not found", code="not_found")
+        super().__init__(f"{entity} with id={id!r} not found", code=ErrorCode.NOT_FOUND)
 
 
 class Forbidden(DomainError):
@@ -79,7 +81,7 @@ class Forbidden(DomainError):
     """
 
     def __init__(self, message: str = "Forbidden") -> None:
-        super().__init__(message, code="forbidden")
+        super().__init__(message, code=ErrorCode.FORBIDDEN)
 
 
 class Conflict(DomainError):
@@ -90,7 +92,7 @@ class Conflict(DomainError):
     """
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, code="conflict")
+        super().__init__(message, code=ErrorCode.CONFLICT)
 
 
 class RuleViolation(DomainError):
@@ -109,7 +111,7 @@ class RuleViolation(DomainError):
         self.field = field
         # Override message attr with just the violation message (not field-prefixed)
         # so adapters can access field and message independently.
-        super().__init__(f"{field}: {message}", code="rule_violation")
+        super().__init__(f"{field}: {message}", code=ErrorCode.RULE_VIOLATION)
         self.message = message
 
 
@@ -126,4 +128,4 @@ class RuleViolations(DomainError):
     def __init__(self, violations: Sequence[RuleViolation]) -> None:
         self.violations: tuple[RuleViolation, ...] = tuple(violations)
         messages = "; ".join(str(v) for v in self.violations)
-        super().__init__(messages, code="rule_violations")
+        super().__init__(messages, code=ErrorCode.RULE_VIOLATIONS)
