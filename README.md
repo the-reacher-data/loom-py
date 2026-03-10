@@ -414,3 +414,11 @@ The full benchmark suite is available in [`dummy-loom`](https://github.com/the-r
 ## Status
 
 Project under active development.
+
+---
+
+## Author
+
+Designed and built by [Massive Data Scope](mailto:massivedatascope@gmail.com).
+
+For questions, feedback, or collaboration: **massivedatascope@gmail.com**
