@@ -53,7 +53,7 @@ import importlib
 import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -89,6 +89,8 @@ if TYPE_CHECKING:
     from omegaconf import DictConfig
 
     from loom.core.engine.metrics import MetricsAdapter
+
+_T = TypeVar("_T")
 
 
 # ---------------------------------------------------------------------------
@@ -297,33 +299,25 @@ def _use_cases_from_interfaces(interfaces: Sequence[type[Any]]) -> tuple[type[Co
     )
 
 
-def _merge_compilables(
-    use_cases: Sequence[type[Compilable]],
-    jobs: Sequence[type[Job[Any]]],
-) -> tuple[type[Compilable], ...]:
-    merged: list[type[Compilable]] = []
-    seen: set[type[Compilable]] = set()
-    for item in (*use_cases, *jobs):
-        if item in seen:
-            continue
-        merged.append(item)
-        seen.add(item)
-    return tuple(merged)
+# ---------------------------------------------------------------------------
+# Sequence utilities
+# ---------------------------------------------------------------------------
 
 
-def _merge_callbacks(
-    first: Sequence[type[Any]],
-    second: Sequence[type[Any]],
-) -> tuple[type[Any], ...]:
-    """Merge callback classes preserving declaration order and uniqueness."""
-    merged: list[type[Any]] = []
-    seen: set[type[Any]] = set()
+def _merge_unique(first: Sequence[_T], second: Sequence[_T]) -> tuple[_T, ...]:
+    """Merge two sequences preserving declaration order and uniqueness."""
+    seen: set[Any] = set()
+    result: list[_T] = []
     for item in (*first, *second):
-        if item in seen:
-            continue
-        merged.append(item)
-        seen.add(item)
-    return tuple(merged)
+        if item not in seen:
+            result.append(item)
+            seen.add(item)
+    return tuple(result)
+
+
+# ---------------------------------------------------------------------------
+# Callback discovery
+# ---------------------------------------------------------------------------
 
 
 def _is_callback_class(value: type[Any]) -> bool:
@@ -353,11 +347,20 @@ def _discover_callbacks_from_modules(modules: list[Any]) -> tuple[type[Any], ...
     return tuple(discovered)
 
 
-def _read_manifest_struct(module: Any, module_path: str) -> WorkerManifest | None:
-    """Reject private typed MANIFEST for worker discovery."""
-    manifest = getattr(module, WorkerManifestAttr.MANIFEST, None)
-    if manifest is None:
-        return None
+# ---------------------------------------------------------------------------
+# Manifest reading
+# ---------------------------------------------------------------------------
+
+
+def _reject_private_manifest(module: Any, module_path: str) -> None:
+    """Raise if the module exposes a private MANIFEST struct.
+
+    The old ``MANIFEST = WorkerManifest(...)`` pattern is no longer part
+    of the public API.  Components must be declared via the public list
+    attributes (MODELS / USE_CASES / INTERFACES / JOBS / CALLBACKS).
+    """
+    if getattr(module, WorkerManifestAttr.MANIFEST, None) is None:
+        return
     raise ValueError(
         f"{module_path!r}.{WorkerManifestAttr.MANIFEST} is not part of the public manifest API. "
         f"Declare components via {WorkerManifestAttr.MODELS}/{WorkerManifestAttr.USE_CASES}/"
@@ -403,8 +406,13 @@ def _read_worker_manifest(module_path: str) -> WorkerManifest:
         A normalized :class:`WorkerManifest`.
     """
     module = importlib.import_module(module_path)
-    _read_manifest_struct(module, module_path)
+    _reject_private_manifest(module, module_path)
     return _read_manifest_lists(module, module_path)
+
+
+# ---------------------------------------------------------------------------
+# AutoCRUD and compilables helpers
+# ---------------------------------------------------------------------------
 
 
 def _autocrud_use_cases_from_models(
@@ -457,30 +465,21 @@ def _build_worker_compilables(manifest: WorkerManifest) -> tuple[type[Compilable
             use_cases.append(uc)
             seen.add(uc)
 
-    return _merge_compilables(use_cases, manifest.jobs)
+    return _merge_unique(use_cases, manifest.jobs)
 
 
-def _resolved_from_parts(
-    *,
-    models: Sequence[type[Any]],
-    use_cases: Sequence[type[Compilable]],
-    interfaces: Sequence[type[Any]],
-    jobs: Sequence[type[Job[Any]]],
-    callbacks: Sequence[type[Any]],
-) -> _WorkerResolved:
-    """Build a normalized worker graph from discovered component collections."""
-    manifest = WorkerManifest(
-        models=tuple(models),
-        use_cases=tuple(use_cases),
-        interfaces=tuple(interfaces),
-        jobs=tuple(jobs),
-        callbacks=tuple(callbacks),
-    )
+# ---------------------------------------------------------------------------
+# Worker graph construction
+# ---------------------------------------------------------------------------
+
+
+def _resolved_from_manifest(manifest: WorkerManifest) -> _WorkerResolved:
+    """Build a normalized worker graph from a fully populated WorkerManifest."""
     return _WorkerResolved(
         compilables=_build_worker_compilables(manifest),
-        jobs=tuple(jobs),
-        models=tuple(models),
-        callbacks=tuple(callbacks),
+        jobs=tuple(manifest.jobs),
+        models=tuple(manifest.models),
+        callbacks=tuple(manifest.callbacks),
     )
 
 
@@ -489,25 +488,20 @@ def _discover_from_modules(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
     modules = import_modules(discovery_cfg.modules.include)
     models, use_cases, interfaces, discovered_jobs = collect_from_modules(modules)
     callbacks = _discover_callbacks_from_modules(modules)
-    return _resolved_from_parts(
-        models=models,
-        use_cases=use_cases,
-        interfaces=interfaces,
-        jobs=discovered_jobs,
-        callbacks=callbacks,
+    return _resolved_from_manifest(
+        WorkerManifest(
+            models=tuple(models),
+            use_cases=tuple(use_cases),
+            interfaces=tuple(interfaces),
+            jobs=tuple(discovered_jobs),
+            callbacks=callbacks,
+        )
     )
 
 
 def _discover_from_manifest(discovery_cfg: _DiscoveryConfig) -> _WorkerResolved:
     """Discover worker components from a manifest module."""
-    manifest = _read_worker_manifest(discovery_cfg.manifest.module)
-    return _resolved_from_parts(
-        models=manifest.models,
-        use_cases=manifest.use_cases,
-        interfaces=manifest.interfaces,
-        jobs=manifest.jobs,
-        callbacks=manifest.callbacks,
-    )
+    return _resolved_from_manifest(_read_worker_manifest(discovery_cfg.manifest.module))
 
 
 def _discover_compilables_from_config(
@@ -519,40 +513,8 @@ def _discover_compilables_from_config(
     return _discover_from_manifest(discovery_cfg)
 
 
-def _supplement_use_cases_from_discovery(
-    raw: DictConfig,
-    compilables: tuple[type[Compilable], ...],
-) -> tuple[type[Compilable], ...]:
-    """Add use-cases discovered via ``app.discovery`` to an explicit compilables set.
-
-    When explicit ``jobs=`` are provided to :func:`bootstrap_worker` the
-    discovery path is skipped, but callbacks may still require use-cases
-    registered in the ``UseCaseRegistry``.  When ``app.discovery`` is
-    present in the YAML (e.g. inherited from a base config), this helper
-    supplements the explicit compilables with the discovered use-cases so
-    callbacks can call ``ApplicationInvoker`` without any code change.
-
-    Silently returns *compilables* unchanged if ``app.discovery`` is absent
-    or fails to load.
-
-    Args:
-        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
-        compilables: Explicit compilables already resolved.
-
-    Returns:
-        Extended compilables tuple with discovered use-cases appended.
-    """
-    try:
-        app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
-        discovered = _discover_compilables_from_config(app_cfg.discovery)
-    except (ConfigError, RuntimeError, ValueError, TypeError):
-        return compilables
-    seen = set(compilables)
-    return (*compilables, *(c for c in discovered.compilables if c not in seen))
-
-
-def _discover_worker_components_or_empty(raw: DictConfig) -> _WorkerResolved:
-    """Best-effort discovery helper used to supplement explicit bootstrap."""
+def _try_discover_components(raw: DictConfig) -> _WorkerResolved:
+    """Best-effort discovery; returns empty _WorkerResolved if config is absent."""
     try:
         app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
         return _discover_compilables_from_config(app_cfg.discovery)
@@ -568,11 +530,11 @@ def _resolve_compilables_and_jobs(
     """Resolve worker components from explicit args and/or discovery config."""
     if explicit_jobs or explicit_use_cases:
         jobs = tuple(explicit_jobs)
-        compilables = _merge_compilables(explicit_use_cases, jobs)
-        discovered = _discover_worker_components_or_empty(raw)
-        compilables = _supplement_use_cases_from_discovery(raw, compilables)
+        compilables = _merge_unique(explicit_use_cases, jobs)
+        discovered = _try_discover_components(raw)
+        extra = tuple(c for c in discovered.compilables if c not in set(compilables))
         return _WorkerResolved(
-            compilables=compilables,
+            compilables=(*compilables, *extra),
             jobs=jobs,
             models=discovered.models,
             callbacks=discovered.callbacks,
@@ -591,6 +553,11 @@ def _resolve_compilables_and_jobs(
             "Add JOBS to manifest or include job modules in app.discovery."
         )
     return discovered
+
+
+# ---------------------------------------------------------------------------
+# Repository registration
+# ---------------------------------------------------------------------------
 
 
 def _register_repositories(
@@ -629,6 +596,52 @@ def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel],
     reset_registry()
     compile_all(*ordered)
     return ordered
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_worker helpers — extracted pipeline steps
+# ---------------------------------------------------------------------------
+
+
+def _configure_logging(raw: DictConfig) -> None:
+    """Configure structlog from YAML logger section, falling back to defaults."""
+    try:
+        logger_cfg = section(raw, ConfigKey.LOGGER, LoggerConfig)
+    except ConfigError:
+        logger_cfg = LoggerConfig()
+    configure_logging_from_values(
+        name=logger_cfg.name,
+        environment=logger_cfg.environment,
+        renderer=logger_cfg.renderer,
+        colors=logger_cfg.colors,
+        level=logger_cfg.level,
+        handlers=logger_cfg.handlers,
+    )
+
+
+def _compile_db_layer(
+    session_manager: SessionManager | None,
+    models: Sequence[type[BaseModel]],
+    user_modules: Sequence[Callable[[LoomContainer], None]],
+) -> tuple[tuple[type[BaseModel], ...], tuple[Callable[[LoomContainer], None], ...]]:
+    """Compile models and register repositories; no-op when DB is not configured.
+
+    Args:
+        session_manager: Active session manager, or ``None`` for pure jobs.
+        models: Model classes discovered or declared for this worker.
+        user_modules: Container modules provided by the caller.
+
+    Returns:
+        Tuple of (normalized_models, runtime_modules).  When no DB is
+        configured or no models are present, original values pass through.
+    """
+    base = tuple(user_modules)
+    if session_manager is None:
+        return tuple(models), base
+    normalized = _compile_models(models)
+    if not normalized:
+        return tuple(models), base
+    return normalized, (*base, _register_repositories(session_manager, normalized))
 
 
 def _emit_worker_init_graph(components: _WorkerResolved) -> None:
@@ -753,60 +766,25 @@ def bootstrap_worker(
     """
     raw = load_config(*config_paths)
     celery_cfg = section(raw, ConfigKey.CELERY, CeleryConfig)
-
-    try:
-        logger_cfg = section(raw, ConfigKey.LOGGER, LoggerConfig)
-    except ConfigError:
-        logger_cfg = LoggerConfig()
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment,
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        handlers=logger_cfg.handlers,
-    )
+    _configure_logging(raw)
 
     resolved = _resolve_compilables_and_jobs(raw, jobs, use_cases)
-    interface_use_cases = _use_cases_from_interfaces(interfaces)
-    if interface_use_cases:
-        seen = set(resolved.compilables)
-        resolved = _WorkerResolved(
-            compilables=(
-                *resolved.compilables,
-                *(uc for uc in interface_use_cases if uc not in seen),
-            ),
-            jobs=resolved.jobs,
-            models=resolved.models,
-            callbacks=resolved.callbacks,
-        )
+    all_compilables = _merge_unique(
+        resolved.compilables,
+        _use_cases_from_interfaces(interfaces),
+    )
 
     for job_type in resolved.jobs:
         _apply_job_config_if_present(raw, job_type)
 
     uow_factory, session_manager = _resolve_uow_factory(raw)
-    normalized_models: tuple[type[BaseModel], ...] = ()
-    runtime_modules: tuple[Callable[[LoomContainer], None], ...] = tuple(modules)
-    if session_manager is not None:
-        normalized_models = _compile_models(resolved.models)
-        if normalized_models:
-            runtime_modules = (
-                *runtime_modules,
-                _register_repositories(session_manager, normalized_models),
-            )
-            resolved = _WorkerResolved(
-                compilables=resolved.compilables,
-                jobs=resolved.jobs,
-                models=normalized_models,
-                callbacks=resolved.callbacks,
-            )
+    final_models, runtime_modules = _compile_db_layer(session_manager, resolved.models, modules)
 
-    merged_callbacks = _merge_callbacks(resolved.callbacks, callbacks)
     resolved = _WorkerResolved(
-        compilables=resolved.compilables,
+        compilables=all_compilables,
         jobs=resolved.jobs,
-        models=resolved.models,
-        callbacks=merged_callbacks,
+        models=final_models,
+        callbacks=_merge_unique(resolved.callbacks, callbacks),
     )
     _emit_worker_init_graph(resolved)
 
