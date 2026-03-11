@@ -80,12 +80,16 @@ intersphinx_mapping = {
 # Optional dependencies are mocked to keep docs builds lightweight and stable.
 autodoc_mock_imports = [
     "aiocache",
+    "celery",
     "fastapi",
+    "kombu",
     "omegaconf",
     "prometheus_client",
     "pydantic",
     "pyspark",
+    "redis",
     "sqlalchemy",
+    "starlette",
     "uvicorn",
 ]
 

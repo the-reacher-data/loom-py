@@ -186,11 +186,14 @@ CREATE_NORMALIZE_PRICE = Compute.set(F(CreateProduct).price).from_command(
 Computes can read multiple fields:
 
 ```python
+def _compute_subtotal(unit_price: float, quantity: int) -> float:
+    return unit_price * quantity
+
 # Derives subtotal from unit_price × quantity
 CREATE_SUBTOTAL = Compute.set(F(PricingCommand).subtotal).from_command(
     F(PricingCommand).unit_price,
     F(PricingCommand).quantity,
-    via=lambda price, qty: price * qty,
+    via=_compute_subtotal,
 )
 ```
 
