@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/_static/logo-transparent.png" alt="loom-kernel" width="280" height="90" />
+  <img src="docs/_static/logo-transparent.png" alt="loom-kernel" width="160" style="background:#ffffff;border-radius:6px;padding:8px 20px;" />
 </p>
 
 # loom-kernel
