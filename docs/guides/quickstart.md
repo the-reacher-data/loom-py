@@ -100,11 +100,14 @@ def _name_must_not_be_blank(full_name: str) -> str | None:
 def _email_must_be_valid(email: str) -> str | None:
     return None if _EMAIL_RE.fullmatch(email) else "email must be valid"
 
+def _email_is_taken(cmd: CreateUser, fields_set: frozenset[str], email_exists: bool) -> bool:
+    return email_exists
+
 class CreateUserUseCase(UseCase[User, User]):
     rules = [
         Rule.check(F(CreateUser).full_name, via=_name_must_not_be_blank),
         Rule.check(F(CreateUser).email, via=_email_must_be_valid),
-        Rule.forbid(lambda _, __, exists: exists, message="email already exists").from_params("email_exists"),
+        Rule.forbid(_email_is_taken, message="email already exists").from_params("email_exists"),
     ]
 
     async def execute(
@@ -369,23 +372,38 @@ For compute-heavy write flows, declare field derivations and run them before rul
 ```python
 from loom.core.use_case import Compute, F
 
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+def _compute_subtotal(unit_price: float, quantity: int) -> float:
+    return unit_price * quantity
+
+def _compute_tax(subtotal: float, tax_rate: float) -> float:
+    return subtotal * tax_rate
+
+def _unit_price_invalid(unit_price: float) -> bool:
+    return unit_price <= 0
+
+def _country_unsupported(country: str) -> bool:
+    return country not in TAX_RATES
+
 class PricingPreviewUseCase(UseCase[Record, PricingPreviewResponse]):
     computes = (
         Compute.set(F(PricingCommand).normalized_email).from_command(
-            F(PricingCommand).email, via=lambda v: v.strip().lower(),
+            F(PricingCommand).email, via=_normalize_email,
         ),
         Compute.set(F(PricingCommand).subtotal).from_command(
             F(PricingCommand).unit_price, F(PricingCommand).quantity,
-            via=lambda price, qty: price * qty,
+            via=_compute_subtotal,
         ),
         Compute.set(F(PricingCommand).tax_amount).from_command(
             F(PricingCommand).subtotal, F(PricingCommand).tax_rate,
-            via=lambda sub, rate: sub * rate,
+            via=_compute_tax,
         ),
     )
     rules = (
-        Rule.check(F(PricingCommand).unit_price, via=lambda v: v <= 0, message="unit_price must be > 0"),
-        Rule.check(F(PricingCommand).country, via=lambda v: v not in TAX_RATES, message="Unsupported country"),
+        Rule.check(F(PricingCommand).unit_price, via=_unit_price_invalid, message="unit_price must be > 0"),
+        Rule.check(F(PricingCommand).country, via=_country_unsupported, message="Unsupported country"),
     )
 
     async def execute(self, record_id: int, cmd: PricingCommand = Input()) -> PricingPreviewResponse:
