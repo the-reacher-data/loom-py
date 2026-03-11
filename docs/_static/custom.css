@@ -5,7 +5,9 @@
 
 .loom-hero img {
   display: inline-block;
-  width: 280px;
-  height: 90px;
-  object-fit: fill;
+  width: 160px;
+  height: auto;
+  background: #ffffff;
+  border-radius: 6px;
+  padding: 8px 20px;
 }
