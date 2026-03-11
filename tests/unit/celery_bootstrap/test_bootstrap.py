@@ -326,6 +326,10 @@ def isolated_celery_signals() -> Any:
     ``_connect_worker_signals`` registers closures with ``weak=False``.
     Without isolation, receivers accumulate across tests and assertions
     like ``assert_called_once()`` see multiple calls (one per handler).
+
+    Also resets ``boot._SIGNALS_CONNECTED`` so the guard introduced for
+    production idempotency does not cause the function to no-op in tests
+    that call ``_connect_worker_signals`` directly.
     """
     from celery.signals import (  # type: ignore[import-untyped]
         worker_process_init,
@@ -334,13 +338,16 @@ def isolated_celery_signals() -> Any:
 
     saved_init = list(worker_process_init.receivers)
     saved_shutdown = list(worker_process_shutdown.receivers)
+    saved_connected = boot._SIGNALS_CONNECTED
     # Start each test with a clean slate so accumulated handlers from prior
     # bootstrap_worker() calls do not inflate assertion call counts.
     worker_process_init.receivers[:] = []
     worker_process_shutdown.receivers[:] = []
+    boot._SIGNALS_CONNECTED = False
     yield
     worker_process_init.receivers[:] = saved_init
     worker_process_shutdown.receivers[:] = saved_shutdown
+    boot._SIGNALS_CONNECTED = saved_connected
 
 
 class TestWorkerSignals:
