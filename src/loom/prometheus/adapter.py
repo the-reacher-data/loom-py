@@ -30,12 +30,25 @@ from loom.core.engine.events import EventKind, RuntimeEvent
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry, Counter, Histogram
 
+# Singleton instruments for the global default registry.  A module-level
+# cache prevents duplicate-collector errors when more than one adapter
+# instance is created in the same process (e.g. multiple apps, dev reload,
+# or tests that omit an explicit registry).  Adapters that pass a custom
+# registry always receive fresh instruments — test isolation is unaffected.
+_GLOBAL_INSTRUMENTS: tuple[Counter, Histogram, Counter] | None = None
 
-def _make_instruments(
+
+def _create_instruments(
     registry: CollectorRegistry | None,
 ) -> tuple[Counter, Histogram, Counter]:
-    """Initialise Prometheus instruments lazily to avoid import errors when
-    the optional dependency is absent at module-import time.
+    """Create Prometheus instruments bound to *registry*.
+
+    Args:
+        registry: Target ``CollectorRegistry``.  ``None`` uses the
+            prometheus_client global default registry.
+
+    Returns:
+        Triple of ``(requests_total, duration_seconds, errors_total)``.
     """
     from prometheus_client import Counter, Histogram
 
@@ -59,6 +72,30 @@ def _make_instruments(
         **reg,
     )
     return requests_total, duration_seconds, errors_total
+
+
+def _get_instruments(
+    registry: CollectorRegistry | None,
+) -> tuple[Counter, Histogram, Counter]:
+    """Return instruments, creating them if needed.
+
+    When *registry* is ``None`` (global default), instruments are created
+    once and reused for the lifetime of the process.  When a custom
+    registry is provided, fresh instruments are always returned so that
+    test suites with isolated registries do not share state.
+
+    Args:
+        registry: Custom registry or ``None`` for the global default.
+
+    Returns:
+        Triple of ``(requests_total, duration_seconds, errors_total)``.
+    """
+    global _GLOBAL_INSTRUMENTS
+    if registry is not None:
+        return _create_instruments(registry)
+    if _GLOBAL_INSTRUMENTS is None:
+        _GLOBAL_INSTRUMENTS = _create_instruments(None)
+    return _GLOBAL_INSTRUMENTS
 
 
 class PrometheusMetricsAdapter:
@@ -86,6 +123,8 @@ class PrometheusMetricsAdapter:
         registry: Optional ``CollectorRegistry``.  Defaults to
             ``prometheus_client.REGISTRY`` (the global default registry).
             Pass a custom registry in tests to avoid cross-test pollution.
+            Multiple adapter instances sharing the default registry reuse
+            the same instruments — no duplicate-collector errors.
 
     Example::
 
@@ -96,7 +135,7 @@ class PrometheusMetricsAdapter:
     """
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
-        self._requests_total, self._duration_seconds, self._errors_total = _make_instruments(
+        self._requests_total, self._duration_seconds, self._errors_total = _get_instruments(
             registry
         )
 

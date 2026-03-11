@@ -91,6 +91,9 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
+# Guard: signals must be connected exactly once per process.
+_SIGNALS_CONNECTED: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Local config structs — private to this module
@@ -199,13 +202,18 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
     * ``worker_process_shutdown`` — disposes the session manager through
       the event loop, then shuts the loop down.
 
-    Must be called once during :func:`bootstrap_worker`.
+    Idempotent: subsequent calls within the same process are no-ops.
+    This prevents handler accumulation when :func:`bootstrap_worker` is
+    called more than once (e.g. in integration tests without full isolation).
 
     Args:
         session_manager: The shared :class:`~SessionManager` instance
             (created pre-fork with a lazy engine).  Disposed per-process
             on shutdown.
     """
+    global _SIGNALS_CONNECTED
+    if _SIGNALS_CONNECTED:
+        return
 
     def _on_init(**kwargs: Any) -> None:
         WorkerEventLoop.initialize()
@@ -227,6 +235,7 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
+    _SIGNALS_CONNECTED = True
 
 
 def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
