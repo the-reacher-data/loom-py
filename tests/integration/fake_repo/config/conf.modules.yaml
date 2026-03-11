@@ -1,6 +1,7 @@
+includes:
+  - conf.yaml
+
 app:
-  name: fake_repo
-  code_path: ../../..
   discovery:
     mode: modules
     modules:
@@ -9,20 +10,6 @@ app:
         - tests.integration.fake_repo.product.category.model
         - tests.integration.fake_repo.product.review.model
         - tests.integration.fake_repo.product.relations
+        - tests.integration.fake_repo.product.repository
         - tests.integration.fake_repo.product.use_cases
         - tests.integration.fake_repo.product.interface
-  rest:
-    backend: fastapi
-    title: Fake Repo Integration API
-    version: 1.0.0
-    docs_url: /docs
-    redoc_url: /redoc
-
-database:
-  url: ${oc.env:LOOM_TEST_DATABASE_URL}
-  echo: false
-  pool_pre_ping: true
-
-metrics:
-  enabled: false
-  path: /metrics

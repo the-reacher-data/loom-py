@@ -10,6 +10,7 @@ from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.model import BaseModel, ColumnField
 from loom.core.model.enums import Cardinality, ServerDefault
 from loom.core.model.relation import RelationField
+from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.use_case import UseCase
 from loom.rest.autocrud import (
     _derive_create_struct,
@@ -71,38 +72,40 @@ class TestBuildAutoRoutes:
         assert len(routes) == 5
 
     def test_include_filters_ops(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("create", "get"))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.CREATE, CrudOp.GET))
         assert len(routes) == 2
         methods = {r.method for r in routes}
         assert methods == {"POST", "GET"}
 
     def test_create_has_status_201(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("create",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.CREATE,))
         assert routes[0].status_code == 201
 
     def test_non_create_have_status_200(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("get", "list", "update", "delete"))
+        routes = build_auto_routes(
+            _IntItem, include=(CrudOp.GET, CrudOp.LIST, CrudOp.UPDATE, CrudOp.DELETE)
+        )
         for route in routes:
             assert route.status_code == 200
 
     def test_get_path_is_slash_id(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("get",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.GET,))
         assert routes[0].path == "/{id}"
 
     def test_list_path_is_slash(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("list",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.LIST,))
         assert routes[0].path == "/"
 
     def test_create_path_is_slash(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("create",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.CREATE,))
         assert routes[0].path == "/"
 
     def test_update_path_is_slash_id(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("update",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.UPDATE,))
         assert routes[0].path == "/{id}"
 
     def test_delete_path_is_slash_id(self) -> None:
-        routes = build_auto_routes(_IntItem, include=("delete",))
+        routes = build_auto_routes(_IntItem, include=(CrudOp.DELETE,))
         assert routes[0].path == "/{id}"
 
     def test_all_routes_are_rest_route_instances(self) -> None:
@@ -133,7 +136,7 @@ class TestAutoCrudCache:
 
         a_ucs = _get_or_create(_A)
         b_ucs = _get_or_create(_B)
-        assert a_ucs["create"] is not b_ucs["create"]
+        assert a_ucs[CrudOp.CREATE] is not b_ucs[CrudOp.CREATE]
 
     def test_cache_contains_input_structs(self) -> None:
         class _Cached(msgspec.Struct):
@@ -142,8 +145,8 @@ class TestAutoCrudCache:
         ucs = _get_or_create(_Cached)
         assert "create_input" in ucs
         assert "update_input" in ucs
-        assert issubclass(ucs["create_input"], Command)
-        assert issubclass(ucs["update_input"], Command)
+        assert issubclass(ucs["create_input"], Command)  # not a CrudOp key
+        assert issubclass(ucs["update_input"], Command)  # not a CrudOp key
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +158,7 @@ class TestAutoCrudUseCaseCompilation:
     def test_create_uc_compiles_via_use_case_compiler(self) -> None:
         compiler = UseCaseCompiler()
         ucs = _get_or_create(_IntItem)
-        plan = compiler.compile(ucs["create"])
+        plan = compiler.compile(ucs[CrudOp.CREATE])
         assert plan is not None
         assert plan.input_binding is not None
         assert plan.input_binding.name == "cmd"
@@ -163,14 +166,14 @@ class TestAutoCrudUseCaseCompilation:
     def test_get_uc_compiles_via_use_case_compiler(self) -> None:
         compiler = UseCaseCompiler()
         ucs = _get_or_create(_IntItem)
-        plan = compiler.compile(ucs["get"])
+        plan = compiler.compile(ucs[CrudOp.GET])
         assert plan is not None
         assert any(pb.name == "id" for pb in plan.param_bindings)
 
     def test_list_uc_compiles_via_use_case_compiler(self) -> None:
         compiler = UseCaseCompiler()
         ucs = _get_or_create(_IntItem)
-        plan = compiler.compile(ucs["list"])
+        plan = compiler.compile(ucs[CrudOp.LIST])
         assert plan is not None
         # query is a ParamBinding (not Input), profile is also a ParamBinding
         param_names = {pb.name for pb in plan.param_bindings}
@@ -179,7 +182,7 @@ class TestAutoCrudUseCaseCompilation:
     def test_update_uc_compiles_via_use_case_compiler(self) -> None:
         compiler = UseCaseCompiler()
         ucs = _get_or_create(_IntItem)
-        plan = compiler.compile(ucs["update"])
+        plan = compiler.compile(ucs[CrudOp.UPDATE])
         assert plan is not None
         assert plan.input_binding is not None
         assert any(pb.name == "id" for pb in plan.param_bindings)
@@ -187,7 +190,7 @@ class TestAutoCrudUseCaseCompilation:
     def test_delete_uc_compiles_via_use_case_compiler(self) -> None:
         compiler = UseCaseCompiler()
         ucs = _get_or_create(_IntItem)
-        plan = compiler.compile(ucs["delete"])
+        plan = compiler.compile(ucs[CrudOp.DELETE])
         assert plan is not None
         assert any(pb.name == "id" for pb in plan.param_bindings)
 
@@ -196,7 +199,7 @@ class TestAutoCrudUseCaseCompilation:
         import typing
 
         ucs = _get_or_create(_IntItem)
-        create_uc = ucs["create"]
+        create_uc = ucs[CrudOp.CREATE]
         for base in getattr(create_uc, "__orig_bases__", ()):
             if typing.get_origin(base) is UseCase:
                 args = typing.get_args(base)
@@ -207,7 +210,7 @@ class TestAutoCrudUseCaseCompilation:
 
     def test_generated_use_cases_have_typed_return_annotations(self) -> None:
         ucs = _get_or_create(_IntItem)
-        for op in ("create", "get", "list", "update", "delete"):
+        for op in CrudOp:
             use_case = ucs[op]
             return_hint = use_case.execute.__annotations__.get("return")
             assert return_hint is not None

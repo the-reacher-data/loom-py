@@ -5,16 +5,52 @@ from __future__ import annotations
 import importlib
 import inspect
 import typing
+from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any
 
 import msgspec
 
+from loom.core.job.job import Job
 from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface
 
 ItemT = typing.TypeVar("ItemT")
+_LocalClassResolver = typing.Callable[[type[Any]], type[Any] | None]
+
+
+@dataclass
+class _DiscoveryCollector:
+    models: list[type[BaseModel]] = field(default_factory=list)
+    use_cases: list[type[UseCase[object, object]]] = field(default_factory=list)
+    interfaces: list[type[RestInterface[object]]] = field(default_factory=list)
+    jobs: list[type[Job[Any]]] = field(default_factory=list)
+
+    _seen_models: set[type[BaseModel]] = field(default_factory=set)
+    _seen_use_cases: set[type[UseCase[object, object]]] = field(default_factory=set)
+    _seen_interfaces: set[type[RestInterface[object]]] = field(default_factory=set)
+    _seen_jobs: set[type[Job[Any]]] = field(default_factory=set)
+
+    def append_model(self, value: type[Any]) -> None:
+        _append_unique(self.models, self._seen_models, typing.cast(type[BaseModel], value))
+
+    def append_use_case(self, value: type[Any]) -> None:
+        _append_unique(
+            self.use_cases,
+            self._seen_use_cases,
+            typing.cast(type[UseCase[object, object]], value),
+        )
+
+    def append_interface(self, value: type[Any]) -> None:
+        _append_unique(
+            self.interfaces,
+            self._seen_interfaces,
+            typing.cast(type[RestInterface[object]], value),
+        )
+
+    def append_job(self, value: type[Any]) -> None:
+        _append_unique(self.jobs, self._seen_jobs, typing.cast(type[Job[Any]], value))
 
 
 def import_modules(module_paths: list[str]) -> list[ModuleType]:
@@ -50,42 +86,51 @@ def _as_interface(cls: type[Any]) -> type[RestInterface[object]] | None:
     return None
 
 
+def _as_job(cls: type[Any]) -> type[Job[Any]] | None:
+    if issubclass(cls, Job) and cls is not Job:
+        return cls
+    return None
+
+
+def _append_discovered_class(
+    cls: type[Any],
+    collector: _DiscoveryCollector,
+) -> None:
+    appenders: tuple[
+        tuple[_LocalClassResolver, typing.Callable[[type[Any]], None]],
+        ...,
+    ] = (
+        (_as_model, collector.append_model),
+        (_as_use_case, collector.append_use_case),
+        (_as_interface, collector.append_interface),
+        (_as_job, collector.append_job),
+    )
+    for resolver, append in appenders:
+        discovered = resolver(cls)
+        if discovered is None:
+            continue
+        append(discovered)
+        return
+
+
 def collect_from_modules(
     modules: list[ModuleType],
 ) -> tuple[
     list[type[BaseModel]],
     list[type[UseCase[object, object]]],
     list[type[RestInterface[object]]],
+    list[type[Job[Any]]],
 ]:
-    models: list[type[BaseModel]] = []
-    use_cases: list[type[UseCase[object, object]]] = []
-    interfaces: list[type[RestInterface[object]]] = []
-
-    seen_models: set[type[BaseModel]] = set()
-    seen_use_cases: set[type[UseCase[object, object]]] = set()
-    seen_interfaces: set[type[RestInterface[object]]] = set()
+    collector = _DiscoveryCollector()
 
     for module in modules:
         module_name = module.__name__
         for _, cls in inspect.getmembers(module, inspect.isclass):
             if not _is_local_class(cls, module_name):
                 continue
+            _append_discovered_class(cls, collector)
 
-            model = _as_model(cls)
-            if model is not None:
-                _append_unique(models, seen_models, model)
-                continue
-
-            use_case = _as_use_case(cls)
-            if use_case is not None:
-                _append_unique(use_cases, seen_use_cases, use_case)
-                continue
-
-            interface = _as_interface(cls)
-            if interface is not None:
-                _append_unique(interfaces, seen_interfaces, interface)
-
-    return models, use_cases, interfaces
+    return collector.models, collector.use_cases, collector.interfaces, collector.jobs
 
 
 def collect_use_cases_from_interfaces(

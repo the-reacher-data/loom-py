@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "0.0.0"
+version = "0.1.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,8 @@ prometheus = [
 ]
 celery = [
     "celery>=5.3,<6.0",
+    "kombu>=5.3,<6.0",
+    "redis>=5.0,<6.0",
 ]
 
 [build-system]
@@ -119,7 +121,7 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.0.0"
+version = "0.1.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:project.version",

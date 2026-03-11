@@ -17,9 +17,11 @@ from loom.core.model import (
     Cardinality,
     ColumnField,
     OnDelete,
+    ProjectionField,
     RelationField,
     TimestampedModel,
 )
+from loom.core.projection.loaders import ExistsLoader
 
 
 class _Product(BaseModel):
@@ -42,6 +44,62 @@ class _Review(BaseModel):
     id: int = ColumnField(primary_key=True, autoincrement=True)
     product_id: int = ColumnField(foreign_key="test_products.id", on_delete=OnDelete.CASCADE)
     comment: str = ColumnField(length=255)
+
+
+class _ProjectionParent(BaseModel):
+    __tablename__ = "test_projection_parent"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    notes: list[dict[str, object]] = RelationField(
+        foreign_key="parent_id",
+        cardinality=Cardinality.ONE_TO_MANY,
+        on_delete=OnDelete.CASCADE,
+        profiles=("with_details",),
+    )
+    has_notes: bool = ProjectionField(
+        loader=ExistsLoader(model=lambda: _ProjectionNote),  # type: ignore[arg-type]
+        profiles=("with_details",),
+        default=False,
+    )
+
+
+class _ProjectionNote(BaseModel):
+    __tablename__ = "test_projection_note"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    parent_id: int = ColumnField(
+        foreign_key="test_projection_parent.id", on_delete=OnDelete.CASCADE
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regression fixtures: fully-qualified FK format ("table.column") on ONE_TO_MANY
+# ---------------------------------------------------------------------------
+
+
+class _FqNote(BaseModel):
+    """Child model whose FK column is 'record_id'."""
+
+    __tablename__ = "fq_test_notes"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    record_id: int = ColumnField(foreign_key="fq_test_records.id", on_delete=OnDelete.CASCADE)
+
+
+class _FqRecord(BaseModel):
+    """Parent model with ONE_TO_MANY relation declared via fully-qualified FK 'table.column'."""
+
+    __tablename__ = "fq_test_records"
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    title: str = ColumnField(length=120)
+    notes: list[_FqNote] = RelationField(
+        foreign_key="fq_test_notes.record_id",  # fully-qualified — the bug trigger
+        cardinality=Cardinality.ONE_TO_MANY,
+        on_delete=OnDelete.CASCADE,
+        profiles=("with_details",),
+    )
+    has_notes: bool = ProjectionField(
+        loader=ExistsLoader(model=_FqNote),
+        profiles=("default", "with_details"),
+        default=False,
+    )
 
 
 class _AuditEntity(TimestampedModel):
@@ -112,3 +170,77 @@ class TestCompileAll:
 
     def test_unknown_returns_none(self) -> None:
         assert get_compiled(_Product) is None
+
+
+class TestFqForeignKeyOtmCompilation:
+    """Regression: ONE_TO_MANY with fully-qualified FK format 'table.column'.
+
+    Before the fix, ``_find_target_sa_by_fk_column("fq_test_notes.record_id")``
+    searched ``table.c`` for the full string and found nothing, so:
+    - the SA relationship was never added to the mapper;
+    - the CoreRelationStep for 'notes' was never compiled;
+    - ``_resolve_projection_steps`` raised ValueError or fell back to a broken
+      memory loader at runtime.
+
+    After the fix the column name is normalised (``rsplit(".", 1)[-1]``) before
+    the ``table.c`` lookup, so both the SA mapper relationship and the
+    CoreRelationStep are built correctly.
+    """
+
+    def test_compile_all_does_not_raise(self) -> None:
+        compile_all(_FqRecord, _FqNote)
+
+    def test_sa_relationship_attached_to_mapper(self) -> None:
+        compile_all(_FqRecord, _FqNote)
+        sa_record = get_compiled(_FqRecord)
+        assert sa_record is not None
+        assert hasattr(sa_record, "notes")
+
+    def test_notes_core_relation_step_compiled(self) -> None:
+        from loom.core.backend.sqlalchemy import get_compiled_core
+
+        compile_all(_FqRecord, _FqNote)
+        core = get_compiled_core(_FqRecord)
+        assert core is not None
+        plan = core._get_plan("with_details")
+        assert any(step.attr == "notes" for step in plan.relation_steps)
+
+    def test_fk_col_is_bare_column_name(self) -> None:
+        """CoreRelationStep.fk_col must be 'record_id', not 'fq_test_notes.record_id'."""
+        from loom.core.backend.sqlalchemy import get_compiled_core
+
+        compile_all(_FqRecord, _FqNote)
+        core = get_compiled_core(_FqRecord)
+        assert core is not None
+        plan = core._get_plan("with_details")
+        notes_step = next(s for s in plan.relation_steps if s.attr == "notes")
+        assert "." not in notes_step.fk_col
+        assert notes_step.fk_col == "record_id"
+
+    def test_has_notes_uses_sql_path_in_default_profile(self) -> None:
+        """In 'default' profile 'notes' is not loaded → SQL path (prefer_memory=False) expected."""
+        from loom.core.backend.sqlalchemy import get_compiled_core
+
+        compile_all(_FqRecord, _FqNote)
+        core = get_compiled_core(_FqRecord)
+        assert core is not None
+        plan = core._get_plan("default")
+        assert plan.projection_plan is not None
+        all_steps = [s for level in plan.projection_plan.levels for s in level]
+        has_notes_step = next((s for s in all_steps if s.name == "has_notes"), None)
+        assert has_notes_step is not None
+        assert has_notes_step.prefer_memory is False
+
+    def test_has_notes_uses_memory_path_in_with_details_profile(self) -> None:
+        """In 'with_details' profile 'notes' IS loaded → memory path expected."""
+        from loom.core.backend.sqlalchemy import get_compiled_core
+
+        compile_all(_FqRecord, _FqNote)
+        core = get_compiled_core(_FqRecord)
+        assert core is not None
+        plan = core._get_plan("with_details")
+        assert plan.projection_plan is not None
+        all_steps = [s for level in plan.projection_plan.levels for s in level]
+        has_notes_step = next((s for s in all_steps if s.name == "has_notes"), None)
+        assert has_notes_step is not None
+        assert has_notes_step.prefer_memory is True

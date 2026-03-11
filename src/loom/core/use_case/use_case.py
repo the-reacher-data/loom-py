@@ -27,13 +27,18 @@ class UseCase(ABC, Generic[ModelT, ResultT]):
     - ``Exists(EntityType, ...)`` — boolean existence check by field.
     - No default — primitive param bound directly from the caller.
 
-    Class attributes ``computes`` and ``rules`` declare the pre-execution
-    pipeline. They are inspected once at startup by ``UseCaseCompiler`` and
-    embedded in the immutable ``ExecutionPlan``.
+    Class attributes ``computes``, ``rules``, and ``read_only`` declare the
+    pre-execution pipeline and execution policy.  They are inspected once at
+    startup by ``UseCaseCompiler`` and embedded in the immutable
+    ``ExecutionPlan``.
 
     Attributes:
         computes: Compute transformations applied in order before rule checks.
         rules: Rule validations applied in order after computes.
+        read_only: When ``True``, the executor skips opening a
+            ``UnitOfWork`` transaction.  Set this on query-only use cases
+            that never mutate state.  GET routes in :class:`RestInterface`
+            always bypass the UoW regardless of this flag.
 
     Example::
 
@@ -56,6 +61,7 @@ class UseCase(ABC, Generic[ModelT, ResultT]):
     __execution_plan__: ClassVar[ExecutionPlan | None] = None
     computes: ClassVar[Sequence[ComputeFn[Any]]] = ()
     rules: ClassVar[Sequence[RuleFn]] = ()
+    read_only: ClassVar[bool] = False
 
     def __init__(self, main_repo: RepoFor[Any] | None = None) -> None:
         """Initialise the use case base dependencies.

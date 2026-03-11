@@ -5,6 +5,7 @@ from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.use_cases import (
     CreateProductUseCase,
     DeleteProductUseCase,
+    FindProductByNameUseCase,
     GetProductUseCase,
     ListProductsUseCase,
     UpdateProductUseCase,
@@ -28,6 +29,11 @@ class ProductRestInterface(RestInterface[Product]):
             method="GET",
             path="/",
             expose_profile=True,
+        ),
+        RestRoute(
+            use_case=FindProductByNameUseCase,
+            method="GET",
+            path="/by-name/{name}",
         ),
         RestRoute(
             use_case=GetProductUseCase,

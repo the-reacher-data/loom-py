@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
+import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,10 +13,14 @@ import pytest
 import loom.celery.bootstrap as boot
 from loom.celery.bootstrap import (
     WorkerBootstrapResult,
+    WorkerManifest,
     _apply_job_config_if_present,
     _connect_worker_signals,
 )
+from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.job.job import Job
+from loom.core.model import BaseModel, ColumnField
+from loom.core.use_case.registry import UseCaseRegistry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,6 +36,21 @@ class _SyncJob(Job[int]):
 
     def execute(self, value: int = 0) -> int:  # type: ignore[override]
         return value * 2
+
+
+class _DiscoveredModel(BaseModel):
+    __tablename__ = "discovered_model_bootstrap_test"
+
+    id: int = ColumnField(primary_key=True, autoincrement=True)
+    name: str = ColumnField(length=120)
+
+
+class _ObservedCallback:
+    def on_success(self, job_id: str, result: Any, **context: Any) -> None:
+        del job_id, result, context
+
+    def on_failure(self, job_id: str, exc_type: str, exc_msg: str, **context: Any) -> None:
+        del job_id, exc_type, exc_msg, context
 
 
 def _make_raw_config(extra: dict[str, Any] | None = None) -> Any:
@@ -101,7 +122,13 @@ class TestWorkerBootstrapResult:
 
 
 class TestBootstrapWorkerTaskRegistration:
-    def _run(self, tmp_path: Any, extra_cfg: dict[str, Any] | None = None) -> WorkerBootstrapResult:
+    def _run(
+        self,
+        tmp_path: Any,
+        extra_cfg: dict[str, Any] | None = None,
+        *,
+        jobs: tuple[type[Job[Any]], ...] | None = (_SyncJob,),
+    ) -> WorkerBootstrapResult:
         """Write a minimal YAML config and call bootstrap_worker."""
         import yaml
 
@@ -121,11 +148,14 @@ class TestBootstrapWorkerTaskRegistration:
 
         from loom.celery.bootstrap import bootstrap_worker
 
-        return bootstrap_worker(str(config_path), jobs=[_SyncJob])
+        kwargs: dict[str, Any] = {}
+        if jobs is not None:
+            kwargs["jobs"] = list(jobs)
+        return bootstrap_worker(str(config_path), **kwargs)
 
     def test_task_registered_with_correct_name(self, tmp_path: Any) -> None:
         result = self._run(tmp_path)
-        expected = f"loom.job.{_SyncJob.__qualname__}"
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
 
     def test_celery_app_is_configured(self, tmp_path: Any) -> None:
@@ -161,6 +191,128 @@ class TestBootstrapWorkerTaskRegistration:
         finally:
             _SyncJob.__retries__ = original_retries  # type: ignore[assignment]
 
+    def test_pure_job_bootstrap_without_database_section(self, tmp_path: Any) -> None:
+        """Database config is optional for jobs that do not access repositories."""
+        import yaml
+
+        cfg: dict[str, Any] = {
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+            }
+        }
+        config_path = tmp_path / "worker_no_db.yaml"
+        config_path.write_text(yaml.dump(cfg))
+
+        with patch.object(boot, "_connect_worker_signals") as mock_signals:
+            result = boot.bootstrap_worker(str(config_path), jobs=[_SyncJob])
+
+        assert isinstance(result, WorkerBootstrapResult)
+        mock_signals.assert_not_called()
+
+    def test_discovers_jobs_from_modules_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg)
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
+        assert expected in result.celery_app.tasks
+
+    def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        module_name = "tests.unit.celery_bootstrap._manifest_jobs_for_test"
+        module = types.ModuleType(module_name)
+        module.MANIFEST = WorkerManifest(jobs=[_SyncJob])
+        sys.modules[module_name] = module
+
+        cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
+        try:
+            result = self._run(tmp_path, extra_cfg=cfg)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
+        assert expected in result.celery_app.tasks
+
+    def test_discovers_jobs_from_manifest_lists_when_manifest_struct_missing(
+        self, tmp_path: Any
+    ) -> None:
+        module_name = "tests.unit.celery_bootstrap._manifest_lists_for_test"
+        module = types.ModuleType(module_name)
+        module.JOBS = [_SyncJob]
+        module.CALLBACKS = [_ObservedCallback]
+        sys.modules[module_name] = module
+
+        cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
+        try:
+            result = self._run(tmp_path, extra_cfg=cfg)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        assert f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_CALLBACK_PREFIX}.{_ObservedCallback.__qualname__}" in result.celery_app.tasks
+        assert (
+            f"{TASK_CALLBACK_ERROR_PREFIX}.{_ObservedCallback.__qualname__}"
+            in result.celery_app.tasks
+        )
+
+    def test_discovers_callbacks_from_modules_when_jobs_not_passed(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        assert f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}" in result.celery_app.tasks
+        assert f"{TASK_CALLBACK_PREFIX}.{_ObservedCallback.__qualname__}" in result.celery_app.tasks
+        assert (
+            f"{TASK_CALLBACK_ERROR_PREFIX}.{_ObservedCallback.__qualname__}"
+            in result.celery_app.tasks
+        )
+
+    def test_modules_discovery_includes_autocrud_use_cases_for_models(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        registry = result.container.resolve(UseCaseRegistry)
+        expected_keys = {
+            "__discovered_model:create",
+            "__discovered_model:get",
+            "__discovered_model:list",
+        }
+        assert expected_keys.issubset(set(registry.keys()))
+
+    def test_registers_repo_mapping_for_discovered_models(self, tmp_path: Any) -> None:
+        cfg = {
+            "app": {
+                "discovery": {
+                    "mode": "modules",
+                    "modules": {"include": ["tests.unit.celery_bootstrap.test_bootstrap"]},
+                }
+            }
+        }
+        result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        mapped_names = {model.__name__ for model in result.container._repo_bindings}
+        assert "_DiscoveredModel" in mapped_names
+
+    def test_raises_when_no_jobs_and_no_discovery(self, tmp_path: Any) -> None:
+        with pytest.raises(RuntimeError):
+            self._run(tmp_path, jobs=None)
+
 
 # ---------------------------------------------------------------------------
 # Celery worker signals
@@ -174,6 +326,10 @@ def isolated_celery_signals() -> Any:
     ``_connect_worker_signals`` registers closures with ``weak=False``.
     Without isolation, receivers accumulate across tests and assertions
     like ``assert_called_once()`` see multiple calls (one per handler).
+
+    Also resets ``boot._SIGNALS_CONNECTED`` so the guard introduced for
+    production idempotency does not cause the function to no-op in tests
+    that call ``_connect_worker_signals`` directly.
     """
     from celery.signals import (  # type: ignore[import-untyped]
         worker_process_init,
@@ -182,13 +338,16 @@ def isolated_celery_signals() -> Any:
 
     saved_init = list(worker_process_init.receivers)
     saved_shutdown = list(worker_process_shutdown.receivers)
+    saved_connected = boot._SIGNALS_CONNECTED
     # Start each test with a clean slate so accumulated handlers from prior
     # bootstrap_worker() calls do not inflate assertion call counts.
     worker_process_init.receivers[:] = []
     worker_process_shutdown.receivers[:] = []
+    boot._SIGNALS_CONNECTED = False
     yield
     worker_process_init.receivers[:] = saved_init
     worker_process_shutdown.receivers[:] = saved_shutdown
+    boot._SIGNALS_CONNECTED = saved_connected
 
 
 class TestWorkerSignals:

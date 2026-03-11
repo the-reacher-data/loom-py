@@ -112,6 +112,7 @@ class RuntimeExecutor:
         payload: dict[str, Any] | None = ...,
         dependencies: dict[type[Any], Any] | None = ...,
         load_overrides: dict[type[Any], Any] | None = ...,
+        read_only: bool = ...,
     ) -> ResultT: ...
 
     @overload
@@ -123,7 +124,20 @@ class RuntimeExecutor:
         payload: dict[str, Any] | None = ...,
         dependencies: dict[type[Any], Any] | None = ...,
         load_overrides: dict[type[Any], Any] | None = ...,
+        read_only: bool = ...,
     ) -> ResultT: ...
+
+    @overload
+    async def execute(
+        self,
+        compilable: Compilable,
+        *,
+        params: dict[str, Any] | None = ...,
+        payload: dict[str, Any] | None = ...,
+        dependencies: dict[type[Any], Any] | None = ...,
+        load_overrides: dict[type[Any], Any] | None = ...,
+        read_only: bool = ...,
+    ) -> Any: ...
 
     async def execute(
         self,
@@ -133,6 +147,7 @@ class RuntimeExecutor:
         payload: dict[str, Any] | None = None,
         dependencies: dict[type[Any], Any] | None = None,
         load_overrides: dict[type[Any], Any] | None = None,
+        read_only: bool = False,
     ) -> Any:
         """Execute a compiled instance via its ExecutionPlan.
 
@@ -153,6 +168,10 @@ class RuntimeExecutor:
                 ``LoadById()`` / ``Load()`` / ``Exists()`` steps.
             load_overrides: Pre-loaded entities by type, bypassing repo
                 calls. Used by test harnesses.
+            read_only: When ``True``, skips opening a ``UnitOfWork``
+                transaction even if a ``uow_factory`` was provided.
+                Automatically set to ``True`` by the HTTP layer for GET
+                routes.  Also honoured when ``plan.read_only`` is ``True``.
 
         Returns:
             The result produced by ``execute()``.
@@ -169,7 +188,10 @@ class RuntimeExecutor:
 
         start = time.perf_counter()
 
-        _owns_uow = self._uow_factory is not None and _active_uow.get() is None
+        _is_read_only = read_only or plan.read_only
+        _owns_uow = (
+            self._uow_factory is not None and _active_uow.get() is None and not _is_read_only
+        )
 
         if not _owns_uow:
             return await self._run_pipeline(
@@ -451,15 +473,9 @@ class RuntimeExecutor:
         load_overrides: dict[type[Any], Any] | None,
     ) -> None:
         for ls in plan.load_steps:
-            entity = await self._resolve_load(
-                ls,
-                plan,
-                compilable,
-                bound,
-                dependencies,
-                load_overrides,
+            bound[ls.name] = await self._resolve_load(
+                ls, plan, compilable, bound, dependencies, load_overrides
             )
-            bound[ls.name] = entity
             self._log_step(f"Load {ls.entity_type.__name__}")
 
     async def _execute_exists(
@@ -470,8 +486,7 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None,
     ) -> None:
         for es in plan.exists_steps:
-            result = await self._resolve_exists(es, plan, compilable, bound, dependencies)
-            bound[es.name] = result
+            bound[es.name] = await self._resolve_exists(es, plan, compilable, bound, dependencies)
             self._log_step(f"Exists {es.entity_type.__name__}")
 
     def _apply_computes(

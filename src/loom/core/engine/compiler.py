@@ -142,6 +142,7 @@ class UseCaseCompiler:
             exists_steps=tuple(exists_steps),
             compute_steps=compute_steps,
             rule_steps=rule_steps,
+            read_only=bool(getattr(use_case_type, "read_only", False)),
         )
         use_case_type.__execution_plan__ = plan
         return plan

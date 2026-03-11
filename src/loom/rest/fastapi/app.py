@@ -27,7 +27,7 @@ Usage::
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
 from starlette.requests import Request
@@ -46,6 +46,16 @@ _log = get_logger(__name__)
 
 # Type alias for ASGI middleware classes accepted by FastAPI.add_middleware.
 _MiddlewareClass = Any
+
+
+def _resolve_executor(result: BootstrapResult) -> RuntimeExecutor:
+    """Return the application-scoped RuntimeExecutor registered at bootstrap."""
+    if not result.container.is_registered(RuntimeExecutor):
+        raise RuntimeError(
+            "RuntimeExecutor is not registered in the container. "
+            "Use bootstrap_app(...) or create_kernel(...) to build BootstrapResult."
+        )
+    return cast(RuntimeExecutor, result.container.resolve(RuntimeExecutor))
 
 
 def create_fastapi_app(
@@ -130,11 +140,7 @@ def create_fastapi_app(
         result.compiler,
         defaults=defaults,
     )
-    executor = RuntimeExecutor(
-        result.compiler,
-        metrics=result.metrics,
-        repo_resolver=result.container.resolve_repo,
-    )
+    executor = _resolve_executor(result)
 
     all_routes = []
     for iface in interfaces:

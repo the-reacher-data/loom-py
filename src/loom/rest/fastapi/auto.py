@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
     from prometheus_client import CollectorRegistry
 
 import msgspec
+import prometheus_client
 from fastapi import FastAPI
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
-from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
+from loom.core.bootstrap import KernelRuntime, create_kernel
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
@@ -28,15 +29,17 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.job.service import InlineJobService, JobService
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy import build_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
 
-ModelT = TypeVar("ModelT", bound=BaseModel)
 _CfgT = TypeVar("_CfgT")
 
 
@@ -56,13 +59,6 @@ def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
         return section(raw, key, cls)
     except ConfigError:
         return cls()
-
-
-@dataclass(frozen=True)
-class _RepoToken(Generic[ModelT]):
-    """Typed DI token used to bind repository instances by model."""
-
-    model: type[ModelT]
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -136,27 +132,7 @@ def _register_repositories(
     session_manager: SessionManager,
     models: tuple[type[BaseModel], ...],
 ) -> Callable[[LoomContainer], None]:
-    repositories: dict[type[BaseModel], RepositorySQLAlchemy[Any, int]] = {
-        model: RepositorySQLAlchemy(session_manager=session_manager, model=model)
-        for model in models
-    }
-
-    def _provider_for(
-        repo: RepositorySQLAlchemy[Any, int],
-    ) -> Callable[[], RepositorySQLAlchemy[Any, int]]:
-        def _provider() -> RepositorySQLAlchemy[Any, int]:
-            return repo
-
-        return _provider
-
-    def register(container: LoomContainer) -> None:
-        for model, repository in repositories.items():
-            token = _RepoToken(model)
-            container.register(token, _provider_for(repository), scope=Scope.APPLICATION)
-            container.register_repo(model, token)
-        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
-
-    return register
+    return build_repository_registration_module(session_manager, models)
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -166,10 +142,64 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
+def _build_celery_service(raw: DictConfig, result: KernelRuntime) -> Any | None:
+    """Return a ``CeleryJobService`` if the celery extra is installed and configured.
+
+    Returns ``None`` when the ``loom[celery]`` extra is absent or the
+    ``celery`` config section is missing / malformed, so the caller can
+    fall back to :func:`_build_inline_service`.
+
+    Args:
+        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        result: Kernel runtime carrying container, factory and executor.
+
+    Returns:
+        ``CeleryJobService`` instance, or ``None``.
+    """
+    try:
+        from loom.celery.config import (  # type: ignore[import-untyped,unused-ignore]
+            CeleryConfig as _CC,
+        )
+        from loom.celery.config import (
+            create_celery_app,
+        )
+        from loom.celery.service import (
+            CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
+        )
+
+        celery_cfg = section(raw, "celery", _CC)
+        return CeleryJobService(
+            create_celery_app(celery_cfg),
+            metrics=result.metrics,
+            factory=result.factory,
+            executor=result.executor,
+        )
+    except ImportError:
+        return None
+    except ConfigError:
+        warnings.warn(
+            "Celery config section is missing or malformed — falling back to InlineJobService. "
+            "Add a 'celery' section to your config or install loom[celery] to suppress this.",
+            stacklevel=3,
+        )
+        return None
+
+
+def _build_inline_service(result: KernelRuntime) -> InlineJobService:
+    """Return an ``InlineJobService`` backed by the kernel's factory and executor.
+
+    Args:
+        result: Kernel runtime carrying factory and executor.
+
+    Returns:
+        ``InlineJobService`` instance.
+    """
+    return InlineJobService(result.factory, result.executor)
+
+
 def _configure_job_service(
     raw: DictConfig,
-    result: BootstrapResult,
-    session_manager: SessionManager,
+    result: KernelRuntime,
 ) -> None:
     """Register a ``JobService`` implementation in the container.
 
@@ -184,36 +214,9 @@ def _configure_job_service(
 
     Args:
         raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
-        result: Bootstrap result carrying the container, compiler, and
-            factory.
-        session_manager: Live ``SessionManager`` for the inline fallback
-            path (used to build a ``UoW`` factory for the executor).
+        result: Kernel runtime carrying container, factory and executor.
     """
-    try:
-        from loom.celery.config import (
-            CeleryConfig as _CC,  # type: ignore[import-untyped,unused-ignore]
-        )
-        from loom.celery.config import (
-            create_celery_app,  # type: ignore[import-untyped,unused-ignore]
-        )
-        from loom.celery.service import (
-            CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
-        )
-
-        celery_cfg = section(raw, "celery", _CC)
-        celery_app = create_celery_app(celery_cfg)
-        svc: Any = CeleryJobService(celery_app, metrics=result.metrics)
-    except (ConfigError, ImportError):
-        from loom.core.engine.executor import RuntimeExecutor as _Exec
-        from loom.core.job.service import InlineJobService
-        from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
-
-        uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
-        executor = _Exec(result.compiler, uow_factory=uow_factory, metrics=result.metrics)
-        svc = InlineJobService(result.factory, executor)
-
-    from loom.core.job.service import JobService
-
+    svc = _build_celery_service(raw, result) or _build_inline_service(result)
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
@@ -234,7 +237,16 @@ def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
     echo: bool,
-) -> tuple[BootstrapResult, SessionManager, DiscoveryResult]:
+    metrics: Any | None = None,
+) -> tuple[KernelRuntime, SessionManager, DiscoveryResult]:
+    discovered = _discover_components(app_cfg)
+    session_manager = _build_sqlalchemy_session_manager(db_cfg, echo)
+    _compile_discovered_models(discovered)
+    result = _build_kernel_runtime(app_cfg, discovered, session_manager, metrics=metrics)
+    return result, session_manager, discovered
+
+
+def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
     discovered = _build_discovery_result(app_cfg.discovery)
     if not discovered.use_cases:
         raise RuntimeError("No UseCase classes discovered.")
@@ -242,11 +254,19 @@ def _build_bootstrap(
         raise RuntimeError("No RestInterface classes discovered.")
     if not discovered.models:
         raise RuntimeError("No BaseModel classes discovered.")
+    return discovered
 
+
+def _compile_discovered_models(discovered: DiscoveryResult) -> None:
     reset_registry()
     compile_all(*discovered.models)
 
-    session_manager = SessionManager(
+
+def _build_sqlalchemy_session_manager(
+    db_cfg: _DatabaseConfig,
+    echo: bool,
+) -> SessionManager:
+    return SessionManager(
         db_cfg.url,
         echo=echo,
         pool_pre_ping=db_cfg.pool_pre_ping,
@@ -257,12 +277,78 @@ def _build_bootstrap(
         connect_args={},
     )
 
-    result = bootstrap_app(
+
+def _build_kernel_runtime(
+    app_cfg: _AppConfig,
+    discovered: DiscoveryResult,
+    session_manager: SessionManager,
+    metrics: Any | None = None,
+) -> KernelRuntime:
+    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
+    return create_kernel(
         config=app_cfg,
         use_cases=discovered.use_cases,
         modules=[_register_repositories(session_manager, discovered.models)],
+        uow_factory=uow_factory,
+        metrics=metrics,
     )
-    return result, session_manager, discovered
+
+
+def _build_metrics_adapter(
+    cfg: _MetricsConfig,
+    registry: CollectorRegistry | None,
+) -> Any | None:
+    """Return a ``PrometheusMetricsAdapter`` when metrics are enabled, else ``None``.
+
+    Args:
+        cfg: Metrics feature config.
+        registry: Optional Prometheus registry override.
+
+    Returns:
+        ``PrometheusMetricsAdapter`` or ``None``.
+    """
+    if not cfg.enabled:
+        return None
+    return PrometheusMetricsAdapter(registry=registry)
+
+
+def _mount_optional_middlewares(
+    app: FastAPI,
+    trace_cfg: _TraceConfig,
+    metrics_cfg: _MetricsConfig,
+    registry: CollectorRegistry | None,
+) -> None:
+    """Mount trace and metrics middlewares when their feature flags are enabled.
+
+    Args:
+        app: FastAPI application to mutate.
+        trace_cfg: Trace feature config.
+        metrics_cfg: Metrics feature config.
+        registry: Optional Prometheus registry override.
+    """
+    if trace_cfg.enabled:
+        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
+    if metrics_cfg.enabled:
+        _mount_metrics(app, metrics_cfg, registry)
+
+
+def _mount_metrics(
+    app: FastAPI,
+    cfg: _MetricsConfig,
+    registry: CollectorRegistry | None,
+) -> None:
+    """Add Prometheus middleware and scrape endpoint to *app*.
+
+    Args:
+        app: FastAPI application to mutate.
+        cfg: Metrics feature config.
+        registry: Optional Prometheus registry override.
+    """
+    app.add_middleware(PrometheusMiddleware, registry=registry)
+    app.mount(
+        cfg.path,
+        prometheus_client.make_asgi_app(registry=registry or prometheus_client.REGISTRY),
+    )
 
 
 def create_app(
@@ -336,8 +422,15 @@ def create_app(
     _ensure_code_path(effective_code_path)
 
     effective_echo = _resolve_effective_echo(db_cfg, trace_cfg)
-    result, session_manager, discovered = _build_bootstrap(app_cfg, db_cfg, effective_echo)
-    _configure_job_service(raw, result, session_manager)
+    metrics_adapter = _build_metrics_adapter(metrics_cfg, metrics_registry)
+
+    result, session_manager, discovered = _build_bootstrap(
+        app_cfg,
+        db_cfg,
+        effective_echo,
+        metrics=metrics_adapter,
+    )
+    _configure_job_service(raw, result)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -358,19 +451,5 @@ def create_app(
         redoc_url=app_cfg.rest.redoc_url,
         lifespan=lifespan,
     )
-
-    if trace_cfg.enabled:
-        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
-
-    if metrics_cfg.enabled:
-        import prometheus_client
-
-        app.add_middleware(PrometheusMiddleware, registry=metrics_registry)
-        app.mount(
-            metrics_cfg.path,
-            prometheus_client.make_asgi_app(
-                registry=metrics_registry or prometheus_client.REGISTRY,
-            ),
-        )
-
+    _mount_optional_middlewares(app, trace_cfg, metrics_cfg, metrics_registry)
     return app

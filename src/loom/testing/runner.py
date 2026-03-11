@@ -150,7 +150,7 @@ class UseCaseTest(Generic[ResultT]):
         """
         compiler = UseCaseCompiler()
         executor = RuntimeExecutor(compiler)
-        return await executor.execute(
+        return await executor.execute(  # type: ignore[no-any-return]
             self._use_case,
             params=self._params,
             payload=self._payload,

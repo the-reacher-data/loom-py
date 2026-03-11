@@ -6,6 +6,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from loom.celery.constants import (
+    TASK_CALLBACK_ERROR_PREFIX,
+    TASK_CALLBACK_PREFIX,
+    TASK_JOB_PREFIX,
+)
 from loom.celery.runner import (
     _emit,
     _install_trace,
@@ -152,7 +157,7 @@ class TestMakeJobTaskRegistration:
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
         _make_job_task(app, _SyncJob, MagicMock(), MagicMock())
-        assert registered_kwargs["name"] == f"loom.job.{_SyncJob.__qualname__}"
+        assert registered_kwargs["name"] == f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
 
     def test_task_registered_with_correct_name_async(self) -> None:
         app = MagicMock()
@@ -161,7 +166,7 @@ class TestMakeJobTaskRegistration:
             side_effect=lambda **kw: registered_kwargs.update(kw) or (lambda fn: fn)
         )
         _make_job_task(app, _AsyncJob, MagicMock(), MagicMock())
-        assert registered_kwargs["name"] == f"loom.job.{_AsyncJob.__qualname__}"
+        assert registered_kwargs["name"] == f"{TASK_JOB_PREFIX}.{_AsyncJob.__qualname__}"
 
     def test_acks_late_is_true(self) -> None:
         app = MagicMock()
@@ -497,7 +502,7 @@ class TestMakeCallbackTask:
         )
         _make_callback_task(app, _SyncCallback, MagicMock())
         task_name = next(iter(registered_name), None)
-        assert task_name == f"loom.callback.{_SyncCallback.__qualname__}"
+        assert task_name == f"{TASK_CALLBACK_PREFIX}.{_SyncCallback.__qualname__}"
 
     def test_sync_on_success_called_with_result_and_job_id(self) -> None:
         cb = MagicMock(spec=_SyncCallback)
@@ -556,7 +561,7 @@ class TestMakeCallbackErrorTask:
         )
         _make_callback_error_task(app, _SyncCallback, MagicMock())
         task_name = next(iter(registered_name), None)
-        assert task_name == f"loom.callback_error.{_SyncCallback.__qualname__}"
+        assert task_name == f"{TASK_CALLBACK_ERROR_PREFIX}.{_SyncCallback.__qualname__}"
 
     def test_on_failure_called_with_exc_info_from_backend(self) -> None:
         cb = MagicMock(spec=_SyncCallback)

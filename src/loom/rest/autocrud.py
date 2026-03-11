@@ -29,7 +29,10 @@ from loom.core.command import Command
 from loom.core.errors import NotFound
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
-from loom.core.use_case.markers import Exists, Input, OnMissing
+from loom.core.use_case.constants import KEY_SEPARATOR, CrudOp
+from loom.core.use_case.keys import set_use_case_key
+from loom.core.use_case.markers import Input
+from loom.core.use_case.registry import model_entity_key
 from loom.core.use_case.use_case import UseCase
 
 __all__ = ["build_auto_routes"]
@@ -38,24 +41,24 @@ __all__ = ["build_auto_routes"]
 # Operation metadata
 # ---------------------------------------------------------------------------
 
-_ALL_OPS: tuple[str, ...] = ("create", "get", "list", "update", "delete")
+_ALL_OPS: tuple[CrudOp, ...] = tuple(CrudOp)
 
 _OP_METHOD: dict[str, str] = {
-    "create": "POST",
-    "get": "GET",
-    "list": "GET",
-    "update": "PATCH",
-    "delete": "DELETE",
+    CrudOp.CREATE: "POST",
+    CrudOp.GET: "GET",
+    CrudOp.LIST: "GET",
+    CrudOp.UPDATE: "PATCH",
+    CrudOp.DELETE: "DELETE",
 }
 _ID_ROUTE_PATH = "/{id}"
 _OP_PATH: dict[str, str] = {
-    "create": "/",
-    "get": _ID_ROUTE_PATH,
-    "list": "/",
-    "update": _ID_ROUTE_PATH,
-    "delete": _ID_ROUTE_PATH,
+    CrudOp.CREATE: "/",
+    CrudOp.GET: _ID_ROUTE_PATH,
+    CrudOp.LIST: "/",
+    CrudOp.UPDATE: _ID_ROUTE_PATH,
+    CrudOp.DELETE: _ID_ROUTE_PATH,
 }
-_OP_STATUS: dict[str, int] = {"create": 201}
+_OP_STATUS: dict[str, int] = {CrudOp.CREATE: 201}
 
 # ---------------------------------------------------------------------------
 # ID coercion
@@ -328,12 +331,6 @@ def _make_update(
         async def execute(
             self,
             id: id_type,  # pyright: ignore[reportInvalidTypeForm]
-            _exists: bool = Exists(
-                model,
-                from_param="id",
-                against="id",
-                on_missing=OnMissing.RAISE,
-            ),
             cmd: update_input = Input(),  # type: ignore[valid-type]
         ) -> model:  # type: ignore[valid-type]
             updated = await self.main_repo.update(coerce(id), cmd)
@@ -401,14 +398,18 @@ def _get_or_create(model: type[Any]) -> dict[str, Any]:
     create_input = _derive_create_struct(model)
     update_input = _derive_update_struct(model)
     result: dict[str, Any] = {
-        "create": _make_create(model, create_input),
-        "get": _make_get(model, id_type, coerce),
-        "list": _make_list(model),
-        "update": _make_update(model, update_input, id_type, coerce),
-        "delete": _make_delete(model, id_type, coerce),
+        CrudOp.CREATE: _make_create(model, create_input),
+        CrudOp.GET: _make_get(model, id_type, coerce),
+        CrudOp.LIST: _make_list(model),
+        CrudOp.UPDATE: _make_update(model, update_input, id_type, coerce),
+        CrudOp.DELETE: _make_delete(model, id_type, coerce),
         "create_input": create_input,
         "update_input": update_input,
     }
+    entity = model_entity_key(model)
+    for operation in _ALL_OPS:
+        use_case_type = cast(type[Any], result[operation])
+        set_use_case_key(use_case_type, f"{entity}{KEY_SEPARATOR}{operation}")
     _UC_CACHE[model] = result
     return result
 

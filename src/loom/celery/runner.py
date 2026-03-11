@@ -21,6 +21,7 @@ sync methods are called directly from the task thread.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from contextvars import Token
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
 
+from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.celery.event_loop import WorkerEventLoop
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
@@ -199,7 +201,7 @@ def _make_job_task(
     run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
 
     @celery_app.task(  # type: ignore[untyped-decorator]
-        name=f"loom.job.{job_type.__qualname__}",
+        name=f"{TASK_JOB_PREFIX}.{job_type.__qualname__}",
         bind=True,
         acks_late=True,
         reject_on_worker_lost=True,
@@ -296,9 +298,9 @@ def _make_callback_task(
     Returns:
         The registered Celery task object.
     """
-    import inspect
+    _on_success_is_async = inspect.iscoroutinefunction(callback_type.on_success)
 
-    @celery_app.task(name=f"loom.callback.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
+    @celery_app.task(name=f"{TASK_CALLBACK_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_task(
         result: Any,
         *,
@@ -309,7 +311,7 @@ def _make_callback_task(
         token = _install_trace(trace_id)
         try:
             cb = factory.build(callback_type)
-            if inspect.iscoroutinefunction(cb.on_success):
+            if _on_success_is_async:
                 _run_coroutine(
                     cb.on_success(job_id=job_id, result=result, **context),
                     eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
@@ -365,9 +367,9 @@ def _make_callback_error_task(
     Returns:
         The registered Celery task object.
     """
-    import inspect
+    _on_failure_is_async = inspect.iscoroutinefunction(callback_type.on_failure)
 
-    @celery_app.task(name=f"loom.callback_error.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
+    @celery_app.task(name=f"{TASK_CALLBACK_ERROR_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_error_task(
         *,
         job_id: str,
@@ -378,7 +380,7 @@ def _make_callback_error_task(
         try:
             exc_type, exc_msg = _resolve_error_info(job_id)
             cb = factory.build(callback_type)
-            if inspect.iscoroutinefunction(cb.on_failure):
+            if _on_failure_is_async:
                 _run_coroutine(
                     cb.on_failure(
                         job_id=job_id,

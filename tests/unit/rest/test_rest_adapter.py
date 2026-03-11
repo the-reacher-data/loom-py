@@ -15,6 +15,7 @@ from loom.core.errors import (
     RuleViolation,
     RuleViolations,
 )
+from loom.core.errors.codes import ErrorCode
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
 from loom.core.use_case.use_case import UseCase
 from loom.rest.errors import HttpErrorMapper
@@ -137,7 +138,7 @@ class TestHttpErrorMapper:
     def test_detail_contains_code_and_message(self) -> None:
         exc = self._mapper().to_http(NotFound("Order", id=42))
         assert isinstance(exc.detail, dict)
-        assert exc.detail["code"] == "not_found"
+        assert exc.detail["code"] == ErrorCode.NOT_FOUND
         assert "42" in exc.detail["message"]
 
 

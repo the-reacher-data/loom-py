@@ -274,6 +274,71 @@ class _RepoWithInvalidDependsOn(_FakeRepository):
     depends_on = ("invalid",)
 
 
+# ---------------------------------------------------------------------------
+# Auto-inferred depends_on fixtures (no explicit declaration)
+# ---------------------------------------------------------------------------
+
+
+class _AutoReview(BaseModel):
+    """Child model — used to resolve ONE_TO_MANY auto-inference."""
+
+    __tablename__ = "auto_reviews"
+    id: int = ColumnField(primary_key=True)
+    product_id: int = ColumnField(foreign_key="auto_products.id")
+
+
+class _FakeLoaderWithModel:
+    """Minimal loader stub that exposes a ``model`` attribute."""
+
+    def __init__(self, model: type) -> None:
+        self.model = model
+
+
+class _AutoProduct(BaseModel):
+    """Parent model — no explicit ``depends_on`` on any field."""
+
+    __tablename__ = "auto_products"
+    id: int = ColumnField(primary_key=True)
+    reviews: list[_AutoReview] = RelationField(
+        foreign_key="product_id",
+        cardinality=Cardinality.ONE_TO_MANY,
+        # depends_on intentionally omitted → should be auto-inferred
+    )
+    review_count: int = ProjectionField(
+        loader=_FakeLoaderWithModel(model=_AutoReview),
+        default=0,
+        # depends_on intentionally omitted → should be auto-inferred
+    )
+
+
+class _AutoProductRepo(_FakeRepository):
+    model = _AutoProduct
+
+
+class _FqAutoChild(BaseModel):
+    """Child model with fully-qualified FK string on the parent relation."""
+
+    __tablename__ = "fq_auto_children"
+    id: int = ColumnField(primary_key=True)
+    parent_id: int = ColumnField(foreign_key="fq_auto_parents.id")
+
+
+class _FqAutoParent(BaseModel):
+    """Parent model using fully-qualified FK format (``table.column``)."""
+
+    __tablename__ = "fq_auto_parents"
+    id: int = ColumnField(primary_key=True)
+    children: list[_FqAutoChild] = RelationField(
+        foreign_key="fq_auto_children.parent_id",  # fully-qualified
+        cardinality=Cardinality.ONE_TO_MANY,
+        # depends_on intentionally omitted
+    )
+
+
+class _FqAutoParentRepo(_FakeRepository):
+    model = _FqAutoParent
+
+
 @fixture
 def cache_config() -> CacheConfig:
     return CacheConfig(enabled=True, default_ttl=100, default_list_ttl=50)
@@ -474,3 +539,58 @@ class TestDependencySpecs:
             CachedRepository(
                 repository, config=cache_config, cache=cache, dependency_resolver=resolver
             )
+
+    def test_otm_relation_dep_auto_inferred_when_depends_on_empty(
+        self, cache_config: CacheConfig
+    ) -> None:
+        """ONE_TO_MANY relation without explicit depends_on → spec auto-inferred."""
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+        wrapped = CachedRepository(
+            _AutoProductRepo(), config=cache_config, cache=cache, dependency_resolver=resolver
+        )
+
+        specs = {(d.entity, d.fk_field) for d in wrapped._depends_on}
+        assert ("auto_reviews", "product_id") in specs
+
+    def test_projection_dep_auto_inferred_via_loader_model(self, cache_config: CacheConfig) -> None:
+        """Projection with loader.model and no depends_on → auto-inferred from sibling relation."""
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+        wrapped = CachedRepository(
+            _AutoProductRepo(), config=cache_config, cache=cache, dependency_resolver=resolver
+        )
+
+        specs = {(d.entity, d.fk_field) for d in wrapped._depends_on}
+        # projection and relation share the same spec — deduplication keeps one entry
+        assert ("auto_reviews", "product_id") in specs
+
+    def test_fully_qualified_fk_normalised_in_auto_inferred_spec(
+        self, cache_config: CacheConfig
+    ) -> None:
+        """Fully-qualified FK ``table.column`` is normalised to bare column name."""
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+        wrapped = CachedRepository(
+            _FqAutoParentRepo(), config=cache_config, cache=cache, dependency_resolver=resolver
+        )
+
+        specs = {(d.entity, d.fk_field) for d in wrapped._depends_on}
+        assert ("fq_auto_children", "parent_id") in specs
+
+    def test_explicit_depends_on_wins_over_auto_inference(self, cache_config: CacheConfig) -> None:
+        """Explicit depends_on is used as-is; auto-inference is skipped for that field."""
+        cache = _MemoryCacheBackend()
+        resolver = GenerationalDependencyResolver(cache)
+        wrapped = CachedRepository(
+            _RepoWithModelDependsOn(),
+            config=cache_config,
+            cache=cache,
+            dependency_resolver=resolver,
+        )
+
+        # explicit specs from _ModelWithDependsOn and the repo-level depends_on
+        specs = {(d.entity, d.fk_field) for d in wrapped._depends_on}
+        assert ("product_reviews", "product_id") in specs
+        assert ("product_notes", "product_id") in specs
+        assert ("products", "id") in specs

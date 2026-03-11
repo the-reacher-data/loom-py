@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import types
+import typing
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Generic, cast
+from typing import Any, Generic, cast, get_args, get_origin, get_type_hints
 
 import msgspec
 
@@ -14,10 +16,99 @@ from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
+from loom.core.model.enums import Cardinality
 from loom.core.model.introspection import get_projections, get_relations
+from loom.core.model.projection import Projection
+from loom.core.model.relation import Relation
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import CursorResult, FilterGroup, PaginationMode, QuerySpec
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
+
+
+def _resolve_loader_model(loader: Any) -> type | None:
+    """Return the domain model class from a projection loader, handling callables."""
+    raw = getattr(loader, "model", None)
+    if raw is None:
+        return None
+    if isinstance(raw, type):
+        return raw
+    if callable(raw):
+        try:
+            resolved = raw()
+            return resolved if isinstance(resolved, type) else None
+        except Exception:
+            return None
+    return None
+
+
+def _list_element_type(annotation: Any) -> type | None:
+    """Return T for ``list[T]`` annotations, or ``None`` if not a typed list.
+
+    Handles ``list[T] | UnsetType`` produced by ``LoomStructMeta`` when it
+    widens relation field annotations at class-definition time.
+    """
+    origin = get_origin(annotation)
+
+    # Unwrap Union / UnionType (e.g. list[T] | UnsetType) to find the list arm.
+    if origin in {typing.Union, types.UnionType}:
+        for arg in get_args(annotation):
+            result = _list_element_type(arg)
+            if result is not None:
+                return result
+        return None
+
+    if origin is list:
+        args = get_args(annotation)
+        if args and isinstance(args[0], type):
+            return args[0]
+    return None
+
+
+def _infer_otm_cache_dep(model: type, attr_name: str, rel: Relation) -> str | None:
+    """Auto-infer ``entity:fk_col`` cache spec for a ONE_TO_MANY relation.
+
+    Resolves the child model type from the field's type annotation and
+    combines it with the FK column name from ``rel.foreign_key``.
+
+    Returns ``None`` when cardinality is not ONE_TO_MANY, when the child
+    type cannot be resolved, or when it has no ``__tablename__``.
+    """
+    if rel.cardinality is not Cardinality.ONE_TO_MANY:
+        return None
+    try:
+        hints = get_type_hints(model)
+    except Exception:
+        return None
+    child_type = _list_element_type(hints.get(attr_name))
+    if child_type is None or not hasattr(child_type, "__tablename__"):
+        return None
+    fk_col = rel.foreign_key.rsplit(".", 1)[-1]
+    return f"{child_type.__tablename__}:{fk_col}"
+
+
+def _infer_projection_cache_dep(model: type, proj: Projection) -> str | None:
+    """Auto-infer ``entity:fk_col`` cache spec for a projection loader.
+
+    Looks up the ONE_TO_MANY relation on ``model`` whose child type matches
+    the loader's ``model`` attribute, then reuses that relation's FK column.
+
+    Returns ``None`` when the loader has no ``model``, when no matching
+    ONE_TO_MANY relation is found, or when types are unresolvable.
+    """
+    loader_model = _resolve_loader_model(proj.loader)
+    if loader_model is None or not hasattr(loader_model, "__tablename__"):
+        return None
+    try:
+        hints = get_type_hints(model)
+    except Exception:
+        return None
+    for attr_name, rel in get_relations(model).items():
+        if rel.cardinality is not Cardinality.ONE_TO_MANY:
+            continue
+        if _list_element_type(hints.get(attr_name)) is loader_model:
+            fk_col = rel.foreign_key.rsplit(".", 1)[-1]
+            return f"{loader_model.__tablename__}:{fk_col}"
+    return None
 
 
 class _ListIndexPayload(msgspec.Struct):
@@ -469,10 +560,22 @@ class CachedRepository(
         if model is None:
             return tuple(specs)
 
-        for rel in get_relations(model).values():
-            specs.extend(rel.depends_on)
+        for attr_name, rel in get_relations(model).items():
+            if rel.depends_on:
+                specs.extend(rel.depends_on)
+            else:
+                inferred = _infer_otm_cache_dep(model, attr_name, rel)
+                if inferred is not None:
+                    specs.append(inferred)
+
         for proj in get_projections(model).values():
-            specs.extend(proj.depends_on)
+            if proj.depends_on:
+                specs.extend(proj.depends_on)
+            else:
+                inferred = _infer_projection_cache_dep(model, proj)
+                if inferred is not None:
+                    specs.append(inferred)
+
         return tuple(dict.fromkeys(specs))
 
     def _to_builtins(self, value: Any) -> Any:

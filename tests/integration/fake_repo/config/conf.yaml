@@ -1,12 +1,6 @@
 app:
   name: fake_repo
-  code_path: ../src
-  discovery:
-    mode: interfaces
-    interfaces:
-      modules:
-        - app.product.interface
-      warn_recommended: true
+  code_path: ../../..
   rest:
     backend: fastapi
     title: Fake Repo Integration API
@@ -20,5 +14,5 @@ database:
   pool_pre_ping: true
 
 metrics:
-  enabled: true
+  enabled: false
   path: /metrics

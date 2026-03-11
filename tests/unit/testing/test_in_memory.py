@@ -8,7 +8,7 @@ import msgspec
 import pytest
 
 from loom.core.model import BaseModel, Cardinality, ColumnField, ProjectionField, RelationField
-from loom.core.projection.loaders import RelationCountLoader
+from loom.core.projection.loaders import CountLoader
 from loom.testing.in_memory import InMemoryRepository
 
 # ---------------------------------------------------------------------------
@@ -29,18 +29,24 @@ class UpdateWidgetCmd(msgspec.Struct):
     name: str
 
 
+class _Review(msgspec.Struct):
+    id: int
+    product_id: int
+    rating: int
+
+
 class _Product(BaseModel):
     __tablename__ = "in_memory_products"
 
     id: int = ColumnField(primary_key=True, autoincrement=True)
     name: str = ColumnField(length=120)
-    reviews: list[dict[str, Any]] = RelationField(
+    reviews: list[_Review] = RelationField(
         foreign_key="product_id",
         cardinality=Cardinality.ONE_TO_MANY,
         profiles=("with_details",),
     )
     review_count: int = ProjectionField(
-        loader=RelationCountLoader(relation="reviews"),
+        loader=CountLoader(model=_Review),
         profiles=("with_details",),
         default=0,
     )
