@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol
 
 from loom.core.repository import repository_for
@@ -24,7 +25,8 @@ class TaskViewRepository:
         }
 
     async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
-        return self._items.get(obj_id)
+        _ = profile
+        return await asyncio.sleep(0, result=self._items.get(obj_id))
 
 
 class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -75,7 +76,11 @@ class _BuilderTaskViewRepository:
         obj_id: str,
         profile: str = "default",
     ) -> BuilderTaskView | None:
-        return BuilderTaskView(task_id=obj_id, state=self._settings.state)
+        _ = profile
+        return await asyncio.sleep(
+            0,
+            result=BuilderTaskView(task_id=obj_id, state=self._settings.state),
+        )
 
 
 class GetBuilderTaskViewUseCase(

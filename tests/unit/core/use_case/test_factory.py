@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Protocol, cast
 
 import pytest
@@ -50,24 +51,26 @@ class TaskViewRepo(Protocol):
 
 class FakeProductRepo:
     async def get_by_id(self, obj_id: Any, profile: str = "default") -> Product | None:
-        return Product(id=int(obj_id), name="p")
+        _ = profile
+        return await asyncio.sleep(0, result=Product(id=int(obj_id), name="p"))
 
     async def list_paginated(self, *args: Any, **kwargs: Any) -> Any:
-        return None
+        return await asyncio.sleep(0, result=None)
 
     async def create(self, data: LoomStruct) -> Product:
-        return Product(id=1, name="p")
+        return await asyncio.sleep(0, result=Product(id=1, name="p"))
 
     async def update(self, obj_id: Any, data: LoomStruct) -> Product | None:
-        return Product(id=int(obj_id), name="p")
+        return await asyncio.sleep(0, result=Product(id=int(obj_id), name="p"))
 
     async def delete(self, obj_id: Any) -> bool:
-        return True
+        return await asyncio.sleep(0, result=True)
 
 
 class FakeTaskViewRepo:
     async def get_by_id(self, obj_id: Any, profile: str = "default") -> TaskView | None:
-        return TaskView(task_id=str(obj_id), state="done")
+        _ = profile
+        return await asyncio.sleep(0, result=TaskView(task_id=str(obj_id), state="done"))
 
 
 # ---------------------------------------------------------------------------

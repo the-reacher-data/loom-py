@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, TypeAlias
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -14,6 +14,89 @@ from loom.core.repository.registry import (
     get_repository_registration,
     list_repository_registrations,
 )
+
+_RepositoryBindingSpec: TypeAlias = tuple[
+    RepositoryRegistration | None,
+    object | None,
+    object,
+]
+
+
+def _build_repository_specs(
+    *,
+    models: Sequence[type[BaseModel]],
+    explicit_models: Sequence[type[LoomStruct]],
+) -> dict[type[LoomStruct], _RepositoryBindingSpec]:
+    explicit_lookup = set(explicit_models) | set(models)
+    repository_specs: dict[type[LoomStruct], _RepositoryBindingSpec] = {}
+
+    for registration in list_repository_registrations():
+        if registration.model not in explicit_lookup:
+            continue
+        repository_specs[registration.model] = _registered_repository_spec(registration)
+
+    for model in models:
+        if get_repository_registration(model) is not None:
+            continue
+        repository_specs[model] = _default_repository_spec(model)
+
+    return repository_specs
+
+
+def _registered_repository_spec(
+    registration: RepositoryRegistration,
+) -> _RepositoryBindingSpec:
+    binding_key = registration.contract or registration.repository_type
+    return (
+        registration,
+        registration.contract,
+        binding_key,
+    )
+
+
+def _default_repository_spec(model: type[LoomStruct]) -> _RepositoryBindingSpec:
+    return (
+        None,
+        None,
+        RepositoryToken(model),
+    )
+
+
+def _build_repository_provider(
+    *,
+    container: LoomContainer,
+    model: type[LoomStruct],
+    registration: RepositoryRegistration | None,
+    build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
+) -> Callable[[], Any]:
+    context = RepositoryBuildContext(model=model, container=container)
+
+    def _provider() -> Any:
+        if registration is not None:
+            return build_registered_repository(context, registration)
+        if not issubclass(model, BaseModel):
+            raise RuntimeError(
+                f"No default repository can be built for non-persistible type {model.__qualname__}"
+            )
+        default_builder = container.resolve(DefaultRepositoryBuilder)
+        return default_builder(context, model)
+
+    return _provider
+
+
+def _register_repository_binding(
+    *,
+    container: LoomContainer,
+    model: type[LoomStruct],
+    contract: object | None,
+    binding_key: object,
+    provider: Callable[[], Any],
+) -> None:
+    if not container.is_registered(binding_key):
+        container.register(binding_key, provider, scope=Scope.APPLICATION)
+    container.register_repo(model, binding_key)
+    if contract is not None and not container.is_registered(contract):
+        container.register(contract, provider, scope=Scope.APPLICATION)
 
 
 def build_repository_registration_module(
@@ -28,56 +111,25 @@ def build_repository_registration_module(
     Persistible ``BaseModel`` types without an explicit registration use the
     provided default repository builder.
     """
-
-    repository_specs: dict[
-        type[LoomStruct], tuple[RepositoryRegistration | None, object | None, object]
-    ] = {}
-
-    explicit_lookup = set(explicit_models) | set(models)
-
-    for registration in list_repository_registrations():
-        if registration.model not in explicit_lookup:
-            continue
-        binding_key = registration.contract or registration.repository_type
-        repository_specs[registration.model] = (
-            registration,
-            registration.contract,
-            binding_key,
-        )
-
-    for model in models:
-        if get_repository_registration(model) is not None:
-            continue
-        token = RepositoryToken(model)
-        repository_specs[model] = (
-            None,
-            None,
-            token,
-        )
+    repository_specs = _build_repository_specs(
+        models=models,
+        explicit_models=explicit_models,
+    )
 
     def register(container: LoomContainer) -> None:
         for model, (registration, contract, binding_key) in repository_specs.items():
-            context = RepositoryBuildContext(model=model, container=container)
-
-            def _provider(
-                current_context: RepositoryBuildContext = context,
-                current_model: type[LoomStruct] = model,
-                current_registration: RepositoryRegistration | None = registration,
-            ) -> Any:
-                if current_registration is not None:
-                    return build_registered_repository(current_context, current_registration)
-                if not issubclass(current_model, BaseModel):
-                    raise RuntimeError(
-                        f"No default repository can be built for non-persistible type "
-                        f"{current_model.__qualname__}"
-                    )
-                default_builder = container.resolve(DefaultRepositoryBuilder)
-                return default_builder(current_context, current_model)
-
-            if not container.is_registered(binding_key):
-                container.register(binding_key, _provider, scope=Scope.APPLICATION)
-            container.register_repo(model, binding_key)
-            if contract is not None and not container.is_registered(contract):
-                container.register(contract, _provider, scope=Scope.APPLICATION)
+            provider = _build_repository_provider(
+                container=container,
+                model=model,
+                registration=registration,
+                build_registered_repository=build_registered_repository,
+            )
+            _register_repository_binding(
+                container=container,
+                model=model,
+                contract=contract,
+                binding_key=binding_key,
+                provider=provider,
+            )
 
     return register
