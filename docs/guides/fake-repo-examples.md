@@ -30,4 +30,13 @@ Custom repository pattern:
 - `repository_for(...)` also works for non-persistible logical types:
   - use `LoomStruct` for neutral internal structs
   - use `Response` for API-facing structs that should serialize in `camelCase`
-- The SQLAlchemy bootstrap module still provides the current default fallback repository builder for `BaseModel`, but explicit `repository_for(...)` bindings take precedence for both persistible and non-persistible types.
+- The SQLAlchemy bootstrap module now registers `DefaultRepositoryBuilder` with
+  `build_default_sqlalchemy_repository` as the current fallback for
+  `BaseModel`.
+- That fallback resolves `SessionManager` from the container, so SQLAlchemy
+  construction details do not leak into the core repository contract.
+- Explicit `repository_for(...)` bindings still take precedence for both
+  persistible and non-persistible types.
+- When a custom repository needs more constructor dependencies than the default
+  class path supports, use `repository_for(..., builder=...)` and resolve those
+  dependencies from `RepositoryBuildContext.container`.

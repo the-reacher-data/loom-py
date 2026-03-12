@@ -7,6 +7,8 @@ from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, LoomStruct
 from loom.core.repository.registry import (
+    DefaultRepositoryBuilder,
+    RepositoryBuildContext,
     RepositoryRegistration,
     RepositoryToken,
     get_repository_registration,
@@ -18,8 +20,7 @@ def build_repository_registration_module(
     *,
     models: Sequence[type[BaseModel]],
     explicit_models: Sequence[type[LoomStruct]] = (),
-    build_registered_repository: Callable[[RepositoryRegistration], Any],
-    build_default_repository: Callable[[type[BaseModel]], Any],
+    build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
 ) -> Callable[[LoomContainer], None]:
     """Build a container module that registers main repositories.
 
@@ -28,7 +29,9 @@ def build_repository_registration_module(
     provided default repository builder.
     """
 
-    repositories: dict[type[LoomStruct], tuple[Any, object | None, object]] = {}
+    repository_specs: dict[
+        type[LoomStruct], tuple[RepositoryRegistration | None, object | None, object]
+    ] = {}
 
     explicit_lookup = set(explicit_models) | set(models)
 
@@ -36,8 +39,8 @@ def build_repository_registration_module(
         if registration.model not in explicit_lookup:
             continue
         binding_key = registration.contract or registration.repository_type
-        repositories[registration.model] = (
-            build_registered_repository(registration),
+        repository_specs[registration.model] = (
+            registration,
             registration.contract,
             binding_key,
         )
@@ -46,25 +49,35 @@ def build_repository_registration_module(
         if get_repository_registration(model) is not None:
             continue
         token = RepositoryToken(model)
-        repositories[model] = (
-            build_default_repository(model),
+        repository_specs[model] = (
+            None,
             None,
             token,
         )
 
-    def _provider_for(repository: Any) -> Callable[[], Any]:
-        def _provider() -> Any:
-            return repository
-
-        return _provider
-
     def register(container: LoomContainer) -> None:
-        for model, (repository, contract, binding_key) in repositories.items():
-            provider = _provider_for(repository)
+        for model, (registration, contract, binding_key) in repository_specs.items():
+            context = RepositoryBuildContext(model=model, container=container)
+
+            def _provider(
+                current_context: RepositoryBuildContext = context,
+                current_model: type[LoomStruct] = model,
+                current_registration: RepositoryRegistration | None = registration,
+            ) -> Any:
+                if current_registration is not None:
+                    return build_registered_repository(current_context, current_registration)
+                if not issubclass(current_model, BaseModel):
+                    raise RuntimeError(
+                        f"No default repository can be built for non-persistible type "
+                        f"{current_model.__qualname__}"
+                    )
+                default_builder = container.resolve(DefaultRepositoryBuilder)
+                return default_builder(current_context, current_model)
+
             if not container.is_registered(binding_key):
-                container.register(binding_key, provider, scope=Scope.APPLICATION)
+                container.register(binding_key, _provider, scope=Scope.APPLICATION)
             container.register_repo(model, binding_key)
             if contract is not None and not container.is_registered(contract):
-                container.register(contract, provider, scope=Scope.APPLICATION)
+                container.register(contract, _provider, scope=Scope.APPLICATION)
 
     return register

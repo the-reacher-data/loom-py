@@ -236,6 +236,100 @@ class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
 Use `LoomStruct` instead of `Response` when you want a logical type without
 REST-specific `camelCase` serialization.
 
+### Default repository builder and explicit builder override
+
+The framework now resolves the default repository through the
+`DefaultRepositoryBuilder` dependency. In the current SQLAlchemy stack, the
+bootstrap registers `build_default_sqlalchemy_repository` as that default, and
+that builder resolves `SessionManager` from the container.
+
+This means:
+
+- the core registry no longer depends on SQLAlchemy constructor details
+- SQLAlchemy keeps `SessionManager` as an infrastructure concern
+- applications can replace the default builder without changing `UseCase`
+
+Conceptually, the current SQLAlchemy fallback is:
+
+```python
+from loom.core.repository import DefaultRepositoryBuilder, RepositoryBuildContext
+from loom.core.repository.sqlalchemy import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
+
+
+def build_default_sqlalchemy_repository(
+    context: RepositoryBuildContext,
+    model: type[BaseModel],
+) -> object:
+    return RepositorySQLAlchemy(
+        session_manager=context.container.resolve(SessionManager),
+        model=model,
+    )
+```
+
+An application that wants a different project-wide base repository can
+register another `DefaultRepositoryBuilder` implementation in the container.
+
+For per-model overrides that need extra dependencies, use `builder=` on
+`repository_for(...)`:
+
+```python
+from dataclasses import dataclass
+
+from loom.core.di.scope import Scope
+from loom.core.repository import RepositoryBuildContext, repository_for
+from loom.core.response import Response
+
+
+class TaskSnapshot(Response):
+    task_id: str
+    state: str
+
+
+class TaskSnapshotRepo(Protocol):
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskSnapshot | None:
+        ...
+
+
+@dataclass(frozen=True)
+class TaskRepoSettings:
+    state: str
+
+
+def build_task_snapshot_repository(context: RepositoryBuildContext) -> object:
+    settings = context.container.resolve(TaskRepoSettings)
+    return TaskSnapshotRepository(settings=settings)
+
+
+@repository_for(
+    TaskSnapshot,
+    contract=TaskSnapshotRepo,
+    builder=build_task_snapshot_repository,
+)
+class TaskSnapshotRepository:
+    def __init__(self, settings: TaskRepoSettings) -> None:
+        self._settings = settings
+
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskSnapshot | None:
+        return TaskSnapshot(task_id=obj_id, state=self._settings.state)
+```
+
+The application bootstrap only has to register the extra dependency:
+
+```python
+container.register(
+    TaskRepoSettings,
+    lambda: TaskRepoSettings(state="from-builder"),
+    scope=Scope.APPLICATION,
+)
+```
+
+Resolution order is:
+
+1. explicit `repository_for(..., builder=...)`
+2. explicit `repository_for(...)` by class
+3. `DefaultRepositoryBuilder`
+
 ---
 
 ## 4. Background jobs

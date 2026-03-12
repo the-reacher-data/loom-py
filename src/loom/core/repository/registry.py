@@ -2,9 +2,31 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-from loom.core.model import LoomStruct
+from loom.core.di.container import LoomContainer
+from loom.core.model import BaseModel, LoomStruct
+
+
+@dataclass(frozen=True)
+class RepositoryBuildContext:
+    """Context available to repository builders."""
+
+    model: type[LoomStruct]
+    container: LoomContainer
+
+
+RepositoryBuilder = Callable[[RepositoryBuildContext], Any]
+
+
+class DefaultRepositoryBuilder(Protocol):
+    """Build the default repository for a persistible model."""
+
+    def __call__(
+        self,
+        context: RepositoryBuildContext,
+        model: type[BaseModel],
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -14,6 +36,7 @@ class RepositoryRegistration:
     model: type[LoomStruct]
     repository_type: type[Any]
     contract: object | None = None
+    builder: RepositoryBuilder | None = None
 
 
 @dataclass(frozen=True)
@@ -31,6 +54,7 @@ def repository_for(
     model: type[LoomStruct],
     *,
     contract: object | None = None,
+    builder: RepositoryBuilder | None = None,
 ) -> Callable[[type[Any]], type[Any]]:
     """Register a repository implementation for a Loom logical type."""
 
@@ -52,6 +76,7 @@ def repository_for(
             model=model,
             repository_type=repository_type,
             contract=contract,
+            builder=builder,
         )
         _REGISTRATIONS_BY_MODEL[model] = registration
         if contract is not None:

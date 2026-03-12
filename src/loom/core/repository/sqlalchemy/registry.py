@@ -7,6 +7,10 @@ from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel
 from loom.core.repository import (
+    DefaultRepositoryBuilder,
+    RepositoryBuildContext,
+)
+from loom.core.repository import (
     build_repository_registration_module as build_main_repository_module,
 )
 from loom.core.repository.registry import (
@@ -21,10 +25,22 @@ from loom.core.repository.sqlalchemy.session_manager import SessionManager
 __all__ = [
     "RepositoryRegistration",
     "RepositoryToken",
+    "build_default_sqlalchemy_repository",
     "build_sqlalchemy_repository_registration_module",
     "get_repository_registration",
     "repository_for",
 ]
+
+
+def build_default_sqlalchemy_repository(
+    context: RepositoryBuildContext,
+    model: type[BaseModel],
+) -> Any:
+    """Build the default SQLAlchemy repository for a persistible model."""
+    return RepositorySQLAlchemy(
+        session_manager=context.container.resolve(SessionManager),
+        model=model,
+    )
 
 
 def build_sqlalchemy_repository_registration_module(
@@ -32,20 +48,16 @@ def build_sqlalchemy_repository_registration_module(
     models: Sequence[type[BaseModel]],
     *,
     logical_models: Sequence[type[Any]] = (),
-    default_repository_builder: Callable[[type[BaseModel], SessionManager], Any] | None = None,
+    default_repository_builder: DefaultRepositoryBuilder | None = None,
 ) -> Callable[[LoomContainer], None]:
     """Build a DI module that registers model repositories and optional contracts."""
 
-    def _default_builder(model: type[BaseModel]) -> Any:
-        builder = default_repository_builder or (
-            lambda current_model, current_session_manager: RepositorySQLAlchemy(
-                session_manager=current_session_manager,
-                model=current_model,
-            )
-        )
-        return builder(model, session_manager)
-
-    def _registered_builder(registration: RepositoryRegistration) -> Any:
+    def _registered_builder(
+        context: RepositoryBuildContext,
+        registration: RepositoryRegistration,
+    ) -> Any:
+        if registration.builder is not None:
+            return registration.builder(context)
         repository_type = registration.repository_type
         if not isinstance(repository_type, type):
             raise RuntimeError(
@@ -57,19 +69,28 @@ def build_sqlalchemy_repository_registration_module(
                 raise RuntimeError(
                     f"{repository_type.__qualname__} requires BaseModel-compatible registrations."
                 )
-            return repository_type(session_manager=session_manager, model=registration.model)
+            return repository_type(
+                session_manager=context.container.resolve(SessionManager),
+                model=registration.model,
+            )
         return repository_type()
 
     register = build_main_repository_module(
         models=models,
         explicit_models=logical_models,
         build_registered_repository=_registered_builder,
-        build_default_repository=_default_builder,
     )
 
     def _register_with_session(container: LoomContainer) -> None:
-        register(container)
         if not container.is_registered(SessionManager):
             container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
+        if not container.is_registered(DefaultRepositoryBuilder):
+            builder = default_repository_builder or build_default_sqlalchemy_repository
+            container.register(
+                DefaultRepositoryBuilder,
+                lambda: builder,
+                scope=Scope.APPLICATION,
+            )
+        register(container)
 
     return _register_with_session

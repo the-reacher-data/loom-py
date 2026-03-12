@@ -6,7 +6,10 @@ from typing import Any
 
 import msgspec
 
+from loom.core.di.container import LoomContainer
+from loom.core.di.scope import Scope
 from loom.core.repository import get_repository_registration
+from loom.core.repository.registry import RepositoryBuildContext
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
@@ -80,10 +83,23 @@ def build_repository_harness(
             repository = repositories.get(entity_name)
         if repository is None:
             registration = get_repository_registration(model)
-            repository_type = (
-                registration.repository_type if registration is not None else RepositorySQLAlchemy
-            )
-            repository = repository_type(session_manager=session_manager, model=model)
+            if registration is not None and registration.builder is not None:
+                container = LoomContainer()
+                container.register(
+                    SessionManager,
+                    lambda: session_manager,
+                    scope=Scope.APPLICATION,
+                )
+                repository = registration.builder(
+                    RepositoryBuildContext(model=model, container=container)
+                )
+            else:
+                repository_type = (
+                    registration.repository_type
+                    if registration is not None
+                    else RepositorySQLAlchemy
+                )
+                repository = repository_type(session_manager=session_manager, model=model)
         entities[entity_name] = EntityHarness(repository=repository)
 
     return RepositoryIntegrationHarness(
