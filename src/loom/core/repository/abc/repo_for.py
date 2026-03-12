@@ -4,6 +4,7 @@ from typing import Any, Protocol, TypeVar
 
 import msgspec
 
+from loom.core.model import LoomStruct
 from loom.core.repository.abc.query import (
     CursorResult,
     FilterParams,
@@ -12,7 +13,7 @@ from loom.core.repository.abc.query import (
     QuerySpec,
 )
 
-ModelT = TypeVar("ModelT", bound=msgspec.Struct, covariant=True)
+ModelT = TypeVar("ModelT", bound=LoomStruct, covariant=True)
 
 
 class RepoFor(Protocol[ModelT]):

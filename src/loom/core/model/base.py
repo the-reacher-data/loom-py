@@ -8,6 +8,7 @@ from msgspec import UNSET, UnsetType
 from loom.core.model.field import ColumnFieldSpec
 from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
+from loom.core.model.struct import LoomStruct
 
 if TYPE_CHECKING:
 
@@ -116,20 +117,11 @@ class LoomStructMeta(_StructMeta):
         return struct_cls
 
 
-if TYPE_CHECKING:
+class BaseModel(LoomStruct, metaclass=LoomStructMeta):  # type: ignore[metaclass]
+    """Base for all loom domain models.
 
-    class BaseModel(msgspec.Struct):
-        """Typing-only base model to avoid metaclass noise in mypy."""
+    Subclasses must declare ``__tablename__`` and provide typed attributes.
+    Column metadata is optional via ``ColumnField(...)``.
+    """
 
-        __tablename__: ClassVar[str]
-        __loom_columns__: ClassVar[dict[str, ColumnFieldSpec]]
-else:
-
-    class BaseModel(msgspec.Struct, metaclass=LoomStructMeta):
-        """Base for all loom domain models.
-
-        Subclasses must declare ``__tablename__`` and provide typed attributes.
-        Column metadata is optional via ``ColumnField(...)``.
-        """
-
-        __tablename__: ClassVar[str]
+    __tablename__: ClassVar[str]

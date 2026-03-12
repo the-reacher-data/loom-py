@@ -81,7 +81,7 @@ class RestRoute:
         )
     """
 
-    use_case: type[UseCase[Any, Any]]
+    use_case: type[UseCase[Any, Any, Any]]
     method: str
     path: str
     summary: str = ""

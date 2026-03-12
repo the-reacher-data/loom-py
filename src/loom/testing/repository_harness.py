@@ -6,7 +6,7 @@ from typing import Any
 
 import msgspec
 
-from loom.core.repository.sqlalchemy import get_repository_registration
+from loom.core.repository import get_repository_registration
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 

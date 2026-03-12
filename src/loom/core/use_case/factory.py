@@ -12,8 +12,6 @@ import inspect
 import typing
 from typing import Any, TypeVar
 
-import msgspec
-
 from loom.core.di.container import LoomContainer
 from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
@@ -114,7 +112,7 @@ class UseCaseFactory:
 
         init = use_case_type.__init__
         if init is UseCase.__init__:
-            main_model = self._infer_main_model(use_case_type)
+            main_model = getattr(use_case_type, "__loom_main_model__", None)
             if main_model is None:
                 self._dep_cache[use_case_type] = []
                 return []
@@ -160,25 +158,3 @@ class UseCaseFactory:
         if len(args) != 1 or not isinstance(args[0], type):
             return None
         return args[0]
-
-    def _infer_main_model(self, use_case_type: type[Any]) -> type[Any] | None:
-        orig_bases = getattr(use_case_type, "__orig_bases__", ())
-        for base in orig_bases:
-            origin = typing.get_origin(base)
-            if origin is not UseCase:
-                continue
-            args = typing.get_args(base)
-            if len(args) != 2:
-                raise TypeError(
-                    f"{use_case_type.__qualname__} must declare UseCase[TModel, TResult]. "
-                    f"Got {len(args)} generic parameter(s)."
-                )
-            candidate = args[0]
-            if candidate is typing.Any:
-                return None  # UseCase[Any, Result]
-            if not isinstance(candidate, type) or not issubclass(candidate, msgspec.Struct):
-                raise TypeError(
-                    f"{use_case_type.__qualname__}: TModel must be a msgspec.Struct subclass."
-                )
-            return candidate
-        return None

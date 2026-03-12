@@ -171,11 +171,9 @@ from typing import Protocol
 
 import msgspec
 
+from loom.core.repository import repository_for
 from loom.core.repository.abc import RepoFor
-from loom.core.repository.sqlalchemy import (
-    RepositorySQLAlchemy,
-    repository_for,
-)
+from loom.core.repository.sqlalchemy import RepositorySQLAlchemy
 
 
 class ProductRepo(RepoFor[Product], Protocol):
@@ -196,6 +194,47 @@ class CreateProductUseCase(UseCase[Product, Product]):
     async def execute(self, cmd: CreateProduct = Input()) -> Product:
         return await self.main_repo.create(cmd)
 ```
+
+### Logical type with automatic `main_repo`
+
+`main_repo` can also be bound to a non-persistible logical type. Use
+`Response` when the returned object is part of your public API contract and you
+want the usual REST `camelCase` output.
+
+```python
+from typing import Protocol
+
+from loom.core.repository import repository_for
+from loom.core.response import Response
+from loom.core.use_case.use_case import UseCase
+
+
+class TaskView(Response):
+    task_id: str
+    state: str
+
+
+class TaskViewRepo(Protocol):
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
+        ...
+
+
+@repository_for(TaskView, contract=TaskViewRepo)
+class TaskViewRepository:
+    def __init__(self) -> None:
+        self._items = {"t-1": TaskView(task_id="t-1", state="done")}
+
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
+        return self._items.get(obj_id)
+
+
+class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
+    async def execute(self, task_id: str) -> TaskView | None:
+        return await self.main_repo.get_by_id(task_id)
+```
+
+Use `LoomStruct` instead of `Response` when you want a logical type without
+REST-specific `camelCase` serialization.
 
 ---
 

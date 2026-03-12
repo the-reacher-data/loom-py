@@ -8,10 +8,10 @@ These tests verify that:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import pytest
 from fastapi import FastAPI
@@ -22,11 +22,15 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, ColumnField
+from loom.core.repository import repository_for
+from loom.core.repository.sqlalchemy import build_repository_registration_module
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from loom.core.response import Response
+from loom.core.use_case.use_case import UseCase
 from loom.rest.autocrud import build_auto_routes
 from loom.rest.fastapi.app import create_fastapi_app
-from loom.rest.model import RestInterface
+from loom.rest.model import RestInterface, RestRoute
 
 # ---------------------------------------------------------------------------
 # Test domain model
@@ -51,6 +55,42 @@ class AutoProductInterface(RestInterface[AutoProduct]):
     auto = True
 
 
+class TaskView(Response, frozen=True, kw_only=True):  # type: ignore[misc]
+    task_id: str
+    state: str
+
+
+class TaskViewRepo(Protocol):
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None: ...
+
+
+@repository_for(TaskView, contract=TaskViewRepo)
+class TaskViewRepository:
+    def __init__(self) -> None:
+        self._items = {
+            "t-1": TaskView(task_id="t-1", state="done"),
+        }
+
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
+        return self._items.get(obj_id)
+
+
+class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
+    async def execute(self, task_id: str) -> TaskView | None:
+        return await self.main_repo.get_by_id(task_id)
+
+
+class TaskViewInterface(RestInterface[TaskView]):
+    prefix = "/task-views"
+    routes = (
+        RestRoute(
+            use_case=GetTaskViewUseCase,
+            method="GET",
+            path="/{task_id}",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap helpers
 # ---------------------------------------------------------------------------
@@ -59,7 +99,10 @@ class AutoProductInterface(RestInterface[AutoProduct]):
 def _make_register_repos(
     session_manager: SessionManager,
 ) -> Callable[[LoomContainer], None]:
-    repo = RepositorySQLAlchemy(session_manager=session_manager, model=AutoProduct)
+    repo: RepositorySQLAlchemy[Any, int] = RepositorySQLAlchemy(
+        session_manager=session_manager,
+        model=AutoProduct,
+    )
 
     def _provider() -> RepositorySQLAlchemy[Any, int]:
         return repo
@@ -114,16 +157,55 @@ def _build_app(db_path: Path) -> FastAPI:
     )
 
 
+def _build_logical_app(db_path: Path) -> FastAPI:
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    session_manager = SessionManager(
+        database_url,
+        echo=False,
+        pool_pre_ping=False,
+        pool_size=None,
+        max_overflow=None,
+        pool_timeout=None,
+        pool_recycle=None,
+        connect_args={},
+    )
+
+    result = bootstrap_app(
+        config={"name": "logical-test"},
+        use_cases=(GetTaskViewUseCase,),
+        modules=[
+            build_repository_registration_module(
+                session_manager,
+                (),
+                logical_models=(TaskView,),
+            )
+        ],
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await session_manager.dispose()
+
+    return create_fastapi_app(
+        result,
+        interfaces=(TaskViewInterface,),
+        lifespan=lifespan,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
+def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app = _build_app(tmp_path / "auto_test.sqlite")
     with TestClient(app) as c:
-        yield c  # type: ignore[misc]
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +290,18 @@ class TestAutoInterfaceCRUD:
     def test_patch_missing_returns_404(self, client: TestClient) -> None:
         resp = client.patch("/auto-products/999", json={"name": "ghost"})
         assert resp.status_code == 404
+
+    def test_manual_interface_can_resolve_non_base_model_main_repo(self, tmp_path: Path) -> None:
+        app = _build_logical_app(tmp_path / "logical_test.sqlite")
+
+        with TestClient(app) as client:
+            resp = client.get("/task-views/t-1")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "taskId": "t-1",
+            "state": "done",
+        }
 
 
 # ---------------------------------------------------------------------------
