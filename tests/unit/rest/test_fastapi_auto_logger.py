@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 
 import pytest
@@ -53,6 +54,34 @@ def test_configure_logger_unknown_environment_falls_back_to_dev() -> None:
     configure_logging_from_values(environment="staging")
     logger = get_logger("loom.struct.staging")
     assert isinstance(logger, StructLogger)
+
+
+def test_configure_logger_applies_named_levels() -> None:
+    celery_logger = logging.getLogger("celery")
+    kombu_logger = logging.getLogger("kombu")
+    old_celery = celery_logger.level
+    old_kombu = kombu_logger.level
+    try:
+        celery_logger.setLevel(logging.NOTSET)
+        kombu_logger.setLevel(logging.NOTSET)
+
+        configure_logging_from_values(
+            named_levels={
+                "celery": "WARNING",
+                "kombu": "ERROR",
+            }
+        )
+
+        assert celery_logger.level == logging.WARNING
+        assert kombu_logger.level == logging.ERROR
+    finally:
+        celery_logger.setLevel(old_celery)
+        kombu_logger.setLevel(old_kombu)
+
+
+def test_configure_logger_rejects_unknown_named_level() -> None:
+    with pytest.raises(ValueError, match="Unsupported log level"):
+        configure_logging_from_values(named_levels={"celery": "LOUD"})
 
 
 # ---------------------------------------------------------------------------

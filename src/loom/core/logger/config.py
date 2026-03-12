@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -132,6 +132,9 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
         colors: Enable ANSI colours.  ``None`` auto-detects from
             ``environment``.
         level: Minimum log level (``"DEBUG"``, ``"INFO"``, etc.).
+        named_levels: Per-logger minimum levels applied after the main logger
+            setup.  Useful for silencing noisy third-party libraries like
+            ``celery`` or ``redis`` from YAML.
         handlers: Additional stdlib handler configurations.
 
     Example::
@@ -143,6 +146,7 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
             renderer=cfg.renderer,
             colors=cfg.colors,
             level=cfg.level,
+            named_levels=cfg.named_levels,
             handlers=cfg.handlers,
         )
     """
@@ -152,6 +156,7 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
     renderer: str | None = None
     colors: bool | None = None
     level: str = "INFO"
+    named_levels: dict[str, str] = msgspec.field(default_factory=dict)
     handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
 
 
@@ -167,6 +172,7 @@ class LogConfig:
         colors: Enable ANSI colors. ``None`` means auto-detect from ``environment``.
         level: Minimum log level name (e.g. ``"INFO"``, ``"DEBUG"``).
         name: stdlib logger name to attach handlers to. ``""`` targets the root logger.
+        named_levels: Per-logger level overrides for specific stdlib logger names.
         handlers: stdlib handler configurations. Empty tuple falls back to ``basicConfig``.
         extra_processors: Additional structlog processors inserted before the final renderer.
 
@@ -180,6 +186,7 @@ class LogConfig:
     colors: bool | None = None
     level: str = "INFO"
     name: str = ""
+    named_levels: tuple[tuple[str, str], ...] = ()
     handlers: tuple[HandlerConfig, ...] = ()
     extra_processors: tuple[Any, ...] = ()
 
@@ -236,6 +243,11 @@ def _setup_stdlib(config: LogConfig, level: int) -> None:
         target.addHandler(handler)
 
 
+def _apply_named_levels(config: LogConfig) -> None:
+    for logger_name, level_name in config.named_levels:
+        logging.getLogger(logger_name).setLevel(_parse_level(level_name))
+
+
 _DEFAULT_LOG_CONFIG = LogConfig()
 
 
@@ -246,6 +258,7 @@ def configure_logging_from_values(
     renderer: str | None = None,
     colors: bool | None = None,
     level: str = "INFO",
+    named_levels: Mapping[str, str] | None = None,
     handlers: Sequence[HandlerConfig] = (),
 ) -> None:
     """Configure logging from plain scalar values.
@@ -261,6 +274,7 @@ def configure_logging_from_values(
             renderer=Renderer.from_str(renderer) if renderer is not None else None,
             colors=colors,
             level=level,
+            named_levels=tuple((named_levels or {}).items()),
             handlers=tuple(handlers),
         )
     )
@@ -283,6 +297,7 @@ def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:
     """
     level = _parse_level(config.level)
     _setup_stdlib(config, level)
+    _apply_named_levels(config)
 
     structlog.configure(
         processors=[

@@ -412,6 +412,7 @@ def create_app(
         renderer=logger_cfg.renderer,
         colors=logger_cfg.colors,
         level=logger_cfg.level,
+        named_levels=logger_cfg.named_levels,
         handlers=logger_cfg.handlers,
     )
 
