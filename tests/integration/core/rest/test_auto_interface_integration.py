@@ -179,7 +179,8 @@ class TestAutoInterfaceCRUD:
         resp = client.get("/auto-products/")
         assert resp.status_code == 200
         data = resp.json()
-        assert "total_count" in data or "items" in data
+        assert "totalCount" in data
+        assert "items" in data
 
     def test_patch_updates_item(self, client: TestClient) -> None:
         create = client.post("/auto-products/", json={"name": "Old"})

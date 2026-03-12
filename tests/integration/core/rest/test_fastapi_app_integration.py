@@ -49,7 +49,7 @@ def test_fake_repo_app_bootstrap_without_metrics(
         list_response = client.get("/products/")
         assert list_response.status_code == 200
         listed = list_response.json()
-        assert listed["total_count"] == 1
+        assert listed["totalCount"] == 1
         assert listed["items"][0]["id"] == 1
 
         get_response = client.get("/products/1")
@@ -107,7 +107,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
         list_response = client.get("/products/")
         assert list_response.status_code == 200
         listed = list_response.json()
-        assert listed["total_count"] == 1
+        assert listed["totalCount"] == 1
         assert listed["items"][0]["id"] == 1
 
         get_response = client.get("/products/1")
@@ -162,7 +162,7 @@ def test_fake_repo_list_query_cursor_and_profile_controls(
         offset_response = client.get("/products/?price__eq=20&limit=1&page=1&sort=id&direction=ASC")
         assert offset_response.status_code == 200
         offset_payload = offset_response.json()
-        assert offset_payload["total_count"] == 2
+        assert offset_payload["totalCount"] == 2
         assert len(offset_payload["items"]) == 1
         assert offset_payload["items"][0]["name"] == "b"
 
@@ -171,18 +171,18 @@ def test_fake_repo_list_query_cursor_and_profile_controls(
         )
         assert cursor_first.status_code == 200
         cursor_first_payload = cursor_first.json()
-        assert cursor_first_payload["has_next"] is True
-        assert cursor_first_payload["next_cursor"] is not None
+        assert cursor_first_payload["hasNext"] is True
+        assert cursor_first_payload["nextCursor"] is not None
         assert cursor_first_payload["items"][0]["name"] == "b"
 
-        next_cursor = cursor_first_payload["next_cursor"]
+        next_cursor = cursor_first_payload["nextCursor"]
         cursor_second = client.get(
             f"/products/?price__eq=20&pagination=cursor&after={next_cursor}&limit=1&sort=id&direction=ASC"
         )
         assert cursor_second.status_code == 200
         cursor_second_payload = cursor_second.json()
-        assert cursor_second_payload["has_next"] is False
-        assert cursor_second_payload["next_cursor"] is None
+        assert cursor_second_payload["hasNext"] is False
+        assert cursor_second_payload["nextCursor"] is None
         assert cursor_second_payload["items"][0]["name"] == "c"
 
         get_with_profile = client.get("/products/2?profile=with_details")
