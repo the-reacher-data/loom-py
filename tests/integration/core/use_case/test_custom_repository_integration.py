@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 from pytest import mark
 
@@ -9,10 +9,7 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.model import LoomStruct
-from loom.core.repository import repository_for
-from loom.core.repository.sqlalchemy import build_repository_registration_module
-from loom.core.use_case.use_case import UseCase
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.testing import RepositoryIntegrationHarness
 from tests.integration.fake_repo.product.jobs import GetProductIdByNameJob
 from tests.integration.fake_repo.product.model import Product
@@ -21,35 +18,15 @@ from tests.integration.fake_repo.product.use_cases import (
     CreateProductUseCase,
     FindProductByNameUseCase,
 )
+from tests.integration.support.logical_repo_fixtures import (
+    GetTaskViewUseCase,
+    TaskView,
+    TaskViewRepository,
+)
 
 
 class _Cfg:
     env: str = "test"
-
-
-class TaskView(LoomStruct):
-    task_id: str
-    state: str
-
-
-class TaskViewRepo(Protocol):
-    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None: ...
-
-
-@repository_for(TaskView, contract=TaskViewRepo)
-class TaskViewRepository:
-    def __init__(self) -> None:
-        self._items = {
-            "t-1": TaskView(task_id="t-1", state="done"),
-        }
-
-    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
-        return self._items.get(obj_id)
-
-
-class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
-    async def execute(self, task_id: str) -> TaskView | None:
-        return await self.main_repo.get_by_id(task_id)
 
 
 def _use_cases(*items: type[Any]) -> tuple[type[Compilable], ...]:
@@ -59,7 +36,7 @@ def _use_cases(*items: type[Any]) -> tuple[type[Compilable], ...]:
 def _repo_module(
     integration_context: RepositoryIntegrationHarness,
 ) -> Callable[[LoomContainer], None]:
-    return build_repository_registration_module(
+    return build_sqlalchemy_repository_registration_module(
         integration_context.session_manager,
         (Product,),
     )
@@ -68,7 +45,7 @@ def _repo_module(
 def _logical_repo_module(
     integration_context: RepositoryIntegrationHarness,
 ) -> Callable[[LoomContainer], None]:
-    return build_repository_registration_module(
+    return build_sqlalchemy_repository_registration_module(
         integration_context.session_manager,
         (),
         logical_models=(TaskView,),

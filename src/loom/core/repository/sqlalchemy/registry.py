@@ -21,13 +21,13 @@ from loom.core.repository.sqlalchemy.session_manager import SessionManager
 __all__ = [
     "RepositoryRegistration",
     "RepositoryToken",
-    "build_repository_registration_module",
+    "build_sqlalchemy_repository_registration_module",
     "get_repository_registration",
     "repository_for",
 ]
 
 
-def build_repository_registration_module(
+def build_sqlalchemy_repository_registration_module(
     session_manager: SessionManager,
     models: Sequence[type[BaseModel]],
     *,

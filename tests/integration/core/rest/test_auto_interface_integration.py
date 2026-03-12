@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -22,15 +22,16 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, ColumnField
-from loom.core.repository import repository_for
-from loom.core.repository.sqlalchemy import build_repository_registration_module
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
-from loom.core.response import Response
-from loom.core.use_case.use_case import UseCase
 from loom.rest.autocrud import build_auto_routes
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.model import RestInterface, RestRoute
+from tests.integration.support.logical_repo_fixtures import (
+    GetTaskViewUseCase,
+    TaskView,
+)
 
 # ---------------------------------------------------------------------------
 # Test domain model
@@ -53,31 +54,6 @@ class AutoProductInterface(RestInterface[AutoProduct]):
     prefix = "/auto-products"
     tags = ("AutoProducts",)
     auto = True
-
-
-class TaskView(Response, frozen=True, kw_only=True):  # type: ignore[misc]
-    task_id: str
-    state: str
-
-
-class TaskViewRepo(Protocol):
-    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None: ...
-
-
-@repository_for(TaskView, contract=TaskViewRepo)
-class TaskViewRepository:
-    def __init__(self) -> None:
-        self._items = {
-            "t-1": TaskView(task_id="t-1", state="done"),
-        }
-
-    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
-        return self._items.get(obj_id)
-
-
-class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
-    async def execute(self, task_id: str) -> TaskView | None:
-        return await self.main_repo.get_by_id(task_id)
 
 
 class TaskViewInterface(RestInterface[TaskView]):
@@ -174,7 +150,7 @@ def _build_logical_app(db_path: Path) -> FastAPI:
         config={"name": "logical-test"},
         use_cases=(GetTaskViewUseCase,),
         modules=[
-            build_repository_registration_module(
+            build_sqlalchemy_repository_registration_module(
                 session_manager,
                 (),
                 logical_models=(TaskView,),

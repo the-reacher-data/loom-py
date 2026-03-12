@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import msgspec
 import pytest
 
 from loom.core.bootstrap import bootstrap_app
 from loom.core.engine.events import RuntimeEvent
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.metrics import MetricsAdapter
+from loom.core.model import LoomStruct
 from loom.core.use_case.use_case import UseCase
 
 
-class _Model(msgspec.Struct):
+class _Model(LoomStruct):
     id: int
 
 

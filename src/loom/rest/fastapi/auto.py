@@ -32,7 +32,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy import build_repository_registration_module
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
@@ -132,7 +132,7 @@ def _register_repositories(
     session_manager: SessionManager,
     models: tuple[type[BaseModel], ...],
 ) -> Callable[[LoomContainer], None]:
-    return build_repository_registration_module(session_manager, models)
+    return build_sqlalchemy_repository_registration_module(session_manager, models)
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
