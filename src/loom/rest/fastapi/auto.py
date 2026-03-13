@@ -345,6 +345,8 @@ def _mount_metrics(
         cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
+    if "{" in cfg.path:
+        raise ValueError(f"metrics.path must not contain path parameters, got: {cfg.path!r}")
     app.add_middleware(PrometheusMiddleware, registry=registry)
     scrape_registry = registry or prometheus_client.REGISTRY
 

@@ -68,7 +68,7 @@ def _build_repository_provider(
     registration: RepositoryRegistration | None,
     build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
 ) -> Callable[[], Any]:
-    context = RepositoryBuildContext(model=model)
+    context = RepositoryBuildContext(model=model, container=container)
 
     def _provider() -> Any:
         if registration is not None:

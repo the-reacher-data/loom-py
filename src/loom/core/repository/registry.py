@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from loom.core.model import LoomStruct
+
+if TYPE_CHECKING:
+    from loom.core.di.container import LoomContainer
 
 _LOOM_REPOSITORY_ATTR = "__loom_repository__"
 _LOOM_CONTRACT_ATTR = "__loom_contract_for__"
@@ -14,12 +17,20 @@ _LOOM_CONTRACT_ATTR = "__loom_contract_for__"
 class RepositoryBuildContext:
     """Context available to repository builders.
 
-    Carries only the model being built. Infrastructure dependencies are
-    injected into builders at construction time by the DI module — they
-    must not be resolved here at call time.
+    Carries the model being built and, optionally, the DI container.  Prefer
+    injecting infrastructure dependencies into your builder at construction
+    time (e.g. as dataclass fields) rather than resolving them here.  Access
+    ``container`` only when late resolution is unavoidable — for example,
+    when the dependency itself is registered after the builder is decorated.
+
+    Args:
+        model: The Loom struct model whose repository is being built.
+        container: The active DI container.  ``None`` in test harnesses that
+            build repositories without a full container.
     """
 
     model: type[LoomStruct]
+    container: LoomContainer | None = None
 
 
 RepositoryBuilder = Callable[[RepositoryBuildContext], Any]
