@@ -468,8 +468,10 @@ def build_auto_routes(
 
     Args:
         model: Domain model type for which routes should be generated.
-        include: Subset of operation names to expose.  If empty, all five
-            standard operations are included.
+        include: Subset of operation names to expose.  If empty, the
+            supported operations are derived automatically from the
+            repository's ``-able`` capability protocols via its MRO.
+            An explicit list is always honoured as-is.
 
     Returns:
         Tuple of :class:`~loom.rest.model.RestRoute` instances, one per

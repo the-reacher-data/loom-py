@@ -36,10 +36,11 @@ __all__ = [
 class SQLAlchemyDefaultRepositoryBuilder:
     """Default repository builder for SQLAlchemy-backed models.
 
-    Receives a ``SessionManager`` at construction time — injected by the
-    SQLAlchemy DI module.  The bootstrap and any other infrastructure layer
-    must not construct this class directly; register it via the DI module so
-    that the ``SessionManager`` singleton is shared across all repositories.
+    A frozen dataclass that receives a ``SessionManager`` at construction
+    time — injected by the SQLAlchemy DI module.  The bootstrap and any
+    other infrastructure layer must not construct this class directly;
+    register it via the DI module so that the ``SessionManager`` singleton
+    is shared across all repositories.
 
     Args:
         session_manager: Shared SQLAlchemy session manager.
@@ -65,7 +66,7 @@ def build_sqlalchemy_repository_registration_module(
     *,
     logical_models: Sequence[type[Any]] = (),
 ) -> Callable[[LoomContainer], None]:
-    """Build a DI module that registers model repositories and optional contracts.
+    """Build a DI module that registers model repositories and their capability bindings.
 
     The module self-declares its infrastructure dependencies: it registers both
     ``SessionManager`` and ``DefaultRepositoryBuilder`` in the container so that
