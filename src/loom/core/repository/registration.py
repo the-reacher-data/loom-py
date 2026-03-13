@@ -13,7 +13,6 @@ from loom.core.repository.registry import (
     RepositoryRegistration,
     RepositoryToken,
     get_repository_registration,
-    list_repository_registrations,
 )
 
 
@@ -29,18 +28,16 @@ def _build_repository_specs(
     models: Sequence[type[BaseModel]],
     explicit_models: Sequence[type[LoomStruct]],
 ) -> dict[type[LoomStruct], _RepositoryBindingSpec]:
-    explicit_lookup = set(explicit_models) | set(models)
     repository_specs: dict[type[LoomStruct], _RepositoryBindingSpec] = {}
 
-    for registration in list_repository_registrations():
-        if registration.model not in explicit_lookup:
-            continue
-        repository_specs[registration.model] = _registered_repository_spec(registration)
+    for model in set(explicit_models) | set(models):
+        registration = get_repository_registration(model)
+        if registration is not None:
+            repository_specs[registration.model] = _registered_repository_spec(registration)
 
     for model in models:
-        if get_repository_registration(model) is not None:
-            continue
-        repository_specs[model] = _default_repository_spec(model)
+        if model not in repository_specs:
+            repository_specs[model] = _default_repository_spec(model)
 
     return repository_specs
 
