@@ -117,7 +117,7 @@ class LoomStructMeta(_StructMeta):
         return struct_cls
 
 
-class BaseModel(LoomStruct, metaclass=LoomStructMeta):  # type: ignore[metaclass]
+class BaseModel(LoomStruct, metaclass=LoomStructMeta):  # type: ignore[metaclass]  # LoomStructMeta + msgspec StructMeta combo not supported by mypy
     """Base for all loom domain models.
 
     Subclasses must declare ``__tablename__`` and provide typed attributes.

@@ -348,16 +348,20 @@ def _mount_metrics(
     app.add_middleware(PrometheusMiddleware, registry=registry)
     scrape_registry = registry or prometheus_client.REGISTRY
 
-    @app.get(cfg.path, include_in_schema=False)
-    async def _metrics() -> Response:
+    async def _scrape() -> Response:
         return Response(
             content=prometheus_client.generate_latest(scrape_registry),
             media_type=prometheus_client.CONTENT_TYPE_LATEST,
         )
 
-    @app.get(f"{cfg.path}/", include_in_schema=False)
-    async def _metrics_trailing_slash() -> Response:
+    async def _scrape_trailing_slash() -> Response:
+        # Return 404 for trailing-slash variant to avoid ambiguous scrape targets.
         return Response(status_code=404)
+
+    app.add_api_route(cfg.path, _scrape, methods=["GET"], include_in_schema=False)
+    app.add_api_route(
+        f"{cfg.path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False
+    )
 
 
 def create_app(

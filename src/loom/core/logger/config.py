@@ -245,7 +245,11 @@ def _setup_stdlib(config: LogConfig, level: int) -> None:
 
 def _apply_named_levels(config: LogConfig) -> None:
     for logger_name, level_name in config.named_levels:
-        logging.getLogger(logger_name).setLevel(_parse_level(level_name))
+        try:
+            level = _parse_level(level_name)
+        except ValueError as exc:
+            raise ValueError(f"Invalid level {level_name!r} for logger {logger_name!r}") from exc
+        logging.getLogger(logger_name).setLevel(level)
 
 
 _DEFAULT_LOG_CONFIG = LogConfig()

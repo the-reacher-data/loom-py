@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, TypeAlias
+from dataclasses import dataclass
+from typing import Any
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -15,11 +16,12 @@ from loom.core.repository.registry import (
     list_repository_registrations,
 )
 
-_RepositoryBindingSpec: TypeAlias = tuple[
-    RepositoryRegistration | None,
-    object | None,
-    object,
-]
+
+@dataclass(frozen=True)
+class _RepositoryBindingSpec:
+    registration: RepositoryRegistration | None
+    contract: object | None
+    binding_key: object
 
 
 def _build_repository_specs(
@@ -47,18 +49,18 @@ def _registered_repository_spec(
     registration: RepositoryRegistration,
 ) -> _RepositoryBindingSpec:
     binding_key = registration.contract or registration.repository_type
-    return (
-        registration,
-        registration.contract,
-        binding_key,
+    return _RepositoryBindingSpec(
+        registration=registration,
+        contract=registration.contract,
+        binding_key=binding_key,
     )
 
 
 def _default_repository_spec(model: type[LoomStruct]) -> _RepositoryBindingSpec:
-    return (
-        None,
-        None,
-        RepositoryToken(model),
+    return _RepositoryBindingSpec(
+        registration=None,
+        contract=None,
+        binding_key=RepositoryToken(model),
     )
 
 
@@ -117,18 +119,18 @@ def build_repository_registration_module(
     )
 
     def register(container: LoomContainer) -> None:
-        for model, (registration, contract, binding_key) in repository_specs.items():
+        for model, spec in repository_specs.items():
             provider = _build_repository_provider(
                 container=container,
                 model=model,
-                registration=registration,
+                registration=spec.registration,
                 build_registered_repository=build_registered_repository,
             )
             _register_repository_binding(
                 container=container,
                 model=model,
-                contract=contract,
-                binding_key=binding_key,
+                contract=spec.contract,
+                binding_key=spec.binding_key,
                 provider=provider,
             )
 
