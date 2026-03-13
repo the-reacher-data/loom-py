@@ -350,13 +350,13 @@ def _mount_metrics(
     app.add_middleware(PrometheusMiddleware, registry=registry)
     scrape_registry = registry or prometheus_client.REGISTRY
 
-    async def _scrape() -> Response:
+    def _scrape() -> Response:
         return Response(
             content=prometheus_client.generate_latest(scrape_registry),
             media_type=prometheus_client.CONTENT_TYPE_LATEST,
         )
 
-    async def _scrape_trailing_slash() -> Response:
+    def _scrape_trailing_slash() -> Response:
         # Return 404 for trailing-slash variant to avoid ambiguous scrape targets.
         return Response(status_code=404)
 
