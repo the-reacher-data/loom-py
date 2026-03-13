@@ -102,6 +102,32 @@ class LoomContainer:
         factory = provider
         self._bindings[interface] = _Binding(provider=factory, scope=scope)
 
+    def register_instance(self, interface: BindingKey, instance: Any) -> None:
+        """Register an already-constructed singleton instance.
+
+        Equivalent to ``register(interface, lambda: instance,
+        scope=Scope.APPLICATION)`` but skips the factory indirection — the
+        instance is stored directly and returned on every :meth:`resolve` call.
+
+        Use this when the caller owns the lifecycle of the object (e.g. a
+        ``SessionManager`` created by the bootstrap) and the container should
+        treat it as an application-scope singleton without constructing it.
+
+        Args:
+            interface: A hashable DI key used as the resolution key.
+            instance: The singleton instance to bind.
+
+        Example::
+
+            container.register_instance(SessionManager, session_manager)
+            assert container.resolve(SessionManager) is session_manager
+        """
+        self._bindings[interface] = _Binding(
+            provider=lambda: instance,
+            scope=Scope.APPLICATION,
+            _instance=instance,
+        )
+
     def resolve(self, interface: BindingKey) -> Any:
         """Return an instance bound to ``interface``.
 
