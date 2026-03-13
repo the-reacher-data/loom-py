@@ -136,6 +136,9 @@ def test_fake_repo_app_bootstrap_with_metrics(
         assert "http_requests_total" in metrics_response.text
         assert "http_request_duration_seconds" in metrics_response.text
 
+        metrics_trailing_slash_response = client.get("/metrics/")
+        assert metrics_trailing_slash_response.status_code == 404
+
 
 @mark.parametrize(
     "config_relpath",

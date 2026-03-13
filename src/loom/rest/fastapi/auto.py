@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 import msgspec
 import prometheus_client
 from fastapi import FastAPI
+from starlette.responses import Response
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap import KernelRuntime, create_kernel
@@ -345,10 +346,18 @@ def _mount_metrics(
         registry: Optional Prometheus registry override.
     """
     app.add_middleware(PrometheusMiddleware, registry=registry)
-    app.mount(
-        cfg.path,
-        prometheus_client.make_asgi_app(registry=registry or prometheus_client.REGISTRY),
-    )
+    scrape_registry = registry or prometheus_client.REGISTRY
+
+    @app.get(cfg.path, include_in_schema=False)
+    async def _metrics() -> Response:
+        return Response(
+            content=prometheus_client.generate_latest(scrape_registry),
+            media_type=prometheus_client.CONTENT_TYPE_LATEST,
+        )
+
+    @app.get(f"{cfg.path}/", include_in_schema=False)
+    async def _metrics_trailing_slash() -> Response:
+        return Response(status_code=404)
 
 
 def create_app(
