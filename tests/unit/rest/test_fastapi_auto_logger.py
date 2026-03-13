@@ -80,7 +80,7 @@ def test_configure_logger_applies_named_levels() -> None:
 
 
 def test_configure_logger_rejects_unknown_named_level() -> None:
-    with pytest.raises(ValueError, match="Unsupported log level"):
+    with pytest.raises(ValueError, match="Invalid level"):
         configure_logging_from_values(named_levels={"celery": "LOUD"})
 
 

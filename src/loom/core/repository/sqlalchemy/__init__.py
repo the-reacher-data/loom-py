@@ -8,7 +8,7 @@ from loom.core.repository.sqlalchemy.model import (
 )
 from loom.core.repository.sqlalchemy.projection import Projection
 from loom.core.repository.sqlalchemy.registry import (
-    build_default_sqlalchemy_repository,
+    SQLAlchemyDefaultRepositoryBuilder,
     build_sqlalchemy_repository_registration_module,
 )
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy, with_session_scope
@@ -26,7 +26,7 @@ __all__ = [
     "SessionManager",
     "SupportsPostCommit",
     "TimestampMixin",
-    "build_default_sqlalchemy_repository",
+    "SQLAlchemyDefaultRepositoryBuilder",
     "build_sqlalchemy_repository_registration_module",
     "transactional",
     "with_session_scope",

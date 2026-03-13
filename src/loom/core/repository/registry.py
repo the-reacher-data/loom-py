@@ -4,29 +4,34 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from loom.core.di.container import LoomContainer
-from loom.core.model import BaseModel, LoomStruct
+from loom.core.model import LoomStruct
 
 
 @dataclass(frozen=True)
 class RepositoryBuildContext:
-    """Context available to repository builders."""
+    """Context available to repository builders.
+
+    Carries only the model being built. Infrastructure dependencies are
+    injected into builders at construction time by the DI module — they
+    must not be resolved here at call time.
+    """
 
     model: type[LoomStruct]
-    container: LoomContainer
 
 
 RepositoryBuilder = Callable[[RepositoryBuildContext], Any]
 
 
 class DefaultRepositoryBuilder(Protocol):
-    """Build the default repository for a persistible model."""
+    """Global fallback strategy for building repositories.
 
-    def __call__(
-        self,
-        context: RepositoryBuildContext,
-        model: type[BaseModel],
-    ) -> Any: ...
+    Implement this protocol to swap the default persistence backend for all
+    models that have no explicit ``repository_for`` registration.  The
+    implementation receives infrastructure dependencies via its constructor
+    (injected by the DI module), not via the context.
+    """
+
+    def __call__(self, context: RepositoryBuildContext) -> Any: ...
 
 
 @dataclass(frozen=True)

@@ -71,7 +71,7 @@ def _build_repository_provider(
     registration: RepositoryRegistration | None,
     build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
 ) -> Callable[[], Any]:
-    context = RepositoryBuildContext(model=model, container=container)
+    context = RepositoryBuildContext(model=model)
 
     def _provider() -> Any:
         if registration is not None:
@@ -81,7 +81,7 @@ def _build_repository_provider(
                 f"No default repository can be built for non-persistible type {model.__qualname__}"
             )
         default_builder = container.resolve(DefaultRepositoryBuilder)
-        return default_builder(context, model)
+        return default_builder(context)
 
     return _provider
 

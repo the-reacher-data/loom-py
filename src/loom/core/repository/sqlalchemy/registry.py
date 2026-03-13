@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from loom.core.di.container import LoomContainer
@@ -25,22 +26,38 @@ from loom.core.repository.sqlalchemy.session_manager import SessionManager
 __all__ = [
     "RepositoryRegistration",
     "RepositoryToken",
-    "build_default_sqlalchemy_repository",
+    "SQLAlchemyDefaultRepositoryBuilder",
     "build_sqlalchemy_repository_registration_module",
     "get_repository_registration",
     "repository_for",
 ]
 
 
-def build_default_sqlalchemy_repository(
-    context: RepositoryBuildContext,
-    model: type[BaseModel],
-) -> Any:
-    """Build the default SQLAlchemy repository for a persistible model."""
-    return RepositorySQLAlchemy(
-        session_manager=context.container.resolve(SessionManager),
-        model=model,
-    )
+@dataclass(frozen=True)
+class SQLAlchemyDefaultRepositoryBuilder:
+    """Default repository builder for SQLAlchemy-backed models.
+
+    Receives a ``SessionManager`` at construction time — injected by the
+    SQLAlchemy DI module.  The bootstrap and any other infrastructure layer
+    must not construct this class directly; register it via the DI module so
+    that the ``SessionManager`` singleton is shared across all repositories.
+
+    Args:
+        session_manager: Shared SQLAlchemy session manager.
+    """
+
+    session_manager: SessionManager
+
+    def __call__(self, context: RepositoryBuildContext) -> Any:
+        if not issubclass(context.model, BaseModel):
+            raise RuntimeError(
+                f"SQLAlchemyDefaultRepositoryBuilder cannot build a repository "
+                f"for non-persistible type {context.model.__qualname__}"
+            )
+        return RepositorySQLAlchemy(
+            session_manager=self.session_manager,
+            model=context.model,
+        )
 
 
 def build_sqlalchemy_repository_registration_module(
@@ -48,9 +65,17 @@ def build_sqlalchemy_repository_registration_module(
     models: Sequence[type[BaseModel]],
     *,
     logical_models: Sequence[type[Any]] = (),
-    default_repository_builder: DefaultRepositoryBuilder | None = None,
 ) -> Callable[[LoomContainer], None]:
-    """Build a DI module that registers model repositories and optional contracts."""
+    """Build a DI module that registers model repositories and optional contracts.
+
+    The module self-declares its infrastructure dependencies: it registers both
+    ``SessionManager`` and ``DefaultRepositoryBuilder`` in the container so that
+    the bootstrap does not need to know about SQLAlchemy internals.
+
+    To swap the default builder, register your own ``DefaultRepositoryBuilder``
+    in the container *before* loading this module — the module will not
+    overwrite an existing registration.
+    """
 
     def _registered_builder(
         context: RepositoryBuildContext,
@@ -65,13 +90,13 @@ def build_sqlalchemy_repository_registration_module(
                 f"{registration.model.__qualname__} must use a class type."
             )
         if issubclass(repository_type, RepositorySQLAlchemy):
-            if not issubclass(registration.model, BaseModel):
+            if not issubclass(context.model, BaseModel):
                 raise RuntimeError(
                     f"{repository_type.__qualname__} requires BaseModel-compatible registrations."
                 )
             return repository_type(
-                session_manager=context.container.resolve(SessionManager),
-                model=registration.model,
+                session_manager=session_manager,
+                model=context.model,
             )
         return repository_type()
 
@@ -85,10 +110,11 @@ def build_sqlalchemy_repository_registration_module(
         if not container.is_registered(SessionManager):
             container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
         if not container.is_registered(DefaultRepositoryBuilder):
-            builder = default_repository_builder or build_default_sqlalchemy_repository
             container.register(
                 DefaultRepositoryBuilder,
-                lambda: builder,
+                lambda: SQLAlchemyDefaultRepositoryBuilder(
+                    session_manager=container.resolve(SessionManager),
+                ),
                 scope=Scope.APPLICATION,
             )
         register(container)
