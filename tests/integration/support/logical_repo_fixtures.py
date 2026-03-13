@@ -17,8 +17,8 @@ class TaskViewRepo(Protocol):
     async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None: ...
 
 
-@repository_for(TaskView, contract=TaskViewRepo)
-class TaskViewRepository:
+@repository_for(TaskView)
+class TaskViewRepository(TaskViewRepo):
     def __init__(self) -> None:
         self._items = {
             "t-1": TaskView(task_id="t-1", state="done"),

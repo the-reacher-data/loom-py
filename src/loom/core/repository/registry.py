@@ -10,7 +10,6 @@ if TYPE_CHECKING:
     from loom.core.di.container import LoomContainer
 
 _LOOM_REPOSITORY_ATTR = "__loom_repository__"
-_LOOM_CONTRACT_ATTR = "__loom_contract_for__"
 
 
 @dataclass(frozen=True)
@@ -53,15 +52,15 @@ class RepositoryRegistration:
     """Repository registration metadata for a logical Loom type.
 
     Stored directly on the model class as ``__loom_repository__`` so that
-    no global mutable state is required. The ``contract`` field defines the
-    DI binding key that use cases declare as their third generic parameter
-    (``UseCase[TModel, TResult, TContract]``) to get typed access to custom
-    repository methods without casts.
+    no global mutable state is required.
+
+    Capability DI keys (e.g. ``Readable[Product]``, custom Protocol classes)
+    are auto-detected from the repository class's direct bases at registration
+    time — no explicit ``contract`` parameter is needed.
     """
 
     model: type[LoomStruct]
     repository_type: type[Any]
-    contract: object | None = None
     builder: RepositoryBuilder | None = None
 
 
@@ -75,40 +74,47 @@ class RepositoryToken:
 def repository_for(
     model: type[LoomStruct],
     *,
-    contract: object | None = None,
     builder: RepositoryBuilder | None = None,
 ) -> Callable[[type[Any]], type[Any]]:
     """Register a repository implementation for a Loom logical type.
 
     Stores the registration as ``__loom_repository__`` on the model class —
-    no global state is written.  The optional ``contract`` is the DI binding
-    key that use cases reference as ``UseCase[TModel, TResult, TContract]``
-    to get fully-typed access to custom repository methods without casts.
+    no global state is written.
+
+    Capability DI keys are detected automatically from the repository's direct
+    base classes.  Any Protocol class declared as a direct base is registered
+    as an additional DI binding, alongside the standard ``-able`` capability
+    generics (``Readable[Model]``, ``Creatable[Model]``, …) inferred from the
+    MRO.
 
     Args:
         model: The Loom struct model this repository is bound to.
-        contract: Optional DI key (Protocol / ABC) exposed to use cases.
         builder: Optional custom factory called with a
             :class:`RepositoryBuildContext` to construct the repository.
 
     Raises:
-        RuntimeError: If another repository is already registered for the
-            same model or the same contract is already bound to a different
-            model.
+        RuntimeError: If another repository is already registered for ``model``.
 
-    Example::
+    Example — custom capability protocol::
 
-        class IProductRepository(Protocol):
+        class IProductRepository(Readable[Product], Protocol):
             async def find_by_sku(self, sku: str) -> Product | None: ...
 
-        @repository_for(Product, contract=IProductRepository)
-        class ProductRepository(RepositorySQLAlchemy[Product, int]):
+        @repository_for(Product)
+        class ProductRepository(RepositorySQLAlchemy[Product, int], IProductRepository):
             async def find_by_sku(self, sku: str) -> Product | None:
                 ...
 
+        # Use case declares only the capability it needs:
         class GetProductUseCase(UseCase[Product, Product | None, IProductRepository]):
             async def execute(self, sku: str) -> Product | None:
                 return await self.main_repo.find_by_sku(sku)
+
+    Example — custom builder with DI dependencies::
+
+        @repository_for(TaskView, builder=lambda ctx: MyRepo(ctx.container.resolve(Dep)))
+        class MyTaskRepo(TaskViewRepo):
+            ...
     """
 
     def decorator(repository_type: type[Any]) -> type[Any]:
@@ -118,18 +124,9 @@ def repository_for(
                 f"Repository already registered for model {model.__qualname__}: "
                 f"{existing.repository_type.__qualname__}"
             )
-        if contract is not None and isinstance(contract, type):
-            bound_model = getattr(contract, _LOOM_CONTRACT_ATTR, None)
-            if bound_model is not None and bound_model is not model:
-                raise RuntimeError(
-                    f"Contract {contract.__qualname__!r} is already bound to "
-                    f"model {bound_model.__qualname__}"
-                )
-            contract.__loom_contract_for__ = model  # type: ignore[attr-defined]
         registration = RepositoryRegistration(
             model=model,
             repository_type=repository_type,
-            contract=contract,
             builder=builder,
         )
         model.__loom_repository__ = registration  # type: ignore[attr-defined]

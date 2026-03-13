@@ -11,8 +11,8 @@ from tests.integration.fake_repo.product.model import Product
 from tests.integration.fake_repo.product.repository_contract import ProductRepo
 
 
-@repository_for(Product, contract=ProductRepo)
-class ProductRepository(RepositorySQLAlchemy[Product, int]):
+@repository_for(Product)
+class ProductRepository(RepositorySQLAlchemy[Product, int], ProductRepo):
     """Custom Product repository used as the automatic main repository."""
 
     async def create(self, data: msgspec.Struct) -> Product:

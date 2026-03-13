@@ -48,10 +48,6 @@ class BuilderTaskViewRepo(Protocol):
     ) -> BuilderTaskView | None: ...
 
 
-class _BuilderTaskViewRepositoryContract(BuilderTaskViewRepo):
-    pass
-
-
 @dataclass(frozen=True)
 class _TaskRepoSettings:
     state: str
@@ -64,10 +60,9 @@ def _build_task_view_repository(context: RepositoryBuildContext) -> Any:
 
 @repository_for(
     BuilderTaskView,
-    contract=_BuilderTaskViewRepositoryContract,
     builder=_build_task_view_repository,
 )
-class _BuilderTaskViewRepository:
+class _BuilderTaskViewRepository(BuilderTaskViewRepo):
     def __init__(self, settings: _TaskRepoSettings) -> None:
         self._settings = settings
 
@@ -84,7 +79,7 @@ class _BuilderTaskViewRepository:
 
 
 class GetBuilderTaskViewUseCase(
-    UseCase[BuilderTaskView, BuilderTaskView | None, _BuilderTaskViewRepositoryContract]
+    UseCase[BuilderTaskView, BuilderTaskView | None, BuilderTaskViewRepo]
 ):
     async def execute(self, task_id: str) -> BuilderTaskView | None:
         return await self.main_repo.get_by_id(task_id)
