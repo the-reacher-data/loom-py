@@ -46,7 +46,7 @@ class UseCase(ABC, Generic[ModelT, ResultT, RepoT]):
 
     Example::
 
-        class UpdateUserUseCase(UseCase[UserResponse]):
+        class UpdateUserUseCase(UseCase[User, UserResponse]):
             computes = [set_updated_at]
             rules = [email_must_be_valid]
 
