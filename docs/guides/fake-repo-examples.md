@@ -24,17 +24,20 @@ Custom repository pattern:
 
 - Declare the custom contract as `RepoFor[Model]` plus only the extra methods.
 - Import `repository_for` from `loom.core.repository`, not from the SQLAlchemy package.
-- Register the SQLAlchemy implementation with `@repository_for(Model, contract=...)`.
+- Register the SQLAlchemy implementation with `@repository_for(Model)` and make the
+  repository class inherit the capability `Protocol` directly.
 - Keep CRUD-only use cases on `self.main_repo`; they automatically receive the custom implementation.
 - Reserve constructor-injected repository contracts for advanced cases where a use case or job needs a secondary repository dependency; the primary public example should stay on `main_repo`.
 - `repository_for(...)` also works for non-persistible logical types:
   - use `LoomStruct` for neutral internal structs
   - use `Response` for API-facing structs that should serialize in `camelCase`
 - The SQLAlchemy bootstrap module now registers `DefaultRepositoryBuilder` with
-  `build_default_sqlalchemy_repository` as the current fallback for
-  `BaseModel`.
-- That fallback resolves `SessionManager` from the container, so SQLAlchemy
+  `SQLAlchemyDefaultRepositoryBuilder` as the current fallback for `BaseModel`.
+- That fallback keeps `SessionManager` inside the SQLAlchemy adapter, so SQLAlchemy
   construction details do not leak into the core repository contract.
+- To replace the project-wide backend, register another `DefaultRepositoryBuilder`
+  implementation in the container; `UseCase[Model, Result]` will continue to
+  resolve `self.main_repo` through that new base repository.
 - Explicit `repository_for(...)` bindings still take precedence for both
   persistible and non-persistible types.
 - When a custom repository needs more constructor dependencies than the default
