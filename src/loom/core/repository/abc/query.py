@@ -152,7 +152,7 @@ class QuerySpec:
     cursor: str | None = None
 
 
-class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True):
+class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
     """Result of a cursor-paginated query.
 
     Attributes:
@@ -200,7 +200,7 @@ class FilterParams(msgspec.Struct, kw_only=True):
     filters: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
-class PageResult(msgspec.Struct, Generic[OutputT], kw_only=True):
+class PageResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
     """Paginated result set returned by list queries.
 
     Attributes:

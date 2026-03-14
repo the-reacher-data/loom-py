@@ -8,7 +8,16 @@ from typing import Any, Generic, TypeVar, cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.logger import get_logger
-from loom.core.repository.abc import IdT, OutputT
+from loom.core.repository.abc import (
+    Countable,
+    Creatable,
+    Deletable,
+    IdT,
+    Listable,
+    OutputT,
+    Readable,
+    Updatable,
+)
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.mixins import (
     SQLAlchemyCreateMixin,
@@ -40,11 +49,17 @@ def with_session_scope(
     return cast(Callable[..., Awaitable[R]], wrapper)
 
 
-class RepositorySQLAlchemy(
+class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve same-named methods across Mixin+Protocol bases; runtime behaviour is correct
     SQLAlchemyCreateMixin[OutputT, IdT],
     SQLAlchemyReadMixin[OutputT, IdT],
     SQLAlchemyUpdateMixin[OutputT, IdT],
     SQLAlchemyDeleteMixin[OutputT, IdT],
+    Readable[OutputT],
+    Creatable[OutputT],
+    Updatable[OutputT],
+    Deletable[OutputT],
+    Listable[OutputT],
+    Countable[OutputT],
     Generic[OutputT, IdT],
 ):
     """Base SQLAlchemy repository with context-aware session management.

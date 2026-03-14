@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "0.1.0"
+version = "0.2.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,27 +21,12 @@ rest = [
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
 ]
-sqlalchemy = [
-    "sqlalchemy>=2.0,<3.0",
-]
-config = [
-    "omegaconf>=2.3,<3.0",
-]
-cache = [
-    "aiocache>=0.12,<1.0",
-    "omegaconf>=2.3,<3.0",
-]
-pyspark = [
-    "pyspark>=3.5,<4.0",
-]
-prometheus = [
-    "prometheus-client>=0.20",
-]
-celery = [
-    "celery>=5.3,<6.0",
-    "kombu>=5.3,<6.0",
-    "redis>=5.0,<6.0",
-]
+sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
+config = ["omegaconf>=2.3,<3.0"]
+cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
+pyspark = ["pyspark>=3.5,<4.0"]
+prometheus = ["prometheus-client>=0.20"]
+celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -121,11 +106,9 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.1.0"
+version = "0.2.0"
 tag_format = "v$version"
-version_files = [
-    "pyproject.toml:project.version",
-]
+version_files = ["pyproject.toml:project.version"]
 update_changelog_on_bump = true
 
 [tool.semantic_branch]
@@ -137,23 +120,8 @@ prerelease = [
     "breaking/.*",
     "fix/.*",
 ]
-patch = [
-    "hotfix/.*",
-    "fix/.*",
-]
-minor = [
-    "feature/.*",
-    "feat/.*",
-    "multifeature/.*",
-]
-major = [
-    "breaking/.*",
-]
-prerelease_ignore = [
-    "docs/.*",
-]
-release_ignore = [
-    "wip/.*",
-    "docs/.*",
-    "chore/.*",
-]
+patch = ["hotfix/.*", "fix/.*"]
+minor = ["feature/.*", "feat/.*", "multifeature/.*"]
+major = ["breaking/.*"]
+prerelease_ignore = ["docs/.*"]
+release_ignore = ["wip/.*", "docs/.*", "chore/.*"]

@@ -16,9 +16,7 @@ Usage::
         interfaces=[OrderInterface],
         middleware=[TraceIdMiddleware, PrometheusMiddleware],
     )
-    # Mount the /metrics scrape endpoint separately:
-    import prometheus_client
-    app.mount("/metrics", prometheus_client.make_asgi_app())
+    # Expose the /metrics scrape endpoint separately as an exact route.
 """
 
 from __future__ import annotations
@@ -77,11 +75,8 @@ class PrometheusMiddleware:
     Non-HTTP scopes (WebSocket, lifespan) are passed through unchanged.
 
     **Scrape endpoint:** This middleware does not expose ``/metrics``
-    automatically.  Mount ``prometheus_client.make_asgi_app()`` at the
-    path of your choice::
-
-        import prometheus_client
-        app.mount("/metrics", prometheus_client.make_asgi_app())
+    automatically.  Register an exact route in your ASGI app that returns
+    ``prometheus_client.generate_latest(...)`` for the registry in use.
 
     Args:
         app: The ASGI application to wrap.

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+import asyncio
+from typing import Any, Protocol, cast
 
-import msgspec
 import pytest
 
 from loom.core.di.container import LoomContainer, ResolutionError
 from loom.core.di.scope import Scope
+from loom.core.model import LoomStruct
 from loom.core.repository.abc import RepoFor
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.use_case import UseCase
@@ -34,26 +35,42 @@ class FakeEmailService(IEmailService):
     pass
 
 
-class Product(msgspec.Struct):
+class Product(LoomStruct):
     id: int
     name: str
 
 
+class TaskView(LoomStruct):
+    task_id: str
+    state: str
+
+
+class TaskViewRepo(Protocol):
+    async def get_by_id(self, obj_id: Any, profile: str = "default") -> TaskView | None: ...
+
+
 class FakeProductRepo:
     async def get_by_id(self, obj_id: Any, profile: str = "default") -> Product | None:
-        return Product(id=int(obj_id), name="p")
+        _ = profile
+        return await asyncio.sleep(0, result=Product(id=int(obj_id), name="p"))
 
     async def list_paginated(self, *args: Any, **kwargs: Any) -> Any:
-        return None
+        return await asyncio.sleep(0, result=None)
 
-    async def create(self, data: msgspec.Struct) -> Product:
-        return Product(id=1, name="p")
+    async def create(self, data: LoomStruct) -> Product:
+        return await asyncio.sleep(0, result=Product(id=1, name="p"))
 
-    async def update(self, obj_id: Any, data: msgspec.Struct) -> Product | None:
-        return Product(id=int(obj_id), name="p")
+    async def update(self, obj_id: Any, data: LoomStruct) -> Product | None:
+        return await asyncio.sleep(0, result=Product(id=int(obj_id), name="p"))
 
     async def delete(self, obj_id: Any) -> bool:
-        return True
+        return await asyncio.sleep(0, result=True)
+
+
+class FakeTaskViewRepo:
+    async def get_by_id(self, obj_id: Any, profile: str = "default") -> TaskView | None:
+        _ = profile
+        return await asyncio.sleep(0, result=TaskView(task_id=str(obj_id), state="done"))
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +127,11 @@ class AutoMainRepoExplicitModelUseCase(UseCase[Product, bool]):
         return True
 
 
+class AutoMainRepoCustomContractUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
+    async def execute(self, task_id: str) -> TaskView | None:
+        return await self.main_repo.get_by_id(task_id)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -158,8 +180,8 @@ def test_build_multi_deps() -> None:
     factory = UseCaseFactory(container)
 
     uc = factory.build(MultiDepUseCase)
-    assert uc._repo is repo  # type: ignore[attr-defined]
-    assert uc._email is email  # type: ignore[attr-defined]
+    assert uc._repo is repo
+    assert uc._email is email
 
 
 def test_build_creates_new_instance_each_call() -> None:
@@ -219,7 +241,7 @@ def test_build_resolves_repo_for_model() -> None:
 
     factory = UseCaseFactory(container)
     uc = factory.build(MainRepoUseCase)
-    assert uc.main_repo is repo
+    assert cast(object, uc.main_repo) is repo
 
 
 def test_build_resolves_repo_for_model_and_other_deps() -> None:
@@ -231,8 +253,8 @@ def test_build_resolves_repo_for_model_and_other_deps() -> None:
     container.register_repo(Product, FakeProductRepo)
 
     factory = UseCaseFactory(container)
-    uc = cast(MixedRepoUseCase, factory.build(MixedRepoUseCase))
-    assert uc.main_repo is repo
+    uc = factory.build(MixedRepoUseCase)
+    assert cast(object, uc.main_repo) is repo
     assert uc._email is email
 
 
@@ -244,7 +266,7 @@ def test_build_auto_infers_main_repo_from_use_case_generic() -> None:
 
     factory = UseCaseFactory(container)
     uc = factory.build(AutoMainRepoUseCase)
-    assert uc.main_repo is repo
+    assert cast(object, uc.main_repo) is repo
 
 
 def test_build_auto_uses_first_generic_as_main_model_even_when_result_is_not_model() -> None:
@@ -255,4 +277,15 @@ def test_build_auto_uses_first_generic_as_main_model_even_when_result_is_not_mod
 
     factory = UseCaseFactory(container)
     uc = factory.build(AutoMainRepoExplicitModelUseCase)
+    assert cast(object, uc.main_repo) is repo
+
+
+def test_build_auto_infers_main_repo_with_explicit_contract() -> None:
+    repo = FakeTaskViewRepo()
+    container = LoomContainer()
+    container.register(TaskViewRepo, lambda: repo, scope=Scope.APPLICATION)
+    container.register_repo(TaskView, TaskViewRepo)
+
+    factory = UseCaseFactory(container)
+    uc = factory.build(AutoMainRepoCustomContractUseCase)
     assert uc.main_repo is repo

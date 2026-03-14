@@ -77,7 +77,7 @@ from loom.core.engine.compilable import Compilable
 from loom.core.job.job import Job
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy import build_repository_registration_module
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.uow.abc import UnitOfWorkFactory
@@ -547,7 +547,7 @@ def _register_repositories(
     models: Sequence[type[BaseModel]],
 ) -> Callable[[LoomContainer], None]:
     """Build a container module that registers SQLAlchemy repositories."""
-    return build_repository_registration_module(session_manager, models)
+    return build_sqlalchemy_repository_registration_module(session_manager, models)
 
 
 def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel], ...]:
@@ -577,6 +577,7 @@ def _configure_logging(raw: DictConfig) -> None:
         renderer=logger_cfg.renderer,
         colors=logger_cfg.colors,
         level=logger_cfg.level,
+        named_levels=logger_cfg.named_levels,
         handlers=logger_cfg.handlers,
     )
 

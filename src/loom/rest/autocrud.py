@@ -29,6 +29,8 @@ from loom.core.command import Command
 from loom.core.errors import NotFound
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.query import CursorResult, PageResult, QuerySpec
+from loom.core.repository.abc.repo_for import Creatable, Deletable, Listable, Readable, Updatable
+from loom.core.repository.registry import get_repository_registration
 from loom.core.use_case.constants import KEY_SEPARATOR, CrudOp
 from loom.core.use_case.keys import set_use_case_key
 from loom.core.use_case.markers import Input
@@ -59,6 +61,14 @@ _OP_PATH: dict[str, str] = {
     CrudOp.DELETE: _ID_ROUTE_PATH,
 }
 _OP_STATUS: dict[str, int] = {CrudOp.CREATE: 201}
+
+_OP_CAPABILITY: dict[str, type] = {
+    CrudOp.CREATE: Creatable,
+    CrudOp.GET: Readable,
+    CrudOp.LIST: Listable,
+    CrudOp.UPDATE: Updatable,
+    CrudOp.DELETE: Deletable,
+}
 
 # ---------------------------------------------------------------------------
 # ID coercion
@@ -415,6 +425,34 @@ def _get_or_create(model: type[Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Capability detection
+# ---------------------------------------------------------------------------
+
+
+def _supported_ops(model: type[Any]) -> tuple[str, ...]:
+    """Return the CRUD ops the registered repository actually supports.
+
+    Derives the supported operations from the repository class's MRO using
+    the standard ``-able`` capability protocols.  Falls back to all ops when
+    no explicit registration exists (the default builder always produces a
+    :class:`~loom.core.repository.sqlalchemy.repository.RepositorySQLAlchemy`
+    which implements every capability).
+
+    Args:
+        model: Domain model type.
+
+    Returns:
+        Tuple of :class:`~loom.core.use_case.constants.CrudOp` string values
+        for the operations the repository supports.
+    """
+    registration = get_repository_registration(model)
+    if registration is None:
+        return _ALL_OPS
+    mro = set(registration.repository_type.__mro__)
+    return tuple(op for op, proto in _OP_CAPABILITY.items() if proto in mro)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -430,8 +468,10 @@ def build_auto_routes(
 
     Args:
         model: Domain model type for which routes should be generated.
-        include: Subset of operation names to expose.  If empty, all five
-            standard operations are included.
+        include: Subset of operation names to expose.  If empty, the
+            supported operations are derived automatically from the
+            repository's ``-able`` capability protocols via its MRO.
+            An explicit list is always honoured as-is.
 
     Returns:
         Tuple of :class:`~loom.rest.model.RestRoute` instances, one per
@@ -443,7 +483,7 @@ def build_auto_routes(
     """
     from loom.rest.model import RestRoute  # lazy — avoids circular import
 
-    ops = include or _ALL_OPS
+    ops = include or _supported_ops(model)
     use_cases = _get_or_create(model)
     return tuple(
         RestRoute(

@@ -5,121 +5,117 @@ from dataclasses import dataclass
 from typing import Any
 
 from loom.core.di.container import LoomContainer
-from loom.core.di.scope import Scope
 from loom.core.model import BaseModel
+from loom.core.repository import (
+    DefaultRepositoryBuilder,
+    RepositoryBuildContext,
+)
+from loom.core.repository import (
+    build_repository_registration_module as build_main_repository_module,
+)
+from loom.core.repository.registry import (
+    RepositoryRegistration,
+    RepositoryToken,
+    get_repository_registration,
+    repository_for,
+)
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
+__all__ = [
+    "RepositoryRegistration",
+    "RepositoryToken",
+    "SQLAlchemyDefaultRepositoryBuilder",
+    "build_sqlalchemy_repository_registration_module",
+    "get_repository_registration",
+    "repository_for",
+]
+
 
 @dataclass(frozen=True)
-class RepositoryRegistration:
-    """Repository registration metadata for a model-bound SQLAlchemy repository."""
+class SQLAlchemyDefaultRepositoryBuilder:
+    """Default repository builder for SQLAlchemy-backed models.
 
-    model: type[BaseModel]
-    repository_type: type[RepositorySQLAlchemy[Any, Any]]
-    contract: object | None = None
-
-
-@dataclass(frozen=True)
-class RepositoryToken:
-    """Internal DI token used for model-centric repository resolution."""
-
-    model: type[BaseModel]
-
-
-_REGISTRATIONS_BY_MODEL: dict[type[BaseModel], RepositoryRegistration] = {}
-_REGISTRATIONS_BY_CONTRACT: dict[object, RepositoryRegistration] = {}
-
-
-def repository_for(
-    model: type[BaseModel],
-    *,
-    contract: object | None = None,
-) -> Callable[[type[RepositorySQLAlchemy[Any, Any]]], type[RepositorySQLAlchemy[Any, Any]]]:
-    """Register a SQLAlchemy repository implementation for ``model``.
+    A frozen dataclass that receives a ``SessionManager`` at construction
+    time — injected by the SQLAlchemy DI module.  The bootstrap and any
+    other infrastructure layer must not construct this class directly;
+    register it via the DI module so that the ``SessionManager`` singleton
+    is shared across all repositories.
 
     Args:
-        model: Struct model handled by the repository.
-        contract: Optional DI contract bound to the same repository instance.
-
-    Raises:
-        RuntimeError: If another repository is already registered for the same
-            model or contract.
+        session_manager: Shared SQLAlchemy session manager.
     """
 
-    def decorator(
-        repository_type: type[RepositorySQLAlchemy[Any, Any]],
-    ) -> type[RepositorySQLAlchemy[Any, Any]]:
-        existing = _REGISTRATIONS_BY_MODEL.get(model)
-        if existing is not None and existing.repository_type is not repository_type:
+    session_manager: SessionManager
+
+    def __call__(self, context: RepositoryBuildContext) -> Any:
+        if not issubclass(context.model, BaseModel):
             raise RuntimeError(
-                f"Repository already registered for model {model.__qualname__}: "
-                f"{existing.repository_type.__qualname__}"
+                f"SQLAlchemyDefaultRepositoryBuilder cannot build a repository "
+                f"for non-persistible type {context.model.__qualname__}"
             )
-        if contract is not None:
-            existing_contract = _REGISTRATIONS_BY_CONTRACT.get(contract)
-            if existing_contract is not None and existing_contract.model is not model:
-                raise RuntimeError(
-                    f"Repository contract {contract!r} is already registered for "
-                    f"model {existing_contract.model.__qualname__}"
-                )
-        registration = RepositoryRegistration(
-            model=model,
-            repository_type=repository_type,
-            contract=contract,
+        return RepositorySQLAlchemy(
+            session_manager=self.session_manager,
+            model=context.model,
         )
-        _REGISTRATIONS_BY_MODEL[model] = registration
-        if contract is not None:
-            _REGISTRATIONS_BY_CONTRACT[contract] = registration
-        return repository_type
-
-    return decorator
 
 
-def get_repository_registration(model: type[BaseModel]) -> RepositoryRegistration | None:
-    """Return the custom repository registration for ``model`` when present."""
-
-    return _REGISTRATIONS_BY_MODEL.get(model)
-
-
-def build_repository_registration_module(
+def build_sqlalchemy_repository_registration_module(
     session_manager: SessionManager,
     models: Sequence[type[BaseModel]],
+    *,
+    logical_models: Sequence[type[Any]] = (),
 ) -> Callable[[LoomContainer], None]:
-    """Build a DI module that registers model repositories and optional contracts.
+    """Build a DI module that registers model repositories and their capability bindings.
 
-    Custom repositories declared with :func:`repository_for` are preferred.
-    Models without a custom registration use ``RepositorySQLAlchemy``.
+    The module self-declares its infrastructure dependencies: it registers both
+    ``SessionManager`` and ``DefaultRepositoryBuilder`` in the container so that
+    the bootstrap does not need to know about SQLAlchemy internals.
+
+    To swap the default builder, register your own ``DefaultRepositoryBuilder``
+    in the container *before* loading this module — the module will not
+    overwrite an existing registration.
     """
 
-    repositories: dict[type[BaseModel], tuple[RepositorySQLAlchemy[Any, Any], object | None]] = {}
-    for model in models:
-        registration = get_repository_registration(model)
-        repository_type = (
-            registration.repository_type if registration is not None else RepositorySQLAlchemy
-        )
-        contract = registration.contract if registration is not None else None
-        repositories[model] = (
-            repository_type(session_manager=session_manager, model=model),
-            contract,
-        )
+    def _registered_builder(
+        context: RepositoryBuildContext,
+        registration: RepositoryRegistration,
+    ) -> Any:
+        if registration.builder is not None:
+            return registration.builder(context)
+        repository_type = registration.repository_type
+        if not isinstance(repository_type, type):
+            raise RuntimeError(
+                "Repository registration for "
+                f"{registration.model.__qualname__} must use a class type."
+            )
+        if issubclass(repository_type, RepositorySQLAlchemy):
+            if not issubclass(context.model, BaseModel):
+                raise RuntimeError(
+                    f"{repository_type.__qualname__} requires BaseModel-compatible registrations."
+                )
+            return repository_type(
+                session_manager=session_manager,
+                model=context.model,
+            )
+        return repository_type()
 
-    def _provider_for(
-        repository: RepositorySQLAlchemy[Any, Any],
-    ) -> Callable[[], RepositorySQLAlchemy[Any, Any]]:
-        def _provider() -> RepositorySQLAlchemy[Any, Any]:
-            return repository
+    register = build_main_repository_module(
+        models=models,
+        explicit_models=logical_models,
+        build_registered_repository=_registered_builder,
+    )
 
-        return _provider
+    def _register_with_session(container: LoomContainer) -> None:
+        if not container.is_registered(SessionManager):
+            container.register_instance(SessionManager, session_manager)
+        if not container.is_registered(DefaultRepositoryBuilder):
+            container.register_instance(
+                DefaultRepositoryBuilder,
+                SQLAlchemyDefaultRepositoryBuilder(
+                    session_manager=container.resolve(SessionManager),
+                ),
+            )
+        register(container)
 
-    def register(container: LoomContainer) -> None:
-        for model, (repository, contract) in repositories.items():
-            token = RepositoryToken(model)
-            provider = _provider_for(repository)
-            container.register(token, provider, scope=Scope.APPLICATION)
-            container.register_repo(model, token)
-            if contract is not None:
-                container.register(contract, provider, scope=Scope.APPLICATION)
-        container.register(SessionManager, lambda: session_manager, scope=Scope.APPLICATION)
-
-    return register
+    return _register_with_session

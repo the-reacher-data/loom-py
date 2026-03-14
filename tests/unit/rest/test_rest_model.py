@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
 import pytest
 
+from loom.core.model import LoomStruct
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import (
     PaginationMode,
@@ -180,7 +180,7 @@ def test_pagination_mode_values() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _AutoModel(msgspec.Struct):
+class _AutoModel(LoomStruct):
     id: int
     name: str
 

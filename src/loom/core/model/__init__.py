@@ -14,6 +14,7 @@ from loom.core.model.projection import (
     ProjectionField,
 )
 from loom.core.model.relation import Relation, RelationField
+from loom.core.model.struct import LoomStruct
 from loom.core.model.timestamped import TimestampedModel
 from loom.core.model.types import (
     JSON,
@@ -30,6 +31,7 @@ from loom.core.model.types_postgres import Postgres
 
 __all__ = [
     "BaseModel",
+    "LoomStruct",
     "TimestampedModel",
     "BigInteger",
     "Boolean",
