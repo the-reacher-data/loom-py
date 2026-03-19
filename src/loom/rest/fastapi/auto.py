@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 import msgspec
 import prometheus_client
 from fastapi import FastAPI
+from starlette.responses import Response
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap import KernelRuntime, create_kernel
@@ -32,7 +33,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy import build_repository_registration_module
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
@@ -132,7 +133,7 @@ def _register_repositories(
     session_manager: SessionManager,
     models: tuple[type[BaseModel], ...],
 ) -> Callable[[LoomContainer], None]:
-    return build_repository_registration_module(session_manager, models)
+    return build_sqlalchemy_repository_registration_module(session_manager, models)
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -344,10 +345,24 @@ def _mount_metrics(
         cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
+    if "{" in cfg.path:
+        raise ValueError(f"metrics.path must not contain path parameters, got: {cfg.path!r}")
     app.add_middleware(PrometheusMiddleware, registry=registry)
-    app.mount(
-        cfg.path,
-        prometheus_client.make_asgi_app(registry=registry or prometheus_client.REGISTRY),
+    scrape_registry = registry or prometheus_client.REGISTRY
+
+    def _scrape() -> Response:
+        return Response(
+            content=prometheus_client.generate_latest(scrape_registry),
+            media_type=prometheus_client.CONTENT_TYPE_LATEST,
+        )
+
+    def _scrape_trailing_slash() -> Response:
+        # Return 404 for trailing-slash variant to avoid ambiguous scrape targets.
+        return Response(status_code=404)
+
+    app.add_api_route(cfg.path, _scrape, methods=["GET"], include_in_schema=False)
+    app.add_api_route(
+        f"{cfg.path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False
     )
 
 
@@ -412,6 +427,7 @@ def create_app(
         renderer=logger_cfg.renderer,
         colors=logger_cfg.colors,
         level=logger_cfg.level,
+        named_levels=logger_cfg.named_levels,
         handlers=logger_cfg.handlers,
     )
 

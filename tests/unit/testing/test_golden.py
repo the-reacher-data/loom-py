@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
-import msgspec
 import pytest
 
 from loom.core.command import Command
@@ -18,6 +17,7 @@ from loom.core.engine.plan import (
     ParamBinding,
     RuleStep,
 )
+from loom.core.model import LoomStruct
 from loom.core.use_case.markers import LookupKind, OnMissing, SourceKind
 from loom.core.use_case.use_case import UseCase
 from loom.testing.golden import GoldenHarness, _ErrorProxy, _serialize_result, serialize_plan
@@ -27,7 +27,7 @@ from loom.testing.golden import GoldenHarness, _ErrorProxy, _serialize_result, s
 # ---------------------------------------------------------------------------
 
 
-class Product(msgspec.Struct):
+class Product(LoomStruct):
     id: int
     name: str
 
@@ -42,6 +42,14 @@ def _normalize(cmd: Any, fields: frozenset[str]) -> Any:
 
 def _price_rule(cmd: Any, fields: frozenset[str]) -> None:
     pass
+
+
+def _rule_step_fn(
+    command: Command,
+    fields_set: frozenset[str],
+    context: dict[str, object] | None = None,
+) -> None:
+    _price_rule(command, fields_set)
 
 
 class IProductRepo:
@@ -112,7 +120,7 @@ class TestSerializePlan:
             ),
             exists_steps=(),
             compute_steps=(ComputeStep(fn=_normalize),),
-            rule_steps=(RuleStep(fn=_price_rule),),
+            rule_steps=(RuleStep(fn=_rule_step_fn),),
         )
 
     def test_returns_dict(self) -> None:
@@ -157,7 +165,7 @@ class TestSerializePlan:
     def test_rule_step_has_fn_qualname(self) -> None:
         plan = self._make_plan()
         result = serialize_plan(plan)
-        assert "_price_rule" in result["rule_steps"][0]["fn"]
+        assert "_rule_step_fn" in result["rule_steps"][0]["fn"]
 
     def test_no_input_binding_is_none(self) -> None:
         plan = ExecutionPlan(

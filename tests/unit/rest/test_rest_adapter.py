@@ -16,6 +16,7 @@ from loom.core.errors import (
     RuleViolations,
 )
 from loom.core.errors.codes import ErrorCode
+from loom.core.repository.abc.query import CursorResult, PageResult
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
 from loom.core.use_case.use_case import UseCase
 from loom.rest.errors import HttpErrorMapper
@@ -163,6 +164,39 @@ class TestLoomRestAdapterSuccess:
         adapter = LoomRestAdapter(self._make_executor(struct))
         result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
         assert result == {"id": 1, "name": "Alice"}
+
+    async def test_page_result_envelope_serialized_in_camel_case(self) -> None:
+        page = PageResult(
+            items=(_ResultStruct(id=1, name="Alice"),),
+            total_count=1,
+            page=1,
+            limit=50,
+            has_next=False,
+        )
+        adapter = LoomRestAdapter(self._make_executor(page))
+
+        result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+
+        assert result["totalCount"] == 1
+        assert result["hasNext"] is False
+        assert "total_count" not in result
+        assert "has_next" not in result
+        assert result["items"][0]["id"] == 1
+
+    async def test_cursor_result_envelope_serialized_in_camel_case(self) -> None:
+        cursor = CursorResult(
+            items=(_ResultStruct(id=1, name="Alice"),),
+            next_cursor="opaque-token",
+            has_next=True,
+        )
+        adapter = LoomRestAdapter(self._make_executor(cursor))
+
+        result = await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+
+        assert result["nextCursor"] == "opaque-token"
+        assert result["hasNext"] is True
+        assert "next_cursor" not in result
+        assert "has_next" not in result
 
     async def test_non_struct_result_returned_as_is(self) -> None:
         payload = {"key": "value"}

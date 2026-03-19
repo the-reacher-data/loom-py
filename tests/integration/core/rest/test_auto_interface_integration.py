@@ -8,7 +8,7 @@ These tests verify that:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,11 +22,16 @@ from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, ColumnField
+from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.rest.autocrud import build_auto_routes
 from loom.rest.fastapi.app import create_fastapi_app
-from loom.rest.model import RestInterface
+from loom.rest.model import RestInterface, RestRoute
+from tests.integration.support.logical_repo_fixtures import (
+    GetTaskViewUseCase,
+    TaskView,
+)
 
 # ---------------------------------------------------------------------------
 # Test domain model
@@ -51,6 +56,17 @@ class AutoProductInterface(RestInterface[AutoProduct]):
     auto = True
 
 
+class TaskViewInterface(RestInterface[TaskView]):
+    prefix = "/task-views"
+    routes = (
+        RestRoute(
+            use_case=GetTaskViewUseCase,
+            method="GET",
+            path="/{task_id}",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap helpers
 # ---------------------------------------------------------------------------
@@ -59,7 +75,10 @@ class AutoProductInterface(RestInterface[AutoProduct]):
 def _make_register_repos(
     session_manager: SessionManager,
 ) -> Callable[[LoomContainer], None]:
-    repo = RepositorySQLAlchemy(session_manager=session_manager, model=AutoProduct)
+    repo: RepositorySQLAlchemy[Any, int] = RepositorySQLAlchemy(
+        session_manager=session_manager,
+        model=AutoProduct,
+    )
 
     def _provider() -> RepositorySQLAlchemy[Any, int]:
         return repo
@@ -114,16 +133,55 @@ def _build_app(db_path: Path) -> FastAPI:
     )
 
 
+def _build_logical_app(db_path: Path) -> FastAPI:
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    session_manager = SessionManager(
+        database_url,
+        echo=False,
+        pool_pre_ping=False,
+        pool_size=None,
+        max_overflow=None,
+        pool_timeout=None,
+        pool_recycle=None,
+        connect_args={},
+    )
+
+    result = bootstrap_app(
+        config={"name": "logical-test"},
+        use_cases=(GetTaskViewUseCase,),
+        modules=[
+            build_sqlalchemy_repository_registration_module(
+                session_manager,
+                (),
+                logical_models=(TaskView,),
+            )
+        ],
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await session_manager.dispose()
+
+    return create_fastapi_app(
+        result,
+        interfaces=(TaskViewInterface,),
+        lifespan=lifespan,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
+def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app = _build_app(tmp_path / "auto_test.sqlite")
     with TestClient(app) as c:
-        yield c  # type: ignore[misc]
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +237,8 @@ class TestAutoInterfaceCRUD:
         resp = client.get("/auto-products/")
         assert resp.status_code == 200
         data = resp.json()
-        assert "total_count" in data or "items" in data
+        assert "totalCount" in data
+        assert "items" in data
 
     def test_patch_updates_item(self, client: TestClient) -> None:
         create = client.post("/auto-products/", json={"name": "Old"})
@@ -207,6 +266,18 @@ class TestAutoInterfaceCRUD:
     def test_patch_missing_returns_404(self, client: TestClient) -> None:
         resp = client.patch("/auto-products/999", json={"name": "ghost"})
         assert resp.status_code == 404
+
+    def test_manual_interface_can_resolve_non_base_model_main_repo(self, tmp_path: Path) -> None:
+        app = _build_logical_app(tmp_path / "logical_test.sqlite")
+
+        with TestClient(app) as client:
+            resp = client.get("/task-views/t-1")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "taskId": "t-1",
+            "state": "done",
+        }
 
 
 # ---------------------------------------------------------------------------

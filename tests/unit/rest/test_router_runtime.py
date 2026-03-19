@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-import msgspec
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,6 +16,7 @@ from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
+from loom.core.model import LoomStruct
 from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.markers import Exists, Input
@@ -115,7 +115,7 @@ class DocUseCase(UseCase[Any, str]):
         return "ok"
 
 
-class _ExistsUserRecord(msgspec.Struct):
+class _ExistsUserRecord(LoomStruct):
     email: str
 
 
@@ -133,7 +133,7 @@ class _ExistsCheckEmailUseCase(UseCase[_ExistsUserRecord, bool]):
         return email_exists
 
 
-class _AutoItem(msgspec.Struct):
+class _AutoItem(LoomStruct):
     id: int
     name: str
 

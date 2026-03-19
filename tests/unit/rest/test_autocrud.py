@@ -7,7 +7,7 @@ import pytest
 
 from loom.core.command import Command
 from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.model import BaseModel, ColumnField
+from loom.core.model import BaseModel, ColumnField, LoomStruct
 from loom.core.model.enums import Cardinality, ServerDefault
 from loom.core.model.relation import RelationField
 from loom.core.use_case.constants import CrudOp
@@ -27,17 +27,17 @@ from loom.rest.model import RestRoute
 # ---------------------------------------------------------------------------
 
 
-class _IntItem(msgspec.Struct):
+class _IntItem(LoomStruct):
     id: int
     name: str
 
 
-class _StrItem(msgspec.Struct):
+class _StrItem(LoomStruct):
     id: str
     name: str
 
 
-class _NoIdItem(msgspec.Struct):
+class _NoIdItem(LoomStruct):
     name: str
 
 
@@ -120,7 +120,7 @@ class TestBuildAutoRoutes:
 
 class TestAutoCrudCache:
     def test_same_uc_class_returned_on_repeated_call(self) -> None:
-        class _Item(msgspec.Struct):
+        class _Item(LoomStruct):
             id: int
 
         first = _get_or_create(_Item)
@@ -128,10 +128,10 @@ class TestAutoCrudCache:
         assert first is second
 
     def test_different_models_get_different_classes(self) -> None:
-        class _A(msgspec.Struct):
+        class _A(LoomStruct):
             id: int
 
-        class _B(msgspec.Struct):
+        class _B(LoomStruct):
             id: int
 
         a_ucs = _get_or_create(_A)
@@ -139,7 +139,7 @@ class TestAutoCrudCache:
         assert a_ucs[CrudOp.CREATE] is not b_ucs[CrudOp.CREATE]
 
     def test_cache_contains_input_structs(self) -> None:
-        class _Cached(msgspec.Struct):
+        class _Cached(LoomStruct):
             name: str
 
         ucs = _get_or_create(_Cached)
@@ -203,7 +203,7 @@ class TestAutoCrudUseCaseCompilation:
         for base in getattr(create_uc, "__orig_bases__", ()):
             if typing.get_origin(base) is UseCase:
                 args = typing.get_args(base)
-                assert len(args) == 2
+                assert len(args) in (2, 3)
                 assert args[0] is _IntItem
                 return
         pytest.fail("No UseCase[_IntItem, ...] found in __orig_bases__")

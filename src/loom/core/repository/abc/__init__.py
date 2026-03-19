@@ -11,7 +11,15 @@ from loom.core.repository.abc.query import (
     SortSpec,
     build_page_result,
 )
-from loom.core.repository.abc.repo_for import RepoFor
+from loom.core.repository.abc.repo_for import (
+    Countable,
+    Creatable,
+    Deletable,
+    Listable,
+    Readable,
+    RepoFor,
+    Updatable,
+)
 from loom.core.repository.abc.repository import (
     CreateT,
     IdT,
@@ -35,7 +43,13 @@ __all__ = [
     "PageResult",
     "PaginationMode",
     "QuerySpec",
+    "Countable",
+    "Creatable",
+    "Deletable",
+    "Listable",
+    "Readable",
     "RepoFor",
+    "Updatable",
     "Repository",
     "RepositoryRead",
     "RepositoryWrite",

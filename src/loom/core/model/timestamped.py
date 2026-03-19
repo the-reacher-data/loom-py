@@ -27,27 +27,18 @@ class TimestampedModel(BaseModel):
     """Opt-in base for domain models that need audit timestamps.
 
     Adds ``created_at`` and ``updated_at`` as nullable server-default
-    columns.  Both fields are omitted from serialisation output when
-    ``None`` (``omit_defaults=True`` is inherited from :class:`BaseModel`).
+    columns. Both fields are omitted from serialisation output when
+    ``None``.
 
-    **Design note:** ``trace_id`` is intentionally absent.  Trace
+    **Design note:** ``trace_id`` is intentionally absent. Trace
     identifiers are an observability concern belonging to the transport
-    layer, not to the domain model.  Correlating a record with the request
-    that created it is the responsibility of structured logs and SQL query
-    comments — not of a model field.
+    layer, not to the domain model.
 
     Attributes:
         created_at: UTC timestamp set by the database at INSERT time.
             ``None`` until the first flush/commit.
         updated_at: UTC timestamp updated by the database on every UPDATE.
             ``None`` until the first flush/commit.
-
-    Example::
-
-        class Product(TimestampedModel):
-            __tablename__ = "products"
-            id:   int = ColumnField(primary_key=True, autoincrement=True)
-            name: str
     """
 
     created_at: datetime | None = ColumnField(

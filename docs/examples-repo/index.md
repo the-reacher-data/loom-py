@@ -171,11 +171,9 @@ from typing import Protocol
 
 import msgspec
 
+from loom.core.repository import repository_for
 from loom.core.repository.abc import RepoFor
-from loom.core.repository.sqlalchemy import (
-    RepositorySQLAlchemy,
-    repository_for,
-)
+from loom.core.repository.sqlalchemy import RepositorySQLAlchemy
 
 
 class ProductRepo(RepoFor[Product], Protocol):
@@ -183,8 +181,8 @@ class ProductRepo(RepoFor[Product], Protocol):
         ...
 
 
-@repository_for(Product, contract=ProductRepo)
-class ProductRepository(RepositorySQLAlchemy[Product, int]):
+@repository_for(Product)
+class ProductRepository(RepositorySQLAlchemy[Product, int], ProductRepo):
     async def create(self, data: msgspec.Struct) -> Product:
         payload = msgspec.to_builtins(data)
         payload["name"] = str(payload["name"]).strip()
@@ -196,6 +194,173 @@ class CreateProductUseCase(UseCase[Product, Product]):
     async def execute(self, cmd: CreateProduct = Input()) -> Product:
         return await self.main_repo.create(cmd)
 ```
+
+### Logical type with automatic `main_repo`
+
+`main_repo` can also be bound to a non-persistible logical type. Use
+`Response` when the returned object is part of your public API contract and you
+want the usual REST `camelCase` output.
+
+```python
+from typing import Protocol
+
+from loom.core.repository import repository_for
+from loom.core.response import Response
+from loom.core.use_case.use_case import UseCase
+
+
+class TaskView(Response):
+    task_id: str
+    state: str
+
+
+class TaskViewRepo(Protocol):
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
+        ...
+
+
+@repository_for(TaskView)
+class TaskViewRepository(TaskViewRepo):
+    def __init__(self) -> None:
+        self._items = {"t-1": TaskView(task_id="t-1", state="done")}
+
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskView | None:
+        return self._items.get(obj_id)
+
+
+class GetTaskViewUseCase(UseCase[TaskView, TaskView | None, TaskViewRepo]):
+    async def execute(self, task_id: str) -> TaskView | None:
+        return await self.main_repo.get_by_id(task_id)
+```
+
+Use `LoomStruct` instead of `Response` when you want a logical type without
+REST-specific `camelCase` serialization.
+
+### Default repository builder and explicit builder override
+
+The framework now resolves the default repository through the
+`DefaultRepositoryBuilder` dependency. In the current SQLAlchemy stack, the
+bootstrap registers `SQLAlchemyDefaultRepositoryBuilder` as that default, and
+that builder keeps `SessionManager` inside the SQLAlchemy adapter layer.
+
+This means:
+
+- the core registry no longer depends on SQLAlchemy constructor details
+- SQLAlchemy keeps `SessionManager` as an infrastructure concern
+- applications can replace the default builder without changing `UseCase`
+
+Conceptually, the current SQLAlchemy fallback is:
+
+```python
+from dataclasses import dataclass
+
+from loom.core.repository import DefaultRepositoryBuilder, RepositoryBuildContext
+from loom.core.repository.sqlalchemy import RepositorySQLAlchemy
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
+
+
+@dataclass(frozen=True)
+class SQLAlchemyDefaultRepositoryBuilder:
+    session_manager: SessionManager
+
+    def __call__(self, context: RepositoryBuildContext) -> object:
+        return RepositorySQLAlchemy(
+            session_manager=self.session_manager,
+            model=context.model,
+        )
+```
+
+An application that wants a different project-wide base repository can
+register another `DefaultRepositoryBuilder` implementation in the container.
+
+That is the extension point for replacing the default backend globally. For
+example, an application can swap the SQLAlchemy fallback for its own base
+repository while keeping `UseCase[Model, Result]` unchanged:
+
+```python
+from dataclasses import dataclass
+
+from loom.core.repository import DefaultRepositoryBuilder, RepositoryBuildContext
+
+
+@dataclass(frozen=True)
+class MyBaseRepositoryBuilder:
+    settings: AppSettings
+
+    def __call__(self, context: RepositoryBuildContext) -> object:
+        return MyBaseRepository(model=context.model, settings=self.settings)
+
+
+container.register_instance(
+    DefaultRepositoryBuilder,
+    MyBaseRepositoryBuilder(settings=settings),
+)
+```
+
+After that registration:
+
+- every model without an explicit `repository_for(...)` uses `MyBaseRepository`
+- `UseCase[Model, Result]` keeps working through `self.main_repo`
+- model-specific overrides still win when needed
+
+For per-model overrides that need extra dependencies, use `builder=` on
+`repository_for(...)`:
+
+```python
+from dataclasses import dataclass
+
+from loom.core.di.scope import Scope
+from loom.core.repository import RepositoryBuildContext, repository_for
+from loom.core.response import Response
+
+
+class TaskSnapshot(Response):
+    task_id: str
+    state: str
+
+
+class TaskSnapshotRepo(Protocol):
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskSnapshot | None:
+        ...
+
+
+@dataclass(frozen=True)
+class TaskRepoSettings:
+    state: str
+
+
+def build_task_snapshot_repository(context: RepositoryBuildContext) -> object:
+    settings = context.container.resolve(TaskRepoSettings)
+    return TaskSnapshotRepository(settings=settings)
+
+
+@repository_for(TaskSnapshot, builder=build_task_snapshot_repository)
+class TaskSnapshotRepository(TaskSnapshotRepo):
+    def __init__(self, settings: TaskRepoSettings) -> None:
+        self._settings = settings
+
+    async def get_by_id(self, obj_id: str, profile: str = "default") -> TaskSnapshot | None:
+        return TaskSnapshot(task_id=obj_id, state=self._settings.state)
+```
+
+The application bootstrap only has to register the extra dependency:
+
+```python
+container.register(
+    TaskRepoSettings,
+    lambda: TaskRepoSettings(state="from-builder"),
+    scope=Scope.APPLICATION,
+)
+```
+
+Resolution order is:
+
+1. explicit `repository_for(..., builder=...)`
+2. explicit `repository_for(...)` by class
+3. `DefaultRepositoryBuilder`
+
+Use the first two for per-model customization; use `DefaultRepositoryBuilder`
+to replace the project-wide backend.
 
 ---
 

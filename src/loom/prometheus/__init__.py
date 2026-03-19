@@ -30,7 +30,7 @@ Example::
         interfaces=[OrderRestInterface],
         middleware=[TraceIdMiddleware, PrometheusMiddleware],
     )
-    app.mount("/metrics", prometheus_client.make_asgi_app())
+    # Expose /metrics as an exact route in the FastAPI app.
 """
 
 from loom.prometheus.adapter import PrometheusMetricsAdapter

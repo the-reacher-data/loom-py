@@ -3,12 +3,12 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
-import msgspec
 import pytest
 
 from loom.core.command import Command
 from loom.core.engine.plan import ExecutionPlan
 from loom.core.errors import NotFound
+from loom.core.model import LoomStruct
 from loom.core.use_case.markers import Input, LoadById
 from loom.core.use_case.rule import RuleViolation, RuleViolations
 from loom.core.use_case.use_case import UseCase
@@ -57,14 +57,22 @@ class _LoadUseCase(UseCase[Any, str]):
         return entity.name
 
 
+def _always_fail_rule(
+    command: Command,
+    fields_set: frozenset[str],
+    context: dict[str, object] | None = None,
+) -> None:
+    raise RuleViolation("email", "bad")
+
+
 class _RuleFailUseCase(UseCase[Any, str]):
-    rules = [lambda cmd, fs: (_ for _ in ()).throw(RuleViolation("email", "bad"))]
+    rules = [_always_fail_rule]
 
     async def execute(self, cmd: Cmd = Input()) -> str:
         return cmd.email
 
 
-class _Product(msgspec.Struct):
+class _Product(LoomStruct):
     id: int
     name: str
 

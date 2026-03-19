@@ -9,8 +9,6 @@ from dataclasses import dataclass, field
 from types import ModuleType
 from typing import Any
 
-import msgspec
-
 from loom.core.job.job import Job
 from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
@@ -165,12 +163,12 @@ def infer_model_from_use_case(
         if typing.get_origin(base) is not UseCase:
             continue
         args = typing.get_args(base)
-        if len(args) != 2:
+        if len(args) < 2:
             continue
         candidate = args[0]
         if candidate is Any:
             return None
-        if isinstance(candidate, type) and issubclass(candidate, msgspec.Struct):
-            return typing.cast(type[BaseModel], candidate)
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
         return None
     return None

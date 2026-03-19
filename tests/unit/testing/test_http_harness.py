@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-import msgspec
-
 from loom.core.command.base import Command
 from loom.core.errors import Conflict, NotFound
+from loom.core.model import LoomStruct
 from loom.core.use_case.markers import Input
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface, RestRoute
@@ -19,7 +18,7 @@ from loom.testing.in_memory import InMemoryRepository
 # ---------------------------------------------------------------------------
 
 
-class Product(msgspec.Struct):
+class Product(LoomStruct):
     id: int
     name: str
 
@@ -56,7 +55,7 @@ class ProductInterface(RestInterface[Product]):
 # ---------------------------------------------------------------------------
 
 
-class Tag(msgspec.Struct):
+class Tag(LoomStruct):
     id: int
     label: str
 
