@@ -1,0 +1,353 @@
+"""ETL compiler — static validation and plan construction.
+
+The compiler inspects ETL class declarations once at startup and produces
+immutable :class:`~loom.etl.compiler._plan.PipelinePlan` /
+:class:`~loom.etl.compiler._plan.ProcessPlan` /
+:class:`~loom.etl.compiler._plan.StepPlan` objects.  No reflection occurs
+after compilation.
+
+Backend auto-detection
+----------------------
+The compiler reads the return-type annotation of ``execute()`` and maps
+it to :class:`~loom.etl.compiler._plan.Backend`:
+
+* ``polars.DataFrame``              → ``Backend.POLARS``
+* ``pyspark.sql.DataFrame``         → ``Backend.SPARK``
+* anything else / unannotated       → ``Backend.UNKNOWN``
+
+Static validation (this sprint)
+--------------------------------
+* ``ETLStep[ParamsT]`` generic present
+* ``execute()`` first positional param is typed as ``ParamsT``
+* every source alias has a matching ``*``-only DataFrame param in ``execute()``
+* every ``*``-only param in ``execute()`` has a matching source alias
+* ``target`` is declared
+* source forms are not mixed (caught earlier in ``__init_subclass__``)
+* ``ETLProcess.steps`` entries are valid step types
+* ``ETLPipeline.processes`` entries are valid process types
+"""
+
+from __future__ import annotations
+
+import inspect
+import typing
+from typing import Any, cast
+
+from loom.etl._pipeline import ETLPipeline
+from loom.etl._process import ETLProcess
+from loom.etl._source import Sources, SourceSet
+from loom.etl._step import ETLStep, _SourceForm
+from loom.etl._target import IntoFile, IntoTable
+from loom.etl.compiler._plan import (
+    Backend,
+    ParallelProcessGroup,
+    ParallelStepGroup,
+    PipelinePlan,
+    PipelineProcessNode,
+    ProcessPlan,
+    ProcessStepNode,
+    SourceBinding,
+    StepPlan,
+    TargetBinding,
+)
+
+_POLARS_DF_QUALNAME = "polars.dataframe.frame.DataFrame"
+_SPARK_DF_QUALNAME = "pyspark.sql.dataframe.DataFrame"
+
+
+class ETLCompilationError(Exception):
+    """Raised when an ETL class fails structural validation.
+
+    Args:
+        message: Human-readable description of the failure.
+    """
+
+
+class ETLCompiler:
+    """Compiles ETL declarations into immutable execution plans.
+
+    Compilation is idempotent per class — results are cached.  Call
+    :meth:`compile` with the top-level :class:`~loom.etl.ETLPipeline`
+    subclass to obtain a :class:`~loom.etl.compiler._plan.PipelinePlan`.
+
+    Example::
+
+        plan = ETLCompiler().compile(DailyOrdersPipeline)
+    """
+
+    def __init__(self) -> None:
+        self._step_cache: dict[type[Any], StepPlan] = {}
+        self._process_cache: dict[type[Any], ProcessPlan] = {}
+
+    def compile(self, pipeline_type: type[ETLPipeline[Any]]) -> PipelinePlan:
+        """Compile a pipeline and return its immutable plan.
+
+        Args:
+            pipeline_type: Concrete :class:`~loom.etl.ETLPipeline` subclass.
+
+        Returns:
+            Fully validated :class:`~loom.etl.compiler._plan.PipelinePlan`.
+
+        Raises:
+            ETLCompilationError: If any structural constraint is violated.
+        """
+        params_type = _require_params_type(pipeline_type, "ETLPipeline")
+        nodes = tuple(
+            self._compile_pipeline_item(item, pipeline_type) for item in pipeline_type.processes
+        )
+        return PipelinePlan(
+            pipeline_type=pipeline_type,
+            params_type=params_type,
+            nodes=nodes,
+        )
+
+    def compile_process(self, process_type: type[ETLProcess[Any]]) -> ProcessPlan:
+        """Compile a single process.
+
+        Args:
+            process_type: Concrete :class:`~loom.etl.ETLProcess` subclass.
+
+        Returns:
+            Validated :class:`~loom.etl.compiler._plan.ProcessPlan`.
+
+        Raises:
+            ETLCompilationError: If any structural constraint is violated.
+        """
+        if process_type in self._process_cache:
+            return self._process_cache[process_type]
+        plan = self._build_process_plan(process_type)
+        self._process_cache[process_type] = plan
+        return plan
+
+    def compile_step(self, step_type: type[ETLStep[Any]]) -> StepPlan:
+        """Compile a single step.
+
+        Args:
+            step_type: Concrete :class:`~loom.etl.ETLStep` subclass.
+
+        Returns:
+            Validated :class:`~loom.etl.compiler._plan.StepPlan`.
+
+        Raises:
+            ETLCompilationError: If any structural constraint is violated.
+        """
+        if step_type in self._step_cache:
+            return self._step_cache[step_type]
+        plan = self._build_step_plan(step_type)
+        self._step_cache[step_type] = plan
+        return plan
+
+    # ------------------------------------------------------------------
+    # Pipeline / process compilation
+    # ------------------------------------------------------------------
+
+    def _compile_pipeline_item(
+        self,
+        item: Any,
+        pipeline_type: type[Any],
+    ) -> PipelineProcessNode:
+        if isinstance(item, list):
+            return ParallelProcessGroup(
+                plans=cast(
+                    "tuple[ProcessPlan, ...]",
+                    tuple(self._compile_pipeline_item(sub, pipeline_type) for sub in item),
+                )
+            )
+        if not (isinstance(item, type) and issubclass(item, ETLProcess)):
+            raise ETLCompilationError(
+                f"{pipeline_type.__qualname__}.processes: "
+                f"expected ETLProcess subclass or list thereof, got {item!r}"
+            )
+        return self.compile_process(item)
+
+    def _build_process_plan(self, process_type: type[ETLProcess[Any]]) -> ProcessPlan:
+        params_type = _require_params_type(process_type, "ETLProcess")
+        nodes = tuple(self._compile_process_item(item, process_type) for item in process_type.steps)
+        return ProcessPlan(
+            process_type=process_type,
+            params_type=params_type,
+            nodes=nodes,
+        )
+
+    def _compile_process_item(
+        self,
+        item: Any,
+        process_type: type[Any],
+    ) -> ProcessStepNode:
+        if isinstance(item, list):
+            return ParallelStepGroup(
+                plans=cast(
+                    "tuple[StepPlan, ...]",
+                    tuple(self._compile_process_item(sub, process_type) for sub in item),
+                )
+            )
+        if not (isinstance(item, type) and issubclass(item, ETLStep)):
+            raise ETLCompilationError(
+                f"{process_type.__qualname__}.steps: "
+                f"expected ETLStep subclass or list thereof, got {item!r}"
+            )
+        return self.compile_step(item)
+
+    # ------------------------------------------------------------------
+    # Step compilation
+    # ------------------------------------------------------------------
+
+    def _build_step_plan(self, step_type: type[ETLStep[Any]]) -> StepPlan:
+        params_type = _require_params_type(step_type, "ETLStep")
+        source_bindings = self._resolve_source_bindings(step_type)
+        target_binding = self._resolve_target_binding(step_type)
+        backend = _detect_backend(step_type)
+        self._validate_execute_signature(step_type, params_type, source_bindings)
+        return StepPlan(
+            step_type=step_type,
+            params_type=params_type,
+            source_bindings=source_bindings,
+            target_binding=target_binding,
+            backend=backend,
+        )
+
+    def _resolve_source_bindings(self, step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
+        form = step_type._source_form
+
+        if form is _SourceForm.NONE:
+            return ()
+
+        if form is _SourceForm.INLINE:
+            return tuple(
+                SourceBinding(alias=alias, spec=src._to_spec(alias))
+                for alias, src in step_type._inline_sources.items()
+            )
+
+        # GROUPED: sources is Sources or SourceSet instance
+        sources_attr = step_type.sources
+        if isinstance(sources_attr, Sources):
+            return tuple(
+                SourceBinding(alias=spec.alias, spec=spec) for spec in sources_attr._to_specs()
+            )
+        if isinstance(sources_attr, SourceSet):
+            return tuple(
+                SourceBinding(alias=spec.alias, spec=spec) for spec in sources_attr._to_specs()
+            )
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}: 'sources' must be Sources(...) or a SourceSet instance"
+        )
+
+    def _resolve_target_binding(self, step_type: type[ETLStep[Any]]) -> TargetBinding:
+        target = step_type.target
+        if target is None:
+            raise ETLCompilationError(
+                f"{step_type.__qualname__}: 'target' is required but not declared"
+            )
+        if not isinstance(target, (IntoTable, IntoFile)):
+            raise ETLCompilationError(
+                f"{step_type.__qualname__}: 'target' must be IntoTable(...) or IntoFile(...)"
+            )
+        return TargetBinding(spec=target._to_spec())
+
+    def _validate_execute_signature(
+        self,
+        step_type: type[ETLStep[Any]],
+        params_type: type[Any],
+        source_bindings: tuple[SourceBinding, ...],
+    ) -> None:
+        sig = inspect.signature(step_type.execute)
+        params = list(sig.parameters.values())
+
+        _validate_params_arg(step_type, params, params_type)
+
+        kw_only = _collect_kw_only_frames(step_type, params)
+        source_aliases = {b.alias for b in source_bindings}
+
+        _check_missing_frames(step_type, source_aliases, kw_only)
+        _check_extra_frames(step_type, source_aliases, kw_only)
+
+
+# ------------------------------------------------------------------
+# Validation helpers
+# ------------------------------------------------------------------
+
+
+def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
+    pt = getattr(cls, "_params_type", None)
+    if pt is None:
+        raise ETLCompilationError(
+            f"{cls.__qualname__}: missing generic parameter — "
+            f"use {kind}[YourParams] not bare {kind}"
+        )
+    return cast(type[Any], pt)
+
+
+def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
+    try:
+        hints = typing.get_type_hints(step_type.execute)
+    except Exception:
+        return Backend.UNKNOWN
+
+    return_type = hints.get("return")
+    if return_type is None:
+        return Backend.UNKNOWN
+
+    qualname = (
+        f"{getattr(return_type, '__module__', '')}.{getattr(return_type, '__qualname__', '')}"
+    )
+    if "polars" in qualname.lower() and "dataframe" in qualname.lower():
+        return Backend.POLARS
+    if "pyspark" in qualname.lower() and "dataframe" in qualname.lower():
+        return Backend.SPARK
+    return Backend.UNKNOWN
+
+
+def _validate_params_arg(
+    step_type: type[Any],
+    params: list[inspect.Parameter],
+    params_type: type[Any],
+) -> None:
+    positional_kinds = {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.POSITIONAL_ONLY,
+    }
+    positional = [p for p in params if p.kind in positional_kinds and p.name != "self"]
+    if not positional:
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}.execute: first parameter must be "
+            f"'params: {params_type.__name__}'"
+        )
+    first = positional[0]
+    if first.name != "params":
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}.execute: first parameter must be named 'params', "
+            f"got '{first.name}'"
+        )
+
+
+def _collect_kw_only_frames(
+    step_type: type[Any],
+    params: list[inspect.Parameter],
+) -> dict[str, inspect.Parameter]:
+    return {p.name: p for p in params if p.kind is inspect.Parameter.KEYWORD_ONLY}
+
+
+def _check_missing_frames(
+    step_type: type[Any],
+    source_aliases: set[str],
+    kw_only: dict[str, inspect.Parameter],
+) -> None:
+    missing = source_aliases - set(kw_only)
+    if missing:
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}.execute: source(s) {sorted(missing)} "
+            f"declared in sources but missing as keyword-only parameter(s) after '*'"
+        )
+
+
+def _check_extra_frames(
+    step_type: type[Any],
+    source_aliases: set[str],
+    kw_only: dict[str, inspect.Parameter],
+) -> None:
+    extra = set(kw_only) - source_aliases
+    if extra:
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}.execute: parameter(s) {sorted(extra)} "
+            f"declared after '*' but not found in sources"
+        )
