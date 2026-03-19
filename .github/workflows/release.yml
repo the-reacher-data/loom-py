@@ -75,6 +75,16 @@ jobs:
           Manual release triggered from branch: ${SOURCE_BRANCH}
           EOF
 
+      - name: Update CHANGELOG.md
+        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s CHANGELOG_RELEASE.md ]; then
+            cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
+            mv CHANGELOG_MERGED.md CHANGELOG.md
+          fi
+
       - name: Sync project version
         if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
@@ -84,6 +94,28 @@ jobs:
           set -euo pipefail
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+
+      - name: Commit version bump and changelog
+        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add pyproject.toml
+          if git diff --cached --quiet; then
+            echo "Nothing to commit for pyproject.toml"
+          fi
+          if [ -f CHANGELOG.md ]; then
+            git add CHANGELOG.md
+          fi
+
+          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
+          git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
+          git push origin HEAD:master
 
       - name: Build package
         if: ${{ steps.version.outputs.deploy == 'true' }}
