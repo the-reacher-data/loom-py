@@ -298,6 +298,19 @@ wheels = [
 ]
 
 [[package]]
+name = "delta-spark"
+version = "3.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "importlib-metadata" },
+    { name = "pyspark" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8e/c9/a4d34fee1dafcad33d4e810ff2ce14a9f6e8e7af9797a9de79ebc3334987/delta_spark-3.3.2.tar.gz", hash = "sha256:f3e89ec4a15a541988f9d6496016a67cf619475e8eeca71da5e073f6ba0da845", size = 23066, upload-time = "2025-05-29T22:25:49.412Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/b7/f484bca84628f9f7a9a16ecfd8b010edbda9fa3f5e3918e967ddd69bf6af/delta_spark-3.3.2-py3-none-any.whl", hash = "sha256:0a34c720b4368f1655e2348e380b5b3baaca0f2b3d519a3198208f00f65e4062", size = 22024, upload-time = "2025-05-29T22:25:48.008Z" },
+]
+
+[[package]]
 name = "deltalake"
 version = "0.25.5"
 source = { registry = "https://pypi.org/simple" }
@@ -517,6 +530,18 @@ wheels = [
 ]
 
 [[package]]
+name = "importlib-metadata"
+version = "9.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "zipp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/01/15bb152d77b21318514a96f43af312635eb2500c96b55398d020c93d86ea/importlib_metadata-9.0.0.tar.gz", hash = "sha256:a4f57ab599e6a2e3016d7595cfd72eb4661a5106e787a95bcc90c7105b831efc", size = 56405, upload-time = "2026-03-20T06:42:56.999Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/3d/2d244233ac4f76e38533cfcb2991c9eb4c7bf688ae0a036d30725b8faafe/importlib_metadata-9.0.0-py3-none-any.whl", hash = "sha256:2d21d1cc5a017bd0559e36150c21c830ab1dc304dedd1b7ea85d20f45ef3edd7", size = 27789, upload-time = "2026-03-20T06:42:55.665Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -654,6 +679,10 @@ etl-polars = [
     { name = "deltalake" },
     { name = "polars" },
 ]
+etl-spark = [
+    { name = "delta-spark" },
+    { name = "pyspark" },
+]
 prometheus = [
     { name = "prometheus-client" },
 ]
@@ -678,6 +707,7 @@ dev = [
     { name = "aiosqlite" },
     { name = "celery" },
     { name = "commitizen" },
+    { name = "delta-spark" },
     { name = "deltalake" },
     { name = "fakeredis" },
     { name = "fastapi" },
@@ -704,6 +734,7 @@ requires-dist = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
+    { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=0.25,<1.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
     { name = "httptools", marker = "extra == 'rest'", specifier = ">=0.6,<1.0" },
@@ -717,6 +748,7 @@ requires-dist = [
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
     { name = "prometheus-client", marker = "extra == 'rest'", specifier = ">=0.20" },
     { name = "pydantic", marker = "extra == 'rest'", specifier = ">=2.0,<3.0" },
+    { name = "pyspark", marker = "extra == 'etl-spark'", specifier = ">=3.5,<4.0" },
     { name = "pyspark", marker = "extra == 'pyspark'", specifier = ">=3.5,<4.0" },
     { name = "redis", marker = "extra == 'celery'", specifier = ">=5.0,<6.0" },
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0,<3.0" },
@@ -724,7 +756,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'rest'", specifier = ">=0.30,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
 ]
-provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "pyspark", "prometheus", "celery"]
+provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "etl-spark", "pyspark", "prometheus", "celery"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -732,6 +764,7 @@ dev = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "celery", specifier = ">=5.3,<6.0" },
     { name = "commitizen", specifier = ">=3.30.0" },
+    { name = "delta-spark", specifier = ">=3.2,<4.0" },
     { name = "deltalake", specifier = ">=0.25,<1.0" },
     { name = "fakeredis", specifier = ">=2.23.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
@@ -1696,4 +1729,13 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/06/b500bfc38a4f82d89f34a13069e748c82c5430d365d9e6b75afb3ab74457/wrapt-2.1.1-cp314-cp314t-win_amd64.whl", hash = "sha256:f76bc12c583ab01e73ba0ea585465a41e48d968f6d1311b4daec4f8654e356e3", size = 63855, upload-time = "2026-02-03T02:12:15.47Z" },
     { url = "https://files.pythonhosted.org/packages/d9/cc/5f6193c32166faee1d2a613f278608e6f3b95b96589d020f0088459c46c9/wrapt-2.1.1-cp314-cp314t-win_arm64.whl", hash = "sha256:7ea74fc0bec172f1ae5f3505b6655c541786a5cabe4bbc0d9723a56ac32eb9b9", size = 60443, upload-time = "2026-02-03T02:11:30.869Z" },
     { url = "https://files.pythonhosted.org/packages/c4/da/5a086bf4c22a41995312db104ec2ffeee2cf6accca9faaee5315c790377d/wrapt-2.1.1-py3-none-any.whl", hash = "sha256:3b0f4629eb954394a3d7c7a1c8cca25f0b07cefe6aa8545e862e9778152de5b7", size = 43886, upload-time = "2026-02-03T02:11:45.048Z" },
+]
+
+[[package]]
+name = "zipp"
+version = "3.23.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/02/0f2892c661036d50ede074e376733dca2ae7c6eb617489437771209d4180/zipp-3.23.0.tar.gz", hash = "sha256:a07157588a12518c9d4034df3fbbee09c814741a33ff63c05fa29d26a2404166", size = 25547, upload-time = "2025-06-08T17:06:39.4Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/54/647ade08bf0db230bfea292f893923872fd20be6ac6f53b2b936ba839d75/zipp-3.23.0-py3-none-any.whl", hash = "sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e", size = 10276, upload-time = "2025-06-08T17:06:38.034Z" },
 ]
