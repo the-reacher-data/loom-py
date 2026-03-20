@@ -57,6 +57,20 @@ class LoomDtype(StrEnum):
     NULL = "Null"
 
 
+class SchemaNotFoundError(Exception):
+    """Raised when a write is attempted but no schema is registered for the table.
+
+    Register the schema via :meth:`~loom.etl._io.TableDiscovery.update_schema`
+    before the first write, or use a backend that creates the table explicitly
+    (e.g. :class:`~loom.etl.backends.polars.DeltaCatalog` with a pre-created
+    Delta table, or :attr:`~loom.etl._target.SchemaMode.OVERWRITE` for first write).
+    """
+
+
+class SchemaError(Exception):
+    """Raised when a frame is incompatible with the registered table schema."""
+
+
 @dataclass(frozen=True)
 class ColumnSchema:
     """Backend-agnostic definition of a single table column.

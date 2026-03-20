@@ -44,7 +44,7 @@ from loom.etl._params import ETLParams
 from loom.etl._pipeline import ETLPipeline
 from loom.etl._process import ETLProcess
 from loom.etl._proxy import ParamExpr, params
-from loom.etl._schema import ColumnSchema, LoomDtype
+from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 from loom.etl._source import FromFile, FromTable, Sources, SourceSet
 from loom.etl._step import ETLStep
 from loom.etl._table import TableRef, col
@@ -81,4 +81,6 @@ __all__ = [
     "SchemaMode",
     "ColumnSchema",
     "LoomDtype",
+    "SchemaNotFoundError",
+    "SchemaError",
 ]

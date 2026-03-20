@@ -32,26 +32,12 @@ from __future__ import annotations
 
 import polars as pl
 
-from loom.etl._schema import ColumnSchema
+from loom.etl._schema import ColumnSchema, SchemaError, SchemaNotFoundError
 from loom.etl._target import SchemaMode
 from loom.etl.backends.polars._dtype import loom_to_polars, polars_to_loom
 
-
-class SchemaNotFoundError(Exception):
-    """Raised when ``apply_schema`` is called but no schema is registered.
-
-    The table schema must be registered in the catalog before any write.
-    This prevents silent type inference on first write, which can produce
-    incorrect partition definitions, wrong nullability, or unexpected types.
-
-    Register the schema via :meth:`~loom.etl._io.TableDiscovery.update_schema`
-    before the first write, or use :class:`~loom.etl.backends.polars.DeltaCatalog`
-    with a pre-created Delta table.
-    """
-
-
-class SchemaError(Exception):
-    """Raised when the frame is incompatible with the registered schema."""
+# Re-exported for backwards compatibility — import from loom.etl._schema directly.
+__all__ = ["apply_schema", "SchemaNotFoundError", "SchemaError"]
 
 
 def apply_schema(
