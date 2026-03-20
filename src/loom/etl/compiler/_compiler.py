@@ -33,9 +33,10 @@ import inspect
 import typing
 from typing import Any, cast
 
+from loom.etl._io import TableDiscovery
 from loom.etl._pipeline import ETLPipeline
 from loom.etl._process import ETLProcess
-from loom.etl._source import Sources, SourceSet
+from loom.etl._source import SourceKind, Sources, SourceSet
 from loom.etl._step import ETLStep, _SourceForm
 from loom.etl._target import IntoFile, IntoTable
 from loom.etl.compiler._plan import (
@@ -70,12 +71,19 @@ class ETLCompiler:
     :meth:`compile` with the top-level :class:`~loom.etl.ETLPipeline`
     subclass to obtain a :class:`~loom.etl.compiler._plan.PipelinePlan`.
 
+    Args:
+        catalog: Optional :class:`~loom.etl._io.TableDiscovery` instance.
+                 When provided, all ``TABLE`` sources and ``IntoTable`` targets
+                 are validated against the catalog at compile time.
+
     Example::
 
         plan = ETLCompiler().compile(DailyOrdersPipeline)
+        plan = ETLCompiler(catalog=HiveCatalog()).compile(DailyOrdersPipeline)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, catalog: TableDiscovery | None = None) -> None:
+        self._catalog = catalog
         self._step_cache: dict[type[Any], StepPlan] = {}
         self._process_cache: dict[type[Any], ProcessPlan] = {}
 
@@ -198,6 +206,8 @@ class ETLCompiler:
         target_binding = self._resolve_target_binding(step_type)
         backend = _detect_backend(step_type)
         self._validate_execute_signature(step_type, params_type, source_bindings)
+        if self._catalog is not None:
+            _validate_catalog_tables(step_type, source_bindings, target_binding, self._catalog)
         return StepPlan(
             step_type=step_type,
             params_type=params_type,
@@ -289,10 +299,11 @@ def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
 
     qualname = (
         f"{getattr(return_type, '__module__', '')}.{getattr(return_type, '__qualname__', '')}"
-    )
-    if "polars" in qualname.lower() and "dataframe" in qualname.lower():
+    ).lower()
+    # Accept both LazyFrame (preferred) and DataFrame for Polars.
+    if "polars" in qualname and ("lazyframe" in qualname or "dataframe" in qualname):
         return Backend.POLARS
-    if "pyspark" in qualname.lower() and "dataframe" in qualname.lower():
+    if "pyspark" in qualname and "dataframe" in qualname:
         return Backend.SPARK
     return Backend.UNKNOWN
 
@@ -350,4 +361,31 @@ def _check_extra_frames(
         raise ETLCompilationError(
             f"{step_type.__qualname__}.execute: parameter(s) {sorted(extra)} "
             f"declared after '*' but not found in sources"
+        )
+
+
+def _validate_catalog_tables(
+    step_type: type[Any],
+    source_bindings: tuple[SourceBinding, ...],
+    target_binding: TargetBinding,
+    catalog: TableDiscovery,
+) -> None:
+    """Validate that all TABLE sources and IntoTable targets exist in the catalog."""
+    for binding in source_bindings:
+        spec = binding.spec
+        if (
+            spec.kind is SourceKind.TABLE
+            and spec.table_ref is not None
+            and not catalog.exists(spec.table_ref)
+        ):
+            raise ETLCompilationError(
+                f"{step_type.__qualname__}: source '{binding.alias}' "
+                f"references unknown table '{spec.table_ref.ref}'"
+            )
+
+    target_spec = target_binding.spec
+    if target_spec.table_ref is not None and not catalog.exists(target_spec.table_ref):
+        raise ETLCompilationError(
+            f"{step_type.__qualname__}: target references unknown table "
+            f"'{target_spec.table_ref.ref}'"
         )

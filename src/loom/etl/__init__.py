@@ -22,15 +22,24 @@ Authoring::
         params,
     )
 
+I/O protocols::
+
+    from loom.etl import TableDiscovery, SourceReader, TargetWriter
+
 Compilation::
 
     from loom.etl.compiler import ETLCompiler, ETLCompilationError
+
+Testing stubs::
+
+    from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
 """
 
 from loom.etl._format import Format
+from loom.etl._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl._params import ETLParams
 from loom.etl._pipeline import ETLPipeline
 from loom.etl._process import ETLProcess
@@ -63,4 +72,8 @@ __all__ = [
     # params proxy
     "params",
     "ParamExpr",
+    # I/O protocols
+    "TableDiscovery",
+    "SourceReader",
+    "TargetWriter",
 ]
