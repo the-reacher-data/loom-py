@@ -4,6 +4,9 @@ Provides in-memory implementations of :class:`~loom.etl._io.TableDiscovery`,
 :class:`~loom.etl._io.SourceReader`, and :class:`~loom.etl._io.TargetWriter`
 that allow step and pipeline tests to run without real storage dependencies.
 
+Also provides :class:`ETLScenario` — a backend-agnostic seed dataset that
+works with any step runner (e.g. :class:`~loom.etl.backends.spark._testing.SparkStepRunner`).
+
 Example::
 
     from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter, StubRunObserver
@@ -24,7 +27,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._source import SourceSpec
@@ -228,3 +231,94 @@ class StubRunObserver:
     def pipeline_statuses(self) -> list[RunStatus]:
         """Statuses from all ``pipeline_end`` events in order."""
         return [d["status"] for name, d in self.events if name is EventName.PIPELINE_END]
+
+
+# ---------------------------------------------------------------------------
+# ETLScenario — backend-agnostic reusable seed dataset
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class StepRunnerProto(Protocol):
+    """Protocol for backend-specific step runners.
+
+    Any runner that implements :meth:`seed` and :meth:`create_frame` is
+    compatible with :class:`ETLScenario`.
+    """
+
+    def seed(self, ref: str, frame: Any) -> Any:
+        """Register *frame* under the logical table reference *ref*."""
+        ...
+
+    def create_frame(self, data: list[tuple[Any, ...]], columns: list[str]) -> Any:
+        """Create a backend-native frame from raw Python data."""
+        ...
+
+
+class ETLScenario:
+    """Named, reusable seed dataset for step runner tests.
+
+    Stores input data as plain Python tuples — no backend dependency at
+    definition time.  Frames are created lazily via the runner's
+    :meth:`~StepRunnerProto.create_frame` when :meth:`apply` is called.
+
+    This makes ``ETLScenario`` compatible with any backend runner
+    (:class:`~loom.etl.backends.spark._testing.SparkStepRunner`,
+    ``PolarsStepRunner``, etc.) without change.
+
+    Args:
+        name: Human-readable label used in ``__repr__`` and error messages.
+
+    Example::
+
+        ORDERS = (
+            ETLScenario("orders")
+            .with_table("raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"])
+        )
+
+        # Works with any backend runner
+        def test_double_amount(step_runner):
+            ORDERS.apply(step_runner)
+            step_runner.run(DoubleAmountStep, NoParams())
+            ...
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._seeds: list[tuple[str, list[tuple[Any, ...]], list[str]]] = []
+
+    def with_table(
+        self,
+        ref: str,
+        data: list[tuple[Any, ...]],
+        columns: list[str],
+    ) -> ETLScenario:
+        """Add a table seed to this scenario.
+
+        Args:
+            ref:     Logical table reference, e.g. ``"raw.orders"``.
+            data:    Row data as a list of tuples.
+            columns: Column names aligned with the tuple positions.
+
+        Returns:
+            ``self`` for fluent chaining.
+        """
+        self._seeds.append((ref, list(data), list(columns)))
+        return self
+
+    def apply(self, runner: StepRunnerProto) -> StepRunnerProto:
+        """Seed all tables into *runner*.
+
+        Args:
+            runner: Any :class:`StepRunnerProto`-compatible runner.
+
+        Returns:
+            The same *runner* for fluent chaining.
+        """
+        for ref, data, columns in self._seeds:
+            runner.seed(ref, runner.create_frame(data, columns))
+        return runner
+
+    def __repr__(self) -> str:
+        tables = [ref for ref, *_ in self._seeds]
+        return f"ETLScenario({self._name!r}, tables={tables})"

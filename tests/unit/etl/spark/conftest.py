@@ -24,7 +24,7 @@ from loom.etl._table import TableRef  # noqa: E402
 from loom.etl.backends.polars import DeltaCatalog  # noqa: E402
 from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
 from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
-from loom.etl.backends.spark._testing import SparkTestSession  # noqa: E402
+from loom.etl.backends.spark._testing import SparkStepRunner, SparkTestSession  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # SparkSession — session-scoped, created once per pytest run
@@ -46,6 +46,12 @@ def spark() -> Generator[SparkSession, None, None]:
 # ---------------------------------------------------------------------------
 # Per-test fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def step_runner(spark: SparkSession) -> SparkStepRunner:
+    """Fresh SparkStepRunner per test — no Delta I/O, in-memory only."""
+    return SparkStepRunner(spark)
 
 
 @pytest.fixture
