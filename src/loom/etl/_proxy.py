@@ -15,7 +15,9 @@ Usage::
             & (col("month") == params.run_date.month),
         ),
     )
-    target = IntoTable("staging.orders").partition_replace(by=params.run_date)
+    target = IntoTable("staging.orders").replace_partitions(
+        values={"year": params.run_date.year, "month": params.run_date.month}
+    )
 
 ``params`` in ``execute(self, params: DailyOrdersParams, *, ...)`` is the
 real instance — Python scope rules separate the two without ambiguity.

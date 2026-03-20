@@ -4,15 +4,15 @@ Public API:  ``IntoTable``, ``IntoFile``, ``SchemaMode``.
 Internal:    ``TargetSpec``, ``WriteMode`` — used by the compiler only.
 
 Each ETL step declares exactly one target.  Write mode and schema mode are
-set by passing keyword arguments to the write-intent method::
+set by chaining a write-intent method::
 
     IntoTable("staging.orders").append()
     IntoTable("staging.orders").replace()
     IntoTable("staging.orders").replace(schema=SchemaMode.EVOLVE)
     IntoTable("staging.orders").replace(schema=SchemaMode.OVERWRITE)
-    IntoTable("staging.orders").partition_replace(by=params.run_date)
-    IntoTable("staging.orders").partition_replace(
-        by=params.run_date, schema=SchemaMode.EVOLVE
+    IntoTable("staging.orders").replace_partitions("year", "month")
+    IntoTable("staging.orders").replace_where(
+        (col("year") == params.run_date.year) & (col("month") == params.run_date.month)
     )
     IntoTable("staging.orders").upsert(keys=("order_id",))
     IntoFile("s3://exports/report_{run_date}.csv", format=Format.CSV)
@@ -21,11 +21,14 @@ set by passing keyword arguments to the write-intent method::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from enum import StrEnum
 from typing import Any
 
 from loom.etl._format import Format
-from loom.etl._table import TableRef
+from loom.etl._predicate import AndPred, EqPred, PredicateNode
+from loom.etl._proxy import ParamExpr
+from loom.etl._table import TableRef, UnboundColumnRef
 
 
 class WriteMode(StrEnum):
@@ -33,7 +36,8 @@ class WriteMode(StrEnum):
 
     APPEND = "append"
     REPLACE = "replace"
-    PARTITION_REPLACE = "partition_replace"
+    REPLACE_PARTITIONS = "replace_partitions"
+    REPLACE_WHERE = "replace_where"
     UPSERT = "upsert"
 
 
@@ -68,13 +72,14 @@ class TargetSpec:
     Consumed by the compiler and executor — never exposed in user code.
 
     Args:
-        mode:        Write semantics.
-        format:      I/O format.
-        schema_mode: Schema evolution strategy.
-        table_ref:   Logical table reference (table targets only).
-        path:        File path template (file targets only).
-        partition_by: Param expression for ``partition_replace`` mode.
-        upsert_keys:  Column names used as merge keys for ``upsert`` mode.
+        mode:             Write semantics.
+        format:           I/O format.
+        schema_mode:      Schema evolution strategy.
+        table_ref:        Logical table reference (table targets only).
+        path:             File path template (file targets only).
+        partition_cols:   Column names for :attr:`~WriteMode.REPLACE_PARTITIONS`.
+        replace_predicate: Predicate node for :attr:`~WriteMode.REPLACE_WHERE`.
+        upsert_keys:      Column names used as merge keys for ``upsert`` mode.
     """
 
     mode: WriteMode
@@ -82,24 +87,42 @@ class TargetSpec:
     schema_mode: SchemaMode = SchemaMode.STRICT
     table_ref: TableRef | None = None
     path: str | None = None
-    partition_by: Any = None
+    partition_cols: tuple[str, ...] = field(default_factory=tuple)
+    replace_predicate: PredicateNode | None = None
     upsert_keys: tuple[str, ...] = field(default_factory=tuple)
+
+
+def _build_eq_predicate(values: dict[str, ParamExpr]) -> PredicateNode:
+    items = list(values.items())
+    head_col, head_expr = items[0]
+    result: PredicateNode = EqPred(left=UnboundColumnRef(head_col), right=head_expr)
+    for col_name, expr in items[1:]:
+        result = AndPred(left=result, right=EqPred(left=UnboundColumnRef(col_name), right=expr))
+    return result
 
 
 class IntoTable:
     """Declare a Delta table as the ETL step target.
 
     The write mode is set by chaining one of:
-    :meth:`append`, :meth:`replace`, :meth:`partition_replace`,
-    :meth:`upsert`.  Defaults to :attr:`~WriteMode.REPLACE` if no mode
-    is chained (explicit is still preferred).
+    :meth:`append`, :meth:`replace`, :meth:`replace_partitions`,
+    :meth:`replace_where`, :meth:`upsert`.
 
     Args:
         ref: Logical table reference — ``str`` or :class:`~loom.etl.TableRef`.
 
     Example::
 
-        target = IntoTable("staging.orders").partition_replace(by=params.run_date)
+        # Full replace
+        target = IntoTable("staging.orders").replace()
+
+        # Replace only the partitions present in the batch
+        target = IntoTable("staging.orders").replace_partitions("year", "month")
+
+        # Replace a date-range for backfill
+        target = IntoTable("staging.orders").replace_where(
+            col("date").between(params.start_date, params.end_date)
+        )
     """
 
     __slots__ = ("_ref", "_spec")
@@ -128,6 +151,9 @@ class IntoTable:
     def replace(self, *, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
         """Write mode: full replace of the target table.
 
+        Overwrites all data in the table.  Use :meth:`replace_partitions` for
+        partition-scoped overwrite or :meth:`replace_where` for predicate-scoped.
+
         Args:
             schema: Schema evolution strategy.  Use
                     :attr:`~SchemaMode.OVERWRITE` to replace the table schema
@@ -138,18 +164,97 @@ class IntoTable:
         """
         return self._with(mode=WriteMode.REPLACE, schema_mode=schema)
 
-    def partition_replace(self, *, by: Any, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
-        """Write mode: replace only the partitions covered by ``by``.
+    def replace_partitions(
+        self,
+        *cols: str,
+        values: dict[str, ParamExpr] | None = None,
+        schema: SchemaMode = SchemaMode.STRICT,
+    ) -> IntoTable:
+        """Write mode: replace only the relevant partitions.
+
+        Two calling styles — pass one or the other, never both:
+
+        * **Dynamic** — positional column names.  The writer collects the
+          distinct partition values from the batch and builds the predicate
+          at write time::
+
+              target = IntoTable("staging.orders").replace_partitions("year", "month")
+
+        * **From params** — ``values`` dict maps column name to a
+          :class:`~loom.etl._proxy.ParamExpr`.  The predicate is resolved from
+          the run params; no collect required::
+
+              target = IntoTable("staging.orders").replace_partitions(
+                  values={"year": params.run_date.year, "month": params.run_date.month}
+              )
 
         Args:
-            by:     Partition key — a :class:`~loom.etl._proxy.ParamExpr` or
-                    a :class:`~loom.etl._table.ColumnRef`.
-            schema: Schema evolution strategy.
+            *cols:   Partition column names (dynamic style).
+            values:  Mapping of column name → :class:`~loom.etl._proxy.ParamExpr`
+                     (params style).  Keys become the partition column names.
+            schema:  Schema evolution strategy.
 
         Returns:
-            New ``IntoTable`` with :attr:`~WriteMode.PARTITION_REPLACE` mode.
+            New ``IntoTable`` instance.
+
+        Raises:
+            ValueError: If both *cols* and *values* are supplied, or neither is.
         """
-        return self._with(mode=WriteMode.PARTITION_REPLACE, partition_by=by, schema_mode=schema)
+        if cols and values is not None:
+            raise ValueError(
+                "replace_partitions: pass either positional column names or values=, not both"
+            )
+        if not cols and values is None:
+            raise ValueError("replace_partitions: pass column names or values=")
+
+        if values is not None:
+            predicate = _build_eq_predicate(values)
+            return self._with(
+                mode=WriteMode.REPLACE_WHERE,
+                replace_predicate=predicate,
+                partition_cols=tuple(values.keys()),
+                schema_mode=schema,
+            )
+
+        return self._with(
+            mode=WriteMode.REPLACE_PARTITIONS,
+            partition_cols=cols,
+            schema_mode=schema,
+        )
+
+    def replace_where(
+        self,
+        predicate: PredicateNode,
+        *,
+        schema: SchemaMode = SchemaMode.STRICT,
+    ) -> IntoTable:
+        """Write mode: replace rows matching an explicit predicate.
+
+        The predicate is resolved against the run params and passed to Delta as
+        ``replaceWhere``.  Only the matching data is overwritten — Delta uses
+        partition pruning so only affected files are rewritten.
+
+        Typical use case: backfill / reprocessing a date range.
+
+        Args:
+            predicate: Predicate built with the :func:`~loom.etl.col` /
+                       :data:`~loom.etl.params` DSL.
+            schema:    Schema evolution strategy.
+
+        Returns:
+            New ``IntoTable`` with :attr:`~WriteMode.REPLACE_WHERE` mode.
+
+        Example::
+
+            target = IntoTable("staging.orders").replace_where(
+                col("date").between(params.start_date, params.end_date)
+            )
+        """
+        return self._with(
+            mode=WriteMode.REPLACE_WHERE,
+            replace_predicate=predicate,
+            schema_mode=schema,
+        )
 
     def upsert(self, *, keys: tuple[str, ...], schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
         """Write mode: merge rows using the given key columns.
@@ -165,17 +270,8 @@ class IntoTable:
 
     def _with(self, **overrides: Any) -> IntoTable:
         new = object.__new__(IntoTable)
-        current = {
-            "mode": self._spec.mode,
-            "format": self._spec.format,
-            "schema_mode": self._spec.schema_mode,
-            "table_ref": self._spec.table_ref,
-            "partition_by": self._spec.partition_by,
-            "upsert_keys": self._spec.upsert_keys,
-        }
-        current.update(overrides)
         object.__setattr__(new, "_ref", self._ref)
-        object.__setattr__(new, "_spec", TargetSpec(**current))
+        object.__setattr__(new, "_spec", _dc_replace(self._spec, **overrides))  # pyright: ignore[reportArgumentType]
         return new
 
     def _to_spec(self) -> TargetSpec:

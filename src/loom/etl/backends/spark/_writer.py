@@ -8,6 +8,7 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 
 from loom.etl._io import TableDiscovery
+from loom.etl._predicate_sql import predicate_to_sql
 from loom.etl._schema import ColumnSchema
 from loom.etl._table import TableRef
 from loom.etl._target import SchemaMode, TargetSpec, WriteMode
@@ -64,19 +65,19 @@ class SparkDeltaWriter:
         existing_schema = self._catalog.schema(table_ref)
 
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
-            self._write_frame(frame, spec)
+            self._write_frame(frame, spec, params_instance)
             self._register_schema(table_ref, frame)
             return
 
         validated = spark_apply_schema(frame, existing_schema, spec.schema_mode)
-        self._write_frame(validated, spec)
+        self._write_frame(validated, spec, params_instance)
         self._register_schema(table_ref, validated)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _write_frame(self, df: DataFrame, spec: TargetSpec) -> None:
+    def _write_frame(self, df: DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         path = self._table_path(spec.table_ref)  # type: ignore[arg-type]
         path.mkdir(parents=True, exist_ok=True)
 
@@ -86,6 +87,12 @@ class SparkDeltaWriter:
             writer = writer.mode("append")
             if spec.schema_mode is SchemaMode.EVOLVE:
                 writer = writer.option("mergeSchema", "true")
+        elif spec.mode is WriteMode.REPLACE_PARTITIONS:
+            predicate = _build_partition_predicate(df, spec.partition_cols)
+            writer = writer.mode("overwrite").option("replaceWhere", predicate)
+        elif spec.mode is WriteMode.REPLACE_WHERE:
+            predicate = predicate_to_sql(spec.replace_predicate, params_instance)  # type: ignore[arg-type]
+            writer = writer.mode("overwrite").option("replaceWhere", predicate)
         else:
             writer = writer.mode("overwrite")
             if spec.schema_mode is SchemaMode.OVERWRITE:
@@ -101,3 +108,23 @@ class SparkDeltaWriter:
 
     def _table_path(self, ref: TableRef) -> Path:
         return self._root.joinpath(*ref.ref.split("."))
+
+
+def _build_partition_predicate(df: DataFrame, partition_cols: tuple[str, ...]) -> str:
+    """Build a ``replaceWhere`` SQL predicate from the distinct partition values in *df*.
+
+    Collects only the partition columns — typically O(1-31) distinct rows.
+    """
+    rows = df.select(*partition_cols).distinct().collect()
+    clauses = [
+        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols) for row in rows
+    ]
+    return " OR ".join(f"({c})" for c in clauses)
+
+
+def _sql_literal(value: Any) -> str:
+    if isinstance(value, str):
+        return f"'{value.replace(chr(39), chr(39) * 2)}'"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return str(value)

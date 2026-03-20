@@ -118,10 +118,10 @@ def test_into_table_append_with_evolve() -> None:
     assert spec.schema_mode is SchemaMode.EVOLVE
 
 
-def test_into_table_partition_replace_with_evolve() -> None:
-    target = IntoTable("staging.orders").partition_replace(by="run_date", schema=SchemaMode.EVOLVE)
+def test_into_table_replace_partitions_with_evolve() -> None:
+    target = IntoTable("staging.orders").replace_partitions("year", schema=SchemaMode.EVOLVE)
     spec = target._to_spec()
-    assert spec.mode is WriteMode.PARTITION_REPLACE
+    assert spec.mode is WriteMode.REPLACE_PARTITIONS
     assert spec.schema_mode is SchemaMode.EVOLVE
 
 

@@ -76,7 +76,9 @@ class ETLStep(Generic[ParamsT]):
                 ),
                 customers=FromTable("raw.customers"),
             )
-            target = IntoTable("staging.orders").partition_replace(by=params.run_date)
+            target = IntoTable("staging.orders").replace_partitions(
+                values={"year": params.run_date.year, "month": params.run_date.month}
+            )
 
             def execute(
                 self,

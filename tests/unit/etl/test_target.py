@@ -23,11 +23,46 @@ def test_into_table_replace() -> None:
     assert spec.mode is WriteMode.REPLACE
 
 
-def test_into_table_partition_replace() -> None:
-    by_expr = params.run_date
-    spec = IntoTable("staging.orders").partition_replace(by=by_expr)._to_spec()
-    assert spec.mode is WriteMode.PARTITION_REPLACE
-    assert spec.partition_by is by_expr
+def test_into_table_replace_partitions_dynamic() -> None:
+    spec = IntoTable("staging.orders").replace_partitions("year", "month")._to_spec()
+    assert spec.mode is WriteMode.REPLACE_PARTITIONS
+    assert spec.partition_cols == ("year", "month")
+
+
+def test_into_table_replace_partitions_from_params() -> None:
+    spec = (
+        IntoTable("staging.orders")
+        .replace_partitions(values={"year": params.run_date.year, "month": params.run_date.month})
+        ._to_spec()
+    )
+    assert spec.mode is WriteMode.REPLACE_WHERE
+    assert spec.partition_cols == ("year", "month")
+    assert spec.replace_predicate is not None
+
+
+def test_into_table_replace_where() -> None:
+    from loom.etl import col
+
+    pred = col("date") >= params.run_date
+    spec = IntoTable("staging.orders").replace_where(pred)._to_spec()
+    assert spec.mode is WriteMode.REPLACE_WHERE
+    assert spec.replace_predicate is pred
+
+
+def test_replace_partitions_raises_when_both_cols_and_values() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="not both"):
+        IntoTable("staging.orders").replace_partitions(
+            "year", values={"year": params.run_date.year}
+        )
+
+
+def test_replace_partitions_raises_when_neither() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        IntoTable("staging.orders").replace_partitions()
 
 
 def test_into_table_upsert() -> None:

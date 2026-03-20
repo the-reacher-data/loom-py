@@ -97,6 +97,20 @@ class _ColOps:
         """
         return InPred(ref=self, values=values)
 
+    def between(self, low: Any, high: Any) -> AndPred:
+        """Return ``low <= col <= high`` as an :class:`AndPred`.
+
+        Equivalent to ``(col >= low) & (col <= high)``.
+
+        Args:
+            low:  Lower bound (inclusive).
+            high: Upper bound (inclusive).
+
+        Returns:
+            Conjunction predicate node.
+        """
+        return AndPred(left=GePred(left=self, right=low), right=LePred(left=self, right=high))
+
     def __and__(self, other: PredicateNode) -> AndPred:
         return AndPred(left=self, right=other)
 

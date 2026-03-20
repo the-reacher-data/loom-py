@@ -12,12 +12,13 @@ is safe because the user explicitly requested a full schema replacement.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import polars as pl
 from deltalake import write_deltalake
 
 from loom.etl._io import TableDiscovery
+from loom.etl._predicate_sql import predicate_to_sql
 from loom.etl._schema import ColumnSchema
 from loom.etl._table import TableRef
 from loom.etl._target import SchemaMode, TargetSpec, WriteMode
@@ -76,23 +77,32 @@ class PolarsDeltaWriter:
 
         # OVERWRITE on a non-existent table: skip apply_schema, create the table.
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
-            self._write_frame(frame.collect(), spec)
+            self._write_frame(frame.collect(), spec, params_instance)
             self._register_schema(table_ref, frame)
             return
 
         validated = apply_schema(frame, existing_schema, spec.schema_mode)
-        self._write_frame(validated.collect(), spec)
+        self._write_frame(validated.collect(), spec, params_instance)
         self._register_schema(table_ref, validated)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _write_frame(self, df: pl.DataFrame, spec: TargetSpec) -> None:
+    def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         path = self._table_path(spec.table_ref)  # type: ignore[arg-type]
         path.mkdir(parents=True, exist_ok=True)
-        delta_mode = _write_mode(spec.mode)
-        write_deltalake(str(path), df.to_arrow(), mode=delta_mode)
+
+        if spec.mode is WriteMode.APPEND:
+            write_deltalake(str(path), df.to_arrow(), mode="append")
+        elif spec.mode is WriteMode.REPLACE_PARTITIONS:
+            predicate = _build_partition_predicate(df, spec.partition_cols)
+            write_deltalake(str(path), df.to_arrow(), mode="overwrite", predicate=predicate)
+        elif spec.mode is WriteMode.REPLACE_WHERE:
+            predicate = predicate_to_sql(spec.replace_predicate, params_instance)  # type: ignore[arg-type]
+            write_deltalake(str(path), df.to_arrow(), mode="overwrite", predicate=predicate)
+        else:
+            write_deltalake(str(path), df.to_arrow(), mode="overwrite")
 
     def _register_schema(self, ref: TableRef, frame: pl.LazyFrame) -> None:
         """Update the catalog schema from the frame's collect_schema()."""
@@ -107,7 +117,19 @@ class PolarsDeltaWriter:
         return self._root.joinpath(*ref.ref.split("."))
 
 
-def _write_mode(mode: WriteMode) -> Literal["overwrite", "append"]:
-    if mode is WriteMode.APPEND:
-        return "append"
-    return "overwrite"
+def _build_partition_predicate(df: pl.DataFrame, partition_cols: tuple[str, ...]) -> str:
+    """Build a replaceWhere SQL predicate from distinct partition values in *df*."""
+    distinct = df.select(list(partition_cols)).unique()
+    clauses = [
+        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols)
+        for row in distinct.iter_rows(named=True)
+    ]
+    return " OR ".join(f"({c})" for c in clauses)
+
+
+def _sql_literal(value: Any) -> str:
+    if isinstance(value, str):
+        return f"'{value.replace(chr(39), chr(39) * 2)}'"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    return str(value)
