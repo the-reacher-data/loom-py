@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from loom.etl._schema import ColumnSchema
 from loom.etl._source import SourceSpec
 from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec
@@ -56,6 +57,31 @@ class TableDiscovery(Protocol):
 
         Returns:
             Tuple of column names in schema order, or ``()`` if unknown.
+        """
+        ...
+
+    def schema(self, ref: TableRef) -> tuple[ColumnSchema, ...] | None:
+        """Return the full column schema of the table.
+
+        Args:
+            ref: Logical table reference.
+
+        Returns:
+            Ordered tuple of :class:`~loom.etl._schema.ColumnSchema` entries,
+            or ``None`` if the table does not yet exist in the catalog
+            (first write).
+        """
+        ...
+
+    def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
+        """Persist the table schema after a successful write.
+
+        Called by the target writer once a write completes so the catalog
+        reflects the current schema for subsequent steps.
+
+        Args:
+            ref:    Logical table reference.
+            schema: New authoritative schema for the table.
         """
         ...
 

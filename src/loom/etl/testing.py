@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._source import SourceSpec
 from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec
@@ -35,33 +36,66 @@ from loom.etl.executor._observer import EventName, RunStatus
 class StubCatalog:
     """In-memory :class:`~loom.etl._io.TableDiscovery` for tests.
 
-    Registers tables as a mapping of dotted ref string to column name
-    tuples.  Pass an empty tuple to register a table with no known columns.
+    Accepts two optional seed dictionaries:
+
+    * ``tables``  — column name tuples (for quick existence + column checks)
+    * ``schemas`` — full :class:`~loom.etl._schema.ColumnSchema` tuples
+                    (for type-aware writer tests)
+
+    When ``schemas`` is provided, ``columns`` and ``exists`` are also derived
+    from it — no need to populate both.  ``update_schema`` persists changes in
+    memory so later steps in the same test see the evolved schema.
 
     Args:
-        tables: Mapping of ``"schema.table"`` → ``("col1", "col2", ...)``.
+        tables:  Mapping of ``"schema.table"`` → ``("col1", "col2", ...)``.
+        schemas: Mapping of ``"schema.table"`` → ``tuple[ColumnSchema, ...]``.
 
     Example::
 
-        catalog = StubCatalog({
-            "raw.orders":   ("id", "amount", "year", "month"),
-            "staging.out":  (),
-        })
+        catalog = StubCatalog(
+            schemas={
+                "raw.orders": (
+                    ColumnSchema("id",     LoomDtype.INT64,   nullable=False),
+                    ColumnSchema("amount", LoomDtype.FLOAT64),
+                    ColumnSchema("year",   LoomDtype.INT32,   nullable=False),
+                ),
+                "staging.out": (),
+            }
+        )
         assert catalog.exists(TableRef("raw.orders"))
-        assert catalog.columns(TableRef("raw.orders")) == ("id", "amount", "year", "month")
-        assert not catalog.exists(TableRef("raw.missing"))
+        assert catalog.schema(TableRef("raw.orders"))[0].name == "id"
     """
 
-    def __init__(self, tables: dict[str, tuple[str, ...]] | None = None) -> None:
-        self._tables: dict[str, tuple[str, ...]] = dict(tables or {})
+    def __init__(
+        self,
+        tables: dict[str, tuple[str, ...]] | None = None,
+        schemas: dict[str, tuple[ColumnSchema, ...]] | None = None,
+    ) -> None:
+        self._schemas: dict[str, tuple[ColumnSchema, ...]] = dict(schemas or {})
+        # Merge explicit tables into _schemas as name-only entries when absent
+        for ref, cols in (tables or {}).items():
+            if ref not in self._schemas:
+                self._schemas[ref] = tuple(ColumnSchema(name=c, dtype=_UNKNOWN_DTYPE) for c in cols)
 
     def exists(self, ref: TableRef) -> bool:
-        """Return ``True`` if the ref was registered in this stub catalog."""
-        return ref.ref in self._tables
+        """Return ``True`` if the ref is registered in this stub catalog."""
+        return ref.ref in self._schemas
 
     def columns(self, ref: TableRef) -> tuple[str, ...]:
         """Return registered column names, or ``()`` for unknown tables."""
-        return self._tables.get(ref.ref, ())
+        return tuple(c.name for c in self._schemas.get(ref.ref, ()))
+
+    def schema(self, ref: TableRef) -> tuple[ColumnSchema, ...] | None:
+        """Return the full schema, or ``None`` if the table is not yet registered."""
+        return self._schemas.get(ref.ref)
+
+    def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
+        """Persist a schema update in memory."""
+        self._schemas[ref.ref] = schema
+
+
+# Sentinel dtype used when a table is registered by column names only.
+_UNKNOWN_DTYPE = LoomDtype.NULL
 
 
 class StubSourceReader:
