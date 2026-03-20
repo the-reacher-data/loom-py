@@ -24,6 +24,7 @@ rest = [
 sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
 config = ["omegaconf>=2.3,<3.0"]
 cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
+etl-polars = ["polars>=1.0,<2.0", "deltalake>=0.25,<1.0"]
 pyspark = ["pyspark>=3.5,<4.0"]
 prometheus = ["prometheus-client>=0.20"]
 celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
@@ -51,6 +52,8 @@ dev = [
     "redis>=5.0.0",
     "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
+    "polars>=1.0,<2.0",
+    "deltalake>=0.25,<1.0",
     "httpx>=0.28.1",
     "httptools>=0.6,<1.0",
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
