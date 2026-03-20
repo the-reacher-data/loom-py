@@ -1,4 +1,4 @@
-"""ETL testing utilities — stub I/O implementations for unit tests.
+"""ETL testing utilities — stub I/O implementations and observer for unit tests.
 
 Provides in-memory implementations of :class:`~loom.etl._io.TableDiscovery`,
 :class:`~loom.etl._io.SourceReader`, and :class:`~loom.etl._io.TargetWriter`
@@ -6,16 +6,20 @@ that allow step and pipeline tests to run without real storage dependencies.
 
 Example::
 
-    from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
+    from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter, StubRunObserver
     from loom.etl.compiler import ETLCompiler
+    from loom.etl.executor import ETLExecutor
 
-    catalog = StubCatalog({"raw.orders": ("id", "amount"), "staging.out": ()})
-    reader  = StubSourceReader({"orders": some_lazy_frame})
-    writer  = StubTargetWriter()
+    catalog  = StubCatalog({"raw.orders": ("id", "amount"), "staging.out": ()})
+    reader   = StubSourceReader({"orders": some_lazy_frame})
+    writer   = StubTargetWriter()
+    observer = StubRunObserver()
 
     plan = ETLCompiler(catalog=catalog).compile_step(MyStep)
-    # pass reader + writer to the executor (sprint 4)
-    assert len(writer.written) == 1
+    ETLExecutor(reader, writer, observer=observer).run_step(plan, params)
+
+    assert writer.written[0][1].mode == WriteMode.REPLACE
+    assert observer.step_statuses == ["success"]
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import Any
 from loom.etl._source import SourceSpec
 from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec
+from loom.etl.executor._observer import EventName, RunStatus
 
 
 class StubCatalog:
@@ -106,3 +111,86 @@ class StubTargetWriter:
     def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:
         """Capture the ``(frame, spec)`` pair for later assertion."""
         self.written.append((frame, spec))
+
+
+class StubRunObserver:
+    """In-memory :class:`~loom.etl.executor.ETLRunObserver` for tests.
+
+    Captures all lifecycle events as a flat list of ``(event_name, data)``
+    tuples.  Helper properties provide quick access to common assertions.
+
+    Attributes:
+        events: All events in order — ``(event_name, data_dict)`` tuples.
+
+    Example::
+
+        observer = StubRunObserver()
+        executor = ETLExecutor(reader, writer, observer=observer)
+        executor.run_step(plan, params)
+
+        assert observer.step_statuses == ["success"]
+        assert "step_start" in observer.event_names
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[EventName, dict[str, Any]]] = []
+
+    # --- protocol implementation ---
+
+    def on_pipeline_start(self, plan: Any, params: Any, run_id: str) -> None:
+        self.events.append((EventName.PIPELINE_START, {"run_id": run_id}))
+
+    def on_pipeline_end(self, run_id: str, status: RunStatus, duration_ms: int) -> None:
+        self.events.append((EventName.PIPELINE_END, {"run_id": run_id, "status": status}))
+
+    def on_process_start(self, plan: Any, run_id: str, process_run_id: str) -> None:
+        self.events.append(
+            (EventName.PROCESS_START, {"run_id": run_id, "process_run_id": process_run_id})
+        )
+
+    def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
+        self.events.append(
+            (EventName.PROCESS_END, {"process_run_id": process_run_id, "status": status})
+        )
+
+    def on_step_start(self, plan: Any, run_id: str, step_run_id: str) -> None:
+        self.events.append(
+            (
+                EventName.STEP_START,
+                {
+                    "step": plan.step_type.__name__,
+                    "run_id": run_id,
+                    "step_run_id": step_run_id,
+                },
+            )
+        )
+
+    def on_step_end(
+        self,
+        step_run_id: str,
+        status: RunStatus,
+        rows_read: int,
+        rows_written: int,
+        duration_ms: int,
+    ) -> None:
+        self.events.append((EventName.STEP_END, {"step_run_id": step_run_id, "status": status}))
+
+    def on_step_error(self, step_run_id: str, exc: Exception) -> None:
+        self.events.append((EventName.STEP_ERROR, {"step_run_id": step_run_id, "error": repr(exc)}))
+
+    # --- convenience accessors ---
+
+    @property
+    def event_names(self) -> list[EventName]:
+        """Ordered list of event names."""
+        return [name for name, _ in self.events]
+
+    @property
+    def step_statuses(self) -> list[RunStatus]:
+        """Statuses from all ``step_end`` events in order."""
+        return [d["status"] for name, d in self.events if name is EventName.STEP_END]
+
+    @property
+    def pipeline_statuses(self) -> list[RunStatus]:
+        """Statuses from all ``pipeline_end`` events in order."""
+        return [d["status"] for name, d in self.events if name is EventName.PIPELINE_END]

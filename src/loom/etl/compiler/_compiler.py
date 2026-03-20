@@ -217,30 +217,16 @@ class ETLCompiler:
         )
 
     def _resolve_source_bindings(self, step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
-        form = step_type._source_form
-
-        if form is _SourceForm.NONE:
-            return ()
-
-        if form is _SourceForm.INLINE:
-            return tuple(
-                SourceBinding(alias=alias, spec=src._to_spec(alias))
-                for alias, src in step_type._inline_sources.items()
-            )
-
-        # GROUPED: sources is Sources or SourceSet instance
-        sources_attr = step_type.sources
-        if isinstance(sources_attr, Sources):
-            return tuple(
-                SourceBinding(alias=spec.alias, spec=spec) for spec in sources_attr._to_specs()
-            )
-        if isinstance(sources_attr, SourceSet):
-            return tuple(
-                SourceBinding(alias=spec.alias, spec=spec) for spec in sources_attr._to_specs()
-            )
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}: 'sources' must be Sources(...) or a SourceSet instance"
-        )
+        match step_type._source_form:
+            case _SourceForm.NONE:
+                return ()
+            case _SourceForm.INLINE:
+                return tuple(
+                    SourceBinding(alias=alias, spec=src._to_spec(alias))
+                    for alias, src in step_type._inline_sources.items()
+                )
+            case _SourceForm.GROUPED:
+                return _bindings_from_grouped(step_type)
 
     def _resolve_target_binding(self, step_type: type[ETLStep[Any]]) -> TargetBinding:
         target = step_type.target
@@ -275,6 +261,17 @@ class ETLCompiler:
 # ------------------------------------------------------------------
 # Validation helpers
 # ------------------------------------------------------------------
+
+
+def _bindings_from_grouped(step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
+    """Extract source bindings from a GROUPED-form step (Sources or SourceSet)."""
+    match step_type.sources:
+        case Sources() | SourceSet() as grouped:
+            return tuple(SourceBinding(alias=spec.alias, spec=spec) for spec in grouped._to_specs())
+        case _:
+            raise ETLCompilationError(
+                f"{step_type.__qualname__}: 'sources' must be Sources(...) or a SourceSet instance"
+            )
 
 
 def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
