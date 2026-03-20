@@ -17,7 +17,6 @@ import pytest
 pytest.importorskip("pyspark")
 pytest.importorskip("delta")
 
-from delta import configure_spark_with_delta_pip  # noqa: E402
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 
 from loom.etl._schema import ColumnSchema  # noqa: E402
@@ -25,6 +24,7 @@ from loom.etl._table import TableRef  # noqa: E402
 from loom.etl.backends.polars import DeltaCatalog  # noqa: E402
 from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
 from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
+from loom.etl.backends.spark._testing import SparkTestSession  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # SparkSession — session-scoped, created once per pytest run
@@ -38,21 +38,9 @@ def spark() -> Generator[SparkSession, None, None]:
     Scoped to the session to avoid the ~5s JVM startup cost per test.
     Log level set to ERROR to suppress verbose Spark output.
     """
-    builder = (
-        SparkSession.builder.master("local[1]")
-        .appName("loom-etl-spark-tests")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
-        .config("spark.driver.memory", "1g")
-        .config("spark.sql.shuffle.partitions", "1")
-    )
-    session = configure_spark_with_delta_pip(builder).getOrCreate()
-    session.sparkContext.setLogLevel("ERROR")
-    yield session
-    session.stop()
+    SparkTestSession.skip_if_unavailable()
+    with SparkTestSession.start(app="loom-etl-spark-tests", parallelism=1) as session:
+        yield session
 
 
 # ---------------------------------------------------------------------------
