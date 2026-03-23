@@ -42,11 +42,6 @@ def resolve_sql(sql: str, params: Any) -> str:
     return _PLACEHOLDER.sub(lambda m: _resolve_placeholder(m.group(1).strip(), params), sql)
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
 def _resolve_placeholder(expr: str, params: Any) -> str:
     parts = expr.split(".")
     if parts[0] != "params":
