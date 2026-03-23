@@ -27,10 +27,6 @@ from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
 from loom.etl.backends.spark._testing import SparkTestSession  # noqa: E402
 from loom.etl.testing import StepRunner  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# SparkSession — session-scoped, created once per pytest run
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture(scope="session")
 def spark() -> Generator[SparkSession, None, None]:
@@ -42,11 +38,6 @@ def spark() -> Generator[SparkSession, None, None]:
     SparkTestSession.skip_if_unavailable()
     with SparkTestSession.start(app="loom-etl-spark-tests", parallelism=1) as session:
         yield session
-
-
-# ---------------------------------------------------------------------------
-# Per-test fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -81,11 +72,6 @@ def spark_writer(
 ) -> SparkDeltaWriter:
     """SparkDeltaWriter pointing at spark_root, backed by spark_catalog."""
     return SparkDeltaWriter(spark, spark_root, spark_catalog)
-
-
-# ---------------------------------------------------------------------------
-# seed_table — write a Spark DataFrame as a Delta table
-# ---------------------------------------------------------------------------
 
 
 def spark_table_path(root: Path, ref: TableRef) -> Path:

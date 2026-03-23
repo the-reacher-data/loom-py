@@ -18,10 +18,6 @@ from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError
 
 from .conftest import table_path
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _seed(root: Path, ref: str, data: pl.DataFrame) -> None:
     path = table_path(root, TableRef(ref))
@@ -44,11 +40,6 @@ def _source_spec(ref: str) -> SourceSpec:
     return SourceSpec(
         alias="data", kind=SourceKind.TABLE, format=Format.DELTA, table_ref=TableRef(ref)
     )
-
-
-# ---------------------------------------------------------------------------
-# DeltaCatalog
-# ---------------------------------------------------------------------------
 
 
 def test_catalog_exists_false_for_missing_table(tmp_path: Path) -> None:
@@ -94,11 +85,6 @@ def test_catalog_update_schema_is_noop(tmp_path: Path) -> None:
     assert len(schema) == 1
 
 
-# ---------------------------------------------------------------------------
-# PolarsDeltaReader
-# ---------------------------------------------------------------------------
-
-
 def test_reader_returns_lazy_frame(tmp_path: Path) -> None:
     _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1, 2]}))
     reader = PolarsDeltaReader(tmp_path)
@@ -112,11 +98,6 @@ def test_reader_reads_correct_data(tmp_path: Path) -> None:
     result = PolarsDeltaReader(tmp_path).read(_source_spec("raw.events"), None).collect()
     assert result["id"].to_list() == [1, 2, 3]
     assert result["v"].to_list() == [10, 20, 30]
-
-
-# ---------------------------------------------------------------------------
-# PolarsDeltaWriter — schema enforcement
-# ---------------------------------------------------------------------------
 
 
 def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:

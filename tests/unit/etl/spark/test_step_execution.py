@@ -25,10 +25,6 @@ from loom.etl.testing import StubRunObserver
 
 from .conftest import SparkDeltaReader, SparkDeltaWriter, spark_table_path
 
-# ---------------------------------------------------------------------------
-# Step definitions
-# ---------------------------------------------------------------------------
-
 
 class NoParams(ETLParams):
     pass
@@ -64,19 +60,9 @@ class AppendStep(ETLStep[NoParams]):
         return deltas
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _read(spark: SparkSession, root, ref: str) -> DataFrame:
     path = spark_table_path(Path(root), TableRef(ref))
     return spark.read.format("delta").load(str(path))
-
-
-# ---------------------------------------------------------------------------
-# Happy-path tests
-# ---------------------------------------------------------------------------
 
 
 def test_run_step_writes_transformed_data(
@@ -155,11 +141,6 @@ def test_run_step_append_adds_rows(
     assert _read(spark, spark_root, "staging.ledger").count() == 3
 
 
-# ---------------------------------------------------------------------------
-# Observer lifecycle
-# ---------------------------------------------------------------------------
-
-
 def test_run_step_emits_success_events(
     spark: SparkSession,
     seed_spark_table,
@@ -191,11 +172,6 @@ def test_run_step_emits_error_event_on_failure(
         ETLExecutor(FailingReader(), spark_writer, observers=[observer]).run_step(plan, NoParams())
 
     assert observer.step_statuses == [RunStatus.FAILED]
-
-
-# ---------------------------------------------------------------------------
-# Schema enforcement
-# ---------------------------------------------------------------------------
 
 
 def test_writer_raises_schema_not_found_without_registered_schema(

@@ -9,10 +9,6 @@ from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._target import SchemaMode
 from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError, apply_schema
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
 _SCHEMA: tuple[ColumnSchema, ...] = (
     ColumnSchema("id", LoomDtype.INT64, nullable=False),
     ColumnSchema("amount", LoomDtype.FLOAT64),
@@ -24,21 +20,11 @@ def _frame(**cols) -> pl.LazyFrame:  # type: ignore[no-untyped-def]
     return pl.DataFrame(cols).lazy()
 
 
-# ---------------------------------------------------------------------------
-# schema is None — all modes must raise SchemaNotFoundError
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("mode", list(SchemaMode))
 def test_apply_schema_none_raises_schema_not_found(mode: SchemaMode) -> None:
     frame = _frame(id=[1], amount=[1.0], label=["x"])
     with pytest.raises(SchemaNotFoundError):
         apply_schema(frame, None, mode)
-
-
-# ---------------------------------------------------------------------------
-# OVERWRITE — always passes through unchanged
-# ---------------------------------------------------------------------------
 
 
 def test_overwrite_passes_through_matching_frame() -> None:
@@ -57,11 +43,6 @@ def test_overwrite_passes_through_extra_columns() -> None:
     frame = _frame(id=[1], amount=[1.0], label=["x"], extra=["y"])
     result = apply_schema(frame, _SCHEMA, SchemaMode.OVERWRITE)
     assert result is frame
-
-
-# ---------------------------------------------------------------------------
-# STRICT — exact match required
-# ---------------------------------------------------------------------------
 
 
 def test_strict_passes_with_matching_frame() -> None:
@@ -86,11 +67,6 @@ def test_strict_fails_on_type_mismatch() -> None:
     frame = _frame(id=[1], amount=[1.0], label=[99])  # label should be Utf8
     with pytest.raises(SchemaError, match="label"):
         apply_schema(frame, _SCHEMA, SchemaMode.STRICT)
-
-
-# ---------------------------------------------------------------------------
-# EVOLVE — extra columns allowed; missing columns filled with typed nulls
-# ---------------------------------------------------------------------------
 
 
 def test_evolve_passes_with_matching_frame() -> None:

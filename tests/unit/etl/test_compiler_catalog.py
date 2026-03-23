@@ -16,11 +16,6 @@ class RunParams(ETLParams):
     run_date: date
 
 
-# ---------------------------------------------------------------------------
-# Step declarations for the tests
-# ---------------------------------------------------------------------------
-
-
 class OrdersStep(ETLStep[RunParams]):
     orders = FromTable("raw.orders")
     target = IntoTable("staging.orders").replace()
@@ -54,11 +49,6 @@ class FileTargetStep(ETLStep[RunParams]):
         return orders
 
 
-# ---------------------------------------------------------------------------
-# Happy paths
-# ---------------------------------------------------------------------------
-
-
 def test_compile_without_catalog_skips_table_validation() -> None:
     plan = ETLCompiler().compile_step(OrdersStep)
     assert plan.step_type is OrdersStep
@@ -82,11 +72,6 @@ def test_compile_multi_source_all_registered() -> None:
     assert len(plan.source_bindings) == 2
 
 
-# ---------------------------------------------------------------------------
-# FILE sources are not validated against the catalog
-# ---------------------------------------------------------------------------
-
-
 def test_file_source_not_validated_against_catalog() -> None:
     # Catalog has the target but NOT the file path — files are physical, not catalogued.
     catalog = StubCatalog({"staging.report": ()})
@@ -99,11 +84,6 @@ def test_file_target_not_validated_against_catalog() -> None:
     catalog = StubCatalog({"raw.orders": ("id",)})
     plan = ETLCompiler(catalog=catalog).compile_step(FileTargetStep)
     assert plan.step_type is FileTargetStep
-
-
-# ---------------------------------------------------------------------------
-# Catalog validation failures
-# ---------------------------------------------------------------------------
 
 
 def test_missing_source_table_raises() -> None:
@@ -134,11 +114,6 @@ def test_error_message_includes_step_name() -> None:
     catalog = StubCatalog({"staging.orders": ()})
     with pytest.raises(ETLCompilationError, match="OrdersStep"):
         ETLCompiler(catalog=catalog).compile_step(OrdersStep)
-
-
-# ---------------------------------------------------------------------------
-# Compiler is reusable across steps with same catalog
-# ---------------------------------------------------------------------------
 
 
 def test_compiler_reuses_catalog_across_compile_calls() -> None:

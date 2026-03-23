@@ -16,19 +16,10 @@ from loom.etl.executor import (
 )
 from loom.etl.testing import StubRunObserver
 
-# ---------------------------------------------------------------------------
-# RunStatus
-# ---------------------------------------------------------------------------
-
 
 def test_run_status_values() -> None:
     assert RunStatus.SUCCESS == "success"
     assert RunStatus.FAILED == "failed"
-
-
-# ---------------------------------------------------------------------------
-# ETLRunObserver protocol
-# ---------------------------------------------------------------------------
 
 
 def test_structlog_observer_satisfies_protocol() -> None:
@@ -45,11 +36,6 @@ def test_run_sink_observer_satisfies_protocol() -> None:
 
 def test_stub_observer_satisfies_protocol() -> None:
     assert isinstance(StubRunObserver(), ETLRunObserver)
-
-
-# ---------------------------------------------------------------------------
-# StubRunObserver
-# ---------------------------------------------------------------------------
 
 
 def test_stub_observer_captures_events() -> None:
@@ -79,11 +65,6 @@ def test_stub_observer_empty_on_init() -> None:
     assert obs.events == []
     assert obs.event_names == []
     assert obs.step_statuses == []
-
-
-# ---------------------------------------------------------------------------
-# StructlogRunObserver
-# ---------------------------------------------------------------------------
 
 
 def test_structlog_observer_emits_step_start() -> None:
@@ -125,11 +106,6 @@ def test_structlog_observer_emits_step_end() -> None:
         assert call_args[0][0] == EventName.STEP_END
         assert call_args[1]["status"] == RunStatus.SUCCESS
         assert call_args[1]["duration_ms"] == 42
-
-
-# ---------------------------------------------------------------------------
-# RunSinkObserver
-# ---------------------------------------------------------------------------
 
 
 class _CapturingSink:

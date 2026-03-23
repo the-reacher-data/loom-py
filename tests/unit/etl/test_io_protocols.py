@@ -9,10 +9,6 @@ from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec, WriteMode
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
-# ---------------------------------------------------------------------------
-# StubCatalog
-# ---------------------------------------------------------------------------
-
 
 def test_stub_catalog_exists_true() -> None:
     catalog = StubCatalog({"raw.orders": ("id", "amount")})
@@ -50,11 +46,6 @@ def test_stub_catalog_satisfies_protocol() -> None:
     assert isinstance(catalog, TableDiscovery)
 
 
-# ---------------------------------------------------------------------------
-# StubSourceReader
-# ---------------------------------------------------------------------------
-
-
 def _make_source_spec(alias: str) -> SourceSpec:
     return SourceSpec(
         alias=alias,
@@ -86,11 +77,6 @@ def test_stub_source_reader_empty_init_always_none() -> None:
 def test_stub_source_reader_satisfies_protocol() -> None:
     reader = StubSourceReader()
     assert isinstance(reader, SourceReader)
-
-
-# ---------------------------------------------------------------------------
-# StubTargetWriter
-# ---------------------------------------------------------------------------
 
 
 def _make_target_spec() -> TargetSpec:

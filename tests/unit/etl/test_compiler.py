@@ -24,10 +24,6 @@ from loom.etl.compiler import (
     ParallelStepGroup,
 )
 
-# ---------------------------------------------------------------------------
-# Test fixtures — reusable step / process / pipeline declarations
-# ---------------------------------------------------------------------------
-
 
 class RunParams(ETLParams):
     run_date: date
@@ -84,11 +80,6 @@ class DailyPipeline(ETLPipeline[RunParams]):
     processes = [StagingProcess]
 
 
-# ---------------------------------------------------------------------------
-# compile_step — happy path
-# ---------------------------------------------------------------------------
-
-
 def test_compile_step_returns_step_plan() -> None:
     plan = ETLCompiler().compile_step(ExtractStep)
     assert plan.step_type is ExtractStep
@@ -124,11 +115,6 @@ def test_compile_step_is_cached() -> None:
     assert p1 is p2
 
 
-# ---------------------------------------------------------------------------
-# compile_step — backend detection
-# ---------------------------------------------------------------------------
-
-
 def test_backend_unknown_when_no_type_hints() -> None:
     class UntypedStep(ETLStep[RunParams]):
         target = IntoTable("staging.x").replace()
@@ -140,11 +126,6 @@ def test_backend_unknown_when_no_type_hints() -> None:
 
     plan = ETLCompiler().compile_step(UntypedStep)
     assert plan.backend is Backend.UNKNOWN
-
-
-# ---------------------------------------------------------------------------
-# compile_step — validation errors
-# ---------------------------------------------------------------------------
 
 
 def test_missing_target_raises() -> None:
@@ -207,11 +188,6 @@ def test_bare_step_without_generic_raises() -> None:
         ETLCompiler().compile_step(BareStep)
 
 
-# ---------------------------------------------------------------------------
-# compile_process
-# ---------------------------------------------------------------------------
-
-
 def test_compile_process_sequential_and_parallel() -> None:
     plan = ETLCompiler().compile_process(StagingProcess)
     assert plan.process_type is StagingProcess
@@ -227,11 +203,6 @@ def test_compile_process_invalid_item_raises() -> None:
 
     with pytest.raises(ETLCompilationError, match="ETLStep subclass"):
         ETLCompiler().compile_process(BadProcess)
-
-
-# ---------------------------------------------------------------------------
-# compile (pipeline)
-# ---------------------------------------------------------------------------
 
 
 def test_compile_pipeline_returns_pipeline_plan() -> None:

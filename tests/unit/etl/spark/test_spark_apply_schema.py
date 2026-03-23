@@ -14,16 +14,7 @@ from loom.etl._target import SchemaMode
 from loom.etl.backends.spark._schema import spark_apply_schema
 from loom.etl.testing import ETLScenario
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 _ID_AMOUNT = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("amount", LoomDtype.FLOAT64))
-
-
-# ---------------------------------------------------------------------------
-# schema=None
-# ---------------------------------------------------------------------------
 
 
 def test_raises_schema_not_found_when_schema_is_none(spark: SparkSession) -> None:
@@ -44,20 +35,10 @@ def test_overwrite_raises_schema_not_found_when_schema_is_none(spark: SparkSessi
         spark_apply_schema(frame, None, SchemaMode.OVERWRITE)
 
 
-# ---------------------------------------------------------------------------
-# OVERWRITE — pass-through when schema is provided
-# ---------------------------------------------------------------------------
-
-
 def test_overwrite_returns_frame_unchanged(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
     result = spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.OVERWRITE)
     assert_df_equality(result, frame)
-
-
-# ---------------------------------------------------------------------------
-# STRICT
-# ---------------------------------------------------------------------------
 
 
 def test_strict_exact_match_passes(spark: SparkSession) -> None:
@@ -79,15 +60,9 @@ def test_strict_raises_on_missing_column(spark: SparkSession) -> None:
 
 
 def test_strict_raises_on_type_mismatch(spark: SparkSession) -> None:
-    # amount as StringType instead of DoubleType
     frame = spark.createDataFrame([(1, "bad")], ["id", "amount"])
     with pytest.raises(SchemaError, match="amount"):
         spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.STRICT)
-
-
-# ---------------------------------------------------------------------------
-# EVOLVE
-# ---------------------------------------------------------------------------
 
 
 def test_evolve_passes_with_matching_columns(spark: SparkSession) -> None:
@@ -115,7 +90,6 @@ def test_evolve_fills_missing_column_with_typed_null(spark: SparkSession) -> Non
 def test_evolve_preserves_extra_columns(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0, "tag")], ["id", "amount", "tag"])
     result = spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.EVOLVE)
-    # extra column survives
     assert "tag" in result.columns
 
 
@@ -123,11 +97,6 @@ def test_evolve_raises_on_type_mismatch(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, "bad")], ["id", "amount"])
     with pytest.raises(SchemaError, match="amount"):
         spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.EVOLVE)
-
-
-# ---------------------------------------------------------------------------
-# ETLScenario integration — same scenario, different assertions
-# ---------------------------------------------------------------------------
 
 
 ORDERS_SCENARIO = ETLScenario().with_table("raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"])

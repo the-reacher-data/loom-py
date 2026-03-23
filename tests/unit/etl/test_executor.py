@@ -12,10 +12,6 @@ from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus, ThreadDispatcher
 from loom.etl.testing import StubRunObserver, StubSourceReader, StubTargetWriter
 
-# ---------------------------------------------------------------------------
-# Params + step fixtures
-# ---------------------------------------------------------------------------
-
 
 class RunParams(ETLParams):
     run_date: date
@@ -80,11 +76,6 @@ def _executor(
     return exc, writer, obs
 
 
-# ---------------------------------------------------------------------------
-# run_step — happy paths
-# ---------------------------------------------------------------------------
-
-
 def test_run_step_reads_source_and_writes_target() -> None:
     plan = _COMPILER.compile_step(StepA)
     exc, writer, _ = _executor()
@@ -112,11 +103,6 @@ def test_run_step_multiple_sources_passes_all_frames() -> None:
     assert frame is SENTINEL_B
 
 
-# ---------------------------------------------------------------------------
-# run_step — observer lifecycle
-# ---------------------------------------------------------------------------
-
-
 def test_run_step_observer_step_start_and_end() -> None:
     plan = _COMPILER.compile_step(StepA)
     exc, _, obs = _executor()
@@ -139,11 +125,6 @@ def test_run_step_run_id_consistent_across_events() -> None:
     exc.run_step(plan, _PARAMS, run_id="fixed-run-id")
     start_event = next(d for name, d in obs.events if name == "step_start")
     assert start_event["run_id"] == "fixed-run-id"
-
-
-# ---------------------------------------------------------------------------
-# run_step — error handling
-# ---------------------------------------------------------------------------
 
 
 class FailingStep(ETLStep[RunParams]):
@@ -177,11 +158,6 @@ def test_run_step_observer_error_before_end() -> None:
         exc.run_step(plan, _PARAMS)
     names = obs.event_names
     assert names.index(EventName.STEP_ERROR) < names.index(EventName.STEP_END)
-
-
-# ---------------------------------------------------------------------------
-# run_process
-# ---------------------------------------------------------------------------
 
 
 def test_run_process_sequential_steps_in_order() -> None:
@@ -221,11 +197,6 @@ def test_run_process_observer_failed_on_step_error() -> None:
     assert proc_end["status"] == "failed"
 
 
-# ---------------------------------------------------------------------------
-# run_pipeline
-# ---------------------------------------------------------------------------
-
-
 def test_run_pipeline_sequential_processes() -> None:
     plan = _COMPILER.compile(PipelineSeq)
     exc, writer, obs = _executor()
@@ -261,11 +232,6 @@ def test_run_pipeline_failed_status_on_step_error() -> None:
     with pytest.raises(ValueError):
         exc.run_pipeline(plan, _PARAMS)
     assert obs.pipeline_statuses == [RunStatus.FAILED]
-
-
-# ---------------------------------------------------------------------------
-# ThreadDispatcher
-# ---------------------------------------------------------------------------
 
 
 def test_thread_dispatcher_runs_all_tasks() -> None:

@@ -25,10 +25,6 @@ from loom.etl._table import TableRef  # noqa: E402
 from loom.etl._target import TargetSpec, WriteMode  # noqa: E402
 from loom.etl.testing import StubCatalog  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Polars → LoomDtype mapping
-# ---------------------------------------------------------------------------
-
 _POLARS_TO_LOOM: dict[type, LoomDtype] = {
     pl.Int8: LoomDtype.INT8,
     pl.Int16: LoomDtype.INT16,
@@ -51,22 +47,12 @@ def _polars_dtype_to_loom(dtype: pl.DataType) -> LoomDtype:
     return _POLARS_TO_LOOM.get(type(dtype), LoomDtype.NULL)
 
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
-
-
 def table_path(root: Path, ref: TableRef) -> Path:
     """Resolve a ``TableRef`` to a filesystem path under *root*.
 
     ``"raw.orders"`` → ``root/raw/orders``.
     """
     return root.joinpath(*ref.ref.split("."))
-
-
-# ---------------------------------------------------------------------------
-# Core fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -114,11 +100,6 @@ def seed_table(
         return path
 
     return _seed
-
-
-# ---------------------------------------------------------------------------
-# Minimal Polars + Delta reader / writer (pre-sprint-5 test helpers)
-# ---------------------------------------------------------------------------
 
 
 class MinimalPolarsDeltaReader:

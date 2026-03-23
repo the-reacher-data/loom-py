@@ -23,11 +23,6 @@ class RunParams(ETLParams):
     countries: tuple[str, ...]
 
 
-# ---------------------------------------------------------------------------
-# Valid step declarations
-# ---------------------------------------------------------------------------
-
-
 class StepForm2(ETLStep[RunParams]):
     sources = Sources(
         orders=FromTable("raw.orders"),
@@ -67,11 +62,6 @@ class StepForm3(ETLStep[RunParams]):
         return orders
 
 
-# ---------------------------------------------------------------------------
-# Tests: source form detection
-# ---------------------------------------------------------------------------
-
-
 def test_form2_detected_as_grouped() -> None:
     assert StepForm2._source_form is _SourceForm.GROUPED
 
@@ -92,22 +82,12 @@ def test_no_sources_form_is_none() -> None:
     assert StepNoSources._source_form is _SourceForm.NONE
 
 
-# ---------------------------------------------------------------------------
-# Tests: params type extraction
-# ---------------------------------------------------------------------------
-
-
 def test_params_type_extracted() -> None:
     assert StepForm2._params_type is RunParams
 
 
 def test_params_type_none_for_base_class() -> None:
     assert ETLStep._params_type is None
-
-
-# ---------------------------------------------------------------------------
-# Tests: mixing forms raises TypeError
-# ---------------------------------------------------------------------------
 
 
 def test_mixing_inline_and_grouped_raises() -> None:
@@ -120,11 +100,6 @@ def test_mixing_inline_and_grouped_raises() -> None:
 
             def execute(self, params: RunParams, *, orders: Any, customers: Any) -> Any:
                 return orders
-
-
-# ---------------------------------------------------------------------------
-# Tests: execute() raises NotImplementedError on base
-# ---------------------------------------------------------------------------
 
 
 def test_execute_raises_not_implemented_on_base() -> None:

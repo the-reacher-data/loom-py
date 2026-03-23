@@ -29,11 +29,6 @@ def _read_delta(root, ref: str) -> pl.DataFrame:
     return pl.from_arrow(DeltaTable(str(path)).to_pyarrow_table())
 
 
-# ---------------------------------------------------------------------------
-# Step definitions (module-level so the compiler sees real class objects)
-# ---------------------------------------------------------------------------
-
-
 class NoParams(ETLParams):
     pass
 
@@ -66,11 +61,6 @@ class AppendStep(ETLStep[NoParams]):
 
     def execute(self, params: NoParams, *, deltas: pl.LazyFrame) -> pl.LazyFrame:  # type: ignore[override]
         return deltas
-
-
-# ---------------------------------------------------------------------------
-# Happy-path tests
-# ---------------------------------------------------------------------------
 
 
 def test_run_step_writes_transformed_data(
@@ -143,11 +133,6 @@ def test_run_step_append_adds_rows(
     assert len(result) == 3  # 1 existing + 2 appended
 
 
-# ---------------------------------------------------------------------------
-# Observer lifecycle tests
-# ---------------------------------------------------------------------------
-
-
 def test_run_step_emits_start_and_end_events(
     seed_table,
     polars_reader: MinimalPolarsDeltaReader,
@@ -183,11 +168,6 @@ def test_run_step_emits_error_event_on_failure(
 
     assert EventName.STEP_ERROR in observer.event_names
     assert observer.step_statuses == [RunStatus.FAILED]
-
-
-# ---------------------------------------------------------------------------
-# Schema derivation test
-# ---------------------------------------------------------------------------
 
 
 def test_seed_table_registers_schema_in_catalog(

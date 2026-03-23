@@ -9,10 +9,6 @@ from loom.etl._table import TableRef
 from loom.etl._target import IntoTable, SchemaMode, WriteMode
 from loom.etl.testing import StubCatalog
 
-# ---------------------------------------------------------------------------
-# LoomDtype
-# ---------------------------------------------------------------------------
-
 
 def test_loom_dtype_is_str_enum() -> None:
     assert LoomDtype.INT64 == "Int64"
@@ -35,11 +31,6 @@ def test_loom_dtype_float_variants() -> None:
 def test_loom_dtype_temporal_variants() -> None:
     for name in ("DATE", "DATETIME", "DURATION", "TIME"):
         assert hasattr(LoomDtype, name)
-
-
-# ---------------------------------------------------------------------------
-# ColumnSchema
-# ---------------------------------------------------------------------------
 
 
 def test_column_schema_stores_fields() -> None:
@@ -79,20 +70,10 @@ def test_column_schema_hashable() -> None:
     assert {col1, col2} == {col1}  # set deduplication works
 
 
-# ---------------------------------------------------------------------------
-# SchemaMode
-# ---------------------------------------------------------------------------
-
-
 def test_schema_mode_values() -> None:
     assert SchemaMode.STRICT == "strict"
     assert SchemaMode.EVOLVE == "evolve"
     assert SchemaMode.OVERWRITE == "overwrite"
-
-
-# ---------------------------------------------------------------------------
-# IntoTable — schema= parameter
-# ---------------------------------------------------------------------------
 
 
 def test_into_table_default_schema_mode_is_strict() -> None:
@@ -141,10 +122,6 @@ def test_into_table_returns_new_instance_on_each_call() -> None:
     assert a._to_spec().schema_mode is SchemaMode.STRICT
     assert b._to_spec().schema_mode is SchemaMode.EVOLVE
 
-
-# ---------------------------------------------------------------------------
-# StubCatalog — schema API
-# ---------------------------------------------------------------------------
 
 _ORDERS_SCHEMA = (
     ColumnSchema("order_id", LoomDtype.INT64, nullable=False),
