@@ -27,27 +27,23 @@ def test_apply_schema_none_raises_schema_not_found(mode: SchemaMode) -> None:
         apply_schema(frame, None, mode)
 
 
-def test_overwrite_passes_through_matching_frame() -> None:
+@pytest.mark.parametrize(
+    "frame",
+    [
+        _frame(id=[1], amount=[1.0], label=["x"]),
+        _frame(id=["not-an-int"], amount=[1.0], label=["x"]),
+        _frame(id=[1], amount=[1.0], label=["x"], extra=["y"]),
+    ],
+)
+def test_overwrite_passes_through_frame(frame: pl.LazyFrame) -> None:
+    result = apply_schema(frame, _SCHEMA, SchemaMode.OVERWRITE)
+    assert result is frame
+
+
+@pytest.mark.parametrize("mode", [SchemaMode.STRICT, SchemaMode.EVOLVE])
+def test_apply_schema_passes_with_matching_frame(mode: SchemaMode) -> None:
     frame = _frame(id=[1], amount=[1.0], label=["x"])
-    result = apply_schema(frame, _SCHEMA, SchemaMode.OVERWRITE)
-    assert result is frame
-
-
-def test_overwrite_passes_through_mismatched_types() -> None:
-    frame = _frame(id=["not-an-int"], amount=[1.0], label=["x"])
-    result = apply_schema(frame, _SCHEMA, SchemaMode.OVERWRITE)
-    assert result is frame
-
-
-def test_overwrite_passes_through_extra_columns() -> None:
-    frame = _frame(id=[1], amount=[1.0], label=["x"], extra=["y"])
-    result = apply_schema(frame, _SCHEMA, SchemaMode.OVERWRITE)
-    assert result is frame
-
-
-def test_strict_passes_with_matching_frame() -> None:
-    frame = _frame(id=[1], amount=[1.0], label=["x"])
-    result = apply_schema(frame, _SCHEMA, SchemaMode.STRICT)
+    result = apply_schema(frame, _SCHEMA, mode)
     assert result is frame
 
 
@@ -67,12 +63,6 @@ def test_strict_fails_on_type_mismatch() -> None:
     frame = _frame(id=[1], amount=[1.0], label=[99])  # label should be Utf8
     with pytest.raises(SchemaError, match="label"):
         apply_schema(frame, _SCHEMA, SchemaMode.STRICT)
-
-
-def test_evolve_passes_with_matching_frame() -> None:
-    frame = _frame(id=[1], amount=[1.0], label=["x"])
-    result = apply_schema(frame, _SCHEMA, SchemaMode.EVOLVE)
-    assert result is frame
 
 
 def test_evolve_allows_extra_columns() -> None:

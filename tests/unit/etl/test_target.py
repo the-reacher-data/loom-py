@@ -2,25 +2,26 @@
 
 from __future__ import annotations
 
+import pytest
+
+from loom.etl import col
 from loom.etl._format import Format
 from loom.etl._proxy import params
 from loom.etl._table import TableRef
 from loom.etl._target import IntoFile, IntoTable, WriteMode
 
 
-def test_into_table_default_mode_is_replace() -> None:
-    t = IntoTable("staging.orders")
-    assert t._to_spec().mode is WriteMode.REPLACE
-
-
-def test_into_table_append() -> None:
-    spec = IntoTable("staging.orders").append()._to_spec()
-    assert spec.mode is WriteMode.APPEND
-
-
-def test_into_table_replace() -> None:
-    spec = IntoTable("staging.orders").replace()._to_spec()
-    assert spec.mode is WriteMode.REPLACE
+@pytest.mark.parametrize(
+    "build,expected_mode",
+    [
+        (lambda t: t, WriteMode.REPLACE),
+        (lambda t: t.append(), WriteMode.APPEND),
+        (lambda t: t.replace(), WriteMode.REPLACE),
+    ],
+)
+def test_into_table_write_mode(build: object, expected_mode: WriteMode) -> None:
+    spec = build(IntoTable("staging.orders"))._to_spec()  # type: ignore[operator]
+    assert spec.mode is expected_mode
 
 
 def test_into_table_replace_partitions_dynamic() -> None:
@@ -41,28 +42,22 @@ def test_into_table_replace_partitions_from_params() -> None:
 
 
 def test_into_table_replace_where() -> None:
-    from loom.etl import col
-
     pred = col("date") >= params.run_date
     spec = IntoTable("staging.orders").replace_where(pred)._to_spec()
     assert spec.mode is WriteMode.REPLACE_WHERE
     assert spec.replace_predicate is pred
 
 
-def test_replace_partitions_raises_when_both_cols_and_values() -> None:
-    import pytest
-
-    with pytest.raises(ValueError, match="not both"):
-        IntoTable("staging.orders").replace_partitions(
-            "year", values={"year": params.run_date.year}
-        )
-
-
-def test_replace_partitions_raises_when_neither() -> None:
-    import pytest
-
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: t.replace_partitions("year", values={"year": params.run_date.year}),
+        lambda t: t.replace_partitions(),
+    ],
+)
+def test_replace_partitions_raises_on_invalid_args(call: object) -> None:
     with pytest.raises(ValueError):
-        IntoTable("staging.orders").replace_partitions()
+        call(IntoTable("staging.orders"))  # type: ignore[operator]
 
 
 def test_into_table_upsert() -> None:

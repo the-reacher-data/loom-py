@@ -234,11 +234,16 @@ def test_run_pipeline_failed_status_on_step_error() -> None:
     assert obs.pipeline_statuses == [RunStatus.FAILED]
 
 
-def test_thread_dispatcher_runs_all_tasks() -> None:
+@pytest.mark.parametrize(
+    "max_workers,n",
+    [(None, 0), (None, 5), (2, 4)],
+)
+def test_thread_dispatcher_runs_all_tasks(max_workers: int | None, n: int) -> None:
     results: list[int] = []
-    dispatcher = ThreadDispatcher()
-    dispatcher.run_all([lambda i=i: results.append(i) for i in range(5)])
-    assert sorted(results) == [0, 1, 2, 3, 4]
+    kwargs = {"max_workers": max_workers} if max_workers is not None else {}
+    dispatcher = ThreadDispatcher(**kwargs)
+    dispatcher.run_all([lambda i=i: results.append(i) for i in range(n)])
+    assert sorted(results) == list(range(n))
 
 
 def test_thread_dispatcher_reraises_first_exception() -> None:
@@ -248,14 +253,3 @@ def test_thread_dispatcher_reraises_first_exception() -> None:
     dispatcher = ThreadDispatcher()
     with pytest.raises(RuntimeError, match="thread error"):
         dispatcher.run_all([fail, fail])
-
-
-def test_thread_dispatcher_empty_tasks_no_error() -> None:
-    ThreadDispatcher().run_all([])
-
-
-def test_thread_dispatcher_max_workers() -> None:
-    results: list[int] = []
-    dispatcher = ThreadDispatcher(max_workers=2)
-    dispatcher.run_all([lambda i=i: results.append(i) for i in range(4)])
-    assert sorted(results) == [0, 1, 2, 3]

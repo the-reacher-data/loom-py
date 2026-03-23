@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from loom.etl.executor import (
     ETLRunObserver,
     EventName,
@@ -17,25 +19,36 @@ from loom.etl.executor import (
 from loom.etl.testing import StubRunObserver
 
 
+class _NullSink:
+    def write(self, record: Any) -> None:
+        """Null sink: intentionally discards all records."""
+
+
+class _CapturingSink:
+    """In-test sink that records every write call."""
+
+    def __init__(self) -> None:
+        self.records: list[Any] = []
+
+    def write(self, record: Any) -> None:
+        self.records.append(record)
+
+
 def test_run_status_values() -> None:
     assert RunStatus.SUCCESS == "success"
     assert RunStatus.FAILED == "failed"
 
 
-def test_structlog_observer_satisfies_protocol() -> None:
-    assert isinstance(StructlogRunObserver(), ETLRunObserver)
-
-
-def test_run_sink_observer_satisfies_protocol() -> None:
-    class _NullSink:
-        def write(self, record: Any) -> None:
-            """Null sink: intentionally discards all records."""
-
-    assert isinstance(RunSinkObserver(_NullSink()), ETLRunObserver)
-
-
-def test_stub_observer_satisfies_protocol() -> None:
-    assert isinstance(StubRunObserver(), ETLRunObserver)
+@pytest.mark.parametrize(
+    "observer",
+    [
+        StructlogRunObserver(),
+        RunSinkObserver(_NullSink()),
+        StubRunObserver(),
+    ],
+)
+def test_observer_satisfies_protocol(observer: ETLRunObserver) -> None:
+    assert isinstance(observer, ETLRunObserver)
 
 
 def test_stub_observer_captures_events() -> None:
@@ -108,17 +121,7 @@ def test_structlog_observer_emits_step_end() -> None:
         assert call_args[1]["duration_ms"] == 42
 
 
-class _CapturingSink:
-    """In-test sink that records every write call."""
-
-    def __init__(self) -> None:
-        self.records: list[Any] = []
-
-    def write(self, record: Any) -> None:
-        self.records.append(record)
-
-
-def test_run_sink_observer_writes_step_record_on_end() -> None:
+def test_run_sink_observer_writes_step_record_and_not_on_start() -> None:
     sink = _CapturingSink()
     obs = RunSinkObserver(sink)
 
@@ -126,8 +129,9 @@ def test_run_sink_observer_writes_step_record_on_end() -> None:
         step_type = type("BuildOrders", (), {})
 
     obs.on_step_start(FakePlan(), "run-1", "step-1")
-    obs.on_step_end("step-1", RunStatus.SUCCESS, 100)
+    assert sink.records == []  # no write on start
 
+    obs.on_step_end("step-1", RunStatus.SUCCESS, 100)
     assert len(sink.records) == 1
     record = sink.records[0]
     assert isinstance(record, StepRunRecord)
@@ -170,14 +174,3 @@ def test_run_sink_observer_writes_pipeline_record_on_end() -> None:
     assert isinstance(record, PipelineRunRecord)
     assert record.pipeline == "DailyPipeline"
     assert record.status == RunStatus.SUCCESS
-
-
-def test_run_sink_observer_does_not_write_on_start_events() -> None:
-    sink = _CapturingSink()
-    obs = RunSinkObserver(sink)
-
-    class FakePlan:
-        step_type = type("MyStep", (), {})
-
-    obs.on_step_start(FakePlan(), "run-1", "step-1")
-    assert sink.records == []

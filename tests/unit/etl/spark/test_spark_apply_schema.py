@@ -17,33 +17,17 @@ from loom.etl.testing import ETLScenario
 _ID_AMOUNT = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("amount", LoomDtype.FLOAT64))
 
 
-def test_raises_schema_not_found_when_schema_is_none(spark: SparkSession) -> None:
+@pytest.mark.parametrize("mode", list(SchemaMode))
+def test_raises_schema_not_found_when_schema_is_none(mode: SchemaMode, spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
     with pytest.raises(SchemaNotFoundError):
-        spark_apply_schema(frame, None, SchemaMode.STRICT)
+        spark_apply_schema(frame, None, mode)
 
 
-def test_raises_schema_not_found_for_evolve_when_schema_is_none(spark: SparkSession) -> None:
+@pytest.mark.parametrize("mode", [SchemaMode.OVERWRITE, SchemaMode.STRICT, SchemaMode.EVOLVE])
+def test_apply_schema_passes_with_matching_frame(mode: SchemaMode, spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    with pytest.raises(SchemaNotFoundError):
-        spark_apply_schema(frame, None, SchemaMode.EVOLVE)
-
-
-def test_overwrite_raises_schema_not_found_when_schema_is_none(spark: SparkSession) -> None:
-    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    with pytest.raises(SchemaNotFoundError):
-        spark_apply_schema(frame, None, SchemaMode.OVERWRITE)
-
-
-def test_overwrite_returns_frame_unchanged(spark: SparkSession) -> None:
-    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    result = spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.OVERWRITE)
-    assert_df_equality(result, frame)
-
-
-def test_strict_exact_match_passes(spark: SparkSession) -> None:
-    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    result = spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.STRICT)
+    result = spark_apply_schema(frame, _ID_AMOUNT, mode)
     assert_df_equality(result, frame)
 
 
@@ -63,12 +47,6 @@ def test_strict_raises_on_type_mismatch(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, "bad")], ["id", "amount"])
     with pytest.raises(SchemaError, match="amount"):
         spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.STRICT)
-
-
-def test_evolve_passes_with_matching_columns(spark: SparkSession) -> None:
-    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    result = spark_apply_schema(frame, _ID_AMOUNT, SchemaMode.EVOLVE)
-    assert_df_equality(result, frame)
 
 
 def test_evolve_fills_missing_column_with_typed_null(spark: SparkSession) -> None:

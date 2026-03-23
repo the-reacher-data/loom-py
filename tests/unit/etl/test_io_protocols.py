@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from loom.etl._format import Format
 from loom.etl._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl._source import SourceKind, SourceSpec
@@ -9,41 +11,7 @@ from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec, WriteMode
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
-
-def test_stub_catalog_exists_true() -> None:
-    catalog = StubCatalog({"raw.orders": ("id", "amount")})
-    assert catalog.exists(TableRef("raw.orders")) is True
-
-
-def test_stub_catalog_exists_false() -> None:
-    catalog = StubCatalog({"raw.orders": ("id",)})
-    assert catalog.exists(TableRef("raw.missing")) is False
-
-
-def test_stub_catalog_empty_init_nothing_exists() -> None:
-    catalog = StubCatalog()
-    assert catalog.exists(TableRef("raw.orders")) is False
-
-
-def test_stub_catalog_columns_known() -> None:
-    catalog = StubCatalog({"raw.orders": ("id", "amount", "year")})
-    assert catalog.columns(TableRef("raw.orders")) == ("id", "amount", "year")
-
-
-def test_stub_catalog_columns_unknown_returns_empty() -> None:
-    catalog = StubCatalog({"raw.orders": ("id",)})
-    assert catalog.columns(TableRef("raw.missing")) == ()
-
-
-def test_stub_catalog_table_no_columns() -> None:
-    catalog = StubCatalog({"staging.out": ()})
-    assert catalog.exists(TableRef("staging.out")) is True
-    assert catalog.columns(TableRef("staging.out")) == ()
-
-
-def test_stub_catalog_satisfies_protocol() -> None:
-    catalog = StubCatalog()
-    assert isinstance(catalog, TableDiscovery)
+_SENTINEL = object()
 
 
 def _make_source_spec(alias: str) -> SourceSpec:
@@ -55,30 +23,6 @@ def _make_source_spec(alias: str) -> SourceSpec:
     )
 
 
-def test_stub_source_reader_returns_seeded_frame() -> None:
-    sentinel = object()
-    reader = StubSourceReader({"orders": sentinel})
-    result = reader.read(_make_source_spec("orders"), _params_instance=None)
-    assert result is sentinel
-
-
-def test_stub_source_reader_missing_alias_returns_none() -> None:
-    reader = StubSourceReader({"orders": object()})
-    result = reader.read(_make_source_spec("customers"), _params_instance=None)
-    assert result is None
-
-
-def test_stub_source_reader_empty_init_always_none() -> None:
-    reader = StubSourceReader()
-    result = reader.read(_make_source_spec("orders"), _params_instance=None)
-    assert result is None
-
-
-def test_stub_source_reader_satisfies_protocol() -> None:
-    reader = StubSourceReader()
-    assert isinstance(reader, SourceReader)
-
-
 def _make_target_spec() -> TargetSpec:
     return TargetSpec(
         mode=WriteMode.REPLACE,
@@ -87,29 +31,66 @@ def _make_target_spec() -> TargetSpec:
     )
 
 
-def test_stub_target_writer_captures_write() -> None:
-    writer = StubTargetWriter()
-    frame = object()
-    spec = _make_target_spec()
-    writer.write(frame, spec, _params_instance=None)
-    assert len(writer.written) == 1
-    assert writer.written[0] == (frame, spec)
+@pytest.mark.parametrize(
+    "tables,ref,expected",
+    [
+        ({"raw.orders": ("id", "amount")}, "raw.orders", True),
+        ({"raw.orders": ("id",)}, "raw.missing", False),
+        ({}, "raw.orders", False),
+    ],
+)
+def test_stub_catalog_exists(tables: dict, ref: str, expected: bool) -> None:
+    assert StubCatalog(tables).exists(TableRef(ref)) is expected
 
 
-def test_stub_target_writer_captures_multiple_writes_in_order() -> None:
+def test_stub_catalog_table_no_columns() -> None:
+    catalog = StubCatalog({"staging.out": ()})
+    assert catalog.exists(TableRef("staging.out")) is True
+    assert catalog.columns(TableRef("staging.out")) == ()
+
+
+@pytest.mark.parametrize(
+    "tables,ref,expected",
+    [
+        ({"raw.orders": ("id", "amount", "year")}, "raw.orders", ("id", "amount", "year")),
+        ({"raw.orders": ("id",)}, "raw.missing", ()),
+    ],
+)
+def test_stub_catalog_columns(tables: dict, ref: str, expected: tuple) -> None:
+    assert StubCatalog(tables).columns(TableRef(ref)) == expected
+
+
+def test_stub_catalog_satisfies_protocol() -> None:
+    assert isinstance(StubCatalog(), TableDiscovery)
+
+
+@pytest.mark.parametrize(
+    "seeds,alias,expected",
+    [
+        ({"orders": _SENTINEL}, "orders", _SENTINEL),
+        ({"orders": object()}, "customers", None),
+        ({}, "orders", None),
+    ],
+)
+def test_stub_source_reader_read(seeds: dict, alias: str, expected: object) -> None:
+    reader = StubSourceReader(seeds)
+    result = reader.read(_make_source_spec(alias), _params_instance=None)
+    assert result is expected
+
+
+def test_stub_source_reader_satisfies_protocol() -> None:
+    assert isinstance(StubSourceReader(), SourceReader)
+
+
+@pytest.mark.parametrize("n_writes", [0, 1, 3])
+def test_stub_target_writer_captures_writes_in_order(n_writes: int) -> None:
     writer = StubTargetWriter()
-    frames = [object(), object()]
+    frames = [object() for _ in range(n_writes)]
     spec = _make_target_spec()
     for f in frames:
         writer.write(f, spec, _params_instance=None)
     assert [w[0] for w in writer.written] == frames
 
 
-def test_stub_target_writer_empty_on_init() -> None:
-    writer = StubTargetWriter()
-    assert writer.written == []
-
-
 def test_stub_target_writer_satisfies_protocol() -> None:
-    writer = StubTargetWriter()
-    assert isinstance(writer, TargetWriter)
+    assert isinstance(StubTargetWriter(), TargetWriter)

@@ -76,42 +76,31 @@ def test_schema_mode_values() -> None:
     assert SchemaMode.OVERWRITE == "overwrite"
 
 
-def test_into_table_default_schema_mode_is_strict() -> None:
-    target = IntoTable("staging.orders").replace()
-    assert target._to_spec().schema_mode is SchemaMode.STRICT
-
-
-def test_into_table_replace_with_evolve() -> None:
-    target = IntoTable("staging.orders").replace(schema=SchemaMode.EVOLVE)
-    spec = target._to_spec()
-    assert spec.mode is WriteMode.REPLACE
-    assert spec.schema_mode is SchemaMode.EVOLVE
-
-
-def test_into_table_replace_with_overwrite() -> None:
-    target = IntoTable("staging.orders").replace(schema=SchemaMode.OVERWRITE)
-    assert target._to_spec().schema_mode is SchemaMode.OVERWRITE
-
-
-def test_into_table_append_with_evolve() -> None:
-    target = IntoTable("staging.orders").append(schema=SchemaMode.EVOLVE)
-    spec = target._to_spec()
-    assert spec.mode is WriteMode.APPEND
-    assert spec.schema_mode is SchemaMode.EVOLVE
-
-
-def test_into_table_replace_partitions_with_evolve() -> None:
-    target = IntoTable("staging.orders").replace_partitions("year", schema=SchemaMode.EVOLVE)
-    spec = target._to_spec()
-    assert spec.mode is WriteMode.REPLACE_PARTITIONS
-    assert spec.schema_mode is SchemaMode.EVOLVE
-
-
-def test_into_table_upsert_with_evolve() -> None:
-    target = IntoTable("staging.orders").upsert(keys=("order_id",), schema=SchemaMode.EVOLVE)
-    spec = target._to_spec()
-    assert spec.mode is WriteMode.UPSERT
-    assert spec.schema_mode is SchemaMode.EVOLVE
+@pytest.mark.parametrize(
+    "build,expected_mode,expected_schema",
+    [
+        (lambda t: t.replace(), WriteMode.REPLACE, SchemaMode.STRICT),
+        (lambda t: t.replace(schema=SchemaMode.EVOLVE), WriteMode.REPLACE, SchemaMode.EVOLVE),
+        (lambda t: t.replace(schema=SchemaMode.OVERWRITE), WriteMode.REPLACE, SchemaMode.OVERWRITE),
+        (lambda t: t.append(schema=SchemaMode.EVOLVE), WriteMode.APPEND, SchemaMode.EVOLVE),
+        (
+            lambda t: t.replace_partitions("year", schema=SchemaMode.EVOLVE),
+            WriteMode.REPLACE_PARTITIONS,
+            SchemaMode.EVOLVE,
+        ),
+        (
+            lambda t: t.upsert(keys=("order_id",), schema=SchemaMode.EVOLVE),
+            WriteMode.UPSERT,
+            SchemaMode.EVOLVE,
+        ),
+    ],
+)
+def test_into_table_write_and_schema_mode(
+    build: object, expected_mode: WriteMode, expected_schema: SchemaMode
+) -> None:
+    spec = build(IntoTable("staging.orders"))._to_spec()  # type: ignore[operator]
+    assert spec.mode is expected_mode
+    assert spec.schema_mode is expected_schema
 
 
 def test_into_table_returns_new_instance_on_each_call() -> None:
@@ -130,15 +119,16 @@ _ORDERS_SCHEMA = (
 )
 
 
-def test_stub_catalog_schema_returns_registered_schema() -> None:
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("raw.orders", _ORDERS_SCHEMA),
+        ("raw.missing", None),
+    ],
+)
+def test_stub_catalog_schema(ref: str, expected: object) -> None:
     catalog = StubCatalog(schemas={"raw.orders": _ORDERS_SCHEMA})
-    result = catalog.schema(TableRef("raw.orders"))
-    assert result == _ORDERS_SCHEMA
-
-
-def test_stub_catalog_schema_returns_none_for_unknown_table() -> None:
-    catalog = StubCatalog(schemas={"raw.orders": _ORDERS_SCHEMA})
-    assert catalog.schema(TableRef("raw.missing")) is None
+    assert catalog.schema(TableRef(ref)) == expected
 
 
 def test_stub_catalog_update_schema_persists() -> None:
