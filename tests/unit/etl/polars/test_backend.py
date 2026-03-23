@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import polars as pl
 import pytest
 from deltalake import DeltaTable, write_deltalake
 
+from loom.etl import ETLParams, col
 from loom.etl._format import Format
+from loom.etl._proxy import params as p
 from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._source import SourceKind, SourceSpec
 from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl._target import IntoTable, SchemaMode, TargetSpec, WriteMode
 from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
 from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError
 
 from .conftest import table_path
+
+
+class _DateParams(ETLParams):
+    run_date: date
+
+
+def _file_source_spec() -> SourceSpec:
+    return SourceSpec(
+        alias="data", kind=SourceKind.FILE, format=Format.CSV, path="s3://bucket/data.csv"
+    )
+
+
+def _file_target_spec() -> TargetSpec:
+    return TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path="s3://bucket/out.csv")
 
 
 def _seed(root: Path, ref: str, data: pl.DataFrame) -> None:
@@ -156,6 +173,109 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     assert "label" in result.columns
     written_rows = result.filter(pl.col("id") == 1)
     assert written_rows["label"][0] is None
+
+
+def test_reader_raises_type_error_for_file_spec(tmp_path: Path) -> None:
+    reader = PolarsDeltaReader(tmp_path)
+    with pytest.raises(TypeError, match="FILE"):
+        reader.read(_file_source_spec(), None)
+
+
+def test_writer_raises_type_error_for_file_spec(tmp_path: Path) -> None:
+    writer = PolarsDeltaWriter(tmp_path, DeltaCatalog(tmp_path))
+    with pytest.raises(TypeError, match="FILE"):
+        writer.write(pl.DataFrame({"id": [1]}).lazy(), _file_target_spec(), None)
+
+
+def test_writer_append_adds_rows(tmp_path: Path) -> None:
+    _seed(tmp_path, "staging.ledger", pl.DataFrame({"id": [0], "v": [0.0]}))
+    catalog = DeltaCatalog(tmp_path)
+    writer = PolarsDeltaWriter(tmp_path, catalog)
+    frame = pl.DataFrame({"id": [1, 2], "v": [1.0, 2.0]}).lazy()
+    writer.write(frame, _spec("staging.ledger", mode=WriteMode.APPEND), None)
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.ledger")))).to_pyarrow_table()
+    )
+    assert result.height == 3
+
+
+def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
+    initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
+    _seed(tmp_path, "staging.facts", initial)
+    catalog = DeltaCatalog(tmp_path)
+    writer = PolarsDeltaWriter(tmp_path, catalog)
+    new_data = pl.DataFrame({"year": [2024], "v": [99]})
+    spec = TargetSpec(
+        mode=WriteMode.REPLACE_PARTITIONS,
+        format=Format.DELTA,
+        schema_mode=SchemaMode.STRICT,
+        table_ref=TableRef("staging.facts"),
+        partition_cols=("year",),
+    )
+    writer.write(new_data.lazy(), spec, None)
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.facts")))).to_pyarrow_table()
+    )
+    assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
+    assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
+
+
+def test_writer_replace_partitions_with_string_values(tmp_path: Path) -> None:
+    initial = pl.DataFrame({"region": ["us", "eu"], "v": [1, 2]})
+    _seed(tmp_path, "staging.regions", initial)
+    catalog = DeltaCatalog(tmp_path)
+    writer = PolarsDeltaWriter(tmp_path, catalog)
+    new_data = pl.DataFrame({"region": ["us"], "v": [99]})
+    spec = TargetSpec(
+        mode=WriteMode.REPLACE_PARTITIONS,
+        format=Format.DELTA,
+        schema_mode=SchemaMode.STRICT,
+        table_ref=TableRef("staging.regions"),
+        partition_cols=("region",),
+    )
+    writer.write(new_data.lazy(), spec, None)
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.regions")))).to_pyarrow_table()
+    )
+    assert result.filter(pl.col("region") == "us")["v"].to_list() == [99]
+    assert result.filter(pl.col("region") == "eu")["v"].to_list() == [2]
+
+
+def test_writer_replace_partitions_with_bool_values(tmp_path: Path) -> None:
+    initial = pl.DataFrame({"active": [True, False], "v": [1, 2]})
+    _seed(tmp_path, "staging.flags", initial)
+    catalog = DeltaCatalog(tmp_path)
+    writer = PolarsDeltaWriter(tmp_path, catalog)
+    new_data = pl.DataFrame({"active": [True], "v": [99]})
+    spec = TargetSpec(
+        mode=WriteMode.REPLACE_PARTITIONS,
+        format=Format.DELTA,
+        schema_mode=SchemaMode.STRICT,
+        table_ref=TableRef("staging.flags"),
+        partition_cols=("active",),
+    )
+    writer.write(new_data.lazy(), spec, None)
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.flags")))).to_pyarrow_table()
+    )
+    assert result.filter(pl.col("active"))["v"].to_list() == [99]
+    assert result.filter(~pl.col("active"))["v"].to_list() == [2]
+
+
+def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
+    initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
+    _seed(tmp_path, "staging.yearly", initial)
+    catalog = DeltaCatalog(tmp_path)
+    writer = PolarsDeltaWriter(tmp_path, catalog)
+    new_data = pl.DataFrame({"year": [2024], "v": [99]})
+    pred = col("year") == p.run_date.year
+    spec = IntoTable("staging.yearly").replace_where(pred)._to_spec()
+    writer.write(new_data.lazy(), spec, _DateParams(run_date=date(2024, 1, 1)))
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.yearly")))).to_pyarrow_table()
+    )
+    assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
+    assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
 
 
 def test_writer_updates_catalog_schema_after_write(tmp_path: Path) -> None:

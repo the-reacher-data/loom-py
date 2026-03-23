@@ -16,9 +16,11 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
+from loom.etl._format import Format
 from loom.etl._schema import LoomDtype, SchemaNotFoundError
+from loom.etl._source import SourceKind, SourceSpec
 from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode
+from loom.etl._target import SchemaMode, TargetSpec, WriteMode
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.testing import StubRunObserver
@@ -228,3 +230,23 @@ def test_seed_registers_correct_schema_in_catalog(
     assert schema[0].dtype is LoomDtype.INT64
     assert schema[1].name == "amount"
     assert schema[1].dtype is LoomDtype.FLOAT64
+
+
+def test_reader_raises_type_error_for_file_spec(
+    spark_reader: SparkDeltaReader,
+) -> None:
+    spec = SourceSpec(
+        alias="data", kind=SourceKind.FILE, format=Format.CSV, path="s3://bucket/data.csv"
+    )
+    with pytest.raises(TypeError, match="FILE"):
+        spark_reader.read(spec, None)
+
+
+def test_writer_raises_type_error_for_file_spec(
+    spark: SparkSession,
+    spark_writer: SparkDeltaWriter,
+) -> None:
+    spec = TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path="s3://bucket/out.csv")
+    frame = spark.createDataFrame([(1,)], ["id"])
+    with pytest.raises(TypeError, match="FILE"):
+        spark_writer.write(frame, spec, None)
