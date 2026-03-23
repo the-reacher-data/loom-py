@@ -16,7 +16,7 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-_PLACEHOLDER = re.compile(r"\{\{\s*(.+?)\s*\}\}")
+_PLACEHOLDER = re.compile(r"\{\{([^{}]+)\}\}")
 
 
 def resolve_sql(sql: str, params: Any) -> str:
