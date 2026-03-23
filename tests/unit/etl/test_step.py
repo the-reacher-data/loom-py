@@ -113,7 +113,7 @@ def test_params_type_none_for_base_class() -> None:
 def test_mixing_inline_and_grouped_raises() -> None:
     with pytest.raises(TypeError, match="cannot mix inline source attributes"):
 
-        class _BadStep(ETLStep[RunParams]):
+        class _BadStep(ETLStep[RunParams]):  # NOSONAR
             orders = FromTable("raw.orders")
             sources = Sources(customers=FromTable("raw.customers"))
             target = IntoTable("staging.out").replace()

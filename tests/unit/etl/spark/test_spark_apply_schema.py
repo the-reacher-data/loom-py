@@ -12,8 +12,6 @@ from loom.etl._target import SchemaMode
 from loom.etl.backends.spark._schema import spark_apply_schema
 from loom.etl.testing import ETLScenario
 
-from .conftest import SparkDeltaReader, SparkDeltaWriter  # noqa: F401 (type hints only)
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -130,13 +128,11 @@ def test_evolve_raises_on_type_mismatch(spark: SparkSession) -> None:
 # ---------------------------------------------------------------------------
 
 
-ORDERS_SCENARIO = ETLScenario("orders").with_table(
-    "raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"]
-)
+ORDERS_SCENARIO = ETLScenario().with_table("raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"])
 
 
-def test_scenario_seeds_frame(step_runner) -> None:  # type: ignore[no-untyped-def]
-    """ETLScenario.apply() correctly seeds the runner via create_frame()."""
+def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type: ignore[no-untyped-def]
+    """ETLScenario.apply() correctly seeds the runner and executes the step."""
     from pyspark.sql import DataFrame
     from pyspark.sql import functions as F
 
@@ -155,5 +151,5 @@ def test_scenario_seeds_frame(step_runner) -> None:  # type: ignore[no-untyped-d
     ORDERS_SCENARIO.apply(step_runner)
     step_runner.run(DoubleStep, NoParams())
 
-    expected = step_runner.spark.createDataFrame([(1, 20.0), (2, 40.0)], ["id", "amount"])
+    expected = spark.createDataFrame([(1, 20.0), (2, 40.0)], ["id", "amount"])
     assert_df_equality(step_runner.result, expected, ignore_row_order=True)

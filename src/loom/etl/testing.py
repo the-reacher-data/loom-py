@@ -251,7 +251,7 @@ class _RunnerCapturingWriter:
     frame: Any = None
     spec: TargetSpec | None = None
 
-    def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:  # noqa: ARG002
+    def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:  # noqa: ARG002  # NOSONAR
         self.frame = frame
         self.spec = spec
 
@@ -260,7 +260,7 @@ class _RunnerStubReader:
     def __init__(self, frames: dict[str, Any]) -> None:
         self._frames = frames
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> Any:  # noqa: ARG002
+    def read(self, spec: SourceSpec, params_instance: Any) -> Any:  # noqa: ARG002  # NOSONAR
         key = spec.table_ref.ref if spec.table_ref is not None else spec.alias
         return self._frames[key]
 

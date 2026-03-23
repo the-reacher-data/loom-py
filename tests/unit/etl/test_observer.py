@@ -38,7 +38,7 @@ def test_structlog_observer_satisfies_protocol() -> None:
 def test_run_sink_observer_satisfies_protocol() -> None:
     class _NullSink:
         def write(self, record: Any) -> None:
-            pass
+            """Null sink: intentionally discards all records."""
 
     assert isinstance(RunSinkObserver(_NullSink()), ETLRunObserver)
 

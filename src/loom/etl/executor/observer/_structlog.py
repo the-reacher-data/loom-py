@@ -34,7 +34,7 @@ class StructlogRunObserver:
         executor = ETLExecutor(reader, writer, observer=StructlogRunObserver())
     """
 
-    def on_pipeline_start(self, plan: Any, params: Any, run_id: str) -> None:
+    def on_pipeline_start(self, plan: Any, _params: Any, run_id: str) -> None:
         _log.info(
             EventName.PIPELINE_START,
             pipeline=plan.pipeline_type.__name__,
