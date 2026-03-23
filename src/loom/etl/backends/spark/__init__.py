@@ -34,13 +34,12 @@ Usage::
 
 from loom.etl.backends.spark._reader import SparkDeltaReader
 from loom.etl.backends.spark._schema import spark_apply_schema
-from loom.etl.backends.spark._testing import SparkStepRunner, SparkTestSession
+from loom.etl.backends.spark._testing import SparkTestSession
 from loom.etl.backends.spark._writer import SparkDeltaWriter
 
 __all__ = [
     "SparkDeltaReader",
     "SparkDeltaWriter",
-    "SparkStepRunner",
     "SparkTestSession",
     "spark_apply_schema",
 ]

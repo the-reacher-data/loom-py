@@ -30,6 +30,9 @@ pyspark = ["pyspark>=3.5,<4.0"]
 prometheus = ["prometheus-client>=0.20"]
 celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
 
+[project.entry-points."pytest11"]
+loom-spark = "loom.etl.backends.spark._fixtures"
+
 [build-system]
 requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"

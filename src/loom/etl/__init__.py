@@ -47,6 +47,7 @@ from loom.etl._proxy import ParamExpr, params
 from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 from loom.etl._source import FromFile, FromTable, Sources, SourceSet
 from loom.etl._step import ETLStep
+from loom.etl._step_sql import StepSQL
 from loom.etl._table import TableRef, col
 from loom.etl._target import IntoFile, IntoTable, SchemaMode
 
@@ -55,6 +56,7 @@ __all__ = [
     "ETLParams",
     # step / process / pipeline
     "ETLStep",
+    "StepSQL",
     "ETLProcess",
     "ETLPipeline",
     # sources

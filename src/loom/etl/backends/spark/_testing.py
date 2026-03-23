@@ -1,21 +1,16 @@
 """Spark testing utilities for the Loom ETL framework.
 
-Provides three public helpers:
+Provides one public helper:
 
 * :class:`SparkTestSession` — centralises session setup, JVM discovery, and
-  teardown.  Use in ``conftest.py`` to avoid boilerplate.
-
-* :class:`SparkStepRunner` — in-memory test harness for a single ETL step.
-  Accepts seeded DataFrames as inputs and captures the output without
-  touching Delta storage.
-
-* :class:`SparkScenario` — named, reusable seed dataset.  Define once as a
-  module-level constant and ``apply()`` to any runner in any test.
+  teardown.  Use in ``conftest.py`` to share a session across all tests and
+  amortise the ~5 s JVM startup cost.
 
 Usage in ``conftest.py``::
 
     import pytest
-    from loom.etl.backends.spark._testing import SparkTestSession, SparkStepRunner
+    from loom.etl.backends.spark._testing import SparkTestSession
+    from loom.etl.testing import StepRunner
 
     @pytest.fixture(scope="session")
     def spark():
@@ -24,24 +19,7 @@ Usage in ``conftest.py``::
 
     @pytest.fixture
     def step_runner(spark):
-        return SparkStepRunner(spark)
-
-Usage in tests::
-
-    from loom.etl.backends.spark._testing import SparkScenario
-    from chispa import assert_df_equality
-
-    ORDERS = (
-        SparkScenario("orders")
-        .with_table("raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"])
-    )
-
-    def test_double_amount(spark, step_runner):
-        ORDERS.apply(step_runner)
-        step_runner.run(DoubleAmountStep, NoParams())
-
-        expected = spark.createDataFrame([(1, 20.0), (2, 40.0)], ["id", "amount"])
-        assert_df_equality(step_runner.result, expected, ignore_row_order=True)
+        return StepRunner.spark(spark)
 """
 
 from __future__ import annotations
@@ -50,15 +28,10 @@ import os
 import subprocess
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pyspark.sql import DataFrame, SparkSession
-
-    from loom.etl._params import ETLParams
-    from loom.etl._source import SourceSpec
-    from loom.etl._step import ETLStep
-    from loom.etl._target import TargetSpec
+    from pyspark.sql import SparkSession
 
 # ---------------------------------------------------------------------------
 # Known JAVA_HOME candidates (macOS + Linux)
@@ -229,134 +202,3 @@ class SparkTestSession:
     def session(self) -> SparkSession:
         """The underlying :class:`pyspark.sql.SparkSession`."""
         return self._session
-
-
-# ---------------------------------------------------------------------------
-# Internal stubs — not part of the public API
-# ---------------------------------------------------------------------------
-
-
-class _StubReader:
-    def __init__(self, tables: dict[str, DataFrame]) -> None:
-        self._tables = tables
-
-    def read(self, spec: SourceSpec, params_instance: Any) -> DataFrame:
-        key = spec.table_ref.ref if spec.table_ref is not None else spec.alias
-        return self._tables[key]
-
-
-class _CapturingWriter:
-    def __init__(self) -> None:
-        self.frame: DataFrame | None = None
-        self.spec: TargetSpec | None = None
-
-    def write(self, frame: DataFrame, spec: TargetSpec, params_instance: Any) -> None:
-        self.frame = frame
-        self.spec = spec
-
-
-# ---------------------------------------------------------------------------
-# SparkStepRunner
-# ---------------------------------------------------------------------------
-
-
-class SparkStepRunner:
-    """In-memory test harness for a single :class:`~loom.etl.ETLStep`.
-
-    Hides :class:`~loom.etl.compiler.ETLCompiler`,
-    :class:`~loom.etl.executor.ETLExecutor`, and all I/O stubs so tests focus
-    on input data and output assertions — no Delta files, no ``tmp_path``.
-
-    Args:
-        spark: Active :class:`pyspark.sql.SparkSession`.
-
-    Example::
-
-        def test_double_amount(spark, step_runner):
-            step_runner.seed("raw.orders", spark.createDataFrame([(1, 10.0)], ["id", "amount"]))
-            step_runner.run(DoubleAmountStep, NoParams())
-
-            expected = spark.createDataFrame([(1, 20.0)], ["id", "amount"])
-            assert_df_equality(step_runner.result, expected, ignore_row_order=True)
-    """
-
-    def __init__(self, spark: SparkSession) -> None:
-        self._spark = spark
-        self._tables: dict[str, DataFrame] = {}
-        self._writer = _CapturingWriter()
-
-    @property
-    def spark(self) -> SparkSession:
-        """The underlying :class:`pyspark.sql.SparkSession`."""
-        return self._spark
-
-    def seed(self, ref: str, df: DataFrame) -> SparkStepRunner:
-        """Register *df* under the logical table reference *ref*.
-
-        Args:
-            ref: Logical table name, e.g. ``"raw.orders"``.
-            df:  DataFrame returned when the step reads this table.
-
-        Returns:
-            ``self`` for fluent chaining.
-        """
-        self._tables[ref] = df
-        return self
-
-    def create_frame(self, data: list[tuple[Any, ...]], columns: list[str]) -> DataFrame:
-        """Create a :class:`pyspark.sql.DataFrame` from raw Python data.
-
-        Used by :class:`~loom.etl.testing.ETLScenario` to materialise seed
-        tables without coupling the scenario to a SparkSession.
-
-        Args:
-            data:    Row data as a list of tuples.
-            columns: Column names aligned with the tuple positions.
-
-        Returns:
-            A new :class:`pyspark.sql.DataFrame`.
-        """
-        return self._spark.createDataFrame(data, columns)
-
-    def run(self, step_cls: type[ETLStep[Any]], params: ETLParams) -> SparkStepRunner:
-        """Compile and execute *step_cls* against the seeded tables.
-
-        Args:
-            step_cls: :class:`~loom.etl.ETLStep` subclass to run.
-            params:   Concrete params instance for this execution.
-
-        Returns:
-            ``self`` for fluent chaining.
-
-        Raises:
-            KeyError: If a source table was not seeded before calling ``run()``.
-        """
-        from loom.etl.compiler import ETLCompiler
-        from loom.etl.executor import ETLExecutor
-
-        plan = ETLCompiler().compile_step(step_cls)
-        self._writer = _CapturingWriter()
-        ETLExecutor(_StubReader(self._tables), self._writer).run_step(plan, params)
-        return self
-
-    @property
-    def result(self) -> DataFrame:
-        """DataFrame produced by the last :meth:`run` call.
-
-        Raises:
-            RuntimeError: If :meth:`run` has not been called yet.
-        """
-        if self._writer.frame is None:
-            raise RuntimeError("No result available — call run() first.")
-        return self._writer.frame
-
-    @property
-    def target_spec(self) -> TargetSpec:
-        """Target spec from the last :meth:`run` call.
-
-        Raises:
-            RuntimeError: If :meth:`run` has not been called yet.
-        """
-        if self._writer.spec is None:
-            raise RuntimeError("No spec available — call run() first.")
-        return self._writer.spec

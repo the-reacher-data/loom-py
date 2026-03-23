@@ -2,25 +2,36 @@
 
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.executor._executor import ETLExecutor
-from loom.etl.executor._observer import (
-    CompositeRunObserver,
+from loom.etl.executor.observer import (
     ETLRunObserver,
     EventName,
-    LoggingRunObserver,
-    NoopRunObserver,
+    PipelineRunRecord,
+    ProcessRunRecord,
+    RunRecord,
+    RunSink,
+    RunSinkObserver,
     RunStatus,
+    StepRunRecord,
+    StructlogRunObserver,
 )
 
 __all__ = [
     # executor
     "ETLExecutor",
-    # observer protocol + implementations
+    # observer protocol
     "ETLRunObserver",
-    "RunStatus",
+    # run sink protocol
+    "RunSink",
+    # events and records
     "EventName",
-    "NoopRunObserver",
-    "LoggingRunObserver",
-    "CompositeRunObserver",
+    "RunStatus",
+    "RunRecord",
+    "PipelineRunRecord",
+    "ProcessRunRecord",
+    "StepRunRecord",
+    # implementations
+    "StructlogRunObserver",
+    "RunSinkObserver",
     # dispatcher protocol + implementations
     "ParallelDispatcher",
     "ThreadDispatcher",

@@ -76,7 +76,7 @@ def _executor(
     writer = StubTargetWriter()
     obs = observer or StubRunObserver()
     reader = StubSourceReader(frames or {"orders": SENTINEL_A, "customers": SENTINEL_B})
-    exc = ETLExecutor(reader, writer, observer=obs, dispatcher=dispatcher)
+    exc = ETLExecutor(reader, writer, observers=[obs], dispatcher=dispatcher)
     return exc, writer, obs
 
 
