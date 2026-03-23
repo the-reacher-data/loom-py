@@ -11,6 +11,7 @@ is safe because the user explicitly requested a full schema replacement.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -91,17 +92,7 @@ class PolarsDeltaWriter:
     def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         path = self._table_path(spec.table_ref)  # type: ignore[arg-type]
         path.mkdir(parents=True, exist_ok=True)
-
-        if spec.mode is WriteMode.APPEND:
-            write_deltalake(str(path), df.to_arrow(), mode="append")
-        elif spec.mode is WriteMode.REPLACE_PARTITIONS:
-            predicate = _build_partition_predicate(df, spec.partition_cols)
-            write_deltalake(str(path), df.to_arrow(), mode="overwrite", predicate=predicate)
-        elif spec.mode is WriteMode.REPLACE_WHERE:
-            predicate = predicate_to_sql(spec.replace_predicate, params_instance)  # type: ignore[arg-type]
-            write_deltalake(str(path), df.to_arrow(), mode="overwrite", predicate=predicate)
-        else:
-            write_deltalake(str(path), df.to_arrow(), mode="overwrite")
+        _MODE_WRITERS[spec.mode](str(path), df, spec, params_instance)
 
     def _register_schema(self, ref: TableRef, frame: pl.LazyFrame) -> None:
         """Update the catalog schema from the frame's collect_schema()."""
@@ -114,6 +105,38 @@ class PolarsDeltaWriter:
 
     def _table_path(self, ref: TableRef) -> Path:
         return self._root.joinpath(*ref.ref.split("."))
+
+
+# ------------------------------------------------------------------
+# Write mode appliers — one function per mode, composed via dispatch map
+# ------------------------------------------------------------------
+
+
+def _write_append(path: str, df: pl.DataFrame, _spec: TargetSpec, _params: Any) -> None:
+    write_deltalake(path, df.to_arrow(), mode="append")
+
+
+def _write_replace_partitions(path: str, df: pl.DataFrame, spec: TargetSpec, _params: Any) -> None:
+    predicate = _build_partition_predicate(df, spec.partition_cols)
+    write_deltalake(path, df.to_arrow(), mode="overwrite", predicate=predicate)
+
+
+def _write_replace_where(path: str, df: pl.DataFrame, spec: TargetSpec, params: Any) -> None:
+    predicate = predicate_to_sql(spec.replace_predicate, params)  # type: ignore[arg-type]
+    write_deltalake(path, df.to_arrow(), mode="overwrite", predicate=predicate)
+
+
+def _write_overwrite(path: str, df: pl.DataFrame, _spec: TargetSpec, _params: Any) -> None:
+    write_deltalake(path, df.to_arrow(), mode="overwrite")
+
+
+_MODE_WRITERS: dict[WriteMode, Callable[[str, pl.DataFrame, TargetSpec, Any], None]] = {
+    WriteMode.APPEND: _write_append,
+    WriteMode.REPLACE_PARTITIONS: _write_replace_partitions,
+    WriteMode.REPLACE_WHERE: _write_replace_where,
+    WriteMode.REPLACE: _write_overwrite,
+    WriteMode.UPSERT: _write_overwrite,
+}
 
 
 def _build_partition_predicate(df: pl.DataFrame, partition_cols: tuple[str, ...]) -> str:
