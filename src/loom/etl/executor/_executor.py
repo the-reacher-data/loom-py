@@ -3,9 +3,9 @@
 The executor is pure Python with no scheduling or broker dependencies.
 It receives three injected collaborators:
 
-* :class:`~loom.etl._io.SourceReader`     — reads sources into frames
-* :class:`~loom.etl._io.TargetWriter`     — writes frames to targets
-* :class:`~loom.etl.executor.ETLRunObserver` — receives lifecycle events
+* :class:`~loom.etl._io.SourceReader`    — reads sources into frames
+* :class:`~loom.etl._io.TargetWriter`    — writes frames to targets
+* ``observers``                           — sequence of :class:`~loom.etl.executor.ETLRunObserver`
 
 A thin Celery / Prefect task wrapper can call :meth:`ETLExecutor.run_step`
 without any change to the executor itself.
@@ -19,22 +19,29 @@ to :class:`~loom.etl.executor.ThreadDispatcher`.
 
 Example::
 
+    from pathlib import Path
     from loom.etl.compiler import ETLCompiler
-    from loom.etl.executor import ETLExecutor, LoggingRunObserver
+    from loom.etl.backends.delta import DeltaRunSink
+    from loom.etl.executor import ETLExecutor, RunSinkObserver, StructlogRunObserver
 
     plan = ETLCompiler().compile_step(DailyOrdersStep)
     executor = ETLExecutor(
         reader=MyDeltaReader(),
         writer=MyDeltaWriter(),
-        observer=LoggingRunObserver(),
+        observers=[
+            StructlogRunObserver(),
+            RunSinkObserver(DeltaRunSink(Path("/data/runs"))),
+        ],
     )
     executor.run_step(plan, params=DailyOrdersParams(run_date=date.today()))
 """
 
 from __future__ import annotations
 
+import functools
 import time
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from loom.etl._io import SourceReader, TargetWriter
@@ -48,11 +55,8 @@ from loom.etl.compiler._plan import (
     StepPlan,
 )
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.executor._observer import (
-    ETLRunObserver,
-    NoopRunObserver,
-    RunStatus,
-)
+from loom.etl.executor.observer._events import RunStatus
+from loom.etl.executor.observer._protocol import ETLRunObserver
 
 
 class ETLExecutor:
@@ -63,7 +67,7 @@ class ETLExecutor:
     * Read each source via the injected :class:`~loom.etl._io.SourceReader`.
     * Invoke the step's ``execute()`` with the resulting frames.
     * Write the result via the injected :class:`~loom.etl._io.TargetWriter`.
-    * Emit lifecycle events to the :class:`~loom.etl.executor.ETLRunObserver`.
+    * Emit lifecycle events to each :class:`~loom.etl.executor.ETLRunObserver`.
     * Dispatch parallel groups through the :class:`~loom.etl.executor.ParallelDispatcher`.
 
     All collaborators are injected — the executor has no dependency on any
@@ -72,7 +76,8 @@ class ETLExecutor:
     Args:
         reader:     Source reader implementation (Delta, Polars, stub, etc.).
         writer:     Target writer implementation.
-        observer:   Lifecycle observer.  Defaults to :class:`~loom.etl.executor.NoopRunObserver`.
+        observers:  Sequence of lifecycle observers.  Defaults to empty — no
+                    observability overhead when not needed.
         dispatcher: Parallel task dispatcher.  Defaults to
                     :class:`~loom.etl.executor.ThreadDispatcher`.
 
@@ -81,7 +86,7 @@ class ETLExecutor:
         executor = ETLExecutor(
             reader=PolarsDeltaReader(catalog_root),
             writer=PolarsDeltaWriter(catalog_root),
-            observer=CompositeRunObserver(LoggingRunObserver(), DeltaRunObserver()),
+            observers=[StructlogRunObserver()],
         )
         executor.run_pipeline(plan, params)
     """
@@ -90,12 +95,12 @@ class ETLExecutor:
         self,
         reader: SourceReader,
         writer: TargetWriter,
-        observer: ETLRunObserver | None = None,
+        observers: Sequence[ETLRunObserver] = (),
         dispatcher: ParallelDispatcher | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._observer: ETLRunObserver = observer or NoopRunObserver()
+        self._observers: Sequence[ETLRunObserver] = observers
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
 
     # ------------------------------------------------------------------
@@ -119,19 +124,23 @@ class ETLExecutor:
             run_id: Optional trace ID.  Generated as UUID4 when omitted.
 
         Raises:
-            Exception: First unhandled exception from any step, after the
-                       observer has received the ``pipeline_end(FAILED)`` event.
+            Exception: First unhandled exception from any step, after all
+                       observers have received the ``pipeline_end(FAILED)`` event.
         """
         run_id = run_id or str(uuid.uuid4())
         start = time.monotonic()
-        self._observer.on_pipeline_start(plan, params, run_id)
+        for obs in self._observers:
+            obs.on_pipeline_start(plan, params, run_id)
+        status = RunStatus.SUCCESS
         try:
             for node in plan.nodes:
                 self._run_pipeline_node(node, params, run_id)
-            self._observer.on_pipeline_end(run_id, RunStatus.SUCCESS, _ms(start))
         except Exception:
-            self._observer.on_pipeline_end(run_id, RunStatus.FAILED, _ms(start))
+            status = RunStatus.FAILED
             raise
+        finally:
+            for obs in self._observers:
+                obs.on_pipeline_end(run_id, status, _ms(start))
 
     def run_process(
         self,
@@ -155,14 +164,18 @@ class ETLExecutor:
         run_id = run_id or str(uuid.uuid4())
         process_run_id = str(uuid.uuid4())
         start = time.monotonic()
-        self._observer.on_process_start(plan, run_id, process_run_id)
+        for obs in self._observers:
+            obs.on_process_start(plan, run_id, process_run_id)
+        status = RunStatus.SUCCESS
         try:
             for node in plan.nodes:
                 self._run_process_node(node, params, run_id)
-            self._observer.on_process_end(process_run_id, RunStatus.SUCCESS, _ms(start))
         except Exception:
-            self._observer.on_process_end(process_run_id, RunStatus.FAILED, _ms(start))
+            status = RunStatus.FAILED
             raise
+        finally:
+            for obs in self._observers:
+                obs.on_process_end(process_run_id, status, _ms(start))
 
     def run_step(
         self,
@@ -181,22 +194,27 @@ class ETLExecutor:
 
         Raises:
             Exception: Any unhandled exception from read, execute, or write —
-                       after the observer has received ``on_step_error`` and
+                       after all observers have received ``on_step_error`` and
                        ``on_step_end(FAILED)``.
         """
         run_id = run_id or str(uuid.uuid4())
         step_run_id = str(uuid.uuid4())
         start = time.monotonic()
-        self._observer.on_step_start(plan, run_id, step_run_id)
+        for obs in self._observers:
+            obs.on_step_start(plan, run_id, step_run_id)
+        status = RunStatus.SUCCESS
         try:
             frames = {b.alias: self._reader.read(b.spec, params) for b in plan.source_bindings}
             result = plan.step_type().execute(params, **frames)
             self._writer.write(result, plan.target_binding.spec, params)
-            self._observer.on_step_end(step_run_id, RunStatus.SUCCESS, 0, 0, _ms(start))
         except Exception as exc:
-            self._observer.on_step_error(step_run_id, exc)
-            self._observer.on_step_end(step_run_id, RunStatus.FAILED, 0, 0, _ms(start))
+            status = RunStatus.FAILED
+            for obs in self._observers:
+                obs.on_step_error(step_run_id, exc)
             raise
+        finally:
+            for obs in self._observers:
+                obs.on_step_end(step_run_id, status, _ms(start))
 
     # ------------------------------------------------------------------
     # Internal node dispatch
@@ -205,22 +223,16 @@ class ETLExecutor:
     def _run_pipeline_node(self, node: PipelineProcessNode, params: Any, run_id: str) -> None:
         match node:
             case ParallelProcessGroup(plans=plans):
-
-                def _run_proc(p: ProcessPlan) -> None:
-                    self.run_process(p, params, run_id)
-
-                self._dispatcher.run_all([lambda p=p: _run_proc(p) for p in plans])  # type: ignore[misc]
+                tasks = [functools.partial(self.run_process, p, params, run_id) for p in plans]
+                self._dispatcher.run_all(tasks)
             case ProcessPlan():
                 self.run_process(node, params, run_id)
 
     def _run_process_node(self, node: ProcessStepNode, params: Any, run_id: str) -> None:
         match node:
             case ParallelStepGroup(plans=plans):
-
-                def _run_step(p: StepPlan) -> None:
-                    self.run_step(p, params, run_id)
-
-                self._dispatcher.run_all([lambda p=p: _run_step(p) for p in plans])  # type: ignore[misc]
+                tasks = [functools.partial(self.run_step, p, params, run_id) for p in plans]
+                self._dispatcher.run_all(tasks)
             case StepPlan():
                 self.run_step(node, params, run_id)
 

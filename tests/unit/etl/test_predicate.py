@@ -94,6 +94,6 @@ def test_col_eq_param_expr() -> None:
 def test_frozen_pred_is_hashable() -> None:
     pred = col("year") == 2024
     # frozen dataclass — must be hashable for use in sets/dicts
-    assert hash(pred) is not None
+    assert isinstance(hash(pred), int)
     s: set[EqPred] = {pred}
     assert pred in s

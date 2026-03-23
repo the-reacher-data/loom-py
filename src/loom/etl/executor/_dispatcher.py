@@ -18,7 +18,7 @@ Swap implementations to move from local threads to distributed workers::
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, runtime_checkable
 
@@ -36,11 +36,11 @@ class ParallelDispatcher(Protocol):
     Example::
 
         class CeleryGroupDispatcher:
-            def run_all(self, tasks: list[Callable[[], None]]) -> None:
+            def run_all(self, tasks: Sequence[Callable[[], None]]) -> None:
                 group(celery_wrap(t) for t in tasks).apply_async().get()
     """
 
-    def run_all(self, tasks: list[Callable[[], None]]) -> None:
+    def run_all(self, tasks: Sequence[Callable[[], None]]) -> None:
         """Execute all tasks in parallel and wait for completion.
 
         Args:
@@ -76,7 +76,7 @@ class ThreadDispatcher:
     def __init__(self, max_workers: int | None = None) -> None:
         self._max_workers = max_workers
 
-    def run_all(self, tasks: list[Callable[[], None]]) -> None:
+    def run_all(self, tasks: Sequence[Callable[[], None]]) -> None:
         """Submit all tasks, wait for all to finish, re-raise first exception."""
         if not tasks:
             return

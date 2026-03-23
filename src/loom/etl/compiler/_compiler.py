@@ -251,7 +251,7 @@ class ETLCompiler:
 
         _validate_params_arg(step_type, params, params_type)
 
-        kw_only = _collect_kw_only_frames(step_type, params)
+        kw_only = _collect_kw_only_frames(params)
         source_aliases = {b.alias for b in source_bindings}
 
         _check_missing_frames(step_type, source_aliases, kw_only)
@@ -329,7 +329,6 @@ def _validate_params_arg(
 
 
 def _collect_kw_only_frames(
-    step_type: type[Any],
     params: list[inspect.Parameter],
 ) -> dict[str, inspect.Parameter]:
     return {p.name: p for p in params if p.kind is inspect.Parameter.KEYWORD_ONLY}

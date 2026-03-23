@@ -15,11 +15,7 @@ Supported operators (standard Python / dataframe idiom):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Union
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Any, Union
 
 # ---------------------------------------------------------------------------
 # Forward-declared union — resolved after all node classes are defined.

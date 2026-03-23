@@ -67,19 +67,19 @@ def _make_source_spec(alias: str) -> SourceSpec:
 def test_stub_source_reader_returns_seeded_frame() -> None:
     sentinel = object()
     reader = StubSourceReader({"orders": sentinel})
-    result = reader.read(_make_source_spec("orders"), params_instance=None)
+    result = reader.read(_make_source_spec("orders"), _params_instance=None)
     assert result is sentinel
 
 
 def test_stub_source_reader_missing_alias_returns_none() -> None:
     reader = StubSourceReader({"orders": object()})
-    result = reader.read(_make_source_spec("customers"), params_instance=None)
+    result = reader.read(_make_source_spec("customers"), _params_instance=None)
     assert result is None
 
 
 def test_stub_source_reader_empty_init_always_none() -> None:
     reader = StubSourceReader()
-    result = reader.read(_make_source_spec("orders"), params_instance=None)
+    result = reader.read(_make_source_spec("orders"), _params_instance=None)
     assert result is None
 
 
@@ -105,7 +105,7 @@ def test_stub_target_writer_captures_write() -> None:
     writer = StubTargetWriter()
     frame = object()
     spec = _make_target_spec()
-    writer.write(frame, spec, params_instance=None)
+    writer.write(frame, spec, _params_instance=None)
     assert len(writer.written) == 1
     assert writer.written[0] == (frame, spec)
 
@@ -115,7 +115,7 @@ def test_stub_target_writer_captures_multiple_writes_in_order() -> None:
     frames = [object(), object()]
     spec = _make_target_spec()
     for f in frames:
-        writer.write(f, spec, params_instance=None)
+        writer.write(f, spec, _params_instance=None)
     assert [w[0] for w in writer.written] == frames
 
 

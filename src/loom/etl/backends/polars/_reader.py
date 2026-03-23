@@ -38,7 +38,7 @@ class PolarsDeltaReader:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
+    def read(self, spec: SourceSpec, _params_instance: Any) -> pl.LazyFrame:
         """Return a lazy frame backed by the Delta table referenced by *spec*.
 
         Uses ``DeltaTable.to_pyarrow_dataset()`` + ``pl.scan_pyarrow_dataset``
@@ -46,9 +46,9 @@ class PolarsDeltaReader:
         ``execute()`` result is collected by the writer.
 
         Args:
-            spec:            Compiled source spec.  Must be a TABLE source.
-            params_instance: Concrete params (unused — predicate pushdown
-                             not yet implemented).
+            spec:             Compiled source spec.  Must be a TABLE source.
+            _params_instance: Concrete params (reserved for predicate pushdown
+                              — not yet implemented).
 
         Returns:
             Lazy Polars frame over the Delta table.

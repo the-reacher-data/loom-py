@@ -81,23 +81,9 @@ class SparkDeltaWriter:
         path = self._table_path(spec.table_ref)  # type: ignore[arg-type]
         path.mkdir(parents=True, exist_ok=True)
 
-        writer = df.write.format("delta")
-
-        if spec.mode is WriteMode.APPEND:
-            writer = writer.mode("append")
-            if spec.schema_mode is SchemaMode.EVOLVE:
-                writer = writer.option("mergeSchema", "true")
-        elif spec.mode is WriteMode.REPLACE_PARTITIONS:
-            predicate = _build_partition_predicate(df, spec.partition_cols)
-            writer = writer.mode("overwrite").option("replaceWhere", predicate)
-        elif spec.mode is WriteMode.REPLACE_WHERE:
-            predicate = predicate_to_sql(spec.replace_predicate, params_instance)  # type: ignore[arg-type]
-            writer = writer.mode("overwrite").option("replaceWhere", predicate)
-        else:
-            writer = writer.mode("overwrite")
-            if spec.schema_mode is SchemaMode.OVERWRITE:
-                writer = writer.option("overwriteSchema", "true")
-
+        df = _sort_for_write(df, spec)
+        writer = df.write.format("delta").option("optimizeWrite", "true")
+        writer = _MODE_APPLIERS[spec.mode](writer, df, spec, params_instance)
         writer.save(str(path))
 
     def _register_schema(self, ref: TableRef, frame: DataFrame) -> None:
@@ -108,6 +94,70 @@ class SparkDeltaWriter:
 
     def _table_path(self, ref: TableRef) -> Path:
         return self._root.joinpath(*ref.ref.split("."))
+
+
+# ------------------------------------------------------------------
+# Write mode appliers — one function per mode, composed via dispatch map
+# ------------------------------------------------------------------
+
+
+def _apply_append(writer: Any, _df: DataFrame, spec: TargetSpec, _params: Any) -> Any:
+    writer = writer.mode("append")
+    if spec.schema_mode is SchemaMode.EVOLVE:
+        writer = writer.option("mergeSchema", "true")
+    return writer
+
+
+def _apply_replace_partitions(writer: Any, df: DataFrame, spec: TargetSpec, _params: Any) -> Any:
+    predicate = _build_partition_predicate(df, spec.partition_cols)
+    return writer.mode("overwrite").option("replaceWhere", predicate)
+
+
+def _apply_replace_where(writer: Any, _df: DataFrame, spec: TargetSpec, params: Any) -> Any:
+    predicate = predicate_to_sql(spec.replace_predicate, params)  # type: ignore[arg-type]
+    return writer.mode("overwrite").option("replaceWhere", predicate)
+
+
+def _apply_overwrite(writer: Any, _df: DataFrame, spec: TargetSpec, _params: Any) -> Any:
+    writer = writer.mode("overwrite")
+    if spec.schema_mode is SchemaMode.OVERWRITE:
+        writer = writer.option("overwriteSchema", "true")
+    return writer
+
+
+_MODE_APPLIERS: dict[WriteMode, Any] = {
+    WriteMode.APPEND: _apply_append,
+    WriteMode.REPLACE_PARTITIONS: _apply_replace_partitions,
+    WriteMode.REPLACE_WHERE: _apply_replace_where,
+    WriteMode.REPLACE: _apply_overwrite,
+    WriteMode.UPSERT: _apply_overwrite,
+}
+
+
+# ------------------------------------------------------------------
+# Shared helpers
+# ------------------------------------------------------------------
+
+
+def _sort_for_write(df: DataFrame, spec: TargetSpec) -> DataFrame:
+    """Apply ``sortWithinPartitions`` for write modes that benefit from locality.
+
+    Does not repartition (no full shuffle) — only sorts within existing
+    Spark partitions so Delta can write contiguous blocks per partition key.
+    Combined with ``optimizeWrite=true``, Delta handles file sizing.
+
+    ``repartition`` is deliberately avoided: for a single partition value
+    (the common daily-batch case) it would concentrate all rows on one
+    worker, causing OOM or extreme slowness.
+    """
+    cols = spec.partition_cols or spec.upsert_keys
+    if cols and spec.mode in (
+        WriteMode.REPLACE_PARTITIONS,
+        WriteMode.REPLACE_WHERE,
+        WriteMode.UPSERT,
+    ):
+        return df.sortWithinPartitions(*cols)
+    return df
 
 
 def _build_partition_predicate(df: DataFrame, partition_cols: tuple[str, ...]) -> str:

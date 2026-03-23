@@ -73,9 +73,10 @@ def test_column_schema_inequality_different_dtype() -> None:
 
 
 def test_column_schema_hashable() -> None:
-    col = ColumnSchema("x", LoomDtype.UTF8)
-    assert hash(col) == hash(col)
-    assert {col, col} == {col}
+    col1 = ColumnSchema("x", LoomDtype.UTF8)
+    col2 = ColumnSchema("x", LoomDtype.UTF8)
+    assert hash(col1) == hash(col2)  # equal objects produce equal hashes
+    assert {col1, col2} == {col1}  # set deduplication works
 
 
 # ---------------------------------------------------------------------------

@@ -36,14 +36,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from loom.etl._format import Format
 from loom.etl._predicate import PredicateNode
 from loom.etl._table import TableRef
-
-if TYPE_CHECKING:
-    pass
 
 ParamsT = TypeVar("ParamsT")
 
