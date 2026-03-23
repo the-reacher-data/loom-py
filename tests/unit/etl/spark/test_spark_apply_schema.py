@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 from chispa import assert_df_equality
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
+from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 from loom.etl._target import SchemaMode
 from loom.etl.backends.spark._schema import spark_apply_schema
@@ -133,10 +135,6 @@ ORDERS_SCENARIO = ETLScenario().with_table("raw.orders", [(1, 10.0), (2, 20.0)],
 
 def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type: ignore[no-untyped-def]
     """ETLScenario.apply() correctly seeds the runner and executes the step."""
-    from pyspark.sql import DataFrame
-    from pyspark.sql import functions as F
-
-    from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 
     class NoParams(ETLParams):
         pass

@@ -109,7 +109,7 @@ class SourceReader(Protocol):
                 return pl.scan_delta(catalog_path(spec.table_ref)).filter(filters)
     """
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> Any:
+    def read(self, spec: SourceSpec, params_instance: Any, /) -> Any:
         """Read the source and return a frame.
 
         Args:
@@ -144,7 +144,7 @@ class TargetWriter(Protocol):
                 write_deltalake(catalog_path(spec.table_ref), frame.collect(), ...)
     """
 
-    def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:
+    def write(self, frame: Any, spec: TargetSpec, params_instance: Any, /) -> None:
         """Write the frame to the target.
 
         Args:

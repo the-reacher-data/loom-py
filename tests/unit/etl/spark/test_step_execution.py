@@ -9,6 +9,8 @@ when either package is absent (enforced by conftest.py).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -18,7 +20,7 @@ from loom.etl._schema import LoomDtype, SchemaNotFoundError
 from loom.etl._table import TableRef
 from loom.etl._target import SchemaMode
 from loom.etl.compiler import ETLCompiler
-from loom.etl.executor import ETLExecutor
+from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.testing import StubRunObserver
 
 from .conftest import SparkDeltaReader, SparkDeltaWriter, spark_table_path
@@ -68,8 +70,6 @@ class AppendStep(ETLStep[NoParams]):
 
 
 def _read(spark: SparkSession, root, ref: str) -> DataFrame:
-    from pathlib import Path
-
     path = spark_table_path(Path(root), TableRef(ref))
     return spark.read.format("delta").load(str(path))
 
@@ -166,8 +166,6 @@ def test_run_step_emits_success_events(
     spark_reader: SparkDeltaReader,
     spark_writer: SparkDeltaWriter,
 ) -> None:
-    from loom.etl.executor import EventName
-
     seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
     seed_spark_table("staging.orders", spark.createDataFrame([(0, 0.0)], ["id", "amount"]))
 
@@ -182,8 +180,6 @@ def test_run_step_emits_success_events(
 def test_run_step_emits_error_event_on_failure(
     spark_writer: SparkDeltaWriter,
 ) -> None:
-    from loom.etl.executor import RunStatus
-
     class FailingReader:
         def read(self, spec: object, params: object) -> None:  # type: ignore[override]
             raise RuntimeError("spark read failure")

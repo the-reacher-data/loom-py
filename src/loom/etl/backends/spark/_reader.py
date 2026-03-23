@@ -34,13 +34,13 @@ class SparkDeltaReader:
         self._spark = spark
         self._root = root
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> DataFrame:
+    def read(self, spec: SourceSpec, _params_instance: Any) -> DataFrame:
         """Return a lazy Spark DataFrame backed by the Delta table in *spec*.
 
         Args:
-            spec:            Compiled source spec.  Must be a TABLE source.
-            params_instance: Concrete params (unused — predicate pushdown
-                             not yet implemented).
+            spec:             Compiled source spec.  Must be a TABLE source.
+            _params_instance: Concrete params (unused — predicate pushdown
+                              not yet implemented).
 
         Returns:
             Spark DataFrame over the Delta table (lazy scan).

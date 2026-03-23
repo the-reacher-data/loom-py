@@ -34,10 +34,13 @@ if TYPE_CHECKING:
     from pyspark.sql import DataFrame as SparkDataFrame
     from pyspark.sql import SparkSession
 
+from loom.etl._predicate_sql import predicate_to_sql
 from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._source import SourceSpec
 from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec
+from loom.etl.compiler import ETLCompiler
+from loom.etl.executor import ETLExecutor
 from loom.etl.executor.observer._events import EventName, RunStatus
 
 # TypeVar for the frame type produced by a StepRunner backend.
@@ -251,7 +254,7 @@ class _RunnerCapturingWriter:
     frame: Any = None
     spec: TargetSpec | None = None
 
-    def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:  # noqa: ARG002  # NOSONAR
+    def write(self, frame: Any, spec: TargetSpec, _params_instance: Any) -> None:
         self.frame = frame
         self.spec = spec
 
@@ -260,7 +263,7 @@ class _RunnerStubReader:
     def __init__(self, frames: dict[str, Any]) -> None:
         self._frames = frames
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> Any:  # noqa: ARG002  # NOSONAR
+    def read(self, spec: SourceSpec, _params_instance: Any) -> Any:
         key = spec.table_ref.ref if spec.table_ref is not None else spec.alias
         return self._frames[key]
 
@@ -357,9 +360,6 @@ class StepRunner(Generic[FrameT]):
             KeyError:     If a source table was not seeded before calling ``run()``.
             RuntimeError: If ``StepRunner.spark(session)`` was not used for a Spark step.
         """
-        from loom.etl.compiler import ETLCompiler
-        from loom.etl.executor import ETLExecutor
-
         self._last_params = params
         frames = {ref: self._materialize(data, cols) for ref, (data, cols) in self._seeds.items()}
         plan = ETLCompiler().compile_step(step_cls)
@@ -415,8 +415,6 @@ class StepRunner(Generic[FrameT]):
         spec = self._writer.spec
         if spec is None or spec.replace_predicate is None:
             return None
-        from loom.etl._predicate_sql import predicate_to_sql
-
         return predicate_to_sql(spec.replace_predicate, self._last_params)
 
     # ------------------------------------------------------------------

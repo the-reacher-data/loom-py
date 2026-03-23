@@ -6,11 +6,13 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from deltalake import write_deltalake
+from deltalake import DeltaTable, write_deltalake
 
+from loom.etl._format import Format
 from loom.etl._schema import ColumnSchema, LoomDtype
+from loom.etl._source import SourceKind, SourceSpec
 from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode, WriteMode
+from loom.etl._target import SchemaMode, TargetSpec, WriteMode
 from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
 from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError
 
@@ -29,10 +31,7 @@ def _seed(root: Path, ref: str, data: pl.DataFrame) -> None:
 
 def _spec(
     ref: str, mode: WriteMode = WriteMode.REPLACE, schema_mode: SchemaMode = SchemaMode.STRICT
-):  # type: ignore[no-untyped-def]
-    from loom.etl._format import Format
-    from loom.etl._target import TargetSpec
-
+) -> TargetSpec:
     return TargetSpec(
         mode=mode,
         format=Format.DELTA,
@@ -41,10 +40,7 @@ def _spec(
     )
 
 
-def _source_spec(ref: str):  # type: ignore[no-untyped-def]
-    from loom.etl._format import Format
-    from loom.etl._source import SourceKind, SourceSpec
-
+def _source_spec(ref: str) -> SourceSpec:
     return SourceSpec(
         alias="data", kind=SourceKind.TABLE, format=Format.DELTA, table_ref=TableRef(ref)
     )
@@ -173,8 +169,6 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path, catalog)
     frame = pl.DataFrame({"id": [1]}).lazy()  # label missing
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.EVOLVE), None)
-    from deltalake import DeltaTable
-
     result = pl.from_arrow(
         DeltaTable(str(table_path(tmp_path, TableRef("staging.out")))).to_pyarrow_table()
     )

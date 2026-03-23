@@ -14,9 +14,10 @@ import pytest
 from deltalake import DeltaTable
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
+from loom.etl._schema import LoomDtype
 from loom.etl._table import TableRef
 from loom.etl.compiler import ETLCompiler
-from loom.etl.executor import ETLExecutor
+from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.testing import StubRunObserver
 
 from .conftest import MinimalPolarsDeltaReader, MinimalPolarsDeltaWriter, table_path
@@ -153,8 +154,6 @@ def test_run_step_emits_start_and_end_events(
     polars_writer: MinimalPolarsDeltaWriter,
 ) -> None:
     """Observer receives step_start then step_end(success) on a clean run."""
-    from loom.etl.executor import EventName
-
     seed_table("raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
     observer = StubRunObserver()
 
@@ -170,7 +169,6 @@ def test_run_step_emits_error_event_on_failure(
     polars_writer: MinimalPolarsDeltaWriter,
 ) -> None:
     """Observer receives step_error + step_end(failed) when a step raises."""
-    from loom.etl.executor import EventName, RunStatus
 
     # Reader that always raises
     class FailingReader:
@@ -197,8 +195,6 @@ def test_seed_table_registers_schema_in_catalog(
     delta_catalog,
 ) -> None:
     """seed_table() registers the correct LoomDtype schema in the catalog."""
-    from loom.etl._schema import LoomDtype
-
     seed_table("raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
     schema = delta_catalog.schema(TableRef("raw.orders"))
 
