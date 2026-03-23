@@ -63,7 +63,7 @@ class RunSinkObserver:
         self._pipeline_ctx[run_id] = (plan.pipeline_type.__name__, _now())
 
     def on_pipeline_end(self, run_id: str, status: RunStatus, duration_ms: int) -> None:
-        pipeline, started_at = self._pipeline_ctx.pop(run_id, ("unknown", _now()))
+        pipeline, started_at = self._pipeline_ctx.pop(run_id)
         self._sink.write(
             PipelineRunRecord(
                 event=EventName.PIPELINE_END,
@@ -80,9 +80,7 @@ class RunSinkObserver:
         self._process_ctx[process_run_id] = (run_id, plan.process_type.__name__, _now())
 
     def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
-        run_id, process, started_at = self._process_ctx.pop(
-            process_run_id, ("unknown", "unknown", _now())
-        )
+        run_id, process, started_at = self._process_ctx.pop(process_run_id)
         self._sink.write(
             ProcessRunRecord(
                 event=EventName.PROCESS_END,
@@ -105,7 +103,7 @@ class RunSinkObserver:
         status: RunStatus,
         duration_ms: int,
     ) -> None:
-        run_id, step, started_at = self._step_ctx.pop(step_run_id, ("unknown", "unknown", _now()))
+        run_id, step, started_at = self._step_ctx.pop(step_run_id)
         error = self._step_errors.pop(step_run_id, None)
         self._sink.write(
             StepRunRecord(
