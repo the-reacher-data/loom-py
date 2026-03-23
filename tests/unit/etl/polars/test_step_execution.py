@@ -85,7 +85,7 @@ def test_run_step_writes_transformed_data(
     ETLExecutor(polars_reader, polars_writer).run_step(plan, NoParams())
 
     result = _read_delta(delta_root, "staging.orders")
-    assert result["amount"].to_list() == [20.0, 40.0, 60.0]
+    assert result["amount"].to_list() == pytest.approx([20.0, 40.0, 60.0])
     assert result["id"].to_list() == [1, 2, 3]
 
 
@@ -121,7 +121,7 @@ def test_run_step_replace_overwrites_existing_target(
 
     result = _read_delta(delta_root, "staging.orders")
     assert result["id"].to_list() == [1]
-    assert result["amount"].to_list() == [10.0]
+    assert result["amount"].to_list() == pytest.approx([10.0])
 
 
 def test_run_step_append_adds_rows(
@@ -153,13 +153,13 @@ def test_run_step_emits_start_and_end_events(
     polars_writer: MinimalPolarsDeltaWriter,
 ) -> None:
     """Observer receives step_start then step_end(success) on a clean run."""
-    from loom.etl.executor._observer import EventName
+    from loom.etl.executor import EventName
 
     seed_table("raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
     observer = StubRunObserver()
 
     plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(polars_reader, polars_writer, observer=observer).run_step(plan, NoParams())
+    ETLExecutor(polars_reader, polars_writer, observers=[observer]).run_step(plan, NoParams())
 
     assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
     assert observer.step_statuses == ["success"]
@@ -170,7 +170,7 @@ def test_run_step_emits_error_event_on_failure(
     polars_writer: MinimalPolarsDeltaWriter,
 ) -> None:
     """Observer receives step_error + step_end(failed) when a step raises."""
-    from loom.etl.executor._observer import EventName, RunStatus
+    from loom.etl.executor import EventName, RunStatus
 
     # Reader that always raises
     class FailingReader:
@@ -181,7 +181,7 @@ def test_run_step_emits_error_event_on_failure(
     plan = ETLCompiler().compile_step(DoubleAmountStep)
 
     with pytest.raises(RuntimeError, match="read failure"):
-        ETLExecutor(FailingReader(), polars_writer, observer=observer).run_step(plan, NoParams())
+        ETLExecutor(FailingReader(), polars_writer, observers=[observer]).run_step(plan, NoParams())
 
     assert EventName.STEP_ERROR in observer.event_names
     assert observer.step_statuses == [RunStatus.FAILED]

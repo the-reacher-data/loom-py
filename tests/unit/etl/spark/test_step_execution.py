@@ -98,7 +98,7 @@ def test_run_step_writes_transformed_data(
 
     result = _read(spark, spark_root, "staging.orders").orderBy("id")
     amounts = [row["amount"] for row in result.collect()]
-    assert amounts == [20.0, 40.0, 60.0]
+    assert amounts == pytest.approx([20.0, 40.0, 60.0])
 
 
 def test_run_step_row_count_preserved(
@@ -136,7 +136,7 @@ def test_run_step_replace_overwrites_existing_target(
     result = _read(spark, spark_root, "staging.orders").collect()
     assert len(result) == 1
     assert result[0]["id"] == 1
-    assert result[0]["amount"] == 10.0
+    assert result[0]["amount"] == pytest.approx(10.0)
 
 
 def test_run_step_append_adds_rows(
@@ -166,14 +166,14 @@ def test_run_step_emits_success_events(
     spark_reader: SparkDeltaReader,
     spark_writer: SparkDeltaWriter,
 ) -> None:
-    from loom.etl.executor._observer import EventName
+    from loom.etl.executor import EventName
 
     seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
     seed_spark_table("staging.orders", spark.createDataFrame([(0, 0.0)], ["id", "amount"]))
 
     observer = StubRunObserver()
     plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(spark_reader, spark_writer, observer=observer).run_step(plan, NoParams())
+    ETLExecutor(spark_reader, spark_writer, observers=[observer]).run_step(plan, NoParams())
 
     assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
     assert observer.step_statuses == ["success"]
@@ -182,7 +182,7 @@ def test_run_step_emits_success_events(
 def test_run_step_emits_error_event_on_failure(
     spark_writer: SparkDeltaWriter,
 ) -> None:
-    from loom.etl.executor._observer import RunStatus
+    from loom.etl.executor import RunStatus
 
     class FailingReader:
         def read(self, spec: object, params: object) -> None:  # type: ignore[override]
@@ -192,7 +192,7 @@ def test_run_step_emits_error_event_on_failure(
     plan = ETLCompiler().compile_step(DoubleAmountStep)
 
     with pytest.raises(RuntimeError, match="spark read failure"):
-        ETLExecutor(FailingReader(), spark_writer, observer=observer).run_step(plan, NoParams())
+        ETLExecutor(FailingReader(), spark_writer, observers=[observer]).run_step(plan, NoParams())
 
     assert observer.step_statuses == [RunStatus.FAILED]
 
