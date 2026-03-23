@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
 from loom.etl import col
@@ -19,8 +22,10 @@ from loom.etl._target import IntoFile, IntoTable, WriteMode
         (lambda t: t.replace(), WriteMode.REPLACE),
     ],
 )
-def test_into_table_write_mode(build: object, expected_mode: WriteMode) -> None:
-    spec = build(IntoTable("staging.orders"))._to_spec()  # type: ignore[operator]
+def test_into_table_write_mode(
+    build: Callable[[IntoTable], IntoTable], expected_mode: WriteMode
+) -> None:
+    spec = build(IntoTable("staging.orders"))._to_spec()
     assert spec.mode is expected_mode
 
 
@@ -55,9 +60,9 @@ def test_into_table_replace_where() -> None:
         lambda t: t.replace_partitions(),
     ],
 )
-def test_replace_partitions_raises_on_invalid_args(call: object) -> None:
+def test_replace_partitions_raises_on_invalid_args(call: Callable[[IntoTable], Any]) -> None:
     with pytest.raises(ValueError):
-        call(IntoTable("staging.orders"))  # type: ignore[operator]
+        call(IntoTable("staging.orders"))
 
 
 def test_into_table_upsert() -> None:

@@ -25,7 +25,6 @@ Usage in ``conftest.py``::
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING
@@ -54,25 +53,9 @@ _JAVA_HOME_CANDIDATES: list[Path] = [
 
 def _discover_java_home() -> Path | None:
     """Return a valid JAVA_HOME path or ``None`` if no JVM is found."""
-    # macOS java_home utility
-    try:
-        result = subprocess.run(
-            ["/usr/libexec/java_home"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            candidate = Path(result.stdout.strip())
-            if candidate.exists():
-                return candidate
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
     for candidate in _JAVA_HOME_CANDIDATES:
         if (candidate / "bin" / "java").exists():
             return candidate
-
     return None
 
 

@@ -46,11 +46,10 @@ class SparkDeltaReader:
             Spark DataFrame over the Delta table (lazy scan).
 
         Raises:
-            AssertionError: If *spec* is a FILE source (unsupported here).
+            TypeError: If *spec* is a FILE source (unsupported here).
         """
-        assert spec.table_ref is not None, (
-            f"SparkDeltaReader only supports TABLE sources; got FILE spec: {spec}"
-        )
+        if spec.table_ref is None:
+            raise TypeError(f"SparkDeltaReader only supports TABLE sources; got FILE spec: {spec}")
         path = self._table_path(spec.table_ref)
         return self._spark.read.format("delta").load(str(path))
 

@@ -54,11 +54,10 @@ class PolarsDeltaReader:
             Lazy Polars frame over the Delta table.
 
         Raises:
-            AssertionError: If *spec* is a FILE source (unsupported here).
+            TypeError: If *spec* is a FILE source (unsupported here).
         """
-        assert spec.table_ref is not None, (
-            f"PolarsDeltaReader only supports TABLE sources; got FILE spec: {spec}"
-        )
+        if spec.table_ref is None:
+            raise TypeError(f"PolarsDeltaReader only supports TABLE sources; got FILE spec: {spec}")
         path = self._table_path(spec.table_ref)
         dataset = DeltaTable(str(path)).to_pyarrow_dataset()
         return pl.scan_pyarrow_dataset(dataset)

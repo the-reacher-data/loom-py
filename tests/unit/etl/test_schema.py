@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from loom.etl._schema import ColumnSchema, LoomDtype
@@ -96,9 +98,9 @@ def test_schema_mode_values() -> None:
     ],
 )
 def test_into_table_write_and_schema_mode(
-    build: object, expected_mode: WriteMode, expected_schema: SchemaMode
+    build: Callable[[IntoTable], IntoTable], expected_mode: WriteMode, expected_schema: SchemaMode
 ) -> None:
-    spec = build(IntoTable("staging.orders"))._to_spec()  # type: ignore[operator]
+    spec = build(IntoTable("staging.orders"))._to_spec()
     assert spec.mode is expected_mode
     assert spec.schema_mode is expected_schema
 

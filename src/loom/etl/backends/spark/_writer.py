@@ -52,14 +52,13 @@ class SparkDeltaWriter:
             params_instance: Concrete params (unused currently).
 
         Raises:
-            AssertionError:      If *spec* is a FILE target.
+            TypeError:           If *spec* is a FILE target.
             SchemaNotFoundError: When the table has no registered schema and
                                  mode is not OVERWRITE.
             SchemaError:         When the frame violates the registered schema.
         """
-        assert spec.table_ref is not None, (
-            f"SparkDeltaWriter only supports TABLE targets; got FILE spec: {spec}"
-        )
+        if spec.table_ref is None:
+            raise TypeError(f"SparkDeltaWriter only supports TABLE targets; got FILE spec: {spec}")
 
         table_ref = spec.table_ref
         existing_schema = self._catalog.schema(table_ref)
