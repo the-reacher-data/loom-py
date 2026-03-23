@@ -41,7 +41,7 @@ from __future__ import annotations
 import functools
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from loom.etl._io import SourceReader, TargetWriter
@@ -127,7 +127,7 @@ class ETLExecutor:
             Exception: First unhandled exception from any step, after all
                        observers have received the ``pipeline_end(FAILED)`` event.
         """
-        run_id = run_id or str(uuid.uuid4())
+        run_id = run_id or _new_run_id()
         start = time.monotonic()
         for obs in self._observers:
             obs.on_pipeline_start(plan, params, run_id)
@@ -161,8 +161,8 @@ class ETLExecutor:
         Raises:
             Exception: First unhandled exception from any step.
         """
-        run_id = run_id or str(uuid.uuid4())
-        process_run_id = str(uuid.uuid4())
+        run_id = run_id or _new_run_id()
+        process_run_id = _new_run_id()
         start = time.monotonic()
         for obs in self._observers:
             obs.on_process_start(plan, run_id, process_run_id)
@@ -197,8 +197,8 @@ class ETLExecutor:
                        after all observers have received ``on_step_error`` and
                        ``on_step_end(FAILED)``.
         """
-        run_id = run_id or str(uuid.uuid4())
-        step_run_id = str(uuid.uuid4())
+        run_id = run_id or _new_run_id()
+        step_run_id = _new_run_id()
         start = time.monotonic()
         for obs in self._observers:
             obs.on_step_start(plan, run_id, step_run_id)
@@ -220,19 +220,28 @@ class ETLExecutor:
     # Internal node dispatch
     # ------------------------------------------------------------------
 
+    def _dispatch_parallel(
+        self,
+        run_fn: Callable[..., None],
+        plans: tuple[Any, ...],
+        params: Any,
+        run_id: str,
+    ) -> None:
+        """Dispatch *plans* concurrently via the configured dispatcher."""
+        tasks = [functools.partial(run_fn, p, params, run_id) for p in plans]
+        self._dispatcher.run_all(tasks)
+
     def _run_pipeline_node(self, node: PipelineProcessNode, params: Any, run_id: str) -> None:
         match node:
             case ParallelProcessGroup(plans=plans):
-                tasks = [functools.partial(self.run_process, p, params, run_id) for p in plans]
-                self._dispatcher.run_all(tasks)
+                self._dispatch_parallel(self.run_process, plans, params, run_id)
             case ProcessPlan():
                 self.run_process(node, params, run_id)
 
     def _run_process_node(self, node: ProcessStepNode, params: Any, run_id: str) -> None:
         match node:
             case ParallelStepGroup(plans=plans):
-                tasks = [functools.partial(self.run_step, p, params, run_id) for p in plans]
-                self._dispatcher.run_all(tasks)
+                self._dispatch_parallel(self.run_step, plans, params, run_id)
             case StepPlan():
                 self.run_step(node, params, run_id)
 
@@ -240,6 +249,11 @@ class ETLExecutor:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _new_run_id() -> str:
+    """Generate a fresh UUID4 run identifier."""
+    return str(uuid.uuid4())
 
 
 def _ms(start: float) -> int:
