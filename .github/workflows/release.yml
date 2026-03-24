@@ -14,6 +14,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  pull-requests: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -86,15 +87,19 @@ jobs:
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
 
-      - name: Commit version bump and changelog to master
+      - name: Open version bump PR
         if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="docs/release-v${VERSION}"
+          git checkout -b "${BRANCH}"
 
           if [ -f CHANGELOG_RELEASE.md ]; then
             cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
@@ -103,8 +108,16 @@ jobs:
 
           git add pyproject.toml CHANGELOG.md
           git diff --staged --quiet && exit 0
-          git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
-          git push origin HEAD:master
+          git commit -m "chore(release): bump version to ${VERSION}"
+          git push origin "${BRANCH}"
+
+          gh pr create \
+            --title "chore(release): bump version to ${VERSION}" \
+            --body "Automated version bump and changelog update after release v${VERSION}." \
+            --base master \
+            --head "${BRANCH}"
+
+          gh pr merge "${BRANCH}" --squash --auto --delete-branch
 
       - name: Build package
         if: ${{ steps.version.outputs.deploy == 'true' }}

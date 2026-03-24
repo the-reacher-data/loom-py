@@ -188,7 +188,7 @@ jobs:
             --skip-existing dist/*
 
       - name: Enforce changelog generation
-        if: ${{ always() }}
+        if: ${{ always() && !startsWith(github.head_ref, 'docs/release-') }}
         shell: bash
         run: |
           set -euo pipefail
