@@ -1,3 +1,33 @@
+# 🚀 Release 0.2.1 ([#12](https://github.com/the-reacher-data/loom-py/pull/12)) ([`87f7d1f`](https://github.com/the-reacher-data/loom-py/commit/87f7d1f1eb1ccde71d0aca1c5584b83317e30707))
+
+## ✨ Features
+
+### logger
+- **logger:** support per-logger levels from config<br>
+  > `LoomConfig` now accepts a `loggers` mapping to override the log level per named logger. Resolves `structlog` / stdlib incompatibility when mixing loom-managed and third-party loggers.
+
+### repository
+- **repository:** generalize main repo registration for loom structs<br>
+  > `repository_for` is now importable from `loom.core.repository` (top-level). The SQLAlchemy-specific import path still works but is no longer the canonical one.
+
+## 🐛 Bug Fixes
+
+### rest
+- **rest:** serialize pagination envelopes in camel case<br>
+  > `PageResult` and list-envelope responses were serialized in snake_case. All envelope fields now follow the camelCase contract of the HTTP layer.
+- **rest:** support loom structs in autocrud tests<br>
+  > Auto-CRUD route generation was not exercising the `msgspec.Struct` code path in integration tests.
+
+### prometheus
+- **prometheus:** expose metrics at exact path<br>
+  > Metrics endpoint was registered with a trailing-slash variant that did not match the documented `/metrics` path.
+
+### docs
+- **docs:** fix RTD build failure, logo and docs examples (#10, #11)<br>
+  > Mock `starlette`, `celery`, `kombu`, `redis` in `autodoc_mock_imports`. Logo resized to natural proportions with dark-mode safe background. Status badges added to index. Rule/Compute examples updated to named predicates.
+
+---
+
 # 🚀 Release 0.2.0 ([#9](https://github.com/the-reacher-data/loom-py/pull/9)) ([`2f669ab`](https://github.com/the-reacher-data/loom-py/commit/2f669ab205c7255eb6494e4cdb8ab8092817af62))
 
 ## ✨ Features
