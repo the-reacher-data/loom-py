@@ -28,7 +28,7 @@ class ETLRunObserver(Protocol):
 
         class MyObserver:
             def on_pipeline_start(
-                self, plan: PipelinePlan, params: Any, ctx: RunContext
+                self, plan: PipelinePlan, _params: Any, ctx: RunContext
             ) -> None:
                 print(f"pipeline={plan.pipeline_type.__name__} attempt={ctx.attempt}")
 
@@ -38,7 +38,7 @@ class ETLRunObserver(Protocol):
                 print(f"step={step_run_id} {status} {duration_ms}ms")
     """
 
-    def on_pipeline_start(self, plan: PipelinePlan, params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, plan: PipelinePlan, _params: Any, ctx: RunContext) -> None:
         """Called before the first process of the pipeline executes."""
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:

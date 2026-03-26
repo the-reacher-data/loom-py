@@ -546,7 +546,7 @@ def _make_backends(
 
 
 def _make_spark_backends(
-    config: UnityCatalogConfig,
+    _config: UnityCatalogConfig,
     spark: Any,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
     from loom.etl.backends.spark import SparkCatalog, SparkDeltaReader, SparkDeltaWriter
@@ -650,7 +650,11 @@ def _parse_yaml_content(
     from omegaconf import DictConfig, OmegaConf
 
     created = OmegaConf.create(content)
-    assert isinstance(created, DictConfig)
+    if not isinstance(created, DictConfig):
+        raise TypeError(
+            f"Expected a mapping from OmegaConf.create, got {type(created).__name__}. "
+            "Pass a dict or YAML string with a top-level mapping."
+        )
     raw: DictConfig = created
     storage_raw: Any = OmegaConf.to_container(raw["storage"], resolve=True)
     storage_config = convert_storage_config(storage_raw)

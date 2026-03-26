@@ -113,7 +113,8 @@ class PolarsDeltaWriter:
 
     def _write_delta(self, frame: pl.LazyFrame, spec: TargetSpec, params_instance: Any) -> None:
         table_ref = spec.table_ref
-        assert table_ref is not None
+        if table_ref is None:
+            raise TypeError("table_ref must be set for Delta write operations")
         _log.debug(
             "write delta table=%s mode=%s schema_mode=%s",
             table_ref.ref,
@@ -143,7 +144,8 @@ class PolarsDeltaWriter:
         existing_schema: Any,
     ) -> None:
         table_ref = spec.table_ref
-        assert table_ref is not None
+        if table_ref is None:
+            raise TypeError("table_ref must be set for UPSERT write operations")
         if existing_schema is None:
             _log.debug("upsert delta first run — creating table=%s", table_ref.ref)
             loc = self._locator.locate(table_ref)
@@ -158,12 +160,14 @@ class PolarsDeltaWriter:
         self._register_schema(table_ref, validated)
 
     def _write_file(self, frame: pl.LazyFrame, spec: TargetSpec) -> None:
-        assert spec.path is not None
+        if spec.path is None:
+            raise TypeError("path must be set for file write operations")
         _log.debug("write file path=%s format=%s", spec.path, spec.format)
         _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
 
     def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
-        assert spec.table_ref is not None
+        if spec.table_ref is None:
+            raise TypeError("table_ref must be set for Delta write operations")
         loc = self._locator.locate(spec.table_ref)
         _MODE_WRITERS[spec.mode](loc, df, spec, params_instance)
 
@@ -211,7 +215,8 @@ def _write_replace_partitions(
 def _write_replace_where(
     loc: TableLocation, df: pl.DataFrame, spec: TargetSpec, params: Any
 ) -> None:
-    assert spec.replace_predicate is not None
+    if spec.replace_predicate is None:
+        raise TypeError("replace_predicate must be set for REPLACE_WHERE write mode")
     predicate = predicate_to_sql(spec.replace_predicate, params)
     write_deltalake(
         loc.uri, df.to_arrow(), mode="overwrite", predicate=predicate, **_write_kwargs(loc)

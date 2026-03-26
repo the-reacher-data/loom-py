@@ -219,13 +219,9 @@ def loom_type_to_polars(lt: LoomType) -> pl.DataType:
                    :class:`~loom.etl._schema.StructType`, etc. instead.
     """
     if isinstance(lt, LoomDtype):
-        if lt in _STRUCTURAL_DTYPES:
-            raise TypeError(
-                f"LoomDtype.{lt} is a coarse structural type without inner-type information. "
-                "Use the rich LoomType classes (ListType, StructType, ArrayType, …) "
-                "to define complex column types."
-            )
-        return _LOOM_TO_POLARS[lt]()
+        return _loom_primitive_to_polars(lt)
+    if isinstance(lt, (DatetimeType, DurationType)):
+        return _loom_temporal_to_polars(lt)
     if isinstance(lt, ListType):
         return pl.List(loom_type_to_polars(lt.inner))
     if isinstance(lt, ArrayType):
@@ -234,20 +230,28 @@ def loom_type_to_polars(lt: LoomType) -> pl.DataType:
         return pl.Struct([pl.Field(f.name, loom_type_to_polars(f.dtype)) for f in lt.fields])
     if isinstance(lt, DecimalType):
         return pl.Decimal(lt.precision, lt.scale if lt.scale is not None else 0)
-    if isinstance(lt, DatetimeType):
-        time_unit = cast(
-            Literal["ns", "us", "ms"],
-            lt.time_unit if lt.time_unit in ("ns", "us", "ms") else "us",
-        )
-        return pl.Datetime(time_unit, lt.time_zone)
-    if isinstance(lt, DurationType):
-        time_unit = cast(
-            Literal["ns", "us", "ms"],
-            lt.time_unit if lt.time_unit in ("ns", "us", "ms") else "us",
-        )
-        return pl.Duration(time_unit)
     if isinstance(lt, CategoricalType):
         return pl.Categorical()
     if isinstance(lt, EnumType):
         return pl.Enum(list(lt.categories))
     raise TypeError(f"Unknown LoomType: {lt!r}")
+
+
+def _loom_primitive_to_polars(lt: LoomDtype) -> pl.DataType:
+    if lt in _STRUCTURAL_DTYPES:
+        raise TypeError(
+            f"LoomDtype.{lt} is a coarse structural type without inner-type information. "
+            "Use the rich LoomType classes (ListType, StructType, ArrayType, …) "
+            "to define complex column types."
+        )
+    return _LOOM_TO_POLARS[lt]()
+
+
+def _loom_temporal_to_polars(lt: DatetimeType | DurationType) -> pl.DataType:
+    time_unit = cast(
+        Literal["ns", "us", "ms"],
+        lt.time_unit if lt.time_unit in ("ns", "us", "ms") else "us",
+    )
+    if isinstance(lt, DurationType):
+        return pl.Duration(time_unit)
+    return pl.Datetime(time_unit, lt.time_zone)

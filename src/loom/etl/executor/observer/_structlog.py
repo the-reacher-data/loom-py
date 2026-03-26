@@ -76,7 +76,7 @@ class StructlogRunObserver:
     def __init__(self, slow_step_threshold_ms: int | None = None) -> None:
         self._slow_ms = slow_step_threshold_ms
 
-    def on_pipeline_start(self, plan: Any, params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
         _log.info(
             EventName.PIPELINE_START,
             pipeline=plan.pipeline_type.__name__,

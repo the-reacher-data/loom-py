@@ -65,7 +65,7 @@ class RunSinkObserver:
         # step_run_id → repr(exc)
         self._step_errors: dict[str, str] = {}
 
-    def on_pipeline_start(self, plan: Any, params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
         self._pipeline_ctx[ctx.run_id] = (ctx, plan.pipeline_type.__name__, _now())
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:

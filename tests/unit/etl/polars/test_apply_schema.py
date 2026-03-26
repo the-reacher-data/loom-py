@@ -156,8 +156,9 @@ def test_strict_fails_struct_field_type_mismatch() -> None:
             ),
         ),
     )
-    # x is Int64, not Float64
-    frame = pl.DataFrame({"point": [{"x": 1, "y": 2.0}]}).lazy()
+    frame = pl.DataFrame(
+        {"point": [{"x": 1, "y": 2.0}]}
+    ).lazy()  # frame has x as Int64, schema expects Float64
     with pytest.raises(SchemaError, match="point"):
         apply_schema(frame, schema, SchemaMode.STRICT)
 
@@ -195,8 +196,9 @@ def test_strict_fails_list_of_struct_inner_mismatch() -> None:
             ),
         ),
     )
-    # count is Float64, not Int64
-    frame = pl.DataFrame({"events": [[{"kind": "click", "count": 5.0}]]}).lazy()
+    frame = pl.DataFrame(
+        {"events": [[{"kind": "click", "count": 5.0}]]}
+    ).lazy()  # frame has count as Float64, schema expects Int64
     with pytest.raises(SchemaError, match="events"):
         apply_schema(frame, schema, SchemaMode.STRICT)
 
@@ -227,8 +229,9 @@ def test_strict_passes_decimal_type() -> None:
 
 def test_strict_fails_decimal_precision_mismatch() -> None:
     schema = (ColumnSchema("price", DecimalType(precision=10, scale=2)),)
-    # scale=4 != scale=2
-    frame = pl.DataFrame({"price": ["1.50"]}).select(pl.col("price").cast(pl.Decimal(10, 4))).lazy()
+    frame = (
+        pl.DataFrame({"price": ["1.50"]}).select(pl.col("price").cast(pl.Decimal(10, 4))).lazy()
+    )  # decimal scale mismatch: frame 4, schema 2
     with pytest.raises(SchemaError, match="price"):
         apply_schema(frame, schema, SchemaMode.STRICT)
 

@@ -585,7 +585,7 @@ def _validate_process_temps(plan: ProcessPlan, will_temp: set[str]) -> None:
 
 def _validate_process_node_temps(
     node: ProcessStepNode,
-    process_type: type[Any],
+    _process_type: type[Any],
     will_temp: set[str],
 ) -> None:
     match node:

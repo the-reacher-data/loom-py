@@ -125,7 +125,8 @@ class SparkDeltaWriter:
         existing_schema: Any,
     ) -> None:
         table_ref = spec.table_ref
-        assert table_ref is not None
+        if table_ref is None:
+            raise TypeError("table_ref must be set for UPSERT write operations")
         if existing_schema is None:
             _log.debug("upsert spark first run — creating table=%s", table_ref.ref)
             _first_run_overwrite_spark(self._spark, frame, spec, self._locator)
@@ -137,7 +138,8 @@ class SparkDeltaWriter:
         self._register_schema(table_ref, validated)
 
     def _write_frame(self, df: DataFrame, spec: TargetSpec, params_instance: Any) -> None:
-        assert spec.table_ref is not None
+        if spec.table_ref is None:
+            raise TypeError("table_ref must be set for Delta write operations")
         df = _sort_for_write(df, spec)
         writer = df.write.format("delta").option("optimizeWrite", "true")
         writer = _MODE_APPLIERS[spec.mode](writer, df, spec, params_instance)
@@ -171,7 +173,8 @@ def _apply_replace_partitions(writer: Any, df: DataFrame, spec: TargetSpec, _par
 
 
 def _apply_replace_where(writer: Any, _df: DataFrame, spec: TargetSpec, params: Any) -> Any:
-    assert spec.replace_predicate is not None
+    if spec.replace_predicate is None:
+        raise TypeError("replace_predicate must be set for REPLACE_WHERE write mode")
     predicate = predicate_to_sql(spec.replace_predicate, params)
     return writer.mode("overwrite").option("replaceWhere", predicate)
 
@@ -192,7 +195,7 @@ _MODE_APPLIERS: dict[WriteMode, Any] = {
 
 
 def _first_run_overwrite_spark(
-    spark: SparkSession,
+    _spark: SparkSession,
     df: DataFrame,
     spec: TargetSpec,
     locator: TableLocator | None,
@@ -202,7 +205,8 @@ def _first_run_overwrite_spark(
     Uses a plain overwrite with ``overwriteSchema=true`` so the table and
     schema are initialised from the frame.  Subsequent runs use MERGE.
     """
-    assert spec.table_ref is not None
+    if spec.table_ref is None:
+        raise TypeError("table_ref must be set for first-run overwrite operations")
     writer = (
         df.write.format("delta")
         .option("optimizeWrite", "true")
@@ -293,7 +297,8 @@ def _resolve_delta_table_spark(
     """
     from delta.tables import DeltaTable
 
-    assert spec.table_ref is not None
+    if spec.table_ref is None:
+        raise TypeError("table_ref must be set for Delta table resolution")
     if locator is not None:
         uri = locator.locate(spec.table_ref).uri
         return DeltaTable.forPath(spark, uri).alias(TARGET_ALIAS)
@@ -314,7 +319,8 @@ def _merge_spark(
         spec:    Target spec carrying keys, partition cols, exclude/include.
         locator: Path-based locator, or ``None`` for Unity Catalog.
     """
-    assert spec.table_ref is not None
+    if spec.table_ref is None:
+        raise TypeError("table_ref must be set for MERGE operations")
     table_ref_str = spec.table_ref.ref
     combos = _collect_partition_combos_for_merge_spark(df, spec.partition_cols, table_ref_str)
     predicate = _build_upsert_predicate(combos, spec, TARGET_ALIAS, SOURCE_ALIAS)

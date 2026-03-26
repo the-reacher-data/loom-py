@@ -194,7 +194,7 @@ class StubRunObserver:
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
         self.events.append((EventName.PIPELINE_END, {"run_id": ctx.run_id, "status": status}))
 
-    def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
+    def on_process_start(self, _plan: Any, ctx: RunContext, process_run_id: str) -> None:
         self.events.append(
             (EventName.PROCESS_START, {"run_id": ctx.run_id, "process_run_id": process_run_id})
         )

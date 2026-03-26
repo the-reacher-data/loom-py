@@ -44,9 +44,9 @@ class CompositeObserver:
     def __init__(self, observers: Sequence[ETLRunObserver]) -> None:
         self._observers = tuple(observers)
 
-    def on_pipeline_start(self, plan: Any, params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
         for obs in self._observers:
-            _safe(obs.on_pipeline_start, plan, params, ctx)
+            _safe(obs.on_pipeline_start, plan, _params, ctx)
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
         for obs in self._observers:

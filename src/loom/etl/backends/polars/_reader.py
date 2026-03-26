@@ -125,7 +125,8 @@ class PolarsDeltaReader:
 
     def _read_delta(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
         ref = spec.table_ref
-        assert ref is not None
+        if ref is None:
+            raise TypeError("table_ref must be set for Delta read operations")
         _log.debug(
             "read delta table=%s predicates=%d columns=%d schema_cols=%d",
             ref.ref,
