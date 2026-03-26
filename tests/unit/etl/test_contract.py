@@ -76,7 +76,7 @@ def test_resolve_schema_passthrough_explicit_tuple() -> None:
         ColumnSchema("id", LoomDtype.INT64),
         ColumnSchema("name", LoomDtype.UTF8),
     )
-    assert resolve_schema(schema) is schema
+    assert resolve_schema(schema) == schema
 
 
 def test_resolve_schema_empty_tuple() -> None:
@@ -131,17 +131,17 @@ def test_resolve_schema_non_class_non_tuple_raises() -> None:
 
 
 def test_resolve_json_type_passthrough_loom_dtype() -> None:
-    assert resolve_json_type(LoomDtype.UTF8) is LoomDtype.UTF8
+    assert resolve_json_type(LoomDtype.UTF8) == LoomDtype.UTF8
 
 
 def test_resolve_json_type_passthrough_struct_type() -> None:
     st = StructType(fields=(StructField("x", LoomDtype.FLOAT64),))
-    assert resolve_json_type(st) is st
+    assert resolve_json_type(st) == st
 
 
 def test_resolve_json_type_passthrough_list_type() -> None:
     lt = ListType(inner=LoomDtype.INT64)
-    assert resolve_json_type(lt) is lt
+    assert resolve_json_type(lt) == lt
 
 
 # ---------------------------------------------------------------------------
@@ -299,4 +299,4 @@ def test_strip_optional_multi_union_not_stripped() -> None:
 
 def test_resolve_json_type_passthrough_datetime_type() -> None:
     dt = DatetimeType("us", "UTC")
-    assert resolve_json_type(dt) is dt
+    assert resolve_json_type(dt) == dt

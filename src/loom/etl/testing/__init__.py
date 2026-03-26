@@ -188,10 +188,10 @@ class StubRunObserver:
     def __init__(self) -> None:
         self.events: list[tuple[EventName, dict[str, Any]]] = []
 
-    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, _plan: Any, _params: Any, ctx: RunContext) -> None:
         self.events.append((EventName.PIPELINE_START, {"run_id": ctx.run_id, "ctx": ctx}))
 
-    def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
+    def on_pipeline_end(self, ctx: RunContext, status: RunStatus, _duration_ms: int) -> None:
         self.events.append((EventName.PIPELINE_END, {"run_id": ctx.run_id, "status": status}))
 
     def on_process_start(self, _plan: Any, ctx: RunContext, process_run_id: str) -> None:
@@ -199,7 +199,7 @@ class StubRunObserver:
             (EventName.PROCESS_START, {"run_id": ctx.run_id, "process_run_id": process_run_id})
         )
 
-    def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
+    def on_process_end(self, process_run_id: str, status: RunStatus, _duration_ms: int) -> None:
         self.events.append(
             (EventName.PROCESS_END, {"process_run_id": process_run_id, "status": status})
         )
@@ -216,7 +216,7 @@ class StubRunObserver:
             )
         )
 
-    def on_step_end(self, step_run_id: str, status: RunStatus, duration_ms: int) -> None:
+    def on_step_end(self, step_run_id: str, status: RunStatus, _duration_ms: int) -> None:
         self.events.append((EventName.STEP_END, {"step_run_id": step_run_id, "status": status}))
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
