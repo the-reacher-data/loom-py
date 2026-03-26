@@ -35,7 +35,6 @@ def spark() -> Generator[SparkSession, None, None]:
     Scoped to the session to avoid the ~5s JVM startup cost per test.
     Log level set to ERROR to suppress verbose Spark output.
     """
-    SparkTestSession.skip_if_unavailable()
     with SparkTestSession.start(app="loom-etl-spark-tests", parallelism=1) as session:
         yield session
 
