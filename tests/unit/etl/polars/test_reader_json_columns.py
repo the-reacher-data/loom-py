@@ -52,7 +52,7 @@ def test_apply_json_decode_simple_struct() -> None:
 
     rows = [
         {"id": 1, "payload": _json_str({"order_id": 10, "amount": 99.5})},
-        {"id": 2, "payload": _json_str({"order_id": 20, "amount": 49.0})},
+        {"id": 2, "payload": _json_str({"order_id": 20, "amount": 49.5})},
     ]
     frame = pl.DataFrame(rows).lazy()
     result = _apply_json_decode(frame, (jc,)).collect()
@@ -62,7 +62,7 @@ def test_apply_json_decode_simple_struct() -> None:
     )
     decoded = result["payload"].to_list()
     assert decoded[0]["order_id"] == 10
-    assert decoded[1]["amount"] == 49.0
+    assert decoded[1]["amount"] == pytest.approx(49.5)
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +178,7 @@ def test_apply_json_decode_nested_struct() -> None:
     loc = result["loc"][0]
     assert loc["name"] == "HQ"
     assert loc["point"]["lat"] == pytest.approx(40.7)
+    assert loc["point"]["lon"] == pytest.approx(-74.0)
 
 
 # ---------------------------------------------------------------------------
