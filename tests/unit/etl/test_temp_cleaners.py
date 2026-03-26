@@ -25,7 +25,7 @@ from loom.etl._temp_cleaners import (
 @pytest.mark.parametrize(
     "path,expected",
     [
-        ("/tmp/loom/runs/abc", False),
+        ("/var/loom/runs/abc", False),
         ("relative/path", False),
         ("s3://bucket/tmp", True),
         ("gs://bucket/tmp", True),
