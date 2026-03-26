@@ -1,14 +1,9 @@
-"""Integration tests for ETLExecutor.run_step with PySpark + Delta I/O.
-
-SparkSession is session-scoped (shared) — each test uses a fresh tmp_path
-via spark_root so Delta tables never collide between tests.
-
-Requires ``pyspark>=3.5`` and ``delta-spark>=3.2``.  Skipped automatically
-when either package is absent (enforced by conftest.py).
-"""
+"""Integration tests for ETLExecutor.run_step with PySpark + Delta I/O."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -33,8 +28,6 @@ class NoParams(ETLParams):
 
 
 class DoubleAmountStep(ETLStep[NoParams]):
-    """Reads raw.orders, doubles the amount, writes staging.orders."""
-
     orders: FromTable = FromTable("raw.orders")  # type: ignore[assignment]
     target = IntoTable("staging.orders").replace()
 
@@ -43,8 +36,6 @@ class DoubleAmountStep(ETLStep[NoParams]):
 
 
 class PassThroughStep(ETLStep[NoParams]):
-    """Copies raw.events to staging.events unchanged."""
-
     events: FromTable = FromTable("raw.events")  # type: ignore[assignment]
     target = IntoTable("staging.events").replace()
 
@@ -53,8 +44,6 @@ class PassThroughStep(ETLStep[NoParams]):
 
 
 class AppendStep(ETLStep[NoParams]):
-    """Appends raw.deltas into staging.ledger."""
-
     deltas: FromTable = FromTable("raw.deltas")  # type: ignore[assignment]
     target = IntoTable("staging.ledger").append()
 
@@ -62,191 +51,230 @@ class AppendStep(ETLStep[NoParams]):
         return deltas
 
 
-def _read(spark: SparkSession, root, ref: str) -> DataFrame:
-    path = spark_table_path(Path(root), TableRef(ref))
+SeedSparkTable = Callable[[str, DataFrame], None]
+
+
+@dataclass(frozen=True)
+class CountScenario:
+    step_type: type[ETLStep[NoParams]]
+    source_table: str
+    source_rows: list[tuple[object, ...]]
+    source_columns: list[str]
+    target_table: str
+    target_rows: list[tuple[object, ...]]
+    target_columns: list[str]
+    expected_count: int
+
+
+def _read(spark: SparkSession, root: Path, ref: str) -> DataFrame:
+    path = spark_table_path(root, TableRef(ref))
     return spark.read.format("delta").load(str(path))
 
 
-def test_run_step_writes_transformed_data(
+def _seed(
     spark: SparkSession,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-    spark_root,
+    seed_spark_table: SeedSparkTable,
+    table_name: str,
+    rows: list[tuple[object, ...]],
+    columns: list[str],
 ) -> None:
-    """execute() result lands in the target Delta table."""
-    seed_spark_table(
-        "raw.orders",
-        spark.createDataFrame([(1, 10.0), (2, 20.0), (3, 30.0)], ["id", "amount"]),
+    seed_spark_table(table_name, spark.createDataFrame(rows, columns))
+
+
+class TestRunStepDataFlow:
+    _COUNT_SCENARIOS = (
+        CountScenario(
+            step_type=PassThroughStep,
+            source_table="raw.events",
+            source_rows=[(i, i * 10) for i in range(5)],
+            source_columns=["ts", "val"],
+            target_table="staging.events",
+            target_rows=[(0, 0)],
+            target_columns=["ts", "val"],
+            expected_count=5,
+        ),
+        CountScenario(
+            step_type=AppendStep,
+            source_table="raw.deltas",
+            source_rows=[(1, 10), (2, 20)],
+            source_columns=["id", "v"],
+            target_table="staging.ledger",
+            target_rows=[(0, 0)],
+            target_columns=["id", "v"],
+            expected_count=3,
+        ),
     )
-    seed_spark_table("staging.orders", spark.createDataFrame([(0, 0.0)], ["id", "amount"]))
 
-    plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
+    @pytest.mark.parametrize("scenario", _COUNT_SCENARIOS)
+    def test_run_step_writes_expected_row_count(
+        self,
+        scenario: CountScenario,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+        spark_root: Path,
+    ) -> None:
+        _seed(
+            spark,
+            seed_spark_table,
+            scenario.source_table,
+            scenario.source_rows,
+            scenario.source_columns,
+        )
+        _seed(
+            spark,
+            seed_spark_table,
+            scenario.target_table,
+            scenario.target_rows,
+            scenario.target_columns,
+        )
 
-    result = _read(spark, spark_root, "staging.orders").orderBy("id")
-    amounts = [row["amount"] for row in result.collect()]
-    assert amounts == pytest.approx([20.0, 40.0, 60.0])
-
-
-def test_run_step_row_count_preserved(
-    spark: SparkSession,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-    spark_root,
-) -> None:
-    seed_spark_table(
-        "raw.events",
-        spark.createDataFrame([(i, i * 10) for i in range(5)], ["ts", "val"]),
-    )
-    seed_spark_table("staging.events", spark.createDataFrame([(0, 0)], ["ts", "val"]))
-
-    plan = ETLCompiler().compile_step(PassThroughStep)
-    ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
-
-    assert _read(spark, spark_root, "staging.events").count() == 5
-
-
-def test_run_step_replace_overwrites_existing_target(
-    spark: SparkSession,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-    spark_root,
-) -> None:
-    seed_spark_table("raw.orders", spark.createDataFrame([(1, 5.0)], ["id", "amount"]))
-    seed_spark_table("staging.orders", spark.createDataFrame([(99, 999.0)], ["id", "amount"]))
-
-    plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
-
-    result = _read(spark, spark_root, "staging.orders").collect()
-    assert len(result) == 1
-    assert result[0]["id"] == 1
-    assert result[0]["amount"] == pytest.approx(10.0)
-
-
-def test_run_step_append_adds_rows(
-    spark: SparkSession,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-    spark_root,
-) -> None:
-    seed_spark_table("raw.deltas", spark.createDataFrame([(1, 10), (2, 20)], ["id", "v"]))
-    seed_spark_table("staging.ledger", spark.createDataFrame([(0, 0)], ["id", "v"]))
-
-    plan = ETLCompiler().compile_step(AppendStep)
-    ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
-
-    assert _read(spark, spark_root, "staging.ledger").count() == 3
-
-
-def test_run_step_emits_success_events(
-    spark: SparkSession,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-) -> None:
-    seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
-    seed_spark_table("staging.orders", spark.createDataFrame([(0, 0.0)], ["id", "amount"]))
-
-    observer = StubRunObserver()
-    plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(spark_reader, spark_writer, observers=[observer]).run_step(plan, NoParams())
-
-    assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
-    assert observer.step_statuses == ["success"]
-
-
-def test_run_step_emits_error_event_on_failure(
-    spark_writer: SparkDeltaWriter,
-) -> None:
-    class FailingReader:
-        def read(self, spec: object, params: object) -> None:  # type: ignore[override]
-            raise RuntimeError("spark read failure")
-
-    observer = StubRunObserver()
-    plan = ETLCompiler().compile_step(DoubleAmountStep)
-
-    with pytest.raises(RuntimeError, match="spark read failure"):
-        ETLExecutor(FailingReader(), spark_writer, observers=[observer]).run_step(plan, NoParams())
-
-    assert observer.step_statuses == [RunStatus.FAILED]
-
-
-def test_writer_raises_schema_not_found_without_registered_schema(
-    spark: SparkSession,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-    seed_spark_table,
-) -> None:
-    """STRICT write to a table with no registered schema raises SchemaNotFoundError."""
-    seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
-    # staging.orders NOT seeded — catalog has no schema for it
-
-    plan = ETLCompiler().compile_step(DoubleAmountStep)
-    with pytest.raises(SchemaNotFoundError):
+        plan = ETLCompiler().compile_step(scenario.step_type)
         ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
 
+        assert _read(spark, spark_root, scenario.target_table).count() == scenario.expected_count
 
-def test_writer_overwrite_creates_table_on_first_write(
-    spark: SparkSession,
-    spark_root,
-    spark_catalog,
-    seed_spark_table,
-    spark_reader: SparkDeltaReader,
-    spark_writer: SparkDeltaWriter,
-) -> None:
-    """OVERWRITE creates the target table when it does not exist yet."""
+    def test_run_step_replace_overwrites_and_applies_transform(
+        self,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+        spark_root: Path,
+    ) -> None:
+        _seed(
+            spark,
+            seed_spark_table,
+            "raw.orders",
+            [(1, 10.0), (2, 20.0), (3, 30.0)],
+            ["id", "amount"],
+        )
+        _seed(
+            spark,
+            seed_spark_table,
+            "staging.orders",
+            [(99, 999.0)],
+            ["id", "amount"],
+        )
 
-    seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
+        plan = ETLCompiler().compile_step(DoubleAmountStep)
+        ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
 
-    class OverwriteStep(ETLStep[NoParams]):
-        orders: FromTable = FromTable("raw.orders")  # type: ignore[assignment]
-        target = IntoTable("staging.new").replace(schema=SchemaMode.OVERWRITE)
-
-        def execute(self, params: NoParams, *, orders: DataFrame) -> DataFrame:  # type: ignore[override]
-            return orders
-
-    plan = ETLCompiler().compile_step(OverwriteStep)
-    ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
-
-    assert spark_catalog.exists(TableRef("staging.new"))
-    result = _read(spark, spark_root, "staging.new").collect()
-    assert len(result) == 1
-
-
-def test_seed_registers_correct_schema_in_catalog(
-    spark: SparkSession,
-    seed_spark_table,
-    spark_catalog,
-) -> None:
-    seed_spark_table("raw.orders", spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
-    schema = spark_catalog.schema(TableRef("raw.orders"))
-    assert schema is not None
-    assert schema[0].name == "id"
-    assert schema[0].dtype is LoomDtype.INT64
-    assert schema[1].name == "amount"
-    assert schema[1].dtype is LoomDtype.FLOAT64
+        rows = _read(spark, spark_root, "staging.orders").orderBy("id").collect()
+        assert [row["id"] for row in rows] == [1, 2, 3]
+        assert [row["amount"] for row in rows] == pytest.approx([20.0, 40.0, 60.0])
 
 
-def test_reader_raises_type_error_for_file_spec(
-    spark_reader: SparkDeltaReader,
-) -> None:
-    spec = SourceSpec(
-        alias="data", kind=SourceKind.FILE, format=Format.CSV, path="s3://bucket/data.csv"
-    )
-    with pytest.raises(TypeError, match="FILE"):
-        spark_reader.read(spec, None)
+class TestRunStepEvents:
+    def test_run_step_emits_success_events(
+        self,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+    ) -> None:
+        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+        _seed(spark, seed_spark_table, "staging.orders", [(0, 0.0)], ["id", "amount"])
+
+        observer = StubRunObserver()
+        plan = ETLCompiler().compile_step(DoubleAmountStep)
+        ETLExecutor(spark_reader, spark_writer, observers=[observer]).run_step(plan, NoParams())
+
+        assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
+        assert observer.step_statuses == [RunStatus.SUCCESS]
+
+    def test_run_step_emits_error_event_on_failure(self, spark_writer: SparkDeltaWriter) -> None:
+        class FailingReader:
+            def read(self, spec: object, params: object) -> DataFrame:  # type: ignore[override]
+                raise RuntimeError("spark read failure")
+
+        observer = StubRunObserver()
+        plan = ETLCompiler().compile_step(DoubleAmountStep)
+
+        with pytest.raises(RuntimeError, match="spark read failure"):
+            ETLExecutor(FailingReader(), spark_writer, observers=[observer]).run_step(
+                plan, NoParams()
+            )
+
+        assert observer.step_statuses == [RunStatus.FAILED]
 
 
-def test_writer_raises_type_error_for_file_spec(
-    spark: SparkSession,
-    spark_writer: SparkDeltaWriter,
-) -> None:
-    spec = TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path="s3://bucket/out.csv")
-    frame = spark.createDataFrame([(1,)], ["id"])
-    with pytest.raises(TypeError, match="FILE"):
-        spark_writer.write(frame, spec, None)
+class TestRunStepContracts:
+    def test_writer_raises_schema_not_found_without_registered_schema(
+        self,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+    ) -> None:
+        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+
+        plan = ETLCompiler().compile_step(DoubleAmountStep)
+        with pytest.raises(SchemaNotFoundError):
+            ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
+
+    def test_writer_overwrite_creates_table_on_first_write(
+        self,
+        spark: SparkSession,
+        spark_root: Path,
+        spark_catalog,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+    ) -> None:
+        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+
+        class OverwriteStep(ETLStep[NoParams]):
+            orders: FromTable = FromTable("raw.orders")  # type: ignore[assignment]
+            target = IntoTable("staging.new").replace(schema=SchemaMode.OVERWRITE)
+
+            def execute(self, params: NoParams, *, orders: DataFrame) -> DataFrame:  # type: ignore[override]
+                return orders
+
+        plan = ETLCompiler().compile_step(OverwriteStep)
+        ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
+
+        assert spark_catalog.exists(TableRef("staging.new"))
+        assert _read(spark, spark_root, "staging.new").count() == 1
+
+    def test_seed_registers_correct_schema_in_catalog(
+        self,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_catalog,
+    ) -> None:
+        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+
+        schema = spark_catalog.schema(TableRef("raw.orders"))
+        assert schema is not None
+        assert schema[0].name == "id"
+        assert schema[0].dtype is LoomDtype.INT64
+        assert schema[1].name == "amount"
+        assert schema[1].dtype is LoomDtype.FLOAT64
+
+
+class TestSparkReaderWriterTypeGuards:
+    @pytest.mark.parametrize("role", ["reader", "writer"])
+    def test_delta_components_reject_file_specs(
+        self,
+        role: str,
+        spark: SparkSession,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+    ) -> None:
+        if role == "reader":
+            spec = SourceSpec(
+                alias="data",
+                kind=SourceKind.FILE,
+                format=Format.CSV,
+                path="s3://bucket/data.csv",
+            )
+            with pytest.raises(TypeError, match="FILE"):
+                spark_reader.read(spec, None)
+            return
+
+        spec = TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path="s3://bucket/out.csv")
+        frame = spark.createDataFrame([(1,)], ["id"])
+        with pytest.raises(TypeError, match="FILE"):
+            spark_writer.write(frame, spec, None)

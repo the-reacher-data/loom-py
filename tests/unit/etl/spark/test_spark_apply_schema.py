@@ -94,7 +94,11 @@ def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type
             return orders.withColumn("amount", F.col("amount") * 2)
 
     ORDERS_SCENARIO.apply(step_runner)
-    step_runner.run(DoubleStep, NoParams())
+    result = step_runner.run(DoubleStep, NoParams())
 
     expected = spark.createDataFrame([(1, 20.0), (2, 40.0)], ["id", "amount"])
-    assert_df_equality(step_runner.result, expected, ignore_row_order=True)
+    assert_df_equality(
+        spark.createDataFrame(result.to_polars().to_pandas()),
+        expected,
+        ignore_row_order=True,
+    )
