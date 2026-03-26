@@ -114,9 +114,8 @@ def _validate_catalog_tables(
             and spec.table_ref.ref not in will_create
             and not catalog.exists(spec.table_ref)
         ):
-            raise ETLCompilationError(
-                f"{step_type.__qualname__}: source '{binding.alias}' "
-                f"references unknown table '{spec.table_ref.ref}'"
+            raise ETLCompilationError.unknown_source_table(
+                step_type, binding.alias, spec.table_ref.ref
             )
 
     target_spec = target_binding.spec
@@ -126,7 +125,4 @@ def _validate_catalog_tables(
         and target_spec.table_ref.ref not in will_create
         and not catalog.exists(target_spec.table_ref)
     ):
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}: target references unknown table "
-            f"'{target_spec.table_ref.ref}'"
-        )
+        raise ETLCompilationError.unknown_target_table(step_type, target_spec.table_ref.ref)

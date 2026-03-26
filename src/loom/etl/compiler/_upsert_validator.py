@@ -28,24 +28,15 @@ def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
 
 def _check_upsert_keys_non_empty(step_type: type[Any], spec: TargetSpec) -> None:
     if not spec.upsert_keys:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}: upsert() requires at least one key column. "
-            'Pass keys=("col",) to identify rows uniquely.'
-        )
+        raise ETLCompilationError.upsert_no_keys(step_type)
 
 
 def _check_upsert_exclude_include_exclusive(step_type: type[Any], spec: TargetSpec) -> None:
     if spec.upsert_exclude and spec.upsert_include:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}: upsert() exclude= and include= are mutually exclusive. "
-            "Use one or the other, not both."
-        )
+        raise ETLCompilationError.upsert_exclude_include_conflict(step_type)
 
 
 def _check_upsert_exclude_keys_disjoint(step_type: type[Any], spec: TargetSpec) -> None:
     overlap = frozenset(spec.upsert_exclude) & frozenset(spec.upsert_keys)
     if overlap:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}: upsert() exclude={sorted(overlap)} overlaps with "
-            "upsert keys — key columns are always excluded from UPDATE SET."
-        )
+        raise ETLCompilationError.upsert_key_in_exclude(step_type, overlap)

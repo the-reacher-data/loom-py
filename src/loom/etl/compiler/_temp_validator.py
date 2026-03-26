@@ -76,11 +76,8 @@ def _check_temp_sources(step: StepPlan, will_temp: set[str]) -> None:
     for binding in step.source_bindings:
         spec = binding.spec
         if spec.kind is SourceKind.TEMP and spec.temp_name not in will_temp:
-            raise ETLCompilationError(
-                f"{step.step_type.__qualname__}: source '{binding.alias}' "
-                f"references FromTemp({spec.temp_name!r}) but no prior "
-                f"IntoTemp({spec.temp_name!r}) was found in the pipeline before this step"
-            )
+            temp_name = spec.temp_name or ""
+            raise ETLCompilationError.temp_not_produced(step.step_type, binding.alias, temp_name)
 
 
 def _register_temp_target(target_binding: TargetBinding, will_temp: set[str]) -> None:

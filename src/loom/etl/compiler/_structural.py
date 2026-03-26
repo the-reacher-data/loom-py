@@ -63,9 +63,8 @@ def validate_params_compat(
     context_fields = {f.name for f in msgspec.structs.fields(context_params)}
     missing = component_fields - context_fields
     if missing:
-        raise ETLCompilationError(
-            f"{component_type.__qualname__} requires params fields "
-            f"{sorted(missing)} not present in {context_params.__name__}"
+        raise ETLCompilationError.missing_params_fields(
+            component_type, frozenset(missing), context_params
         )
 
 
@@ -80,16 +79,10 @@ def _validate_params_arg(
     }
     positional = [p for p in params if p.kind in positional_kinds and p.name != "self"]
     if not positional:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}.execute: first parameter must be "
-            f"'params: {params_type.__name__}'"
-        )
+        raise ETLCompilationError.invalid_params_type(step_type, params_type)
     first = positional[0]
     if first.name != "params":
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}.execute: first parameter must be named 'params', "
-            f"got '{first.name}'"
-        )
+        raise ETLCompilationError.invalid_params_name(step_type, first.name)
 
 
 def _collect_kw_only_frames(
@@ -105,10 +98,7 @@ def _check_missing_frames(
 ) -> None:
     missing = source_aliases - set(kw_only)
     if missing:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}.execute: source(s) {sorted(missing)} "
-            f"declared in sources but missing as keyword-only parameter(s) after '*'"
-        )
+        raise ETLCompilationError.missing_source_params(step_type, frozenset(missing))
 
 
 def _check_extra_frames(
@@ -118,7 +108,4 @@ def _check_extra_frames(
 ) -> None:
     extra = set(kw_only) - source_aliases
     if extra:
-        raise ETLCompilationError(
-            f"{step_type.__qualname__}.execute: parameter(s) {sorted(extra)} "
-            f"declared after '*' but not found in sources"
-        )
+        raise ETLCompilationError.extra_source_params(step_type, frozenset(extra))

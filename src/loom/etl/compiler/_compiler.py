@@ -170,10 +170,7 @@ class ETLCompiler:
                 )
             )
         if not (isinstance(item, type) and issubclass(item, ETLProcess)):
-            raise ETLCompilationError(
-                f"{pipeline_type.__qualname__}.processes: "
-                f"expected ETLProcess subclass or list thereof, got {item!r}"
-            )
+            raise ETLCompilationError.invalid_process_item(pipeline_type, item)
         plan = self._get_or_build_process(item)
         validate_params_compat(item, plan.params_type, pipeline_params_type)
         return plan
@@ -207,10 +204,7 @@ class ETLCompiler:
                 )
             )
         if not (isinstance(item, type) and issubclass(item, ETLStep)):
-            raise ETLCompilationError(
-                f"{process_type.__qualname__}.steps: "
-                f"expected ETLStep subclass or list thereof, got {item!r}"
-            )
+            raise ETLCompilationError.invalid_step_item(process_type, item)
         plan = self._get_or_build_step(item)
         validate_params_compat(item, plan.params_type, process_params_type)
         return plan
@@ -266,14 +260,9 @@ class ETLCompiler:
     def _resolve_target_binding(self, step_type: type[ETLStep[Any]]) -> TargetBinding:
         target = step_type.target
         if target is None:
-            raise ETLCompilationError(
-                f"{step_type.__qualname__}: 'target' is required but not declared"
-            )
+            raise ETLCompilationError.missing_target(step_type)
         if not isinstance(target, (IntoTable, IntoFile, IntoTemp)):
-            raise ETLCompilationError(
-                f"{step_type.__qualname__}: 'target' must be "
-                "IntoTable(...), IntoFile(...), or IntoTemp(...)"
-            )
+            raise ETLCompilationError.invalid_target_type(step_type)
         spec = target._to_spec()
         validate_upsert_spec(step_type, spec)
         return TargetBinding(spec=spec)
@@ -285,18 +274,13 @@ def _bindings_from_grouped(step_type: type[ETLStep[Any]]) -> tuple[SourceBinding
         case Sources() | SourceSet() as grouped:
             return tuple(SourceBinding(alias=spec.alias, spec=spec) for spec in grouped._to_specs())
         case _:
-            raise ETLCompilationError(
-                f"{step_type.__qualname__}: 'sources' must be Sources(...) or a SourceSet instance"
-            )
+            raise ETLCompilationError.invalid_sources_type(step_type)
 
 
 def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
     pt = getattr(cls, "_params_type", None)
     if pt is None:
-        raise ETLCompilationError(
-            f"{cls.__qualname__}: missing generic parameter — "
-            f"use {kind}[YourParams] not bare {kind}"
-        )
+        raise ETLCompilationError.missing_generic_param(cls, kind)
     return cast(type[Any], pt)
 
 
