@@ -38,13 +38,35 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
 
+from loom.etl._contract import resolve_json_type, resolve_schema
 from loom.etl._format import Format
 from loom.etl._predicate import PredicateNode
 from loom.etl._read_options import ReadOptions
-from loom.etl._schema import ColumnSchema
+from loom.etl._schema import ColumnSchema, LoomType
 from loom.etl._table import TableRef
 
 ParamsT = TypeVar("ParamsT")
+
+
+# ---------------------------------------------------------------------------
+# JSON column spec — internal
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JsonColumnSpec:
+    """Declares that a string column contains JSON to be decoded at read time.
+
+    Produced by :meth:`FromTable.parse_json` and :meth:`FromFile.parse_json`.
+    Consumed by backend readers — never constructed directly in user code.
+
+    Args:
+        column:    Name of the string column that holds the JSON payload.
+        loom_type: Target :data:`~loom.etl._schema.LoomType` to decode into.
+    """
+
+    column: str
+    loom_type: LoomType
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +120,7 @@ class SourceSpec:
     schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
     read_options: ReadOptions | None = None
     columns: tuple[str, ...] = field(default_factory=tuple)
+    json_columns: tuple[JsonColumnSpec, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +145,14 @@ class FromTable:
         )
     """
 
-    __slots__ = ("_ref", "_predicates", "_schema", "_columns")
+    __slots__ = ("_ref", "_predicates", "_schema", "_columns", "_json_columns")
 
     def __init__(self, ref: str | TableRef) -> None:
         self._ref: TableRef = TableRef(ref) if isinstance(ref, str) else ref
         self._predicates: tuple[PredicateNode, ...] = ()
         self._schema: tuple[ColumnSchema, ...] = ()
         self._columns: tuple[str, ...] = ()
+        self._json_columns: tuple[JsonColumnSpec, ...] = ()
 
     @property
     def table_ref(self) -> TableRef:
@@ -140,20 +164,17 @@ class FromTable:
         """Declared filter predicates."""
         return self._predicates
 
-    def with_schema(self, schema: tuple[ColumnSchema, ...]) -> FromTable:
+    def with_schema(self, schema: tuple[ColumnSchema, ...] | type[Any]) -> FromTable:
         """Return a new ``FromTable`` with a user-declared source schema.
 
         The schema is applied at read time via column-level casts — each
-        declared column is cast to its :class:`~loom.etl._schema.LoomDtype`.
-        Extra columns present in the table but absent from *schema* pass
-        through unchanged.
-
-        Use this to enforce types when reading from a table whose registered
-        schema may differ from what your step expects, or to document the
-        expected contract explicitly.
+        declared column is cast to its declared type.  Extra columns present
+        in the table but absent from *schema* pass through unchanged.
 
         Args:
-            schema: Tuple of :class:`~loom.etl._schema.ColumnSchema` entries.
+            schema: Either a ``tuple[ColumnSchema, ...]`` or an annotated class
+                    (``msgspec.Struct``, ``dataclass``, or plain Python class)
+                    whose fields define the column contract.
 
         Returns:
             New ``FromTable`` with the schema applied at read time.
@@ -164,9 +185,52 @@ class FromTable:
                 ColumnSchema("id", LoomDtype.INT64, nullable=False),
                 ColumnSchema("amount", LoomDtype.FLOAT64),
             ))
+
+            # Equivalent with an annotated class:
+            class OrderRow(msgspec.Struct):
+                id: int
+                amount: float
+
+            orders = FromTable("raw.orders").with_schema(OrderRow)
         """
         new = _copy_from_table(self)
-        object.__setattr__(new, "_schema", schema)
+        object.__setattr__(new, "_schema", resolve_schema(schema))
+        return new
+
+    def parse_json(self, column: str, contract: Any) -> FromTable:
+        """Return a new ``FromTable`` that decodes *column* from JSON at read time.
+
+        The string column *column* is decoded into a structured type using the
+        Polars ``str.json_decode`` expression (or Spark ``from_json``).
+
+        Args:
+            column:   Name of the string column that contains the JSON payload.
+            contract: Target type for the decoded column.  Accepted forms:
+
+                      * Any :data:`~loom.etl._schema.LoomType` instance
+                        (e.g. ``StructType(...)``, ``ListType(...)``).
+                      * An annotated class (``msgspec.Struct``, ``dataclass``,
+                        or plain Python class) — converted to
+                        :class:`~loom.etl._schema.StructType`.
+                      * ``list[SomeClass]`` — converted to
+                        :class:`~loom.etl._schema.ListType`.
+
+        Returns:
+            New ``FromTable`` with the JSON decode applied at read time.
+
+        Example::
+
+            class Payload(msgspec.Struct):
+                event_type: str
+                user_id: int
+
+            events = FromTable("raw.events").parse_json("payload", Payload)
+            events = FromTable("raw.events").parse_json("tags", list[str])
+        """
+        loom_type = resolve_json_type(contract)
+        spec = JsonColumnSpec(column=column, loom_type=loom_type)
+        new = _copy_from_table(self)
+        object.__setattr__(new, "_json_columns", self._json_columns + (spec,))
         return new
 
     def where(self, *predicates: Any) -> FromTable:
@@ -224,6 +288,7 @@ class FromTable:
             table_ref=self._ref,
             schema=self._schema,
             columns=self._columns,
+            json_columns=self._json_columns,
         )
 
     def __repr__(self) -> str:
@@ -245,7 +310,7 @@ class FromFile:
         report = FromFile("s3://raw/report_{run_date}.xlsx", format=Format.XLSX)
     """
 
-    __slots__ = ("_path", "_format", "_schema", "_read_options", "_columns")
+    __slots__ = ("_path", "_format", "_schema", "_read_options", "_columns", "_json_columns")
 
     def __init__(self, path: str, *, format: Format) -> None:
         self._path = path
@@ -253,6 +318,7 @@ class FromFile:
         self._schema: tuple[ColumnSchema, ...] = ()
         self._read_options: ReadOptions | None = None
         self._columns: tuple[str, ...] = ()
+        self._json_columns: tuple[JsonColumnSpec, ...] = ()
 
     @property
     def path(self) -> str:
@@ -264,30 +330,60 @@ class FromFile:
         """I/O format."""
         return self._format
 
-    def with_schema(self, schema: tuple[ColumnSchema, ...]) -> FromFile:
+    def with_schema(self, schema: tuple[ColumnSchema, ...] | type[Any]) -> FromFile:
         """Return a new ``FromFile`` with a user-declared source schema.
 
         The schema is applied at read time — each declared column is cast to
-        its :class:`~loom.etl._schema.LoomDtype`.  Extra columns in the file
-        that are not declared in *schema* pass through unchanged.
-
-        Combine with ``.with_options()`` to fully control how a file is read::
-
-            events = FromFile("s3://raw/events.json", format=Format.JSON)
-                .with_options(JsonReadOptions(infer_schema_length=None))
-                .with_schema((
-                    ColumnSchema("id", LoomDtype.INT64, nullable=False),
-                    ColumnSchema("ts", LoomDtype.DATETIME),
-                ))
+        its declared type.  Extra columns in the file not declared in *schema*
+        pass through unchanged.
 
         Args:
-            schema: Tuple of :class:`~loom.etl._schema.ColumnSchema` entries.
+            schema: Either a ``tuple[ColumnSchema, ...]`` or an annotated class
+                    (``msgspec.Struct``, ``dataclass``, or plain Python class)
+                    whose fields define the column contract.
 
         Returns:
             New ``FromFile`` with the schema applied at read time.
+
+        Example::
+
+            class EventRow(msgspec.Struct):
+                id: int
+                ts: datetime.datetime
+
+            events = (
+                FromFile("s3://raw/events.json", format=Format.JSON)
+                .with_options(JsonReadOptions(infer_schema_length=None))
+                .with_schema(EventRow)
+            )
         """
         new = _copy_from_file(self)
-        object.__setattr__(new, "_schema", schema)
+        object.__setattr__(new, "_schema", resolve_schema(schema))
+        return new
+
+    def parse_json(self, column: str, contract: Any) -> FromFile:
+        """Return a new ``FromFile`` that decodes *column* from JSON at read time.
+
+        The string column *column* is decoded into a structured type using the
+        Polars ``str.json_decode`` expression (or Spark ``from_json``).
+
+        Args:
+            column:   Name of the string column that contains the JSON payload.
+            contract: Target type for the decoded column.  Accepted forms:
+
+                      * Any :data:`~loom.etl._schema.LoomType` instance.
+                      * An annotated class — converted to
+                        :class:`~loom.etl._schema.StructType`.
+                      * ``list[SomeClass]`` — converted to
+                        :class:`~loom.etl._schema.ListType`.
+
+        Returns:
+            New ``FromFile`` with the JSON decode applied at read time.
+        """
+        loom_type = resolve_json_type(contract)
+        spec = JsonColumnSpec(column=column, loom_type=loom_type)
+        new = _copy_from_file(self)
+        object.__setattr__(new, "_json_columns", self._json_columns + (spec,))
         return new
 
     def with_options(self, options: ReadOptions) -> FromFile:
@@ -347,6 +443,7 @@ class FromFile:
             schema=self._schema,
             read_options=self._read_options,
             columns=self._columns,
+            json_columns=self._json_columns,
         )
 
     def __repr__(self) -> str:
@@ -360,6 +457,7 @@ def _copy_from_table(src: FromTable) -> FromTable:
     object.__setattr__(new, "_predicates", src._predicates)
     object.__setattr__(new, "_schema", src._schema)
     object.__setattr__(new, "_columns", src._columns)
+    object.__setattr__(new, "_json_columns", src._json_columns)
     return new
 
 
@@ -371,6 +469,7 @@ def _copy_from_file(src: FromFile) -> FromFile:
     object.__setattr__(new, "_schema", src._schema)
     object.__setattr__(new, "_read_options", src._read_options)
     object.__setattr__(new, "_columns", src._columns)
+    object.__setattr__(new, "_json_columns", src._json_columns)
     return new
 
 

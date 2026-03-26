@@ -58,7 +58,7 @@ from loom.etl._read_options import (
     JsonReadOptions,
 )
 from loom.etl._schema import ColumnSchema
-from loom.etl._source import SourceKind, SourceSpec
+from loom.etl._source import JsonColumnSpec, SourceKind, SourceSpec
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.backends.polars._predicate import predicate_to_polars
 
@@ -143,7 +143,8 @@ class PolarsDeltaReader:
             frame = frame.filter(predicate_to_polars(pred, params_instance))
         if spec.columns:
             frame = frame.select(list(spec.columns))
-        return _apply_source_schema(frame, spec.schema)
+        frame = _apply_source_schema(frame, spec.schema)
+        return _apply_json_decode(frame, spec.json_columns)
 
     # ------------------------------------------------------------------
     # File
@@ -162,7 +163,8 @@ class PolarsDeltaReader:
         frame = _FILE_READERS[spec.format](spec.path, spec.read_options)
         if spec.columns:
             frame = frame.select(list(spec.columns))
-        return _apply_source_schema(frame, spec.schema)
+        frame = _apply_source_schema(frame, spec.schema)
+        return _apply_json_decode(frame, spec.json_columns)
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +190,36 @@ def _apply_source_schema(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) 
         return frame
     cast_exprs = [pl.col(col.name).cast(loom_type_to_polars(col.dtype)) for col in schema]
     return frame.with_columns(cast_exprs)
+
+
+# ---------------------------------------------------------------------------
+# JSON column decoding
+# ---------------------------------------------------------------------------
+
+
+def _apply_json_decode(
+    frame: pl.LazyFrame, json_columns: tuple[JsonColumnSpec, ...]
+) -> pl.LazyFrame:
+    """Decode JSON string columns using ``str.json_decode``.
+
+    Each entry in *json_columns* replaces the named string column with a
+    structured value decoded from its JSON content.  Applied lazily — no
+    materialisation occurs.
+
+    Args:
+        frame:        Lazy frame to apply decoding to.
+        json_columns: JSON column specs from the source spec.
+
+    Returns:
+        Original frame when *json_columns* is empty; otherwise a new lazy
+        frame with ``str.json_decode`` expressions for the declared columns.
+    """
+    if not json_columns:
+        return frame
+    exprs = [
+        pl.col(jc.column).str.json_decode(loom_type_to_polars(jc.loom_type)) for jc in json_columns
+    ]
+    return frame.with_columns(exprs)
 
 
 # ---------------------------------------------------------------------------

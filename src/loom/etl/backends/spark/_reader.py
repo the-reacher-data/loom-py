@@ -23,9 +23,11 @@ import os
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from loom.etl._locator import TableLocator, _as_locator
-from loom.etl._source import SourceSpec
+from loom.etl._source import JsonColumnSpec, SourceSpec
+from loom.etl.backends.spark._dtype import loom_type_to_spark
 
 _log = logging.getLogger(__name__)
 
@@ -96,4 +98,26 @@ class SparkDeltaReader:
         if spec.columns:
             _log.debug("read spark table=%s columns=%d", spec.table_ref.ref, len(spec.columns))
             df = df.select(list(spec.columns))
+        return _apply_json_decode_spark(df, spec.json_columns)
+
+
+def _apply_json_decode_spark(df: DataFrame, json_columns: tuple[JsonColumnSpec, ...]) -> DataFrame:
+    """Decode JSON string columns using Spark ``from_json``.
+
+    Each entry in *json_columns* replaces the named string column with a
+    structured value decoded from its JSON content.
+
+    Args:
+        df:           Source DataFrame.
+        json_columns: JSON column specs from the source spec.
+
+    Returns:
+        Original DataFrame when *json_columns* is empty; otherwise a new
+        DataFrame with ``from_json`` applied for the declared columns.
+    """
+    if not json_columns:
         return df
+    for jc in json_columns:
+        schema_ddl: str = loom_type_to_spark(jc.loom_type).simpleString()
+        df = df.withColumn(jc.column, F.from_json(F.col(jc.column), schema_ddl))
+    return df
