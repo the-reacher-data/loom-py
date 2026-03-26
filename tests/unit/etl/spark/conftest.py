@@ -24,8 +24,8 @@ from loom.etl._table import TableRef  # noqa: E402
 from loom.etl.backends.polars import DeltaCatalog  # noqa: E402
 from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
 from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
-from loom.etl.backends.spark._testing import SparkTestSession  # noqa: E402
 from loom.etl.testing import StepRunner  # noqa: E402
+from loom.etl.testing.spark import SparkTestSession  # noqa: E402
 
 
 @pytest.fixture(scope="session")

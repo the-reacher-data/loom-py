@@ -13,7 +13,7 @@ from pyspark.sql import functions as F
 
 from loom.etl._schema import ColumnSchema, SchemaError, SchemaNotFoundError
 from loom.etl._target import SchemaMode
-from loom.etl.backends.spark._dtype import loom_to_spark, spark_to_loom
+from loom.etl.backends.spark._dtype import loom_type_to_spark, spark_to_loom
 
 
 def spark_apply_schema(
@@ -86,7 +86,7 @@ def _evolve(frame: DataFrame, schema: tuple[ColumnSchema, ...]) -> DataFrame:
     if not missing:
         return frame
 
-    null_cols = [F.lit(None).cast(loom_to_spark(col.dtype)).alias(col.name) for col in missing]
+    null_cols = [F.lit(None).cast(loom_type_to_spark(col.dtype)).alias(col.name) for col in missing]
     return frame.withColumns({col.name: expr for col, expr in zip(missing, null_cols, strict=True)})
 
 

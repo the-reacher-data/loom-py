@@ -1,38 +1,26 @@
-"""Observer package — ETL lifecycle observability.
+"""Observer package — ETL lifecycle observability."""
 
-Contains the observer protocol, event types, the run sink protocol,
-and all built-in implementations.
-
-Import from here, never from the internal submodules directly.
-
-Contracts:
-
-* :class:`ETLRunObserver`   — lifecycle observer protocol.
-* :class:`RunSink`          — persistence sink protocol for run records.
-
-Implementations:
-
-* :class:`StructlogRunObserver` — fully structured events via structlog.
-* :class:`RunSinkObserver`      — routes lifecycle events to a :class:`RunSink`.
-"""
-
+from loom.etl.executor.observer._composite import CompositeObserver
 from loom.etl.executor.observer._events import (
     EventName,
     PipelineRunRecord,
     ProcessRunRecord,
+    RunContext,
     RunRecord,
     RunStatus,
     StepRunRecord,
 )
 from loom.etl.executor.observer._protocol import ETLRunObserver
-from loom.etl.executor.observer._sink import RunSink
 from loom.etl.executor.observer._sink_observer import RunSinkObserver
 from loom.etl.executor.observer._structlog import StructlogRunObserver
+from loom.etl.executor.observer.sinks.protocol import RunSink
 
 __all__ = [
     # contracts
     "ETLRunObserver",
     "RunSink",
+    # run context
+    "RunContext",
     # events and records
     "EventName",
     "RunStatus",
@@ -41,6 +29,7 @@ __all__ = [
     "ProcessRunRecord",
     "StepRunRecord",
     # implementations
+    "CompositeObserver",
     "StructlogRunObserver",
     "RunSinkObserver",
 ]

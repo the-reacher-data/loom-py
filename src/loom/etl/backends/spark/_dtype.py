@@ -7,7 +7,16 @@ from __future__ import annotations
 
 from pyspark.sql import types as T
 
-from loom.etl._schema import LoomDtype
+from loom.etl._schema import (
+    ArrayType,
+    DatetimeType,
+    DecimalType,
+    DurationType,
+    ListType,
+    LoomDtype,
+    LoomType,
+    StructType,
+)
 
 # ---------------------------------------------------------------------------
 # Mapping tables
@@ -80,3 +89,35 @@ def spark_to_loom(dtype: T.DataType) -> LoomDtype:
         the Spark type has no direct mapping.
     """
     return _SPARK_TO_LOOM.get(type(dtype), LoomDtype.NULL)
+
+
+def loom_type_to_spark(lt: LoomType) -> T.DataType:
+    """Recursively convert a :data:`~loom.etl._schema.LoomType` to a PySpark DataType.
+
+    Handles primitive :class:`~loom.etl._schema.LoomDtype` values as well as
+    complex structural types such as :class:`~loom.etl._schema.ListType`,
+    :class:`~loom.etl._schema.ArrayType`, :class:`~loom.etl._schema.StructType`,
+    :class:`~loom.etl._schema.DecimalType`, :class:`~loom.etl._schema.DatetimeType`,
+    and :class:`~loom.etl._schema.DurationType`.
+
+    Args:
+        lt: Any :data:`~loom.etl._schema.LoomType` value.
+
+    Returns:
+        Concrete PySpark DataType instance.
+    """
+    if isinstance(lt, LoomDtype):
+        return loom_to_spark(lt)
+    if isinstance(lt, ListType):
+        return T.ArrayType(loom_type_to_spark(lt.inner))
+    if isinstance(lt, ArrayType):
+        return T.ArrayType(loom_type_to_spark(lt.inner))
+    if isinstance(lt, StructType):
+        return T.StructType([T.StructField(f.name, loom_type_to_spark(f.dtype)) for f in lt.fields])
+    if isinstance(lt, DecimalType):
+        return T.DecimalType(lt.precision or 38, lt.scale or 18)
+    if isinstance(lt, DatetimeType):
+        return T.TimestampType()
+    if isinstance(lt, DurationType):
+        return T.LongType()
+    return T.StringType()

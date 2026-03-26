@@ -24,14 +24,14 @@ rest = [
 sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
 config = ["omegaconf>=2.3,<3.0"]
 cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
-etl-polars = ["polars>=1.0,<2.0", "deltalake>=0.25,<1.0"]
-etl-spark = ["pyspark>=3.5,<4.0", "delta-spark>=3.2,<4.0"]
+etl-polars = ["polars>=1.0,<2.0", "deltalake>=0.25,<1.0", "fsspec>=2024.2.0"]
+etl-spark = ["pyspark>=3.5,<4.0", "delta-spark>=3.2,<4.0", "findspark>=2.0,<3.0", "fsspec>=2024.2.0"]
 pyspark = ["pyspark>=3.5,<4.0"]
 prometheus = ["prometheus-client>=0.20"]
 celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
 
 [project.entry-points."pytest11"]
-loom-spark = "loom.etl.backends.spark._fixtures"
+loom-spark = "loom.etl.testing.spark"
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -66,6 +66,7 @@ dev = [
     "delta-spark>=3.2,<4.0",
     "chispa>=0.10,<1.0",
     "pytest-cov>=7.1.0",
+    "findspark>=2.0.1",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -98,12 +99,19 @@ extend-immutable-calls = [
 pythonVersion = "3.11"
 include = ["src"]
 typeCheckingMode = "standard"
+reportMissingModuleSource = "none"
+reportMissingImports = "none"
+ignore = ["src/loom/etl/testing/spark.py"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = ["src"]
 exclude = ["^tests/"]
+
+[[tool.mypy.overrides]]
+module = ["pyspark.*", "delta.*", "findspark", "fsspec.*", "chispa.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

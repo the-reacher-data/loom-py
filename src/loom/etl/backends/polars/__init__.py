@@ -12,16 +12,16 @@ Requires the ``etl-polars`` optional dependency group::
 
 Usage::
 
-    from pathlib import Path
+    from loom.etl._locator import PrefixLocator
     from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
     from loom.etl.compiler import ETLCompiler
     from loom.etl.executor import ETLExecutor
 
-    root = Path("/data/delta")
-    catalog = DeltaCatalog(root)
+    locator = PrefixLocator("s3://my-lake/", storage_options={"AWS_REGION": "eu-west-1"})
+    catalog = DeltaCatalog(locator)
     executor = ETLExecutor(
-        reader=PolarsDeltaReader(root),
-        writer=PolarsDeltaWriter(root, catalog),
+        reader=PolarsDeltaReader(locator),
+        writer=PolarsDeltaWriter(locator, catalog),
     )
     plan = ETLCompiler(catalog=catalog).compile_step(MyStep)
     executor.run_step(plan, MyParams(...))

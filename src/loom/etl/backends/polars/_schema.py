@@ -20,6 +20,29 @@ Schema enforcement rules
 | schema is None           | error    | error    | error     |
 +--------------------------+----------+----------+-----------+
 
+Complex / nested type validation
+---------------------------------
+
+When a :class:`~loom.etl._schema.ColumnSchema` uses a coarse
+:class:`~loom.etl._schema.LoomDtype` (e.g. ``LoomDtype.DATETIME``, or the
+structural aliases ``LoomDtype.LIST`` / ``LoomDtype.STRUCT``), validation
+accepts any parametrisation of that base type.
+
+When a structural class is used (e.g. :class:`~loom.etl._schema.ListType`,
+:class:`~loom.etl._schema.StructType`, :class:`~loom.etl._schema.DatetimeType`),
+validation enforces **full structural equality** including inner types at
+every nesting level.
+
+EVOLVE + missing complex column
+---------------------------------
+EVOLVE fills missing columns with ``pl.lit(None).cast(polars_type)``.
+For complex columns the Polars type is reconstructed from the
+:data:`~loom.etl._schema.LoomType` via
+:func:`~loom.etl.backends.polars._dtype.loom_type_to_polars`.
+Coarse structural aliases (e.g. ``LoomDtype.LIST``) carry no inner-type
+information and therefore cannot produce a valid cast expression —
+:exc:`~loom.etl._schema.SchemaError` is raised in that case.
+
 The *missing column* case in EVOLVE adds a typed null expression
 (``pl.lit(None).cast(polars_type)``) so the frame always carries
 the expected columns in the correct dtype for the writer.
@@ -30,11 +53,19 @@ the table schema with whatever the frame contains.
 
 from __future__ import annotations
 
+import logging
+
 import polars as pl
 
-from loom.etl._schema import ColumnSchema, SchemaError, SchemaNotFoundError
+from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 from loom.etl._target import SchemaMode
-from loom.etl.backends.polars._dtype import loom_to_polars, polars_to_loom
+from loom.etl.backends.polars._dtype import (
+    loom_type_to_polars,
+    polars_to_loom,
+    polars_to_loom_type,
+)
+
+_log = logging.getLogger(__name__)
 
 # Re-exported for backwards compatibility — import from loom.etl._schema directly.
 __all__ = ["apply_schema", "SchemaNotFoundError", "SchemaError"]
@@ -69,6 +100,8 @@ def apply_schema(
             "No schema registered for this table. "
             "Register the schema via catalog.update_schema() before the first write."
         )
+
+    _log.debug("apply_schema mode=%s schema_cols=%d", mode, len(schema))
 
     if mode is SchemaMode.OVERWRITE:
         return frame
@@ -116,7 +149,20 @@ def _apply_evolve(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) -> pl.L
     if not missing:
         return frame
 
-    null_exprs = [pl.lit(None).cast(loom_to_polars(col.dtype)).alias(col.name) for col in missing]
+    _log.debug("evolve fill cols=%s", [c.name for c in missing])
+    null_exprs = []
+    for col in missing:
+        try:
+            polars_type = loom_type_to_polars(col.dtype)
+        except TypeError as exc:
+            raise SchemaError(
+                f"EVOLVE: cannot fill missing column '{col.name}' (dtype={col.dtype!r}). "
+                "Coarse structural aliases (LoomDtype.LIST, LoomDtype.STRUCT, …) carry no "
+                "inner-type information. Use the rich LoomType classes (ListType, StructType, …) "
+                "or provide the column in the frame."
+            ) from exc
+        null_exprs.append(pl.lit(None).cast(polars_type).alias(col.name))
+
     return frame.with_columns(null_exprs)
 
 
@@ -127,6 +173,12 @@ def _validate_types(
     allow_missing: bool = False,
 ) -> None:
     """Check that frame column types are compatible with the registered schema.
+
+    Coarse :class:`~loom.etl._schema.LoomDtype` values use a class-level
+    comparison (any parametrisation of the base type is accepted).  Rich
+    structural types (:class:`~loom.etl._schema.ListType`,
+    :class:`~loom.etl._schema.StructType`, :class:`~loom.etl._schema.DatetimeType`,
+    etc.) require **full structural equality** at every nesting level.
 
     Args:
         frame_schema:  Polars schema of the frame.
@@ -144,6 +196,15 @@ def _validate_types(
                 raise SchemaError(f"column '{col.name}' is missing from the frame")
             continue
 
-        actual_loom = polars_to_loom(frame_dtype)
-        if actual_loom is not col.dtype:
-            raise SchemaError(f"column '{col.name}': expected {col.dtype!r}, got {actual_loom!r}")
+        if isinstance(col.dtype, LoomDtype):
+            # Coarse check — class-level mapping, ignores parametrisation.
+            actual = polars_to_loom(frame_dtype)
+            if actual is not col.dtype:
+                raise SchemaError(f"column '{col.name}': expected {col.dtype!r}, got {actual!r}")
+        else:
+            # Full structural check — exact recursive equality.
+            actual_type = polars_to_loom_type(frame_dtype)
+            if actual_type != col.dtype:
+                raise SchemaError(
+                    f"column '{col.name}': expected {col.dtype!r}, got {actual_type!r}"
+                )

@@ -175,16 +175,56 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     assert written_rows["label"][0] is None
 
 
-def test_reader_raises_type_error_for_file_spec(tmp_path: Path) -> None:
+def test_reader_reads_csv_file(tmp_path: Path) -> None:
+    """FILE sources are now supported — reader dispatches to _read_file."""
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
+    spec = SourceSpec(
+        alias="data",
+        kind=SourceKind.FILE,
+        format=Format.CSV,
+        path=str(csv_path),
+    )
     reader = PolarsDeltaReader(tmp_path)
-    with pytest.raises(TypeError, match="FILE"):
-        reader.read(_file_source_spec(), None)
+    lf = reader.read(spec, None)
+    df = lf.collect()
+    assert df.shape == (2, 2)
+    assert list(df.columns) == ["id", "amount"]
 
 
-def test_writer_raises_type_error_for_file_spec(tmp_path: Path) -> None:
+def test_reader_applies_source_schema_on_csv(tmp_path: Path) -> None:
+    """with_schema() casts declared columns at read time."""
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
+    schema = (
+        ColumnSchema("id", LoomDtype.INT64),
+        ColumnSchema("amount", LoomDtype.FLOAT64),
+    )
+    spec = SourceSpec(
+        alias="data",
+        kind=SourceKind.FILE,
+        format=Format.CSV,
+        path=str(csv_path),
+        schema=schema,
+    )
+    reader = PolarsDeltaReader(tmp_path)
+    df = reader.read(spec, None).collect()
+    assert df["id"].dtype == pl.Int64
+    assert df["amount"].dtype == pl.Float64
+
+
+def test_writer_writes_csv_file(tmp_path: Path) -> None:
+    """FILE targets (CSV) are now supported."""
+    out_path = tmp_path / "out.csv"
+    frame = pl.DataFrame({"id": [1, 2], "name": ["a", "b"]}).lazy()
     writer = PolarsDeltaWriter(tmp_path, DeltaCatalog(tmp_path))
-    with pytest.raises(TypeError, match="FILE"):
-        writer.write(pl.DataFrame({"id": [1]}).lazy(), _file_target_spec(), None)
+    writer.write(frame, _file_target_spec_local(str(out_path)), None)
+    result = pl.read_csv(str(out_path))
+    assert result.shape == (2, 2)
+
+
+def _file_target_spec_local(path: str) -> TargetSpec:
+    return TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path=path)
 
 
 def test_writer_append_adds_rows(tmp_path: Path) -> None:

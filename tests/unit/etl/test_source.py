@@ -118,3 +118,91 @@ def test_source_set_extended_returns_new_instance() -> None:
 
     extended = Base.extended(customers=FromTable("raw.customers"))
     assert extended is not Base
+
+
+# ---------------------------------------------------------------------------
+# FromTable.columns()
+# ---------------------------------------------------------------------------
+
+
+def test_from_table_columns_returns_new_instance() -> None:
+    src = FromTable("raw.orders")
+    projected = src.columns("id", "amount")
+    assert projected is not src
+
+
+def test_from_table_columns_stored_in_spec() -> None:
+    spec = FromTable("raw.orders").columns("id", "amount", "status")._to_spec("orders")
+    assert spec.columns == ("id", "amount", "status")
+
+
+def test_from_table_default_columns_is_empty() -> None:
+    spec = FromTable("raw.orders")._to_spec("orders")
+    assert spec.columns == ()
+
+
+def test_from_table_columns_empty_raises() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        FromTable("raw.orders").columns()
+
+
+def test_from_table_columns_preserves_predicates() -> None:
+    pred = col("year") == 2024
+    src = FromTable("raw.orders").where(pred).columns("id", "amount")
+    spec = src._to_spec("orders")
+    assert len(spec.predicates) == 1
+    assert spec.columns == ("id", "amount")
+
+
+def test_from_table_columns_preserves_schema() -> None:
+    from loom.etl._schema import ColumnSchema, LoomDtype
+
+    schema = (ColumnSchema("id", LoomDtype.INT64),)
+    src = FromTable("raw.orders").with_schema(schema).columns("id")
+    spec = src._to_spec("orders")
+    assert spec.schema == schema
+    assert spec.columns == ("id",)
+
+
+def test_from_table_where_preserves_columns() -> None:
+    pred = col("year") == 2024
+    src = FromTable("raw.orders").columns("id", "amount").where(pred)
+    spec = src._to_spec("orders")
+    assert spec.columns == ("id", "amount")
+    assert len(spec.predicates) == 1
+
+
+# ---------------------------------------------------------------------------
+# FromFile.columns()
+# ---------------------------------------------------------------------------
+
+
+def test_from_file_columns_stored_in_spec() -> None:
+    spec = (
+        FromFile("s3://raw/data.parquet", format=Format.PARQUET)
+        .columns("order_id", "amount")
+        ._to_spec("data")
+    )
+    assert spec.columns == ("order_id", "amount")
+
+
+def test_from_file_default_columns_is_empty() -> None:
+    spec = FromFile("s3://raw/data.csv", format=Format.CSV)._to_spec("data")
+    assert spec.columns == ()
+
+
+def test_from_file_columns_empty_raises() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        FromFile("s3://raw/data.csv", format=Format.CSV).columns()
+
+
+def test_from_file_columns_preserved_by_with_schema() -> None:
+    from loom.etl._schema import ColumnSchema, LoomDtype
+
+    schema = (ColumnSchema("id", LoomDtype.INT64),)
+    src = (
+        FromFile("s3://raw/data.csv", format=Format.CSV).columns("id", "amount").with_schema(schema)
+    )
+    spec = src._to_spec("data")
+    assert spec.columns == ("id", "amount")
+    assert spec.schema == schema

@@ -22,6 +22,13 @@ Example::
     runner = StepRunner.spark(spark_session)
     ORDERS.apply(runner).run(MySparkStep, params)
     assert_df_equality(runner.result, expected)
+
+Spark fixtures
+--------------
+The ``loom_spark_session`` pytest fixture is registered automatically when
+``loom-kernel[etl-spark]`` is installed.  For direct use::
+
+    from loom.etl.testing.spark import SparkTestSession
 """
 
 from __future__ import annotations
@@ -41,12 +48,9 @@ from loom.etl._table import TableRef
 from loom.etl._target import TargetSpec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
-from loom.etl.executor.observer._events import EventName, RunStatus
+from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
 
-# TypeVar for the frame type produced by a StepRunner backend.
 FrameT = TypeVar("FrameT")
-
-# TypeVar for preserving the concrete runner type through ETLScenario.apply().
 _RunnerT = TypeVar("_RunnerT", bound="StepRunnerProto")
 
 
@@ -89,7 +93,6 @@ class StubCatalog:
         schemas: dict[str, tuple[ColumnSchema, ...]] | None = None,
     ) -> None:
         self._schemas: dict[str, tuple[ColumnSchema, ...]] = dict(schemas or {})
-        # Merge explicit tables into _schemas as name-only entries when absent
         for ref, cols in (tables or {}).items():
             if ref not in self._schemas:
                 self._schemas[ref] = tuple(ColumnSchema(name=c, dtype=_UNKNOWN_DTYPE) for c in cols)
@@ -111,7 +114,6 @@ class StubCatalog:
         self._schemas[ref.ref] = schema
 
 
-# Sentinel dtype used when a table is registered by column names only.
 _UNKNOWN_DTYPE = LoomDtype.NULL
 
 
@@ -186,17 +188,15 @@ class StubRunObserver:
     def __init__(self) -> None:
         self.events: list[tuple[EventName, dict[str, Any]]] = []
 
-    # --- protocol implementation ---
+    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
+        self.events.append((EventName.PIPELINE_START, {"run_id": ctx.run_id, "ctx": ctx}))
 
-    def on_pipeline_start(self, plan: Any, _params: Any, run_id: str) -> None:
-        self.events.append((EventName.PIPELINE_START, {"run_id": run_id}))
+    def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
+        self.events.append((EventName.PIPELINE_END, {"run_id": ctx.run_id, "status": status}))
 
-    def on_pipeline_end(self, run_id: str, status: RunStatus, duration_ms: int) -> None:
-        self.events.append((EventName.PIPELINE_END, {"run_id": run_id, "status": status}))
-
-    def on_process_start(self, plan: Any, run_id: str, process_run_id: str) -> None:
+    def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
         self.events.append(
-            (EventName.PROCESS_START, {"run_id": run_id, "process_run_id": process_run_id})
+            (EventName.PROCESS_START, {"run_id": ctx.run_id, "process_run_id": process_run_id})
         )
 
     def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
@@ -204,13 +204,13 @@ class StubRunObserver:
             (EventName.PROCESS_END, {"process_run_id": process_run_id, "status": status})
         )
 
-    def on_step_start(self, plan: Any, run_id: str, step_run_id: str) -> None:
+    def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
         self.events.append(
             (
                 EventName.STEP_START,
                 {
                     "step": plan.step_type.__name__,
-                    "run_id": run_id,
+                    "run_id": ctx.run_id,
                     "step_run_id": step_run_id,
                 },
             )
@@ -221,8 +221,6 @@ class StubRunObserver:
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
         self.events.append((EventName.STEP_ERROR, {"step_run_id": step_run_id, "error": repr(exc)}))
-
-    # --- convenience accessors ---
 
     @property
     def event_names(self) -> list[EventName]:
@@ -301,10 +299,6 @@ class StepRunner(Generic[FrameT]):
         self._writer = _RunnerCapturingWriter()
         self._last_params: Any = None
 
-    # ------------------------------------------------------------------
-    # Factories
-    # ------------------------------------------------------------------
-
     @classmethod
     def polars(cls) -> StepRunner[pl.DataFrame]:
         """Return a runner that materialises seed frames as ``polars.DataFrame``."""
@@ -318,10 +312,6 @@ class StepRunner(Generic[FrameT]):
             session: Active :class:`pyspark.sql.SparkSession`.
         """
         return cls(_BackendKind.SPARK, spark=session)  # type: ignore[return-value]
-
-    # ------------------------------------------------------------------
-    # Seeding
-    # ------------------------------------------------------------------
 
     def seed(
         self,
@@ -341,10 +331,6 @@ class StepRunner(Generic[FrameT]):
         """
         self._seeds[ref] = (list(data), list(columns))
         return self
-
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
 
     def run(self, step_cls: type[Any], params: Any) -> StepRunner[FrameT]:
         """Compile and execute *step_cls* against the seeded tables.
@@ -367,10 +353,6 @@ class StepRunner(Generic[FrameT]):
         ETLExecutor(_RunnerStubReader(frames), self._writer).run_step(plan, params)
         return self
 
-    # ------------------------------------------------------------------
-    # Result accessors
-    # ------------------------------------------------------------------
-
     @property
     def result(self) -> FrameT:
         """Frame produced by the last :meth:`run` call.
@@ -389,8 +371,6 @@ class StepRunner(Generic[FrameT]):
     def target_spec(self) -> TargetSpec:
         """Target spec from the last :meth:`run` call.
 
-        Useful for asserting write mode, partition columns, and predicates.
-
         Raises:
             RuntimeError: If :meth:`run` has not been called yet.
         """
@@ -402,24 +382,12 @@ class StepRunner(Generic[FrameT]):
     def resolved_predicate(self) -> str | None:
         """SQL predicate resolved from the last run's target spec and params.
 
-        Returns ``None`` when the write mode has no predicate
-        (e.g. ``APPEND``, ``REPLACE``).  Useful for asserting
-        ``replace_where`` / ``replace_partitions(values=…)`` SQL without
-        touching Delta.
-
-        Example::
-
-            runner.run(BackfillStep, params)
-            assert runner.resolved_predicate == "date >= '2024-01-01' AND date <= '2024-01-31'"
+        Returns ``None`` when the write mode has no predicate.
         """
         spec = self._writer.spec
         if spec is None or spec.replace_predicate is None:
             return None
         return predicate_to_sql(spec.replace_predicate, self._last_params)
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _materialize(self, data: list[tuple[Any, ...]], columns: list[str]) -> Any:
         if self._backend is _BackendKind.POLARS:
@@ -448,10 +416,7 @@ def _to_polars_frame(data: list[tuple[Any, ...]], columns: list[str]) -> Any:
 
 @runtime_checkable
 class StepRunnerProto(Protocol):
-    """Protocol for runners compatible with :class:`ETLScenario`.
-
-    Any object implementing :meth:`seed` satisfies this protocol.
-    """
+    """Protocol for runners compatible with :class:`ETLScenario`."""
 
     def seed(self, ref: str, data: list[tuple[Any, ...]], columns: list[str]) -> Any:
         """Register raw data under the logical table reference *ref*."""
@@ -464,9 +429,6 @@ class ETLScenario:
     Stores input data as plain Python tuples — no backend dependency at
     definition time.  Data is passed directly to the runner's :meth:`seed`
     when :meth:`apply` is called, so any :class:`StepRunner` backend works.
-
-    :meth:`apply` is generic — it returns the same concrete runner type it
-    receives, preserving ``FrameT`` for typed result access after the call.
 
     Example::
 
@@ -504,9 +466,6 @@ class ETLScenario:
 
     def apply(self, runner: _RunnerT) -> _RunnerT:
         """Seed all tables into *runner* and return it unchanged.
-
-        The return type preserves the concrete runner type — a
-        ``StepRunner[pl.DataFrame]`` in, a ``StepRunner[pl.DataFrame]`` out.
 
         Args:
             runner: Any :class:`StepRunnerProto`-compatible runner.

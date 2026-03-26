@@ -29,6 +29,8 @@ from loom.etl._format import Format
 from loom.etl._predicate import AndPred, EqPred, PredicateNode
 from loom.etl._proxy import ParamExpr
 from loom.etl._table import TableRef, UnboundColumnRef
+from loom.etl._temp import TempScope
+from loom.etl._write_options import WriteOptions
 
 
 class WriteMode(StrEnum):
@@ -90,6 +92,11 @@ class TargetSpec:
     partition_cols: tuple[str, ...] = field(default_factory=tuple)
     replace_predicate: PredicateNode | None = None
     upsert_keys: tuple[str, ...] = field(default_factory=tuple)
+    upsert_exclude: tuple[str, ...] = field(default_factory=tuple)
+    upsert_include: tuple[str, ...] = field(default_factory=tuple)
+    temp_name: str | None = None
+    temp_scope: TempScope | None = None
+    write_options: WriteOptions | None = None
 
 
 def _build_eq_predicate(values: dict[str, ParamExpr]) -> PredicateNode:
@@ -256,17 +263,59 @@ class IntoTable:
             schema_mode=schema,
         )
 
-    def upsert(self, *, keys: tuple[str, ...], schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
-        """Write mode: merge rows using the given key columns.
+    def upsert(
+        self,
+        *,
+        keys: tuple[str, ...],
+        partition_cols: tuple[str, ...] = (),
+        exclude: tuple[str, ...] = (),
+        include: tuple[str, ...] = (),
+        schema: SchemaMode = SchemaMode.STRICT,
+    ) -> IntoTable:
+        """Write mode: merge rows using the given key columns (UPSERT / MERGE).
+
+        On first write the table is created from the frame.  Subsequent writes
+        issue a Delta MERGE: matched rows are updated, unmatched rows are
+        inserted.
+
+        Declaring ``partition_cols`` is strongly recommended for large tables —
+        it allows Delta to prune files at the log level before evaluating the
+        join condition.  Without it, every MERGE forces a full table scan.
 
         Args:
-            keys:   Tuple of column names that identify a row uniquely.
-            schema: Schema evolution strategy.
+            keys:           Columns that uniquely identify a row.  Used in the
+                            MERGE ``ON`` join condition.
+            partition_cols: Partition columns to include in the MERGE ``ON``
+                            predicate and for Delta log pruning.  Must be a
+                            subset of the frame columns.
+            exclude:        Columns to exclude from ``UPDATE SET`` on match.
+                            Keys and partition columns are always excluded.
+                            Mutually exclusive with *include*.
+            include:        Explicit allow-list of columns to update on match.
+                            Keys and partition columns are always excluded even
+                            if listed here.  Mutually exclusive with *exclude*.
+            schema:         Schema evolution strategy.  Defaults to
+                            :attr:`~SchemaMode.STRICT`.
 
         Returns:
             New ``IntoTable`` with :attr:`~WriteMode.UPSERT` mode.
+
+        Example::
+
+            target = IntoTable("events.orders").upsert(
+                keys=("order_id",),
+                partition_cols=("year", "month"),
+                exclude=("created_at",),
+            )
         """
-        return self._with(mode=WriteMode.UPSERT, upsert_keys=keys, schema_mode=schema)
+        return self._with(
+            mode=WriteMode.UPSERT,
+            upsert_keys=keys,
+            partition_cols=partition_cols,
+            upsert_exclude=exclude,
+            upsert_include=include,
+            schema_mode=schema,
+        )
 
     def _with(self, **overrides: Any) -> IntoTable:
         new = object.__new__(IntoTable)
@@ -296,18 +345,96 @@ class IntoFile:
         target = IntoFile("s3://exports/summary_{run_date}.xlsx", format=Format.XLSX)
     """
 
-    __slots__ = ("_path", "_format")
+    __slots__ = ("_path", "_format", "_write_options")
 
     def __init__(self, path: str, *, format: Format) -> None:
         self._path = path
         self._format = format
+        self._write_options: WriteOptions | None = None
+
+    def with_options(self, options: WriteOptions) -> IntoFile:
+        """Return a new ``IntoFile`` with format-specific write options.
+
+        Args:
+            options: Format-specific write options — use
+                     :class:`~loom.etl.CsvWriteOptions` or
+                     :class:`~loom.etl.ParquetWriteOptions`.
+
+        Returns:
+            New ``IntoFile`` with the options applied at write time.
+
+        Example::
+
+            target = IntoFile("s3://exports/report.csv", format=Format.CSV)
+                .with_options(CsvWriteOptions(separator=";"))
+        """
+        new = object.__new__(IntoFile)
+        object.__setattr__(new, "_path", self._path)
+        object.__setattr__(new, "_format", self._format)
+        object.__setattr__(new, "_write_options", options)
+        return new
 
     def _to_spec(self) -> TargetSpec:
         return TargetSpec(
             mode=WriteMode.REPLACE,
             format=self._format,
             path=self._path,
+            write_options=self._write_options,
         )
 
     def __repr__(self) -> str:
         return f"IntoFile({self._path!r}, format={self._format!r})"
+
+
+class IntoTemp:
+    """Declare an intermediate result that bypasses Delta and lives in tmp storage.
+
+    The physical format is chosen automatically by
+    :class:`~loom.etl._temp_store.IntermediateStore` based on the DataFrame
+    type returned by ``execute()``:
+
+    * **Polars** — Arrow IPC via ``sink_ipc()`` (streaming write, no collect)
+      and ``scan_ipc()`` (lazy, memory-mapped read with predicate pushdown).
+    * **Spark** — Parquet directory via ``df.write.parquet()`` and
+      ``spark.read.parquet()``.  Cuts the lineage DAG; Photon-optimised.
+
+    Use :class:`~loom.etl.FromTemp` in a downstream step to consume the result.
+
+    Args:
+        name:  Logical name identifying this intermediate.  Must be unique
+               within the pipeline.  Downstream steps reference it by this
+               name via :class:`~loom.etl.FromTemp`.
+        scope: Lifetime scope.  Defaults to :attr:`~loom.etl.TempScope.RUN`.
+
+    Example::
+
+        target = IntoTemp("normalized_orders")
+        target = IntoTemp("normalized_orders", scope=TempScope.CORRELATION)
+    """
+
+    __slots__ = ("_name", "_scope")
+
+    def __init__(self, name: str, *, scope: TempScope = TempScope.RUN) -> None:
+        self._name = name
+        self._scope = scope
+
+    @property
+    def temp_name(self) -> str:
+        """Logical name of this intermediate."""
+        return self._name
+
+    @property
+    def scope(self) -> TempScope:
+        """Lifetime scope."""
+        return self._scope
+
+    def _to_spec(self) -> TargetSpec:
+        return TargetSpec(
+            mode=WriteMode.REPLACE,
+            format=Format.PARQUET,
+            temp_name=self._name,
+            temp_scope=self._scope,
+        )
+
+    def __repr__(self) -> str:
+        return f"IntoTemp({self._name!r}, scope={self._scope!r})"

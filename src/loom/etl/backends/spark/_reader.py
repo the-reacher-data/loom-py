@@ -1,14 +1,33 @@
-"""SparkDeltaReader — SourceReader backed by PySpark + Delta Lake."""
+"""SparkDeltaReader — SourceReader backed by PySpark + Delta Lake.
+
+Two resolution modes controlled by the *locator* constructor argument:
+
+* **Path-based** (``locator`` is a URI string, :class:`pathlib.Path`, or
+  :class:`~loom.etl._locator.TableLocator`) — reads via
+  ``spark.read.format("delta").load(uri)``.  Works with any cloud storage
+  that Spark can reach: S3, GCS, ADLS, DBFS, local.
+
+* **Unity Catalog** (``locator=None``) — reads via
+  ``spark.table(ref.ref)``, delegating all path and credential resolution
+  to the active Spark catalog.  The :class:`~loom.etl._table.TableRef` is
+  used as the fully-qualified table name
+  (e.g. ``"main.raw.orders"`` or ``"raw.orders"``).
+
+See https://docs.databricks.com/en/data-governance/unity-catalog/index.html
+"""
 
 from __future__ import annotations
 
-from pathlib import Path
+import logging
+import os
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 
+from loom.etl._locator import TableLocator, _as_locator
 from loom.etl._source import SourceSpec
-from loom.etl._table import TableRef
+
+_log = logging.getLogger(__name__)
 
 
 class SparkDeltaReader:
@@ -20,27 +39,46 @@ class SparkDeltaReader:
     until the step's ``execute()`` result is written by the writer.
 
     Args:
-        spark: Active :class:`pyspark.sql.SparkSession`.
-        root:  Filesystem root.  Table paths are resolved as
-               ``root/<schema>/<table>/``.
+        spark:   Active :class:`pyspark.sql.SparkSession`.
+        locator: How to resolve table references to a physical location.
+
+                 * Pass a URI string, :class:`pathlib.Path`, or any
+                   :class:`~loom.etl._locator.TableLocator` for path-based
+                   reads — e.g. ``"s3://my-lake/"`` or
+                   ``PrefixLocator("abfss://container@account.dfs.core.windows.net/")``.
+                 * Pass ``None`` (default) for Unity Catalog — table refs are
+                   resolved directly via ``spark.table()``.
 
     Example::
 
-        reader = SparkDeltaReader(spark, Path("/data/delta"))
-        frame = reader.read(spec, params)  # returns pyspark.sql.DataFrame
+        from loom.etl.backends.spark import SparkDeltaReader
+
+        # Unity Catalog (Databricks managed)
+        reader = SparkDeltaReader(spark)
+
+        # Cloud path (S3, GCS, ADLS, DBFS)
+        reader = SparkDeltaReader(spark, "s3://my-lake/")
+
+        # With explicit credentials
+        from loom.etl._locator import PrefixLocator
+        reader = SparkDeltaReader(spark, PrefixLocator("s3://my-lake/", storage_options={...}))
     """
 
-    def __init__(self, spark: SparkSession, root: Path) -> None:
+    def __init__(
+        self,
+        spark: SparkSession,
+        locator: str | os.PathLike[str] | TableLocator | None = None,
+    ) -> None:
         self._spark = spark
-        self._root = root
+        self._locator = _as_locator(locator) if locator is not None else None
 
     def read(self, spec: SourceSpec, _params_instance: Any) -> DataFrame:
         """Return a lazy Spark DataFrame backed by the Delta table in *spec*.
 
         Args:
             spec:             Compiled source spec.  Must be a TABLE source.
-            _params_instance: Concrete params (unused — predicate pushdown
-                              not yet implemented).
+            _params_instance: Concrete params (reserved for future predicate
+                              pushdown support).
 
         Returns:
             Spark DataFrame over the Delta table (lazy scan).
@@ -50,8 +88,12 @@ class SparkDeltaReader:
         """
         if spec.table_ref is None:
             raise TypeError(f"SparkDeltaReader only supports TABLE sources; got FILE spec: {spec}")
-        path = self._table_path(spec.table_ref)
-        return self._spark.read.format("delta").load(str(path))
-
-    def _table_path(self, ref: TableRef) -> Path:
-        return self._root.joinpath(*ref.ref.split("."))
+        if self._locator is None:
+            df = self._spark.table(spec.table_ref.ref)
+        else:
+            loc = self._locator.locate(spec.table_ref)
+            df = self._spark.read.format("delta").load(loc.uri)
+        if spec.columns:
+            _log.debug("read spark table=%s columns=%d", spec.table_ref.ref, len(spec.columns))
+            df = df.select(list(spec.columns))
+        return df

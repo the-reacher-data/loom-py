@@ -503,6 +503,24 @@ wheels = [
 ]
 
 [[package]]
+name = "findspark"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/41/86/445e2b90fff1efc0858512102ff78746a04c1a4a9c1d3fa9e4650c11a000/findspark-2.0.1.tar.gz", hash = "sha256:aa10a96cb616cab329181d72e8ef13d2dc453b4babd02b5482471a0882c1195e", size = 5284, upload-time = "2022-02-11T08:02:07.669Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/cb/7d2bb508f4ca00a043fd53e8156c11767799d3f534bf451a0942211d5def/findspark-2.0.1-py2.py3-none-any.whl", hash = "sha256:e5d5415ff8ced6b173b801e12fc90c1eefca1fb6bf9c19c4fc1f235d4222e753", size = 4446, upload-time = "2022-02-11T08:02:06.567Z" },
+]
+
+[[package]]
+name = "fsspec"
+version = "2026.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/7c/f60c259dcbf4f0c47cc4ddb8f7720d2dcdc8888c8e5ad84c73ea4531cc5b/fsspec-2026.2.0.tar.gz", hash = "sha256:6544e34b16869f5aacd5b90bdf1a71acb37792ea3ddf6125ee69a22a53fb8bff", size = 313441, upload-time = "2026-02-05T21:50:53.743Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl", hash = "sha256:98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437", size = 202505, upload-time = "2026-02-05T21:50:51.819Z" },
+]
+
+[[package]]
 name = "greenlet"
 version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -793,10 +811,13 @@ config = [
 ]
 etl-polars = [
     { name = "deltalake" },
+    { name = "fsspec" },
     { name = "polars" },
 ]
 etl-spark = [
     { name = "delta-spark" },
+    { name = "findspark" },
+    { name = "fsspec" },
     { name = "pyspark" },
 ]
 prometheus = [
@@ -828,6 +849,7 @@ dev = [
     { name = "deltalake" },
     { name = "fakeredis" },
     { name = "fastapi" },
+    { name = "findspark" },
     { name = "greenlet" },
     { name = "httptools" },
     { name = "httpx" },
@@ -856,6 +878,9 @@ requires-dist = [
     { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=0.25,<1.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
+    { name = "findspark", marker = "extra == 'etl-spark'", specifier = ">=2.0,<3.0" },
+    { name = "fsspec", marker = "extra == 'etl-polars'", specifier = ">=2024.2.0" },
+    { name = "fsspec", marker = "extra == 'etl-spark'", specifier = ">=2024.2.0" },
     { name = "httptools", marker = "extra == 'rest'", specifier = ">=0.6,<1.0" },
     { name = "kombu", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "msgspec", specifier = ">=0.18,<1.0" },
@@ -888,6 +913,7 @@ dev = [
     { name = "deltalake", specifier = ">=0.25,<1.0" },
     { name = "fakeredis", specifier = ">=2.23.0" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
+    { name = "findspark", specifier = ">=2.0.1" },
     { name = "greenlet", specifier = ">=3.0.0" },
     { name = "httptools", specifier = ">=0.6,<1.0" },
     { name = "httpx", specifier = ">=0.28.1" },

@@ -3,23 +3,25 @@
 Reads schema directly from the Delta log via ``deltalake.DeltaTable``.
 ``update_schema`` is a no-op: Delta maintains its own schema in the log
 and ``schema()`` always reflects the current on-disk state.
+
+Storage options are forwarded verbatim to delta-rs — the locator resolves
+credentials per table.  See https://delta-io.github.io/delta-rs/api/delta_writer/
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
+from loom.etl._locator import TableLocator, _as_locator
 from loom.etl._schema import ColumnSchema, LoomDtype
 from loom.etl._table import TableRef
 
-# ---------------------------------------------------------------------------
 # PyArrow string representation → LoomDtype
 # Stable because PyArrow's __str__ for primitive types is well-defined.
-# ---------------------------------------------------------------------------
 
 _ARROW_STR_TO_LOOM: dict[str, LoomDtype] = {
     "int8": LoomDtype.INT8,
@@ -53,34 +55,41 @@ def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
 
 
 class DeltaCatalog:
-    """Catalog backed by real Delta table metadata on the filesystem.
+    """Catalog backed by real Delta table metadata.
 
     Implements :class:`~loom.etl._io.TableDiscovery`.  ``exists()`` and
-    ``schema()`` read the Delta log directly; no in-memory state is maintained
-    so the catalog always reflects the current on-disk state after each write.
+    ``schema()`` read the Delta log directly via delta-rs — no in-memory
+    state is maintained, so the catalog always reflects the current state
+    after each write.
+
+    Table existence is detected with ``DeltaTable.is_deltatable(uri)``, which
+    works for local paths and cloud URIs alike.
 
     Args:
-        root: Filesystem root under which tables are stored as
-              ``root/<schema>/<table>/``.
+        locator: Root URI string, :class:`pathlib.Path`, or any
+                 :class:`~loom.etl._locator.TableLocator`.  A plain string or
+                 path is wrapped in :class:`~loom.etl._locator.PrefixLocator`
+                 automatically.
 
     Example::
 
-        catalog = DeltaCatalog(Path("/data/delta"))
-        if catalog.exists(TableRef("raw.orders")):
-            schema = catalog.schema(TableRef("raw.orders"))
+        from loom.etl.backends.polars import DeltaCatalog
+
+        # Simple — plain URI
+        catalog = DeltaCatalog("s3://my-lake/")
+
+        # Advanced — explicit locator with credentials
+        from loom.etl._locator import PrefixLocator
+        catalog = DeltaCatalog(PrefixLocator("s3://my-lake/", storage_options={...}))
     """
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
-
-    # ------------------------------------------------------------------
-    # TableDiscovery protocol
-    # ------------------------------------------------------------------
+    def __init__(self, locator: str | os.PathLike[str] | TableLocator) -> None:
+        self._locator = _as_locator(locator)
 
     def exists(self, ref: TableRef) -> bool:
-        """Return ``True`` if the Delta table exists at the expected path."""
-        path = self._table_path(ref)
-        return (path / "_delta_log").exists()
+        """Return ``True`` if the Delta table exists at the resolved URI."""
+        loc = self._locator.locate(ref)
+        return DeltaTable.is_deltatable(loc.uri, loc.storage_options or None)
 
     def columns(self, ref: TableRef) -> tuple[str, ...]:
         """Return column names from the Delta log, or ``()`` if the table does not exist."""
@@ -88,7 +97,7 @@ class DeltaCatalog:
         return tuple(col.name for col in schema) if schema is not None else ()
 
     def schema(self, ref: TableRef) -> tuple[ColumnSchema, ...] | None:
-        """Return the current schema from the Delta log, or ``None`` if the table does not exist.
+        """Return the current schema from the Delta log, or ``None`` if absent.
 
         Reads ``DeltaTable.schema().to_pyarrow()`` so the result always
         reflects what is actually on disk.
@@ -100,9 +109,9 @@ class DeltaCatalog:
             Ordered tuple of :class:`~loom.etl._schema.ColumnSchema`, or
             ``None`` when the table does not yet exist.
         """
-        path = self._table_path(ref)
+        loc = self._locator.locate(ref)
         try:
-            dt = DeltaTable(str(path))
+            dt = DeltaTable(loc.uri, storage_options=loc.storage_options or None)
         except TableNotFoundError:
             return None
 
@@ -117,15 +126,4 @@ class DeltaCatalog:
         )
 
     def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
-        """No-op — Delta maintains its own schema in the transaction log.
-
-        The catalog re-reads the schema from disk on every :meth:`schema` call,
-        so there is nothing to update in memory.
-        """
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _table_path(self, ref: TableRef) -> Path:
-        return self._root.joinpath(*ref.ref.split("."))
+        """No-op — Delta maintains its own schema in the transaction log."""

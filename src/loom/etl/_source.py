@@ -40,6 +40,8 @@ from typing import Any, Generic, TypeVar
 
 from loom.etl._format import Format
 from loom.etl._predicate import PredicateNode
+from loom.etl._read_options import ReadOptions
+from loom.etl._schema import ColumnSchema
 from loom.etl._table import TableRef
 
 ParamsT = TypeVar("ParamsT")
@@ -55,6 +57,7 @@ class SourceKind(StrEnum):
 
     TABLE = "table"
     FILE = "file"
+    TEMP = "temp"
 
 
 @dataclass(frozen=True)
@@ -65,12 +68,24 @@ class SourceSpec:
     Consumed by the compiler and executor — never exposed in user code.
 
     Args:
-        alias:      Name matching the ``execute()`` parameter.
-        kind:       Physical kind (table or file).
-        table_ref:  Logical table reference (``SourceKind.TABLE`` only).
-        path:       File path template (``SourceKind.FILE`` only).
-        format:     I/O format.
-        predicates: Compiled predicate nodes from ``.where()``.
+        alias:        Name matching the ``execute()`` parameter.
+        kind:         Physical kind (table, file, or temp).
+        table_ref:    Logical table reference (``SourceKind.TABLE`` only).
+        path:         File path template (``SourceKind.FILE`` only).
+        format:       I/O format.
+        predicates:   Compiled predicate nodes from ``.where()``.
+        temp_name:    Logical intermediate name (``SourceKind.TEMP`` only).
+        schema:       Optional user-declared schema applied at read time via
+                      ``with_columns(cast(...))``; casts each declared column to
+                      its :class:`~loom.etl._schema.LoomDtype`.  Extra columns
+                      in the source pass through untouched.
+        read_options: Format-specific read options set via ``.with_options()``.
+                      Only used for ``SourceKind.FILE`` sources.
+        columns:      Column names to project at scan time.  When non-empty,
+                      only these columns are read from storage — all other
+                      columns are discarded before the frame reaches
+                      ``execute()``.  The projection is pushed down to the
+                      Parquet row-group scanner, reducing I/O.
     """
 
     alias: str
@@ -79,6 +94,10 @@ class SourceSpec:
     predicates: tuple[Any, ...] = field(default_factory=tuple)
     table_ref: TableRef | None = None
     path: str | None = None
+    temp_name: str | None = None
+    schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
+    read_options: ReadOptions | None = None
+    columns: tuple[str, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -103,11 +122,13 @@ class FromTable:
         )
     """
 
-    __slots__ = ("_ref", "_predicates")
+    __slots__ = ("_ref", "_predicates", "_schema", "_columns")
 
     def __init__(self, ref: str | TableRef) -> None:
         self._ref: TableRef = TableRef(ref) if isinstance(ref, str) else ref
         self._predicates: tuple[PredicateNode, ...] = ()
+        self._schema: tuple[ColumnSchema, ...] = ()
+        self._columns: tuple[str, ...] = ()
 
     @property
     def table_ref(self) -> TableRef:
@@ -119,6 +140,35 @@ class FromTable:
         """Declared filter predicates."""
         return self._predicates
 
+    def with_schema(self, schema: tuple[ColumnSchema, ...]) -> FromTable:
+        """Return a new ``FromTable`` with a user-declared source schema.
+
+        The schema is applied at read time via column-level casts — each
+        declared column is cast to its :class:`~loom.etl._schema.LoomDtype`.
+        Extra columns present in the table but absent from *schema* pass
+        through unchanged.
+
+        Use this to enforce types when reading from a table whose registered
+        schema may differ from what your step expects, or to document the
+        expected contract explicitly.
+
+        Args:
+            schema: Tuple of :class:`~loom.etl._schema.ColumnSchema` entries.
+
+        Returns:
+            New ``FromTable`` with the schema applied at read time.
+
+        Example::
+
+            orders = FromTable("raw.orders").with_schema((
+                ColumnSchema("id", LoomDtype.INT64, nullable=False),
+                ColumnSchema("amount", LoomDtype.FLOAT64),
+            ))
+        """
+        new = _copy_from_table(self)
+        object.__setattr__(new, "_schema", schema)
+        return new
+
     def where(self, *predicates: Any) -> FromTable:
         """Return a new ``FromTable`` with the given predicates added.
 
@@ -129,8 +179,40 @@ class FromTable:
         Returns:
             New ``FromTable`` instance (original is unchanged).
         """
-        new = FromTable(self._ref)
-        object.__setattr__(new, "_predicates", predicates)  # bypass __slots__ via object
+        new = _copy_from_table(self)
+        object.__setattr__(new, "_predicates", predicates)
+        return new
+
+    def columns(self, *cols: str) -> FromTable:
+        """Return a new ``FromTable`` projecting only the listed columns.
+
+        The projection is pushed down to the Parquet row-group scanner —
+        only the declared columns are read from storage, reducing I/O and
+        memory pressure on wide tables.
+
+        Columns used in ``.where()`` predicates that are absent from *cols*
+        are still applied at the filter level; the optimizer drops them from
+        the output automatically.
+
+        Args:
+            *cols: Column names to project.  Must be non-empty.
+
+        Returns:
+            New ``FromTable`` with column projection applied at scan time.
+
+        Raises:
+            ValueError: When called with no column names.
+
+        Example::
+
+            orders = FromTable("raw.orders") \\
+                .where(col("year") == params.run_date.year) \\
+                .columns("id", "amount", "status")
+        """
+        if not cols:
+            raise ValueError("FromTable.columns() requires at least one column name.")
+        new = _copy_from_table(self)
+        object.__setattr__(new, "_columns", cols)
         return new
 
     def _to_spec(self, alias: str) -> SourceSpec:
@@ -140,6 +222,8 @@ class FromTable:
             format=Format.DELTA,
             predicates=self._predicates,
             table_ref=self._ref,
+            schema=self._schema,
+            columns=self._columns,
         )
 
     def __repr__(self) -> str:
@@ -161,11 +245,14 @@ class FromFile:
         report = FromFile("s3://raw/report_{run_date}.xlsx", format=Format.XLSX)
     """
 
-    __slots__ = ("_path", "_format")
+    __slots__ = ("_path", "_format", "_schema", "_read_options", "_columns")
 
     def __init__(self, path: str, *, format: Format) -> None:
         self._path = path
         self._format = format
+        self._schema: tuple[ColumnSchema, ...] = ()
+        self._read_options: ReadOptions | None = None
+        self._columns: tuple[str, ...] = ()
 
     @property
     def path(self) -> str:
@@ -177,23 +264,167 @@ class FromFile:
         """I/O format."""
         return self._format
 
+    def with_schema(self, schema: tuple[ColumnSchema, ...]) -> FromFile:
+        """Return a new ``FromFile`` with a user-declared source schema.
+
+        The schema is applied at read time — each declared column is cast to
+        its :class:`~loom.etl._schema.LoomDtype`.  Extra columns in the file
+        that are not declared in *schema* pass through unchanged.
+
+        Combine with ``.with_options()`` to fully control how a file is read::
+
+            events = FromFile("s3://raw/events.json", format=Format.JSON)
+                .with_options(JsonReadOptions(infer_schema_length=None))
+                .with_schema((
+                    ColumnSchema("id", LoomDtype.INT64, nullable=False),
+                    ColumnSchema("ts", LoomDtype.DATETIME),
+                ))
+
+        Args:
+            schema: Tuple of :class:`~loom.etl._schema.ColumnSchema` entries.
+
+        Returns:
+            New ``FromFile`` with the schema applied at read time.
+        """
+        new = _copy_from_file(self)
+        object.__setattr__(new, "_schema", schema)
+        return new
+
+    def with_options(self, options: ReadOptions) -> FromFile:
+        """Return a new ``FromFile`` with format-specific read options.
+
+        Args:
+            options: Format-specific read options — use
+                     :class:`~loom.etl.CsvReadOptions`,
+                     :class:`~loom.etl.JsonReadOptions`,
+                     :class:`~loom.etl.ExcelReadOptions`, or
+                     :class:`~loom.etl.ParquetReadOptions`.
+
+        Returns:
+            New ``FromFile`` with the options applied at read time.
+
+        Example::
+
+            report = FromFile("s3://erp/export.csv", format=Format.CSV)
+                .with_options(CsvReadOptions(separator=";", has_header=False))
+        """
+        new = _copy_from_file(self)
+        object.__setattr__(new, "_read_options", options)
+        return new
+
+    def columns(self, *cols: str) -> FromFile:
+        """Return a new ``FromFile`` projecting only the listed columns.
+
+        Only the declared columns are loaded from the file — useful for
+        wide CSVs or Parquet files where most columns are not needed.
+
+        Args:
+            *cols: Column names to project.  Must be non-empty.
+
+        Returns:
+            New ``FromFile`` with column projection applied at scan time.
+
+        Raises:
+            ValueError: When called with no column names.
+
+        Example::
+
+            report = FromFile("s3://raw/report.parquet", format=Format.PARQUET) \\
+                .columns("order_id", "amount", "currency")
+        """
+        if not cols:
+            raise ValueError("FromFile.columns() requires at least one column name.")
+        new = _copy_from_file(self)
+        object.__setattr__(new, "_columns", cols)
+        return new
+
     def _to_spec(self, alias: str) -> SourceSpec:
         return SourceSpec(
             alias=alias,
             kind=SourceKind.FILE,
             format=self._format,
             path=self._path,
+            schema=self._schema,
+            read_options=self._read_options,
+            columns=self._columns,
         )
 
     def __repr__(self) -> str:
         return f"FromFile({self._path!r}, format={self._format!r})"
 
 
+def _copy_from_table(src: FromTable) -> FromTable:
+    """Return a shallow copy of *src* preserving all current attributes."""
+    new = object.__new__(FromTable)
+    object.__setattr__(new, "_ref", src._ref)
+    object.__setattr__(new, "_predicates", src._predicates)
+    object.__setattr__(new, "_schema", src._schema)
+    object.__setattr__(new, "_columns", src._columns)
+    return new
+
+
+def _copy_from_file(src: FromFile) -> FromFile:
+    """Return a shallow copy of *src* preserving all current attributes."""
+    new = object.__new__(FromFile)
+    object.__setattr__(new, "_path", src._path)
+    object.__setattr__(new, "_format", src._format)
+    object.__setattr__(new, "_schema", src._schema)
+    object.__setattr__(new, "_read_options", src._read_options)
+    object.__setattr__(new, "_columns", src._columns)
+    return new
+
+
+class FromTemp:
+    """Declare an intermediate result as an ETL source.
+
+    The *name* must match the :attr:`~loom.etl.IntoTemp.temp_name` of an
+    :class:`~loom.etl.IntoTemp` target that appears **before** this step in
+    the pipeline execution order.  The compiler validates this forward-
+    reference at compile time.
+
+    The physical format is resolved automatically by
+    :class:`~loom.etl._temp_store.IntermediateStore` — Polars steps receive a
+    lazy :class:`polars.LazyFrame` (Arrow IPC), Spark steps receive a
+    ``pyspark.sql.DataFrame`` (Parquet).
+
+    Args:
+        name: Logical name of the intermediate to consume — must match the
+              corresponding :class:`~loom.etl.IntoTemp`.
+
+    Example::
+
+        normalized = FromTemp("normalized_orders")
+    """
+
+    __slots__ = ("_name",)
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def temp_name(self) -> str:
+        """Logical name of the intermediate to consume."""
+        return self._name
+
+    def _to_spec(self, alias: str) -> SourceSpec:
+        from loom.etl._format import Format
+
+        return SourceSpec(
+            alias=alias,
+            kind=SourceKind.TEMP,
+            format=Format.PARQUET,
+            temp_name=self._name,
+        )
+
+    def __repr__(self) -> str:
+        return f"FromTemp({self._name!r})"
+
+
 # ---------------------------------------------------------------------------
 # Source grouping types
 # ---------------------------------------------------------------------------
 
-_SourceEntry = FromTable | FromFile
+_SourceEntry = FromTable | FromFile | FromTemp
 
 
 class Sources:
@@ -259,7 +490,7 @@ class SourceSet(Generic[ParamsT]):
         cls._sources = {
             name: val
             for name, val in cls.__dict__.items()
-            if isinstance(val, (FromTable, FromFile))
+            if isinstance(val, (FromTable, FromFile, FromTemp))
         }
 
     @classmethod

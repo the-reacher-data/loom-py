@@ -9,7 +9,7 @@ import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
-from loom.etl.executor import ETLExecutor, EventName, RunStatus, ThreadDispatcher
+from loom.etl.executor import ETLExecutor, EventName, RunContext, RunStatus, ThreadDispatcher
 from loom.etl.testing import StubRunObserver, StubSourceReader, StubTargetWriter
 
 
@@ -122,7 +122,8 @@ def test_run_step_observer_receives_step_name() -> None:
 def test_run_step_run_id_consistent_across_events() -> None:
     plan = _COMPILER.compile_step(StepA)
     exc, _, obs = _executor()
-    exc.run_step(plan, _PARAMS, run_id="fixed-run-id")
+    ctx = RunContext(run_id="fixed-run-id")
+    exc.run_step(plan, _PARAMS, ctx)
     start_event = next(d for name, d in obs.events if name == "step_start")
     assert start_event["run_id"] == "fixed-run-id"
 

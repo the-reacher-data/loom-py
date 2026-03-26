@@ -1,12 +1,29 @@
-"""ETL executor public API."""
+"""ETL executor public API.
+
+The normal entry point is :class:`~loom.etl.ETLRunner` — it wires I/O,
+compilation, and execution from a single YAML config.
+
+This module exposes the observer and dispatcher abstractions so users can
+compose observability pipelines without touching I/O internals:
+
+* :class:`ETLRunObserver`    — lifecycle hook protocol
+* :class:`StructlogRunObserver` — structured-log implementation
+* :class:`RunSinkObserver`   — persists run records to a Delta sink
+* :class:`ParallelDispatcher` / :class:`ThreadDispatcher` — parallelism
+
+``ETLExecutor`` is intentionally **not** exported here.  It is an internal
+engine used exclusively by :class:`~loom.etl.ETLRunner`.
+"""
 
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.executor._executor import ETLExecutor
+from loom.etl.executor._executor import ETLExecutor as ETLExecutor  # internal — not in __all__
 from loom.etl.executor.observer import (
+    CompositeObserver,
     ETLRunObserver,
     EventName,
     PipelineRunRecord,
     ProcessRunRecord,
+    RunContext,
     RunRecord,
     RunSink,
     RunSinkObserver,
@@ -16,12 +33,12 @@ from loom.etl.executor.observer import (
 )
 
 __all__ = [
-    # executor
-    "ETLExecutor",
     # observer protocol
     "ETLRunObserver",
     # run sink protocol
     "RunSink",
+    # run context
+    "RunContext",
     # events and records
     "EventName",
     "RunStatus",
@@ -30,6 +47,7 @@ __all__ = [
     "ProcessRunRecord",
     "StepRunRecord",
     # implementations
+    "CompositeObserver",
     "StructlogRunObserver",
     "RunSinkObserver",
     # dispatcher protocol + implementations

@@ -18,8 +18,8 @@ import typing
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
-from loom.etl._source import FromFile, FromTable, Sources, SourceSet
-from loom.etl._target import IntoFile, IntoTable
+from loom.etl._source import FromFile, FromTable, FromTemp, Sources, SourceSet
+from loom.etl._target import IntoFile, IntoTable, IntoTemp
 
 ParamsT = TypeVar("ParamsT")
 
@@ -34,8 +34,8 @@ _RESERVED_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_SOURCE_TYPES = (FromTable, FromFile)
-_TARGET_TYPES = (IntoTable, IntoFile)
+_SOURCE_TYPES = (FromTable, FromFile, FromTemp)
+_TARGET_TYPES = (IntoTable, IntoFile, IntoTemp)
 
 
 class _SourceForm(Enum):
@@ -91,12 +91,12 @@ class ETLStep(Generic[ParamsT]):
     """
 
     sources: ClassVar[Sources | SourceSet[Any] | None] = None
-    target: ClassVar[IntoTable | IntoFile | None] = None
+    target: ClassVar[IntoTable | IntoFile | IntoTemp | None] = None
 
     # Set by __init_subclass__
     _params_type: ClassVar[type[Any] | None] = None
     _source_form: ClassVar[_SourceForm] = _SourceForm.NONE
-    _inline_sources: ClassVar[dict[str, FromTable | FromFile]]
+    _inline_sources: ClassVar[dict[str, FromTable | FromFile | FromTemp]]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

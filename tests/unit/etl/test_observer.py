@@ -11,6 +11,7 @@ from loom.etl.executor import (
     ETLRunObserver,
     EventName,
     PipelineRunRecord,
+    RunContext,
     RunSinkObserver,
     RunStatus,
     StepRunRecord,
@@ -53,7 +54,7 @@ def test_observer_satisfies_protocol(observer: ETLRunObserver) -> None:
 
 def test_stub_observer_captures_events() -> None:
     obs = StubRunObserver()
-    obs.on_step_start(type("Plan", (), {"step_type": type("Step", (), {})})(), "r", "s")
+    obs.on_step_start(type("Plan", (), {"step_type": type("Step", (), {})})(), RunContext("r"), "s")
     obs.on_step_end("s", RunStatus.SUCCESS, 5)
     assert EventName.STEP_START in obs.event_names
     assert EventName.STEP_END in obs.event_names
@@ -68,8 +69,8 @@ def test_stub_observer_step_statuses() -> None:
 
 def test_stub_observer_pipeline_statuses() -> None:
     obs = StubRunObserver()
-    obs.on_pipeline_end("r1", RunStatus.SUCCESS, 100)
-    obs.on_pipeline_end("r2", RunStatus.FAILED, 50)
+    obs.on_pipeline_end(RunContext("r1"), RunStatus.SUCCESS, 100)
+    obs.on_pipeline_end(RunContext("r2"), RunStatus.FAILED, 50)
     assert obs.pipeline_statuses == [RunStatus.SUCCESS, RunStatus.FAILED]
 
 
@@ -83,17 +84,33 @@ def test_stub_observer_empty_on_init() -> None:
 def test_structlog_observer_emits_step_start() -> None:
     obs = StructlogRunObserver()
 
-    class FakePlan:
+    class _Spec:
+        table_ref = None
+        temp_name = None
+        path = "s3://raw/data"
+        mode = "replace"
+
+    class _Binding:
+        spec = _Spec()
+        alias = "data"
+
+    class _FakePlan:
         step_type = type("MyStep", (), {})
+        source_bindings = (_Binding(),)
+        target_binding = type("TB", (), {"spec": _Spec()})()
+        backend = "polars"
 
     with patch("loom.etl.executor.observer._structlog._log") as mock_log:
-        obs.on_step_start(FakePlan(), "run-1", "step-1")
+        obs.on_step_start(_FakePlan(), RunContext("run-1"), "step-1")
         mock_log.info.assert_called_once()
         call_args = mock_log.info.call_args
         assert call_args[0][0] == EventName.STEP_START
         assert call_args[1]["step"] == "MyStep"
         assert call_args[1]["run_id"] == "run-1"
         assert call_args[1]["step_run_id"] == "step-1"
+        assert "sources" in call_args[1]
+        assert "target" in call_args[1]
+        assert "write_mode" in call_args[1]
 
 
 def test_structlog_observer_emits_step_error_at_error_level() -> None:
@@ -128,8 +145,8 @@ def test_run_sink_observer_writes_step_record_and_not_on_start() -> None:
     class FakePlan:
         step_type = type("BuildOrders", (), {})
 
-    obs.on_step_start(FakePlan(), "run-1", "step-1")
-    assert sink.records == []  # no write on start
+    obs.on_step_start(FakePlan(), RunContext("run-1"), "step-1")
+    assert sink.records == []
 
     obs.on_step_end("step-1", RunStatus.SUCCESS, 100)
     assert len(sink.records) == 1
@@ -149,7 +166,7 @@ def test_run_sink_observer_captures_error_in_step_record() -> None:
     class FakePlan:
         step_type = type("FailingStep", (), {})
 
-    obs.on_step_start(FakePlan(), "run-1", "step-1")
+    obs.on_step_start(FakePlan(), RunContext("run-1"), "step-1")
     obs.on_step_error("step-1", RuntimeError("disk full"))
     obs.on_step_end("step-1", RunStatus.FAILED, 50)
 
@@ -166,8 +183,9 @@ def test_run_sink_observer_writes_pipeline_record_on_end() -> None:
     class FakePlan:
         pipeline_type = type("DailyPipeline", (), {})
 
-    obs.on_pipeline_start(FakePlan(), object(), "run-1")
-    obs.on_pipeline_end("run-1", RunStatus.SUCCESS, 300)
+    ctx = RunContext("run-1")
+    obs.on_pipeline_start(FakePlan(), object(), ctx)
+    obs.on_pipeline_end(ctx, RunStatus.SUCCESS, 300)
 
     assert len(sink.records) == 1
     record = sink.records[0]
