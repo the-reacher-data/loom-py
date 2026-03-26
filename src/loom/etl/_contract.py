@@ -36,7 +36,7 @@ from __future__ import annotations
 import datetime
 import types as _builtin_types
 import typing
-from typing import Any
+from typing import Any, TypeAlias
 
 from loom.etl._schema import (
     ArrayType,
@@ -52,6 +52,21 @@ from loom.etl._schema import (
     StructField,
     StructType,
 )
+
+# ---------------------------------------------------------------------------
+# Public TypeAliases — used in FromTable / FromFile signatures
+# ---------------------------------------------------------------------------
+
+#: Contract accepted by ``with_schema``: either an explicit column-schema tuple
+#: or an annotated class whose fields are mapped to :class:`ColumnSchema` entries.
+SchemaContract: TypeAlias = tuple[ColumnSchema, ...] | type[Any]
+
+#: Contract accepted by ``parse_json``: a :data:`LoomType` (passthrough), an
+#: annotated class (→ :class:`StructType`), or a ``list[X]`` generic alias
+#: (→ :class:`ListType`).  ``list[X]`` is a ``types.GenericAlias`` at runtime,
+#: not a plain ``type``, so the union includes ``Any`` to capture it without
+#: widening the documented intent.
+JsonContract: TypeAlias = LoomType | type[Any]
 
 # ---------------------------------------------------------------------------
 # Primitive Python type → LoomDtype

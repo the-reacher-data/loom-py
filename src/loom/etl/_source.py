@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, TypeVar
 
-from loom.etl._contract import resolve_json_type, resolve_schema
+from loom.etl._contract import JsonContract, SchemaContract, resolve_json_type, resolve_schema
 from loom.etl._format import Format
 from loom.etl._predicate import PredicateNode
 from loom.etl._read_options import ReadOptions
@@ -164,7 +164,7 @@ class FromTable:
         """Declared filter predicates."""
         return self._predicates
 
-    def with_schema(self, schema: tuple[ColumnSchema, ...] | type[Any]) -> FromTable:
+    def with_schema(self, schema: SchemaContract) -> FromTable:
         """Return a new ``FromTable`` with a user-declared source schema.
 
         The schema is applied at read time via column-level casts — each
@@ -197,7 +197,7 @@ class FromTable:
         object.__setattr__(new, "_schema", resolve_schema(schema))
         return new
 
-    def parse_json(self, column: str, contract: Any) -> FromTable:
+    def parse_json(self, column: str, contract: JsonContract) -> FromTable:
         """Return a new ``FromTable`` that decodes *column* from JSON at read time.
 
         The string column *column* is decoded into a structured type using the
@@ -330,7 +330,7 @@ class FromFile:
         """I/O format."""
         return self._format
 
-    def with_schema(self, schema: tuple[ColumnSchema, ...] | type[Any]) -> FromFile:
+    def with_schema(self, schema: SchemaContract) -> FromFile:
         """Return a new ``FromFile`` with a user-declared source schema.
 
         The schema is applied at read time — each declared column is cast to
@@ -361,7 +361,7 @@ class FromFile:
         object.__setattr__(new, "_schema", resolve_schema(schema))
         return new
 
-    def parse_json(self, column: str, contract: Any) -> FromFile:
+    def parse_json(self, column: str, contract: JsonContract) -> FromFile:
         """Return a new ``FromFile`` that decodes *column* from JSON at read time.
 
         The string column *column* is decoded into a structured type using the
