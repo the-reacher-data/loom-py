@@ -1,10 +1,11 @@
-"""Tests for IntoTemp / FromTemp / TempScope / IntermediateStore."""
+"""Tests for IntoTemp, FromTemp, TempScope and IntermediateStore."""
 
 from __future__ import annotations
 
 import os
-import tempfile
+from collections.abc import Callable
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,56 +25,18 @@ from loom.etl import (
 from loom.etl._source import SourceKind
 from loom.etl._temp_store import IntermediateStore
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
-from loom.etl.testing import StubCatalog
-
-# ---------------------------------------------------------------------------
-# Params fixture
-# ---------------------------------------------------------------------------
+from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 
-class P(ETLParams):
+class P(ETLParams):  # type: ignore[misc]
     run_date: date
-
-
-# ---------------------------------------------------------------------------
-# IntoTemp / FromTemp — spec construction
-# ---------------------------------------------------------------------------
-
-
-def test_into_temp_default_scope() -> None:
-    t = IntoTemp("orders")
-    assert t.temp_name == "orders"
-    assert t.scope is TempScope.RUN
-
-
-def test_into_temp_correlation_scope() -> None:
-    t = IntoTemp("orders", scope=TempScope.CORRELATION)
-    assert t.scope is TempScope.CORRELATION
-
-
-def test_into_temp_to_spec_carries_name_and_scope() -> None:
-    spec = IntoTemp("orders", scope=TempScope.CORRELATION)._to_spec()
-    assert spec.temp_name == "orders"
-    assert spec.temp_scope is TempScope.CORRELATION
-
-
-def test_from_temp_to_spec_kind_is_temp() -> None:
-    spec = FromTemp("orders")._to_spec("data")
-    assert spec.kind is SourceKind.TEMP
-    assert spec.temp_name == "orders"
-    assert spec.alias == "data"
-
-
-# ---------------------------------------------------------------------------
-# Compiler — structural validation with IntoTemp / FromTemp
-# ---------------------------------------------------------------------------
 
 
 class ProduceStep(ETLStep[P]):
     sources = Sources(raw=FromTable("raw.orders"))
     target = IntoTemp("normalized")
 
-    def execute(self, params: P, *, raw: Any) -> Any:
+    def execute(self, params: P, *, raw: Any) -> Any:  # type: ignore[override]
         return raw
 
 
@@ -81,7 +44,7 @@ class ConsumeStep(ETLStep[P]):
     normalized = FromTemp("normalized")
     target = IntoTable("mart.summary").replace()
 
-    def execute(self, params: P, *, normalized: Any) -> Any:
+    def execute(self, params: P, *, normalized: Any) -> Any:  # type: ignore[override]
         return normalized
 
 
@@ -93,174 +56,223 @@ class TempPipeline(ETLPipeline[P]):
     processes = [TempProcess]
 
 
-_CATALOG = StubCatalog(tables={"raw.orders": (), "mart.summary": ()})
+@pytest.fixture
+def catalog() -> StubCatalog:
+    return StubCatalog(tables={"raw.orders": (), "mart.summary": ()})
 
 
-def test_compile_step_into_temp_succeeds() -> None:
-    plan = ETLCompiler().compile_step(ProduceStep)
-    assert plan.target_binding.spec.temp_name == "normalized"
+class TestTempSpecConstruction:
+    @pytest.mark.parametrize(
+        "scope",
+        [TempScope.RUN, TempScope.CORRELATION],
+    )
+    def test_into_temp_scope_contract(self, scope: TempScope) -> None:
+        target = IntoTemp("orders", scope=scope)
+        assert target.temp_name == "orders"
+        assert target.scope is scope
+        spec = target._to_spec()
+        assert spec.temp_name == "orders"
+        assert spec.temp_scope is scope
+
+    def test_from_temp_to_spec_kind_is_temp(self) -> None:
+        spec = FromTemp("orders")._to_spec("data")
+        assert spec.kind is SourceKind.TEMP
+        assert spec.temp_name == "orders"
+        assert spec.alias == "data"
 
 
-def test_compile_step_from_temp_source_binding() -> None:
-    plan = ETLCompiler().compile_step(ConsumeStep)
-    assert len(plan.source_bindings) == 1
-    b = plan.source_bindings[0]
-    assert b.alias == "normalized"
-    assert b.spec.kind is SourceKind.TEMP
-    assert b.spec.temp_name == "normalized"
+class TestCompilerTempValidation:
+    @pytest.mark.parametrize(
+        "step_type,check",
+        [
+            (
+                ProduceStep,
+                lambda plan: plan.target_binding.spec.temp_name == "normalized",
+            ),
+            (
+                ConsumeStep,
+                lambda plan: (
+                    len(plan.source_bindings) == 1
+                    and plan.source_bindings[0].alias == "normalized"
+                    and plan.source_bindings[0].spec.kind is SourceKind.TEMP
+                    and plan.source_bindings[0].spec.temp_name == "normalized"
+                ),
+            ),
+        ],
+    )
+    def test_compile_step_temp_bindings(
+        self,
+        step_type: type[ETLStep[P]],
+        check: Callable[[Any], bool],
+    ) -> None:
+        assert check(ETLCompiler().compile_step(step_type))
+
+    def test_compile_pipeline_with_temp_passes(self, catalog: StubCatalog) -> None:
+        assert ETLCompiler(catalog).compile(TempPipeline) is not None
+
+    @pytest.mark.parametrize(
+        "pipeline_builder,error",
+        [
+            (
+                lambda: _build_orphan_pipeline(),
+                "normalized",
+            ),
+            (
+                lambda: _build_parallel_same_group_pipeline(),
+                "normalized",
+            ),
+        ],
+    )
+    def test_compile_pipeline_temp_errors(
+        self,
+        catalog: StubCatalog,
+        pipeline_builder: Callable[[], type[ETLPipeline[P]]],
+        error: str,
+    ) -> None:
+        with pytest.raises(ETLCompilationError, match=error):
+            ETLCompiler(catalog).compile(pipeline_builder())
+
+    def test_compile_pipeline_sequential_step_sees_prior_parallel_temp(
+        self,
+        catalog: StubCatalog,
+    ) -> None:
+        ETLCompiler(catalog).compile(_build_parallel_then_consume_pipeline())
 
 
-def test_compile_pipeline_with_temp_passes() -> None:
-    plan = ETLCompiler(_CATALOG).compile(TempPipeline)
-    assert plan is not None
+class TestIntermediateStore:
+    @pytest.mark.parametrize(
+        "cleanup_fn,subdir,key",
+        [
+            (lambda store, value: store.cleanup_run(value), "runs", "my-run"),
+            (
+                lambda store, value: store.cleanup_correlation(value),
+                "correlations",
+                "job-123",
+            ),
+        ],
+    )
+    def test_cleanup_removes_directory(
+        self,
+        tmp_path: Path,
+        cleanup_fn: Callable[[IntermediateStore, str], None],
+        subdir: str,
+        key: str,
+    ) -> None:
+        store = IntermediateStore(tmp_root=str(tmp_path))
+        directory = tmp_path / subdir / key
+        directory.mkdir(parents=True)
+        cleanup_fn(store, key)
+        assert not directory.exists()
+
+    def test_cleanup_run_is_noop_when_missing(self, tmp_path: Path) -> None:
+        IntermediateStore(tmp_root=str(tmp_path)).cleanup_run("does-not-exist")
+
+    @pytest.mark.parametrize(
+        "old_offset_days,should_delete",
+        [
+            (2, True),
+            (0, False),
+        ],
+    )
+    def test_cleanup_stale_behavior(
+        self,
+        tmp_path: Path,
+        old_offset_days: int,
+        should_delete: bool,
+    ) -> None:
+        store = IntermediateStore(tmp_root=str(tmp_path))
+        run_dir = tmp_path / "runs" / "run-x"
+        run_dir.mkdir(parents=True)
+        if old_offset_days:
+            old_time = run_dir.stat().st_mtime - old_offset_days * 86_400
+            os.utime(run_dir, (old_time, old_time))
+        store.cleanup_stale(older_than_seconds=86_400)
+        assert run_dir.exists() is (not should_delete)
+
+    @pytest.mark.parametrize(
+        "scope,data,error,match",
+        [
+            (TempScope.RUN, {"not": "a frame"}, TypeError, "unsupported DataFrame type"),
+            (TempScope.CORRELATION, object(), ValueError, "correlation_id"),
+        ],
+    )
+    def test_store_put_validation(
+        self,
+        tmp_path: Path,
+        scope: TempScope,
+        data: object,
+        error: type[Exception],
+        match: str,
+    ) -> None:
+        store = IntermediateStore(tmp_root=str(tmp_path))
+        with pytest.raises(error, match=match):
+            store.put("x", run_id="r", correlation_id=None, scope=scope, data=data)
+
+    def test_store_get_raises_when_missing(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            IntermediateStore(tmp_root=str(tmp_path)).get(
+                "missing", run_id="r", correlation_id=None
+            )
 
 
-def test_compile_pipeline_from_temp_without_prior_into_temp_raises() -> None:
+class TestRunnerTempCleanup:
+    @pytest.mark.parametrize(
+        "cleanup_fn",
+        [
+            lambda runner: runner.cleanup_correlation("job-123"),
+            lambda runner: runner.cleanup_stale_temps(),
+        ],
+    )
+    def test_runner_cleanup_without_temp_store_raises(
+        self,
+        cleanup_fn: Callable[[Any], None],
+    ) -> None:
+        from loom.etl._runner import ETLRunner
+
+        runner = ETLRunner(StubSourceReader({}), StubTargetWriter(), StubCatalog(tables={}))
+        with pytest.raises(RuntimeError, match="tmp_root"):
+            cleanup_fn(runner)
+
+
+def _build_orphan_pipeline() -> type[ETLPipeline[P]]:
     class OrphanProcess(ETLProcess[P]):
-        steps = [ConsumeStep]  # no ProduceStep before it
+        steps = [ConsumeStep]
 
     class OrphanPipeline(ETLPipeline[P]):
         processes = [OrphanProcess]
 
-    with pytest.raises(ETLCompilationError, match="normalized"):
-        ETLCompiler(_CATALOG).compile(OrphanPipeline)
+    return OrphanPipeline
 
 
-def test_compile_pipeline_parallel_steps_do_not_see_each_others_temps() -> None:
+def _build_parallel_same_group_pipeline() -> type[ETLPipeline[P]]:
     class ParallelProcess(ETLProcess[P]):
-        steps = [[ProduceStep, ConsumeStep]]  # parallel — ConsumeStep cannot see ProduceStep
+        steps = [[ProduceStep, ConsumeStep]]
 
     class ParallelPipeline(ETLPipeline[P]):
         processes = [ParallelProcess]
 
-    with pytest.raises(ETLCompilationError, match="normalized"):
-        ETLCompiler(_CATALOG).compile(ParallelPipeline)
+    return ParallelPipeline
 
 
-def test_compile_pipeline_sequential_step_sees_prior_parallel_temp() -> None:
+def _build_parallel_then_consume_pipeline() -> type[ETLPipeline[P]]:
     class ProduceA(ETLStep[P]):
         sources = Sources(raw=FromTable("raw.orders"))
         target = IntoTemp("norm_a")
 
-        def execute(self, params: P, *, raw: Any) -> Any:
+        def execute(self, params: P, *, raw: Any) -> Any:  # type: ignore[override]
             return raw
 
     class ConsumeA(ETLStep[P]):
         norm_a = FromTemp("norm_a")
         target = IntoTable("mart.summary").replace()
 
-        def execute(self, params: P, *, norm_a: Any) -> Any:
+        def execute(self, params: P, *, norm_a: Any) -> Any:  # type: ignore[override]
             return norm_a
 
     class Proc(ETLProcess[P]):
-        steps = [[ProduceA], ConsumeA]  # parallel group with one step, then sequential
+        steps = [[ProduceA], ConsumeA]
 
-    class Pip(ETLPipeline[P]):
+    class Pipeline(ETLPipeline[P]):
         processes = [Proc]
 
-    ETLCompiler(_CATALOG).compile(Pip)  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# IntermediateStore — local filesystem (no Polars/Spark needed for path logic)
-# ---------------------------------------------------------------------------
-
-
-def test_store_cleanup_run_removes_directory() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        run_dir = os.path.join(tmp, "runs", "my-run")
-        os.makedirs(run_dir)
-        assert os.path.isdir(run_dir)
-        store.cleanup_run("my-run")
-        assert not os.path.exists(run_dir)
-
-
-def test_store_cleanup_run_is_noop_when_missing() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        store.cleanup_run("does-not-exist")  # must not raise
-
-
-def test_store_cleanup_correlation_removes_directory() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        corr_dir = os.path.join(tmp, "correlations", "job-123")
-        os.makedirs(corr_dir)
-        store.cleanup_correlation("job-123")
-        assert not os.path.exists(corr_dir)
-
-
-def test_store_cleanup_stale_removes_old_entries() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        runs_dir = os.path.join(tmp, "runs")
-        old_run = os.path.join(runs_dir, "old-run")
-        os.makedirs(old_run)
-        # backdate mtime by 2 days
-        old_time = os.path.getmtime(old_run) - 2 * 86_400
-        os.utime(old_run, (old_time, old_time))
-        store.cleanup_stale(older_than_seconds=86_400)
-        assert not os.path.exists(old_run)
-
-
-def test_store_cleanup_stale_keeps_recent_entries() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        runs_dir = os.path.join(tmp, "runs")
-        new_run = os.path.join(runs_dir, "new-run")
-        os.makedirs(new_run)
-        store.cleanup_stale(older_than_seconds=86_400)
-        assert os.path.isdir(new_run)
-
-
-def test_store_put_raises_for_unknown_type() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        with pytest.raises(TypeError, match="unsupported DataFrame type"):
-            store.put(
-                "x", run_id="r", correlation_id=None, scope=TempScope.RUN, data={"not": "a frame"}
-            )
-
-
-def test_store_put_correlation_without_correlation_id_raises() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-
-        class FakeFrame:
-            pass
-
-        with pytest.raises(ValueError, match="correlation_id"):
-            store.put(
-                "x", run_id="r", correlation_id=None, scope=TempScope.CORRELATION, data=FakeFrame()
-            )
-
-
-def test_store_get_raises_when_missing() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        store = IntermediateStore(tmp_root=tmp)
-        with pytest.raises(FileNotFoundError):
-            store.get("missing", run_id="r", correlation_id=None)
-
-
-# ---------------------------------------------------------------------------
-# Runner — cleanup_correlation / cleanup_stale_temps without temp_store raise
-# ---------------------------------------------------------------------------
-
-
-def test_runner_cleanup_correlation_without_temp_store_raises() -> None:
-    from loom.etl._runner import ETLRunner
-    from loom.etl.testing import StubSourceReader, StubTargetWriter
-
-    runner = ETLRunner(StubSourceReader({}), StubTargetWriter(), StubCatalog(tables={}))
-    with pytest.raises(RuntimeError, match="tmp_root"):
-        runner.cleanup_correlation("job-123")
-
-
-def test_runner_cleanup_stale_without_temp_store_raises() -> None:
-    from loom.etl._runner import ETLRunner
-    from loom.etl.testing import StubSourceReader, StubTargetWriter
-
-    runner = ETLRunner(StubSourceReader({}), StubTargetWriter(), StubCatalog(tables={}))
-    with pytest.raises(RuntimeError, match="tmp_root"):
-        runner.cleanup_stale_temps()
+    return Pipeline

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -10,7 +11,7 @@ from loom.etl import ETLParams, ETLStep, IntoTable
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
 
 
-class _Params(ETLParams):
+class _Params(ETLParams):  # type: ignore[misc]
     pass
 
 
@@ -18,21 +19,11 @@ def _compiler() -> ETLCompiler:
     return ETLCompiler()
 
 
-# ---------------------------------------------------------------------------
-# Valid UPSERT specs compile without errors
-# ---------------------------------------------------------------------------
-
-
 class _ValidUpsert(ETLStep[_Params]):
     target = IntoTable("test.orders").upsert(keys=("order_id",))
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_valid_upsert_compiles() -> None:
-    plan = _compiler().compile_step(_ValidUpsert)
-    assert plan.target_binding.spec.upsert_keys == ("order_id",)
 
 
 class _UpsertWithPartitions(ETLStep[_Params]):
@@ -41,15 +32,8 @@ class _UpsertWithPartitions(ETLStep[_Params]):
         partition_cols=("year", "month"),
     )
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_valid_upsert_with_partition_cols_compiles() -> None:
-    plan = _compiler().compile_step(_UpsertWithPartitions)
-    spec = plan.target_binding.spec
-    assert spec.upsert_keys == ("order_id",)
-    assert spec.partition_cols == ("year", "month")
 
 
 class _UpsertWithExclude(ETLStep[_Params]):
@@ -58,13 +42,8 @@ class _UpsertWithExclude(ETLStep[_Params]):
         exclude=("created_at",),
     )
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_valid_upsert_with_exclude_compiles() -> None:
-    plan = _compiler().compile_step(_UpsertWithExclude)
-    assert plan.target_binding.spec.upsert_exclude == ("created_at",)
 
 
 class _UpsertWithInclude(ETLStep[_Params]):
@@ -73,35 +52,15 @@ class _UpsertWithInclude(ETLStep[_Params]):
         include=("status", "updated_at"),
     )
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_valid_upsert_with_include_compiles() -> None:
-    plan = _compiler().compile_step(_UpsertWithInclude)
-    assert plan.target_binding.spec.upsert_include == ("status", "updated_at")
-
-
-# ---------------------------------------------------------------------------
-# Empty keys raises ETLCompilationError
-# ---------------------------------------------------------------------------
 
 
 class _EmptyKeys(ETLStep[_Params]):
     target = IntoTable("test.orders").upsert(keys=())
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_upsert_empty_keys_raises() -> None:
-    with pytest.raises(ETLCompilationError, match="requires at least one key"):
-        _compiler().compile_step(_EmptyKeys)
-
-
-# ---------------------------------------------------------------------------
-# exclude and include are mutually exclusive
-# ---------------------------------------------------------------------------
 
 
 class _ExcludeAndInclude(ETLStep[_Params]):
@@ -111,18 +70,8 @@ class _ExcludeAndInclude(ETLStep[_Params]):
         include=("status",),
     )
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
-
-
-def test_upsert_exclude_and_include_raises() -> None:
-    with pytest.raises(ETLCompilationError, match="mutually exclusive"):
-        _compiler().compile_step(_ExcludeAndInclude)
-
-
-# ---------------------------------------------------------------------------
-# exclude must not overlap with upsert_keys
-# ---------------------------------------------------------------------------
 
 
 class _ExcludeOverlapsKeys(ETLStep[_Params]):
@@ -131,10 +80,54 @@ class _ExcludeOverlapsKeys(ETLStep[_Params]):
         exclude=("order_id", "created_at"),
     )
 
-    def execute(self, params: _Params) -> Any:
+    def execute(self, params: _Params) -> Any:  # type: ignore[override]
         return None
 
 
-def test_upsert_exclude_overlaps_keys_raises() -> None:
-    with pytest.raises(ETLCompilationError, match="overlaps with upsert keys"):
-        _compiler().compile_step(_ExcludeOverlapsKeys)
+class TestCompileUpsertSpecs:
+    @pytest.mark.parametrize(
+        "step_type,assertion",
+        [
+            (
+                _ValidUpsert,
+                lambda spec: spec.upsert_keys == ("order_id",),
+            ),
+            (
+                _UpsertWithPartitions,
+                lambda spec: (
+                    spec.upsert_keys == ("order_id",) and spec.partition_cols == ("year", "month")
+                ),
+            ),
+            (
+                _UpsertWithExclude,
+                lambda spec: spec.upsert_exclude == ("created_at",),
+            ),
+            (
+                _UpsertWithInclude,
+                lambda spec: spec.upsert_include == ("status", "updated_at"),
+            ),
+        ],
+    )
+    def test_valid_specs_compile(
+        self,
+        step_type: type[ETLStep[_Params]],
+        assertion: Callable[[Any], bool],
+    ) -> None:
+        spec = _compiler().compile_step(step_type).target_binding.spec
+        assert assertion(spec)
+
+    @pytest.mark.parametrize(
+        "step_type,error",
+        [
+            (_EmptyKeys, "requires at least one key"),
+            (_ExcludeAndInclude, "mutually exclusive"),
+            (_ExcludeOverlapsKeys, "overlaps with upsert keys"),
+        ],
+    )
+    def test_invalid_specs_raise(
+        self,
+        step_type: type[ETLStep[_Params]],
+        error: str,
+    ) -> None:
+        with pytest.raises(ETLCompilationError, match=error):
+            _compiler().compile_step(step_type)

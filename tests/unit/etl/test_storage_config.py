@@ -1,14 +1,14 @@
-"""Unit tests for DeltaConfig, UnityCatalogConfig, and convert_storage_config.
-
-Covers the programmatic construction path — no YAML, no dict — as the
-canonical typed entry point for storage configuration.
-"""
+"""Unit tests for DeltaConfig, UnityCatalogConfig and convert_storage_config."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
 
 import msgspec
 import pytest
 
+from loom.etl._locator import MappingLocator, PrefixLocator
 from loom.etl._storage_config import (
     DeltaConfig,
     StorageBackend,
@@ -17,227 +17,219 @@ from loom.etl._storage_config import (
     convert_storage_config,
 )
 
-# ---------------------------------------------------------------------------
-# DeltaConfig — direct construction
-# ---------------------------------------------------------------------------
 
+class TestDeltaConfig:
+    def test_defaults(self) -> None:
+        config = DeltaConfig()
+        assert config.type == "delta"
+        assert config.root == ""
+        assert config.storage_options == {}
+        assert config.writer == {}
+        assert config.delta_config == {}
+        assert config.commit == {}
+        assert config.tables == {}
+        assert config.tmp_root == ""
+        assert config.tmp_storage_options == {}
 
-def test_delta_config_defaults() -> None:
-    config = DeltaConfig()
-    assert config.type == "delta"
-    assert config.root == ""
-    assert config.storage_options == {}
-    assert config.writer == {}
-    assert config.delta_config == {}
-    assert config.commit == {}
-    assert config.tables == {}
-    assert config.tmp_root == ""
-    assert config.tmp_storage_options == {}
-
-
-def test_delta_config_with_root() -> None:
-    config = DeltaConfig(root="s3://my-lake/")
-    assert config.root == "s3://my-lake/"
-
-
-def test_delta_config_with_storage_options() -> None:
-    config = DeltaConfig(
-        root="s3://my-lake/",
-        storage_options={"AWS_REGION": "eu-west-1"},
+    @pytest.mark.parametrize(
+        "kwargs,check",
+        [
+            (
+                {"root": "s3://my-lake/"},
+                lambda c: c.root == "s3://my-lake/",
+            ),
+            (
+                {"root": "s3://my-lake/", "storage_options": {"AWS_REGION": "eu-west-1"}},
+                lambda c: c.storage_options["AWS_REGION"] == "eu-west-1",
+            ),
+            (
+                {"writer": {"compression": "SNAPPY"}},
+                lambda c: c.writer["compression"] == "SNAPPY",
+            ),
+            (
+                {"root": "s3://lake/", "tmp_root": "s3://lake/tmp/"},
+                lambda c: c.tmp_root == "s3://lake/tmp/",
+            ),
+        ],
     )
-    assert config.storage_options["AWS_REGION"] == "eu-west-1"
+    def test_direct_construction(
+        self,
+        kwargs: dict[str, Any],
+        check: Callable[[DeltaConfig], bool],
+    ) -> None:
+        assert check(DeltaConfig(**kwargs))
 
+    def test_is_frozen(self) -> None:
+        config = DeltaConfig(root="s3://lake/")
+        with pytest.raises((TypeError, AttributeError)):
+            config.root = "s3://other/"  # type: ignore[misc]
 
-def test_delta_config_with_writer_options() -> None:
-    config = DeltaConfig(writer={"compression": "SNAPPY"})
-    assert config.writer["compression"] == "SNAPPY"
-
-
-def test_delta_config_with_tmp_root() -> None:
-    config = DeltaConfig(root="s3://lake/", tmp_root="s3://lake/tmp/")
-    assert config.tmp_root == "s3://lake/tmp/"
-
-
-def test_delta_config_frozen() -> None:
-    config = DeltaConfig(root="s3://lake/")
-    with pytest.raises((TypeError, AttributeError)):
-        config.root = "s3://other/"  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# DeltaConfig — config evolution via msgspec.structs.replace
-# ---------------------------------------------------------------------------
-
-
-def test_delta_config_replace_root() -> None:
-    base = DeltaConfig(root="s3://prod/", writer={"compression": "SNAPPY"})
-    staging = msgspec.structs.replace(base, root="s3://staging/")
-
-    assert staging.root == "s3://staging/"
-    assert staging.writer == {"compression": "SNAPPY"}  # preserved
-
-
-def test_delta_config_replace_writer() -> None:
-    base = DeltaConfig(root="s3://lake/", writer={"compression": "SNAPPY"})
-    prod = msgspec.structs.replace(base, writer={"compression": "ZSTD", "compression_level": 3})
-
-    assert prod.root == "s3://lake/"
-    assert prod.writer["compression"] == "ZSTD"
-    assert base.writer["compression"] == "SNAPPY"  # original unchanged
-
-
-def test_delta_config_replace_storage_options() -> None:
-    base = DeltaConfig(root="s3://lake/", storage_options={"AWS_REGION": "eu-west-1"})
-    other_region = msgspec.structs.replace(base, storage_options={"AWS_REGION": "us-east-1"})
-
-    assert other_region.storage_options["AWS_REGION"] == "us-east-1"
-    assert base.storage_options["AWS_REGION"] == "eu-west-1"  # original unchanged
-
-
-# ---------------------------------------------------------------------------
-# DeltaConfig — validate()
-# ---------------------------------------------------------------------------
-
-
-def test_delta_config_validate_empty_writer_passes() -> None:
-    DeltaConfig().validate()  # must not raise
-
-
-def test_delta_config_validate_bad_writer_key_raises() -> None:
-    config = DeltaConfig(writer={"nonexistent_key": "value"})
-    with pytest.raises(TypeError, match="writer"):
-        config.validate()
-
-
-def test_delta_config_validate_bad_commit_key_raises() -> None:
-    config = DeltaConfig(commit={"nonexistent_commit_key": "value"})
-    with pytest.raises(TypeError, match="commit"):
-        config.validate()
-
-
-def test_delta_config_validate_bad_table_override_writer_raises() -> None:
-    config = DeltaConfig(
-        root="s3://lake/",
-        tables={"raw.orders": TableOverride(writer={"bad_key": "x"})},
+    @pytest.mark.parametrize(
+        "base,replace,check",
+        [
+            (
+                DeltaConfig(root="s3://prod/", writer={"compression": "SNAPPY"}),
+                {"root": "s3://staging/"},
+                lambda new, old: new.root == "s3://staging/" and new.writer == old.writer,
+            ),
+            (
+                DeltaConfig(root="s3://lake/", writer={"compression": "SNAPPY"}),
+                {"writer": {"compression": "ZSTD", "compression_level": 3}},
+                lambda new, old: (
+                    new.writer["compression"] == "ZSTD" and old.writer["compression"] == "SNAPPY"
+                ),
+            ),
+            (
+                DeltaConfig(root="s3://lake/", storage_options={"AWS_REGION": "eu-west-1"}),
+                {"storage_options": {"AWS_REGION": "us-east-1"}},
+                lambda new, old: (
+                    new.storage_options["AWS_REGION"] == "us-east-1"
+                    and old.storage_options["AWS_REGION"] == "eu-west-1"
+                ),
+            ),
+        ],
     )
-    with pytest.raises(TypeError, match="tables.raw.orders.writer"):
-        config.validate()
+    def test_replace(
+        self,
+        base: DeltaConfig,
+        replace: dict[str, Any],
+        check: Callable[[DeltaConfig, DeltaConfig], bool],
+    ) -> None:
+        updated = msgspec.structs.replace(base, **replace)
+        assert check(updated, base)
 
-
-# ---------------------------------------------------------------------------
-# UnityCatalogConfig — direct construction
-# ---------------------------------------------------------------------------
-
-
-def test_unity_catalog_config_minimal() -> None:
-    config = UnityCatalogConfig(type="unity_catalog")
-    assert config.type == "unity_catalog"
-    assert config.workspace_url == ""
-    assert config.catalog == ""
-    assert config.token == ""
-    assert config.tables == {}
-
-
-def test_unity_catalog_config_explicit_fields() -> None:
-    config = UnityCatalogConfig(
-        type="unity_catalog",
-        workspace_url="https://my-workspace.azuredatabricks.net",
-        catalog="my_catalog",
-        token="dapi-xxx",
+    @pytest.mark.parametrize(
+        "config,error",
+        [
+            (DeltaConfig(writer={"nonexistent_key": "value"}), "writer"),
+            (DeltaConfig(commit={"nonexistent_commit_key": "value"}), "commit"),
+            (
+                DeltaConfig(
+                    root="s3://lake/",
+                    tables={"raw.orders": TableOverride(writer={"bad_key": "x"})},
+                ),
+                "tables.raw.orders.writer",
+            ),
+        ],
     )
-    assert config.workspace_url == "https://my-workspace.azuredatabricks.net"
-    assert config.catalog == "my_catalog"
-    assert config.token == "dapi-xxx"
+    def test_validate_invalid_options_raise(self, config: DeltaConfig, error: str) -> None:
+        with pytest.raises(TypeError, match=error):
+            config.validate()
 
+    def test_validate_empty_writer_passes(self) -> None:
+        DeltaConfig().validate()
 
-def test_unity_catalog_config_replace_catalog() -> None:
-    base = UnityCatalogConfig(type="unity_catalog", catalog="prod")
-    dev = msgspec.structs.replace(base, catalog="dev")
-
-    assert dev.catalog == "dev"
-    assert base.catalog == "prod"  # original unchanged
-
-
-def test_unity_catalog_config_frozen() -> None:
-    config = UnityCatalogConfig(type="unity_catalog")
-    with pytest.raises((TypeError, AttributeError)):
-        config.catalog = "other"  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# convert_storage_config — dispatch
-# ---------------------------------------------------------------------------
-
-
-def test_convert_defaults_to_delta_when_no_type() -> None:
-    config = convert_storage_config({"root": "s3://my-lake/"})
-    assert isinstance(config, DeltaConfig)
-    assert config.root == "s3://my-lake/"
-
-
-def test_convert_explicit_delta_type() -> None:
-    config = convert_storage_config({"type": "delta", "root": "s3://lake/"})
-    assert isinstance(config, DeltaConfig)
-
-
-def test_convert_unity_catalog_type() -> None:
-    config = convert_storage_config({"type": "unity_catalog"})
-    assert isinstance(config, UnityCatalogConfig)
-
-
-def test_convert_unknown_type_raises_value_error() -> None:
-    with pytest.raises(ValueError, match="Unknown storage backend"):
-        convert_storage_config({"type": "unknown_backend"})
-
-
-def test_convert_invalid_delta_fields_raises_validation_error() -> None:
-    with pytest.raises(msgspec.ValidationError):
-        convert_storage_config({"root": 123})  # root must be str
-
-
-def test_convert_empty_dict_produces_default_delta_config() -> None:
-    config = convert_storage_config({})
-    assert isinstance(config, DeltaConfig)
-    assert config.root == ""
-
-
-# ---------------------------------------------------------------------------
-# StorageBackend — enum values
-# ---------------------------------------------------------------------------
-
-
-def test_storage_backend_values() -> None:
-    assert StorageBackend.DELTA == "delta"
-    assert StorageBackend.UNITY_CATALOG == "unity_catalog"
-
-
-def test_storage_backend_comparison_with_config_type() -> None:
-    delta = DeltaConfig()
-    uc = UnityCatalogConfig(type="unity_catalog")
-
-    assert delta.type == StorageBackend.DELTA
-    assert uc.type == StorageBackend.UNITY_CATALOG
-
-
-# ---------------------------------------------------------------------------
-# DeltaConfig — to_locator()
-# ---------------------------------------------------------------------------
-
-
-def test_delta_config_to_locator_no_tables_returns_prefix_locator() -> None:
-    from loom.etl._locator import PrefixLocator
-
-    config = DeltaConfig(root="s3://lake/")
-    locator = config.to_locator()
-    assert isinstance(locator, PrefixLocator)
-
-
-def test_delta_config_to_locator_with_tables_returns_mapping_locator() -> None:
-    from loom.etl._locator import MappingLocator
-
-    config = DeltaConfig(
-        root="s3://lake/",
-        tables={"raw.orders": TableOverride(root="s3://raw-account/raw/")},
+    @pytest.mark.parametrize(
+        "config,expected_type",
+        [
+            (DeltaConfig(root="s3://lake/"), PrefixLocator),
+            (
+                DeltaConfig(
+                    root="s3://lake/",
+                    tables={"raw.orders": TableOverride(root="s3://raw-account/raw/")},
+                ),
+                MappingLocator,
+            ),
+        ],
     )
-    locator = config.to_locator()
-    assert isinstance(locator, MappingLocator)
+    def test_to_locator(self, config: DeltaConfig, expected_type: type[object]) -> None:
+        assert isinstance(config.to_locator(), expected_type)
+
+
+class TestUnityCatalogConfig:
+    def test_minimal_defaults(self) -> None:
+        config = UnityCatalogConfig(type="unity_catalog")
+        assert config.type == "unity_catalog"
+        assert config.workspace_url == ""
+        assert config.catalog == ""
+        assert config.token == ""
+        assert config.tables == {}
+
+    def test_explicit_fields(self) -> None:
+        config = UnityCatalogConfig(
+            type="unity_catalog",
+            workspace_url="https://my-workspace.azuredatabricks.net",
+            catalog="my_catalog",
+            token="dapi-xxx",
+        )
+        assert config.workspace_url == "https://my-workspace.azuredatabricks.net"
+        assert config.catalog == "my_catalog"
+        assert config.token == "dapi-xxx"
+
+    def test_replace(self) -> None:
+        base = UnityCatalogConfig(type="unity_catalog", catalog="prod")
+        dev = msgspec.structs.replace(base, catalog="dev")
+        assert dev.catalog == "dev"
+        assert base.catalog == "prod"
+
+    def test_is_frozen(self) -> None:
+        config = UnityCatalogConfig(type="unity_catalog")
+        with pytest.raises((TypeError, AttributeError)):
+            config.catalog = "other"  # type: ignore[misc]
+
+
+class TestConvertStorageConfig:
+    @pytest.mark.parametrize(
+        "raw,expected_type,extra_check",
+        [
+            (
+                {"root": "s3://my-lake/"},
+                DeltaConfig,
+                lambda c: c.root == "s3://my-lake/",
+            ),
+            (
+                {"type": "delta", "root": "s3://lake/"},
+                DeltaConfig,
+                lambda c: c.type == "delta",
+            ),
+            (
+                {"type": "unity_catalog"},
+                UnityCatalogConfig,
+                lambda c: c.type == "unity_catalog",
+            ),
+            (
+                {},
+                DeltaConfig,
+                lambda c: c.root == "",
+            ),
+        ],
+    )
+    def test_convert_valid_dispatch(
+        self,
+        raw: dict[str, Any],
+        expected_type: type[DeltaConfig | UnityCatalogConfig],
+        extra_check: Callable[[DeltaConfig | UnityCatalogConfig], bool],
+    ) -> None:
+        config = convert_storage_config(raw)
+        assert isinstance(config, expected_type)
+        assert extra_check(config)
+
+    @pytest.mark.parametrize(
+        "raw,exc,error",
+        [
+            ({"type": "unknown_backend"}, ValueError, "Unknown storage backend"),
+            ({"root": 123}, msgspec.ValidationError, ""),
+        ],
+    )
+    def test_convert_errors(
+        self,
+        raw: dict[str, Any],
+        exc: type[Exception],
+        error: str,
+    ) -> None:
+        if error:
+            with pytest.raises(exc, match=error):
+                convert_storage_config(raw)
+            return
+        with pytest.raises(exc):
+            convert_storage_config(raw)
+
+
+class TestStorageBackendEnum:
+    def test_values_and_comparison(self) -> None:
+        delta = DeltaConfig()
+        uc = UnityCatalogConfig(type="unity_catalog")
+        assert StorageBackend.DELTA.value == "delta"
+        assert StorageBackend.UNITY_CATALOG.value == "unity_catalog"
+        assert delta.type == StorageBackend.DELTA.value
+        assert uc.type == StorageBackend.UNITY_CATALOG.value

@@ -2,87 +2,62 @@
 
 from __future__ import annotations
 
+import pytest
+
 from loom.etl._predicate import EqPred, GtPred, InPred
 from loom.etl._proxy import ParamExpr
 from loom.etl._table import ColumnRef, TableRef, UnboundColumnRef, col
 
 
-def test_col_returns_unbound_ref() -> None:
-    ref = col("year")
-    assert isinstance(ref, UnboundColumnRef)
-    assert ref.name == "year"
+class TestTableRefAndColumns:
+    def test_table_ref_and_col_construction(self) -> None:
+        table = TableRef("raw.orders")
+        unbound = col("year")
+        bound = table.c.year
+
+        assert table.ref == "raw.orders"
+        assert isinstance(unbound, UnboundColumnRef)
+        assert unbound.name == "year"
+        assert isinstance(bound, ColumnRef)
+        assert bound.table == table
+        assert bound.name == "year"
+
+    def test_table_ref_equality_hash_and_repr(self) -> None:
+        assert TableRef("raw.orders") == TableRef("raw.orders")
+        assert TableRef("raw.orders") != TableRef("raw.customers")
+        assert len({TableRef("raw.orders"), TableRef("raw.orders"), TableRef("raw.customers")}) == 2
+        assert repr(TableRef("raw.orders")) == "TableRef('raw.orders')"
+
+    def test_column_namespace_private_attr_raises(self) -> None:
+        with pytest.raises(AttributeError):
+            _ = TableRef("raw.orders").c._private
 
 
-def test_table_ref_stores_ref_string() -> None:
-    t = TableRef("raw.orders")
-    assert t.ref == "raw.orders"
+class TestPredicatesAndHashes:
+    @pytest.mark.parametrize(
+        "expr,expected_type",
+        [
+            (col("year") == 2024, EqPred),
+            (TableRef("raw.orders").c.year == ParamExpr(("run_date", "year")), EqPred),
+            (col("amount") > 0, GtPred),
+            (col("country").isin(("ES", "FR")), InPred),
+        ],
+    )
+    def test_predicate_builders(self, expr: object, expected_type: type[object]) -> None:
+        assert isinstance(expr, expected_type)
 
+    def test_eq_predicate_payloads(self) -> None:
+        literal_pred = col("year") == 2024
+        bound_pred = TableRef("raw.orders").c.year == ParamExpr(("run_date", "year"))
 
-def test_table_ref_c_returns_column_ref() -> None:
-    t = TableRef("raw.orders")
-    c = t.c.year
-    assert isinstance(c, ColumnRef)
-    assert c.table == t
-    assert c.name == "year"
+        assert isinstance(literal_pred, EqPred)
+        assert literal_pred.right == 2024
+        assert isinstance(bound_pred, EqPred)
+        assert isinstance(bound_pred.left, ColumnRef)
 
-
-def test_table_ref_equality() -> None:
-    assert TableRef("raw.orders") == TableRef("raw.orders")
-    assert TableRef("raw.orders") != TableRef("raw.customers")
-
-
-def test_table_ref_hashable() -> None:
-    s = {TableRef("raw.orders"), TableRef("raw.orders"), TableRef("raw.customers")}
-    assert len(s) == 2
-
-
-def test_unbound_col_eq_literal_produces_eq_pred() -> None:
-    pred = col("year") == 2024
-    assert isinstance(pred, EqPred)
-    assert pred.right == 2024
-
-
-def test_bound_col_eq_param_expr_produces_eq_pred() -> None:
-    t = TableRef("raw.orders")
-    pred = t.c.year == ParamExpr(("run_date", "year"))
-    assert isinstance(pred, EqPred)
-    assert isinstance(pred.left, ColumnRef)
-
-
-def test_unbound_col_gt() -> None:
-    assert isinstance(col("amount") > 0, GtPred)
-
-
-def test_unbound_col_isin() -> None:
-    pred = col("country").isin(("ES", "FR"))
-    assert isinstance(pred, InPred)
-
-
-def test_column_namespace_private_attr_raises() -> None:
-    t = TableRef("raw.orders")
-    try:
-        _ = t.c._private
-        raised = False
-    except AttributeError:
-        raised = True
-    assert raised
-
-
-def test_unbound_col_hash_by_name() -> None:
-    assert hash(col("year")) == hash(col("year"))
-    assert hash(col("year")) != hash(col("month"))
-
-
-def test_bound_col_hash() -> None:
-    t = TableRef("raw.orders")
-    c1 = t.c.year
-    c2 = t.c.year
-    assert hash(c1) == hash(c2)
-
-
-def test_col_repr() -> None:
-    assert repr(col("year")) == "col('year')"
-
-
-def test_table_ref_repr() -> None:
-    assert repr(TableRef("raw.orders")) == "TableRef('raw.orders')"
+    def test_hash_and_repr_contract(self) -> None:
+        table = TableRef("raw.orders")
+        assert hash(col("year")) == hash(col("year"))
+        assert hash(col("year")) != hash(col("month"))
+        assert hash(table.c.year) == hash(table.c.year)
+        assert repr(col("year")) == "col('year')"

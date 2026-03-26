@@ -53,16 +53,16 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Sequence
-from typing import Any, Protocol, cast
+from typing import Any
 
 import msgspec
 from pyspark.sql import SparkSession
 
+from loom.etl._backend_factory import make_backends, make_observers, make_temp_store
 from loom.etl._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl._observability_config import ObservabilityConfig
 from loom.etl._pipeline import ETLPipeline
 from loom.etl._storage_config import (
-    DeltaConfig,
     StorageConfig,
     UnityCatalogConfig,
     convert_storage_config,
@@ -210,9 +210,9 @@ class ETLRunner:
             ValueError: When *config* is :class:`~loom.etl.UnityCatalogConfig`
                         and *spark* is ``None``.
         """
-        reader, writer, catalog = _make_backends(config, spark)
-        observers = _make_observers(obs_config or ObservabilityConfig())
-        temp_store = _make_temp_store(config, spark, cleaner)
+        reader, writer, catalog = make_backends(config, spark)
+        observers = make_observers(obs_config or ObservabilityConfig())
+        temp_store = make_temp_store(config, spark, cleaner)
         return cls(reader, writer, catalog, observers, dispatcher, temp_store)
 
     @classmethod
@@ -509,103 +509,6 @@ def _filter_process_nodes(
                 elif kept:
                     result.append(ParallelStepGroup(plans=kept))
     return tuple(result)
-
-
-class _TempStoreAware(Protocol):
-    """Structural protocol satisfied by every StorageConfig variant.
-
-    All current variants (:class:`~loom.etl.DeltaConfig`,
-    :class:`~loom.etl.UnityCatalogConfig`) carry these two fields.  Any future
-    backend added to :data:`~loom.etl.StorageConfig` must also declare them so
-    that :func:`_make_temp_store` works without modification.
-    """
-
-    tmp_root: str
-    tmp_storage_options: dict[str, str]
-
-
-def _make_backends(
-    config: StorageConfig,
-    spark: Any = None,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    # Extension point: add a new `case NewConfig():` branch here when
-    # introducing a third storage backend.  Each branch must return
-    # (SourceReader, TargetWriter, TableDiscovery) and handle its own
-    # spark-requirement check if applicable.
-    _log.debug("backend config_type=%s", type(config).__name__)
-    match config:
-        case DeltaConfig():
-            return _make_polars_backends(config)
-        case UnityCatalogConfig():
-            if spark is None:
-                raise ValueError(
-                    "A SparkSession is required for UnityCatalogConfig. "
-                    "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
-                )
-            return _make_spark_backends(config, spark)
-
-
-def _make_spark_backends(
-    _config: UnityCatalogConfig,
-    spark: Any,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    from loom.etl.backends.spark import SparkCatalog, SparkDeltaReader, SparkDeltaWriter
-
-    catalog = SparkCatalog(spark)
-    return SparkDeltaReader(spark), SparkDeltaWriter(spark, None, catalog), catalog
-
-
-def _make_polars_backends(
-    config: DeltaConfig,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
-
-    locator = config.to_locator()
-    catalog = DeltaCatalog(locator)
-    return PolarsDeltaReader(locator), PolarsDeltaWriter(locator, catalog), catalog
-
-
-def _make_observers(config: ObservabilityConfig) -> list[ETLRunObserver]:
-    from loom.etl.executor.observer._sink_observer import RunSinkObserver
-    from loom.etl.executor.observer._structlog import StructlogRunObserver
-    from loom.etl.executor.observer.sinks import DeltaRunSink
-
-    observers: list[ETLRunObserver] = []
-    if config.log:
-        observers.append(StructlogRunObserver(slow_step_threshold_ms=config.slow_step_threshold_ms))
-    if config.run_sink is not None and config.run_sink.root:
-        from loom.etl._locator import TableLocation
-
-        location = TableLocation(
-            uri=config.run_sink.root,
-            storage_options=config.run_sink.storage_options,
-        )
-        observers.append(RunSinkObserver(DeltaRunSink(location)))
-    return observers
-
-
-def _make_temp_store(
-    config: StorageConfig,
-    spark: Any = None,
-    cleaner: TempCleaner | None = None,
-) -> IntermediateStore | None:
-    """Build an :class:`IntermediateStore` from config, or ``None`` when unconfigured.
-
-    Accesses ``tmp_root`` and ``tmp_storage_options`` through
-    :class:`_TempStoreAware` — all :data:`~loom.etl.StorageConfig` variants
-    satisfy this protocol, so no dynamic attribute access is needed.
-    """
-    temp_cfg = cast(_TempStoreAware, config)
-    if not temp_cfg.tmp_root:
-        _log.debug("temp store disabled (tmp_root not set)")
-        return None
-    _log.debug("temp store root=%s", temp_cfg.tmp_root)
-    return IntermediateStore(
-        tmp_root=temp_cfg.tmp_root,
-        storage_options=temp_cfg.tmp_storage_options or {},
-        spark=spark,
-        cleaner=cleaner,
-    )
 
 
 def _new_run_id() -> str:
