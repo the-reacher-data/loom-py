@@ -164,13 +164,7 @@ class PolarsDeltaWriter:
         if spec.path is None:
             raise TypeError("path must be set for file write operations")
         _log.debug("write file path=%s format=%s", spec.path, spec.format)
-        writer = _FILE_WRITERS.get(spec.format)
-        if writer is None:
-            raise TypeError(
-                f"PolarsDeltaWriter: unsupported file format {spec.format!r}. "
-                f"Supported: {sorted(f.value for f in _FILE_WRITERS)}"
-            )
-        writer(frame.collect(), spec.path, spec.write_options)
+        _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
 
     def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         if spec.table_ref is None:
