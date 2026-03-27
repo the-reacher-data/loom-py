@@ -14,8 +14,7 @@ from loom.etl.sql._upsert import (
     TARGET_ALIAS,
     _build_insert_values,
     _build_join_clause,
-    _build_partition_literal_filter,
-    _build_single_partition_combo_clause,
+    _build_partition_predicate,
     _build_update_set,
     _build_upsert_predicate,
     _build_upsert_update_cols,
@@ -81,23 +80,31 @@ class TestJoinClause:
 
 class TestPartitionFiltering:
     @pytest.mark.parametrize(
-        "combo,partition_cols,expected",
+        "rows,partition_cols,alias,expected",
         [
-            ({"year": 2023}, ("year",), "(t.year = 2023)"),
-            ({"year": 2023, "month": 1}, ("year", "month"), "(t.year = 2023 AND t.month = 1)"),
-            ({"region": "eu-west"}, ("region",), "(t.region = 'eu-west')"),
+            ([{"year": 2023}], ("year",), "t", "(t.year = 2023)"),
+            (
+                [{"year": 2023, "month": 1}],
+                ("year", "month"),
+                "t",
+                "(t.year = 2023 AND t.month = 1)",
+            ),
+            ([{"region": "eu-west"}], ("region",), "t", "(t.region = 'eu-west')"),
+            # no alias — replaceWhere style
+            ([{"year": 2024, "month": 1}], ("year", "month"), "", "(year = 2024 AND month = 1)"),
         ],
     )
-    def test_build_single_partition_combo_clause(
+    def test_build_partition_predicate_aliased(
         self,
-        combo: dict[str, object],
+        rows: list[dict[str, object]],
         partition_cols: tuple[str, ...],
+        alias: str,
         expected: str,
     ) -> None:
-        assert _build_single_partition_combo_clause(combo, partition_cols, "t") == expected
+        assert _build_partition_predicate(rows, partition_cols, alias=alias) == expected
 
     @pytest.mark.parametrize(
-        "combos,partition_cols,expected",
+        "rows,partition_cols,expected",
         [
             (
                 [{"year": 2023, "month": 1}],
@@ -111,13 +118,13 @@ class TestPartitionFiltering:
             ),
         ],
     )
-    def test_build_partition_literal_filter(
+    def test_build_partition_predicate_multi_combo(
         self,
-        combos: list[dict[str, object]],
+        rows: list[dict[str, object]],
         partition_cols: tuple[str, ...],
         expected: str,
     ) -> None:
-        assert _build_partition_literal_filter(combos, partition_cols, "t") == expected
+        assert _build_partition_predicate(rows, partition_cols, alias="t") == expected
 
 
 class TestUpsertPredicate:

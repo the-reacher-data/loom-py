@@ -282,19 +282,28 @@ def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
     return cast(type[Any], pt)
 
 
-def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
+def _return_type_qualname(step_type: type[ETLStep[Any]]) -> str | None:
+    """Resolve the lowercased ``module.qualname`` of the ``execute`` return type.
+
+    Returns ``None`` when the annotation is absent, unresolvable, or not a
+    concrete type (e.g. an undefined forward reference).
+    """
     try:
         hints = typing.get_type_hints(step_type.execute)
     except (TypeError, NameError):
-        return Backend.UNKNOWN
-
+        return None
     return_type = hints.get("return")
     if return_type is None:
-        return Backend.UNKNOWN
+        return None
+    module = getattr(return_type, "__module__", "")
+    qualname = getattr(return_type, "__qualname__", "")
+    return f"{module}.{qualname}".lower()
 
-    qualname = (
-        f"{getattr(return_type, '__module__', '')}.{getattr(return_type, '__qualname__', '')}"
-    ).lower()
+
+def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
+    qualname = _return_type_qualname(step_type)
+    if qualname is None:
+        return Backend.UNKNOWN
     if "polars" in qualname and ("lazyframe" in qualname or "dataframe" in qualname):
         return Backend.POLARS
     if "pyspark" in qualname and "dataframe" in qualname:

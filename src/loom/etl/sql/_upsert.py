@@ -62,50 +62,6 @@ def _build_join_clause(
     return _SQL_AND.join(f"{target_alias}.{col} = {source_alias}.{col}" for col in all_cols)
 
 
-def _build_single_partition_combo_clause(
-    combo: dict[str, Any],
-    partition_cols: tuple[str, ...],
-    target_alias: str,
-) -> str:
-    """Build a literal equality clause for one partition value combination.
-
-    Args:
-        combo:          Dict of partition column → literal value for one row.
-        partition_cols: Ordered partition column names.
-        target_alias:   Target table alias.
-
-    Returns:
-        SQL string, e.g. ``(t.year = 2023 AND t.month = 1)``
-    """
-    parts = _SQL_AND.join(
-        f"{target_alias}.{col} = {sql_literal(combo[col])}" for col in partition_cols
-    )
-    return f"({parts})"
-
-
-def _build_partition_literal_filter(
-    combos: list[dict[str, Any]],
-    partition_cols: tuple[str, ...],
-    target_alias: str,
-) -> str:
-    """Build a partition pre-filter from distinct partition value combinations.
-
-    Args:
-        combos:         List of dicts, one per distinct partition combination.
-        partition_cols: Ordered partition column names.
-        target_alias:   Target table alias.
-
-    Returns:
-        SQL string, e.g.
-        ``(t.year=2023 AND t.month=1) OR (t.year=2024 AND t.month=3)``
-    """
-    clauses = [
-        _build_single_partition_combo_clause(combo, partition_cols, target_alias)
-        for combo in combos
-    ]
-    return " OR ".join(clauses)
-
-
 def _build_upsert_predicate(
     combos: list[dict[str, Any]],
     spec: TargetSpec,
@@ -132,7 +88,7 @@ def _build_upsert_predicate(
     )
     if not combos or not spec.partition_cols:
         return join_clause
-    partition_filter = _build_partition_literal_filter(combos, spec.partition_cols, target_alias)
+    partition_filter = _build_partition_predicate(combos, spec.partition_cols, alias=target_alias)
     return f"({partition_filter}) AND ({join_clause})"
 
 
@@ -165,11 +121,8 @@ def _build_upsert_update_cols(
     always_excluded = frozenset(spec.upsert_keys) | frozenset(spec.partition_cols)
     if spec.upsert_include:
         return tuple(c for c in spec.upsert_include if c not in always_excluded)
-    candidates = tuple(c for c in df_columns if c not in always_excluded)
-    if spec.upsert_exclude:
-        extra_excluded = frozenset(spec.upsert_exclude)
-        return tuple(c for c in candidates if c not in extra_excluded)
-    return candidates
+    excluded = always_excluded | frozenset(spec.upsert_exclude)
+    return tuple(c for c in df_columns if c not in excluded)
 
 
 def _build_update_set(
@@ -242,8 +195,13 @@ def _log_partition_combos(
 def _build_partition_predicate(
     rows: Iterable[Mapping[str, Any]],
     partition_cols: tuple[str, ...],
+    *,
+    alias: str = "",
 ) -> str:
-    """Build a ``replaceWhere`` SQL predicate from distinct partition rows.
+    """Build a partition SQL predicate from distinct partition rows.
+
+    Used for both ``replaceWhere`` (no alias) and MERGE ON pre-filters
+    (aliased, e.g. ``t.year = 2024``).
 
     Backend-agnostic: callers extract the distinct rows from their DataFrame
     and pass them as an ``Iterable[Mapping[str, Any]]``.
@@ -252,12 +210,17 @@ def _build_partition_predicate(
         rows:           Distinct partition-column rows (each a mapping of
                         column name → value).
         partition_cols: Ordered partition column names.
+        alias:          Optional table alias prepended to column references
+                        (e.g. ``"t"`` → ``t.year = 2024``).  Defaults to no
+                        prefix (plain ``year = 2024``).
 
     Returns:
         SQL predicate string, e.g.
         ``(year = 2024 AND month = 1) OR (year = 2024 AND month = 2)``.
     """
+    prefix = f"{alias}." if alias else ""
     clauses = [
-        _SQL_AND.join(f"{col} = {sql_literal(row[col])}" for col in partition_cols) for row in rows
+        _SQL_AND.join(f"{prefix}{col} = {sql_literal(row[col])}" for col in partition_cols)
+        for row in rows
     ]
     return " OR ".join(f"({c})" for c in clauses)
