@@ -215,7 +215,7 @@ class SparkStepRunner:
         raw = self._writer.frame
         if raw is None:
             raise RuntimeError("Step produced no output — check that target is declared.")
-        return StepResult(pl.from_pandas(raw.toPandas()))
+        return StepResult(_spark_frame_to_polars(raw))
 
     @property
     def target_spec(self) -> TargetSpec:
@@ -300,3 +300,12 @@ def _pick_jar(jar_dir: Path, prefix: str, expected_version: str | None) -> Path 
     if not candidates:
         return None
     return candidates[-1]
+
+
+def _spark_frame_to_polars(frame: Any) -> pl.DataFrame:
+    columns = list(frame.columns)
+    rows = frame.collect()
+    records = [{col: row[col] for col in columns} for row in rows]
+    if not records:
+        return pl.DataFrame({col: [] for col in columns})
+    return pl.DataFrame(records)

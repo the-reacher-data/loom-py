@@ -97,8 +97,6 @@ def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type
     result = step_runner.run(DoubleStep, NoParams())
 
     expected = spark.createDataFrame([(1, 20.0), (2, 40.0)], ["id", "amount"])
-    assert_df_equality(
-        spark.createDataFrame(result.to_polars().to_pandas()),
-        expected,
-        ignore_row_order=True,
-    )
+    expected_rows = [tuple(row) for row in expected.orderBy("id").collect()]
+    actual_rows = list(result.to_polars().sort("id").iter_rows())
+    assert actual_rows == expected_rows

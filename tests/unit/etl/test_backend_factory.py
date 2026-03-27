@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from loom.etl._backend_factory import make_backends, make_observers, make_temp_store
@@ -14,10 +16,10 @@ from loom.etl.executor.observer._structlog import StructlogRunObserver
 # ---------------------------------------------------------------------------
 
 
-def test_make_backends_delta_config_returns_polars_types() -> None:
+def test_make_backends_delta_config_returns_polars_types(tmp_path: Path) -> None:
     from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
 
-    config = DeltaConfig(root="/tmp/test-lake")
+    config = DeltaConfig(root=str(tmp_path / "test-lake"))
     reader, writer, catalog = make_backends(config)
 
     assert isinstance(reader, PolarsDeltaReader)
@@ -68,17 +70,18 @@ def test_make_observers_no_sink_when_run_sink_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_make_temp_store_no_root_returns_none() -> None:
-    config = DeltaConfig(root="/tmp/lake")  # tmp_root defaults to ""
+def test_make_temp_store_no_root_returns_none(tmp_path: Path) -> None:
+    config = DeltaConfig(root=str(tmp_path / "lake"))  # tmp_root defaults to ""
     result = make_temp_store(config)
 
     assert result is None
 
 
-def test_make_temp_store_with_root_returns_store() -> None:
+def test_make_temp_store_with_root_returns_store(tmp_path: Path) -> None:
     from loom.etl._temp_store import IntermediateStore
 
-    config = DeltaConfig(root="/tmp/lake", tmp_root="/tmp/lake/tmp")
+    root = tmp_path / "lake"
+    config = DeltaConfig(root=str(root), tmp_root=str(root / "tmp"))
     result = make_temp_store(config)
 
     assert isinstance(result, IntermediateStore)
