@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 import msgspec
+from omegaconf import DictConfig, OmegaConf
 
 from loom.etl.storage._config import StorageConfig, convert_storage_config
 from loom.etl.storage._observability import ObservabilityConfig
@@ -31,8 +32,6 @@ def _parse_yaml_content(content: str) -> tuple[StorageConfig, ObservabilityConfi
         KeyError: When ``storage:`` key is absent.
         msgspec.ValidationError: When config shape is invalid.
     """
-    from omegaconf import DictConfig, OmegaConf
-
     created = OmegaConf.create(content)
     if not isinstance(created, DictConfig):
         raise TypeError(
