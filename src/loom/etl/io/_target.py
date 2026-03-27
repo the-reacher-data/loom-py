@@ -27,7 +27,7 @@ from typing import Any
 
 from loom.etl.io._format import Format
 from loom.etl.io._write_options import WriteOptions
-from loom.etl.model._proxy import ParamExpr
+from loom.etl.pipeline._proxy import ParamExpr
 from loom.etl.schema._table import TableRef, UnboundColumnRef
 from loom.etl.sql._predicate import AndPred, EqPred, PredicateNode
 from loom.etl.temp._scope import TempScope

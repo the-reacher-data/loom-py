@@ -56,9 +56,9 @@ from loom.etl.compiler._temp_validator import validate_plan_temps
 from loom.etl.compiler._upsert_validator import validate_upsert_spec
 from loom.etl.io._source import Sources, SourceSet
 from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
-from loom.etl.model._pipeline import ETLPipeline
-from loom.etl.model._process import ETLProcess
-from loom.etl.model._step import ETLStep, _SourceForm
+from loom.etl.pipeline._pipeline import ETLPipeline
+from loom.etl.pipeline._process import ETLProcess
+from loom.etl.pipeline._step import ETLStep, _SourceForm
 from loom.etl.storage._io import TableDiscovery
 
 _log = logging.getLogger(__name__)

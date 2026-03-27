@@ -8,7 +8,7 @@ import pytest
 
 from loom.etl.io._format import Format
 from loom.etl.io._source import FromFile, FromTable, SourceKind, Sources, SourceSet
-from loom.etl.model._proxy import params
+from loom.etl.pipeline._proxy import params
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef, col
 

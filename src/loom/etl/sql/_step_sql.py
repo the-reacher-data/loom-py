@@ -18,7 +18,7 @@ from __future__ import annotations
 import typing
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
-from loom.etl.model._step import ETLStep
+from loom.etl.pipeline._step import ETLStep
 from loom.etl.sql._sql import resolve_sql
 
 ParamsT = TypeVar("ParamsT")

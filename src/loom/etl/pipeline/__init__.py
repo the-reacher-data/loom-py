@@ -1,4 +1,4 @@
-"""Temporary-intermediate storage API and cleanup policies."""
+"""User-facing alias for ETL pipeline declaration primitives."""
 
 from __future__ import annotations
 
@@ -6,13 +6,12 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS: dict[str, str] = {
-    "TempScope": "loom.etl.temp._scope",
-    "IntermediateStore": "loom.etl.temp._store",
-    "TempCleaner": "loom.etl.temp._cleaners",
-    "LocalTempCleaner": "loom.etl.temp._cleaners",
-    "FsspecTempCleaner": "loom.etl.temp._cleaners",
-    "DbutilsTempCleaner": "loom.etl.temp._cleaners",
-    "AutoTempCleaner": "loom.etl.temp._cleaners",
+    "ETLParams": "loom.etl.pipeline._params",
+    "ETLStep": "loom.etl.pipeline._step",
+    "ETLProcess": "loom.etl.pipeline._process",
+    "ETLPipeline": "loom.etl.pipeline._pipeline",
+    "params": "loom.etl.pipeline._proxy",
+    "ParamExpr": "loom.etl.pipeline._proxy",
 }
 
 __all__ = list(_EXPORTS)

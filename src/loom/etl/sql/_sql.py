@@ -13,8 +13,9 @@ Internal module — not part of the public API.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
 from typing import Any
+
+from loom.etl.sql.literals import sql_literal
 
 _PLACEHOLDER = re.compile(r"\{\{([^{}]+)\}\}")
 
@@ -51,17 +52,4 @@ def _resolve_placeholder(expr: str, params: Any) -> str:
     value: Any = params
     for attr in parts[1:]:
         value = getattr(value, attr)
-    return _sql_literal(value)
-
-
-def _sql_literal(value: Any) -> str:
-    """Serialize *value* as a safe SQL literal."""
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, datetime):
-        return f"'{value.isoformat()}'"
-    if isinstance(value, date):
-        return f"'{value.isoformat()}'"
-    if isinstance(value, str):
-        return f"'{value.replace(chr(39), chr(39) * 2)}'"
-    return str(value)
+    return sql_literal(value)

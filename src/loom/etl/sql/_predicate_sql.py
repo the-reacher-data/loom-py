@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from loom.etl.model._proxy import ParamExpr, resolve_param_expr
+from loom.etl.pipeline._proxy import ParamExpr, resolve_param_expr
 from loom.etl.schema._table import UnboundColumnRef
 from loom.etl.sql._predicate import (
     AndPred,

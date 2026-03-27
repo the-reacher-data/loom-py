@@ -27,6 +27,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from loom.etl.io._target import TargetSpec
+from loom.etl.sql.literals import sql_literal
 
 _log = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def _build_single_partition_combo_clause(
         SQL string, e.g. ``(t.year = 2023 AND t.month = 1)``
     """
     parts = " AND ".join(
-        f"{target_alias}.{col} = {_sql_literal(combo[col])}" for col in partition_cols
+        f"{target_alias}.{col} = {sql_literal(combo[col])}" for col in partition_cols
     )
     return f"({parts})"
 
@@ -237,27 +238,6 @@ def _log_partition_combos(
     _log.debug("upsert table=%s partition_combos=%d", table_ref, len(combos))
 
 
-# ---------------------------------------------------------------------------
-# SQL literal helper
-# ---------------------------------------------------------------------------
-
-
-def _sql_literal(value: Any) -> str:
-    """Render a Python scalar as a SQL literal.
-
-    Args:
-        value: Python bool, str, or numeric value.
-
-    Returns:
-        SQL literal string.
-    """
-    if isinstance(value, str):
-        return f"'{value.replace(chr(39), chr(39) * 2)}'"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    return str(value)
-
-
 def _build_partition_predicate(
     rows: Iterable[Mapping[str, Any]],
     partition_cols: tuple[str, ...],
@@ -277,6 +257,6 @@ def _build_partition_predicate(
         ``(year = 2024 AND month = 1) OR (year = 2024 AND month = 2)``.
     """
     clauses = [
-        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols) for row in rows
+        " AND ".join(f"{col} = {sql_literal(row[col])}" for col in partition_cols) for row in rows
     ]
     return " OR ".join(f"({c})" for c in clauses)

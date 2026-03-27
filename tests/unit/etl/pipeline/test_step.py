@@ -15,7 +15,7 @@ from loom.etl import (
     Sources,
     SourceSet,
 )
-from loom.etl.model._step import _SourceForm
+from loom.etl.pipeline._step import _SourceForm
 
 
 class RunParams(ETLParams):

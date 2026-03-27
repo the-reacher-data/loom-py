@@ -1,4 +1,4 @@
-"""Unit tests for shared UPSERT/MERGE helpers in loom.etl._upsert."""
+"""Unit tests for shared UPSERT/MERGE helpers in ``loom.etl.sql``."""
 
 from __future__ import annotations
 
@@ -19,8 +19,8 @@ from loom.etl.sql._upsert import (
     _build_update_set,
     _build_upsert_predicate,
     _build_upsert_update_cols,
-    _sql_literal,
 )
+from loom.etl.sql.literals import sql_literal
 
 
 def _upsert_spec(
@@ -54,7 +54,7 @@ class TestSqlLiteral:
         ],
     )
     def test_sql_literal(self, value: object, expected: str) -> None:
-        assert _sql_literal(value) == expected
+        assert sql_literal(value) == expected
 
 
 class TestJoinClause:

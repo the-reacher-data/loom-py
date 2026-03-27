@@ -34,28 +34,37 @@ Testing stubs::
 
     from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
+Namespaced API (discoverable by bounded context)::
+
+    from loom.etl import io, pipeline, runner, schema, sql, storage, temp
+
 Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
 """
 
-from loom.etl.io._format import Format
-from loom.etl.io._read_options import (
+from loom.etl.io import (
     CsvReadOptions,
+    CsvWriteOptions,
     ExcelReadOptions,
+    Format,
+    FromFile,
+    FromTable,
+    FromTemp,
+    IntoFile,
+    IntoTable,
+    IntoTemp,
     JsonReadOptions,
     ParquetReadOptions,
+    ParquetWriteOptions,
     ReadOptions,
+    SchemaMode,
+    Sources,
+    SourceSet,
+    WriteOptions,
 )
-from loom.etl.io._source import FromFile, FromTable, FromTemp, Sources, SourceSet
-from loom.etl.io._target import IntoFile, IntoTable, IntoTemp, SchemaMode
-from loom.etl.io._write_options import CsvWriteOptions, ParquetWriteOptions, WriteOptions
-from loom.etl.model._params import ETLParams
-from loom.etl.model._pipeline import ETLPipeline
-from loom.etl.model._process import ETLProcess
-from loom.etl.model._proxy import ParamExpr, params
-from loom.etl.model._step import ETLStep
+from loom.etl.pipeline import ETLParams, ETLPipeline, ETLProcess, ETLStep, ParamExpr, params
 from loom.etl.runner import ETLRunner, InvalidStageError
-from loom.etl.schema._schema import (
+from loom.etl.schema import (
     ArrayType,
     CategoricalType,
     ColumnSchema,
@@ -70,22 +79,34 @@ from loom.etl.schema._schema import (
     SchemaNotFoundError,
     StructField,
     StructType,
+    TableRef,
+    col,
 )
-from loom.etl.schema._table import TableRef, col
-from loom.etl.sql._step_sql import StepSQL
-from loom.etl.storage._config import DeltaConfig, StorageBackend, StorageConfig, UnityCatalogConfig
-from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
-from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from loom.etl.storage._observability import ObservabilityConfig, RunSinkConfig
-from loom.etl.temp._cleaners import (
+from loom.etl.sql import StepSQL
+from loom.etl.storage import (
+    DeltaConfig,
+    MappingLocator,
+    ObservabilityConfig,
+    PrefixLocator,
+    RunSinkConfig,
+    SourceReader,
+    StorageBackend,
+    StorageConfig,
+    TableDiscovery,
+    TableLocation,
+    TableLocator,
+    TargetWriter,
+    UnityCatalogConfig,
+)
+from loom.etl.temp import (
     AutoTempCleaner,
     DbutilsTempCleaner,
     FsspecTempCleaner,
+    IntermediateStore,
     LocalTempCleaner,
     TempCleaner,
+    TempScope,
 )
-from loom.etl.temp._scope import TempScope
-from loom.etl.temp._store import IntermediateStore
 
 __all__ = [
     # params

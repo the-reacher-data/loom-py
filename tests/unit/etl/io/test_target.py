@@ -10,7 +10,7 @@ import pytest
 from loom.etl import col
 from loom.etl.io._format import Format
 from loom.etl.io._target import IntoFile, IntoTable, WriteMode
-from loom.etl.model._proxy import params
+from loom.etl.pipeline._proxy import params
 from loom.etl.schema._table import TableRef
 
 

@@ -15,7 +15,7 @@ from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ETLRunObserver, ParallelDispatcher
 from loom.etl.executor.observer._composite import CompositeObserver
 from loom.etl.executor.observer._events import RunContext
-from loom.etl.model._pipeline import ETLPipeline
+from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
