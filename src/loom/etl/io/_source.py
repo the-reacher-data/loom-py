@@ -591,6 +591,15 @@ class SourceSet(Generic[ParamsT]):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
+        for base in cls.__mro__[1:]:
+            if base is SourceSet:
+                break
+            if issubclass(base, SourceSet) and base is not SourceSet:
+                raise TypeError(
+                    f"{cls.__name__} subclasses {base.__name__} which is already a concrete "
+                    "SourceSet. Subclassing a concrete SourceSet is not supported — use "
+                    f"{base.__name__}.extended(...) to add sources."
+                )
         cls._sources = {
             name: val
             for name, val in cls.__dict__.items()
