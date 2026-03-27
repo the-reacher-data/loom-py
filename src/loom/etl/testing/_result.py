@@ -47,11 +47,13 @@ class StepResult:
 
         for col_name, loom_dtype in expected.items():
             actual = self._frame.schema.get(col_name)
-            assert actual is not None, f"Column '{col_name}' not found in result schema"
+            if actual is None:
+                raise AssertionError(f"Column '{col_name}' not found in result schema")
             expected_polars = loom_type_to_polars(loom_dtype)
-            assert actual == expected_polars, (
-                f"Column '{col_name}': expected {expected_polars}, got {actual}"
-            )
+            if actual != expected_polars:
+                raise AssertionError(
+                    f"Column '{col_name}': expected {expected_polars}, got {actual}"
+                )
 
     def assert_count(self, n: int) -> None:
         """Assert the result contains exactly *n* rows.
@@ -63,7 +65,8 @@ class StepResult:
             AssertionError: When the row count differs.
         """
         actual = len(self._frame)
-        assert actual == n, f"Expected {n} rows, got {actual}"
+        if actual != n:
+            raise AssertionError(f"Expected {n} rows, got {actual}")
 
     def assert_not_empty(self) -> None:
         """Assert the result contains at least one row.
@@ -71,7 +74,8 @@ class StepResult:
         Raises:
             AssertionError: When the result is empty.
         """
-        assert len(self._frame) > 0, "Expected non-empty result, got 0 rows"
+        if len(self._frame) <= 0:
+            raise AssertionError("Expected non-empty result, got 0 rows")
 
     def show(self, n: int = 10) -> None:
         """Print the first *n* rows to stdout.

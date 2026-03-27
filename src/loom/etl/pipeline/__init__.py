@@ -5,6 +5,8 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+__all__ = ["ETLParams", "ETLStep", "ETLProcess", "ETLPipeline", "params", "ParamExpr"]
+
 _EXPORTS: dict[str, str] = {
     "ETLParams": "loom.etl.pipeline._params",
     "ETLStep": "loom.etl.pipeline._step",
@@ -13,8 +15,6 @@ _EXPORTS: dict[str, str] = {
     "params": "loom.etl.pipeline._proxy",
     "ParamExpr": "loom.etl.pipeline._proxy",
 }
-
-__all__ = list(_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:

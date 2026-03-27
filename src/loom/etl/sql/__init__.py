@@ -5,13 +5,13 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+__all__ = ["StepSQL", "resolve_sql", "sql_literal"]
+
 _EXPORTS: dict[str, str] = {
     "StepSQL": "loom.etl.sql._step_sql",
     "resolve_sql": "loom.etl.sql._sql",
     "sql_literal": "loom.etl.sql.literals",
 }
-
-__all__ = list(_EXPORTS)
 
 
 def __getattr__(name: str) -> Any:
