@@ -86,5 +86,8 @@ class TestValidatePlanCatalogErrors:
 
     def test_error_message_includes_table_name(self) -> None:
         catalog = StubCatalog({"staging.out": (), "mart.summary": ()})
-        with pytest.raises(ETLCompilationError, match="raw.orders"):
+        with pytest.raises(ETLCompilationError) as exc_info:
             validate_plan_catalog(_plan(ReplacePipeline), catalog)
+        message = str(exc_info.value)
+        assert "source 'orders'" in message
+        assert "raw.orders" in message

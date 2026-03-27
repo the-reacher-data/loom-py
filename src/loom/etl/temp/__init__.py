@@ -2,27 +2,22 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from ._cleaners import (
+    AutoTempCleaner,
+    DbutilsTempCleaner,
+    FsspecTempCleaner,
+    LocalTempCleaner,
+    TempCleaner,
+)
+from ._scope import TempScope
+from ._store import IntermediateStore
 
-_EXPORTS: dict[str, str] = {
-    "TempScope": "loom.etl.temp._scope",
-    "IntermediateStore": "loom.etl.temp._store",
-    "TempCleaner": "loom.etl.temp._cleaners",
-    "LocalTempCleaner": "loom.etl.temp._cleaners",
-    "FsspecTempCleaner": "loom.etl.temp._cleaners",
-    "DbutilsTempCleaner": "loom.etl.temp._cleaners",
-    "AutoTempCleaner": "loom.etl.temp._cleaners",
-}
-
-__all__ = list(_EXPORTS)
-
-
-def __getattr__(name: str) -> Any:
-    module_path = _EXPORTS.get(name)
-    if module_path is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(module_path)
-    value = getattr(module, name)
-    globals()[name] = value
-    return value
+__all__ = [
+    "TempScope",
+    "IntermediateStore",
+    "TempCleaner",
+    "LocalTempCleaner",
+    "FsspecTempCleaner",
+    "DbutilsTempCleaner",
+    "AutoTempCleaner",
+]

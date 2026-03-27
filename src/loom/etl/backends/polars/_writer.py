@@ -164,7 +164,13 @@ class PolarsDeltaWriter:
         if spec.path is None:
             raise TypeError("path must be set for file write operations")
         _log.debug("write file path=%s format=%s", spec.path, spec.format)
-        _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
+        writer = _FILE_WRITERS.get(spec.format)
+        if writer is None:
+            raise TypeError(
+                f"PolarsDeltaWriter: unsupported file format {spec.format!r}. "
+                f"Supported: {sorted(f.value for f in _FILE_WRITERS)}"
+            )
+        writer(frame.collect(), spec.path, spec.write_options)
 
     def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         if spec.table_ref is None:
@@ -240,6 +246,12 @@ _MODE_WRITERS: dict[WriteMode, Callable[[TableLocation, pl.DataFrame, TargetSpec
     WriteMode.REPLACE_WHERE: _write_replace_where,
     WriteMode.REPLACE: _write_overwrite,
 }
+
+# UPSERT is handled before _write_frame is reached; all other modes must be present.
+_MISSING_MODES = frozenset(WriteMode) - {WriteMode.UPSERT} - frozenset(_MODE_WRITERS)
+if _MISSING_MODES:
+    raise AssertionError(f"_MODE_WRITERS is not exhaustive — missing: {_MISSING_MODES}")
+del _MISSING_MODES
 
 
 def _write_csv_file(df: pl.DataFrame, path: str, options: Any) -> None:

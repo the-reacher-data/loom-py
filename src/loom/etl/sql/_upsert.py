@@ -33,6 +33,7 @@ _log = logging.getLogger(__name__)
 
 TARGET_ALIAS = "t"
 SOURCE_ALIAS = "s"
+_SQL_AND = " AND "
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +59,7 @@ def _build_join_clause(
         SQL string, e.g. ``t.id = s.id AND t.year = s.year``
     """
     all_cols = (*upsert_keys, *partition_cols)
-    return " AND ".join(f"{target_alias}.{col} = {source_alias}.{col}" for col in all_cols)
+    return _SQL_AND.join(f"{target_alias}.{col} = {source_alias}.{col}" for col in all_cols)
 
 
 def _build_single_partition_combo_clause(
@@ -76,7 +77,7 @@ def _build_single_partition_combo_clause(
     Returns:
         SQL string, e.g. ``(t.year = 2023 AND t.month = 1)``
     """
-    parts = " AND ".join(
+    parts = _SQL_AND.join(
         f"{target_alias}.{col} = {sql_literal(combo[col])}" for col in partition_cols
     )
     return f"({parts})"
@@ -257,6 +258,6 @@ def _build_partition_predicate(
         ``(year = 2024 AND month = 1) OR (year = 2024 AND month = 2)``.
     """
     clauses = [
-        " AND ".join(f"{col} = {sql_literal(row[col])}" for col in partition_cols) for row in rows
+        _SQL_AND.join(f"{col} = {sql_literal(row[col])}" for col in partition_cols) for row in rows
     ]
     return " OR ".join(f"({c})" for c in clauses)

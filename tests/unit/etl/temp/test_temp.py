@@ -192,7 +192,12 @@ class TestIntermediateStore:
     @pytest.mark.parametrize(
         "scope,data,error,match",
         [
-            (TempScope.RUN, {"not": "a frame"}, TypeError, "unsupported DataFrame type"),
+            (
+                TempScope.RUN,
+                {"not": "a frame"},
+                TypeError,
+                "Polars backend expects polars.LazyFrame",
+            ),
             (TempScope.CORRELATION, object(), ValueError, "correlation_id"),
         ],
     )

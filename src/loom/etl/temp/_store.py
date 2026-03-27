@@ -6,7 +6,8 @@ results materialised by :class:`~loom.etl.IntoTemp` targets and consumed by
 
 Physical formats
 ----------------
-The backend is detected from the concrete DataFrame type at ``put()`` time:
+The backend is selected at construction time based on whether a
+``SparkSession`` is provided:
 
 * **Polars** :class:`polars.LazyFrame` — Arrow IPC written via ``sink_ipc()``
   (streaming, no in-memory collect) and read back via ``scan_ipc()`` (lazy,
@@ -48,7 +49,7 @@ import logging
 import os
 import time
 import uuid
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from loom.etl.temp._cleaners import AutoTempCleaner, TempCleaner, _is_cloud_path
 from loom.etl.temp._scope import TempScope
@@ -56,28 +57,119 @@ from loom.etl.temp._scope import TempScope
 _log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Backend Protocol + implementations
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class _TempBackend(Protocol):
+    """Physical I/O contract for one DataFrame backend.
+
+    Both :class:`_PolarsTempBackend` and :class:`_SparkTempBackend` satisfy
+    this protocol.  ``IntermediateStore`` holds a single ``_TempBackend`` chosen
+    at construction time, keeping ``put`` / ``get`` free of backend branches.
+    """
+
+    def probe(self, name: str, base: str) -> Any | None:
+        """Return the frame stored at (*name*, *base*), or ``None`` if absent."""
+        ...
+
+    def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
+        """Materialise *data* at (*name*, *base*)."""
+        ...
+
+
+class _PolarsTempBackend:
+    """Polars Arrow IPC backend for :class:`IntermediateStore`."""
+
+    def __init__(self, storage_options: dict[str, str]) -> None:
+        self._storage_options = storage_options
+
+    def probe(self, name: str, base: str) -> Any | None:
+        """Return a ``LazyFrame`` scanning *name* under *base*, or ``None`` if absent."""
+        import polars as pl
+
+        scan_path = _find_arrow(name, base)
+        if scan_path is None:
+            return None
+        return pl.scan_ipc(scan_path, memory_map=True)
+
+    def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
+        """Sink *data* as Arrow IPC under *base*.
+
+        Raises:
+            TypeError: When *data* is not a ``polars.LazyFrame``.
+        """
+        if not _is_polars_lazy_frame(data):
+            raise TypeError(
+                f"Polars backend expects polars.LazyFrame, got {type(data).__qualname__!r}. "
+                "Verify that IntermediateStore was constructed without a SparkSession."
+            )
+        path = _arrow_part(name, base) if append else _arrow_path(name, base)
+        _log.debug("temp write arrow path=%s append=%s", path, append)
+        _ensure_parent(path)
+        kwargs: dict[str, Any] = {}
+        if self._storage_options:
+            kwargs["storage_options"] = self._storage_options
+        data.sink_ipc(path, **kwargs)
+
+
+class _SparkTempBackend:
+    """PySpark Parquet backend for :class:`IntermediateStore`."""
+
+    def __init__(self, spark: Any) -> None:
+        self._spark = spark
+
+    def probe(self, name: str, base: str) -> Any | None:
+        """Return a ``DataFrame`` reading *name* under *base*, or ``None`` if absent."""
+        return _probe_spark(self._spark, f"{base}/{name}")
+
+    def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
+        """Write *data* as a Parquet directory under *base*.
+
+        Raises:
+            TypeError: When *data* is not a ``pyspark.sql.DataFrame``.
+        """
+        if not _is_spark_dataframe(data):
+            raise TypeError(
+                f"Spark backend expects pyspark.sql.DataFrame, got {type(data).__qualname__!r}. "
+                "Verify that IntermediateStore was constructed with a SparkSession."
+            )
+        path = f"{base}/{name}"
+        _log.debug("temp write parquet path=%s append=%s", path, append)
+        data.write.mode("append" if append else "overwrite").parquet(path)
+
+
+# ---------------------------------------------------------------------------
+# IntermediateStore
+# ---------------------------------------------------------------------------
+
+
 class IntermediateStore:
     """Physical store for intermediate ETL results.
 
-    Handles Polars (Arrow IPC) and Spark (Parquet) backends transparently.
-    The backend is auto-detected from the DataFrame type at :meth:`put` time.
+    The backend (Polars or Spark) is selected once at construction time based
+    on whether a ``SparkSession`` is provided.  ``put`` and ``get`` are then
+    backend-agnostic — no runtime type switching.
 
     Args:
         tmp_root:        Root directory (local path or cloud URI) where
                          intermediates are stored.
-        storage_options: Cloud credentials for the underlying storage, forwarded
-                         to ``polars.sink_ipc`` when using a cloud URI.
-                         Ignored for Spark (SparkSession handles credentials).
-        spark:           Active :class:`pyspark.sql.SparkSession`.  Required
-                         when writing/reading Spark DataFrames.
+        storage_options: Cloud credentials forwarded to ``polars.sink_ipc``
+                         when using a cloud URI.  Ignored for Spark (the
+                         ``SparkSession`` handles credentials).
+        spark:           Active :class:`pyspark.sql.SparkSession`.  When
+                         provided, selects the Spark backend.
+        cleaner:         Strategy for deleting temp trees.  Defaults to
+                         :class:`~loom.etl.AutoTempCleaner`.
 
     Example::
 
         store = IntermediateStore(tmp_root="/tmp/loom", storage_options={})
         store.put("orders", run_id="abc", correlation_id=None,
                   scope=TempScope.RUN, data=polars_lazy_frame)
-        lf = store.get("orders", run_id="abc", correlation_id=None,
-                       scope=TempScope.RUN)
+        lf = store.get("orders", run_id="abc", correlation_id=None)
     """
 
     def __init__(
@@ -88,9 +180,12 @@ class IntermediateStore:
         cleaner: TempCleaner | None = None,
     ) -> None:
         self._root = tmp_root.rstrip("/")
-        self._storage_options: dict[str, str] = storage_options or {}
-        self._spark = spark
         self._cleaner: TempCleaner = cleaner if cleaner is not None else AutoTempCleaner()
+        self._backend: _TempBackend = (
+            _SparkTempBackend(spark)
+            if spark is not None
+            else _PolarsTempBackend(storage_options or {})
+        )
 
     # ------------------------------------------------------------------
     # Public write / read
@@ -121,41 +216,18 @@ class IntermediateStore:
                             any prior content for this name is overwritten.
 
         Raises:
-            TypeError: When *data* is neither a Polars LazyFrame nor a Spark
-                       DataFrame.
             ValueError: When *scope* is ``CORRELATION`` and *correlation_id*
                         is ``None``.
+            TypeError:  When *data* type does not match the configured backend.
         """
         if scope is TempScope.CORRELATION and not correlation_id:
             raise ValueError(
                 f"IntoTemp({name!r}, scope=CORRELATION) requires a correlation_id. "
                 "Pass correlation_id= to ETLRunner.run()."
             )
-        if _is_polars_lazy_frame(data):
-            _log.debug("temp put name=%r scope=%s backend=polars append=%s", name, scope, append)
-            self._put_polars(
-                name,
-                run_id=run_id,
-                correlation_id=correlation_id,
-                scope=scope,
-                lf=data,
-                append=append,
-            )
-        elif _is_spark_dataframe(data):
-            _log.debug("temp put name=%r scope=%s backend=spark append=%s", name, scope, append)
-            self._put_spark(
-                name,
-                run_id=run_id,
-                correlation_id=correlation_id,
-                scope=scope,
-                df=data,
-                append=append,
-            )
-        else:
-            raise TypeError(
-                f"IntermediateStore.put(): unsupported DataFrame type {type(data).__qualname__!r}. "
-                "Expected polars.LazyFrame or pyspark.sql.DataFrame."
-            )
+        _log.debug("temp put name=%r scope=%s append=%s", name, scope, append)
+        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
+        self._backend.write(name, base, data, append=append)
 
     def get(
         self,
@@ -181,57 +253,21 @@ class IntermediateStore:
         Raises:
             FileNotFoundError: When no intermediate exists at either path.
         """
-        if self._spark is not None:
-            return self._get_spark(name, run_id=run_id, correlation_id=correlation_id)
-        return self._get_polars(name, run_id=run_id, correlation_id=correlation_id)
-
-    def _get_polars(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-    ) -> Any:
-        import polars as pl
-
         run_base = self._scope_base(
             run_id=run_id, correlation_id=correlation_id, scope=TempScope.RUN
         )
-        if scan_path := _find_arrow(name, run_base):
-            _log.debug("temp get name=%r resolved=run path=%s", name, scan_path)
-            return pl.scan_ipc(scan_path, memory_map=True)
+        result = self._backend.probe(name, run_base)
+        if result is not None:
+            _log.debug("temp get name=%r scope=run", name)
+            return result
         if correlation_id is not None:
             corr_base = self._scope_base(
                 run_id=run_id, correlation_id=correlation_id, scope=TempScope.CORRELATION
             )
-            if scan_path := _find_arrow(name, corr_base):
-                _log.debug("temp get name=%r resolved=correlation path=%s", name, scan_path)
-                return pl.scan_ipc(scan_path, memory_map=True)
-        raise FileNotFoundError(
-            f"Intermediate {name!r} not found. "
-            f"Check that IntoTemp({name!r}) ran before FromTemp({name!r})."
-        )
-
-    def _get_spark(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-    ) -> Any:
-        run_path = self._spark_path(
-            name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.RUN
-        )
-        df = _probe_spark(self._spark, run_path)
-        if df is not None:
-            return df
-        if correlation_id is not None:
-            corr_path = self._spark_path(
-                name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.CORRELATION
-            )
-            df = _probe_spark(self._spark, corr_path)
-            if df is not None:
-                return df
+            result = self._backend.probe(name, corr_base)
+            if result is not None:
+                _log.debug("temp get name=%r scope=correlation", name)
+                return result
         raise FileNotFoundError(
             f"Intermediate {name!r} not found. "
             f"Check that IntoTemp({name!r}) ran before FromTemp({name!r})."
@@ -303,17 +339,6 @@ class IntermediateStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _spark_path(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-        scope: TempScope,
-    ) -> str:
-        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
-        return f"{base}/{name}"
-
     def _scope_base(
         self,
         *,
@@ -322,41 +347,13 @@ class IntermediateStore:
         scope: TempScope,
     ) -> str:
         if scope is TempScope.CORRELATION:
+            if correlation_id is None:
+                raise RuntimeError(
+                    "_scope_base called with scope=CORRELATION but correlation_id=None. "
+                    "This is a framework bug — please report it."
+                )
             return f"{self._root}/correlations/{correlation_id}"
         return f"{self._root}/runs/{run_id}"
-
-    def _put_polars(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-        scope: TempScope,
-        lf: Any,
-        append: bool,
-    ) -> None:
-        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
-        path = _arrow_part(name, base) if append else _arrow_path(name, base)
-        _log.debug("temp write arrow path=%s append=%s", path, append)
-        _ensure_parent(path)
-        kwargs: dict[str, Any] = {}
-        if self._storage_options:
-            kwargs["storage_options"] = self._storage_options
-        lf.sink_ipc(path, **kwargs)
-
-    def _put_spark(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-        scope: TempScope,
-        df: Any,
-        append: bool,
-    ) -> None:
-        path = self._spark_path(name, run_id=run_id, correlation_id=correlation_id, scope=scope)
-        _log.debug("temp write parquet path=%s append=%s", path, append)
-        df.write.mode("append" if append else "overwrite").parquet(path)
 
 
 # ---------------------------------------------------------------------------

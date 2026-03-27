@@ -202,6 +202,12 @@ _MODE_APPLIERS: dict[WriteMode, Any] = {
     WriteMode.REPLACE: _apply_overwrite,
 }
 
+# UPSERT is handled before _write_frame is reached; all other modes must be present.
+_MISSING_MODES = frozenset(WriteMode) - {WriteMode.UPSERT} - frozenset(_MODE_APPLIERS)
+if _MISSING_MODES:
+    raise AssertionError(f"_MODE_APPLIERS is not exhaustive — missing: {_MISSING_MODES}")
+del _MISSING_MODES
+
 
 def _first_run_overwrite_spark(
     _spark: SparkSession,
