@@ -363,10 +363,10 @@ def _sort_for_write(df: DataFrame, spec: TargetSpec) -> DataFrame:
     worker, causing OOM or extreme slowness.
     """
     cols = spec.partition_cols or spec.upsert_keys
-    if cols and spec.mode in (
+    if not cols or spec.mode not in (
         WriteMode.REPLACE_PARTITIONS,
         WriteMode.REPLACE_WHERE,
         WriteMode.UPSERT,
     ):
-        return df.sortWithinPartitions(*cols)
-    return df
+        return df
+    return df.sortWithinPartitions(*cols)

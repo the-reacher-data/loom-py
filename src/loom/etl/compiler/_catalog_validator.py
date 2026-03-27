@@ -45,12 +45,15 @@ def _walk_pipeline_node(
         case ProcessPlan():
             _walk_process(node, catalog, will_create)
         case ParallelProcessGroup(plans=plans):
+            # Each parallel branch starts from the same pre-group state.
             snapshot = frozenset(will_create)
             group_creates: set[str] = set()
             for proc in plans:
                 proc_creates = set(snapshot)
                 _walk_process(proc, catalog, proc_creates)
+                # Merge only tables created within this branch.
                 group_creates |= proc_creates - snapshot
+            # Expose branch-created tables to subsequent sequential nodes.
             will_create |= group_creates
 
 
@@ -72,11 +75,13 @@ def _walk_process_node(
         case StepPlan():
             _validate_step(node, catalog, will_create)
         case ParallelStepGroup(plans=plans):
+            # Validate each branch against the same incoming state.
             snapshot = frozenset(will_create)
             group_creates: set[str] = set()
             for step in plans:
                 _validate_step(step, catalog, set(snapshot))
                 _track_overwrite(step, group_creates)
+            # Tables created by any branch become visible after the group.
             will_create |= group_creates
 
 

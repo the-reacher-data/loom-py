@@ -76,7 +76,7 @@ class CompositeObserver:
 def _safe(fn: Any, *args: Any) -> None:
     try:
         fn(*args)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - observer callbacks are user code; isolate failures.
         _log.error(
             "observer_error",
             observer=type(fn.__self__).__name__ if hasattr(fn, "__self__") else repr(fn),
