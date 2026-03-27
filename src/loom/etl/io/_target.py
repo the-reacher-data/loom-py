@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeVar
 
 from loom.etl.io._format import Format
 from loom.etl.io._write_options import WriteOptions
@@ -31,6 +31,16 @@ from loom.etl.pipeline._proxy import ParamExpr
 from loom.etl.schema._table import TableRef, UnboundColumnRef
 from loom.etl.sql._predicate import AndPred, EqPred, PredicateNode
 from loom.etl.temp._scope import TempScope
+
+_CopyT = TypeVar("_CopyT")
+
+
+def _clone_slots(src: _CopyT, cls: type[_CopyT], slots: tuple[str, ...]) -> _CopyT:
+    """Create a shallow copy by transferring all declared ``__slots__``."""
+    new = object.__new__(cls)
+    for slot in slots:
+        object.__setattr__(new, slot, getattr(src, slot))
+    return new
 
 
 class WriteMode(StrEnum):
@@ -319,8 +329,7 @@ class IntoTable:
         )
 
     def _with(self, **overrides: Any) -> IntoTable:
-        new = object.__new__(IntoTable)
-        object.__setattr__(new, "_ref", self._ref)
+        new = _clone_slots(self, IntoTable, IntoTable.__slots__)
         object.__setattr__(new, "_spec", _dc_replace(self._spec, **overrides))  # pyright: ignore[reportArgumentType]
         return new
 
@@ -369,9 +378,7 @@ class IntoFile:
             target = IntoFile("s3://exports/report.csv", format=Format.CSV)
                 .with_options(CsvWriteOptions(separator=";"))
         """
-        new = object.__new__(IntoFile)
-        object.__setattr__(new, "_path", self._path)
-        object.__setattr__(new, "_format", self._format)
+        new = _clone_slots(self, IntoFile, IntoFile.__slots__)
         object.__setattr__(new, "_write_options", options)
         return new
 

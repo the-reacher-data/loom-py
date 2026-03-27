@@ -174,7 +174,7 @@ def _class_to_struct_type(cls: type[Any]) -> StructType:
 def _get_type_hints(cls: type[Any]) -> dict[str, Any]:
     try:
         hints = typing.get_type_hints(cls)
-    except Exception as exc:
+    except (TypeError, NameError) as exc:
         raise TypeError(f"Cannot introspect annotations of {cls.__name__!r}: {exc}") from exc
     if not hints:
         raise TypeError(

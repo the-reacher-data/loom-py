@@ -457,24 +457,22 @@ class FromFile:
 
 def _copy_from_table(src: FromTable) -> FromTable:
     """Return a shallow copy of *src* preserving all current attributes."""
-    new = object.__new__(FromTable)
-    object.__setattr__(new, "_ref", src._ref)
-    object.__setattr__(new, "_predicates", src._predicates)
-    object.__setattr__(new, "_schema", src._schema)
-    object.__setattr__(new, "_columns", src._columns)
-    object.__setattr__(new, "_json_columns", src._json_columns)
-    return new
+    return _clone_slots(src, FromTable, FromTable.__slots__)
 
 
 def _copy_from_file(src: FromFile) -> FromFile:
     """Return a shallow copy of *src* preserving all current attributes."""
-    new = object.__new__(FromFile)
-    object.__setattr__(new, "_path", src._path)
-    object.__setattr__(new, "_format", src._format)
-    object.__setattr__(new, "_schema", src._schema)
-    object.__setattr__(new, "_read_options", src._read_options)
-    object.__setattr__(new, "_columns", src._columns)
-    object.__setattr__(new, "_json_columns", src._json_columns)
+    return _clone_slots(src, FromFile, FromFile.__slots__)
+
+
+CopyT = TypeVar("CopyT")
+
+
+def _clone_slots(src: CopyT, cls: type[CopyT], slots: tuple[str, ...]) -> CopyT:
+    """Create a shallow copy by transferring all declared ``__slots__``."""
+    new = object.__new__(cls)
+    for slot in slots:
+        object.__setattr__(new, slot, getattr(src, slot))
     return new
 
 
@@ -628,9 +626,8 @@ class SourceSet(Generic[ParamsT]):
         return instance
 
     def _to_specs(self) -> tuple[SourceSpec, ...]:
-        sources = getattr(self, "_sources", {})
-        return tuple(src._to_spec(alias) for alias, src in sources.items())
+        return tuple(src._to_spec(alias) for alias, src in self._sources.items())
 
     def __repr__(self) -> str:
-        names = ", ".join(getattr(self, "_sources", {}))
+        names = ", ".join(self._sources)
         return f"SourceSet({names})"
