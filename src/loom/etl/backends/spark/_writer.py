@@ -141,6 +141,11 @@ class SparkDeltaWriter:
     def _write_frame(self, df: DataFrame, spec: TargetSpec, params_instance: Any) -> None:
         if spec.table_ref is None:
             raise TypeError("table_ref must be set for Delta write operations")
+        if spec.mode is WriteMode.REPLACE_PARTITIONS and df.isEmpty():
+            _log.warning(
+                "replace_partitions table=%s has 0 rows — nothing written", spec.table_ref.ref
+            )
+            return
         df = _sort_for_write(df, spec)
         writer = df.write.format("delta").option("optimizeWrite", "true")
         writer = _MODE_APPLIERS[spec.mode](writer, df, spec, params_instance)

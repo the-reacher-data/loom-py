@@ -50,6 +50,7 @@ from loom.etl.executor.observer._events import RunContext, RunStatus
 from loom.etl.executor.observer._protocol import ETLRunObserver
 from loom.etl.io._source import SourceKind
 from loom.etl.storage._io import SourceReader, TargetWriter
+from loom.etl.temp._store import IntermediateStore
 
 _log = logging.getLogger(__name__)
 
@@ -87,13 +88,13 @@ class ETLExecutor:
         writer: TargetWriter,
         observers: Sequence[ETLRunObserver] = (),
         dispatcher: ParallelDispatcher | None = None,
-        temp_store: Any = None,
+        temp_store: IntermediateStore | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._observers: Sequence[ETLRunObserver] = observers
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
-        self._temp_store = temp_store
+        self._temp_store: IntermediateStore | None = temp_store
 
     def run_pipeline(
         self,
@@ -225,10 +226,19 @@ class ETLExecutor:
             for obs in self._observers:
                 obs.on_step_end(step_run_id, status, _ms(start))
 
+    def _require_temp_store(self, temp_name: str) -> IntermediateStore:
+        """Return the intermediate store, or raise if unconfigured."""
+        if self._temp_store is None:
+            raise RuntimeError(
+                f"Step uses temp intermediate {temp_name!r} but no intermediate store is "
+                "configured. Set 'temp:' in your storage config or pass a TempCleaner."
+            )
+        return self._temp_store
+
     def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
         if spec.kind is SourceKind.TEMP:
             _log.debug("read source kind=TEMP name=%s", spec.temp_name)
-            return self._temp_store.get(
+            return self._require_temp_store(spec.temp_name).get(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,
@@ -241,7 +251,7 @@ class ETLExecutor:
     def _write_target(self, result: Any, spec: Any, params: Any, ctx: RunContext) -> None:
         if spec.temp_name is not None:
             _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
-            self._temp_store.put(
+            self._require_temp_store(spec.temp_name).put(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,

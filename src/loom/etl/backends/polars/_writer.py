@@ -207,6 +207,9 @@ def _write_append(loc: TableLocation, df: pl.DataFrame, _spec: TargetSpec, _para
 def _write_replace_partitions(
     loc: TableLocation, df: pl.DataFrame, spec: TargetSpec, _params: Any
 ) -> None:
+    if df.is_empty():
+        _log.warning("replace_partitions table=%s has 0 rows — nothing written", loc.uri)
+        return
     predicate = _build_partition_predicate(
         df.select(list(spec.partition_cols)).unique().iter_rows(named=True),
         spec.partition_cols,

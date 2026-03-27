@@ -25,11 +25,12 @@ def _filter_plan(plan: PipelinePlan, include: frozenset[str]) -> PipelinePlan:
         Filtered :class:`PipelinePlan`.
 
     Raises:
-        InvalidStageError: When no node survives the filter.
+        InvalidStageError: When any name in *include* does not exist in the plan.
     """
+    unknown = include - _collect_all_names(plan)
+    if unknown:
+        raise InvalidStageError(frozenset(unknown))
     nodes = _filter_pipeline_nodes(plan.nodes, include)
-    if not nodes:
-        raise InvalidStageError(include)
     return PipelinePlan(
         pipeline_type=plan.pipeline_type,
         params_type=plan.params_type,
@@ -90,3 +91,27 @@ def _filter_process_nodes(
                 elif kept:
                     result.append(ParallelStepGroup(plans=kept))
     return tuple(result)
+
+
+def _collect_all_names(plan: PipelinePlan) -> frozenset[str]:
+    """Collect every step and process class name reachable from *plan*."""
+    names: set[str] = set()
+    for node in plan.nodes:
+        match node:
+            case ProcessPlan():
+                _collect_process_names(node, names)
+            case ParallelProcessGroup(plans=plans):
+                for proc in plans:
+                    _collect_process_names(proc, names)
+    return frozenset(names)
+
+
+def _collect_process_names(plan: ProcessPlan, names: set[str]) -> None:
+    names.add(plan.process_type.__name__)
+    for node in plan.nodes:
+        match node:
+            case StepPlan():
+                names.add(node.step_type.__name__)
+            case ParallelStepGroup(plans=plans):
+                for step in plans:
+                    names.add(step.step_type.__name__)
