@@ -39,7 +39,11 @@ from loom.etl._process import ETLProcess
 from loom.etl._source import Sources, SourceSet
 from loom.etl._step import ETLStep, _SourceForm
 from loom.etl._target import IntoFile, IntoTable, IntoTemp
-from loom.etl.compiler._catalog_validator import validate_plan_catalog
+from loom.etl.compiler._catalog_validator import (
+    _validate_step,
+    _walk_process,
+    validate_plan_catalog,
+)
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
     Backend,
@@ -127,9 +131,7 @@ class ETLCompiler:
         """
         plan = self._get_or_build_process(process_type)
         if self._catalog is not None:
-            from loom.etl.compiler._catalog_validator import _validate_process
-
-            _validate_process(plan, self._catalog, set())
+            _walk_process(plan, self._catalog, set())
         return plan
 
     def compile_step(self, step_type: type[ETLStep[Any]]) -> StepPlan:
@@ -146,11 +148,7 @@ class ETLCompiler:
         """
         plan = self._get_or_build_step(step_type)
         if self._catalog is not None:
-            from loom.etl.compiler._catalog_validator import _validate_catalog_tables
-
-            _validate_catalog_tables(
-                step_type, plan.source_bindings, plan.target_binding, self._catalog, set()
-            )
+            _validate_step(plan, self._catalog, set())
         return plan
 
     def _compile_pipeline_item(
