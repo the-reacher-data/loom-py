@@ -222,22 +222,20 @@ class IntermediateStore:
         run_path = self._spark_path(
             name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.RUN
         )
-        corr_path = (
-            self._spark_path(
+        df = _probe_spark(self._spark, run_path)
+        if df is not None:
+            return df
+        if correlation_id is not None:
+            corr_path = self._spark_path(
                 name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.CORRELATION
             )
-            if correlation_id is not None
-            else None
+            df = _probe_spark(self._spark, corr_path)
+            if df is not None:
+                return df
+        raise FileNotFoundError(
+            f"Intermediate {name!r} not found. "
+            f"Check that IntoTemp({name!r}) ran before FromTemp({name!r})."
         )
-        # For Spark, rely on Parquet directory existence check via SparkSession
-        # Try RUN first, then CORRELATION.  Spark raises on missing path at read time.
-        try:
-            return self._spark.read.parquet(run_path)
-        except Exception:
-            if corr_path is not None:
-                return self._spark.read.parquet(corr_path)
-            msg = f"Intermediate {name!r} not found in Spark temp storage."
-            raise FileNotFoundError(msg) from None
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -400,6 +398,23 @@ def _find_arrow(name: str, base: str) -> str | None:
     if os.path.isdir(directory):
         return f"{directory}/*.arrow"
     return None
+
+
+def _probe_spark(spark: Any, path: str) -> Any | None:
+    """Read a Parquet path via *spark*; return ``None`` when the path does not exist.
+
+    Catches ``pyspark.sql.utils.AnalysisException`` only — the specific Spark
+    exception for missing paths and unresolvable table references.  Checked by
+    module prefix and class name to avoid importing pyspark at module level
+    (optional dependency).  Any other exception is re-raised.
+    """
+    try:
+        return spark.read.parquet(path)
+    except Exception as exc:
+        t = type(exc)
+        if t.__module__.startswith("pyspark") and t.__name__ == "AnalysisException":
+            return None
+        raise
 
 
 def _ensure_parent(path: str) -> None:

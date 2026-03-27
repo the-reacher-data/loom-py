@@ -285,7 +285,7 @@ def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
 def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
     try:
         hints = typing.get_type_hints(step_type.execute)
-    except Exception:
+    except (TypeError, NameError):
         return Backend.UNKNOWN
 
     return_type = hints.get("return")

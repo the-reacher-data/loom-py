@@ -122,6 +122,21 @@ class BareStep(ETLStep):  # type: ignore[type-arg]
         return None
 
 
+class _UnresolvableReturnStep(ETLStep[RunParams]):
+    """Step whose execute return annotation references an undefined name.
+
+    With ``from __future__ import annotations``, annotations are stored as
+    strings and evaluated lazily by ``get_type_hints``.  This step intentionally
+    uses an undefined name so that ``get_type_hints`` raises ``NameError``,
+    exercising the ``_detect_backend`` error-handling path.
+    """
+
+    target = IntoTable("staging.unresolvable").replace()
+
+    def execute(self, params: RunParams) -> _UndefinedType:  # type: ignore[name-defined]  # noqa: F821
+        return None  # type: ignore[return-value]
+
+
 class StagingProcess(ETLProcess[RunParams]):
     steps = [ExtractStep, [EnrichAStep, EnrichBStep], AggStep]
 
@@ -451,3 +466,9 @@ class TestCatalogValidation:
             return
         with pytest.raises(ETLCompilationError, match=error):
             compiler.compile(pipeline_type)
+
+
+class TestDetectBackend:
+    def test_unresolvable_annotation_yields_unknown_backend(self) -> None:
+        plan = ETLCompiler().compile_step(_UnresolvableReturnStep)
+        assert plan.backend is Backend.UNKNOWN

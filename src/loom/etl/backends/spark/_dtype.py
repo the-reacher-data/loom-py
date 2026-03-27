@@ -105,6 +105,9 @@ def loom_type_to_spark(lt: LoomType) -> T.DataType:
 
     Returns:
         Concrete PySpark DataType instance.
+
+    Raises:
+        TypeError: When *lt* is not a recognized :data:`~loom.etl._schema.LoomType`.
     """
     if isinstance(lt, LoomDtype):
         return loom_to_spark(lt)
@@ -120,4 +123,4 @@ def loom_type_to_spark(lt: LoomType) -> T.DataType:
         return T.TimestampType()
     if isinstance(lt, DurationType):
         return T.LongType()
-    return T.StringType()
+    raise TypeError(f"No Spark mapping for LoomType {type(lt).__name__!r}")
