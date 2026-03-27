@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from loom.etl._source import SourceSpec
-from loom.etl._target import TargetSpec
+from loom.etl.io._source import SourceSpec
+from loom.etl.io._target import TargetSpec
 
 
 class Backend(StrEnum):

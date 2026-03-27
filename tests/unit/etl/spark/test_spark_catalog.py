@@ -10,9 +10,9 @@ pytest.importorskip("pyspark")
 
 from pyspark.sql import types as T  # noqa: E402
 
-from loom.etl._schema import ColumnSchema, LoomDtype  # noqa: E402
-from loom.etl._table import TableRef  # noqa: E402
 from loom.etl.backends.spark._catalog import SparkCatalog  # noqa: E402
+from loom.etl.schema._schema import ColumnSchema, LoomDtype  # noqa: E402
+from loom.etl.schema._table import TableRef  # noqa: E402
 
 
 def _field(name: str, dtype: T.DataType, nullable: bool = True) -> MagicMock:
@@ -162,7 +162,7 @@ class TestNoopAndProtocol:
         spark.catalog.tableExists.assert_not_called()
 
     def test_spark_catalog_satisfies_table_discovery_protocol(self) -> None:
-        from loom.etl._io import TableDiscovery
+        from loom.etl.storage._io import TableDiscovery
 
         catalog = SparkCatalog(_mock_spark({}))
         assert isinstance(catalog, TableDiscovery)

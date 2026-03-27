@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
-from loom.etl._target import SchemaMode
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
 from loom.etl.compiler._catalog_validator import validate_plan_catalog
 from loom.etl.compiler._plan import PipelinePlan
+from loom.etl.io._target import SchemaMode
 from loom.etl.testing import StubCatalog
 
 

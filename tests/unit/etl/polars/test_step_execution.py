@@ -14,10 +14,10 @@ import pytest
 from deltalake import DeltaTable
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
-from loom.etl._schema import LoomDtype
-from loom.etl._table import TableRef
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
+from loom.etl.schema._schema import LoomDtype
+from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
 
 from .conftest import MinimalPolarsDeltaReader, MinimalPolarsDeltaWriter, table_path

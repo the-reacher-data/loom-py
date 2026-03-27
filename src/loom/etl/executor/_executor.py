@@ -36,8 +36,6 @@ import uuid
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from loom.etl._io import SourceReader, TargetWriter
-from loom.etl._source import SourceKind
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
     ParallelStepGroup,
@@ -50,6 +48,8 @@ from loom.etl.compiler._plan import (
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.executor.observer._events import RunContext, RunStatus
 from loom.etl.executor.observer._protocol import ETLRunObserver
+from loom.etl.io._source import SourceKind
+from loom.etl.storage._io import SourceReader, TargetWriter
 
 _log = logging.getLogger(__name__)
 

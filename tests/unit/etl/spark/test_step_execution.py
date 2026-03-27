@@ -11,13 +11,13 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
-from loom.etl._format import Format
-from loom.etl._schema import LoomDtype, SchemaNotFoundError
-from loom.etl._source import SourceKind, SourceSpec
-from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode, TargetSpec, WriteMode
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
+from loom.etl.io._format import Format
+from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl.schema._schema import LoomDtype, SchemaNotFoundError
+from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
 
 from .conftest import SparkDeltaReader, SparkDeltaWriter, spark_table_path

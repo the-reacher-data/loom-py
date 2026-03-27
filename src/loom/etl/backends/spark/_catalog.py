@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from pyspark.sql import SparkSession
 
-from loom.etl._schema import ColumnSchema
-from loom.etl._table import TableRef
 from loom.etl.backends.spark._dtype import spark_to_loom
+from loom.etl.schema._schema import ColumnSchema
+from loom.etl.schema._table import TableRef
 
 
 class SparkCatalog:

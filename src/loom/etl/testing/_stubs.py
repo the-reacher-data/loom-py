@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from loom.etl._schema import ColumnSchema, LoomDtype
-from loom.etl._source import SourceSpec
-from loom.etl._table import TableRef
-from loom.etl._target import TargetSpec
 from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
+from loom.etl.io._source import SourceSpec
+from loom.etl.io._target import TargetSpec
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._table import TableRef
 
 _UNKNOWN_DTYPE = LoomDtype.NULL
 

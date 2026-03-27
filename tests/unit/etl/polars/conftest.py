@@ -19,10 +19,10 @@ pytest.importorskip("deltalake")
 import polars as pl  # noqa: E402 — import after importorskip guard
 from deltalake import DeltaTable, write_deltalake  # noqa: E402
 
-from loom.etl._schema import ColumnSchema, LoomDtype  # noqa: E402
-from loom.etl._source import SourceSpec  # noqa: E402
-from loom.etl._table import TableRef  # noqa: E402
-from loom.etl._target import TargetSpec, WriteMode  # noqa: E402
+from loom.etl.io._source import SourceSpec  # noqa: E402
+from loom.etl.io._target import TargetSpec, WriteMode  # noqa: E402
+from loom.etl.schema._schema import ColumnSchema, LoomDtype  # noqa: E402
+from loom.etl.schema._table import TableRef  # noqa: E402
 from loom.etl.testing import StubCatalog  # noqa: E402
 
 _POLARS_TO_LOOM: dict[type, LoomDtype] = {

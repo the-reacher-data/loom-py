@@ -9,9 +9,9 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
-from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
-from loom.etl._target import SchemaMode
 from loom.etl.backends.spark._schema import spark_apply_schema
+from loom.etl.io._target import SchemaMode
+from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 from loom.etl.testing import ETLScenario
 
 _ID_AMOUNT = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("amount", LoomDtype.FLOAT64))

@@ -27,7 +27,9 @@ from typing import Any
 
 import polars as pl
 
-from loom.etl._predicate import (
+from loom.etl.model._proxy import ParamExpr, resolve_param_expr
+from loom.etl.schema._table import UnboundColumnRef
+from loom.etl.sql._predicate import (
     AndPred,
     EqPred,
     GePred,
@@ -40,8 +42,6 @@ from loom.etl._predicate import (
     OrPred,
     PredicateNode,
 )
-from loom.etl._proxy import ParamExpr, resolve_param_expr
-from loom.etl._table import UnboundColumnRef
 
 
 def predicate_to_polars(node: PredicateNode, params_instance: Any) -> pl.Expr:

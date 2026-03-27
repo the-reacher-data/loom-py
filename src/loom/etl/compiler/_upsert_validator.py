@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from loom.etl._target import TargetSpec, WriteMode
 from loom.etl.compiler._errors import ETLCompilationError
+from loom.etl.io._target import TargetSpec, WriteMode
 
 
 def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:

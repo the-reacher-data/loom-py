@@ -5,7 +5,9 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from loom.etl._schema import (
+from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError, apply_schema
+from loom.etl.io._target import SchemaMode
+from loom.etl.schema._schema import (
     ArrayType,
     ColumnSchema,
     DatetimeType,
@@ -16,8 +18,6 @@ from loom.etl._schema import (
     StructField,
     StructType,
 )
-from loom.etl._target import SchemaMode
-from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError, apply_schema
 
 _SCHEMA: tuple[ColumnSchema, ...] = (
     ColumnSchema("id", LoomDtype.INT64, nullable=False),

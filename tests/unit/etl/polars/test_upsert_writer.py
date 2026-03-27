@@ -11,11 +11,11 @@ from pathlib import Path
 import polars as pl
 from deltalake import DeltaTable, write_deltalake
 
-from loom.etl._format import Format
-from loom.etl._schema import ColumnSchema, LoomDtype
-from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode, TargetSpec, WriteMode
 from loom.etl.backends.polars import PolarsDeltaWriter
+from loom.etl.io._format import Format
+from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubCatalog
 
 from .conftest import table_path

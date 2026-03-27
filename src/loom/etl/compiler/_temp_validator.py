@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from loom.etl._source import SourceKind
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -16,6 +15,7 @@ from loom.etl.compiler._plan import (
     ProcessStepNode,
     StepPlan,
 )
+from loom.etl.io._source import SourceKind
 
 # ---------------------------------------------------------------------------
 # Duplicate-name conflict dispatch

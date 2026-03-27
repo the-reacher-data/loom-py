@@ -10,14 +10,14 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from loom.etl import ETLParams, col
-from loom.etl._format import Format
-from loom.etl._proxy import params as p
-from loom.etl._schema import ColumnSchema, LoomDtype
-from loom.etl._source import SourceKind, SourceSpec
-from loom.etl._table import TableRef
-from loom.etl._target import IntoTable, SchemaMode, TargetSpec, WriteMode
 from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
 from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError
+from loom.etl.io._format import Format
+from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io._target import IntoTable, SchemaMode, TargetSpec, WriteMode
+from loom.etl.model._proxy import params as p
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._table import TableRef
 
 from .conftest import table_path
 

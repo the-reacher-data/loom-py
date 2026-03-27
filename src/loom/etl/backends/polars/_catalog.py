@@ -16,9 +16,9 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-from loom.etl._locator import TableLocator, _as_locator
-from loom.etl._schema import ColumnSchema, LoomDtype
-from loom.etl._table import TableRef
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._table import TableRef
+from loom.etl.storage._locator import TableLocator, _as_locator
 
 # PyArrow string representation → LoomDtype
 # Stable because PyArrow's __str__ for primitive types is well-defined.
@@ -79,7 +79,7 @@ class DeltaCatalog:
         catalog = DeltaCatalog("s3://my-lake/")
 
         # Advanced — explicit locator with credentials
-        from loom.etl._locator import PrefixLocator
+        from loom.etl.storage._locator import PrefixLocator
         catalog = DeltaCatalog(PrefixLocator("s3://my-lake/", storage_options={...}))
     """
 

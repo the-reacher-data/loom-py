@@ -38,23 +38,24 @@ Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
 """
 
-from loom.etl._format import Format
-from loom.etl._io import SourceReader, TableDiscovery, TargetWriter
-from loom.etl._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from loom.etl._observability_config import ObservabilityConfig, RunSinkConfig
-from loom.etl._params import ETLParams
-from loom.etl._pipeline import ETLPipeline
-from loom.etl._process import ETLProcess
-from loom.etl._proxy import ParamExpr, params
-from loom.etl._read_options import (
+from loom.etl.io._format import Format
+from loom.etl.io._read_options import (
     CsvReadOptions,
     ExcelReadOptions,
     JsonReadOptions,
     ParquetReadOptions,
     ReadOptions,
 )
-from loom.etl._runner import ETLRunner, InvalidStageError
-from loom.etl._schema import (
+from loom.etl.io._source import FromFile, FromTable, FromTemp, Sources, SourceSet
+from loom.etl.io._target import IntoFile, IntoTable, IntoTemp, SchemaMode
+from loom.etl.io._write_options import CsvWriteOptions, ParquetWriteOptions, WriteOptions
+from loom.etl.model._params import ETLParams
+from loom.etl.model._pipeline import ETLPipeline
+from loom.etl.model._process import ETLProcess
+from loom.etl.model._proxy import ParamExpr, params
+from loom.etl.model._step import ETLStep
+from loom.etl.runner import ETLRunner, InvalidStageError
+from loom.etl.schema._schema import (
     ArrayType,
     CategoricalType,
     ColumnSchema,
@@ -70,22 +71,21 @@ from loom.etl._schema import (
     StructField,
     StructType,
 )
-from loom.etl._source import FromFile, FromTable, FromTemp, Sources, SourceSet
-from loom.etl._step import ETLStep
-from loom.etl._step_sql import StepSQL
-from loom.etl._storage_config import DeltaConfig, StorageBackend, StorageConfig, UnityCatalogConfig
-from loom.etl._table import TableRef, col
-from loom.etl._target import IntoFile, IntoTable, IntoTemp, SchemaMode
-from loom.etl._temp import TempScope
-from loom.etl._temp_cleaners import (
+from loom.etl.schema._table import TableRef, col
+from loom.etl.sql._step_sql import StepSQL
+from loom.etl.storage._config import DeltaConfig, StorageBackend, StorageConfig, UnityCatalogConfig
+from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
+from loom.etl.storage._observability import ObservabilityConfig, RunSinkConfig
+from loom.etl.temp._cleaners import (
     AutoTempCleaner,
     DbutilsTempCleaner,
     FsspecTempCleaner,
     LocalTempCleaner,
     TempCleaner,
 )
-from loom.etl._temp_store import IntermediateStore
-from loom.etl._write_options import CsvWriteOptions, ParquetWriteOptions, WriteOptions
+from loom.etl.temp._scope import TempScope
+from loom.etl.temp._store import IntermediateStore
 
 __all__ = [
     # params

@@ -27,14 +27,15 @@ from typing import Any
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl._format import Format as _Format
-from loom.etl._io import TableDiscovery
-from loom.etl._locator import TableLocation, TableLocator, _as_locator
-from loom.etl._predicate_sql import predicate_to_sql
-from loom.etl._schema import ColumnSchema
-from loom.etl._table import TableRef
-from loom.etl._target import SchemaMode, TargetSpec, WriteMode
-from loom.etl._upsert import (
+from loom.etl.backends.polars._dtype import polars_to_loom
+from loom.etl.backends.polars._schema import apply_schema
+from loom.etl.io._format import Format as _Format
+from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl.io._write_options import CsvWriteOptions, ParquetWriteOptions
+from loom.etl.schema._schema import ColumnSchema
+from loom.etl.schema._table import TableRef
+from loom.etl.sql._predicate_sql import predicate_to_sql
+from loom.etl.sql._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
     _build_insert_values,
@@ -44,9 +45,8 @@ from loom.etl._upsert import (
     _log_partition_combos,
     _warn_no_partition_cols,
 )
-from loom.etl._write_options import CsvWriteOptions, ParquetWriteOptions
-from loom.etl.backends.polars._dtype import polars_to_loom
-from loom.etl.backends.polars._schema import apply_schema
+from loom.etl.storage._io import TableDiscovery
+from loom.etl.storage._locator import TableLocation, TableLocator, _as_locator
 
 _log = logging.getLogger(__name__)
 

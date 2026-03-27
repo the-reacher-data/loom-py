@@ -11,10 +11,10 @@ from pathlib import Path
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl._format import Format
-from loom.etl._source import FromFile, FromTable, SourceKind, SourceSpec
-from loom.etl._table import TableRef
 from loom.etl.backends.polars import PolarsDeltaReader
+from loom.etl.io._format import Format
+from loom.etl.io._source import FromFile, FromTable, SourceKind, SourceSpec
+from loom.etl.schema._table import TableRef
 
 from .conftest import table_path
 
@@ -92,8 +92,8 @@ def test_reader_columns_preserves_row_count(tmp_path: Path) -> None:
 
 
 def test_reader_columns_combined_with_predicate(tmp_path: Path) -> None:
-    from loom.etl._predicate import EqPred
-    from loom.etl._table import UnboundColumnRef
+    from loom.etl.schema._table import UnboundColumnRef
+    from loom.etl.sql._predicate import EqPred
 
     data = pl.DataFrame(
         {
@@ -130,7 +130,7 @@ def test_from_table_columns_spec_propagation() -> None:
 
 
 def test_from_table_columns_chained_with_where() -> None:
-    from loom.etl._table import col
+    from loom.etl.schema._table import col
 
     spec = (
         FromTable("raw.orders")

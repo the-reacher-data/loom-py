@@ -50,17 +50,17 @@ from typing import Any
 import polars as pl
 from deltalake import DeltaTable
 
-from loom.etl._format import Format
-from loom.etl._locator import TableLocator, _as_locator
-from loom.etl._read_options import (
+from loom.etl.backends.polars._dtype import loom_type_to_polars
+from loom.etl.backends.polars._predicate import predicate_to_polars
+from loom.etl.io._format import Format
+from loom.etl.io._read_options import (
     CsvReadOptions,
     ExcelReadOptions,
     JsonReadOptions,
 )
-from loom.etl._schema import ColumnSchema
-from loom.etl._source import JsonColumnSpec, SourceKind, SourceSpec
-from loom.etl.backends.polars._dtype import loom_type_to_polars
-from loom.etl.backends.polars._predicate import predicate_to_polars
+from loom.etl.io._source import JsonColumnSpec, SourceKind, SourceSpec
+from loom.etl.schema._schema import ColumnSchema
+from loom.etl.storage._locator import TableLocator, _as_locator
 
 _log = logging.getLogger(__name__)
 

@@ -26,13 +26,13 @@ from typing import Any
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl._locator import TableLocation, _as_location
 from loom.etl.executor.observer._events import (
     PipelineRunRecord,
     ProcessRunRecord,
     RunRecord,
     StepRunRecord,
 )
+from loom.etl.storage._locator import TableLocation, _as_location
 
 _TABLE_FOR: dict[type[Any], str] = {
     PipelineRunRecord: "pipeline_runs",

@@ -27,7 +27,7 @@ from typing import Literal, cast
 import polars as pl
 from polars.datatypes import DataTypeClass
 
-from loom.etl._schema import (
+from loom.etl.schema._schema import (
     ArrayType,
     CategoricalType,
     DatetimeType,

@@ -33,12 +33,6 @@ import logging
 import typing
 from typing import Any, cast
 
-from loom.etl._io import TableDiscovery
-from loom.etl._pipeline import ETLPipeline
-from loom.etl._process import ETLProcess
-from loom.etl._source import Sources, SourceSet
-from loom.etl._step import ETLStep, _SourceForm
-from loom.etl._target import IntoFile, IntoTable, IntoTemp
 from loom.etl.compiler._catalog_validator import (
     _validate_step,
     _walk_process,
@@ -60,6 +54,12 @@ from loom.etl.compiler._plan import (
 from loom.etl.compiler._structural import validate_execute_signature, validate_params_compat
 from loom.etl.compiler._temp_validator import validate_plan_temps
 from loom.etl.compiler._upsert_validator import validate_upsert_spec
+from loom.etl.io._source import Sources, SourceSet
+from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
+from loom.etl.model._pipeline import ETLPipeline
+from loom.etl.model._process import ETLProcess
+from loom.etl.model._step import ETLStep, _SourceForm
+from loom.etl.storage._io import TableDiscovery
 
 _log = logging.getLogger(__name__)
 

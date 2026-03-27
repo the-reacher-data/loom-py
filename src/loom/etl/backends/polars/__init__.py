@@ -12,7 +12,7 @@ Requires the ``etl-polars`` optional dependency group::
 
 Usage::
 
-    from loom.etl._locator import PrefixLocator
+    from loom.etl.storage._locator import PrefixLocator
     from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
     from loom.etl.compiler import ETLCompiler
     from loom.etl.executor import ETLExecutor

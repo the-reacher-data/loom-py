@@ -8,7 +8,12 @@ pytest.importorskip("pyspark")
 
 from pyspark.sql import types as T  # noqa: E402
 
-from loom.etl._schema import (  # noqa: E402
+from loom.etl.backends.spark._dtype import (  # noqa: E402
+    loom_to_spark,
+    loom_type_to_spark,
+    spark_to_loom,
+)
+from loom.etl.schema._schema import (  # noqa: E402
     ArrayType,
     DatetimeType,
     DecimalType,
@@ -17,11 +22,6 @@ from loom.etl._schema import (  # noqa: E402
     LoomDtype,
     StructField,
     StructType,
-)
-from loom.etl.backends.spark._dtype import (  # noqa: E402
-    loom_to_spark,
-    loom_type_to_spark,
-    spark_to_loom,
 )
 
 

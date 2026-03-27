@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
-from loom.etl._runner import ETLRunner, InvalidStageError, _filter_plan
 from loom.etl.compiler import ETLCompiler
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -19,6 +18,8 @@ from loom.etl.compiler._plan import (
     ProcessPlan,
     StepPlan,
 )
+from loom.etl.runner import ETLRunner, InvalidStageError
+from loom.etl.runner.filtering import _filter_plan
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 RunnerFactory = Callable[..., ETLRunner]
@@ -209,7 +210,7 @@ class TestRunnerRun:
 
 class TestRunnerFromConfig:
     def test_from_config_unity_catalog_without_spark_raises(self) -> None:
-        from loom.etl._storage_config import UnityCatalogConfig
+        from loom.etl.storage._config import UnityCatalogConfig
 
         with pytest.raises(ValueError, match="SparkSession"):
             ETLRunner.from_config(UnityCatalogConfig(type="unity_catalog"))
@@ -219,9 +220,9 @@ class TestRunnerFromConfig:
 
         from unittest.mock import MagicMock
 
-        from loom.etl._storage_config import UnityCatalogConfig
         from loom.etl.backends.spark._catalog import SparkCatalog
         from loom.etl.backends.spark._reader import SparkDeltaReader
+        from loom.etl.storage._config import UnityCatalogConfig
 
         spark = MagicMock()
         runner = ETLRunner.from_config(UnityCatalogConfig(type="unity_catalog"), spark=spark)
@@ -242,9 +243,9 @@ class TestRunnerFromConfig:
         tmp_suffix: str | None,
         has_temp_store: bool,
     ) -> None:
-        from loom.etl._storage_config import DeltaConfig
         from loom.etl.backends.polars._reader import PolarsDeltaReader
         from loom.etl.backends.polars._writer import PolarsDeltaWriter
+        from loom.etl.storage._config import DeltaConfig
 
         config = DeltaConfig(
             root=str(tmp_path),
@@ -293,7 +294,7 @@ class TestRunnerFromDict:
 
 class TestRunnerCleaner:
     def test_from_config_with_injected_cleaner(self, tmp_path: Path) -> None:
-        from loom.etl._storage_config import DeltaConfig
+        from loom.etl.storage._config import DeltaConfig
 
         deleted: list[str] = []
 

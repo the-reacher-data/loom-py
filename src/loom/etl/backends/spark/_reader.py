@@ -25,9 +25,9 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from loom.etl._locator import TableLocator, _as_locator
-from loom.etl._source import JsonColumnSpec, SourceSpec
 from loom.etl.backends.spark._dtype import loom_type_to_spark
+from loom.etl.io._source import JsonColumnSpec, SourceSpec
+from loom.etl.storage._locator import TableLocator, _as_locator
 
 _log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class SparkDeltaReader:
         reader = SparkDeltaReader(spark, "s3://my-lake/")
 
         # With explicit credentials
-        from loom.etl._locator import PrefixLocator
+        from loom.etl.storage._locator import PrefixLocator
         reader = SparkDeltaReader(spark, PrefixLocator("s3://my-lake/", storage_options={...}))
     """
 

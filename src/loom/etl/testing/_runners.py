@@ -6,11 +6,11 @@ from typing import Any
 
 import polars as pl
 
-from loom.etl._predicate_sql import predicate_to_sql
-from loom.etl._source import SourceSpec
-from loom.etl._target import TargetSpec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
+from loom.etl.io._source import SourceSpec
+from loom.etl.io._target import TargetSpec
+from loom.etl.sql._predicate_sql import predicate_to_sql
 from loom.etl.testing._result import StepResult
 
 

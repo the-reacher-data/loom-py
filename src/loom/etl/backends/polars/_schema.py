@@ -57,13 +57,13 @@ import logging
 
 import polars as pl
 
-from loom.etl._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
-from loom.etl._target import SchemaMode
 from loom.etl.backends.polars._dtype import (
     loom_type_to_polars,
     polars_to_loom,
     polars_to_loom_type,
 )
+from loom.etl.io._target import SchemaMode
+from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaError, SchemaNotFoundError
 
 _log = logging.getLogger(__name__)
 

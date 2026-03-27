@@ -1,0 +1,191 @@
+"""Tests for FromTable, FromFile, Sources, and SourceSet."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import pytest
+
+from loom.etl.io._format import Format
+from loom.etl.io._source import FromFile, FromTable, SourceKind, Sources, SourceSet
+from loom.etl.model._proxy import params
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._table import TableRef, col
+
+
+@pytest.fixture
+def table_schema() -> tuple[ColumnSchema, ...]:
+    return (ColumnSchema("id", LoomDtype.INT64),)
+
+
+class TestFromTable:
+    @pytest.mark.parametrize(
+        "ref,expected_ref,is_same_instance",
+        [
+            ("raw.orders", "raw.orders", False),
+            (TableRef("raw.orders"), "raw.orders", True),
+        ],
+    )
+    def test_ref_normalization(
+        self,
+        ref: str | TableRef,
+        expected_ref: str,
+        is_same_instance: bool,
+    ) -> None:
+        src = FromTable(ref)
+        assert src.table_ref.ref == expected_ref
+        if is_same_instance:
+            assert src.table_ref is ref
+
+    def test_default_state(self) -> None:
+        src = FromTable("raw.orders")
+        spec = src._to_spec("orders")
+        assert src.predicates == ()
+        assert spec.predicates == ()
+        assert spec.columns == ()
+
+    @pytest.mark.parametrize(
+        "builder,check",
+        [
+            (
+                lambda s: s.where(col("year") == 2024),
+                lambda spec: len(spec.predicates) == 1 and spec.columns == (),
+            ),
+            (
+                lambda s: s.where(
+                    col("year") == params.run_date.year,
+                    col("month") == params.run_date.month,
+                ),
+                lambda spec: len(spec.predicates) == 2,
+            ),
+            (
+                lambda s: s.columns("id", "amount"),
+                lambda spec: spec.columns == ("id", "amount") and spec.predicates == (),
+            ),
+            (
+                lambda s: s.where(col("year") == 2024).columns("id", "amount"),
+                lambda spec: len(spec.predicates) == 1 and spec.columns == ("id", "amount"),
+            ),
+            (
+                lambda s: s.columns("id", "amount").where(col("year") == 2024),
+                lambda spec: len(spec.predicates) == 1 and spec.columns == ("id", "amount"),
+            ),
+            (
+                lambda s: s.with_schema((ColumnSchema("id", LoomDtype.INT64),)),
+                lambda spec: spec.schema == (ColumnSchema("id", LoomDtype.INT64),),
+            ),
+        ],
+    )
+    def test_transformers_return_new_and_preserve_state(
+        self,
+        builder: Callable[[FromTable], FromTable],
+        check: Callable[[object], bool],
+    ) -> None:
+        src = FromTable("raw.orders")
+        mutated = builder(src)
+        assert mutated is not src
+        assert check(mutated._to_spec("orders"))
+
+    def test_to_spec_table_kind_defaults(self) -> None:
+        spec = FromTable("raw.orders")._to_spec("orders")
+        assert spec.alias == "orders"
+        assert spec.kind is SourceKind.TABLE
+        assert spec.format is Format.DELTA
+        assert spec.table_ref == TableRef("raw.orders")
+
+    def test_columns_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            FromTable("raw.orders").columns()
+
+    def test_columns_preserves_schema(self, table_schema: tuple[ColumnSchema, ...]) -> None:
+        spec = FromTable("raw.orders").with_schema(table_schema).columns("id")._to_spec("orders")
+        assert spec.schema == table_schema
+        assert spec.columns == ("id",)
+
+
+class TestFromFile:
+    @pytest.mark.parametrize(
+        "path,format",
+        [
+            ("s3://raw/report_{run_date}.xlsx", Format.XLSX),
+            ("s3://raw/data.csv", Format.CSV),
+        ],
+    )
+    def test_basic_fields(self, path: str, format: Format) -> None:
+        src = FromFile(path, format=format)
+        assert src.path == path
+        assert src.format is format
+
+    def test_to_spec_file_kind(self) -> None:
+        spec = FromFile("s3://raw/data.csv", format=Format.CSV)._to_spec("data")
+        assert spec.alias == "data"
+        assert spec.kind is SourceKind.FILE
+        assert spec.format is Format.CSV
+        assert spec.path == "s3://raw/data.csv"
+
+    @pytest.mark.parametrize(
+        "builder,expected_columns",
+        [
+            (
+                lambda s: s.columns("order_id", "amount"),
+                ("order_id", "amount"),
+            ),
+            (
+                lambda s: s.columns("id", "amount").with_schema(
+                    (ColumnSchema("id", LoomDtype.INT64),)
+                ),
+                ("id", "amount"),
+            ),
+        ],
+    )
+    def test_columns_variants(
+        self,
+        builder: Callable[[FromFile], FromFile],
+        expected_columns: tuple[str, ...],
+    ) -> None:
+        base = FromFile("s3://raw/data.csv", format=Format.CSV)
+        spec = builder(base)._to_spec("data")
+        assert spec.columns == expected_columns
+
+    def test_default_columns_empty(self) -> None:
+        spec = FromFile("s3://raw/data.csv", format=Format.CSV)._to_spec("data")
+        assert spec.columns == ()
+
+    def test_columns_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            FromFile("s3://raw/data.csv", format=Format.CSV).columns()
+
+
+class TestSources:
+    def test_aliases_and_specs_keep_order(self) -> None:
+        sources = Sources(orders=FromTable("raw.orders"), customers=FromTable("raw.customers"))
+        assert sources.aliases == ("orders", "customers")
+        specs = sources._to_specs()
+        assert [spec.alias for spec in specs] == ["orders", "customers"]
+
+
+class TestSourceSet:
+    def test_collects_declared_sources(self) -> None:
+        class OrderSources(SourceSet[object]):
+            orders = FromTable("raw.orders")
+            customers = FromTable("raw.customers")
+
+        aliases = {spec.alias for spec in OrderSources()._to_specs()}
+        assert aliases == {"orders", "customers"}
+
+    def test_extended_behaviors(self) -> None:
+        class Base(SourceSet[object]):
+            orders = FromTable("raw.orders")
+
+        extended = Base.extended(customers=FromTable("raw.customers"))
+        aliases = {spec.alias for spec in extended._to_specs()}
+        assert aliases == {"orders", "customers"}
+        assert isinstance(extended, SourceSet)
+        assert extended._sources is not Base._sources
+
+    def test_extended_conflict_raises(self) -> None:
+        class Base(SourceSet[object]):
+            orders = FromTable("raw.orders")
+
+        with pytest.raises(ValueError, match="conflicting source names"):
+            Base.extended(orders=FromTable("raw.orders_v2"))

@@ -11,9 +11,9 @@ from __future__ import annotations
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
-from loom.etl._schema import ColumnSchema, SchemaError, SchemaNotFoundError
-from loom.etl._target import SchemaMode
 from loom.etl.backends.spark._dtype import loom_type_to_spark, spark_to_loom
+from loom.etl.io._target import SchemaMode
+from loom.etl.schema._schema import ColumnSchema, SchemaError, SchemaNotFoundError
 
 
 def spark_apply_schema(

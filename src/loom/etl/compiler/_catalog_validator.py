@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from loom.etl._io import TableDiscovery
-from loom.etl._source import SourceKind
-from loom.etl._target import SchemaMode
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -15,6 +12,9 @@ from loom.etl.compiler._plan import (
     ProcessStepNode,
     StepPlan,
 )
+from loom.etl.io._source import SourceKind
+from loom.etl.io._target import SchemaMode
+from loom.etl.storage._io import TableDiscovery
 
 
 def validate_plan_catalog(plan: PipelinePlan, catalog: TableDiscovery) -> None:

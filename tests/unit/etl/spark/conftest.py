@@ -19,11 +19,11 @@ pytest.importorskip("delta")
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 
-from loom.etl._schema import ColumnSchema  # noqa: E402
-from loom.etl._table import TableRef  # noqa: E402
 from loom.etl.backends.polars import DeltaCatalog  # noqa: E402
 from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
 from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
+from loom.etl.schema._schema import ColumnSchema  # noqa: E402
+from loom.etl.schema._table import TableRef  # noqa: E402
 from loom.etl.testing.spark import SparkStepRunner, SparkTestSession  # noqa: E402
 
 

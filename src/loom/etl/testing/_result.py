@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import polars as pl
 
-from loom.etl._schema import LoomDtype
+from loom.etl.schema._schema import LoomDtype
 
 
 @dataclass(frozen=True)

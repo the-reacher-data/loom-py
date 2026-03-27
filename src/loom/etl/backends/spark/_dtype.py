@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pyspark.sql import types as T
 
-from loom.etl._schema import (
+from loom.etl.schema._schema import (
     ArrayType,
     DatetimeType,
     DecimalType,

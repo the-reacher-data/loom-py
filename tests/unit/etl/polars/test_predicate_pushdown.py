@@ -10,12 +10,12 @@ import pytest
 from deltalake import write_deltalake
 
 from loom.etl import ETLParams, col
-from loom.etl._format import Format
-from loom.etl._proxy import params as p
-from loom.etl._source import SourceKind, SourceSpec
-from loom.etl._table import TableRef
 from loom.etl.backends.polars import PolarsDeltaReader
 from loom.etl.backends.polars._predicate import predicate_to_polars
+from loom.etl.io._format import Format
+from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.model._proxy import params as p
+from loom.etl.schema._table import TableRef
 
 from .conftest import table_path
 

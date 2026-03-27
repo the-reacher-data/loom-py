@@ -37,10 +37,10 @@ import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 
-from loom.etl._source import SourceSpec
-from loom.etl._target import TargetSpec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
+from loom.etl.io._source import SourceSpec
+from loom.etl.io._target import TargetSpec
 from loom.etl.testing._result import StepResult
 
 
