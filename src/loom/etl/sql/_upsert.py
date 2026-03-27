@@ -23,6 +23,7 @@ cardinality so the collect is cheap.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from loom.etl.io._target import TargetSpec
@@ -255,3 +256,27 @@ def _sql_literal(value: Any) -> str:
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     return str(value)
+
+
+def _build_partition_predicate(
+    rows: Iterable[Mapping[str, Any]],
+    partition_cols: tuple[str, ...],
+) -> str:
+    """Build a ``replaceWhere`` SQL predicate from distinct partition rows.
+
+    Backend-agnostic: callers extract the distinct rows from their DataFrame
+    and pass them as an ``Iterable[Mapping[str, Any]]``.
+
+    Args:
+        rows:           Distinct partition-column rows (each a mapping of
+                        column name → value).
+        partition_cols: Ordered partition column names.
+
+    Returns:
+        SQL predicate string, e.g.
+        ``(year = 2024 AND month = 1) OR (year = 2024 AND month = 2)``.
+    """
+    clauses = [
+        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols) for row in rows
+    ]
+    return " OR ".join(f"({c})" for c in clauses)

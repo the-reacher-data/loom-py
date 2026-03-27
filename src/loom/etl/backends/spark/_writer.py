@@ -31,6 +31,7 @@ from loom.etl.sql._predicate_sql import predicate_to_sql
 from loom.etl.sql._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
+    _build_partition_predicate,
     _build_update_set,
     _build_upsert_predicate,
     _build_upsert_update_cols,
@@ -168,7 +169,10 @@ def _apply_append(writer: Any, _df: DataFrame, spec: TargetSpec, _params: Any) -
 
 
 def _apply_replace_partitions(writer: Any, df: DataFrame, spec: TargetSpec, _params: Any) -> Any:
-    predicate = _build_partition_predicate(df, spec.partition_cols)
+    predicate = _build_partition_predicate(
+        (row.asDict() for row in df.select(*spec.partition_cols).distinct().collect()),
+        spec.partition_cols,
+    )
     return writer.mode("overwrite").option("replaceWhere", predicate)
 
 
@@ -355,23 +359,3 @@ def _sort_for_write(df: DataFrame, spec: TargetSpec) -> DataFrame:
     ):
         return df.sortWithinPartitions(*cols)
     return df
-
-
-def _build_partition_predicate(df: DataFrame, partition_cols: tuple[str, ...]) -> str:
-    """Build a ``replaceWhere`` SQL predicate from the distinct partition values in *df*.
-
-    Collects only the partition columns — typically O(1-31) distinct rows.
-    """
-    rows = df.select(*partition_cols).distinct().collect()
-    clauses = [
-        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols) for row in rows
-    ]
-    return " OR ".join(f"({c})" for c in clauses)
-
-
-def _sql_literal(value: Any) -> str:
-    if isinstance(value, str):
-        return f"'{value.replace(chr(39), chr(39) * 2)}'"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    return str(value)

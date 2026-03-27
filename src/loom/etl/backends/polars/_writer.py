@@ -39,6 +39,7 @@ from loom.etl.sql._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
     _build_insert_values,
+    _build_partition_predicate,
     _build_update_set,
     _build_upsert_predicate,
     _build_upsert_update_cols,
@@ -206,7 +207,10 @@ def _write_append(loc: TableLocation, df: pl.DataFrame, _spec: TargetSpec, _para
 def _write_replace_partitions(
     loc: TableLocation, df: pl.DataFrame, spec: TargetSpec, _params: Any
 ) -> None:
-    predicate = _build_partition_predicate(df, spec.partition_cols)
+    predicate = _build_partition_predicate(
+        df.select(list(spec.partition_cols)).unique().iter_rows(named=True),
+        spec.partition_cols,
+    )
     write_deltalake(
         loc.uri, df.to_arrow(), mode="overwrite", predicate=predicate, **_write_kwargs(loc)
     )
@@ -339,21 +343,3 @@ def _collect_partition_combos_for_merge_polars(
     combos = _collect_partition_combos_polars(df, partition_cols)
     _log_partition_combos(combos, table_ref)
     return combos
-
-
-def _build_partition_predicate(df: pl.DataFrame, partition_cols: tuple[str, ...]) -> str:
-    """Build a replaceWhere SQL predicate from distinct partition values in *df*."""
-    distinct = df.select(list(partition_cols)).unique()
-    clauses = [
-        " AND ".join(f"{col} = {_sql_literal(row[col])}" for col in partition_cols)
-        for row in distinct.iter_rows(named=True)
-    ]
-    return " OR ".join(f"({c})" for c in clauses)
-
-
-def _sql_literal(value: Any) -> str:
-    if isinstance(value, str):
-        return f"'{value.replace(chr(39), chr(39) * 2)}'"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    return str(value)
