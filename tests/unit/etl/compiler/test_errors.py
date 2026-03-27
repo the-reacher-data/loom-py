@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
 
 
@@ -14,7 +16,7 @@ class _Component:
 
 
 class _Params:
-    __name__ = "MyParams"
+    __name__ = "_Params"
 
 
 class _Context:
@@ -22,227 +24,200 @@ class _Context:
 
 
 # ---------------------------------------------------------------------------
-# ETLErrorCode is a StrEnum usable as a string
+# ETLErrorCode
 # ---------------------------------------------------------------------------
 
 
-def test_error_code_is_string() -> None:
-    assert ETLErrorCode.INVALID_PARAMS_TYPE == "INVALID_PARAMS_TYPE"
+class TestETLErrorCode:
+    def test_is_string(self) -> None:
+        assert ETLErrorCode.INVALID_PARAMS_TYPE == "INVALID_PARAMS_TYPE"
 
-
-def test_all_codes_unique() -> None:
-    values = [c.value for c in ETLErrorCode]
-    assert len(values) == len(set(values))
+    def test_all_values_unique(self) -> None:
+        values = [c.value for c in ETLErrorCode]
+        assert len(values) == len(set(values))
 
 
 # ---------------------------------------------------------------------------
-# Factory: invalid_params_type
+# Factory: execute() params errors
 # ---------------------------------------------------------------------------
 
 
-def test_invalid_params_type_code() -> None:
+class TestInvalidParamsType:
     err = ETLCompilationError.invalid_params_type(_Step, _Params)  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.INVALID_PARAMS_TYPE
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.INVALID_PARAMS_TYPE
+
+    def test_component(self) -> None:
+        assert self.err.component == "MyStep"
+
+    def test_field(self) -> None:
+        assert self.err.field == "params"
+
+    def test_message_contains_params_type(self) -> None:
+        assert "_Params" in str(self.err)
 
 
-def test_invalid_params_type_component() -> None:
-    err = ETLCompilationError.invalid_params_type(_Step, _Params)  # type: ignore[arg-type]
-    assert err.component == "MyStep"
-
-
-def test_invalid_params_type_field() -> None:
-    err = ETLCompilationError.invalid_params_type(_Step, _Params)  # type: ignore[arg-type]
-    assert err.field == "params"
-
-
-def test_invalid_params_type_message_contains_name() -> None:
-    err = ETLCompilationError.invalid_params_type(_Step, _Params)  # type: ignore[arg-type]
-    assert "_Params" in str(err)
-
-
-# ---------------------------------------------------------------------------
-# Factory: invalid_params_name
-# ---------------------------------------------------------------------------
-
-
-def test_invalid_params_name_code() -> None:
+class TestInvalidParamsName:
     err = ETLCompilationError.invalid_params_name(_Step, "ctx")  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.INVALID_PARAMS_NAME
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.INVALID_PARAMS_NAME
+
+    def test_field_is_the_wrong_name(self) -> None:
+        assert self.err.field == "ctx"
 
 
-def test_invalid_params_name_field() -> None:
-    err = ETLCompilationError.invalid_params_name(_Step, "ctx")  # type: ignore[arg-type]
-    assert err.field == "ctx"
-
-
-# ---------------------------------------------------------------------------
-# Factory: missing_source_params
-# ---------------------------------------------------------------------------
-
-
-def test_missing_source_params_code() -> None:
+class TestMissingSourceParams:
     err = ETLCompilationError.missing_source_params(_Step, frozenset({"orders"}))  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.MISSING_SOURCE_PARAMS
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.MISSING_SOURCE_PARAMS
+
+    def test_message_contains_alias(self) -> None:
+        assert "orders" in str(self.err)
 
 
-def test_missing_source_params_field_is_none() -> None:
-    err = ETLCompilationError.missing_source_params(_Step, frozenset({"orders"}))  # type: ignore[arg-type]
-    assert err.field is None
-
-
-def test_missing_source_params_message_contains_alias() -> None:
-    err = ETLCompilationError.missing_source_params(_Step, frozenset({"orders"}))  # type: ignore[arg-type]
-    assert "orders" in str(err)
-
-
-# ---------------------------------------------------------------------------
-# Factory: extra_source_params
-# ---------------------------------------------------------------------------
-
-
-def test_extra_source_params_code() -> None:
+class TestExtraSourceParams:
     err = ETLCompilationError.extra_source_params(_Step, frozenset({"ghost"}))  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.EXTRA_SOURCE_PARAMS
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.EXTRA_SOURCE_PARAMS
+
+    def test_message_contains_param_name(self) -> None:
+        assert "ghost" in str(self.err)
 
 
-# ---------------------------------------------------------------------------
-# Factory: missing_params_fields
-# ---------------------------------------------------------------------------
-
-
-def test_missing_params_fields_code() -> None:
-    err = ETLCompilationError.missing_params_fields(
-        _Component,
-        frozenset({"run_date"}),
-        _Context,  # type: ignore[arg-type]
+class TestMissingParamsFields:
+    err = ETLCompilationError.missing_params_fields(  # type: ignore[arg-type]
+        _Component, frozenset({"run_date"}), _Context
     )
-    assert err.code is ETLErrorCode.MISSING_PARAMS_FIELDS
 
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.MISSING_PARAMS_FIELDS
 
-def test_missing_params_fields_component() -> None:
-    err = ETLCompilationError.missing_params_fields(
-        _Component,
-        frozenset({"run_date"}),
-        _Context,  # type: ignore[arg-type]
-    )
-    assert err.component == "MyComponent"
+    def test_component(self) -> None:
+        assert self.err.component == "MyComponent"
 
-
-def test_missing_params_fields_message_contains_field() -> None:
-    err = ETLCompilationError.missing_params_fields(
-        _Component,
-        frozenset({"run_date"}),
-        _Context,  # type: ignore[arg-type]
-    )
-    assert "run_date" in str(err)
+    def test_message_contains_missing_field(self) -> None:
+        assert "run_date" in str(self.err)
 
 
 # ---------------------------------------------------------------------------
-# Factory: unknown_source_table
+# Factory: catalog errors
 # ---------------------------------------------------------------------------
 
 
-def test_unknown_source_table_code() -> None:
+class TestUnknownSourceTable:
     err = ETLCompilationError.unknown_source_table(_Step, "orders", "raw.orders")  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.UNKNOWN_SOURCE_TABLE
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.UNKNOWN_SOURCE_TABLE
+
+    def test_field_is_alias(self) -> None:
+        assert self.err.field == "orders"
+
+    def test_message_contains_table_ref(self) -> None:
+        assert "raw.orders" in str(self.err)
 
 
-def test_unknown_source_table_field_is_alias() -> None:
-    err = ETLCompilationError.unknown_source_table(_Step, "orders", "raw.orders")  # type: ignore[arg-type]
-    assert err.field == "orders"
-
-
-def test_unknown_source_table_message() -> None:
-    err = ETLCompilationError.unknown_source_table(_Step, "orders", "raw.orders")  # type: ignore[arg-type]
-    assert "raw.orders" in str(err)
-    assert "orders" in str(err)
-
-
-# ---------------------------------------------------------------------------
-# Factory: unknown_target_table
-# ---------------------------------------------------------------------------
-
-
-def test_unknown_target_table_code() -> None:
+class TestUnknownTargetTable:
     err = ETLCompilationError.unknown_target_table(_Step, "staging.out")  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.UNKNOWN_TARGET_TABLE
 
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.UNKNOWN_TARGET_TABLE
 
-def test_unknown_target_table_field_is_none() -> None:
-    err = ETLCompilationError.unknown_target_table(_Step, "staging.out")  # type: ignore[arg-type]
-    assert err.field is None
+    def test_field_is_none(self) -> None:
+        assert self.err.field is None
 
 
 # ---------------------------------------------------------------------------
-# Factory: temp_not_produced
+# Factory: temp errors
 # ---------------------------------------------------------------------------
 
 
-def test_temp_not_produced_code() -> None:
+class TestTempNotProduced:
     err = ETLCompilationError.temp_not_produced(_Step, "tmp_orders", "orders_temp")  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.TEMP_NOT_PRODUCED
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.TEMP_NOT_PRODUCED
+
+    def test_field_is_alias(self) -> None:
+        assert self.err.field == "tmp_orders"
+
+    def test_message_contains_temp_name(self) -> None:
+        assert "orders_temp" in str(self.err)
 
 
-def test_temp_not_produced_field_is_alias() -> None:
-    err = ETLCompilationError.temp_not_produced(_Step, "tmp_orders", "orders_temp")  # type: ignore[arg-type]
-    assert err.field == "tmp_orders"
+class TestDuplicateTempName:
+    err = ETLCompilationError.duplicate_temp_name(_Step, "orders_temp")  # type: ignore[arg-type]
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.DUPLICATE_TEMP_NAME
+
+    def test_field_is_temp_name(self) -> None:
+        assert self.err.field == "orders_temp"
 
 
-def test_temp_not_produced_message_contains_temp_name() -> None:
-    err = ETLCompilationError.temp_not_produced(_Step, "tmp_orders", "orders_temp")  # type: ignore[arg-type]
-    assert "orders_temp" in str(err)
+class TestInvalidTempAppendMix:
+    err = ETLCompilationError.invalid_temp_append_mix(_Step, "orders_temp")  # type: ignore[arg-type]
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.INVALID_TEMP_APPEND_MIX
+
+    def test_field_is_temp_name(self) -> None:
+        assert self.err.field == "orders_temp"
 
 
 # ---------------------------------------------------------------------------
-# Factory: upsert_no_keys
+# Factory: upsert errors
 # ---------------------------------------------------------------------------
 
 
-def test_upsert_no_keys_code() -> None:
+class TestUpsertNoKeys:
     err = ETLCompilationError.upsert_no_keys(_Step)  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.UPSERT_NO_KEYS
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.UPSERT_NO_KEYS
+
+    def test_is_exception(self) -> None:
+        assert isinstance(self.err, Exception)
+
+    def test_str_is_message(self) -> None:
+        assert str(self.err) == self.err.args[0]
 
 
-def test_upsert_no_keys_field_is_none() -> None:
-    err = ETLCompilationError.upsert_no_keys(_Step)  # type: ignore[arg-type]
-    assert err.field is None
-
-
-# ---------------------------------------------------------------------------
-# Factory: upsert_exclude_include_conflict
-# ---------------------------------------------------------------------------
-
-
-def test_upsert_exclude_include_conflict_code() -> None:
+class TestUpsertExcludeIncludeConflict:
     err = ETLCompilationError.upsert_exclude_include_conflict(_Step)  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.UPSERT_EXCLUDE_INCLUDE_CONFLICT
+
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.UPSERT_EXCLUDE_INCLUDE_CONFLICT
 
 
-# ---------------------------------------------------------------------------
-# Factory: upsert_key_in_exclude
-# ---------------------------------------------------------------------------
-
-
-def test_upsert_key_in_exclude_code() -> None:
+class TestUpsertKeyInExclude:
     err = ETLCompilationError.upsert_key_in_exclude(_Step, frozenset({"id"}))  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.UPSERT_KEY_IN_EXCLUDE
 
+    def test_code(self) -> None:
+        assert self.err.code is ETLErrorCode.UPSERT_KEY_IN_EXCLUDE
 
-def test_upsert_key_in_exclude_message_contains_overlap() -> None:
-    err = ETLCompilationError.upsert_key_in_exclude(_Step, frozenset({"id"}))  # type: ignore[arg-type]
-    assert "id" in str(err)
+    def test_message_contains_overlap(self) -> None:
+        assert "id" in str(self.err)
 
 
 # ---------------------------------------------------------------------------
-# ETLCompilationError is still a plain Exception subclass
+# Raisable as exception
 # ---------------------------------------------------------------------------
 
 
-def test_is_exception() -> None:
-    err = ETLCompilationError.upsert_no_keys(_Step)  # type: ignore[arg-type]
-    assert isinstance(err, Exception)
-
-
-def test_str_is_message() -> None:
-    err = ETLCompilationError.upsert_no_keys(_Step)  # type: ignore[arg-type]
-    assert str(err) == err.args[0]
+class TestRaisable:
+    @pytest.mark.parametrize(
+        "err",
+        [
+            ETLCompilationError.upsert_no_keys(_Step),  # type: ignore[arg-type]
+            ETLCompilationError.missing_target(_Step),  # type: ignore[arg-type]
+            ETLCompilationError.temp_not_produced(_Step, "a", "b"),  # type: ignore[arg-type]
+        ],
+    )
+    def test_can_be_raised_and_caught(self, err: ETLCompilationError) -> None:
+        with pytest.raises(ETLCompilationError):
+            raise err

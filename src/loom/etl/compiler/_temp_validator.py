@@ -15,7 +15,6 @@ from loom.etl.compiler._plan import (
     ProcessPlan,
     ProcessStepNode,
     StepPlan,
-    TargetBinding,
 )
 
 # ---------------------------------------------------------------------------
@@ -106,13 +105,13 @@ def _walk_process_node(node: ProcessStepNode, seen: dict[str, bool]) -> None:
     match node:
         case StepPlan():
             _check_sources(node, seen)
-            _register_target(node.target_binding, node.step_type, seen)
+            _register_step_target(node, seen)
         case ParallelStepGroup(plans=plans):
             snapshot = dict(seen)
             group_seen: dict[str, bool] = {}
             for step in plans:
                 _check_sources(step, snapshot)
-                _register_target(step.target_binding, step.step_type, group_seen)
+                _register_step_target(step, group_seen)
             seen.update(group_seen)
 
 
@@ -129,17 +128,14 @@ def _check_sources(step: StepPlan, seen: dict[str, bool]) -> None:
             raise ETLCompilationError.temp_not_produced(step.step_type, binding.alias, temp_name)
 
 
-def _register_target(
-    target: TargetBinding,
-    step_type: type,
-    seen: dict[str, bool],
-) -> None:
-    name = target.spec.temp_name
+def _register_step_target(step: StepPlan, seen: dict[str, bool]) -> None:
+    """Record the temp name produced by *step*, enforcing uniqueness rules."""
+    name = step.target_binding.spec.temp_name
     if name is None:
         return
-    append = target.spec.temp_append
+    append = step.target_binding.spec.temp_append
     existing = seen.get(name)
     if existing is None:
         seen[name] = append
         return
-    _CONFLICT[(existing, append)](step_type, name)
+    _CONFLICT[(existing, append)](step.step_type, name)
