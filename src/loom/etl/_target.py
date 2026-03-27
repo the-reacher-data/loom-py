@@ -96,6 +96,7 @@ class TargetSpec:
     upsert_include: tuple[str, ...] = field(default_factory=tuple)
     temp_name: str | None = None
     temp_scope: TempScope | None = None
+    temp_append: bool = False
     write_options: WriteOptions | None = None
 
 
@@ -401,22 +402,37 @@ class IntoTemp:
     Use :class:`~loom.etl.FromTemp` in a downstream step to consume the result.
 
     Args:
-        name:  Logical name identifying this intermediate.  Must be unique
-               within the pipeline.  Downstream steps reference it by this
-               name via :class:`~loom.etl.FromTemp`.
-        scope: Lifetime scope.  Defaults to :attr:`~loom.etl.TempScope.RUN`.
+        name:   Logical name identifying this intermediate.  By default the
+                name must be unique across the pipeline — the compiler raises
+                if two steps write to the same name.
+        scope:  Lifetime scope.  Defaults to :attr:`~loom.etl.TempScope.RUN`.
+        append: When ``True``, multiple steps may write to this name; their
+                outputs are concatenated and exposed as one logical intermediate
+                (fan-in pattern).  All writers for a given name must agree on
+                the same ``append`` value — mixing ``True`` and ``False`` is a
+                compile-time error.
 
     Example::
 
+        # strict — only one step may write "normalized_orders"
         target = IntoTemp("normalized_orders")
-        target = IntoTemp("normalized_orders", scope=TempScope.CORRELATION)
+
+        # fan-in — multiple partition steps write to the same intermediate
+        target = IntoTemp("order_parts", append=True)
     """
 
-    __slots__ = ("_name", "_scope")
+    __slots__ = ("_append", "_name", "_scope")
 
-    def __init__(self, name: str, *, scope: TempScope = TempScope.RUN) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        scope: TempScope = TempScope.RUN,
+        append: bool = False,
+    ) -> None:
         self._name = name
         self._scope = scope
+        self._append = append
 
     @property
     def temp_name(self) -> str:
@@ -428,13 +444,19 @@ class IntoTemp:
         """Lifetime scope."""
         return self._scope
 
+    @property
+    def append(self) -> bool:
+        """Whether multiple steps may write to this name (fan-in)."""
+        return self._append
+
     def _to_spec(self) -> TargetSpec:
         return TargetSpec(
             mode=WriteMode.REPLACE,
             format=Format.PARQUET,
             temp_name=self._name,
             temp_scope=self._scope,
+            temp_append=self._append,
         )
 
     def __repr__(self) -> str:
-        return f"IntoTemp({self._name!r}, scope={self._scope!r})"
+        return f"IntoTemp({self._name!r}, scope={self._scope!r}, append={self._append!r})"

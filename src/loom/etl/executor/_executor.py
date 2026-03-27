@@ -247,6 +247,7 @@ class ETLExecutor:
                 correlation_id=ctx.correlation_id,
                 scope=spec.temp_scope,
                 data=result,
+                append=spec.temp_append,
             )
         else:
             _log.debug(

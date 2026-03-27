@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from loom.etl._temp import TempScope
@@ -103,6 +104,7 @@ class IntermediateStore:
         correlation_id: str | None,
         scope: TempScope,
         data: Any,
+        append: bool = False,
     ) -> None:
         """Materialise *data* as a named intermediate.
 
@@ -113,6 +115,10 @@ class IntermediateStore:
                             *scope* is :attr:`~TempScope.CORRELATION`.
             scope:          Whether to keep across retries.
             data:           ``polars.LazyFrame`` or ``pyspark.sql.DataFrame``.
+            append:         When ``True``, writes a new partition file alongside
+                            any previously written parts for this name (fan-in).
+                            When ``False`` (default), the write is exclusive —
+                            any prior content for this name is overwritten.
 
         Raises:
             TypeError: When *data* is neither a Polars LazyFrame nor a Spark
@@ -126,14 +132,24 @@ class IntermediateStore:
                 "Pass correlation_id= to ETLRunner.run()."
             )
         if _is_polars_lazy_frame(data):
-            _log.debug("temp put name=%r scope=%s backend=polars", name, scope)
+            _log.debug("temp put name=%r scope=%s backend=polars append=%s", name, scope, append)
             self._put_polars(
-                name, run_id=run_id, correlation_id=correlation_id, scope=scope, lf=data
+                name,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                scope=scope,
+                lf=data,
+                append=append,
             )
         elif _is_spark_dataframe(data):
-            _log.debug("temp put name=%r scope=%s backend=spark", name, scope)
+            _log.debug("temp put name=%r scope=%s backend=spark append=%s", name, scope, append)
             self._put_spark(
-                name, run_id=run_id, correlation_id=correlation_id, scope=scope, df=data
+                name,
+                run_id=run_id,
+                correlation_id=correlation_id,
+                scope=scope,
+                df=data,
+                append=append,
             )
         else:
             raise TypeError(
@@ -178,19 +194,19 @@ class IntermediateStore:
     ) -> Any:
         import polars as pl
 
-        run_path = self._polars_path(
-            name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.RUN
+        run_base = self._scope_base(
+            run_id=run_id, correlation_id=correlation_id, scope=TempScope.RUN
         )
-        if os.path.exists(run_path):
-            _log.debug("temp get name=%r resolved=run path=%s", name, run_path)
-            return pl.scan_ipc(run_path, memory_map=True)
+        if scan_path := _find_arrow(name, run_base):
+            _log.debug("temp get name=%r resolved=run path=%s", name, scan_path)
+            return pl.scan_ipc(scan_path, memory_map=True)
         if correlation_id is not None:
-            corr_path = self._polars_path(
-                name, run_id=run_id, correlation_id=correlation_id, scope=TempScope.CORRELATION
+            corr_base = self._scope_base(
+                run_id=run_id, correlation_id=correlation_id, scope=TempScope.CORRELATION
             )
-            if os.path.exists(corr_path):
-                _log.debug("temp get name=%r resolved=correlation path=%s", name, corr_path)
-                return pl.scan_ipc(corr_path, memory_map=True)
+            if scan_path := _find_arrow(name, corr_base):
+                _log.debug("temp get name=%r resolved=correlation path=%s", name, scan_path)
+                return pl.scan_ipc(scan_path, memory_map=True)
         raise FileNotFoundError(
             f"Intermediate {name!r} not found. "
             f"Check that IntoTemp({name!r}) ran before FromTemp({name!r})."
@@ -289,17 +305,6 @@ class IntermediateStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _polars_path(
-        self,
-        name: str,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-        scope: TempScope,
-    ) -> str:
-        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
-        return f"{base}/{name}.arrow"
-
     def _spark_path(
         self,
         name: str,
@@ -330,9 +335,11 @@ class IntermediateStore:
         correlation_id: str | None,
         scope: TempScope,
         lf: Any,
+        append: bool,
     ) -> None:
-        path = self._polars_path(name, run_id=run_id, correlation_id=correlation_id, scope=scope)
-        _log.debug("temp write arrow path=%s", path)
+        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
+        path = _arrow_part(name, base) if append else _arrow_path(name, base)
+        _log.debug("temp write arrow path=%s append=%s", path, append)
         _ensure_parent(path)
         kwargs: dict[str, Any] = {}
         if self._storage_options:
@@ -347,10 +354,11 @@ class IntermediateStore:
         correlation_id: str | None,
         scope: TempScope,
         df: Any,
+        append: bool,
     ) -> None:
         path = self._spark_path(name, run_id=run_id, correlation_id=correlation_id, scope=scope)
-        _log.debug("temp write parquet path=%s", path)
-        df.write.mode("overwrite").parquet(path)
+        _log.debug("temp write parquet path=%s append=%s", path, append)
+        df.write.mode("append" if append else "overwrite").parquet(path)
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +374,32 @@ def _is_polars_lazy_frame(obj: Any) -> bool:
 def _is_spark_dataframe(obj: Any) -> bool:
     t = type(obj)
     return "pyspark" in t.__module__ and t.__name__ == "DataFrame"
+
+
+def _arrow_path(name: str, base: str) -> str:
+    """Single-file Arrow IPC path for strict (non-append) writes."""
+    return f"{base}/{name}.arrow"
+
+
+def _arrow_part(name: str, base: str) -> str:
+    """Unique partition path inside the append directory for *name*."""
+    return f"{base}/{name}/{uuid.uuid4().hex}.arrow"
+
+
+def _find_arrow(name: str, base: str) -> str | None:
+    """Return the scan path for *name* under *base*, or ``None`` if absent.
+
+    Checks the single-file path first (strict write), then the directory
+    (append fan-in).  Returns a glob pattern for directories so that
+    ``polars.scan_ipc`` picks up all parts in one call.
+    """
+    single = _arrow_path(name, base)
+    if os.path.exists(single):
+        return single
+    directory = f"{base}/{name}"
+    if os.path.isdir(directory):
+        return f"{directory}/*.arrow"
+    return None
 
 
 def _ensure_parent(path: str) -> None:

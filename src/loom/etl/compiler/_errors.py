@@ -34,6 +34,8 @@ class ETLErrorCode(StrEnum):
     INVALID_SOURCES_TYPE = "INVALID_SOURCES_TYPE"
     INVALID_PROCESS_ITEM = "INVALID_PROCESS_ITEM"
     INVALID_STEP_ITEM = "INVALID_STEP_ITEM"
+    DUPLICATE_TEMP_NAME = "DUPLICATE_TEMP_NAME"
+    INVALID_TEMP_APPEND_MIX = "INVALID_TEMP_APPEND_MIX"
 
 
 class ETLCompilationError(Exception):
@@ -268,4 +270,31 @@ class ETLCompilationError(Exception):
                 f"{process.__qualname__}.steps: "
                 f"expected ETLStep subclass or list thereof, got {item!r}"
             ),
+        )
+
+    @classmethod
+    def duplicate_temp_name(cls, step: type, name: str) -> ETLCompilationError:
+        """Two steps write to the same IntoTemp name without append=True."""
+        return cls(
+            code=ETLErrorCode.DUPLICATE_TEMP_NAME,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: IntoTemp({name!r}) already written by a prior step. "
+                "Use append=True on all writers to enable fan-in, "
+                "or choose a unique name for each intermediate."
+            ),
+            field=name,
+        )
+
+    @classmethod
+    def invalid_temp_append_mix(cls, step: type, name: str) -> ETLCompilationError:
+        """A step mixes append=True and append=False on the same IntoTemp name."""
+        return cls(
+            code=ETLErrorCode.INVALID_TEMP_APPEND_MIX,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: IntoTemp({name!r}) mixes append=True and append=False. "
+                "All writers for the same intermediate must use the same mode."
+            ),
+            field=name,
         )
