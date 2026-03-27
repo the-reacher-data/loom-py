@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
-    ParallelProcessGroup,
-    ParallelStepGroup,
     PipelinePlan,
-    PipelineProcessNode,
     ProcessPlan,
-    ProcessStepNode,
     StepPlan,
+    visit_pipeline_nodes,
+    visit_process_nodes,
 )
 from loom.etl.io._source import SourceKind
 from loom.etl.io._target import SchemaMode
@@ -32,29 +30,11 @@ def validate_plan_catalog(plan: PipelinePlan, catalog: TableDiscovery) -> None:
         ETLCompilationError: When a source or target table is not found.
     """
     will_create: set[str] = set()
-    for node in plan.nodes:
-        _walk_pipeline_node(node, catalog, will_create)
-
-
-def _walk_pipeline_node(
-    node: PipelineProcessNode,
-    catalog: TableDiscovery,
-    will_create: set[str],
-) -> None:
-    match node:
-        case ProcessPlan():
-            _walk_process(node, catalog, will_create)
-        case ParallelProcessGroup(plans=plans):
-            # Each parallel branch starts from the same pre-group state.
-            snapshot = frozenset(will_create)
-            group_creates: set[str] = set()
-            for proc in plans:
-                proc_creates = set(snapshot)
-                _walk_process(proc, catalog, proc_creates)
-                # Merge only tables created within this branch.
-                group_creates |= proc_creates - snapshot
-            # Expose branch-created tables to subsequent sequential nodes.
-            will_create |= group_creates
+    visit_pipeline_nodes(
+        plan.nodes,
+        lambda proc: _walk_process(proc, catalog, will_create),
+        on_parallel_group=lambda plans: _walk_parallel_process_group(plans, catalog, will_create),
+    )
 
 
 def _walk_process(
@@ -62,27 +42,43 @@ def _walk_process(
     catalog: TableDiscovery,
     will_create: set[str],
 ) -> None:
-    for node in plan.nodes:
-        _walk_process_node(node, catalog, will_create)
+    visit_process_nodes(
+        plan.nodes,
+        lambda step: _validate_step(step, catalog, will_create),
+        on_parallel_group=lambda plans: _walk_parallel_step_group(plans, catalog, will_create),
+    )
 
 
-def _walk_process_node(
-    node: ProcessStepNode,
+def _walk_parallel_process_group(
+    plans: tuple[ProcessPlan, ...],
     catalog: TableDiscovery,
     will_create: set[str],
 ) -> None:
-    match node:
-        case StepPlan():
-            _validate_step(node, catalog, will_create)
-        case ParallelStepGroup(plans=plans):
-            # Validate each branch against the same incoming state.
-            snapshot = frozenset(will_create)
-            group_creates: set[str] = set()
-            for step in plans:
-                _validate_step(step, catalog, set(snapshot))
-                _track_overwrite(step, group_creates)
-            # Tables created by any branch become visible after the group.
-            will_create |= group_creates
+    # Each parallel branch starts from the same pre-group state.
+    snapshot = frozenset(will_create)
+    group_creates: set[str] = set()
+    for proc in plans:
+        proc_creates = set(snapshot)
+        _walk_process(proc, catalog, proc_creates)
+        # Merge only tables created within this branch.
+        group_creates |= proc_creates - snapshot
+    # Expose branch-created tables to subsequent sequential nodes.
+    will_create |= group_creates
+
+
+def _walk_parallel_step_group(
+    plans: tuple[StepPlan, ...],
+    catalog: TableDiscovery,
+    will_create: set[str],
+) -> None:
+    # Validate each branch against the same incoming state.
+    snapshot = frozenset(will_create)
+    group_creates: set[str] = set()
+    for step in plans:
+        _validate_step(step, catalog, set(snapshot))
+        _track_overwrite(step, group_creates)
+    # Tables created by any branch become visible after the group.
+    will_create |= group_creates
 
 
 def _validate_step(step: StepPlan, catalog: TableDiscovery, will_create: set[str]) -> None:

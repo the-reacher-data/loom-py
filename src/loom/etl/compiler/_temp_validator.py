@@ -7,13 +7,11 @@ from typing import Any
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
-    ParallelProcessGroup,
-    ParallelStepGroup,
     PipelinePlan,
-    PipelineProcessNode,
     ProcessPlan,
-    ProcessStepNode,
     StepPlan,
+    visit_pipeline_nodes,
+    visit_process_nodes,
 )
 from loom.etl.io._source import SourceKind
 
@@ -73,8 +71,11 @@ def validate_plan_temps(plan: PipelinePlan) -> None:
                              ``append=True``, or append modes are mixed.
     """
     seen: dict[str, bool] = {}  # name → is_append
-    for node in plan.nodes:
-        _walk_pipeline_node(node, seen)
+    visit_pipeline_nodes(
+        plan.nodes,
+        lambda proc: _walk_process(proc, seen),
+        on_parallel_group=lambda plans: _walk_parallel_process_group(plans, seen),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -82,37 +83,36 @@ def validate_plan_temps(plan: PipelinePlan) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _walk_pipeline_node(node: PipelineProcessNode, seen: dict[str, bool]) -> None:
-    match node:
-        case ProcessPlan():
-            _walk_process(node, seen)
-        case ParallelProcessGroup(plans=plans):
-            snapshot = dict(seen)
-            group_seen: dict[str, bool] = {}
-            for proc in plans:
-                proc_seen = dict(snapshot)
-                _walk_process(proc, proc_seen)
-                group_seen.update({k: v for k, v in proc_seen.items() if k not in snapshot})
-            seen.update(group_seen)
-
-
 def _walk_process(plan: ProcessPlan, seen: dict[str, bool]) -> None:
-    for node in plan.nodes:
-        _walk_process_node(node, seen)
+    visit_process_nodes(
+        plan.nodes,
+        lambda step: _validate_step(step, seen),
+        on_parallel_group=lambda plans: _walk_parallel_step_group(plans, seen),
+    )
 
 
-def _walk_process_node(node: ProcessStepNode, seen: dict[str, bool]) -> None:
-    match node:
-        case StepPlan():
-            _check_sources(node, seen)
-            _register_step_target(node, seen)
-        case ParallelStepGroup(plans=plans):
-            snapshot = dict(seen)
-            group_seen: dict[str, bool] = {}
-            for step in plans:
-                _check_sources(step, snapshot)
-                _register_step_target(step, group_seen)
-            seen.update(group_seen)
+def _walk_parallel_process_group(plans: tuple[ProcessPlan, ...], seen: dict[str, bool]) -> None:
+    snapshot = dict(seen)
+    group_seen: dict[str, bool] = {}
+    for proc in plans:
+        proc_seen = dict(snapshot)
+        _walk_process(proc, proc_seen)
+        group_seen.update({k: v for k, v in proc_seen.items() if k not in snapshot})
+    seen.update(group_seen)
+
+
+def _walk_parallel_step_group(plans: tuple[StepPlan, ...], seen: dict[str, bool]) -> None:
+    snapshot = dict(seen)
+    group_seen: dict[str, bool] = {}
+    for step in plans:
+        _check_sources(step, snapshot)
+        _register_step_target(step, group_seen)
+    seen.update(group_seen)
+
+
+def _validate_step(step: StepPlan, seen: dict[str, bool]) -> None:
+    _check_sources(step, seen)
+    _register_step_target(step, seen)
 
 
 # ---------------------------------------------------------------------------
