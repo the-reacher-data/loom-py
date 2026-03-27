@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +10,7 @@ import pytest
 from loom.etl.executor import (
     ETLRunObserver,
     EventName,
+    NoopRunObserver,
     PipelineRunRecord,
     RunContext,
     RunSinkObserver,
@@ -43,6 +44,7 @@ def test_run_status_values() -> None:
 @pytest.mark.parametrize(
     "observer",
     [
+        NoopRunObserver(),
         StructlogRunObserver(),
         RunSinkObserver(_NullSink()),
         StubRunObserver(),
@@ -79,6 +81,32 @@ def test_stub_observer_empty_on_init() -> None:
     assert obs.events == []
     assert obs.event_names == []
     assert obs.step_statuses == []
+
+
+def test_noop_observer_has_no_side_effects() -> None:
+    obs = NoopRunObserver()
+
+    class _PipelinePlan:
+        pipeline_type = type("Pipe", (), {})
+
+    class _ProcessPlan:
+        process_type = type("Proc", (), {})
+        nodes = ()
+
+    class _StepPlan:
+        step_type = type("Step", (), {})
+        source_bindings = ()
+        target_binding = type("TB", (), {"spec": object()})()
+        backend = "polars"
+
+    ctx = RunContext("run-1")
+    obs.on_pipeline_start(cast(Any, _PipelinePlan()), object(), ctx)
+    obs.on_process_start(cast(Any, _ProcessPlan()), ctx, "process-1")
+    obs.on_step_start(cast(Any, _StepPlan()), ctx, "step-1")
+    obs.on_step_error("step-1", RuntimeError("boom"))
+    obs.on_step_end("step-1", RunStatus.SUCCESS, 1)
+    obs.on_process_end("process-1", RunStatus.SUCCESS, 2)
+    obs.on_pipeline_end(ctx, RunStatus.SUCCESS, 3)
 
 
 def test_structlog_observer_emits_step_start() -> None:

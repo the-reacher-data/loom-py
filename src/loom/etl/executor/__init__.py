@@ -7,6 +7,7 @@ This module exposes the observer and dispatcher abstractions so users can
 compose observability pipelines without touching I/O internals:
 
 * :class:`ETLRunObserver`    — lifecycle hook protocol
+* :class:`NoopRunObserver`   — no-op implementation (zero side effects)
 * :class:`StructlogRunObserver` — structured-log implementation
 * :class:`RunSinkObserver`   — persists run records to a Delta sink
 * :class:`ParallelDispatcher` / :class:`ThreadDispatcher` — parallelism
@@ -21,6 +22,7 @@ from loom.etl.executor.observer import (
     CompositeObserver,
     ETLRunObserver,
     EventName,
+    NoopRunObserver,
     PipelineRunRecord,
     ProcessRunRecord,
     RunContext,
@@ -48,6 +50,7 @@ __all__ = [
     "StepRunRecord",
     # implementations
     "CompositeObserver",
+    "NoopRunObserver",
     "StructlogRunObserver",
     "RunSinkObserver",
     # dispatcher protocol + implementations

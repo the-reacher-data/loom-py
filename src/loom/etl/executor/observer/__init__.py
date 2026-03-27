@@ -10,6 +10,7 @@ from loom.etl.executor.observer._events import (
     RunStatus,
     StepRunRecord,
 )
+from loom.etl.executor.observer._noop import NoopRunObserver
 from loom.etl.executor.observer._protocol import ETLRunObserver
 from loom.etl.executor.observer._sink_observer import RunSinkObserver
 from loom.etl.executor.observer._structlog import StructlogRunObserver
@@ -30,6 +31,7 @@ __all__ = [
     "StepRunRecord",
     # implementations
     "CompositeObserver",
+    "NoopRunObserver",
     "StructlogRunObserver",
     "RunSinkObserver",
 ]
