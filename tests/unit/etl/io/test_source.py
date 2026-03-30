@@ -211,7 +211,11 @@ class TestSourceSet:
             orders = FromTable("raw.orders")
 
         with pytest.raises(TypeError, match="already a concrete SourceSet"):
-            type("Child", (Base,), {"customers": FromTable("raw.customers")})
+
+            class Child(Base):
+                customers = FromTable("raw.customers")
+
+            _ = Child
 
     def test_repr_lists_aliases(self) -> None:
         class OrderSources(SourceSet[object]):

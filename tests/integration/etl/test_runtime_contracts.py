@@ -258,9 +258,10 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
     cloud_spy = _spy_cleaner()
     monkeypatch.setattr(auto, "_local", local_spy)
     monkeypatch.setattr(auto, "_cloud", cloud_spy)
-    auto.delete_tree("/tmp/local")
+    local_path = str(tmp_path / "cleanup-auto-local")
+    auto.delete_tree(local_path)
     auto.delete_tree("s3://bucket/tmp")
-    assert local_spy.paths == ["/tmp/local"]
+    assert local_spy.paths == [local_path]
     assert cloud_spy.paths == ["s3://bucket/tmp"]
 
     removed: list[tuple[str, bool]] = []

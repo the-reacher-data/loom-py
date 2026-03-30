@@ -21,12 +21,6 @@ _ID_AMOUNT_SCHEMA = T.StructType(
 )
 
 
-def _persist(df: DataFrame) -> DataFrame:
-    df.cache()
-    df.count()
-    return df
-
-
 @pytest.mark.parametrize("mode", [SchemaMode.STRICT, SchemaMode.EVOLVE])
 def test_raises_schema_not_found_when_schema_is_none(mode: SchemaMode, spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
@@ -49,7 +43,9 @@ def test_strict_casts_fills_missing_and_drops_extra_columns(spark: SparkSession)
     )
     frame = spark.createDataFrame([(1, "1.5", "drop-me")], ["id", "amount", "extra"])
 
-    out = _persist(spark_apply_schema(frame, schema, SchemaMode.STRICT))
+    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out.cache()
+    out.count()
 
     assert out.columns == ["id", "amount", "label"]
     assert isinstance(out.schema["id"].dataType, T.LongType)
@@ -71,7 +67,9 @@ def test_evolve_casts_and_keeps_extra_columns(spark: SparkSession) -> None:
     )
     frame = spark.createDataFrame([(1, "2.5", "keep-me")], ["id", "amount", "extra"])
 
-    out = _persist(spark_apply_schema(frame, schema, SchemaMode.EVOLVE))
+    out = spark_apply_schema(frame, schema, SchemaMode.EVOLVE)
+    out.cache()
+    out.count()
 
     assert "extra" in out.columns
     assert isinstance(out.schema["id"].dataType, T.LongType)
@@ -116,7 +114,10 @@ def test_struct_cast_is_recursive(spark: SparkSession) -> None:
     )
     frame = spark.createDataFrame([((1, ("2",)),)], schema=input_schema)
 
-    out = _persist(spark_apply_schema(frame, schema, SchemaMode.STRICT)).select(
+    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out.cache()
+    out.count()
+    out = out.select(
         F.col("point.x").alias("x"),
         F.col("point.meta.z").alias("z"),
     )
@@ -145,7 +146,9 @@ def test_missing_struct_column_is_null_filled_recursively(spark: SparkSession) -
     )
     frame = spark.createDataFrame([(1,)], ["id"])
 
-    out = _persist(spark_apply_schema(frame, schema, SchemaMode.STRICT))
+    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out.cache()
+    out.count()
 
     assert out.collect()[0]["point"] is None
     assert isinstance(out.schema["point"].dataType, T.StructType)
@@ -160,7 +163,9 @@ def test_missing_array_column_is_null_filled_with_exact_type(spark: SparkSession
     )
     frame = spark.createDataFrame([(1,)], ["id"])
 
-    out = _persist(spark_apply_schema(frame, schema, SchemaMode.STRICT))
+    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out.cache()
+    out.count()
 
     assert out.collect()[0]["tags"] is None
     assert isinstance(out.schema["tags"].dataType, T.ArrayType)
@@ -193,13 +198,21 @@ def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type
 
 
 def test_apply_schema_passes_with_matching_frame(spark: SparkSession) -> None:
-    frame = _persist(spark.createDataFrame([(1, 1.0)], ["id", "amount"]))
+    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
+    frame.cache()
+    frame.count()
 
-    result = _persist(spark_apply_schema(frame, None, SchemaMode.OVERWRITE))
+    result = spark_apply_schema(frame, None, SchemaMode.OVERWRITE)
+    result.cache()
+    result.count()
     assert_df_equality(result, frame)
 
-    result = _persist(spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT))
+    result = spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT)
+    result.cache()
+    result.count()
     assert_df_equality(result, frame, ignore_nullable=True)
 
-    result = _persist(spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE))
+    result = spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE)
+    result.cache()
+    result.count()
     assert_df_equality(result, frame, ignore_nullable=True)
