@@ -113,7 +113,12 @@ class _FakeSparkFrame:
     __module__ = "pyspark.sql.dataframe"
 
     def __init__(self) -> None:
-        self.sparkSession = object()
+        self._spark_session = object()
+
+    def __getattr__(self, name: str) -> object:
+        if name == "sparkSession":
+            return self._spark_session
+        raise AttributeError(name)
 
 
 class _RouteStep(StepSQL[_SqlParams, object]):

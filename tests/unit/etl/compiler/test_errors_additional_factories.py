@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
@@ -62,12 +64,12 @@ def test_missing_generic_param_factory() -> None:
     ],
 )
 def test_factory_codes_and_messages(
-    factory: object,
+    factory: Callable[[], ETLCompilationError],
     code: ETLErrorCode,
     field: str | None,
     contains: str,
 ) -> None:
-    err = factory()  # type: ignore[operator]
+    err = factory()
     assert isinstance(err, ETLCompilationError)
     assert err.code is code
     assert err.field == field

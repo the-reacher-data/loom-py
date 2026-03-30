@@ -166,7 +166,7 @@ def _(node: InPred, params_instance: Any, dialect: PredicateDialect[T]) -> T:
         if isinstance(node.values, ParamExpr)
         else node.values
     )
-    values = tuple(raw_values) if isinstance(raw_values, (tuple, list)) else tuple(raw_values)
+    values = tuple(raw_values)
     ref = _term(node.ref, params_instance, dialect)
     return dialect.in_(ref, values)
 

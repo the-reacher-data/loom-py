@@ -48,7 +48,7 @@ def test_validate_step_calls_all_validators_in_order(
     ) -> None:
         assert step_type is ctx.step_type
         assert params_type is ctx.params_type
-        assert source_bindings is ctx.source_bindings
+        assert source_bindings == ctx.source_bindings
         calls.append("signature")
 
     def _validate_upsert(step_type: type[Any], spec: Any) -> None:
@@ -64,8 +64,8 @@ def test_validate_step_calls_all_validators_in_order(
     ) -> None:
         assert step_type is ctx.step_type
         assert params_type is ctx.params_type
-        assert source_bindings is ctx.source_bindings
-        assert target_binding is ctx.target_binding
+        assert source_bindings == ctx.source_bindings
+        assert target_binding == ctx.target_binding
         calls.append("params")
 
     monkeypatch.setattr(step_validator, "validate_execute_signature", _validate_signature)

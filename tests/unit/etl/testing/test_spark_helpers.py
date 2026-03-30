@@ -92,7 +92,7 @@ def test_spark_stub_reader_and_writer_store_and_return_values() -> None:
 
 def test_spark_step_runner_target_spec_guard_and_run_path(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Spark:
-        def createDataFrame(self, data: list[tuple[Any, ...]], columns: list[str]) -> Any:
+        def _create_dataframe(self, data: list[tuple[Any, ...]], columns: list[str]) -> Any:
             class _Row:
                 def __init__(self, d: dict[str, Any]) -> None:
                     self._d = d
@@ -111,6 +111,11 @@ def test_spark_step_runner_target_spec_guard_and_run_path(monkeypatch: pytest.Mo
             records = [dict(zip(columns, row, strict=True)) for row in data]
             return _Frame(records)
 
+        def __getattr__(self, name: str) -> Any:
+            if name == "createDataFrame":
+                return self._create_dataframe
+            raise AttributeError(name)
+
     runner = spark_testing.SparkStepRunner(_Spark())
     with pytest.raises(RuntimeError, match="No spec"):
         _ = runner.target_spec
@@ -120,7 +125,7 @@ def test_spark_step_runner_target_spec_guard_and_run_path(monkeypatch: pytest.Mo
     monkeypatch.setattr(spark_testing.ETLCompiler, "compile_step", lambda _self, _cls: object())
 
     def _fake_run_step(self: Any, _plan: Any, _params: Any) -> None:
-        frame = _Spark().createDataFrame([(1, 20.0)], ["id", "amount"])
+        frame = _Spark()._create_dataframe([(1, 20.0)], ["id", "amount"])
         writer = self._writer
         writer.write(frame, ReplaceSpec(table_ref=TableRef("staging.out")), None)
 
@@ -135,8 +140,17 @@ def test_spark_step_runner_raises_when_step_produces_no_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Spark:
-        def createDataFrame(self, data: list[tuple[Any, ...]], columns: list[str]) -> Any:  # noqa: ARG002
+        def _create_dataframe(
+            self,
+            data: list[tuple[Any, ...]],
+            columns: list[str],  # noqa: ARG002
+        ) -> Any:
             return object()
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "createDataFrame":
+                return self._create_dataframe
+            raise AttributeError(name)
 
     runner = spark_testing.SparkStepRunner(_Spark()).seed("raw.orders", [(1,)], ["id"])
     monkeypatch.setattr(spark_testing.ETLCompiler, "compile_step", lambda _self, _cls: object())
