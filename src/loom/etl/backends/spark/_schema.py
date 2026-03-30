@@ -1,110 +1,131 @@
-"""spark_apply_schema — frame validation and evolution for PySpark DataFrames.
+"""spark_apply_schema — conform a PySpark DataFrame to the destination table's native schema.
 
 Same STRICT / EVOLVE / OVERWRITE semantics as the Polars backend but
-operating on ``pyspark.sql.DataFrame`` instead of ``pl.LazyFrame``.
+operating on ``pyspark.sql.DataFrame`` with native PySpark ``StructType``.
 
 See :mod:`loom.etl.backends.polars._schema` for the full rules table.
+
+StructType — field-by-field casting
+-------------------------------------
+For :class:`~pyspark.sql.types.StructType` columns the cast uses Spark dot
+notation (``F.col("parent.field")``) to access each nested field, then
+reconstructs the struct with ``F.struct([...])``.  This correctly handles
+arbitrarily nested structures such as ``Struct[Struct[...]]`` at any depth.
+All other types delegate to ``F.col(col_ref).cast(dtype)`` directly —
+PySpark preserves full type parameters including inner element types and
+precision.
 """
 
 from __future__ import annotations
 
-from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
+import logging
 
-from loom.etl.backends.spark._dtype import loom_type_to_spark, spark_to_loom
+from pyspark.sql import Column, DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql import types as T
+
 from loom.etl.io._target import SchemaMode
-from loom.etl.schema._schema import ColumnSchema, SchemaError, SchemaNotFoundError
+from loom.etl.schema._schema import SchemaNotFoundError
+
+_log = logging.getLogger(__name__)
+
+__all__ = ["spark_apply_schema", "SchemaNotFoundError"]
 
 
 def spark_apply_schema(
     frame: DataFrame,
-    schema: tuple[ColumnSchema, ...] | None,
+    schema: T.StructType | None,
     mode: SchemaMode,
 ) -> DataFrame:
-    """Validate or evolve *frame* against the registered table *schema*.
+    """Conform *frame* to the destination table's *schema* according to *mode*.
 
     Args:
         frame:  Spark DataFrame produced by the step's ``execute()``.
-        schema: Registered table schema from the catalog.  Must not be
-                ``None`` — pre-register via ``catalog.update_schema`` before
-                the first write.
+        schema: Destination table's native PySpark StructType schema.  May be
+                ``None`` only when *mode* is ``OVERWRITE``.
         mode:   Schema enforcement strategy.
 
     Returns:
-        The original frame (STRICT / compatible EVOLVE), or the frame
-        extended with typed-null columns for schema columns absent from
-        the frame (EVOLVE).  OVERWRITE returns the frame unchanged.
+        Frame with columns cast to destination types.  ``STRICT`` additionally
+        drops columns absent from *schema* and selects in schema order.
+        ``EVOLVE`` keeps extra frame columns unchanged.
+        ``OVERWRITE`` returns the frame unchanged.
 
     Raises:
-        SchemaNotFoundError: When *schema* is ``None`` for any mode.
-        SchemaError:         When the frame violates schema constraints.
+        SchemaNotFoundError: When *schema* is ``None`` and *mode* is not
+                             ``OVERWRITE`` (table does not yet exist).
     """
-    if schema is None:
-        raise SchemaNotFoundError(
-            "No schema registered for this table. "
-            "Register the schema via catalog.update_schema() before the first write."
-        )
-
     if mode is SchemaMode.OVERWRITE:
         return frame
 
+    if schema is None:
+        raise SchemaNotFoundError(
+            "Destination table does not yet exist. "
+            "Write with SchemaMode.OVERWRITE to create it on first run."
+        )
+
+    frame_cols = set(frame.columns)
+    present = [f for f in schema.fields if f.name in frame_cols]
+    missing = [f for f in schema.fields if f.name not in frame_cols]
+
+    _log.debug(
+        "spark_apply_schema mode=%s present=%d missing=%d",
+        mode,
+        len(present),
+        len(missing),
+    )
+
+    for field in present:
+        frame = frame.withColumn(field.name, _cast_col(field.name, field.dataType))
+
+    for field in missing:
+        frame = frame.withColumn(field.name, _null_col(field.dataType))
+
     if mode is SchemaMode.STRICT:
-        return _strict(frame, schema)
-    return _evolve(frame, schema)
+        frame = frame.select([f.name for f in schema.fields])
 
-
-# ---------------------------------------------------------------------------
-# Internal per-mode helpers
-# ---------------------------------------------------------------------------
-
-
-def _strict(frame: DataFrame, schema: tuple[ColumnSchema, ...]) -> DataFrame:
-    schema_names = {col.name for col in schema}
-    frame_names = set(frame.columns)
-
-    extra = frame_names - schema_names
-    if extra:
-        raise SchemaError(
-            f"STRICT: frame contains columns not in the registered schema: {sorted(extra)}"
-        )
-
-    missing = schema_names - frame_names
-    if missing:
-        raise SchemaError(
-            f"STRICT: frame is missing columns required by the registered schema: {sorted(missing)}"
-        )
-
-    _validate_types(frame, schema)
     return frame
 
 
-def _evolve(frame: DataFrame, schema: tuple[ColumnSchema, ...]) -> DataFrame:
-    frame_names = set(frame.columns)
-    _validate_types(frame, schema, allow_missing=True)
-
-    missing = [col for col in schema if col.name not in frame_names]
-    if not missing:
-        return frame
-
-    null_cols = [F.lit(None).cast(loom_type_to_spark(col.dtype)).alias(col.name) for col in missing]
-    return frame.withColumns({col.name: expr for col, expr in zip(missing, null_cols, strict=True)})
+# ---------------------------------------------------------------------------
+# Cast column builder
+# ---------------------------------------------------------------------------
 
 
-def _validate_types(
-    frame: DataFrame,
-    schema: tuple[ColumnSchema, ...],
-    *,
-    allow_missing: bool = False,
-) -> None:
-    frame_schema = {f.name: f.dataType for f in frame.schema.fields}
+def _cast_col(col_ref: str, dtype: T.DataType) -> Column:
+    """Recursively cast the column at *col_ref* to *dtype*.
 
-    for col in schema:
-        spark_dtype = frame_schema.get(col.name)
-        if spark_dtype is None:
-            if not allow_missing:
-                raise SchemaError(f"column '{col.name}' is missing from the frame")
-            continue
+    For :class:`~pyspark.sql.types.StructType` accesses each field via Spark
+    dot notation and reconstructs the struct so that nested types are handled
+    correctly at any depth.  All other types delegate to
+    ``F.col(col_ref).cast(dtype)`` directly.
 
-        actual_loom = spark_to_loom(spark_dtype)
-        if actual_loom is not col.dtype:
-            raise SchemaError(f"column '{col.name}': expected {col.dtype!r}, got {actual_loom!r}")
+    Args:
+        col_ref: Dot-notation column reference (e.g. ``"address"`` or
+                 ``"address.point"`` for nested access).
+        dtype:   Target PySpark DataType.
+
+    Returns:
+        Spark Column expression with the cast applied.
+    """
+    if isinstance(dtype, T.StructType):
+        field_exprs = [
+            _cast_col(f"{col_ref}.{f.name}", f.dataType).alias(f.name) for f in dtype.fields
+        ]
+        return F.struct(field_exprs)
+    return F.col(col_ref).cast(dtype)
+
+
+# ---------------------------------------------------------------------------
+# Null column builder
+# ---------------------------------------------------------------------------
+
+
+def _null_col(dtype: T.DataType) -> Column:
+    """Return a typed-null Spark Column expression for *dtype*.
+
+    Delegates to ``F.lit(None).cast(dtype)`` for all types — PySpark preserves
+    exact type parameters and produces a null value of the correct dtype,
+    including null structs and null arrays.
+    """
+    return F.lit(None).cast(dtype)

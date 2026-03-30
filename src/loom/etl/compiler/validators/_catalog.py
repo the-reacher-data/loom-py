@@ -12,7 +12,42 @@ from loom.etl.compiler._plan import (
 )
 from loom.etl.io._source import SourceKind
 from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    ReplaceWhereSpec,
+    UpsertSpec,
+)
 from loom.etl.storage._io import TableDiscovery
+
+_TABLE_SPEC_TYPES = (AppendSpec, ReplaceSpec, ReplacePartitionsSpec, ReplaceWhereSpec, UpsertSpec)
+
+
+def validate_step_catalog(plan: StepPlan, catalog: TableDiscovery) -> None:
+    """Validate a single step's sources and target against the catalog.
+
+    Args:
+        plan:    Compiled step plan.
+        catalog: Table discovery implementation.
+
+    Raises:
+        ETLCompilationError: When a source or target table is not found.
+    """
+    _validate_step(plan, catalog, set())
+
+
+def validate_process_catalog(plan: ProcessPlan, catalog: TableDiscovery) -> None:
+    """Validate all steps in a process against the catalog.
+
+    Args:
+        plan:    Compiled process plan.
+        catalog: Table discovery implementation.
+
+    Raises:
+        ETLCompilationError: When a source or target table is not found.
+    """
+    _walk_process(plan, catalog, set())
 
 
 def validate_plan_catalog(plan: PipelinePlan, catalog: TableDiscovery) -> None:
@@ -103,9 +138,10 @@ def _check_sources(step: StepPlan, catalog: TableDiscovery, will_create: set[str
 
 def _check_target(step: StepPlan, catalog: TableDiscovery, will_create: set[str]) -> None:
     spec = step.target_binding.spec
+    if not isinstance(spec, _TABLE_SPEC_TYPES):
+        return
     if (
-        spec.table_ref is not None
-        and spec.schema_mode is not SchemaMode.OVERWRITE
+        spec.schema_mode is not SchemaMode.OVERWRITE
         and spec.table_ref.ref not in will_create
         and not catalog.exists(spec.table_ref)
     ):
@@ -114,5 +150,5 @@ def _check_target(step: StepPlan, catalog: TableDiscovery, will_create: set[str]
 
 def _track_overwrite(step: StepPlan, will_create: set[str]) -> None:
     spec = step.target_binding.spec
-    if spec.table_ref is not None and spec.schema_mode is SchemaMode.OVERWRITE:
+    if isinstance(spec, _TABLE_SPEC_TYPES) and spec.schema_mode is SchemaMode.OVERWRITE:
         will_create.add(spec.table_ref.ref)

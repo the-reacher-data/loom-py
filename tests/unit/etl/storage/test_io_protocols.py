@@ -6,7 +6,8 @@ import pytest
 
 from loom.etl.io._format import Format
 from loom.etl.io._source import SourceKind, SourceSpec
-from loom.etl.io._target import TargetSpec, WriteMode
+from loom.etl.io.target import TargetSpec
+from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
@@ -24,11 +25,7 @@ def _make_source_spec(alias: str) -> SourceSpec:
 
 
 def _make_target_spec() -> TargetSpec:
-    return TargetSpec(
-        mode=WriteMode.REPLACE,
-        format=Format.DELTA,
-        table_ref=TableRef("staging.out"),
-    )
+    return ReplaceSpec(table_ref=TableRef("staging.out"))
 
 
 @pytest.mark.parametrize(
@@ -94,3 +91,16 @@ def test_stub_target_writer_captures_writes_in_order(n_writes: int) -> None:
 
 def test_stub_target_writer_satisfies_protocol() -> None:
     assert isinstance(StubTargetWriter(), TargetWriter)
+
+
+def test_protocol_stub_bodies_execute_without_errors() -> None:
+    spec = _make_source_spec("orders")
+    target = _make_target_spec()
+    ref = TableRef("raw.orders")
+
+    assert TableDiscovery.exists(object(), ref) is None
+    assert TableDiscovery.columns(object(), ref) is None
+    assert TableDiscovery.schema(object(), ref) is None
+    assert TableDiscovery.update_schema(object(), ref, ()) is None
+    assert SourceReader.read(object(), spec, None) is None
+    assert TargetWriter.write(object(), object(), target, None) is None

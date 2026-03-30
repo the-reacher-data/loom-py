@@ -27,6 +27,7 @@ from pyspark.sql import functions as F
 
 from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.io._source import JsonColumnSpec, SourceSpec
+from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage._locator import TableLocator, _as_locator
 
 _log = logging.getLogger(__name__)
@@ -96,9 +97,38 @@ class SparkDeltaReader:
             loc = self._locator.locate(spec.table_ref)
             df = self._spark.read.format("delta").load(loc.uri)
         if spec.columns:
-            _log.debug("read spark table=%s columns=%d", spec.table_ref.ref, len(spec.columns))
+            _log.debug(
+                "read spark table=%s columns=%d schema_cols=%d",
+                spec.table_ref.ref,
+                len(spec.columns),
+                len(spec.schema),
+            )
             df = df.select(list(spec.columns))
+        df = _apply_source_schema_spark(df, spec.schema)
         return _apply_json_decode_spark(df, spec.json_columns)
+
+
+def _apply_source_schema_spark(df: DataFrame, schema: tuple[ColumnSchema, ...]) -> DataFrame:
+    """Cast declared source columns to their Spark type equivalents.
+
+    Only columns declared in *schema* are cast; all other columns pass
+    through unchanged.  The cast is applied lazily — no Spark action is
+    triggered.
+
+    Args:
+        df:     Source DataFrame.
+        schema: Tuple of :class:`~loom.etl.schema._schema.ColumnSchema` entries
+                declared via ``.with_schema()`` on the source spec.
+
+    Returns:
+        Original DataFrame when *schema* is empty; otherwise a new DataFrame
+        with ``withColumn`` cast expressions for the declared columns.
+    """
+    if not schema:
+        return df
+    for col in schema:
+        df = df.withColumn(col.name, F.col(col.name).cast(loom_type_to_spark(col.dtype)))
+    return df
 
 
 def _apply_json_decode_spark(df: DataFrame, json_columns: tuple[JsonColumnSpec, ...]) -> DataFrame:

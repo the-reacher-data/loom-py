@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from loom.etl.io._source import SourceSpec
-from loom.etl.io._target import TargetSpec
+from loom.etl.io.target import TargetSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
 

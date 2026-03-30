@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from loom.etl.compiler._errors import ETLCompilationError
-from loom.etl.io._target import TargetSpec, WriteMode
+from loom.etl.io.target import TargetSpec, UpsertSpec
 
 
 def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
@@ -19,24 +19,24 @@ def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
         ETLCompilationError: When upsert_keys is empty, exclude and include
                              are both set, or exclude overlaps with upsert_keys.
     """
-    if spec.mode is not WriteMode.UPSERT:
+    if not isinstance(spec, UpsertSpec):
         return
     _check_upsert_keys_non_empty(step_type, spec)
     _check_upsert_exclude_include_exclusive(step_type, spec)
     _check_upsert_exclude_keys_disjoint(step_type, spec)
 
 
-def _check_upsert_keys_non_empty(step_type: type[Any], spec: TargetSpec) -> None:
+def _check_upsert_keys_non_empty(step_type: type[Any], spec: UpsertSpec) -> None:
     if not spec.upsert_keys:
         raise ETLCompilationError.upsert_no_keys(step_type)
 
 
-def _check_upsert_exclude_include_exclusive(step_type: type[Any], spec: TargetSpec) -> None:
+def _check_upsert_exclude_include_exclusive(step_type: type[Any], spec: UpsertSpec) -> None:
     if spec.upsert_exclude and spec.upsert_include:
         raise ETLCompilationError.upsert_exclude_include_conflict(step_type)
 
 
-def _check_upsert_exclude_keys_disjoint(step_type: type[Any], spec: TargetSpec) -> None:
+def _check_upsert_exclude_keys_disjoint(step_type: type[Any], spec: UpsertSpec) -> None:
     overlap = frozenset(spec.upsert_exclude) & frozenset(spec.upsert_keys)
     if overlap:
         raise ETLCompilationError.upsert_key_in_exclude(step_type, overlap)

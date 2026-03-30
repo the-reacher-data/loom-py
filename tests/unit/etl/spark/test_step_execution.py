@@ -15,7 +15,8 @@ from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.io._format import Format
 from loom.etl.io._source import SourceKind, SourceSpec
-from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl.io._target import SchemaMode
+from loom.etl.io.target._file import FileSpec
 from loom.etl.schema._schema import LoomDtype, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
@@ -274,7 +275,7 @@ class TestSparkReaderWriterTypeGuards:
                 spark_reader.read(spec, None)
             return
 
-        spec = TargetSpec(mode=WriteMode.REPLACE, format=Format.CSV, path="s3://bucket/out.csv")
+        spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
         frame = spark.createDataFrame([(1,)], ["id"])
-        with pytest.raises(TypeError, match="FILE"):
+        with pytest.raises(TypeError, match="TABLE targets"):
             spark_writer.write(frame, spec, None)

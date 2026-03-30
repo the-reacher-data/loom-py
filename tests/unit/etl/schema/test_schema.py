@@ -6,7 +6,13 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io._target import IntoTable, SchemaMode, WriteMode
+from loom.etl.io._target import IntoTable, SchemaMode
+from loom.etl.io.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    UpsertSpec,
+)
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubCatalog
@@ -86,24 +92,24 @@ class TestSchemaModeAndIntoTable:
         assert SchemaMode.OVERWRITE.value == "overwrite"
 
     @pytest.mark.parametrize(
-        "build,expected_mode,expected_schema",
+        "build,expected_type,expected_schema",
         [
-            (lambda t: t.replace(), WriteMode.REPLACE, SchemaMode.STRICT),
-            (lambda t: t.replace(schema=SchemaMode.EVOLVE), WriteMode.REPLACE, SchemaMode.EVOLVE),
+            (lambda t: t.replace(), ReplaceSpec, SchemaMode.STRICT),
+            (lambda t: t.replace(schema=SchemaMode.EVOLVE), ReplaceSpec, SchemaMode.EVOLVE),
             (
                 lambda t: t.replace(schema=SchemaMode.OVERWRITE),
-                WriteMode.REPLACE,
+                ReplaceSpec,
                 SchemaMode.OVERWRITE,
             ),
-            (lambda t: t.append(schema=SchemaMode.EVOLVE), WriteMode.APPEND, SchemaMode.EVOLVE),
+            (lambda t: t.append(schema=SchemaMode.EVOLVE), AppendSpec, SchemaMode.EVOLVE),
             (
                 lambda t: t.replace_partitions("year", schema=SchemaMode.EVOLVE),
-                WriteMode.REPLACE_PARTITIONS,
+                ReplacePartitionsSpec,
                 SchemaMode.EVOLVE,
             ),
             (
                 lambda t: t.upsert(keys=("order_id",), schema=SchemaMode.EVOLVE),
-                WriteMode.UPSERT,
+                UpsertSpec,
                 SchemaMode.EVOLVE,
             ),
         ],
@@ -111,11 +117,11 @@ class TestSchemaModeAndIntoTable:
     def test_into_table_write_and_schema_modes(
         self,
         build: Callable[[IntoTable], IntoTable],
-        expected_mode: WriteMode,
+        expected_type: type,
         expected_schema: SchemaMode,
     ) -> None:
         spec = build(IntoTable("staging.orders"))._to_spec()
-        assert spec.mode is expected_mode
+        assert isinstance(spec, expected_type)
         assert spec.schema_mode is expected_schema
 
     def test_into_table_mode_calls_are_immutable(self) -> None:

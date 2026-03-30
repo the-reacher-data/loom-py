@@ -120,7 +120,7 @@ class DbutilsTempCleaner:
 
     Use this cleaner when ``tmp_root`` is a ``dbfs:/`` path and ``fsspec``
     cannot reach it.  Pass the ``dbutils`` object injected by the Databricks
-    runtime (notebook global or retrieved from :pypi:`databricks-sdk`).
+    runtime (notebook global or retrieved from ``databricks-sdk``).
 
     Args:
         dbutils: The Databricks ``dbutils`` object.

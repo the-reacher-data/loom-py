@@ -51,6 +51,9 @@ import time
 import uuid
 from typing import Any, Protocol, runtime_checkable
 
+import fsspec.core
+import polars as pl
+
 from loom.etl.temp._cleaners import AutoTempCleaner, TempCleaner, _is_cloud_path
 from loom.etl.temp._scope import TempScope
 
@@ -88,12 +91,14 @@ class _PolarsTempBackend:
 
     def probe(self, name: str, base: str) -> Any | None:
         """Return a ``LazyFrame`` scanning *name* under *base*, or ``None`` if absent."""
-        import polars as pl
-
-        scan_path = _find_arrow(name, base)
+        scan_path = self._find_arrow(name, base)
         if scan_path is None:
             return None
-        return pl.scan_ipc(scan_path, memory_map=True)
+        cloud = _is_cloud_path(base)
+        kwargs: dict[str, Any] = {"memory_map": not cloud}
+        if self._storage_options:
+            kwargs["storage_options"] = self._storage_options
+        return pl.scan_ipc(scan_path, **kwargs)
 
     def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
         """Sink *data* as Arrow IPC under *base*.
@@ -113,6 +118,28 @@ class _PolarsTempBackend:
         if self._storage_options:
             kwargs["storage_options"] = self._storage_options
         data.sink_ipc(path, **kwargs)
+
+    def _find_arrow(self, name: str, base: str) -> str | None:
+        """Return the scan path for *name* under *base*, or ``None`` if absent.
+
+        For cloud URIs uses ``fsspec`` to check existence — ``os.path`` only
+        works on local filesystems.  For local paths falls back to the standard
+        ``os.path.exists`` / ``os.path.isdir`` checks.
+        """
+        single = _arrow_path(name, base)
+        directory = f"{base}/{name}"
+        if _is_cloud_path(base):
+            fs, base_path = fsspec.core.url_to_fs(base, **(self._storage_options or {}))
+            if fs.exists(f"{base_path}/{name}.arrow"):
+                return single
+            if fs.isdir(f"{base_path}/{name}"):
+                return f"{directory}/*.arrow"
+            return None
+        if os.path.exists(single):
+            return single
+        if os.path.isdir(directory):
+            return f"{directory}/*.arrow"
+        return None
 
 
 class _SparkTempBackend:
@@ -381,22 +408,6 @@ def _arrow_part(name: str, base: str) -> str:
     return f"{base}/{name}/{uuid.uuid4().hex}.arrow"
 
 
-def _find_arrow(name: str, base: str) -> str | None:
-    """Return the scan path for *name* under *base*, or ``None`` if absent.
-
-    Checks the single-file path first (strict write), then the directory
-    (append fan-in).  Returns a glob pattern for directories so that
-    ``polars.scan_ipc`` picks up all parts in one call.
-    """
-    single = _arrow_path(name, base)
-    if os.path.exists(single):
-        return single
-    directory = f"{base}/{name}"
-    if os.path.isdir(directory):
-        return f"{directory}/*.arrow"
-    return None
-
-
 def _probe_spark(spark: Any, path: str) -> Any | None:
     """Read a Parquet path via *spark*; return ``None`` when the path does not exist.
 
@@ -415,6 +426,8 @@ def _probe_spark(spark: Any, path: str) -> Any | None:
 
 
 def _ensure_parent(path: str) -> None:
+    if _is_cloud_path(path):
+        return  # object stores create key prefixes implicitly on write
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)

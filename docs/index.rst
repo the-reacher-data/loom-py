@@ -46,6 +46,7 @@ Companion demo application:
    :maxdepth: 2
    :caption: Guides
 
+   guides/etl
    guides/autocrud
    guides/quickstart
    examples-repo/index

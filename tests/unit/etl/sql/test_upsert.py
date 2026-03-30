@@ -6,8 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io._format import Format
-from loom.etl.io._target import TargetSpec, WriteMode
+from loom.etl.io.target._table import UpsertSpec
 from loom.etl.schema._table import TableRef
 from loom.etl.sql._upsert import (
     SOURCE_ALIAS,
@@ -27,10 +26,8 @@ def _upsert_spec(
     partition_cols: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
     include: tuple[str, ...] = (),
-) -> TargetSpec:
-    return TargetSpec(
-        mode=WriteMode.UPSERT,
-        format=Format.DELTA,
+) -> UpsertSpec:
+    return UpsertSpec(
         table_ref=TableRef("test.table"),
         upsert_keys=keys,
         partition_cols=partition_cols,
@@ -182,7 +179,7 @@ class TestUpsertUpdateCols:
     )
     def test_build_upsert_update_cols(
         self,
-        spec: TargetSpec,
+        spec: UpsertSpec,
         columns: tuple[str, ...],
         expected: tuple[str, ...],
     ) -> None:

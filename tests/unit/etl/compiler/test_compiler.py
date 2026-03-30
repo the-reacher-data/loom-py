@@ -17,7 +17,6 @@ from loom.etl import (
     Sources,
 )
 from loom.etl.compiler import (
-    Backend,
     ETLCompilationError,
     ETLCompiler,
     ParallelProcessGroup,
@@ -303,12 +302,12 @@ class PipelineAfterParallelCreate(ETLPipeline[RunParams]):
 
 class TestCompileStep:
     @pytest.mark.parametrize(
-        "step_type,expected_aliases,target_ref,expected_backend",
+        "step_type,expected_aliases,target_ref",
         [
-            (ExtractStep, {"orders"}, "staging.orders", Backend.UNKNOWN),
-            (AggStep, {"enriched_a", "enriched_b"}, "mart.summary", Backend.UNKNOWN),
-            (NoSourceStep, set(), "staging.calendar", Backend.UNKNOWN),
-            (UntypedStep, {"orders"}, "staging.x", Backend.UNKNOWN),
+            (ExtractStep, {"orders"}, "staging.orders"),
+            (AggStep, {"enriched_a", "enriched_b"}, "mart.summary"),
+            (NoSourceStep, set(), "staging.calendar"),
+            (UntypedStep, {"orders"}, "staging.x"),
         ],
     )
     def test_compile_step_shape(
@@ -316,7 +315,6 @@ class TestCompileStep:
         step_type: type[ETLStep[RunParams]],
         expected_aliases: set[str],
         target_ref: str,
-        expected_backend: Backend,
     ) -> None:
         plan = ETLCompiler().compile_step(step_type)
         assert plan.step_type is step_type
@@ -324,7 +322,6 @@ class TestCompileStep:
         assert {binding.alias for binding in plan.source_bindings} == expected_aliases
         assert plan.target_binding.spec.table_ref is not None
         assert plan.target_binding.spec.table_ref.ref == target_ref
-        assert plan.backend is expected_backend
 
     def test_compile_step_is_cached(self) -> None:
         compiler = ETLCompiler()
@@ -469,6 +466,7 @@ class TestCatalogValidation:
 
 
 class TestDetectBackend:
-    def test_unresolvable_annotation_yields_unknown_backend(self) -> None:
+    def test_unresolvable_annotation_compiles_without_error(self) -> None:
+        # Backend is not tracked — unresolvable annotations are irrelevant.
         plan = ETLCompiler().compile_step(_UnresolvableReturnStep)
-        assert plan.backend is Backend.UNKNOWN
+        assert plan.step_type is _UnresolvableReturnStep

@@ -66,10 +66,9 @@ def spark_reader(spark: SparkSession, spark_root: Path) -> SparkDeltaReader:
 def spark_writer(
     spark: SparkSession,
     spark_root: Path,
-    spark_catalog: DeltaCatalog,
 ) -> SparkDeltaWriter:
-    """SparkDeltaWriter pointing at spark_root, backed by spark_catalog."""
-    return SparkDeltaWriter(spark, spark_root, spark_catalog)
+    """SparkDeltaWriter pointing at spark_root."""
+    return SparkDeltaWriter(spark, spark_root)
 
 
 def spark_table_path(root: Path, ref: TableRef) -> Path:

@@ -6,10 +6,12 @@ import logging
 import os
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec
-from pyspark.sql import SparkSession
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ETLRunObserver, ParallelDispatcher

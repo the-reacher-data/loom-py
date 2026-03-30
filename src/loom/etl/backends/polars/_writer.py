@@ -1,8 +1,8 @@
 """PolarsDeltaWriter — TargetWriter backed by Polars + delta-rs.
 
 Enforces schema validation/evolution via ``apply_schema`` before each write.
-The catalog is used to look up the registered schema and is updated after
-a successful write so subsequent steps see the current state.
+The existing schema is read directly from the Delta transaction log —
+no external catalog is consulted or updated.
 
 OVERWRITE mode is the sole exception to the "schema must be registered" rule:
 the table and its schema are created from the frame on first write, which
@@ -21,18 +21,24 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
 from typing import Any
 
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl.backends.polars._dtype import polars_to_loom
 from loom.etl.backends.polars._schema import apply_schema
 from loom.etl.io._format import Format as _Format
-from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
+from loom.etl.io._target import SchemaMode
 from loom.etl.io._write_options import CsvWriteOptions, ParquetWriteOptions
-from loom.etl.schema._schema import ColumnSchema
+from loom.etl.io.target import TargetSpec
+from loom.etl.io.target._file import FileSpec
+from loom.etl.io.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    ReplaceWhereSpec,
+    UpsertSpec,
+)
 from loom.etl.schema._table import TableRef
 from loom.etl.sql._predicate_sql import predicate_to_sql
 from loom.etl.sql._upsert import (
@@ -46,7 +52,6 @@ from loom.etl.sql._upsert import (
     _log_partition_combos,
     _warn_no_partition_cols,
 )
-from loom.etl.storage._io import TableDiscovery
 from loom.etl.storage._locator import TableLocation, TableLocator, _as_locator
 
 _log = logging.getLogger(__name__)
@@ -58,8 +63,8 @@ class PolarsDeltaWriter:
     Implements :class:`~loom.etl._io.TargetWriter`.
 
     Validates or evolves the frame schema via :func:`~loom.etl.backends.polars._schema.apply_schema`
-    before each write, then updates the catalog so later steps see the evolved
-    schema.
+    before each write.  The Delta transaction log is the authoritative schema
+    store — no explicit catalog update is needed after a successful write.
 
     OVERWRITE mode is the only mode that may create a new table from scratch
     — the caller explicitly accepts whatever schema the frame carries.
@@ -73,113 +78,123 @@ class PolarsDeltaWriter:
 
     Example::
 
-        from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaWriter
+        from loom.etl.backends.polars import PolarsDeltaWriter
 
-        # Simple — plain URI shared by catalog and writer
-        catalog = DeltaCatalog("s3://my-lake/")
-        writer  = PolarsDeltaWriter("s3://my-lake/", catalog)
+        writer = PolarsDeltaWriter("s3://my-lake/")
         writer.write(frame, spec, params)
     """
 
-    def __init__(
-        self, locator: str | os.PathLike[str] | TableLocator, catalog: TableDiscovery
-    ) -> None:
+    def __init__(self, locator: str | os.PathLike[str] | TableLocator) -> None:
         self._locator = _as_locator(locator)
-        self._catalog = catalog
 
     def write(self, frame: pl.LazyFrame, spec: TargetSpec, params_instance: Any) -> None:
         """Validate schema and write the frame to the declared target.
 
-        Dispatches to Delta or file writing based on ``spec.table_ref`` /
-        ``spec.path``.
-
         Args:
             frame:           Lazy frame produced by the step's ``execute()``.
-            spec:            Compiled target spec (mode, table_ref/path,
-                             schema_mode, write_options, …).
+            spec:            Compiled target spec variant.
             params_instance: Concrete params for predicate resolution.
 
         Raises:
             SchemaNotFoundError: When the table has no registered schema and
                                  mode is not OVERWRITE.
             SchemaError:         When the frame violates the registered schema.
-            TypeError:           If spec has neither ``table_ref`` nor ``path``.
+            TypeError:           If an unsupported spec type is received.
         """
-        if spec.table_ref is not None:
+        if isinstance(spec, UpsertSpec):
+            self._write_upsert_delta(frame, spec)
+        elif isinstance(spec, (AppendSpec, ReplaceSpec, ReplacePartitionsSpec, ReplaceWhereSpec)):
             self._write_delta(frame, spec, params_instance)
-        elif spec.path is not None:
+        elif isinstance(spec, FileSpec):
             self._write_file(frame, spec)
         else:
-            raise TypeError(f"PolarsDeltaWriter: spec has neither table_ref nor path: {spec}")
+            raise TypeError(f"PolarsDeltaWriter: unsupported spec type: {type(spec)!r}")
 
-    def _write_delta(self, frame: pl.LazyFrame, spec: TargetSpec, params_instance: Any) -> None:
+    def _write_delta(
+        self,
+        frame: pl.LazyFrame,
+        spec: AppendSpec | ReplaceSpec | ReplacePartitionsSpec | ReplaceWhereSpec,
+        params_instance: Any,
+    ) -> None:
         table_ref = spec.table_ref
-        if table_ref is None:
-            raise TypeError("table_ref must be set for Delta write operations")
         _log.debug(
-            "write delta table=%s mode=%s schema_mode=%s",
+            "write delta table=%s schema_mode=%s",
             table_ref.ref,
-            spec.mode,
             spec.schema_mode,
         )
-        existing_schema = self._catalog.schema(table_ref)
-
-        if spec.mode is WriteMode.UPSERT:
-            self._write_upsert_delta(frame, spec, existing_schema)
-            return
+        existing_schema = _native_polars_schema(self._locator, table_ref)
 
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
             _log.debug("write delta new table table=%s (no prior schema, OVERWRITE)", table_ref.ref)
             self._write_frame(frame.collect(), spec, params_instance)
-            self._register_schema(table_ref, frame)
             return
 
         validated = apply_schema(frame, existing_schema, spec.schema_mode)
         self._write_frame(validated.collect(), spec, params_instance)
-        self._register_schema(table_ref, validated)
 
-    def _write_upsert_delta(
-        self,
-        frame: pl.LazyFrame,
-        spec: TargetSpec,
-        existing_schema: Any,
-    ) -> None:
+    def _write_upsert_delta(self, frame: pl.LazyFrame, spec: UpsertSpec) -> None:
         table_ref = spec.table_ref
-        if table_ref is None:
-            raise TypeError("table_ref must be set for UPSERT write operations")
+        existing_schema = _native_polars_schema(self._locator, table_ref)
+
         if existing_schema is None:
             _log.debug("upsert delta first run — creating table=%s", table_ref.ref)
             loc = self._locator.locate(table_ref)
             _first_run_overwrite_polars(loc, frame.collect())
-            self._register_schema(table_ref, frame)
             return
 
         validated = apply_schema(frame, existing_schema, spec.schema_mode)
         df = validated.collect()
         loc = self._locator.locate(table_ref)
         _merge_polars(loc, df, spec)
-        self._register_schema(table_ref, validated)
 
-    def _write_file(self, frame: pl.LazyFrame, spec: TargetSpec) -> None:
-        if spec.path is None:
-            raise TypeError("path must be set for file write operations")
+    def _write_file(self, frame: pl.LazyFrame, spec: FileSpec) -> None:
         _log.debug("write file path=%s format=%s", spec.path, spec.format)
         _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
 
-    def _write_frame(self, df: pl.DataFrame, spec: TargetSpec, params_instance: Any) -> None:
-        if spec.table_ref is None:
-            raise TypeError("table_ref must be set for Delta write operations")
+    def _write_frame(
+        self,
+        df: pl.DataFrame,
+        spec: AppendSpec | ReplaceSpec | ReplacePartitionsSpec | ReplaceWhereSpec,
+        params_instance: Any,
+    ) -> None:
         loc = self._locator.locate(spec.table_ref)
-        _MODE_WRITERS[spec.mode](loc, df, spec, params_instance)
+        match spec:
+            case AppendSpec():
+                write_deltalake(loc.uri, df.to_arrow(), mode="append", **_write_kwargs(loc))
+            case ReplaceSpec():
+                write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **_write_kwargs(loc))
+            case ReplacePartitionsSpec():
+                _write_replace_partitions(loc, df, spec)
+            case ReplaceWhereSpec():
+                _write_replace_where(loc, df, spec, params_instance)
 
-    def _register_schema(self, ref: TableRef, frame: pl.LazyFrame) -> None:
-        """Update the catalog schema from the frame's collect_schema()."""
-        polars_schema = frame.collect_schema()
-        schema = tuple(
-            ColumnSchema(name=name, dtype=polars_to_loom(dtype))
-            for name, dtype in polars_schema.items()
-        )
-        self._catalog.update_schema(ref, schema)
+
+def _native_polars_schema(locator: TableLocator, ref: TableRef) -> pl.Schema | None:
+    """Return the native Polars schema for the Delta table at *ref*, or ``None``.
+
+    Reads the Delta transaction log via delta-rs and converts the PyArrow
+    schema to a Polars schema without any intermediate LoomType conversion.
+    Returns ``None`` when the table does not yet exist.
+
+    Args:
+        locator: Resolves the logical table reference to a physical URI.
+        ref:     Logical table reference.
+
+    Returns:
+        Native :class:`~polars.Schema` reflecting the on-disk column types, or
+        ``None`` when the table has not been written yet.
+    """
+    import pyarrow as pa
+    from deltalake import DeltaTable
+    from deltalake.exceptions import TableNotFoundError
+
+    loc = locator.locate(ref)
+    try:
+        dt = DeltaTable(loc.uri, storage_options=loc.storage_options or None)
+    except TableNotFoundError:
+        return None
+    arrow_schema: pa.Schema = dt.schema().to_pyarrow()
+    return pl.DataFrame(pa.Table.from_batches([], schema=arrow_schema)).schema
 
 
 def _write_kwargs(loc: TableLocation) -> dict[str, Any]:
@@ -200,12 +215,8 @@ def _write_kwargs(loc: TableLocation) -> dict[str, Any]:
     }
 
 
-def _write_append(loc: TableLocation, df: pl.DataFrame, _spec: TargetSpec, _params: Any) -> None:
-    write_deltalake(loc.uri, df.to_arrow(), mode="append", **_write_kwargs(loc))
-
-
 def _write_replace_partitions(
-    loc: TableLocation, df: pl.DataFrame, spec: TargetSpec, _params: Any
+    loc: TableLocation, df: pl.DataFrame, spec: ReplacePartitionsSpec
 ) -> None:
     if df.is_empty():
         _log.warning("replace_partitions table=%s has 0 rows — nothing written", loc.uri)
@@ -220,32 +231,12 @@ def _write_replace_partitions(
 
 
 def _write_replace_where(
-    loc: TableLocation, df: pl.DataFrame, spec: TargetSpec, params: Any
+    loc: TableLocation, df: pl.DataFrame, spec: ReplaceWhereSpec, params: Any
 ) -> None:
-    if spec.replace_predicate is None:
-        raise TypeError("replace_predicate must be set for REPLACE_WHERE write mode")
     predicate = predicate_to_sql(spec.replace_predicate, params)
     write_deltalake(
         loc.uri, df.to_arrow(), mode="overwrite", predicate=predicate, **_write_kwargs(loc)
     )
-
-
-def _write_overwrite(loc: TableLocation, df: pl.DataFrame, _spec: TargetSpec, _params: Any) -> None:
-    write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **_write_kwargs(loc))
-
-
-_MODE_WRITERS: dict[WriteMode, Callable[[TableLocation, pl.DataFrame, TargetSpec, Any], None]] = {
-    WriteMode.APPEND: _write_append,
-    WriteMode.REPLACE_PARTITIONS: _write_replace_partitions,
-    WriteMode.REPLACE_WHERE: _write_replace_where,
-    WriteMode.REPLACE: _write_overwrite,
-}
-
-# UPSERT is handled before _write_frame is reached; all other modes must be present.
-_MISSING_MODES = frozenset(WriteMode) - {WriteMode.UPSERT} - frozenset(_MODE_WRITERS)
-if _MISSING_MODES:
-    raise AssertionError(f"_MODE_WRITERS is not exhaustive — missing: {_MISSING_MODES}")
-del _MISSING_MODES
 
 
 def _write_csv_file(df: pl.DataFrame, path: str, options: Any) -> None:
@@ -297,17 +288,17 @@ def _collect_partition_combos_polars(
     return df.unique(subset=list(partition_cols)).select(list(partition_cols)).to_dicts()
 
 
-def _merge_polars(loc: TableLocation, df: pl.DataFrame, spec: TargetSpec) -> None:
+def _merge_polars(loc: TableLocation, df: pl.DataFrame, spec: UpsertSpec) -> None:
     """Execute a Delta MERGE (UPSERT) for the Polars backend.
 
     Args:
         loc:  Resolved table location (URI + storage options).
         df:   Collected source frame.
-        spec: Target spec carrying keys, partition cols, and exclude/include.
+        spec: Upsert spec carrying keys, partition cols, and exclude/include.
     """
     from deltalake import DeltaTable
 
-    table_ref_str = spec.table_ref.ref if spec.table_ref else loc.uri
+    table_ref_str = spec.table_ref.ref
     combos = _collect_partition_combos_for_merge_polars(df, spec.partition_cols, table_ref_str)
     predicate = _build_upsert_predicate(combos, spec, TARGET_ALIAS, SOURCE_ALIAS)
     update_cols = _build_upsert_update_cols(tuple(df.columns), spec)

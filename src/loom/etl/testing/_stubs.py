@@ -10,7 +10,7 @@ from typing import Any
 
 from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
 from loom.etl.io._source import SourceSpec
-from loom.etl.io._target import TargetSpec
+from loom.etl.io.target import TargetSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 

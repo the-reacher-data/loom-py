@@ -17,16 +17,14 @@ Unity Catalog (Databricks) — fully managed by Spark::
     # locator=None → spark.table() / saveAsTable()
     catalog = SparkCatalog(spark)
     reader  = SparkDeltaReader(spark)
-    writer  = SparkDeltaWriter(spark, None, catalog)
+    writer  = SparkDeltaWriter(spark, None)
 
-Path-based (S3, GCS, ADLS, DBFS) — pair with DeltaCatalog::
+Path-based (S3, GCS, ADLS, DBFS)::
 
     from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter
-    from loom.etl.backends.polars import DeltaCatalog
 
-    catalog = DeltaCatalog("s3://my-lake/")
-    reader  = SparkDeltaReader(spark, "s3://my-lake/")
-    writer  = SparkDeltaWriter(spark, "s3://my-lake/", catalog)
+    reader = SparkDeltaReader(spark, "s3://my-lake/")
+    writer = SparkDeltaWriter(spark, "s3://my-lake/")
 """
 
 from loom.etl.backends.spark._catalog import SparkCatalog

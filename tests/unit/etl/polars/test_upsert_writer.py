@@ -12,11 +12,9 @@ import polars as pl
 from deltalake import DeltaTable, write_deltalake
 
 from loom.etl.backends.polars import PolarsDeltaWriter
-from loom.etl.io._format import Format
-from loom.etl.io._target import SchemaMode, TargetSpec, WriteMode
-from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.io._target import SchemaMode
+from loom.etl.io.target._table import UpsertSpec
 from loom.etl.schema._table import TableRef
-from loom.etl.testing import StubCatalog
 
 from .conftest import table_path
 
@@ -32,10 +30,8 @@ def _upsert_spec(
     exclude: tuple[str, ...] = (),
     include: tuple[str, ...] = (),
     schema_mode: SchemaMode = SchemaMode.STRICT,
-) -> TargetSpec:
-    return TargetSpec(
-        mode=WriteMode.UPSERT,
-        format=Format.DELTA,
+) -> UpsertSpec:
+    return UpsertSpec(
         table_ref=TableRef(ref),
         upsert_keys=keys,
         partition_cols=partition_cols,
@@ -51,19 +47,14 @@ def _read_table(root: Path, ref: str) -> pl.DataFrame:
     return pl.scan_pyarrow_dataset(dataset).collect()
 
 
-def _seed_table(root: Path, catalog: StubCatalog, ref: str, data: pl.DataFrame) -> None:
+def _seed_table(root: Path, ref: str, data: pl.DataFrame) -> None:
     path = table_path(root, TableRef(ref))
     path.mkdir(parents=True, exist_ok=True)
     write_deltalake(str(path), data.to_arrow(), mode="overwrite")
-    schema = tuple(
-        ColumnSchema(name=col, dtype=LoomDtype.UTF8 if dt == pl.Utf8 else LoomDtype.INT64)
-        for col, dt in zip(data.columns, data.dtypes, strict=True)
-    )
-    catalog.update_schema(TableRef(ref), schema)
 
 
-def _writer(root: Path, catalog: StubCatalog) -> PolarsDeltaWriter:
-    return PolarsDeltaWriter(str(root), catalog)
+def _writer(root: Path) -> PolarsDeltaWriter:
+    return PolarsDeltaWriter(str(root))
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +63,7 @@ def _writer(root: Path, catalog: StubCatalog) -> PolarsDeltaWriter:
 
 
 def test_upsert_first_run_creates_table(tmp_path: Path) -> None:
-    catalog = StubCatalog()
-    writer = _writer(tmp_path, catalog)
+    writer = _writer(tmp_path)
     frame = pl.LazyFrame({"id": [1, 2], "name": ["alice", "bob"]})
     spec = _upsert_spec("test.orders", keys=("id",))
 
@@ -81,7 +71,6 @@ def test_upsert_first_run_creates_table(tmp_path: Path) -> None:
 
     result = _read_table(tmp_path, "test.orders")
     assert sorted(result["id"].to_list()) == [1, 2]
-    assert catalog.schema(TableRef("test.orders")) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -90,10 +79,9 @@ def test_upsert_first_run_creates_table(tmp_path: Path) -> None:
 
 
 def test_upsert_updates_matched_rows(tmp_path: Path) -> None:
-    catalog = StubCatalog()
     initial = pl.DataFrame({"id": [1, 2], "status": ["pending", "pending"]})
-    _seed_table(tmp_path, catalog, "test.orders", initial)
-    writer = _writer(tmp_path, catalog)
+    _seed_table(tmp_path, "test.orders", initial)
+    writer = _writer(tmp_path)
 
     batch = pl.LazyFrame({"id": [2, 3], "status": ["done", "new"]})
     spec = _upsert_spec("test.orders", keys=("id",))
@@ -110,7 +98,6 @@ def test_upsert_updates_matched_rows(tmp_path: Path) -> None:
 
 
 def test_upsert_exclude_preserves_column(tmp_path: Path) -> None:
-    catalog = StubCatalog()
     initial = pl.DataFrame(
         {
             "id": [1],
@@ -118,8 +105,8 @@ def test_upsert_exclude_preserves_column(tmp_path: Path) -> None:
             "created_at": ["2024-01-01"],
         }
     )
-    _seed_table(tmp_path, catalog, "test.orders", initial)
-    writer = _writer(tmp_path, catalog)
+    _seed_table(tmp_path, "test.orders", initial)
+    writer = _writer(tmp_path)
 
     batch = pl.LazyFrame(
         {
@@ -142,7 +129,6 @@ def test_upsert_exclude_preserves_column(tmp_path: Path) -> None:
 
 
 def test_upsert_include_updates_only_listed_columns(tmp_path: Path) -> None:
-    catalog = StubCatalog()
     initial = pl.DataFrame(
         {
             "id": [1],
@@ -150,8 +136,8 @@ def test_upsert_include_updates_only_listed_columns(tmp_path: Path) -> None:
             "notes": ["original"],
         }
     )
-    _seed_table(tmp_path, catalog, "test.orders", initial)
-    writer = _writer(tmp_path, catalog)
+    _seed_table(tmp_path, "test.orders", initial)
+    writer = _writer(tmp_path)
 
     batch = pl.LazyFrame(
         {
@@ -174,7 +160,6 @@ def test_upsert_include_updates_only_listed_columns(tmp_path: Path) -> None:
 
 
 def test_upsert_multi_partition_merges_correctly(tmp_path: Path) -> None:
-    catalog = StubCatalog()
     initial = pl.DataFrame(
         {
             "id": [1, 2, 3],
@@ -182,8 +167,8 @@ def test_upsert_multi_partition_merges_correctly(tmp_path: Path) -> None:
             "value": [10, 20, 30],
         }
     )
-    _seed_table(tmp_path, catalog, "test.events", initial)
-    writer = _writer(tmp_path, catalog)
+    _seed_table(tmp_path, "test.events", initial)
+    writer = _writer(tmp_path)
 
     # Batch touches year=2023 (update id=1) and year=2025 (insert id=4)
     batch = pl.LazyFrame(
@@ -202,22 +187,19 @@ def test_upsert_multi_partition_merges_correctly(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Catalog schema is updated after upsert
+# Upsert inserts new rows without affecting existing ones
 # ---------------------------------------------------------------------------
 
 
-def test_upsert_updates_catalog_schema(tmp_path: Path) -> None:
-    catalog = StubCatalog()
+def test_upsert_inserts_new_rows_without_affecting_existing(tmp_path: Path) -> None:
     initial = pl.DataFrame({"id": [1], "name": ["alice"]})
-    _seed_table(tmp_path, catalog, "test.users", initial)
-    writer = _writer(tmp_path, catalog)
+    _seed_table(tmp_path, "test.users", initial)
+    writer = _writer(tmp_path)
 
     batch = pl.LazyFrame({"id": [2], "name": ["bob"]})
     spec = _upsert_spec("test.users", keys=("id",))
     writer.write(batch, spec, None)
 
-    schema = catalog.schema(TableRef("test.users"))
-    assert schema is not None
-    col_names = {c.name for c in schema}
-    assert "id" in col_names
-    assert "name" in col_names
+    result = _read_table(tmp_path, "test.users")
+    assert sorted(result["id"].to_list()) == [1, 2]
+    assert set(result.columns) == {"id", "name"}

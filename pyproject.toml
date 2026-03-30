@@ -110,7 +110,7 @@ mypy_path = ["src"]
 exclude = ["^tests/"]
 
 [[tool.mypy.overrides]]
-module = ["pyspark.*", "delta.*", "findspark", "fsspec.*", "chispa.*"]
+module = ["pyspark.*", "delta.*", "findspark", "fsspec.*", "chispa.*", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

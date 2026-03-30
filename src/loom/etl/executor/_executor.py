@@ -49,6 +49,7 @@ from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.executor.observer._events import RunContext, RunStatus
 from loom.etl.executor.observer._protocol import ETLRunObserver
 from loom.etl.io._source import SourceKind
+from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.temp._store import IntermediateStore
 
@@ -249,7 +250,7 @@ class ETLExecutor:
         return self._reader.read(spec, params)
 
     def _write_target(self, result: Any, spec: Any, params: Any, ctx: RunContext) -> None:
-        if spec.temp_name is not None:
+        if isinstance(spec, (TempSpec, TempFanInSpec)):
             _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
             self._require_temp_store(spec.temp_name).put(
                 spec.temp_name,
@@ -257,13 +258,12 @@ class ETLExecutor:
                 correlation_id=ctx.correlation_id,
                 scope=spec.temp_scope,
                 data=result,
-                append=spec.temp_append,
+                append=isinstance(spec, TempFanInSpec),
             )
         else:
             _log.debug(
-                "write target ref=%s mode=%s",
-                getattr(spec, "table_ref", None) or spec.path,
-                spec.mode,
+                "write target ref=%s",
+                getattr(spec, "table_ref", None) or getattr(spec, "path", None),
             )
             self._writer.write(result, spec, params)
 

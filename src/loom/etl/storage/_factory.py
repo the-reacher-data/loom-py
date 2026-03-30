@@ -33,8 +33,11 @@ class _TempStoreAware(Protocol):
     that :func:`make_temp_store` works without modification.
     """
 
-    tmp_root: str
-    tmp_storage_options: dict[str, str]
+    @property
+    def tmp_root(self) -> str: ...
+
+    @property
+    def tmp_storage_options(self) -> dict[str, str]: ...
 
 
 def make_backends(
@@ -64,6 +67,8 @@ def make_backends(
                     "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
                 )
             return _make_spark_backends(spark)
+        case _:  # pragma: no cover
+            raise TypeError(f"Unsupported storage config type: {type(config).__name__!r}")
 
 
 def make_observers(config: ObservabilityConfig) -> list[ETLRunObserver]:
@@ -94,28 +99,26 @@ def make_observers(config: ObservabilityConfig) -> list[ETLRunObserver]:
 
 
 def make_temp_store(
-    config: StorageConfig,
+    config: _TempStoreAware,
     spark: Any = None,
     cleaner: TempCleaner | None = None,
 ) -> IntermediateStore | None:
     """Build an IntermediateStore from config, or None when unconfigured.
 
     Args:
-        config:  Resolved storage config.
+        config:  Any storage config that declares ``tmp_root`` and
+                 ``tmp_storage_options`` (satisfies :class:`_TempStoreAware`).
         spark:   Active SparkSession (Spark backend only).
         cleaner: Cloud-aware temp cleaner.
 
     Returns:
         Configured :class:`~loom.etl._temp_store.IntermediateStore` or None.
     """
-    from typing import cast
-
-    temp_cfg = cast(_TempStoreAware, config)
-    if not temp_cfg.tmp_root:
+    if not config.tmp_root:
         return None
     return IntermediateStore(
-        tmp_root=temp_cfg.tmp_root,
-        storage_options=temp_cfg.tmp_storage_options or {},
+        tmp_root=config.tmp_root,
+        storage_options=config.tmp_storage_options or {},
         spark=spark,
         cleaner=cleaner,
     )
@@ -127,7 +130,7 @@ def _make_spark_backends(
     from loom.etl.backends.spark import SparkCatalog, SparkDeltaReader, SparkDeltaWriter
 
     catalog = SparkCatalog(spark)
-    return SparkDeltaReader(spark), SparkDeltaWriter(spark, None, catalog), catalog
+    return SparkDeltaReader(spark), SparkDeltaWriter(spark, None), catalog
 
 
 def _make_polars_backends(
@@ -137,4 +140,4 @@ def _make_polars_backends(
 
     locator = config.to_locator()
     catalog = DeltaCatalog(locator)
-    return PolarsDeltaReader(locator), PolarsDeltaWriter(locator, catalog), catalog
+    return PolarsDeltaReader(locator), PolarsDeltaWriter(locator), catalog

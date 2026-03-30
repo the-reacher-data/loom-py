@@ -26,7 +26,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from loom.etl.io._target import TargetSpec
+from loom.etl.io.target._table import UpsertSpec
 from loom.etl.sql.literals import sql_literal
 
 _log = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ def _build_join_clause(
 
 def _build_upsert_predicate(
     combos: list[dict[str, Any]],
-    spec: TargetSpec,
+    spec: UpsertSpec,
     target_alias: str,
     source_alias: str,
 ) -> str:
@@ -99,7 +99,7 @@ def _build_upsert_predicate(
 
 def _build_upsert_update_cols(
     df_columns: tuple[str, ...],
-    spec: TargetSpec,
+    spec: UpsertSpec,
 ) -> tuple[str, ...]:
     """Compute the columns to update on MATCH, respecting exclude/include.
 

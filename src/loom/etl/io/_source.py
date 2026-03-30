@@ -40,6 +40,7 @@ from typing import Any, Generic, TypeVar
 
 from loom.etl.io._format import Format
 from loom.etl.io._read_options import ReadOptions
+from loom.etl.io._utils import _clone_slots
 from loom.etl.schema._contract import (
     JsonContract,
     SchemaContract,
@@ -463,17 +464,6 @@ def _copy_from_table(src: FromTable) -> FromTable:
 def _copy_from_file(src: FromFile) -> FromFile:
     """Return a shallow copy of *src* preserving all current attributes."""
     return _clone_slots(src, FromFile, FromFile.__slots__)
-
-
-CopyT = TypeVar("CopyT")
-
-
-def _clone_slots(src: CopyT, cls: type[CopyT], slots: tuple[str, ...]) -> CopyT:
-    """Create a shallow copy by transferring all declared ``__slots__``."""
-    new = object.__new__(cls)
-    for slot in slots:
-        object.__setattr__(new, slot, getattr(src, slot))
-    return new
 
 
 class FromTemp:

@@ -10,15 +10,18 @@ credentials per table.  See https://delta-io.github.io/delta-rs/api/delta_writer
 
 from __future__ import annotations
 
+import logging
 import os
 
-import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator, _as_locator
+
+_log = logging.getLogger(__name__)
 
 # PyArrow string representation → LoomDtype
 # Stable because PyArrow's __str__ for primitive types is well-defined.
@@ -50,8 +53,21 @@ _ARROW_STR_TO_LOOM: dict[str, LoomDtype] = {
 
 
 def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
-    """Map a PyArrow DataType to a LoomDtype using the type's string representation."""
-    return _ARROW_STR_TO_LOOM.get(str(arrow_type), LoomDtype.NULL)
+    """Map a PyArrow DataType to a LoomDtype using the type's string representation.
+
+    Returns ``LoomDtype.NULL`` for unknown or unsupported types (e.g. nested
+    structs, maps, decimals, non-UTC timestamps).  Emits a ``WARNING`` so
+    callers can detect catalog schema gaps without raising at read time.
+    """
+    result = _ARROW_STR_TO_LOOM.get(str(arrow_type))
+    if result is None:
+        _log.warning(
+            "DeltaCatalog: unsupported Arrow type %r — mapped to LoomDtype.NULL; "
+            "declare an explicit schema override if this column is used in validation",
+            arrow_type,
+        )
+        return LoomDtype.NULL
+    return result
 
 
 class DeltaCatalog:

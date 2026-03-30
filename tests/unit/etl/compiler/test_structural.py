@@ -10,7 +10,10 @@ import pytest
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding
-from loom.etl.compiler._structural import validate_execute_signature, validate_params_compat
+from loom.etl.compiler.validators._structural import (
+    validate_execute_signature,
+    validate_params_compat,
+)
 
 # ---------------------------------------------------------------------------
 # Params fixtures

@@ -23,24 +23,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from enum import StrEnum
-from typing import Any, TypeVar
+from typing import Any
 
 from loom.etl.io._format import Format
+from loom.etl.io._utils import _clone_slots
 from loom.etl.io._write_options import WriteOptions
 from loom.etl.pipeline._proxy import ParamExpr
 from loom.etl.schema._table import TableRef, UnboundColumnRef
 from loom.etl.sql._predicate import AndPred, EqPred, PredicateNode
 from loom.etl.temp._scope import TempScope
-
-_CopyT = TypeVar("_CopyT")
-
-
-def _clone_slots(src: _CopyT, cls: type[_CopyT], slots: tuple[str, ...]) -> _CopyT:
-    """Create a shallow copy by transferring all declared ``__slots__``."""
-    new = object.__new__(cls)
-    for slot in slots:
-        object.__setattr__(new, slot, getattr(src, slot))
-    return new
 
 
 class WriteMode(StrEnum):
@@ -77,21 +68,11 @@ class SchemaMode(StrEnum):
 
 
 @dataclass(frozen=True)
-class TargetSpec:
-    """Normalized internal representation of one ETL target.
+class _RawSpec:
+    """Internal flat spec used only by :class:`IntoTable` builder chaining.
 
-    Produced by :meth:`IntoTable._to_spec` and :meth:`IntoFile._to_spec`.
-    Consumed by the compiler and executor — never exposed in user code.
-
-    Args:
-        mode:             Write semantics.
-        format:           I/O format.
-        schema_mode:      Schema evolution strategy.
-        table_ref:        Logical table reference (table targets only).
-        path:             File path template (file targets only).
-        partition_cols:   Column names for :attr:`~WriteMode.REPLACE_PARTITIONS`.
-        replace_predicate: Predicate node for :attr:`~WriteMode.REPLACE_WHERE`.
-        upsert_keys:      Column names used as merge keys for ``upsert`` mode.
+    Never exposed outside ``_target.py``.  Converted to the appropriate
+    :data:`~loom.etl.io.target.TargetSpec` variant by ``_to_spec()``.
     """
 
     mode: WriteMode
@@ -148,7 +129,7 @@ class IntoTable:
     def __init__(self, ref: str | TableRef) -> None:
         table_ref = TableRef(ref) if isinstance(ref, str) else ref
         self._ref = table_ref
-        self._spec = TargetSpec(
+        self._spec = _RawSpec(
             mode=WriteMode.REPLACE,
             format=Format.DELTA,
             table_ref=table_ref,
@@ -333,8 +314,45 @@ class IntoTable:
         object.__setattr__(new, "_spec", _dc_replace(self._spec, **overrides))  # pyright: ignore[reportArgumentType]
         return new
 
-    def _to_spec(self) -> TargetSpec:
-        return self._spec
+    def _to_spec(self) -> Any:
+        from loom.etl.io.target._table import (  # local — avoids circular import
+            AppendSpec,
+            ReplacePartitionsSpec,
+            ReplaceSpec,
+            ReplaceWhereSpec,
+            UpsertSpec,
+        )
+
+        s = self._spec
+        builders: dict[WriteMode, Any] = {
+            WriteMode.APPEND: lambda: AppendSpec(
+                table_ref=s.table_ref,  # type: ignore[arg-type]
+                schema_mode=s.schema_mode,
+            ),
+            WriteMode.REPLACE: lambda: ReplaceSpec(
+                table_ref=s.table_ref,  # type: ignore[arg-type]
+                schema_mode=s.schema_mode,
+            ),
+            WriteMode.REPLACE_PARTITIONS: lambda: ReplacePartitionsSpec(
+                table_ref=s.table_ref,  # type: ignore[arg-type]
+                partition_cols=s.partition_cols,
+                schema_mode=s.schema_mode,
+            ),
+            WriteMode.REPLACE_WHERE: lambda: ReplaceWhereSpec(
+                table_ref=s.table_ref,  # type: ignore[arg-type]
+                replace_predicate=s.replace_predicate,  # type: ignore[arg-type]
+                schema_mode=s.schema_mode,
+            ),
+            WriteMode.UPSERT: lambda: UpsertSpec(
+                table_ref=s.table_ref,  # type: ignore[arg-type]
+                upsert_keys=s.upsert_keys,
+                partition_cols=s.partition_cols,
+                upsert_exclude=s.upsert_exclude,
+                upsert_include=s.upsert_include,
+                schema_mode=s.schema_mode,
+            ),
+        }
+        return builders[s.mode]()
 
     def __repr__(self) -> str:
         return f"IntoTable({self._ref.ref!r}, mode={self._spec.mode!r})"
@@ -382,13 +400,10 @@ class IntoFile:
         object.__setattr__(new, "_write_options", options)
         return new
 
-    def _to_spec(self) -> TargetSpec:
-        return TargetSpec(
-            mode=WriteMode.REPLACE,
-            format=self._format,
-            path=self._path,
-            write_options=self._write_options,
-        )
+    def _to_spec(self) -> Any:
+        from loom.etl.io.target._file import FileSpec  # local — avoids circular import
+
+        return FileSpec(path=self._path, format=self._format, write_options=self._write_options)
 
     def __repr__(self) -> str:
         return f"IntoFile({self._path!r}, format={self._format!r})"
@@ -456,14 +471,15 @@ class IntoTemp:
         """Whether multiple steps may write to this name (fan-in)."""
         return self._append
 
-    def _to_spec(self) -> TargetSpec:
-        return TargetSpec(
-            mode=WriteMode.REPLACE,
-            format=Format.PARQUET,
-            temp_name=self._name,
-            temp_scope=self._scope,
-            temp_append=self._append,
-        )
+    def _to_spec(self) -> Any:
+        from loom.etl.io.target._temp import (
+            TempFanInSpec,
+            TempSpec,
+        )  # local — avoids circular import
+
+        if self._append:
+            return TempFanInSpec(temp_name=self._name, temp_scope=self._scope)
+        return TempSpec(temp_name=self._name, temp_scope=self._scope)
 
     def __repr__(self) -> str:
         return f"IntoTemp({self._name!r}, scope={self._scope!r}, append={self._append!r})"

@@ -21,7 +21,7 @@ Usage::
     catalog = DeltaCatalog(locator)
     executor = ETLExecutor(
         reader=PolarsDeltaReader(locator),
-        writer=PolarsDeltaWriter(locator, catalog),
+        writer=PolarsDeltaWriter(locator),
     )
     plan = ETLCompiler(catalog=catalog).compile_step(MyStep)
     executor.run_step(plan, MyParams(...))
@@ -29,7 +29,7 @@ Usage::
 
 from loom.etl.backends.polars._catalog import DeltaCatalog
 from loom.etl.backends.polars._reader import PolarsDeltaReader
-from loom.etl.backends.polars._schema import SchemaError, SchemaNotFoundError, apply_schema
+from loom.etl.backends.polars._schema import SchemaNotFoundError, apply_schema
 from loom.etl.backends.polars._writer import PolarsDeltaWriter
 
 __all__ = [
@@ -38,5 +38,4 @@ __all__ = [
     "PolarsDeltaWriter",
     "apply_schema",
     "SchemaNotFoundError",
-    "SchemaError",
 ]

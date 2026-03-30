@@ -16,8 +16,9 @@ Example::
 
 from __future__ import annotations
 
-import typing
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar
+
+from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")
 
@@ -39,10 +40,12 @@ class ETLPipeline(Generic[ParamsT]):
 
     Example::
 
-        plan = ETLCompiler().compile(DailyOrdersPipeline)
-        ETLExecutor(plan, backend=PolarsBackend()).run(
-            params=DailyOrdersParams(run_date=date(2024, 1, 1))
-        )
+        class DailyOrdersPipeline(ETLPipeline[DailyOrdersParams]):
+            processes = [
+                BuildStagingProcess,
+                [EnrichProductsProcess, EnrichCustomersProcess],
+                AggregateProcess,
+            ]
     """
 
     processes: ClassVar[list[_ProcessItem]] = []
@@ -51,19 +54,9 @@ class ETLPipeline(Generic[ParamsT]):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        cls._params_type = _extract_params_type(cls)
+        cls._params_type = _extract_generic_arg(cls, ETLPipeline)
         if not isinstance(cls.__dict__.get("processes", []), list):
             raise TypeError(
                 f"{cls.__qualname__}: 'processes' must be a list, "
                 f"got {type(cls.__dict__['processes']).__name__}"
             )
-
-
-def _extract_params_type(cls: type[Any]) -> type[Any] | None:
-    for base in getattr(cls, "__orig_bases__", ()):
-        origin = getattr(base, "__origin__", None)
-        if origin is ETLPipeline:
-            args = typing.get_args(base)
-            if args:
-                return cast(type[Any], args[0])
-    return None

@@ -20,7 +20,8 @@ import polars as pl  # noqa: E402 — import after importorskip guard
 from deltalake import DeltaTable, write_deltalake  # noqa: E402
 
 from loom.etl.io._source import SourceSpec  # noqa: E402
-from loom.etl.io._target import TargetSpec, WriteMode  # noqa: E402
+from loom.etl.io.target import TargetSpec  # noqa: E402
+from loom.etl.io.target._table import ReplaceSpec  # noqa: E402
 from loom.etl.schema._schema import ColumnSchema, LoomDtype  # noqa: E402
 from loom.etl.schema._table import TableRef  # noqa: E402
 from loom.etl.testing import StubCatalog  # noqa: E402
@@ -145,10 +146,12 @@ class MinimalPolarsDeltaWriter:
 
     def write(self, frame: pl.LazyFrame, spec: TargetSpec, params_instance: Any) -> None:
         """Collect *frame* and write it to the Delta table referenced by *spec*."""
-        assert spec.table_ref is not None, f"expected TABLE target, got {spec}"
-        path = table_path(self._root, spec.table_ref)
+        assert hasattr(spec, "table_ref") and spec.table_ref is not None, (
+            f"expected TABLE target, got {spec}"
+        )  # type: ignore[union-attr]
+        path = table_path(self._root, spec.table_ref)  # type: ignore[union-attr]
         path.mkdir(parents=True, exist_ok=True)
-        delta_mode = "overwrite" if spec.mode is WriteMode.REPLACE else "append"
+        delta_mode = "overwrite" if isinstance(spec, ReplaceSpec) else "append"
         write_deltalake(str(path), frame.collect().to_arrow(), mode=delta_mode)
 
 

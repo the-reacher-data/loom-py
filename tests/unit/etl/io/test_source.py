@@ -7,7 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from loom.etl.io._format import Format
-from loom.etl.io._source import FromFile, FromTable, SourceKind, Sources, SourceSet
+from loom.etl.io._source import FromFile, FromTable, FromTemp, SourceKind, Sources, SourceSet
 from loom.etl.pipeline._proxy import params
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef, col
@@ -156,12 +156,28 @@ class TestFromFile:
             FromFile("s3://raw/data.csv", format=Format.CSV).columns()
 
 
+class TestFromTemp:
+    def test_to_spec_temp_kind(self) -> None:
+        spec = FromTemp("normalized")._to_spec("normalized")
+        assert spec.alias == "normalized"
+        assert spec.kind is SourceKind.TEMP
+        assert spec.temp_name == "normalized"
+        assert spec.path is None
+
+    def test_repr_includes_temp_name(self) -> None:
+        assert repr(FromTemp("orders_tmp")) == "FromTemp('orders_tmp')"
+
+
 class TestSources:
     def test_aliases_and_specs_keep_order(self) -> None:
         sources = Sources(orders=FromTable("raw.orders"), customers=FromTable("raw.customers"))
         assert sources.aliases == ("orders", "customers")
         specs = sources._to_specs()
         assert [spec.alias for spec in specs] == ["orders", "customers"]
+
+    def test_repr_lists_aliases(self) -> None:
+        sources = Sources(orders=FromTable("raw.orders"), customers=FromTable("raw.customers"))
+        assert repr(sources) == "Sources(orders, customers)"
 
 
 class TestSourceSet:
@@ -189,3 +205,19 @@ class TestSourceSet:
 
         with pytest.raises(ValueError, match="conflicting source names"):
             Base.extended(orders=FromTable("raw.orders_v2"))
+
+    def test_subclassing_concrete_source_set_raises(self) -> None:
+        class Base(SourceSet[object]):
+            orders = FromTable("raw.orders")
+
+        with pytest.raises(TypeError, match="already a concrete SourceSet"):
+
+            class Child(Base):
+                customers = FromTable("raw.customers")
+
+    def test_repr_lists_aliases(self) -> None:
+        class OrderSources(SourceSet[object]):
+            orders = FromTable("raw.orders")
+            customers = FromFile("s3://raw/customers.csv", format=Format.CSV)
+
+        assert repr(OrderSources()) == "SourceSet(orders, customers)"

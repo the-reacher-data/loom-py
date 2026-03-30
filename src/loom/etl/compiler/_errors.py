@@ -36,6 +36,7 @@ class ETLErrorCode(StrEnum):
     INVALID_STEP_ITEM = "INVALID_STEP_ITEM"
     DUPLICATE_TEMP_NAME = "DUPLICATE_TEMP_NAME"
     INVALID_TEMP_APPEND_MIX = "INVALID_TEMP_APPEND_MIX"
+    UNKNOWN_PARAM_FIELD = "UNKNOWN_PARAM_FIELD"
 
 
 class ETLCompilationError(Exception):
@@ -297,4 +298,19 @@ class ETLCompilationError(Exception):
                 "All writers for the same intermediate must use the same mode."
             ),
             field=name,
+        )
+
+    @classmethod
+    def unknown_param_field(
+        cls, step: type, field_name: str, params_type: type
+    ) -> ETLCompilationError:
+        """A ParamExpr references a field not declared on the params type."""
+        return cls(
+            code=ETLErrorCode.UNKNOWN_PARAM_FIELD,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: params expression references unknown field "
+                f"'{field_name}' on {params_type.__name__}"
+            ),
+            field=field_name,
         )

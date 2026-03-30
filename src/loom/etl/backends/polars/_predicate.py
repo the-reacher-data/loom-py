@@ -22,26 +22,55 @@ See https://docs.pola.rs/api/python/stable/reference/lazyframe/api/polars.LazyFr
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
 import polars as pl
 
-from loom.etl.pipeline._proxy import ParamExpr, resolve_param_expr
-from loom.etl.schema._table import UnboundColumnRef
-from loom.etl.sql._predicate import (
-    AndPred,
-    EqPred,
-    GePred,
-    GtPred,
-    InPred,
-    LePred,
-    LtPred,
-    NePred,
-    NotPred,
-    OrPred,
-    PredicateNode,
-)
+from loom.etl.sql._predicate import PredicateNode
+from loom.etl.sql._predicate_dialect import PredicateDialect, fold_predicate
+
+
+class _PolarsPredicateDialect(PredicateDialect[pl.Expr]):
+    """Render predicate nodes as Polars expressions."""
+
+    def column(self, name: str) -> pl.Expr:
+        return pl.col(name)
+
+    def literal(self, value: Any) -> pl.Expr:
+        return pl.lit(value)
+
+    def eq(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left == right
+
+    def ne(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left != right
+
+    def gt(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left > right
+
+    def ge(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left >= right
+
+    def lt(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left < right
+
+    def le(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left <= right
+
+    def in_(self, ref: pl.Expr, values: tuple[Any, ...]) -> pl.Expr:
+        return ref.is_in(list(values))
+
+    def and_(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left & right
+
+    def or_(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left | right
+
+    def not_(self, operand: pl.Expr) -> pl.Expr:
+        return ~operand
+
+
+_POLARS_PREDICATE_DIALECT = _PolarsPredicateDialect()
 
 
 def predicate_to_polars(node: PredicateNode, params_instance: Any) -> pl.Expr:
@@ -70,51 +99,4 @@ def predicate_to_polars(node: PredicateNode, params_instance: Any) -> pl.Expr:
         expr = predicate_to_polars(node, DailyParams(run_date=date(2024, 1, 15)))
         # → (pl.col("year") == 2024) & (pl.col("month") == 1)
     """
-    return _to_expr(node, params_instance)
-
-
-_BINARY: dict[type, Callable[[pl.Expr, pl.Expr], pl.Expr]] = {
-    EqPred: lambda lhs, r: lhs == r,
-    NePred: lambda lhs, r: lhs != r,
-    GtPred: lambda lhs, r: lhs > r,
-    GePred: lambda lhs, r: lhs >= r,
-    LtPred: lambda lhs, r: lhs < r,
-    LePred: lambda lhs, r: lhs <= r,
-}
-
-
-def _to_expr(node: Any, params: Any) -> pl.Expr:
-    node_type = type(node)
-
-    binary_op = _BINARY.get(node_type)
-    if binary_op is not None:
-        return binary_op(_as_expr(node.left, params), _as_expr(node.right, params))
-
-    if node_type is AndPred:
-        return _to_expr(node.left, params) & _to_expr(node.right, params)
-
-    if node_type is OrPred:
-        return _to_expr(node.left, params) | _to_expr(node.right, params)
-
-    if node_type is NotPred:
-        return ~_to_expr(node.operand, params)
-
-    if node_type is InPred:
-        col_expr = _as_expr(node.ref, params)
-        raw = (
-            resolve_param_expr(node.values, params)
-            if isinstance(node.values, ParamExpr)
-            else node.values
-        )
-        return col_expr.is_in(list(raw))
-
-    raise TypeError(f"predicate_to_polars: unsupported node type {node_type!r}")
-
-
-def _as_expr(value: Any, params: Any) -> pl.Expr:
-    """Convert a predicate leaf to a Polars expression."""
-    if isinstance(value, UnboundColumnRef):
-        return pl.col(value.name)
-    if isinstance(value, ParamExpr):
-        return pl.lit(resolve_param_expr(value, params))
-    return pl.lit(value)
+    return fold_predicate(node, params_instance, _POLARS_PREDICATE_DIALECT)

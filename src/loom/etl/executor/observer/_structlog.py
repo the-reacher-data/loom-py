@@ -41,6 +41,15 @@ from typing import Any
 import structlog
 
 from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
+from loom.etl.io.target._file import FileSpec
+from loom.etl.io.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    ReplaceWhereSpec,
+    UpsertSpec,
+)
+from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 
 _log: Any = structlog.get_logger("loom.etl")
 
@@ -119,8 +128,7 @@ class StructlogRunObserver:
             step=plan.step_type.__name__,
             sources=sources,
             target=_target_label(plan.target_binding.spec),
-            write_mode=plan.target_binding.spec.mode,
-            backend=str(plan.backend),
+            write_mode=_write_mode_label(plan.target_binding.spec),
             run_id=ctx.run_id,
             step_run_id=step_run_id,
         )
@@ -169,3 +177,24 @@ def _target_label(spec: Any) -> str:
     if getattr(spec, "temp_name", None) is not None:
         return f"temp:{spec.temp_name}"
     return str(spec.path) if spec.path else "?"
+
+
+def _write_mode_label(spec: Any) -> str:
+    """Return the write mode string for *spec* without accessing ``.mode``."""
+    match spec:
+        case AppendSpec():
+            return "append"
+        case ReplaceSpec():
+            return "replace"
+        case ReplacePartitionsSpec():
+            return "replace_partitions"
+        case ReplaceWhereSpec():
+            return "replace_where"
+        case UpsertSpec():
+            return "upsert"
+        case TempSpec() | TempFanInSpec():
+            return "temp"
+        case FileSpec():
+            return "file"
+        case _:
+            return "unknown"

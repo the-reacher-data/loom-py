@@ -6,15 +6,6 @@ immutable :class:`~loom.etl.compiler._plan.PipelinePlan` /
 :class:`~loom.etl.compiler._plan.StepPlan` objects.  No reflection occurs
 after compilation.
 
-Backend auto-detection
-----------------------
-The compiler reads the return-type annotation of ``execute()`` and maps
-it to :class:`~loom.etl.compiler._plan.Backend`:
-
-* ``polars.DataFrame``              → ``Backend.POLARS``
-* ``pyspark.sql.DataFrame``         → ``Backend.SPARK``
-* anything else / unannotated       → ``Backend.UNKNOWN``
-
 Static validation
 -----------------
 * ``ETLStep[ParamsT]`` generic present
@@ -30,35 +21,31 @@ Static validation
 from __future__ import annotations
 
 import logging
-import typing
 from typing import Any, cast
 
-from loom.etl.compiler._catalog_validator import (
-    _validate_step,
-    _walk_process,
-    validate_plan_catalog,
-)
+from loom.etl.compiler._binding import resolve_source_bindings, resolve_target_binding
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
-    Backend,
     ParallelProcessGroup,
     ParallelStepGroup,
     PipelinePlan,
     PipelineProcessNode,
     ProcessPlan,
     ProcessStepNode,
-    SourceBinding,
     StepPlan,
-    TargetBinding,
 )
-from loom.etl.compiler._structural import validate_execute_signature, validate_params_compat
-from loom.etl.compiler._temp_validator import validate_plan_temps
-from loom.etl.compiler._upsert_validator import validate_upsert_spec
-from loom.etl.io._source import Sources, SourceSet
-from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
+from loom.etl.compiler.validators import (
+    StepCompilationContext,
+    validate_params_compat,
+    validate_plan_catalog,
+    validate_plan_temps,
+    validate_process_catalog,
+    validate_step,
+    validate_step_catalog,
+)
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess
-from loom.etl.pipeline._step import ETLStep, _SourceForm
+from loom.etl.pipeline._step import ETLStep
 from loom.etl.storage._io import TableDiscovery
 
 _log = logging.getLogger(__name__)
@@ -107,11 +94,7 @@ class ETLCompiler:
             self._compile_pipeline_item(item, pipeline_type, params_type)
             for item in pipeline_type.processes
         )
-        plan = PipelinePlan(
-            pipeline_type=pipeline_type,
-            params_type=params_type,
-            nodes=nodes,
-        )
+        plan = PipelinePlan(pipeline_type=pipeline_type, params_type=params_type, nodes=nodes)
         validate_plan_temps(plan)
         if self._catalog is not None:
             validate_plan_catalog(plan, self._catalog)
@@ -131,7 +114,7 @@ class ETLCompiler:
         """
         plan = self._get_or_build_process(process_type)
         if self._catalog is not None:
-            _walk_process(plan, self._catalog, set())
+            validate_process_catalog(plan, self._catalog)
         return plan
 
     def compile_step(self, step_type: type[ETLStep[Any]]) -> StepPlan:
@@ -148,8 +131,12 @@ class ETLCompiler:
         """
         plan = self._get_or_build_step(step_type)
         if self._catalog is not None:
-            _validate_step(plan, self._catalog, set())
+            validate_step_catalog(plan, self._catalog)
         return plan
+
+    # ------------------------------------------------------------------
+    # Pipeline assembly
+    # ------------------------------------------------------------------
 
     def _compile_pipeline_item(
         self,
@@ -173,17 +160,17 @@ class ETLCompiler:
         validate_params_compat(item, plan.params_type, pipeline_params_type)
         return plan
 
+    # ------------------------------------------------------------------
+    # Process assembly
+    # ------------------------------------------------------------------
+
     def _build_process_plan(self, process_type: type[ETLProcess[Any]]) -> ProcessPlan:
         params_type = _require_params_type(process_type, "ETLProcess")
         nodes = tuple(
             self._compile_process_item(item, process_type, params_type)
             for item in process_type.steps
         )
-        return ProcessPlan(
-            process_type=process_type,
-            params_type=params_type,
-            nodes=nodes,
-        )
+        return ProcessPlan(process_type=process_type, params_type=params_type, nodes=nodes)
 
     def _compile_process_item(
         self,
@@ -207,6 +194,38 @@ class ETLCompiler:
         validate_params_compat(item, plan.params_type, process_params_type)
         return plan
 
+    # ------------------------------------------------------------------
+    # Step assembly
+    # ------------------------------------------------------------------
+
+    def _build_step_plan(self, step_type: type[ETLStep[Any]]) -> StepPlan:
+        params_type = _require_params_type(step_type, "ETLStep")
+        source_bindings = resolve_source_bindings(step_type)
+        target_binding = resolve_target_binding(step_type)
+        _log.debug(
+            "compile step=%s sources=%d",
+            step_type.__name__,
+            len(source_bindings),
+        )
+        validate_step(
+            StepCompilationContext(
+                step_type=step_type,
+                params_type=params_type,
+                source_bindings=source_bindings,
+                target_binding=target_binding,
+            )
+        )
+        return StepPlan(
+            step_type=step_type,
+            params_type=params_type,
+            source_bindings=source_bindings,
+            target_binding=target_binding,
+        )
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
     def _get_or_build_process(self, process_type: type[ETLProcess[Any]]) -> ProcessPlan:
         if process_type in self._process_cache:
             _log.debug("compile cache hit process=%s", process_type.__name__)
@@ -223,56 +242,10 @@ class ETLCompiler:
         self._step_cache[step_type] = plan
         return plan
 
-    def _build_step_plan(self, step_type: type[ETLStep[Any]]) -> StepPlan:
-        params_type = _require_params_type(step_type, "ETLStep")
-        source_bindings = self._resolve_source_bindings(step_type)
-        target_binding = self._resolve_target_binding(step_type)
-        backend = _detect_backend(step_type)
-        _log.debug(
-            "compile step=%s backend=%s sources=%d",
-            step_type.__name__,
-            backend,
-            len(source_bindings),
-        )
-        validate_execute_signature(step_type, params_type, source_bindings)
-        return StepPlan(
-            step_type=step_type,
-            params_type=params_type,
-            source_bindings=source_bindings,
-            target_binding=target_binding,
-            backend=backend,
-        )
 
-    def _resolve_source_bindings(self, step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
-        match step_type._source_form:
-            case _SourceForm.NONE:
-                return ()
-            case _SourceForm.INLINE:
-                return tuple(
-                    SourceBinding(alias=alias, spec=src._to_spec(alias))
-                    for alias, src in step_type._inline_sources.items()
-                )
-            case _SourceForm.GROUPED:
-                return _bindings_from_grouped(step_type)
-
-    def _resolve_target_binding(self, step_type: type[ETLStep[Any]]) -> TargetBinding:
-        target = step_type.target
-        if target is None:
-            raise ETLCompilationError.missing_target(step_type)
-        if not isinstance(target, (IntoTable, IntoFile, IntoTemp)):
-            raise ETLCompilationError.invalid_target_type(step_type)
-        spec = target._to_spec()
-        validate_upsert_spec(step_type, spec)
-        return TargetBinding(spec=spec)
-
-
-def _bindings_from_grouped(step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
-    """Extract source bindings from a GROUPED-form step (Sources or SourceSet)."""
-    match step_type.sources:
-        case Sources() | SourceSet() as grouped:
-            return tuple(SourceBinding(alias=spec.alias, spec=spec) for spec in grouped._to_specs())
-        case _:
-            raise ETLCompilationError.invalid_sources_type(step_type)
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 
 def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
@@ -280,32 +253,3 @@ def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
     if pt is None:
         raise ETLCompilationError.missing_generic_param(cls, kind)
     return cast(type[Any], pt)
-
-
-def _return_type_qualname(step_type: type[ETLStep[Any]]) -> str | None:
-    """Resolve the lowercased ``module.qualname`` of the ``execute`` return type.
-
-    Returns ``None`` when the annotation is absent, unresolvable, or not a
-    concrete type (e.g. an undefined forward reference).
-    """
-    try:
-        hints = typing.get_type_hints(step_type.execute)
-    except (TypeError, NameError):
-        return None
-    return_type = hints.get("return")
-    if return_type is None:
-        return None
-    module = getattr(return_type, "__module__", "")
-    qualname = getattr(return_type, "__qualname__", "")
-    return f"{module}.{qualname}".lower()
-
-
-def _detect_backend(step_type: type[ETLStep[Any]]) -> Backend:
-    qualname = _return_type_qualname(step_type)
-    if qualname is None:
-        return Backend.UNKNOWN
-    if "polars" in qualname and ("lazyframe" in qualname or "dataframe" in qualname):
-        return Backend.POLARS
-    if "pyspark" in qualname and "dataframe" in qualname:
-        return Backend.SPARK
-    return Backend.UNKNOWN

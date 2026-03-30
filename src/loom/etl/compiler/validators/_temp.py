@@ -14,6 +14,7 @@ from loom.etl.compiler._plan import (
     visit_process_nodes,
 )
 from loom.etl.io._source import SourceKind
+from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 
 # ---------------------------------------------------------------------------
 # Duplicate-name conflict dispatch
@@ -130,12 +131,13 @@ def _check_sources(step: StepPlan, seen: dict[str, bool]) -> None:
 
 def _register_step_target(step: StepPlan, seen: dict[str, bool]) -> None:
     """Record the temp name produced by *step*, enforcing uniqueness rules."""
-    name = step.target_binding.spec.temp_name
-    if name is None:
+    spec = step.target_binding.spec
+    if not isinstance(spec, (TempSpec, TempFanInSpec)):
         return
-    append = step.target_binding.spec.temp_append
+    name = spec.temp_name
+    is_fan_in = isinstance(spec, TempFanInSpec)
     existing = seen.get(name)
     if existing is None:
-        seen[name] = append
+        seen[name] = is_fan_in
         return
-    _CONFLICT[(existing, append)](step.step_type, name)
+    _CONFLICT[(existing, is_fan_in)](step.step_type, name)

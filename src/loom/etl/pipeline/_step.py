@@ -3,9 +3,10 @@
 :class:`ETLStep` is the single unit of ETL work: it declares its sources,
 one target, and a pure ``execute()`` transformation method.
 
-The backend is **auto-detected** from the return-type annotation of
-``execute()`` — no explicit declaration is needed.  The executor
-selects the appropriate source reader and target writer at runtime.
+The backend (Polars, Spark) is determined by the configured
+:class:`~loom.etl.storage._io.SourceReader` and
+:class:`~loom.etl.storage._io.TargetWriter` injected at runner build time —
+no declaration is needed on the step itself.
 
 Definition-time validation (via ``__init_subclass__``) catches the most
 common structural errors early, before the full :class:`~loom.etl.compiler.ETLCompiler`
@@ -14,12 +15,12 @@ runs.
 
 from __future__ import annotations
 
-import typing
 from enum import Enum
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar
 
 from loom.etl.io._source import FromFile, FromTable, FromTemp, Sources, SourceSet
 from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
+from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")
 
@@ -50,16 +51,6 @@ class ETLStep(Generic[ParamsT]):
     Subclass, declare :attr:`sources` and :attr:`target`, then implement
     :meth:`execute`.  The ``*`` separator in ``execute`` makes all injected
     DataFrame parameters keyword-only — the executor always injects by name.
-
-    Backend detection
-    -----------------
-    The compiler reads the return-type annotation of ``execute()`` and
-    auto-detects the backend:
-
-    * ``-> pl.DataFrame``              → Polars backend
-    * ``-> pyspark.sql.DataFrame``     → Spark backend
-
-    No ``backend = ...`` declaration is needed.
 
     Source forms
     ------------
@@ -100,7 +91,7 @@ class ETLStep(Generic[ParamsT]):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        cls._params_type = _extract_params_type(cls)
+        cls._params_type = _extract_generic_arg(cls, ETLStep)
         cls._inline_sources = {}
         _validate_and_classify_sources(cls)
 
@@ -125,17 +116,6 @@ class ETLStep(Generic[ParamsT]):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _extract_params_type(cls: type[Any]) -> type[Any] | None:
-    """Extract ``ParamsT`` from ``ETLStep[ParamsT]`` in ``__orig_bases__``."""
-    for base in getattr(cls, "__orig_bases__", ()):
-        origin = getattr(base, "__origin__", None)
-        if origin is ETLStep:
-            args = typing.get_args(base)
-            if args:
-                return cast(type[Any], args[0])
-    return None
 
 
 def _validate_and_classify_sources(cls: type[Any]) -> None:
