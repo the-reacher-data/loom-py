@@ -140,12 +140,12 @@ def _predicate_shape(node: Any) -> _PredicateShape:
     fields = getattr(type(node), "__dataclass_fields__", None)
     if not isinstance(fields, dict):
         return _PredicateShape.UNKNOWN
-    names = frozenset(fields.keys())
-    if names == {"left", "right"}:
+    field_count = len(fields)
+    if field_count == 2 and "left" in fields and "right" in fields:
         return _PredicateShape.BINARY
-    if names == {"ref", "values"}:
+    if field_count == 2 and "ref" in fields and "values" in fields:
         return _PredicateShape.IN
-    if names == {"operand"}:
+    if field_count == 1 and "operand" in fields:
         return _PredicateShape.UNARY
     return _PredicateShape.UNKNOWN
 
