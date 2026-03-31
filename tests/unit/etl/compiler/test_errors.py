@@ -46,7 +46,7 @@ class TestInvalidParamsType:
     err = ETLCompilationError.invalid_params_type(_Step, _Params)  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.INVALID_PARAMS_TYPE
+        assert self.err.code == ETLErrorCode.INVALID_PARAMS_TYPE
 
     def test_component(self) -> None:
         assert self.err.component == "MyStep"
@@ -62,7 +62,7 @@ class TestInvalidParamsName:
     err = ETLCompilationError.invalid_params_name(_Step, "ctx")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.INVALID_PARAMS_NAME
+        assert self.err.code == ETLErrorCode.INVALID_PARAMS_NAME
 
     def test_field_is_the_wrong_name(self) -> None:
         assert self.err.field == "ctx"
@@ -72,7 +72,7 @@ class TestMissingSourceParams:
     err = ETLCompilationError.missing_source_params(_Step, frozenset({"orders"}))  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.MISSING_SOURCE_PARAMS
+        assert self.err.code == ETLErrorCode.MISSING_SOURCE_PARAMS
 
     def test_message_contains_alias(self) -> None:
         assert "orders" in str(self.err)
@@ -82,7 +82,7 @@ class TestExtraSourceParams:
     err = ETLCompilationError.extra_source_params(_Step, frozenset({"ghost"}))  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.EXTRA_SOURCE_PARAMS
+        assert self.err.code == ETLErrorCode.EXTRA_SOURCE_PARAMS
 
     def test_message_contains_param_name(self) -> None:
         assert "ghost" in str(self.err)
@@ -94,7 +94,7 @@ class TestMissingParamsFields:
     )
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.MISSING_PARAMS_FIELDS
+        assert self.err.code == ETLErrorCode.MISSING_PARAMS_FIELDS
 
     def test_component(self) -> None:
         assert self.err.component == "MyComponent"
@@ -112,7 +112,7 @@ class TestUnknownSourceTable:
     err = ETLCompilationError.unknown_source_table(_Step, "orders", "raw.orders")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.UNKNOWN_SOURCE_TABLE
+        assert self.err.code == ETLErrorCode.UNKNOWN_SOURCE_TABLE
 
     def test_field_is_alias(self) -> None:
         assert self.err.field == "orders"
@@ -125,7 +125,7 @@ class TestUnknownTargetTable:
     err = ETLCompilationError.unknown_target_table(_Step, "staging.out")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.UNKNOWN_TARGET_TABLE
+        assert self.err.code == ETLErrorCode.UNKNOWN_TARGET_TABLE
 
     def test_field_is_none(self) -> None:
         assert self.err.field is None
@@ -140,7 +140,7 @@ class TestTempNotProduced:
     err = ETLCompilationError.temp_not_produced(_Step, "tmp_orders", "orders_temp")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.TEMP_NOT_PRODUCED
+        assert self.err.code == ETLErrorCode.TEMP_NOT_PRODUCED
 
     def test_field_is_alias(self) -> None:
         assert self.err.field == "tmp_orders"
@@ -153,7 +153,7 @@ class TestDuplicateTempName:
     err = ETLCompilationError.duplicate_temp_name(_Step, "orders_temp")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.DUPLICATE_TEMP_NAME
+        assert self.err.code == ETLErrorCode.DUPLICATE_TEMP_NAME
 
     def test_field_is_temp_name(self) -> None:
         assert self.err.field == "orders_temp"
@@ -163,7 +163,7 @@ class TestInvalidTempAppendMix:
     err = ETLCompilationError.invalid_temp_append_mix(_Step, "orders_temp")  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.INVALID_TEMP_APPEND_MIX
+        assert self.err.code == ETLErrorCode.INVALID_TEMP_APPEND_MIX
 
     def test_field_is_temp_name(self) -> None:
         assert self.err.field == "orders_temp"
@@ -178,7 +178,7 @@ class TestUpsertNoKeys:
     err = ETLCompilationError.upsert_no_keys(_Step)  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.UPSERT_NO_KEYS
+        assert self.err.code == ETLErrorCode.UPSERT_NO_KEYS
 
     def test_is_exception(self) -> None:
         assert isinstance(self.err, Exception)
@@ -191,14 +191,14 @@ class TestUpsertExcludeIncludeConflict:
     err = ETLCompilationError.upsert_exclude_include_conflict(_Step)  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.UPSERT_EXCLUDE_INCLUDE_CONFLICT
+        assert self.err.code == ETLErrorCode.UPSERT_EXCLUDE_INCLUDE_CONFLICT
 
 
 class TestUpsertKeyInExclude:
     err = ETLCompilationError.upsert_key_in_exclude(_Step, frozenset({"id"}))  # type: ignore[arg-type]
 
     def test_code(self) -> None:
-        assert self.err.code is ETLErrorCode.UPSERT_KEY_IN_EXCLUDE
+        assert self.err.code == ETLErrorCode.UPSERT_KEY_IN_EXCLUDE
 
     def test_message_contains_overlap(self) -> None:
         assert "id" in str(self.err)

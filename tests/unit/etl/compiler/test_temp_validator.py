@@ -126,7 +126,7 @@ def test_duplicate_strict_temp_error_code() -> None:
 
     with pytest.raises(ETLCompilationError) as exc_info:
         ETLCompiler().compile(DuplicateStrictPipeline)
-    assert exc_info.value.code is ETLErrorCode.DUPLICATE_TEMP_NAME
+    assert exc_info.value.code == ETLErrorCode.DUPLICATE_TEMP_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -202,4 +202,4 @@ def test_mixed_append_modes_error_code() -> None:
 
     with pytest.raises(ETLCompilationError) as exc_info:
         ETLCompiler().compile(MixedModePipeline)
-    assert exc_info.value.code is ETLErrorCode.INVALID_TEMP_APPEND_MIX
+    assert exc_info.value.code == ETLErrorCode.INVALID_TEMP_APPEND_MIX

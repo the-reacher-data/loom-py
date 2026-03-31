@@ -23,7 +23,7 @@ class _Pipeline:
 
 def test_missing_generic_param_factory() -> None:
     err = ETLCompilationError.missing_generic_param(_Step, "ETLStep")  # type: ignore[arg-type]
-    assert err.code is ETLErrorCode.MISSING_GENERIC_PARAM
+    assert err.code == ETLErrorCode.MISSING_GENERIC_PARAM
     assert err.component == "MyStep"
     assert "missing generic parameter" in str(err)
 
@@ -71,6 +71,6 @@ def test_factory_codes_and_messages(
 ) -> None:
     err = factory()
     assert isinstance(err, ETLCompilationError)
-    assert err.code is code
+    assert err.code == code
     assert err.field == field
     assert contains in str(err)

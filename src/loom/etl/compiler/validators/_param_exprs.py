@@ -15,7 +15,6 @@ from typing import Any, Protocol, cast
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
-from loom.etl.io.target._table import ReplaceWhereSpec
 from loom.etl.pipeline._proxy import ParamExpr
 from loom.etl.sql._predicate import PredicateNode
 
@@ -47,6 +46,10 @@ class _InPredicateLike(Protocol):
 
 class _UnaryPredicateLike(Protocol):
     operand: Any
+
+
+class _ReplaceWhereSpecLike(Protocol):
+    replace_predicate: PredicateNode
 
 
 def validate_param_exprs(
@@ -84,8 +87,9 @@ def validate_param_exprs(
         for pred in binding.spec.predicates:
             _collect_exprs(pred, exprs)
 
-    if isinstance(target_binding.spec, ReplaceWhereSpec):
-        _collect_exprs(target_binding.spec.replace_predicate, exprs)
+    if _is_replace_where_like(target_binding.spec):
+        target_spec = cast(_ReplaceWhereSpecLike, target_binding.spec)
+        _collect_exprs(target_spec.replace_predicate, exprs)
 
     for expr in exprs:
         field_name = expr.path[0]
@@ -166,3 +170,7 @@ def _has_fields(fields: dict[str, Any], *expected: _PredicateField) -> bool:
     if len(fields) != len(expected):
         return False
     return all(field.value in fields for field in expected)
+
+
+def _is_replace_where_like(spec: object) -> bool:
+    return hasattr(spec, "replace_predicate") and hasattr(spec, "table_ref")

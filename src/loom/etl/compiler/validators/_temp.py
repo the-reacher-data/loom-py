@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from enum import Enum
+from typing import Any, Protocol, TypeGuard
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
@@ -13,8 +14,14 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
-from loom.etl.io._source import SourceKind
-from loom.etl.io.target._temp import TempFanInSpec, TempSpec
+
+_SOURCE_KIND_TEMP = "temp"
+
+
+class _TempTargetSpecLike(Protocol):
+    temp_name: str
+    temp_scope: object
+
 
 # ---------------------------------------------------------------------------
 # Duplicate-name conflict dispatch
@@ -124,20 +131,49 @@ def _validate_step(step: StepPlan, seen: dict[str, bool]) -> None:
 def _check_sources(step: StepPlan, seen: dict[str, bool]) -> None:
     for binding in step.source_bindings:
         spec = binding.spec
-        if spec.kind is SourceKind.TEMP and spec.temp_name not in seen:
+        if _enum_value(spec.kind) == _SOURCE_KIND_TEMP and spec.temp_name not in seen:
             temp_name = spec.temp_name or ""
             raise ETLCompilationError.temp_not_produced(step.step_type, binding.alias, temp_name)
 
 
 def _register_step_target(step: StepPlan, seen: dict[str, bool]) -> None:
     """Record the temp name produced by *step*, enforcing uniqueness rules."""
-    spec = step.target_binding.spec
-    if not isinstance(spec, (TempSpec, TempFanInSpec)):
+    raw_spec = step.target_binding.spec
+    if not _is_temp_target_spec(raw_spec):
+        return
+    spec = raw_spec
+    target_kind = _temp_target_kind(spec)
+    if target_kind is None:
         return
     name = spec.temp_name
-    is_fan_in = isinstance(spec, TempFanInSpec)
+    is_fan_in = target_kind == "fan_in"
     existing = seen.get(name)
     if existing is None:
         seen[name] = is_fan_in
         return
     _CONFLICT[(existing, is_fan_in)](step.step_type, name)
+
+
+def _temp_target_kind(spec: object) -> str | None:
+    if not _is_temp_target_spec(spec):
+        return None
+    kind = type(spec).__name__
+    if kind == "TempSpec":
+        return "strict"
+    if kind == "TempFanInSpec":
+        return "fan_in"
+    return None
+
+
+def _is_temp_target_spec(spec: object) -> TypeGuard[_TempTargetSpecLike]:
+    return isinstance(getattr(spec, "temp_name", None), str) and hasattr(spec, "temp_scope")
+
+
+def _enum_value(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Enum):
+        raw = value.value
+        if isinstance(raw, str):
+            return raw
+    return None

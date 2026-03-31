@@ -153,7 +153,7 @@ def test_all_factory_methods_runtime_execution(
 ) -> None:
     err = factory()
     assert isinstance(err, ETLCompilationError)
-    assert err.code is code
+    assert err.code == code
     assert err.field == field
     assert err.component
     assert str(err)

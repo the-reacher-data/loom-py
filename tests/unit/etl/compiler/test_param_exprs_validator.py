@@ -91,7 +91,7 @@ def test_unknown_field_in_source_predicate_raises() -> None:
     pred = col("year") == p.bad_field
     with pytest.raises(ETLCompilationError) as exc_info:
         validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
-    assert exc_info.value.code is ETLErrorCode.UNKNOWN_PARAM_FIELD
+    assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "bad_field"
 
 
@@ -99,7 +99,7 @@ def test_unknown_field_in_replace_where_raises() -> None:
     pred = col("region") == p.unknown_region
     with pytest.raises(ETLCompilationError) as exc_info:
         validate_param_exprs(_Step, _P, (), _replace_where_target(pred))
-    assert exc_info.value.code is ETLErrorCode.UNKNOWN_PARAM_FIELD
+    assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "unknown_region"
 
 

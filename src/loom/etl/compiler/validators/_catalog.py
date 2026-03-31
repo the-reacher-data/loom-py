@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from enum import Enum
+from typing import Protocol, TypeGuard, cast
+
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import (
     PipelinePlan,
@@ -10,18 +13,20 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
-from loom.etl.io._source import SourceKind
-from loom.etl.io._target import SchemaMode
-from loom.etl.io.target import (
-    AppendSpec,
-    ReplacePartitionsSpec,
-    ReplaceSpec,
-    ReplaceWhereSpec,
-    UpsertSpec,
-)
+from loom.etl.schema._table import TableRef
 from loom.etl.storage._io import TableDiscovery
 
-_TABLE_SPEC_TYPES = (AppendSpec, ReplaceSpec, ReplacePartitionsSpec, ReplaceWhereSpec, UpsertSpec)
+_SOURCE_KIND_TABLE = "table"
+_SCHEMA_MODE_OVERWRITE = "overwrite"
+
+
+class _TableRefLike(Protocol):
+    ref: str
+
+
+class _TableTargetSpecLike(Protocol):
+    table_ref: _TableRefLike
+    schema_mode: object
 
 
 def validate_step_catalog(plan: StepPlan, catalog: TableDiscovery) -> None:
@@ -126,7 +131,7 @@ def _check_sources(step: StepPlan, catalog: TableDiscovery, will_create: set[str
     for binding in step.source_bindings:
         spec = binding.spec
         if (
-            spec.kind is SourceKind.TABLE
+            _enum_value(spec.kind) == _SOURCE_KIND_TABLE
             and spec.table_ref is not None
             and spec.table_ref.ref not in will_create
             and not catalog.exists(spec.table_ref)
@@ -137,18 +142,41 @@ def _check_sources(step: StepPlan, catalog: TableDiscovery, will_create: set[str
 
 
 def _check_target(step: StepPlan, catalog: TableDiscovery, will_create: set[str]) -> None:
-    spec = step.target_binding.spec
-    if not isinstance(spec, _TABLE_SPEC_TYPES):
+    raw_spec = step.target_binding.spec
+    if not _is_table_target_spec(raw_spec):
         return
+    spec = raw_spec
+    table_ref = cast(TableRef, spec.table_ref)
     if (
-        spec.schema_mode is not SchemaMode.OVERWRITE
-        and spec.table_ref.ref not in will_create
-        and not catalog.exists(spec.table_ref)
+        _enum_value(spec.schema_mode) != _SCHEMA_MODE_OVERWRITE
+        and table_ref.ref not in will_create
+        and not catalog.exists(table_ref)
     ):
-        raise ETLCompilationError.unknown_target_table(step.step_type, spec.table_ref.ref)
+        raise ETLCompilationError.unknown_target_table(step.step_type, table_ref.ref)
 
 
 def _track_overwrite(step: StepPlan, will_create: set[str]) -> None:
-    spec = step.target_binding.spec
-    if isinstance(spec, _TABLE_SPEC_TYPES) and spec.schema_mode is SchemaMode.OVERWRITE:
+    raw_spec = step.target_binding.spec
+    if not _is_table_target_spec(raw_spec):
+        return
+    spec = raw_spec
+    if _enum_value(spec.schema_mode) == _SCHEMA_MODE_OVERWRITE:
         will_create.add(spec.table_ref.ref)
+
+
+def _is_table_target_spec(spec: object) -> TypeGuard[_TableTargetSpecLike]:
+    table_ref = getattr(spec, "table_ref", None)
+    schema_mode = getattr(spec, "schema_mode", None)
+    if table_ref is None or schema_mode is None:
+        return False
+    return isinstance(getattr(table_ref, "ref", None), str)
+
+
+def _enum_value(value: object) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Enum):
+        raw = value.value
+        if isinstance(raw, str):
+            return raw
+    return None

@@ -6,15 +6,21 @@ Internal module — consumed only by :mod:`loom.etl.compiler._compiler`.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
-from loom.etl.io._source import Sources, SourceSet
-from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
 from loom.etl.pipeline._step import ETLStep
 
-_VALID_TARGET_TYPES = (IntoTable, IntoFile, IntoTemp)
+
+@runtime_checkable
+class _TargetLike(Protocol):
+    def _to_spec(self) -> Any: ...
+
+
+@runtime_checkable
+class _GroupedSourcesLike(Protocol):
+    def _to_specs(self) -> tuple[Any, ...]: ...
 
 
 class _SourceFormKey(Enum):
@@ -63,7 +69,7 @@ def resolve_target_binding(step_type: type[ETLStep[Any]]) -> TargetBinding:
     target = step_type.target
     if target is None:
         raise ETLCompilationError.missing_target(step_type)
-    if not isinstance(target, _VALID_TARGET_TYPES):
+    if not isinstance(target, _TargetLike):
         raise ETLCompilationError.invalid_target_type(step_type)
     return TargetBinding(spec=target._to_spec())
 
@@ -81,11 +87,10 @@ def _bindings_from_inline(step_type: type[ETLStep[Any]]) -> tuple[SourceBinding,
 
 
 def _bindings_from_grouped(step_type: type[ETLStep[Any]]) -> tuple[SourceBinding, ...]:
-    match step_type.sources:
-        case Sources() | SourceSet() as grouped:
-            return tuple(SourceBinding(alias=spec.alias, spec=spec) for spec in grouped._to_specs())
-        case _:
-            raise ETLCompilationError.invalid_sources_type(step_type)
+    grouped = step_type.sources
+    if not isinstance(grouped, _GroupedSourcesLike):
+        raise ETLCompilationError.invalid_sources_type(step_type)
+    return tuple(SourceBinding(alias=spec.alias, spec=spec) for spec in grouped._to_specs())
 
 
 def _normalize_source_form(raw: Any) -> _SourceFormKey:
