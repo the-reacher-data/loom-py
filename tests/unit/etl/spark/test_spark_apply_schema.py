@@ -21,6 +21,10 @@ _ID_AMOUNT_SCHEMA = T.StructType(
 )
 
 
+def _snapshot(df: DataFrame) -> tuple[T.StructType, list[dict[str, object]]]:
+    return df.schema, [row.asDict(recursive=True) for row in df.collect()]
+
+
 @pytest.mark.parametrize("mode", [SchemaMode.STRICT, SchemaMode.EVOLVE])
 def test_raises_schema_not_found_when_schema_is_none(mode: SchemaMode, spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
@@ -44,12 +48,13 @@ def test_strict_casts_fills_missing_and_drops_extra_columns(spark: SparkSession)
     frame = spark.createDataFrame([(1, "1.5", "drop-me")], ["id", "amount", "extra"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out_schema, rows = _snapshot(out)
+    row = rows[0]
 
-    assert out.columns == ["id", "amount", "label"]
-    assert isinstance(out.schema["id"].dataType, T.LongType)
-    assert isinstance(out.schema["amount"].dataType, T.DoubleType)
-    assert isinstance(out.schema["label"].dataType, T.StringType)
-    row = out.collect()[0]
+    assert out_schema.fieldNames() == ["id", "amount", "label"]
+    assert isinstance(out_schema["id"].dataType, T.LongType)
+    assert isinstance(out_schema["amount"].dataType, T.DoubleType)
+    assert isinstance(out_schema["label"].dataType, T.StringType)
     assert row["id"] == 1
     assert row["amount"] == pytest.approx(1.5)
     assert row["label"] is None
@@ -66,11 +71,12 @@ def test_evolve_casts_and_keeps_extra_columns(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, "2.5", "keep-me")], ["id", "amount", "extra"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.EVOLVE)
+    out_schema, _ = _snapshot(out)
 
-    assert "extra" in out.columns
-    assert isinstance(out.schema["id"].dataType, T.LongType)
-    assert isinstance(out.schema["amount"].dataType, T.DoubleType)
-    assert isinstance(out.schema["label"].dataType, T.StringType)
+    assert "extra" in out_schema.fieldNames()
+    assert isinstance(out_schema["id"].dataType, T.LongType)
+    assert isinstance(out_schema["amount"].dataType, T.DoubleType)
+    assert isinstance(out_schema["label"].dataType, T.StringType)
 
 
 def test_struct_cast_is_recursive(spark: SparkSession) -> None:
@@ -115,10 +121,11 @@ def test_struct_cast_is_recursive(spark: SparkSession) -> None:
         F.col("point.x").alias("x"),
         F.col("point.meta.z").alias("z"),
     )
-    row = out.collect()[0]
+    out_schema, rows = _snapshot(out)
+    row = rows[0]
 
-    assert isinstance(out.schema["x"].dataType, T.DoubleType)
-    assert isinstance(out.schema["z"].dataType, T.LongType)
+    assert isinstance(out_schema["x"].dataType, T.DoubleType)
+    assert isinstance(out_schema["z"].dataType, T.LongType)
     assert row["x"] == pytest.approx(1.0)
     assert row["z"] == 2
 
@@ -141,9 +148,11 @@ def test_missing_struct_column_is_null_filled_recursively(spark: SparkSession) -
     frame = spark.createDataFrame([(1,)], ["id"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out_schema, rows = _snapshot(out)
+    row = rows[0]
 
-    assert out.collect()[0]["point"] is None
-    assert isinstance(out.schema["point"].dataType, T.StructType)
+    assert row["point"] is None
+    assert isinstance(out_schema["point"].dataType, T.StructType)
 
 
 def test_missing_array_column_is_null_filled_with_exact_type(spark: SparkSession) -> None:
@@ -156,10 +165,12 @@ def test_missing_array_column_is_null_filled_with_exact_type(spark: SparkSession
     frame = spark.createDataFrame([(1,)], ["id"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out_schema, rows = _snapshot(out)
+    row = rows[0]
 
-    assert out.collect()[0]["tags"] is None
-    assert isinstance(out.schema["tags"].dataType, T.ArrayType)
-    assert isinstance(out.schema["tags"].dataType.elementType, T.StringType)
+    assert row["tags"] is None
+    assert isinstance(out_schema["tags"].dataType, T.ArrayType)
+    assert isinstance(out_schema["tags"].dataType.elementType, T.StringType)
 
 
 ORDERS_SCENARIO = ETLScenario().with_table("raw.orders", [(1, 10.0), (2, 20.0)], ["id", "amount"])
