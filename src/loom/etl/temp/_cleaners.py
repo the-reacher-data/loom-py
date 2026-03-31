@@ -63,8 +63,9 @@ class LocalTempCleaner:
 
     Example::
 
+        tmp_root = os.environ["LOOM_TMP_ROOT"]
         cleaner = LocalTempCleaner()
-        cleaner.delete_tree("/tmp/loom/runs/abc123")
+        cleaner.delete_tree(f"{tmp_root}/runs/abc123")
     """
 
     def delete_tree(self, path: str) -> None:
@@ -164,7 +165,8 @@ class AutoTempCleaner:
 
     Example::
 
-        store = IntermediateStore(tmp_root="/tmp/loom")
+        tmp_root = os.environ["LOOM_TMP_ROOT"]
+        store = IntermediateStore(tmp_root=tmp_root)
         # AutoTempCleaner is used automatically — no need to pass it explicitly.
     """
 

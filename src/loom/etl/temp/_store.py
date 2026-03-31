@@ -127,18 +127,18 @@ class _PolarsTempBackend:
         ``os.path.exists`` / ``os.path.isdir`` checks.
         """
         single = _arrow_path(name, base)
-        directory = f"{base}/{name}"
+        directory = _join_path(base, name)
         if _is_cloud_path(base):
             fs, base_path = fsspec.core.url_to_fs(base, **(self._storage_options or {}))
-            if fs.exists(f"{base_path}/{name}.arrow"):
+            if fs.exists(_join_path(base_path, f"{name}.arrow")):
                 return single
-            if fs.isdir(f"{base_path}/{name}"):
-                return f"{directory}/*.arrow"
+            if fs.isdir(_join_path(base_path, name)):
+                return _join_path(directory, "*.arrow")
             return None
         if os.path.exists(single):
             return single
         if os.path.isdir(directory):
-            return f"{directory}/*.arrow"
+            return _join_path(directory, "*.arrow")
         return None
 
 
@@ -150,7 +150,7 @@ class _SparkTempBackend:
 
     def probe(self, name: str, base: str) -> Any | None:
         """Return a ``DataFrame`` reading *name* under *base*, or ``None`` if absent."""
-        return _probe_spark(self._spark, f"{base}/{name}")
+        return _probe_spark(self._spark, _join_path(base, name))
 
     def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
         """Write *data* as a Parquet directory under *base*.
@@ -163,7 +163,7 @@ class _SparkTempBackend:
                 f"Spark backend expects pyspark.sql.DataFrame, got {type(data).__qualname__!r}. "
                 "Verify that IntermediateStore was constructed with a SparkSession."
             )
-        path = f"{base}/{name}"
+        path = _join_path(base, name)
         _log.debug("temp write parquet path=%s append=%s", path, append)
         data.write.mode("append" if append else "overwrite").parquet(path)
 
@@ -193,7 +193,8 @@ class IntermediateStore:
 
     Example::
 
-        store = IntermediateStore(tmp_root="/tmp/loom", storage_options={})
+        tmp_root = os.environ["LOOM_TMP_ROOT"]
+        store = IntermediateStore(tmp_root=tmp_root, storage_options={})
         store.put("orders", run_id="abc", correlation_id=None,
                   scope=TempScope.RUN, data=polars_lazy_frame)
         lf = store.get("orders", run_id="abc", correlation_id=None)
@@ -312,7 +313,7 @@ class IntermediateStore:
         Args:
             run_id: UUID of the pipeline run to clean.
         """
-        path = f"{self._root}/runs/{run_id}"
+        path = _join_path(self._root, "runs", run_id)
         _log.debug("temp cleanup run path=%s", path)
         self._cleaner.delete_tree(path)
 
@@ -325,7 +326,7 @@ class IntermediateStore:
         Args:
             correlation_id: Logical job ID whose intermediates to purge.
         """
-        path = f"{self._root}/correlations/{correlation_id}"
+        path = _join_path(self._root, "correlations", correlation_id)
         _log.debug("temp cleanup correlation path=%s", path)
         self._cleaner.delete_tree(path)
 
@@ -340,7 +341,7 @@ class IntermediateStore:
             older_than_seconds: Age threshold in seconds.  Defaults to 86 400
                                 (24 hours).
         """
-        runs_root = f"{self._root}/runs"
+        runs_root = _join_path(self._root, "runs")
         if _is_cloud_path(runs_root):
             _log.warning(
                 "cleanup_stale not supported for cloud tmp_root=%s — "
@@ -379,8 +380,8 @@ class IntermediateStore:
                     "_scope_base called with scope=CORRELATION but correlation_id=None. "
                     "This is a framework bug — please report it."
                 )
-            return f"{self._root}/correlations/{correlation_id}"
-        return f"{self._root}/runs/{run_id}"
+            return _join_path(self._root, "correlations", correlation_id)
+        return _join_path(self._root, "runs", run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -400,12 +401,12 @@ def _is_spark_dataframe(obj: Any) -> bool:
 
 def _arrow_path(name: str, base: str) -> str:
     """Single-file Arrow IPC path for strict (non-append) writes."""
-    return f"{base}/{name}.arrow"
+    return _join_path(base, f"{name}.arrow")
 
 
 def _arrow_part(name: str, base: str) -> str:
     """Unique partition path inside the append directory for *name*."""
-    return f"{base}/{name}/{uuid.uuid4().hex}.arrow"
+    return _join_path(base, name, f"{uuid.uuid4().hex}.arrow")
 
 
 def _probe_spark(spark: Any, path: str) -> Any | None:
@@ -431,3 +432,11 @@ def _ensure_parent(path: str) -> None:
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
+
+
+def _join_path(base: str, *parts: str) -> str:
+    root = base.rstrip("/")
+    suffix = "/".join(part.strip("/") for part in parts if part)
+    if not root:
+        return f"/{suffix}" if suffix else "/"
+    return f"{root}/{suffix}" if suffix else root

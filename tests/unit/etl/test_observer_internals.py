@@ -194,6 +194,6 @@ def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.Monke
 
 
 def test_delta_run_sink_rejects_unknown_record_type() -> None:
-    sink = DeltaRunSink("/tmp/runs")
+    sink = DeltaRunSink("/var/lib/loom/runs")
     with pytest.raises(TypeError, match="unrecognised record type"):
         sink.write(object())  # type: ignore[arg-type]

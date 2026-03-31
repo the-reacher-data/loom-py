@@ -116,7 +116,7 @@ class PrefixLocator:
         locator = PrefixLocator(root="s3://my-lake/")
 
         # From a pathlib.Path (converted to str internally)
-        locator = PrefixLocator(root=Path("/data/delta"))
+        locator = PrefixLocator(root=Path("data/delta"))
 
         # With explicit credentials and compression
         locator = PrefixLocator(

@@ -32,7 +32,7 @@ from loom.etl.temp._cleaners import (
         ("gcs://bucket/tmp", True),
         ("abfss://container@account/tmp", True),
         ("abfs://container@account/tmp", True),
-        ("dbfs:/tmp/loom", True),
+        ("dbfs:/loom", True),
         ("az://container/tmp", True),
     ],
 )
@@ -136,8 +136,8 @@ def test_fsspec_cleaner_does_not_raise_on_exception() -> None:
 
 def test_dbutils_cleaner_calls_fs_rm() -> None:
     dbutils = MagicMock()
-    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/tmp/loom/runs/abc")
-    dbutils.fs.rm.assert_called_once_with("dbfs:/tmp/loom/runs/abc", recurse=True)
+    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")
+    dbutils.fs.rm.assert_called_once_with("dbfs:/loom/runs/abc", recurse=True)
 
 
 def test_dbutils_cleaner_logs_warning_on_exception(caplog: pytest.LogCaptureFixture) -> None:
@@ -146,7 +146,7 @@ def test_dbutils_cleaner_logs_warning_on_exception(caplog: pytest.LogCaptureFixt
     import logging
 
     with caplog.at_level(logging.WARNING, logger="loom.etl._temp_cleaners"):
-        DbutilsTempCleaner(dbutils).delete_tree("dbfs:/tmp/loom/runs/abc")
+        DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")
 
     assert any("cleanup skipped" in r.message for r in caplog.records)
 
@@ -154,7 +154,7 @@ def test_dbutils_cleaner_logs_warning_on_exception(caplog: pytest.LogCaptureFixt
 def test_dbutils_cleaner_does_not_raise_on_exception() -> None:
     dbutils = MagicMock()
     dbutils.fs.rm.side_effect = RuntimeError("boom")
-    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/tmp/loom/runs/abc")  # must not raise
+    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ def test_auto_cleaner_dispatches_dbfs_path_to_fsspec() -> None:
     mock_module = _mock_fsspec(mock_fs, "/dbfs/tmp")
 
     with patch.dict(sys.modules, {"fsspec": mock_module, "fsspec.core": mock_module.core}):
-        AutoTempCleaner().delete_tree("dbfs:/tmp/loom/runs/abc")
+        AutoTempCleaner().delete_tree("dbfs:/loom/runs/abc")
 
     mock_module.core.url_to_fs.assert_called_once()
 

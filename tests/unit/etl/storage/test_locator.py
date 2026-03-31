@@ -82,6 +82,6 @@ def test_as_location_coerces_pathlike_and_keeps_table_location() -> None:
     existing = TableLocation(uri="s3://bucket/table")
     assert _as_location(existing) is existing
 
-    coerced = _as_location(Path("/tmp/runs"))
+    coerced = _as_location(Path("/var/lib/loom/runs"))
     assert isinstance(coerced, TableLocation)
-    assert coerced.uri == "/tmp/runs"
+    assert coerced.uri == "/var/lib/loom/runs"

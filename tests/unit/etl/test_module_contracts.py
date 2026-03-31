@@ -199,8 +199,10 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
     assert compiled_target.table_ref.ref == "staging.orders"
     assert compiled_target.replace_predicate is not None
 
-    file_target = target_mod.IntoFile("/tmp/out.csv", format=target_mod.Format.CSV)._to_spec()
-    assert file_target.path == "/tmp/out.csv"
+    file_target = target_mod.IntoFile(
+        "/var/lib/loom/out.csv", format=target_mod.Format.CSV
+    )._to_spec()
+    assert file_target.path == "/var/lib/loom/out.csv"
 
     temp_target = target_mod.IntoTemp("parts", append=True)._to_spec()
     assert temp_target.temp_name == "parts"
@@ -215,7 +217,7 @@ def test_reload_temp_store_module_and_helpers() -> None:
     assert store_mod._is_polars_lazy_frame(fake_polars)
     assert store_mod._is_spark_dataframe(fake_spark)
 
-    base = "/tmp/loom-test"
+    base = "/var/lib/loom/test"
     single = store_mod._arrow_path("orders", base)
     part = store_mod._arrow_part("orders", base)
     assert single.endswith("/orders.arrow")
@@ -233,7 +235,7 @@ def test_reload_temp_store_module_and_helpers() -> None:
     class _Spark:
         read = _Reader()
 
-    assert store_mod._probe_spark(_Spark(), "/tmp/missing") is None
+    assert store_mod._probe_spark(_Spark(), "/var/lib/loom/missing") is None
 
     class _ReaderUnexpected:
         def parquet(self, _path: str) -> object:
@@ -243,7 +245,7 @@ def test_reload_temp_store_module_and_helpers() -> None:
         read = _ReaderUnexpected()
 
     with pytest.raises(RuntimeError, match="boom"):
-        store_mod._probe_spark(_SparkUnexpected(), "/tmp/missing")
+        store_mod._probe_spark(_SparkUnexpected(), "/var/lib/loom/missing")
 
 
 def test_lazy_pipeline_exports_resolve() -> None:
@@ -299,13 +301,13 @@ def test_target_variant_specs_store_expected_fields() -> None:
     from loom.etl.temp._scope import TempScope
 
     table = TableRef("staging.orders")
-    file_spec = FileSpec(path="/tmp/out.csv", format=Format.CSV)
+    file_spec = FileSpec(path="/var/lib/loom/out.csv", format=Format.CSV)
     append = AppendSpec(table_ref=table)
     replace = ReplaceSpec(table_ref=table)
     temp = TempSpec(temp_name="tmp_orders", temp_scope=TempScope.RUN)
     fan_in = TempFanInSpec(temp_name="tmp_parts", temp_scope=TempScope.CORRELATION)
 
-    assert file_spec.path == "/tmp/out.csv"
+    assert file_spec.path == "/var/lib/loom/out.csv"
     assert append.table_ref == table
     assert replace.table_ref == table
     assert temp.temp_name == "tmp_orders"

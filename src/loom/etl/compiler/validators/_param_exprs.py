@@ -10,25 +10,35 @@ Internal module — consumed only by :mod:`loom.etl.compiler.validators._step`.
 
 from __future__ import annotations
 
-from typing import Any
+from enum import Enum
+from typing import Any, Protocol, cast
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.io.target._table import ReplaceWhereSpec
 from loom.etl.pipeline._proxy import ParamExpr
-from loom.etl.sql._predicate import (
-    AndPred,
-    EqPred,
-    GePred,
-    GtPred,
-    InPred,
-    LePred,
-    LtPred,
-    NePred,
-    NotPred,
-    OrPred,
-    PredicateNode,
-)
+from loom.etl.sql._predicate import PredicateNode
+
+
+class _PredicateShape(Enum):
+    BINARY = "binary"  # left/right
+    IN = "in"  # ref/values
+    UNARY = "unary"  # operand
+    UNKNOWN = "unknown"
+
+
+class _BinaryPredicateLike(Protocol):
+    left: Any
+    right: Any
+
+
+class _InPredicateLike(Protocol):
+    ref: Any
+    values: Any
+
+
+class _UnaryPredicateLike(Protocol):
+    operand: Any
 
 
 def validate_param_exprs(
@@ -89,21 +99,57 @@ def _known_fields(params_type: type[Any]) -> frozenset[str] | None:
 
 def _collect_exprs(node: PredicateNode, out: list[ParamExpr]) -> None:
     """Recursively collect all :class:`ParamExpr` leaves from *node* into *out*."""
-    match node:
-        case EqPred() | NePred() | GtPred() | GePred() | LtPred() | LePred():
-            _collect_value(node.left, out)
-            _collect_value(node.right, out)
-        case InPred():
-            _collect_value(node.ref, out)
-            _collect_value(node.values, out)
-        case AndPred() | OrPred():
-            _collect_exprs(node.left, out)
-            _collect_exprs(node.right, out)
-        case NotPred():
-            _collect_exprs(node.operand, out)
+    shape = _predicate_shape(node)
+    if shape is _PredicateShape.BINARY:
+        binary = cast(_BinaryPredicateLike, node)
+        left = binary.left
+        right = binary.right
+        if _is_predicate_node_like(left) or _is_predicate_node_like(right):
+            _collect_exprs(left, out)
+            _collect_exprs(right, out)
+            return
+        _collect_value(left, out)
+        _collect_value(right, out)
+        return
+    if shape is _PredicateShape.IN:
+        in_pred = cast(_InPredicateLike, node)
+        _collect_value(in_pred.ref, out)
+        _collect_value(in_pred.values, out)
+        return
+    if shape is _PredicateShape.UNARY:
+        unary = cast(_UnaryPredicateLike, node)
+        _collect_exprs(unary.operand, out)
 
 
 def _collect_value(value: Any, out: list[ParamExpr]) -> None:
     """Append *value* to *out* if it is a :class:`ParamExpr`."""
-    if isinstance(value, ParamExpr):
+    if _is_param_expr(value):
         out.append(value)
+
+
+def _is_param_expr(value: Any) -> bool:
+    """Return True for ParamExpr values across module reload boundaries."""
+    if isinstance(value, ParamExpr):
+        return True
+    path = getattr(value, "path", None)
+    return isinstance(path, tuple) and all(isinstance(part, str) for part in path)
+
+
+def _predicate_shape(node: Any) -> _PredicateShape:
+    """Classify predicate node by dataclass field shape (reload-safe)."""
+    fields = getattr(type(node), "__dataclass_fields__", None)
+    if not isinstance(fields, dict):
+        return _PredicateShape.UNKNOWN
+    names = frozenset(fields.keys())
+    if names == {"left", "right"}:
+        return _PredicateShape.BINARY
+    if names == {"ref", "values"}:
+        return _PredicateShape.IN
+    if names == {"operand"}:
+        return _PredicateShape.UNARY
+    return _PredicateShape.UNKNOWN
+
+
+def _is_predicate_node_like(value: Any) -> bool:
+    """Return True for supported predicate node shapes."""
+    return _predicate_shape(value) is not _PredicateShape.UNKNOWN
