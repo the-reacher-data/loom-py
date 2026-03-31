@@ -50,7 +50,7 @@ class DailyPipeline(ETLPipeline[DailyParams]):
     processes = [DailyProcess]
 
 
-runner = ETLRunner.from_dict(storage={"root": "/tmp/lake"})
+runner = ETLRunner.from_dict(storage={"root": "/var/lib/loom/lake"})
 runner.run(DailyPipeline, DailyParams(run_date=date(2026, 3, 30)))
 ```
 
@@ -58,14 +58,14 @@ runner.run(DailyPipeline, DailyParams(run_date=date(2026, 3, 30)))
 
 ```yaml
 storage:
-  root: /tmp/lake
-  tmp_root: /tmp/lake/_tmp
+  root: /var/lib/loom/lake
+  tmp_root: /var/lib/loom/lake/_tmp
 
 observability:
   log: true
   slow_step_threshold_ms: 30000
   run_sink:
-    root: /tmp/lake/_runs
+    root: /var/lib/loom/lake/_runs
 ```
 
 ```python

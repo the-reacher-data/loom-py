@@ -18,7 +18,7 @@ from loom.etl.storage._locator import (
 
 def test_prefix_locator_resolves_dotted_refs_and_preserves_defaults() -> None:
     locator = PrefixLocator(
-        root="/tmp/lake/",
+        root="/var/lib/loom/lake/",
         storage_options={"AWS_REGION": "eu-west-1"},
         writer={"compression": "SNAPPY"},
         delta_config={"delta.appendOnly": "true"},
@@ -27,7 +27,7 @@ def test_prefix_locator_resolves_dotted_refs_and_preserves_defaults() -> None:
 
     location = locator.locate(TableRef("raw.orders"))
 
-    assert location.uri == "/tmp/lake/raw/orders"
+    assert location.uri == "/var/lib/loom/lake/raw/orders"
     assert location.storage_options == {"AWS_REGION": "eu-west-1"}
     assert location.writer == {"compression": "SNAPPY"}
     assert location.delta_config == {"delta.appendOnly": "true"}
@@ -73,9 +73,9 @@ def test_as_locator_coerces_pathlike_and_keeps_custom_locator() -> None:
     custom = _Locator()
     assert _as_locator(custom) is custom
 
-    coerced = _as_locator(Path("/tmp/lake"))
+    coerced = _as_locator(Path("/var/lib/loom/lake"))
     assert isinstance(coerced, PrefixLocator)
-    assert coerced.locate(TableRef("raw.orders")).uri == "/tmp/lake/raw/orders"
+    assert coerced.locate(TableRef("raw.orders")).uri == "/var/lib/loom/lake/raw/orders"
 
 
 def test_as_location_coerces_pathlike_and_keeps_table_location() -> None:

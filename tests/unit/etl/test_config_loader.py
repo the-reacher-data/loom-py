@@ -15,7 +15,7 @@ def test_parse_yaml_content_reads_storage_and_observability_sections() -> None:
     content = """
 storage:
   type: delta
-  root: /tmp/lake
+  root: /var/lib/loom/lake
 observability:
   log: false
   slow_step_threshold_ms: 1500
@@ -24,17 +24,17 @@ observability:
     storage, obs = _parse_yaml_content(content)
 
     assert isinstance(storage, DeltaConfig)
-    assert storage.root == "/tmp/lake"
+    assert storage.root == "/var/lib/loom/lake"
     assert isinstance(obs, ObservabilityConfig)
     assert obs.log is False
     assert obs.slow_step_threshold_ms == 1500
 
 
 def test_parse_yaml_content_uses_default_observability_when_missing() -> None:
-    storage, obs = _parse_yaml_content("storage:\n  root: /tmp/lake\n")
+    storage, obs = _parse_yaml_content("storage:\n  root: /var/lib/loom/lake\n")
 
     assert isinstance(storage, DeltaConfig)
-    assert storage.root == "/tmp/lake"
+    assert storage.root == "/var/lib/loom/lake"
     assert obs == ObservabilityConfig()
 
 
@@ -52,9 +52,9 @@ def test_parse_yaml_content_errors(content: str, exc: type[Exception], match: st
 
 def test_read_yaml_file_reads_raw_text(tmp_path: Path) -> None:
     path = tmp_path / "loom.yaml"
-    path.write_text("storage:\n  root: /tmp/lake\n", encoding="utf-8")
+    path.write_text("storage:\n  root: /var/lib/loom/lake\n", encoding="utf-8")
 
-    assert _read_yaml_file(path) == "storage:\n  root: /tmp/lake\n"
+    assert _read_yaml_file(path) == "storage:\n  root: /var/lib/loom/lake\n"
 
 
 def test_load_yaml_reads_and_parses_file(tmp_path: Path) -> None:
@@ -62,7 +62,7 @@ def test_load_yaml_reads_and_parses_file(tmp_path: Path) -> None:
     path.write_text(
         """
 storage:
-  root: /tmp/lake
+  root: /var/lib/loom/lake
 observability:
   log: true
 """,
@@ -71,5 +71,5 @@ observability:
 
     storage, obs = _load_yaml(path)
     assert isinstance(storage, DeltaConfig)
-    assert storage.root == "/tmp/lake"
+    assert storage.root == "/var/lib/loom/lake"
     assert obs.log is True
