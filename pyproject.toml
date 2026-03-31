@@ -59,6 +59,7 @@ dev = [
     "sqlalchemy>=2.0,<3.0",
     "polars>=1.0,<2.0",
     "deltalake>=0.25,<1.0",
+    "fsspec>=2024.2.0",
     "httpx>=0.28.1",
     "httptools>=0.6,<1.0",
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",

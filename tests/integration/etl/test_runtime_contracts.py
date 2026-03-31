@@ -286,11 +286,11 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
             def rm(path: str, recurse: bool) -> None:
                 _Dbutils.fs.calls.append((path, recurse))
 
-    cleaners_mod.DbutilsTempCleaner(_Dbutils()).delete_tree("dbfs:/tmp/runs")
-    assert _Dbutils.fs.calls == [("dbfs:/tmp/runs", True)]
+    cleaners_mod.DbutilsTempCleaner(_Dbutils()).delete_tree("dbfs:/loom/runs")
+    assert _Dbutils.fs.calls == [("dbfs:/loom/runs", True)]
 
     assert cleaners_mod._is_cloud_path("abfss://container/path")
-    assert not cleaners_mod._is_cloud_path("/tmp/path")
+    assert not cleaners_mod._is_cloud_path("/var/lib/loom/path")
 
 
 def test_proxy_and_locator_runtime_contracts() -> None:
@@ -308,8 +308,8 @@ def test_proxy_and_locator_runtime_contracts() -> None:
     with pytest.raises(AttributeError):
         _ = proxy_mod.params._private
 
-    prefix = locator_mod.PrefixLocator("/tmp/lake")
-    assert prefix.locate(TableRef("raw.orders")).uri == "/tmp/lake/raw/orders"
+    prefix = locator_mod.PrefixLocator("/var/lib/loom/lake")
+    assert prefix.locate(TableRef("raw.orders")).uri == "/var/lib/loom/lake/raw/orders"
 
     mapped = locator_mod.MappingLocator(
         mapping={"raw.orders": locator_mod.TableLocation(uri="s3://raw/orders")},
@@ -320,8 +320,8 @@ def test_proxy_and_locator_runtime_contracts() -> None:
     with pytest.raises(KeyError):
         locator_mod.MappingLocator(mapping={}).locate(TableRef("missing.table"))
 
-    assert isinstance(locator_mod._as_locator("/tmp/lake"), locator_mod.PrefixLocator)
-    assert locator_mod._as_location("/tmp/runs").uri == "/tmp/runs"
+    assert isinstance(locator_mod._as_locator("/var/lib/loom/lake"), locator_mod.PrefixLocator)
+    assert locator_mod._as_location("/var/lib/loom/runs").uri == "/var/lib/loom/runs"
 
 
 def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,7 +392,7 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
         "write_deltalake",
         lambda uri, df, mode, schema_mode, storage_options=None: writes.append((uri, df)),
     )
-    delta_sink = delta_sink_mod.DeltaRunSink("/tmp/runs")
+    delta_sink = delta_sink_mod.DeltaRunSink("/var/lib/loom/runs")
     record = events_mod.StepRunRecord(
         event=events_mod.EventName.STEP_END,
         run_id="r3",
