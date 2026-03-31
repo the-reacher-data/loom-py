@@ -27,6 +27,14 @@ class _PredicateShape(Enum):
     UNKNOWN = "unknown"
 
 
+class _PredicateField(Enum):
+    LEFT = "left"
+    RIGHT = "right"
+    REF = "ref"
+    VALUES = "values"
+    OPERAND = "operand"
+
+
 class _BinaryPredicateLike(Protocol):
     left: Any
     right: Any
@@ -140,12 +148,11 @@ def _predicate_shape(node: Any) -> _PredicateShape:
     fields = getattr(type(node), "__dataclass_fields__", None)
     if not isinstance(fields, dict):
         return _PredicateShape.UNKNOWN
-    field_count = len(fields)
-    if field_count == 2 and "left" in fields and "right" in fields:
+    if _has_fields(fields, _PredicateField.LEFT, _PredicateField.RIGHT):
         return _PredicateShape.BINARY
-    if field_count == 2 and "ref" in fields and "values" in fields:
+    if _has_fields(fields, _PredicateField.REF, _PredicateField.VALUES):
         return _PredicateShape.IN
-    if field_count == 1 and "operand" in fields:
+    if _has_fields(fields, _PredicateField.OPERAND):
         return _PredicateShape.UNARY
     return _PredicateShape.UNKNOWN
 
@@ -153,3 +160,9 @@ def _predicate_shape(node: Any) -> _PredicateShape:
 def _is_predicate_node_like(value: Any) -> bool:
     """Return True for supported predicate node shapes."""
     return _predicate_shape(value) is not _PredicateShape.UNKNOWN
+
+
+def _has_fields(fields: dict[str, Any], *expected: _PredicateField) -> bool:
+    if len(fields) != len(expected):
+        return False
+    return all(field.value in fields for field in expected)

@@ -44,8 +44,6 @@ def test_strict_casts_fills_missing_and_drops_extra_columns(spark: SparkSession)
     frame = spark.createDataFrame([(1, "1.5", "drop-me")], ["id", "amount", "extra"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
-    out.cache()
-    out.count()
 
     assert out.columns == ["id", "amount", "label"]
     assert isinstance(out.schema["id"].dataType, T.LongType)
@@ -68,8 +66,6 @@ def test_evolve_casts_and_keeps_extra_columns(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, "2.5", "keep-me")], ["id", "amount", "extra"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.EVOLVE)
-    out.cache()
-    out.count()
 
     assert "extra" in out.columns
     assert isinstance(out.schema["id"].dataType, T.LongType)
@@ -115,8 +111,6 @@ def test_struct_cast_is_recursive(spark: SparkSession) -> None:
     frame = spark.createDataFrame([((1, ("2",)),)], schema=input_schema)
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
-    out.cache()
-    out.count()
     out = out.select(
         F.col("point.x").alias("x"),
         F.col("point.meta.z").alias("z"),
@@ -147,8 +141,6 @@ def test_missing_struct_column_is_null_filled_recursively(spark: SparkSession) -
     frame = spark.createDataFrame([(1,)], ["id"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
-    out.cache()
-    out.count()
 
     assert out.collect()[0]["point"] is None
     assert isinstance(out.schema["point"].dataType, T.StructType)
@@ -164,8 +156,6 @@ def test_missing_array_column_is_null_filled_with_exact_type(spark: SparkSession
     frame = spark.createDataFrame([(1,)], ["id"])
 
     out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
-    out.cache()
-    out.count()
 
     assert out.collect()[0]["tags"] is None
     assert isinstance(out.schema["tags"].dataType, T.ArrayType)
@@ -198,21 +188,17 @@ def test_scenario_seeds_frame(step_runner, spark: SparkSession) -> None:  # type
 
 
 def test_apply_schema_passes_with_matching_frame(spark: SparkSession) -> None:
-    frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    frame.cache()
-    frame.count()
+    base_rows = [(1, 1.0)]
+    columns = ["id", "amount"]
 
-    result = spark_apply_schema(frame, None, SchemaMode.OVERWRITE)
-    result.cache()
-    result.count()
-    assert_df_equality(result, frame)
+    frame_overwrite = spark.createDataFrame(base_rows, columns)
+    result_overwrite = spark_apply_schema(frame_overwrite, None, SchemaMode.OVERWRITE)
+    assert_df_equality(result_overwrite, frame_overwrite)
 
-    result = spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT)
-    result.cache()
-    result.count()
-    assert_df_equality(result, frame, ignore_nullable=True)
+    frame_strict = spark.createDataFrame(base_rows, columns)
+    result_strict = spark_apply_schema(frame_strict, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT)
+    assert_df_equality(result_strict, frame_strict, ignore_nullable=True)
 
-    result = spark_apply_schema(frame, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE)
-    result.cache()
-    result.count()
-    assert_df_equality(result, frame, ignore_nullable=True)
+    frame_evolve = spark.createDataFrame(base_rows, columns)
+    result_evolve = spark_apply_schema(frame_evolve, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE)
+    assert_df_equality(result_evolve, frame_evolve, ignore_nullable=True)
