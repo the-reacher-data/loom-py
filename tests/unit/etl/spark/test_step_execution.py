@@ -311,12 +311,13 @@ class TestSparkReaderWriterTypeGuards:
     def test_unified_reader_rejects_unsupported_csv_skip_rows(
         self,
         spark_reader: SparkDeltaReader,
+        tmp_path: Path,
     ) -> None:
         read_spec = SourceSpec(
             alias="data",
             kind=SourceKind.FILE,
             format=Format.CSV,
-            path="/tmp/data.csv",
+            path=str(tmp_path / "data.csv"),
             read_options=CsvReadOptions(skip_rows=1),
         )
         with pytest.raises(ValueError, match="skip_rows"):
