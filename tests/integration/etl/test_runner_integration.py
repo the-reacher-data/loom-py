@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import date
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from loom.etl import (
     ETLProcess,
     ETLRunner,
     ETLStep,
+    Format,
+    FromFile,
     FromTable,
+    IntoFile,
     IntoTable,
     SchemaMode,
 )
@@ -167,3 +171,84 @@ observability:
     assert (orders_target / "_delta_log").exists()
     assert not (customers_target / "_delta_log").exists()
     assert _read_table(root, "staging.orders_only")["id"].to_list() == [1, 2]
+
+
+def test_runner_handles_json_string_source_and_final_csv_reporting(tmp_path: Path) -> None:
+    root = tmp_path / "lake"
+    source_path = tmp_path / "events.csv"
+    report_path = tmp_path / "daily_report.csv"
+    pl.DataFrame(
+        {
+            "event_id": [1, 2, 3],
+            "payload": [
+                json.dumps({"store": "es", "amount": 10.0, "items": 2}),
+                json.dumps({"store": "es", "amount": 5.5, "items": 1}),
+                json.dumps({"store": "uk", "amount": 7.0, "items": 3}),
+            ],
+        }
+    ).write_csv(source_path)
+
+    class PayloadContract:
+        store: str
+        amount: float
+        items: int
+
+    class LoadEvents(ETLStep[RunParams]):
+        events = FromFile(str(source_path), format=Format.CSV).parse_json(
+            "payload", PayloadContract
+        )
+        target = IntoTable("staging.events").replace(schema=SchemaMode.OVERWRITE)
+
+        def execute(self, params: RunParams, *, events: pl.LazyFrame) -> pl.LazyFrame:  # type: ignore[override]
+            _ = params
+            return events.select(
+                pl.col("event_id").cast(pl.Int64).alias("event_id"),
+                pl.col("payload").struct.field("store").alias("store"),
+                pl.col("payload").struct.field("amount").cast(pl.Float64).alias("amount"),
+                pl.col("payload").struct.field("items").cast(pl.Int64).alias("items"),
+            )
+
+    class BuildPrepared(ETLStep[RunParams]):
+        events = FromTable("staging.events")
+        target = IntoTable("prepared.store_daily").replace(schema=SchemaMode.OVERWRITE)
+
+        def execute(self, params: RunParams, *, events: pl.LazyFrame) -> pl.LazyFrame:  # type: ignore[override]
+            _ = params
+            return (
+                events.group_by("store")
+                .agg(
+                    pl.col("amount").sum().alias("gross_amount"),
+                    pl.col("items").sum().alias("item_count"),
+                )
+                .sort("store")
+            )
+
+    class EmitReport(ETLStep[RunParams]):
+        store_daily = FromTable("prepared.store_daily")
+        target = IntoFile(str(report_path), format=Format.CSV)
+
+        def execute(self, params: RunParams, *, store_daily: pl.LazyFrame) -> pl.LazyFrame:  # type: ignore[override]
+            _ = params
+            return store_daily.select("store", "gross_amount", "item_count").sort("store")
+
+    class ReportingProcess(ETLProcess[RunParams]):
+        steps = [LoadEvents, BuildPrepared, EmitReport]
+
+    class ReportingPipeline(ETLPipeline[RunParams]):
+        processes = [ReportingProcess]
+
+    runner = _fresh_runner_cls().from_dict(
+        storage={"root": str(root)},
+        observability={"log": False},
+    )
+    runner.run(ReportingPipeline, RunParams(run_date=date(2024, 1, 5)))
+
+    prepared = _read_table(root, "prepared.store_daily").sort("store")
+    report = pl.read_csv(report_path).sort("store")
+
+    assert prepared["store"].to_list() == ["es", "uk"]
+    assert prepared["gross_amount"].to_list() == pytest.approx([15.5, 7.0])
+    assert prepared["item_count"].to_list() == [3, 3]
+    assert report["store"].to_list() == ["es", "uk"]
+    assert report["gross_amount"].to_list() == pytest.approx([15.5, 7.0])
+    assert report["item_count"].to_list() == [3, 3]

@@ -10,10 +10,9 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
-from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
+from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, IntoTable
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
-from loom.etl.io._format import Format
 from loom.etl.io._read_options import CsvReadOptions
 from loom.etl.io._source import SourceKind, SourceSpec
 from loom.etl.io._target import SchemaMode
@@ -51,6 +50,12 @@ class AppendStep(ETLStep[NoParams]):
 
     def execute(self, params: NoParams, *, deltas: DataFrame) -> DataFrame:  # type: ignore[override]
         return deltas
+
+
+class _PayloadContract:
+    store: str
+    amount: float
+    items: int
 
 
 SeedSparkTable = Callable[[str, DataFrame], None]
@@ -255,6 +260,38 @@ class TestRunStepContracts:
         assert schema[1].name == "amount"
         assert schema[1].dtype is LoomDtype.FLOAT64
 
+    def test_run_step_supports_csv_reporting_target(
+        self,
+        spark: SparkSession,
+        seed_spark_table: SeedSparkTable,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+        tmp_path: Path,
+    ) -> None:
+        report_path = tmp_path / "report.csv"
+        _seed(
+            spark,
+            seed_spark_table,
+            "raw.orders",
+            [(1, 10.0), (2, 20.0)],
+            ["id", "amount"],
+        )
+
+        class ReportStep(ETLStep[NoParams]):
+            orders: FromTable = FromTable("raw.orders")  # type: ignore[assignment]
+            target = IntoFile(str(report_path), format=Format.CSV)
+
+            def execute(self, params: NoParams, *, orders: DataFrame) -> DataFrame:  # type: ignore[override]
+                _ = params
+                return orders.select("id", "amount")
+
+        plan = ETLCompiler().compile_step(ReportStep)
+        ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
+
+        out = spark.read.option("header", "true").csv(str(report_path)).orderBy("id").collect()
+        assert [row["id"] for row in out] == ["1", "2"]
+        assert [float(row["amount"]) for row in out] == pytest.approx([10.0, 20.0])
+
 
 class TestSparkReaderWriterTypeGuards:
     def test_legacy_delta_components_reject_file_specs(
@@ -323,22 +360,48 @@ class TestSparkReaderWriterTypeGuards:
         with pytest.raises(ValueError, match="skip_rows"):
             spark_reader.read(read_spec, None)
 
+    def test_unified_reader_parses_json_string_column_from_json_file(
+        self,
+        spark_reader: SparkDeltaReader,
+        tmp_path: Path,
+    ) -> None:
+        source_path = tmp_path / "events.json"
+        source_path.write_text(
+            '{"event_id":1,"payload":"{\\"store\\":\\"es\\",\\"amount\\":10.0,\\"items\\":2}"}\n'
+            '{"event_id":2,"payload":"{\\"store\\":\\"uk\\",\\"amount\\":7.5,\\"items\\":1}"}\n',
+            encoding="utf-8",
+        )
+
+        spec = (
+            FromFile(str(source_path), format=Format.JSON)
+            .parse_json("payload", _PayloadContract)
+            ._to_spec("events")
+        )
+        result = spark_reader.read(spec, None).orderBy("event_id").collect()
+
+        assert [row["payload"]["store"] for row in result] == ["es", "uk"]
+        assert [row["payload"]["items"] for row in result] == [2, 1]
+        assert [row["payload"]["amount"] for row in result] == pytest.approx([10.0, 7.5])
+
     def test_unified_components_reject_xlsx_without_plugin(
         self,
         spark: SparkSession,
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
+        tmp_path: Path,
     ) -> None:
+        input_path = tmp_path / "data.xlsx"
+        output_path = tmp_path / "out.xlsx"
         read_spec = SourceSpec(
             alias="data",
             kind=SourceKind.FILE,
             format=Format.XLSX,
-            path="/tmp/data.xlsx",
+            path=str(input_path),
         )
         with pytest.raises(TypeError, match="XLSX"):
             spark_reader.read(read_spec, None)
 
-        write_spec = FileSpec(path="/tmp/out.xlsx", format=Format.XLSX)
+        write_spec = FileSpec(path=str(output_path), format=Format.XLSX)
         frame = spark.createDataFrame([(1,)], ["id"])
         with pytest.raises(TypeError, match="XLSX"):
             spark_writer.write(frame, write_spec, None)

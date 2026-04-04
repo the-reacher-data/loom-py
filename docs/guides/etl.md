@@ -54,6 +54,45 @@ runner = ETLRunner.from_dict(storage={"root": "/var/lib/loom/lake"})
 runner.run(DailyPipeline, DailyParams(run_date=date(2026, 3, 30)))
 ```
 
+## File source with JSON payload + final CSV report
+
+```python
+import polars as pl
+from loom.etl import ETLStep, ETLProcess, ETLPipeline, FromFile, FromTable, IntoFile, IntoTable, Format
+
+class Payload:
+    store: str
+    amount: float
+    items: int
+
+class LoadEvents(ETLStep[DailyParams]):
+    events = FromFile("/data/raw/events.csv", format=Format.CSV).parse_json("payload", Payload)
+    target = IntoTable("staging.events").replace()
+
+    def execute(self, params: DailyParams, *, events: pl.LazyFrame) -> pl.LazyFrame:
+        return events.select(
+            pl.col("payload").struct.field("store").alias("store"),
+            pl.col("payload").struct.field("amount").alias("amount"),
+            pl.col("payload").struct.field("items").alias("items"),
+        )
+
+class BuildReport(ETLStep[DailyParams]):
+    events = FromTable("staging.events")
+    target = IntoFile("/data/exports/daily_report.csv", format=Format.CSV)
+
+    def execute(self, params: DailyParams, *, events: pl.LazyFrame) -> pl.LazyFrame:
+        return events.group_by("store").agg(
+            pl.col("amount").sum().alias("gross_amount"),
+            pl.col("items").sum().alias("item_count"),
+        )
+
+class ReportProcess(ETLProcess[DailyParams]):
+    steps = [LoadEvents, BuildReport]
+
+class ReportPipeline(ETLPipeline[DailyParams]):
+    processes = [ReportProcess]
+```
+
 ## YAML config + observability
 
 ```yaml
