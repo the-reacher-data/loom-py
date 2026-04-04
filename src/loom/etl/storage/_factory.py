@@ -127,17 +127,17 @@ def make_temp_store(
 def _make_spark_backends(
     spark: Any,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    from loom.etl.backends.spark import SparkCatalog, SparkDeltaReader, SparkDeltaWriter
+    from loom.etl.backends.spark import SparkCatalog, SparkSourceReader, SparkTargetWriter
 
     catalog = SparkCatalog(spark)
-    return SparkDeltaReader(spark), SparkDeltaWriter(spark, None), catalog
+    return SparkSourceReader(spark), SparkTargetWriter(spark, None), catalog
 
 
 def _make_polars_backends(
     config: DeltaConfig,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
+    from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
 
     locator = config.to_locator()
     catalog = DeltaCatalog(locator)
-    return PolarsDeltaReader(locator), PolarsDeltaWriter(locator), catalog
+    return PolarsSourceReader(locator), PolarsTargetWriter(locator), catalog

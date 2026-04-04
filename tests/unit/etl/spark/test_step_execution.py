@@ -14,10 +14,11 @@ from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.io._format import Format
+from loom.etl.io._read_options import CsvReadOptions
 from loom.etl.io._source import SourceKind, SourceSpec
 from loom.etl.io._target import SchemaMode
 from loom.etl.io.target._file import FileSpec
-from loom.etl.schema._schema import LoomDtype, SchemaNotFoundError
+from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
 
@@ -256,26 +257,87 @@ class TestRunStepContracts:
 
 
 class TestSparkReaderWriterTypeGuards:
-    @pytest.mark.parametrize("role", ["reader", "writer"])
-    def test_delta_components_reject_file_specs(
+    def test_legacy_delta_components_reject_file_specs(
         self,
-        role: str,
+        spark: SparkSession,
+    ) -> None:
+        from loom.etl.backends.spark._reader import SparkDeltaReader as SparkDeltaTableReader
+        from loom.etl.backends.spark._writer import SparkDeltaWriter as SparkDeltaTableWriter
+
+        reader = SparkDeltaTableReader(spark, None)
+        writer = SparkDeltaTableWriter(spark, None)
+
+        read_spec = SourceSpec(
+            alias="data",
+            kind=SourceKind.FILE,
+            format=Format.CSV,
+            path="s3://bucket/data.csv",
+        )
+        with pytest.raises(TypeError, match="TABLE sources"):
+            reader.read(read_spec, None)
+
+        write_spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
+        frame = spark.createDataFrame([(1,)], ["id"])
+        with pytest.raises(TypeError, match="TABLE targets"):
+            writer.write(frame, write_spec, None)
+
+    def test_unified_components_support_file_specs(
+        self,
+        spark: SparkSession,
+        tmp_path: Path,
+        spark_reader: SparkDeltaReader,
+        spark_writer: SparkDeltaWriter,
+    ) -> None:
+        in_path = tmp_path / "in.csv"
+        in_path.write_text("id;amount\n1;10.0\n2;20.0\n", encoding="utf-8")
+
+        read_spec = SourceSpec(
+            alias="data",
+            kind=SourceKind.FILE,
+            format=Format.CSV,
+            path=str(in_path),
+            read_options=CsvReadOptions(separator=";"),
+            schema=(ColumnSchema("amount", LoomDtype.FLOAT64),),
+        )
+        frame = spark_reader.read(read_spec, None)
+        assert frame.count() == 2
+
+        out_spec = FileSpec(path=str(tmp_path / "out.csv"), format=Format.CSV)
+        spark_writer.write(frame, out_spec, None)
+
+        out = spark.read.option("header", "true").csv(out_spec.path)
+        assert out.count() == 2
+
+    def test_unified_reader_rejects_unsupported_csv_skip_rows(
+        self,
+        spark_reader: SparkDeltaReader,
+    ) -> None:
+        read_spec = SourceSpec(
+            alias="data",
+            kind=SourceKind.FILE,
+            format=Format.CSV,
+            path="/tmp/data.csv",
+            read_options=CsvReadOptions(skip_rows=1),
+        )
+        with pytest.raises(ValueError, match="skip_rows"):
+            spark_reader.read(read_spec, None)
+
+    def test_unified_components_reject_xlsx_without_plugin(
+        self,
         spark: SparkSession,
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
     ) -> None:
-        if role == "reader":
-            spec = SourceSpec(
-                alias="data",
-                kind=SourceKind.FILE,
-                format=Format.CSV,
-                path="s3://bucket/data.csv",
-            )
-            with pytest.raises(TypeError, match="FILE"):
-                spark_reader.read(spec, None)
-            return
+        read_spec = SourceSpec(
+            alias="data",
+            kind=SourceKind.FILE,
+            format=Format.XLSX,
+            path="/tmp/data.xlsx",
+        )
+        with pytest.raises(TypeError, match="XLSX"):
+            spark_reader.read(read_spec, None)
 
-        spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
+        write_spec = FileSpec(path="/tmp/out.xlsx", format=Format.XLSX)
         frame = spark.createDataFrame([(1,)], ["id"])
-        with pytest.raises(TypeError, match="TABLE targets"):
-            spark_writer.write(frame, spec, None)
+        with pytest.raises(TypeError, match="XLSX"):
+            spark_writer.write(frame, write_spec, None)
