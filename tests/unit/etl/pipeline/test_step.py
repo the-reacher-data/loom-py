@@ -108,3 +108,25 @@ def test_execute_raises_not_implemented_on_base() -> None:
 
     with pytest.raises(NotImplementedError):
         Bare().execute(RunParams(run_date=date(2024, 1, 1), countries=()))
+
+
+def test_streaming_flag_must_be_bool() -> None:
+    with pytest.raises(TypeError, match="'streaming' must be bool"):
+
+        class _BadStreamingType(ETLStep[RunParams]):  # NOSONAR
+            streaming = "yes"
+            target = IntoTable("staging.out").replace()
+
+            def execute(self, params: RunParams) -> Any:
+                return None
+
+
+def test_streaming_name_is_not_treated_as_inline_source() -> None:
+    with pytest.raises(TypeError, match="'streaming' must be bool"):
+
+        class _BadStreamingSource(ETLStep[RunParams]):  # NOSONAR
+            streaming = FromTable("raw.orders")
+            target = IntoTable("staging.out").replace()
+
+            def execute(self, params: RunParams) -> Any:
+                return None

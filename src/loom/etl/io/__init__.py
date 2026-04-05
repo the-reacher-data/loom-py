@@ -12,7 +12,7 @@ from ._read_options import (
 )
 from ._source import FromFile, FromTable, FromTemp, Sources, SourceSet
 from ._target import IntoFile, IntoTable, IntoTemp, SchemaMode
-from ._write_options import CsvWriteOptions, ParquetWriteOptions, WriteOptions
+from ._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions, WriteOptions
 
 __all__ = [
     "Format",
@@ -23,6 +23,7 @@ __all__ = [
     "ParquetReadOptions",
     "WriteOptions",
     "CsvWriteOptions",
+    "JsonWriteOptions",
     "ParquetWriteOptions",
     "FromTable",
     "FromFile",

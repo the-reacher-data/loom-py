@@ -46,14 +46,18 @@ def _fresh_runner_cls() -> type[ETLRunner]:
     """Reload runtime modules that can be stale after module-level reload tests."""
     import loom.etl.backends.polars as polars_pkg
     import loom.etl.backends.polars._predicate as polars_predicate
-    import loom.etl.backends.polars._writer as polars_writer
+    import loom.etl.backends.polars.writer.core as polars_writer_core
+    import loom.etl.backends.polars.writer.file as polars_writer_file
+    import loom.etl.backends.polars.writer.table as polars_writer_table
     import loom.etl.runner.core as runner_core
     import loom.etl.sql._predicate_dialect as predicate_dialect
     import loom.etl.storage._factory as storage_factory
 
     importlib.reload(predicate_dialect)
     importlib.reload(polars_predicate)
-    importlib.reload(polars_writer)
+    importlib.reload(polars_writer_file)
+    importlib.reload(polars_writer_table)
+    importlib.reload(polars_writer_core)
     importlib.reload(polars_pkg)
     importlib.reload(storage_factory)
     runner_core = importlib.reload(runner_core)

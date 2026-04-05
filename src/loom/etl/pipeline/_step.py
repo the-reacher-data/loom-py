@@ -28,6 +28,7 @@ _RESERVED_NAMES: frozenset[str] = frozenset(
     {
         "sources",
         "target",
+        "streaming",
         "execute",
         "_params_type",
         "_source_form",
@@ -83,6 +84,7 @@ class ETLStep(Generic[ParamsT]):
 
     sources: ClassVar[Sources | SourceSet[Any] | None] = None
     target: ClassVar[IntoTable | IntoFile | IntoTemp | None] = None
+    streaming: ClassVar[bool] = False
 
     # Set by __init_subclass__
     _params_type: ClassVar[type[Any] | None] = None
@@ -93,6 +95,7 @@ class ETLStep(Generic[ParamsT]):
         super().__init_subclass__(**kwargs)
         cls._params_type = _extract_generic_arg(cls, ETLStep)
         cls._inline_sources = {}
+        _validate_streaming_flag(cls)
         _validate_and_classify_sources(cls)
 
     def execute(self, params: ParamsT, **frames: Any) -> Any:
@@ -140,3 +143,12 @@ def _validate_and_classify_sources(cls: type[Any]) -> None:
         cls._source_form = _SourceForm.GROUPED
     else:
         cls._source_form = _SourceForm.NONE
+
+
+def _validate_streaming_flag(cls: type[Any]) -> None:
+    """Enforce that ``streaming`` is explicitly boolean at class definition time."""
+    streaming = getattr(cls, "streaming", False)
+    if not isinstance(streaming, bool):
+        raise TypeError(
+            f"{cls.__qualname__}: 'streaming' must be bool, got {type(streaming).__name__}"
+        )

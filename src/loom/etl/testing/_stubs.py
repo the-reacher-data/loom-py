@@ -108,6 +108,7 @@ class StubTargetWriter:
 
     Attributes:
         written: List of ``(frame, spec)`` pairs in write order.
+        streaming_flags: Streaming flag values received for each write call.
 
     Example::
 
@@ -120,10 +121,14 @@ class StubTargetWriter:
 
     def __init__(self) -> None:
         self.written: list[tuple[Any, TargetSpec]] = []
+        self.streaming_flags: list[bool] = []
 
-    def write(self, frame: Any, spec: TargetSpec, _params_instance: Any) -> None:
+    def write(
+        self, frame: Any, spec: TargetSpec, _params_instance: Any, *, streaming: bool = False
+    ) -> None:
         """Capture the ``(frame, spec)`` pair for later assertion."""
         self.written.append((frame, spec))
+        self.streaming_flags.append(streaming)
 
 
 class StubRunObserver:

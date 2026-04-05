@@ -47,6 +47,15 @@ class StepNoSources(ETLStep[RunParams]):
         return {"generated": True}
 
 
+class StepStreaming(ETLStep[RunParams]):
+    streaming = True
+    orders = FromTable("raw.orders")
+    target = IntoTable("staging.stream").replace()
+
+    def execute(self, params: RunParams, *, orders: Any) -> Any:  # type: ignore[override]
+        return orders
+
+
 class FailingStep(ETLStep[RunParams]):
     orders = FromTable("raw.orders")
     target = IntoTable("staging.fail").replace()
@@ -140,6 +149,21 @@ class TestRunStep:
         start_event = next(data for name, data in observer.events if name == "step_start")
         assert start_event["step"] == "StepA"
         assert start_event["run_id"] == "fixed-run-id"
+
+    def test_run_step_forwards_streaming_flag_to_writer(
+        self,
+        compiler: ETLCompiler,
+        params: RunParams,
+        executor_factory: ExecutorFactory,
+    ) -> None:
+        streaming_plan = compiler.compile_step(StepStreaming)
+        normal_plan = compiler.compile_step(StepA)
+        executor, writer, _ = executor_factory()
+
+        executor.run_step(streaming_plan, params)
+        executor.run_step(normal_plan, params)
+
+        assert writer.streaming_flags == [True, False]
 
     def test_run_step_error_events_and_order(
         self,
