@@ -164,9 +164,9 @@ def test_runner_error_message_includes_requested_include_set() -> None:
 
 
 def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
-    modules = _reload_modules("loom.etl.io._source", "loom.etl.io._target")
-    source_mod = modules["loom.etl.io._source"]
-    target_mod = modules["loom.etl.io._target"]
+    modules = _reload_modules("loom.etl.io.source._from", "loom.etl.io.target._into")
+    source_mod = modules["loom.etl.io.source._from"]
+    target_mod = modules["loom.etl.io.target._into"]
 
     from loom.etl.pipeline._proxy import params
     from loom.etl.schema._table import col

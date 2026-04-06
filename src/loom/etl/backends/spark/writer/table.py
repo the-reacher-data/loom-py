@@ -32,6 +32,7 @@ class SparkDeltaTableWriter:
         self, frame: DataFrame, spec: Any, params_instance: Any, *, streaming: bool = False
     ) -> None:
         """Write a Delta table target spec."""
+        _ = streaming
         if not isinstance(
             spec, (AppendSpec, ReplaceSpec, ReplacePartitionsSpec, ReplaceWhereSpec, UpsertSpec)
         ):

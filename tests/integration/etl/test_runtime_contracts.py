@@ -67,8 +67,10 @@ class _Sink:
 
 def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     mods = _reload_modules(
-        "loom.etl.io._source",
-        "loom.etl.io._target",
+        "loom.etl.io.source._from",
+        "loom.etl.io.source",
+        "loom.etl.io.target._into",
+        "loom.etl.io.target",
         "loom.etl.pipeline._params",
         "loom.etl.pipeline._pipeline",
         "loom.etl.pipeline._process",
@@ -76,8 +78,8 @@ def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch)
         "loom.etl.compiler._binding",
     )
     binding_mod = mods["loom.etl.compiler._binding"]
-    source_mod = mods["loom.etl.io._source"]
-    target_mod = mods["loom.etl.io._target"]
+    source_mod = mods["loom.etl.io.source._from"]
+    target_mod = mods["loom.etl.io.target._into"]
     params_mod = mods["loom.etl.pipeline._params"]
     pipeline_mod = mods["loom.etl.pipeline._pipeline"]
     process_mod = mods["loom.etl.pipeline._process"]
@@ -148,12 +150,12 @@ def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch)
 def test_plan_and_schema_runtime_contracts() -> None:
     mods = _reload_modules(
         "loom.etl.compiler._plan",
-        "loom.etl.io._source",
+        "loom.etl.io.source._specs",
         "loom.etl.io.target._table",
         "loom.etl.schema._table",
     )
     plan_mod = mods["loom.etl.compiler._plan"]
-    source_mod = mods["loom.etl.io._source"]
+    source_mod = mods["loom.etl.io.source._specs"]
     target_table_mod = mods["loom.etl.io.target._table"]
     table_mod = mods["loom.etl.schema._table"]
 

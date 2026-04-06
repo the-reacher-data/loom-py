@@ -19,13 +19,15 @@ class SparkFileReader:
     def __init__(self, spark: SparkSession) -> None:
         self._spark = spark
 
-    def read(self, spec: FileSourceSpec, params_instance: Any) -> DataFrame:
+    def read(self, spec: FileSourceSpec, _params_instance: Any) -> DataFrame:
         """Read a FILE source spec with Spark-native readers."""
         df = _FILE_READERS[spec.format](self._spark.read, spec.path, spec.read_options)
         if spec.columns:
             df = df.select(list(spec.columns))
-        df = apply_source_schema_spark(df, spec.schema)
-        return apply_json_decode_spark(df, spec.json_columns)
+        return apply_json_decode_spark(
+            apply_source_schema_spark(df, spec.schema),
+            spec.json_columns,
+        )
 
 
 def _read_delta(reader: DataFrameReader, path: str, _options: Any) -> DataFrame:

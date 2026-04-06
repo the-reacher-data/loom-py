@@ -2,7 +2,7 @@
 
 Casts each present column to the declared Polars dtype, fills missing columns
 with typed nulls, and optionally selects the exact schema column set depending
-on :class:`~loom.etl.io._target.SchemaMode`.
+on :class:`~loom.etl.io.target.SchemaMode`.
 
 Schema enforcement rules
 ------------------------

@@ -109,6 +109,7 @@ class SparkDeltaWriter:
                                  mode is not OVERWRITE.
             SchemaError:         When the frame violates the registered schema.
         """
+        _ = streaming
         if isinstance(spec, UpsertSpec):
             self._write_upsert_spark(frame, spec)
             return

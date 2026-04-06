@@ -34,6 +34,11 @@ class SparkDeltaTableReader:
 
         if spec.columns:
             df = df.select(list(spec.columns))
-        df = apply_source_schema_spark(df, spec.schema)
-        df = apply_json_decode_spark(df, spec.json_columns)
-        return apply_predicates_spark(df, spec.predicates, params_instance)
+        return apply_predicates_spark(
+            apply_json_decode_spark(
+                apply_source_schema_spark(df, spec.schema),
+                spec.json_columns,
+            ),
+            spec.predicates,
+            params_instance,
+        )

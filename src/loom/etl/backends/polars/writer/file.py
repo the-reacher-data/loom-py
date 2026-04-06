@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -16,9 +15,6 @@ from loom.etl.io._write_options import (
     WriteOptions,
 )
 from loom.etl.io.target._file import FileSpec
-
-if TYPE_CHECKING:
-    pass
 
 _log = logging.getLogger(__name__)
 

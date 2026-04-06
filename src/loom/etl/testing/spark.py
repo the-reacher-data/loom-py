@@ -138,6 +138,7 @@ class _SparkCapturingWriter:
     def write(
         self, frame: Any, spec: TargetSpec, _params_instance: Any, *, streaming: bool = False
     ) -> None:
+        _ = streaming
         self.frame = frame
         self.spec = spec
 

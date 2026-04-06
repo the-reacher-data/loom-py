@@ -69,6 +69,7 @@ class SparkTargetWriter:
         Raises:
             TypeError: When *spec* is not a supported target spec type.
         """
+        _ = streaming
         if isinstance(spec, FileSpec):
             self._file_writer.write(frame, spec)
             return
