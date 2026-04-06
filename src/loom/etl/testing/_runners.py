@@ -21,7 +21,9 @@ class _PolarsCapturingWriter:
         self.spec: TargetSpec | None = None
         self._last_params: Any = None
 
-    def write(self, frame: Any, spec: TargetSpec, params_instance: Any) -> None:
+    def write(
+        self, frame: Any, spec: TargetSpec, params_instance: Any, *, streaming: bool = False
+    ) -> None:
         self.frame = frame
         self.spec = spec
         self._last_params = params_instance
@@ -32,7 +34,8 @@ class _PolarsStubReader:
         self._frames = frames
 
     def read(self, spec: SourceSpec, _params_instance: Any) -> pl.LazyFrame:
-        key = spec.table_ref.ref if spec.table_ref is not None else spec.alias
+        table_ref = getattr(spec, "table_ref", None)
+        key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]
 
 

@@ -116,7 +116,7 @@ class StubTargetWriter:
         writer.write(frame, spec, params)
         assert len(writer.written) == 1
         frame_out, spec_out = writer.written[0]
-        assert spec_out.mode == WriteMode.REPLACE
+        assert isinstance(spec_out, ReplaceSpec)
     """
 
     def __init__(self) -> None:
