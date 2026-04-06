@@ -14,8 +14,7 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
-
-_SOURCE_KIND_TEMP = "temp"
+from loom.etl.io.source._specs import TempSourceSpec
 
 
 class _TempTargetSpecLike(Protocol):
@@ -131,9 +130,10 @@ def _validate_step(step: StepPlan, seen: dict[str, bool]) -> None:
 def _check_sources(step: StepPlan, seen: dict[str, bool]) -> None:
     for binding in step.source_bindings:
         spec = binding.spec
-        if _enum_value(spec.kind) == _SOURCE_KIND_TEMP and spec.temp_name not in seen:
-            temp_name = spec.temp_name or ""
-            raise ETLCompilationError.temp_not_produced(step.step_type, binding.alias, temp_name)
+        if isinstance(spec, TempSourceSpec) and spec.temp_name not in seen:
+            raise ETLCompilationError.temp_not_produced(
+                step.step_type, binding.alias, spec.temp_name
+            )
 
 
 def _register_step_target(step: StepPlan, seen: dict[str, bool]) -> None:

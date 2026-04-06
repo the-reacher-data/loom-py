@@ -12,7 +12,7 @@ import polars as pl
 from deltalake import DeltaTable, write_deltalake
 
 from loom.etl.backends.polars import PolarsDeltaWriter
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import UpsertSpec
 from loom.etl.schema._table import TableRef
 

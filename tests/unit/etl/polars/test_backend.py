@@ -13,8 +13,8 @@ from loom.etl import ETLParams, col
 from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
 from loom.etl.backends.polars._schema import SchemaNotFoundError
 from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
-from loom.etl.io._target import IntoTable, SchemaMode
+from loom.etl.io.source import FileSourceSpec, TableSourceSpec
+from loom.etl.io.target import IntoTable, SchemaMode
 from loom.etl.io.target._file import FileSpec
 from loom.etl.io.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
 from loom.etl.pipeline._proxy import params as p
@@ -28,10 +28,10 @@ class _DateParams(ETLParams):
     run_date: date
 
 
-def _file_source_spec() -> SourceSpec:
-    return SourceSpec(
-        alias="data", kind=SourceKind.FILE, format=Format.CSV, path="s3://bucket/data.csv"
-    )
+def _file_source_spec() -> FileSourceSpec:
+    from loom.etl.io._format import Format
+
+    return FileSourceSpec(alias="data", path="s3://bucket/data.csv", format=Format.CSV)
 
 
 def _seed(root: Path, ref: str, data: pl.DataFrame) -> None:
@@ -44,10 +44,8 @@ def _spec(ref: str, schema_mode: SchemaMode = SchemaMode.STRICT) -> ReplaceSpec:
     return ReplaceSpec(table_ref=TableRef(ref), schema_mode=schema_mode)
 
 
-def _source_spec(ref: str) -> SourceSpec:
-    return SourceSpec(
-        alias="data", kind=SourceKind.TABLE, format=Format.DELTA, table_ref=TableRef(ref)
-    )
+def _source_spec(ref: str) -> TableSourceSpec:
+    return TableSourceSpec(alias="data", table_ref=TableRef(ref))
 
 
 def test_catalog_exists_false_for_missing_table(tmp_path: Path) -> None:
@@ -168,14 +166,11 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
 
 def test_reader_reads_csv_file(tmp_path: Path) -> None:
     """FILE sources are now supported — reader dispatches to _read_file."""
+    from loom.etl.io._format import Format
+
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
-    spec = SourceSpec(
-        alias="data",
-        kind=SourceKind.FILE,
-        format=Format.CSV,
-        path=str(csv_path),
-    )
+    spec = FileSourceSpec(alias="data", path=str(csv_path), format=Format.CSV)
     reader = PolarsDeltaReader(tmp_path)
     lf = reader.read(spec, None)
     df = lf.collect()
@@ -185,19 +180,15 @@ def test_reader_reads_csv_file(tmp_path: Path) -> None:
 
 def test_reader_applies_source_schema_on_csv(tmp_path: Path) -> None:
     """with_schema() casts declared columns at read time."""
+    from loom.etl.io._format import Format
+
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
     schema = (
         ColumnSchema("id", LoomDtype.INT64),
         ColumnSchema("amount", LoomDtype.FLOAT64),
     )
-    spec = SourceSpec(
-        alias="data",
-        kind=SourceKind.FILE,
-        format=Format.CSV,
-        path=str(csv_path),
-        schema=schema,
-    )
+    spec = FileSourceSpec(alias="data", path=str(csv_path), format=Format.CSV, schema=schema)
     reader = PolarsDeltaReader(tmp_path)
     df = reader.read(spec, None).collect()
     assert df["id"].dtype == pl.Int64

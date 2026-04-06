@@ -25,8 +25,7 @@ from pyspark.sql import DataFrame, DataFrameWriter, SparkSession
 from pyspark.sql import types as T
 
 from loom.etl.backends.spark._schema import spark_apply_schema
-from loom.etl.io._target import SchemaMode
-from loom.etl.io.target import TargetSpec
+from loom.etl.io.target import SchemaMode, TargetSpec
 from loom.etl.io.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
@@ -93,13 +92,16 @@ class SparkDeltaWriter:
         self._spark = spark
         self._locator = _as_locator(locator) if locator is not None else None
 
-    def write(self, frame: DataFrame, spec: TargetSpec, params_instance: Any) -> None:
+    def write(
+        self, frame: DataFrame, spec: TargetSpec, params_instance: Any, *, streaming: bool = False
+    ) -> None:
         """Validate schema and write *frame* to the Delta target.
 
         Args:
             frame:           Spark DataFrame produced by the step's ``execute()``.
             spec:            Compiled target spec variant.
             params_instance: Concrete params for predicate resolution.
+            streaming:       Ignored — Spark manages its own execution model.
 
         Raises:
             TypeError:           If *spec* is a FILE or TEMP target.

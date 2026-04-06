@@ -244,7 +244,7 @@ class TestRunnerFromConfig:
         has_temp_store: bool,
     ) -> None:
         from loom.etl.backends.polars._reader import PolarsDeltaReader
-        from loom.etl.backends.polars._writer import PolarsDeltaWriter
+        from loom.etl.backends.polars.writer import PolarsTargetWriter
         from loom.etl.storage._config import DeltaConfig
 
         config = DeltaConfig(
@@ -254,7 +254,7 @@ class TestRunnerFromConfig:
         runner = ETLRunner.from_config(config)
 
         assert isinstance(runner._executor._reader, PolarsDeltaReader)
-        assert isinstance(runner._executor._writer, PolarsDeltaWriter)
+        assert isinstance(runner._executor._writer, PolarsTargetWriter)
         assert (runner._temp_store is not None) is has_temp_store
 
 

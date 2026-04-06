@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from ._cleaners import (
     AutoTempCleaner,
-    DbutilsTempCleaner,
     FsspecTempCleaner,
     LocalTempCleaner,
     TempCleaner,
@@ -18,6 +17,5 @@ __all__ = [
     "TempCleaner",
     "LocalTempCleaner",
     "FsspecTempCleaner",
-    "DbutilsTempCleaner",
     "AutoTempCleaner",
 ]

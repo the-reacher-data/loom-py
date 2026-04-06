@@ -12,8 +12,7 @@ from deltalake import write_deltalake
 from loom.etl import ETLParams, col
 from loom.etl.backends.polars import PolarsDeltaReader
 from loom.etl.backends.polars._predicate import predicate_to_polars
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import TableSourceSpec
 from loom.etl.pipeline._proxy import params as p
 from loom.etl.schema._table import TableRef
 
@@ -120,14 +119,8 @@ def _seed_partitioned(root: Path, ref: str, data: pl.DataFrame) -> None:
     write_deltalake(str(path), data.to_arrow(), mode="overwrite")
 
 
-def _spec_with_pred(ref: str, *predicates: object) -> SourceSpec:
-    return SourceSpec(
-        alias="data",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef(ref),
-        predicates=tuple(predicates),
-    )
+def _spec_with_pred(ref: str, *predicates: object) -> TableSourceSpec:
+    return TableSourceSpec(alias="data", table_ref=TableRef(ref), predicates=tuple(predicates))
 
 
 def test_reader_applies_eq_predicate(tmp_path: Path) -> None:
@@ -162,8 +155,6 @@ def test_reader_no_predicate_returns_full_table(tmp_path: Path) -> None:
     data = pl.DataFrame({"year": [2023, 2024], "v": [1, 2]})
     _seed_partitioned(tmp_path, "raw.facts", data)
     reader = PolarsDeltaReader(tmp_path)
-    spec = SourceSpec(
-        alias="data", kind=SourceKind.TABLE, format=Format.DELTA, table_ref=TableRef("raw.facts")
-    )
+    spec = TableSourceSpec(alias="data", table_ref=TableRef("raw.facts"))
     result = reader.read(spec, _PARAMS).collect()
     assert result.height == 2

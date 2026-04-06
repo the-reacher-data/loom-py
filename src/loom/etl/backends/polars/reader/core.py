@@ -8,7 +8,7 @@ from typing import Any
 import polars as pl
 
 from loom.etl.backends.polars._reader import PolarsDeltaReader
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.storage._locator import TableLocator
 
 from .file import PolarsFileReader
@@ -24,14 +24,12 @@ class PolarsSourceReader(PolarsDeltaReader):
         self._file_reader = PolarsFileReader(self)
 
     def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
-        """Read source spec with Polars according to its ``SourceKind``."""
-        match spec.kind:
-            case SourceKind.TABLE:
-                return self._table_reader.read(spec, params_instance)
-            case SourceKind.FILE:
-                return self._file_reader.read(spec, params_instance)
-            case _:
-                raise TypeError(
-                    f"PolarsSourceReader cannot read source kind {spec.kind!r}. "
-                    "TEMP sources are handled by IntermediateStore."
-                )
+        """Read source spec with Polars by dispatching on the spec type."""
+        if isinstance(spec, TableSourceSpec):
+            return self._table_reader.read(spec, params_instance)
+        if isinstance(spec, FileSourceSpec):
+            return self._file_reader.read(spec, params_instance)
+        raise TypeError(
+            f"PolarsSourceReader cannot read source kind {spec.kind!r}. "
+            "TEMP sources are handled by IntermediateStore."
+        )

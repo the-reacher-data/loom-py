@@ -19,7 +19,7 @@ from loom.etl import (
     ParquetReadOptions,
     ParquetWriteOptions,
 )
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import SourceKind, SourceSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 SCHEMA = (

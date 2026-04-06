@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from loom.etl.io._source import SourceSpec
+from loom.etl.io.source import SourceSpec
 from loom.etl.io.target import TargetSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
@@ -144,7 +144,9 @@ class TargetWriter(Protocol):
                 write_deltalake(catalog_path(spec.table_ref), frame.collect(), ...)
     """
 
-    def write(self, frame: Any, spec: TargetSpec, params_instance: Any, /) -> None:
+    def write(
+        self, frame: Any, spec: TargetSpec, params_instance: Any, /, *, streaming: bool = False
+    ) -> None:
         """Write the frame to the target.
 
         Args:
@@ -152,5 +154,9 @@ class TargetWriter(Protocol):
             spec:            Compiled target specification (mode, path/ref,
                              partition_by, upsert_keys, etc.).
             params_instance: Concrete params for the current run.
+            streaming:       When ``True``, the Polars backend uses ``sink_*``
+                             for file targets and ``collect(streaming=True)``
+                             for Delta table targets.  Ignored by the Spark
+                             backend and all test stubs.  Defaults to ``False``.
         """
         ...

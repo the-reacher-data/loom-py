@@ -8,7 +8,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 from loom.etl.backends.spark._dtype import loom_type_to_spark
-from loom.etl.io._source import JsonColumnSpec
+from loom.etl.io.source import JsonColumnSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.sql._predicate_sql import predicate_to_sql
 

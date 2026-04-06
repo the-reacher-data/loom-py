@@ -6,8 +6,7 @@ from typing import Any
 
 import msgspec
 
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import SourceSpec, TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
@@ -37,12 +36,7 @@ def test_observability_config_defaults_and_conversion() -> None:
 
 
 def test_protocol_method_bodies_are_callable() -> None:
-    src_spec = SourceSpec(
-        alias="orders",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef("raw.orders"),
-    )
+    src_spec = TableSourceSpec(alias="orders", table_ref=TableRef("raw.orders"))
     target_spec = ReplaceSpec(table_ref=TableRef("staging.out"))
     schema = (ColumnSchema("id", LoomDtype.INT64),)
 
@@ -74,7 +68,9 @@ class _ReaderImpl:
 
 
 class _WriterImpl:
-    def write(self, frame: Any, spec: object, params_instance: Any, /) -> None:
+    def write(
+        self, frame: Any, spec: object, params_instance: Any, /, *, streaming: bool = False
+    ) -> None:
         return None
 
 

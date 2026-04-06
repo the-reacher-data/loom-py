@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 
 from loom.etl.backends.polars._reader import PolarsDeltaReader
-from loom.etl.io._source import SourceSpec
+from loom.etl.io.source import TableSourceSpec
 
 
 class PolarsDeltaTableReader:
@@ -16,8 +16,6 @@ class PolarsDeltaTableReader:
     def __init__(self, reader: PolarsDeltaReader) -> None:
         self._reader = reader
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
-        """Read TABLE source through the legacy Polars reader implementation."""
-        if spec.table_ref is None:
-            raise TypeError(f"PolarsDeltaTableReader requires table_ref; got: {spec}")
+    def read(self, spec: TableSourceSpec, params_instance: Any) -> pl.LazyFrame:
+        """Read TABLE source through the Polars reader implementation."""
         return self._reader._read_delta(spec, params_instance)

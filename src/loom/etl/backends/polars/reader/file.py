@@ -7,7 +7,7 @@ from typing import Any
 import polars as pl
 
 from loom.etl.backends.polars._reader import PolarsDeltaReader
-from loom.etl.io._source import SourceSpec
+from loom.etl.io.source import FileSourceSpec
 
 
 class PolarsFileReader:
@@ -16,8 +16,6 @@ class PolarsFileReader:
     def __init__(self, reader: PolarsDeltaReader) -> None:
         self._reader = reader
 
-    def read(self, spec: SourceSpec, _params_instance: Any) -> pl.LazyFrame:
-        """Read FILE source through the legacy Polars reader implementation."""
-        if spec.path is None:
-            raise ValueError(f"FromFile spec has no path: {spec}")
+    def read(self, spec: FileSourceSpec, _params_instance: Any) -> pl.LazyFrame:
+        """Read FILE source through the Polars reader implementation."""
         return self._reader._read_file(spec)

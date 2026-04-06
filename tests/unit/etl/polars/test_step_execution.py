@@ -170,6 +170,43 @@ def test_run_step_emits_error_event_on_failure(
     assert observer.step_statuses == [RunStatus.FAILED]
 
 
+class StreamingReplaceStep(ETLStep[NoParams]):
+    """Copies raw.stream_src to staging.stream_dst with streaming enabled."""
+
+    streaming = True
+
+    src: FromTable = FromTable("raw.stream_src")  # type: ignore[assignment]
+    target = IntoTable("staging.stream_dst").replace()
+
+    def execute(self, params: NoParams, *, src: pl.LazyFrame) -> pl.LazyFrame:  # type: ignore[override]
+        return src
+
+
+def test_streaming_step_writes_correct_data(
+    seed_table,
+    polars_reader: MinimalPolarsDeltaReader,
+    polars_writer: MinimalPolarsDeltaWriter,
+    delta_root,
+) -> None:
+    """A step with streaming=True produces the same result as a non-streaming step."""
+    seed_table("raw.stream_src", pl.DataFrame({"id": [1, 2, 3], "v": [10, 20, 30]}))
+
+    plan = ETLCompiler().compile_step(StreamingReplaceStep)
+    assert plan.streaming is True
+
+    ETLExecutor(polars_reader, polars_writer).run_step(plan, NoParams())
+
+    result = _read_delta(delta_root, "staging.stream_dst")
+    assert result["id"].to_list() == [1, 2, 3]
+    assert result["v"].to_list() == [10, 20, 30]
+
+
+def test_streaming_flag_is_false_by_default() -> None:
+    """ETLStep.streaming defaults to False; plan carries it correctly."""
+    plan = ETLCompiler().compile_step(DoubleAmountStep)
+    assert plan.streaming is False
+
+
 def test_seed_table_registers_schema_in_catalog(
     seed_table,
     delta_catalog,

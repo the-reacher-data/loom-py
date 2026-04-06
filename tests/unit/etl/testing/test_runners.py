@@ -11,8 +11,7 @@ import pytest
 from loom.etl import col
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import FileSourceSpec, TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec, ReplaceWhereSpec
 from loom.etl.pipeline._proxy import params
 from loom.etl.schema._schema import LoomDtype
@@ -52,18 +51,10 @@ def test_polars_stub_reader_resolves_table_ref_or_alias() -> None:
     file_frame = pl.DataFrame({"id": [2]}).lazy()
     reader = _PolarsStubReader({"raw.orders": table_frame, "events": file_frame})
 
-    table_spec = SourceSpec(
-        alias="orders",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef("raw.orders"),
-    )
-    file_spec = SourceSpec(
-        alias="events",
-        kind=SourceKind.FILE,
-        format=Format.CSV,
-        path="s3://bucket/events.csv",
-    )
+    from loom.etl.io._format import Format
+
+    table_spec = TableSourceSpec(alias="orders", table_ref=TableRef("raw.orders"))
+    file_spec = FileSourceSpec(alias="events", path="s3://bucket/events.csv", format=Format.CSV)
 
     assert reader.read(table_spec, None) is table_frame
     assert reader.read(file_spec, None) is file_frame

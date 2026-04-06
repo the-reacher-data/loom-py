@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from loom.etl.io._source import SourceSpec
+from loom.etl.io.source import SourceSpec
 from loom.etl.io.target import TargetSpec
 
 
@@ -47,12 +47,15 @@ class StepPlan:
         params_type:     The ``ParamsT`` generic argument.
         source_bindings: Ordered source alias → spec bindings.
         target_binding:  Compiled target.
+        streaming:       Whether the step opts into Polars streaming execution.
+                         Defaults to ``False``.
     """
 
     step_type: type[Any]
     params_type: type[Any]
     source_bindings: tuple[SourceBinding, ...]
     target_binding: TargetBinding
+    streaming: bool = False
 
 
 @dataclass(frozen=True)

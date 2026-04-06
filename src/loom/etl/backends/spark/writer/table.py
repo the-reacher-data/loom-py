@@ -28,7 +28,9 @@ class SparkDeltaTableWriter:
     ) -> None:
         self._writer = SparkDeltaWriter(spark, locator)
 
-    def write(self, frame: DataFrame, spec: Any, params_instance: Any) -> None:
+    def write(
+        self, frame: DataFrame, spec: Any, params_instance: Any, *, streaming: bool = False
+    ) -> None:
         """Write a Delta table target spec."""
         if not isinstance(
             spec, (AppendSpec, ReplaceSpec, ReplacePartitionsSpec, ReplaceWhereSpec, UpsertSpec)

@@ -14,8 +14,8 @@ from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.io._read_options import CsvReadOptions
-from loom.etl.io._source import SourceKind, SourceSpec
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.source import FileSourceSpec
+from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._file import FileSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
@@ -304,14 +304,11 @@ class TestSparkReaderWriterTypeGuards:
         reader = SparkDeltaTableReader(spark, None)
         writer = SparkDeltaTableWriter(spark, None)
 
-        read_spec = SourceSpec(
-            alias="data",
-            kind=SourceKind.FILE,
-            format=Format.CSV,
-            path="s3://bucket/data.csv",
-        )
-        with pytest.raises(TypeError, match="TABLE sources"):
-            reader.read(read_spec, None)
+        # With typed specs, the legacy reader only accepts TableSourceSpec.
+        # Passing a FileSourceSpec (a runtime contract violation) raises AttributeError.
+        read_spec = FileSourceSpec(alias="data", path="s3://bucket/data.csv", format=Format.CSV)
+        with pytest.raises((TypeError, AttributeError)):
+            reader.read(read_spec, None)  # type: ignore[arg-type]
 
         write_spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
         frame = spark.createDataFrame([(1,)], ["id"])
@@ -328,11 +325,10 @@ class TestSparkReaderWriterTypeGuards:
         in_path = tmp_path / "in.csv"
         in_path.write_text("id;amount\n1;10.0\n2;20.0\n", encoding="utf-8")
 
-        read_spec = SourceSpec(
+        read_spec = FileSourceSpec(
             alias="data",
-            kind=SourceKind.FILE,
-            format=Format.CSV,
             path=str(in_path),
+            format=Format.CSV,
             read_options=CsvReadOptions(separator=";"),
             schema=(ColumnSchema("amount", LoomDtype.FLOAT64),),
         )
@@ -350,11 +346,10 @@ class TestSparkReaderWriterTypeGuards:
         spark_reader: SparkDeltaReader,
         tmp_path: Path,
     ) -> None:
-        read_spec = SourceSpec(
+        read_spec = FileSourceSpec(
             alias="data",
-            kind=SourceKind.FILE,
-            format=Format.CSV,
             path=str(tmp_path / "data.csv"),
+            format=Format.CSV,
             read_options=CsvReadOptions(skip_rows=1),
         )
         with pytest.raises(ValueError, match="skip_rows"):
@@ -392,12 +387,7 @@ class TestSparkReaderWriterTypeGuards:
     ) -> None:
         input_path = tmp_path / "data.xlsx"
         output_path = tmp_path / "out.xlsx"
-        read_spec = SourceSpec(
-            alias="data",
-            kind=SourceKind.FILE,
-            format=Format.XLSX,
-            path=str(input_path),
-        )
+        read_spec = FileSourceSpec(alias="data", path=str(input_path), format=Format.XLSX)
         with pytest.raises(TypeError, match="XLSX"):
             spark_reader.read(read_spec, None)
 

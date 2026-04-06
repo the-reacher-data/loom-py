@@ -6,8 +6,7 @@ import pytest
 
 from loom.etl import col
 from loom.etl.io._format import Format
-from loom.etl.io._target import SchemaMode
-from loom.etl.io.target import TargetSpec
+from loom.etl.io.target import SchemaMode, TargetSpec
 from loom.etl.io.target._file import FileSpec
 from loom.etl.io.target._table import (
     AppendSpec,

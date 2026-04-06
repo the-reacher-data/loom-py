@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target import TargetSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._table import TableRef
@@ -15,13 +14,8 @@ from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 _SENTINEL = object()
 
 
-def _make_source_spec(alias: str) -> SourceSpec:
-    return SourceSpec(
-        alias=alias,
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef(f"raw.{alias}"),
-    )
+def _make_source_spec(alias: str) -> TableSourceSpec:
+    return TableSourceSpec(alias=alias, table_ref=TableRef(f"raw.{alias}"))
 
 
 def _make_target_spec() -> TargetSpec:

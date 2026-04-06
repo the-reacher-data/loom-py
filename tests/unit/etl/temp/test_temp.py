@@ -23,7 +23,7 @@ from loom.etl import (
     TempScope,
 )
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
-from loom.etl.io._source import SourceKind
+from loom.etl.io.source import SourceKind
 from loom.etl.temp._store import IntermediateStore
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 

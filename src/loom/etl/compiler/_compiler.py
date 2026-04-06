@@ -220,6 +220,7 @@ class ETLCompiler:
             params_type=params_type,
             source_bindings=source_bindings,
             target_binding=target_binding,
+            streaming=step_type.streaming,
         )
 
     # ------------------------------------------------------------------

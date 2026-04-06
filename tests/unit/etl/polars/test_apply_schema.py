@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from loom.etl.backends.polars._schema import SchemaNotFoundError, apply_schema
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 
 
 def _frame(**cols: object) -> pl.LazyFrame:

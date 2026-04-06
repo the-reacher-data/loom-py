@@ -13,7 +13,7 @@ from deltalake import write_deltalake
 
 from loom.etl.backends.polars import PolarsDeltaReader
 from loom.etl.io._format import Format
-from loom.etl.io._source import FromFile, FromTable, SourceKind, SourceSpec
+from loom.etl.io.source import FileSourceSpec, FromFile, FromTable, TableSourceSpec
 from loom.etl.schema._table import TableRef
 
 from .conftest import table_path
@@ -34,14 +34,8 @@ def _reader(root: Path) -> PolarsDeltaReader:
     return PolarsDeltaReader(str(root))
 
 
-def _table_spec(ref: str, columns: tuple[str, ...] = ()) -> SourceSpec:
-    return SourceSpec(
-        alias="data",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef(ref),
-        columns=columns,
-    )
+def _table_spec(ref: str, columns: tuple[str, ...] = ()) -> TableSourceSpec:
+    return TableSourceSpec(alias="data", table_ref=TableRef(ref), columns=columns)
 
 
 # ---------------------------------------------------------------------------
@@ -105,10 +99,8 @@ def test_reader_columns_combined_with_predicate(tmp_path: Path) -> None:
     _seed_delta(tmp_path, "raw.orders", data)
 
     pred = EqPred(left=UnboundColumnRef("year"), right=2024)
-    spec = SourceSpec(
+    spec = TableSourceSpec(
         alias="orders",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
         table_ref=TableRef("raw.orders"),
         predicates=(pred,),
         columns=("id", "amount"),
@@ -161,12 +153,8 @@ def test_reader_file_columns_projects_parquet(tmp_path: Path) -> None:
     path = tmp_path / "data.parquet"
     data.write_parquet(str(path))
 
-    spec = SourceSpec(
-        alias="data",
-        kind=SourceKind.FILE,
-        format=Format.PARQUET,
-        path=str(path),
-        columns=("id", "value"),
+    spec = FileSourceSpec(
+        alias="data", path=str(path), format=Format.PARQUET, columns=("id", "value")
     )
     result = _reader(tmp_path).read(spec, None).collect()
 

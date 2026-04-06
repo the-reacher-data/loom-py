@@ -1,8 +1,13 @@
-"""ETL target variant specs.
+"""ETL target declaration API — builders and compiled spec types.
 
-Each variant carries exactly the fields required for its write semantic.
-The union :data:`TargetSpec` is the type used throughout the compiler,
-executor, and backend writers.
+Builders (user-facing):
+
+* :class:`IntoTable`  — Delta table target
+* :class:`IntoFile`   — file target (CSV, JSON, XLSX, Parquet)
+* :class:`IntoTemp`   — intermediate store target
+* :class:`SchemaMode` — schema evolution strategy
+
+Spec types (internal — compiler, executor, and backend writers):
 
 TABLE targets (Delta Lake):
 
@@ -20,6 +25,7 @@ Non-table targets:
 """
 
 from loom.etl.io.target._file import FileSpec
+from loom.etl.io.target._into import IntoFile, IntoTable, IntoTemp, SchemaMode
 from loom.etl.io.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
@@ -47,6 +53,10 @@ Used as the public type annotation for any value produced by
 """
 
 __all__ = [
+    "IntoTable",
+    "IntoFile",
+    "IntoTemp",
+    "SchemaMode",
     "TargetSpec",
     "AppendSpec",
     "ReplaceSpec",

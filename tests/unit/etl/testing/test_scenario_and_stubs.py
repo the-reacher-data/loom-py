@@ -6,8 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
@@ -57,12 +56,7 @@ def test_stub_reader_and_writer_capture_data_flow() -> None:
     reader = StubSourceReader({"orders": frame})
     writer = StubTargetWriter()
 
-    src_spec = SourceSpec(
-        alias="orders",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
-        table_ref=TableRef("raw.orders"),
-    )
+    src_spec = TableSourceSpec(alias="orders", table_ref=TableRef("raw.orders"))
     target_spec = ReplaceSpec(table_ref=TableRef("staging.out"))
 
     assert reader.read(src_spec, _params_instance=None) is frame

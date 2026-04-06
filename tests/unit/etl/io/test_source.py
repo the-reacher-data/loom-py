@@ -7,7 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from loom.etl.io._format import Format
-from loom.etl.io._source import FromFile, FromTable, FromTemp, SourceKind, Sources, SourceSet
+from loom.etl.io.source import FromFile, FromTable, FromTemp, SourceKind, Sources, SourceSet
 from loom.etl.pipeline._proxy import params
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef, col
@@ -162,7 +162,6 @@ class TestFromTemp:
         assert spec.alias == "normalized"
         assert spec.kind is SourceKind.TEMP
         assert spec.temp_name == "normalized"
-        assert spec.path is None
 
     def test_repr_includes_temp_name(self) -> None:
         assert repr(FromTemp("orders_tmp")) == "FromTemp('orders_tmp')"

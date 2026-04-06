@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io._target import IntoTable, SchemaMode
+from loom.etl.io.target import IntoTable, SchemaMode
 from loom.etl.io.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,

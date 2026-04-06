@@ -26,7 +26,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl.backends.spark._dtype import loom_type_to_spark
-from loom.etl.io._source import JsonColumnSpec, SourceSpec
+from loom.etl.io.source import JsonColumnSpec, TableSourceSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage._locator import TableLocator, _as_locator
 
@@ -75,22 +75,17 @@ class SparkDeltaReader:
         self._spark = spark
         self._locator = _as_locator(locator) if locator is not None else None
 
-    def read(self, spec: SourceSpec, _params_instance: Any) -> DataFrame:
+    def read(self, spec: TableSourceSpec, _params_instance: Any) -> DataFrame:
         """Return a lazy Spark DataFrame backed by the Delta table in *spec*.
 
         Args:
-            spec:             Compiled source spec.  Must be a TABLE source.
+            spec:             Compiled :class:`TableSourceSpec`.
             _params_instance: Concrete params (reserved for future predicate
                               pushdown support).
 
         Returns:
             Spark DataFrame over the Delta table (lazy scan).
-
-        Raises:
-            TypeError: If *spec* is a FILE source (unsupported here).
         """
-        if spec.table_ref is None:
-            raise TypeError(f"SparkDeltaReader only supports TABLE sources; got FILE spec: {spec}")
         if self._locator is None:
             df = self._spark.table(spec.table_ref.ref)
         else:

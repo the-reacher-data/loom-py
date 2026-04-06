@@ -49,7 +49,7 @@ class RunContext:
         run_id:         UUID generated per attempt — unique per execution.
         correlation_id: Opaque ID supplied by the caller to group retry
                         attempts of the same logical job.  Typically the
-                        orchestrator's job run ID (Databricks, Bytewarx, etc.).
+                        orchestrator's job run ID.
                         ``None`` when not provided.
         attempt:        1-based attempt counter.  Pass the orchestrator's
                         retry number so retries are distinguishable in the
@@ -61,13 +61,13 @@ class RunContext:
                         ``CORRELATION`` intermediates alive for the next
                         attempt.
 
-    Example (Databricks)::
+    Example::
 
         runner.run(
             DailyOrdersPipeline,
             params,
-            correlation_id=dbutils.jobs.taskValues.get("job_run_id"),
-            attempt=dbutils.jobs.taskValues.get("attempt_number"),
+            correlation_id=context.run_id,
+            attempt=context.retry_number,
         )
     """
 

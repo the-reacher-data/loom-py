@@ -54,6 +54,7 @@ from loom.etl.io import (
     IntoTable,
     IntoTemp,
     JsonReadOptions,
+    JsonWriteOptions,
     ParquetReadOptions,
     ParquetWriteOptions,
     ReadOptions,
@@ -100,7 +101,6 @@ from loom.etl.storage import (
 )
 from loom.etl.temp import (
     AutoTempCleaner,
-    DbutilsTempCleaner,
     FsspecTempCleaner,
     IntermediateStore,
     LocalTempCleaner,
@@ -136,7 +136,6 @@ __all__ = [
     "TempCleaner",
     "LocalTempCleaner",
     "FsspecTempCleaner",
-    "DbutilsTempCleaner",
     "AutoTempCleaner",
     # format
     "Format",
@@ -149,6 +148,7 @@ __all__ = [
     # write options
     "WriteOptions",
     "CsvWriteOptions",
+    "JsonWriteOptions",
     "ParquetWriteOptions",
     # table / column refs
     "TableRef",

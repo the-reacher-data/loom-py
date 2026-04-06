@@ -84,7 +84,7 @@ def validate_param_exprs(
 
     exprs: list[ParamExpr] = []
     for binding in source_bindings:
-        for pred in binding.spec.predicates:
+        for pred in getattr(binding.spec, "predicates", ()):
             _collect_exprs(pred, exprs)
 
     if _is_replace_where_like(target_binding.spec):

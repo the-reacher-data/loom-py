@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target._into import SchemaMode
 from loom.etl.schema._table import TableRef
 from loom.etl.sql._predicate import PredicateNode
 

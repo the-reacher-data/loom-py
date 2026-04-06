@@ -10,7 +10,7 @@ import polars as pl
 from deltalake import write_deltalake
 
 from loom.etl.backends.polars._schema import apply_schema
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,

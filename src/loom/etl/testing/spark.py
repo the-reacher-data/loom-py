@@ -39,7 +39,7 @@ from pyspark.sql import SparkSession
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
-from loom.etl.io._source import SourceSpec
+from loom.etl.io.source import SourceSpec
 from loom.etl.io.target import TargetSpec
 from loom.etl.testing._result import StepResult
 
@@ -135,7 +135,9 @@ class _SparkCapturingWriter:
         self.frame: Any = None
         self.spec: TargetSpec | None = None
 
-    def write(self, frame: Any, spec: TargetSpec, _params_instance: Any) -> None:
+    def write(
+        self, frame: Any, spec: TargetSpec, _params_instance: Any, *, streaming: bool = False
+    ) -> None:
         self.frame = frame
         self.spec = spec
 
@@ -145,7 +147,8 @@ class _SparkStubReader:
         self._frames = frames
 
     def read(self, spec: SourceSpec, _params_instance: Any) -> Any:
-        key = spec.table_ref.ref if spec.table_ref is not None else spec.alias
+        table_ref = getattr(spec, "table_ref", None)
+        key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]
 
 

@@ -13,10 +13,10 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
+from loom.etl.io.source._specs import TableSourceSpec
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._io import TableDiscovery
 
-_SOURCE_KIND_TABLE = "table"
 _SCHEMA_MODE_OVERWRITE = "overwrite"
 
 
@@ -131,8 +131,7 @@ def _check_sources(step: StepPlan, catalog: TableDiscovery, will_create: set[str
     for binding in step.source_bindings:
         spec = binding.spec
         if (
-            _enum_value(spec.kind) == _SOURCE_KIND_TABLE
-            and spec.table_ref is not None
+            isinstance(spec, TableSourceSpec)
             and spec.table_ref.ref not in will_create
             and not catalog.exists(spec.table_ref)
         ):

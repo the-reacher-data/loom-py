@@ -9,7 +9,7 @@ import pytest
 
 from loom.etl import col
 from loom.etl.io._format import Format
-from loom.etl.io._target import IntoFile, IntoTable, IntoTemp, SchemaMode
+from loom.etl.io.target import IntoFile, IntoTable, IntoTemp, SchemaMode
 from loom.etl.io.target._file import FileSpec
 from loom.etl.io.target._table import (
     AppendSpec,

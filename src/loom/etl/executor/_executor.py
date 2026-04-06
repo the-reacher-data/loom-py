@@ -48,7 +48,7 @@ from loom.etl.compiler._plan import (
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.executor.observer._events import RunContext, RunStatus
 from loom.etl.executor.observer._protocol import ETLRunObserver
-from loom.etl.io._source import SourceKind
+from loom.etl.io.source import TempSourceSpec
 from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.temp._store import IntermediateStore
@@ -217,7 +217,9 @@ class ETLExecutor:
         try:
             frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
             result = plan.step_type().execute(params, **frames)
-            self._write_target(result, plan.target_binding.spec, params, ctx)
+            self._write_target(
+                result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
+            )
         except Exception as exc:
             status = RunStatus.FAILED
             for obs in self._observers:
@@ -237,7 +239,7 @@ class ETLExecutor:
         return self._temp_store
 
     def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
-        if spec.kind is SourceKind.TEMP:
+        if isinstance(spec, TempSourceSpec):
             _log.debug("read source kind=TEMP name=%s", spec.temp_name)
             return self._require_temp_store(spec.temp_name).get(
                 spec.temp_name,
@@ -245,11 +247,15 @@ class ETLExecutor:
                 correlation_id=ctx.correlation_id,
             )
         _log.debug(
-            "read source kind=%s ref=%s", spec.kind, getattr(spec, "table_ref", None) or spec.path
+            "read source kind=%s ref=%s",
+            spec.kind,
+            getattr(spec, "table_ref", None) or getattr(spec, "path", None),
         )
         return self._reader.read(spec, params)
 
-    def _write_target(self, result: Any, spec: Any, params: Any, ctx: RunContext) -> None:
+    def _write_target(
+        self, result: Any, spec: Any, params: Any, ctx: RunContext, *, streaming: bool = False
+    ) -> None:
         if isinstance(spec, (TempSpec, TempFanInSpec)):
             _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
             self._require_temp_store(spec.temp_name).put(
@@ -265,7 +271,7 @@ class ETLExecutor:
                 "write target ref=%s",
                 getattr(spec, "table_ref", None) or getattr(spec, "path", None),
             )
-            self._writer.write(result, spec, params)
+            self._writer.write(result, spec, params, streaming=streaming)
 
     def _cleanup_temps(self, ctx: RunContext, status: RunStatus) -> None:
         if self._temp_store is None:

@@ -10,7 +10,6 @@ import pytest
 
 from loom.etl.temp._cleaners import (
     AutoTempCleaner,
-    DbutilsTempCleaner,
     FsspecTempCleaner,
     LocalTempCleaner,
     TempCleaner,
@@ -32,7 +31,6 @@ from loom.etl.temp._cleaners import (
         ("gcs://bucket/tmp", True),
         ("abfss://container@account/tmp", True),
         ("abfs://container@account/tmp", True),
-        ("dbfs:/loom", True),
         ("az://container/tmp", True),
     ],
 )
@@ -48,7 +46,6 @@ def test_is_cloud_path(path: str, expected: bool) -> None:
 def test_temp_cleaner_protocol_satisfied_by_all_implementations() -> None:
     assert isinstance(LocalTempCleaner(), TempCleaner)
     assert isinstance(FsspecTempCleaner(), TempCleaner)
-    assert isinstance(DbutilsTempCleaner(MagicMock()), TempCleaner)
     assert isinstance(AutoTempCleaner(), TempCleaner)
 
 
@@ -130,34 +127,6 @@ def test_fsspec_cleaner_does_not_raise_on_exception() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DbutilsTempCleaner
-# ---------------------------------------------------------------------------
-
-
-def test_dbutils_cleaner_calls_fs_rm() -> None:
-    dbutils = MagicMock()
-    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")
-    dbutils.fs.rm.assert_called_once_with("dbfs:/loom/runs/abc", recurse=True)
-
-
-def test_dbutils_cleaner_logs_warning_on_exception(caplog: pytest.LogCaptureFixture) -> None:
-    dbutils = MagicMock()
-    dbutils.fs.rm.side_effect = Exception("permission denied")
-    import logging
-
-    with caplog.at_level(logging.WARNING, logger="loom.etl._temp_cleaners"):
-        DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")
-
-    assert any("cleanup skipped" in r.message for r in caplog.records)
-
-
-def test_dbutils_cleaner_does_not_raise_on_exception() -> None:
-    dbutils = MagicMock()
-    dbutils.fs.rm.side_effect = RuntimeError("boom")
-    DbutilsTempCleaner(dbutils).delete_tree("dbfs:/loom/runs/abc")  # must not raise
-
-
-# ---------------------------------------------------------------------------
 # AutoTempCleaner — dispatch
 # ---------------------------------------------------------------------------
 
@@ -182,14 +151,14 @@ def test_auto_cleaner_dispatches_cloud_path_to_fsspec() -> None:
     mock_fs.rm.assert_called_once_with("/bucket/tmp", recursive=True)
 
 
-def test_auto_cleaner_dispatches_dbfs_path_to_fsspec() -> None:
-    """dbfs:/ is a cloud path — AutoTempCleaner routes to FsspecTempCleaner."""
+def test_auto_cleaner_dispatches_abfss_path_to_fsspec() -> None:
+    """abfss:// is a cloud path — AutoTempCleaner routes to FsspecTempCleaner."""
     mock_fs = MagicMock()
     mock_fs.exists.return_value = False
-    mock_module = _mock_fsspec(mock_fs, "/dbfs/tmp")
+    mock_module = _mock_fsspec(mock_fs, "/container/tmp")
 
     with patch.dict(sys.modules, {"fsspec": mock_module, "fsspec.core": mock_module.core}):
-        AutoTempCleaner().delete_tree("dbfs:/loom/runs/abc")
+        AutoTempCleaner().delete_tree("abfss://container/tmp/runs/abc")
 
     mock_module.core.url_to_fs.assert_called_once()
 

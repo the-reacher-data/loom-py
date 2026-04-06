@@ -24,7 +24,7 @@ from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 from loom.etl.schema._schema import SchemaNotFoundError
 
 _log = logging.getLogger(__name__)

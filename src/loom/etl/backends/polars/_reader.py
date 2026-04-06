@@ -58,7 +58,7 @@ from loom.etl.io._read_options import (
     ExcelReadOptions,
     JsonReadOptions,
 )
-from loom.etl.io._source import JsonColumnSpec, SourceKind, SourceSpec
+from loom.etl.io.source import FileSourceSpec, JsonColumnSpec, SourceSpec, TableSourceSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage._locator import TableLocator, _as_locator
 
@@ -92,41 +92,36 @@ class PolarsDeltaReader:
     def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
         """Return a lazy frame for the source described by *spec*.
 
-        Dispatches to Delta or file reading based on ``spec.kind``.
+        Dispatches to Delta or file reading based on the spec type.
         Applies source schema casts and predicates lazily.
 
         Args:
-            spec:             Compiled source spec.
+            spec:             Compiled source spec — :class:`TableSourceSpec` or
+                              :class:`FileSourceSpec`.
             params_instance:  Concrete params for resolving predicate expressions.
 
         Returns:
             Lazy Polars frame.
 
         Raises:
-            TypeError: If ``spec.kind`` is ``TEMP`` (handled by
+            TypeError: If *spec* is a :class:`TempSourceSpec` (handled by
                        :class:`~loom.etl._temp_store.IntermediateStore`).
-            ValueError: If ``spec.kind`` is ``FILE`` but ``spec.path`` is
-                        ``None``.
         """
-        match spec.kind:
-            case SourceKind.TABLE:
-                return self._read_delta(spec, params_instance)
-            case SourceKind.FILE:
-                return self._read_file(spec)
-            case _:
-                raise TypeError(
-                    f"PolarsDeltaReader cannot read source kind {spec.kind!r}. "
-                    "TEMP sources are handled by IntermediateStore."
-                )
+        if isinstance(spec, TableSourceSpec):
+            return self._read_delta(spec, params_instance)
+        if isinstance(spec, FileSourceSpec):
+            return self._read_file(spec)
+        raise TypeError(
+            f"PolarsDeltaReader cannot read source kind {spec.kind!r}. "
+            "TEMP sources are handled by IntermediateStore."
+        )
 
     # ------------------------------------------------------------------
     # Delta
     # ------------------------------------------------------------------
 
-    def _read_delta(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
+    def _read_delta(self, spec: TableSourceSpec, params_instance: Any) -> pl.LazyFrame:
         ref = spec.table_ref
-        if ref is None:
-            raise TypeError("table_ref must be set for Delta read operations")
         _log.debug(
             "read delta table=%s predicates=%d columns=%d schema_cols=%d",
             ref.ref,
@@ -150,9 +145,7 @@ class PolarsDeltaReader:
     # File
     # ------------------------------------------------------------------
 
-    def _read_file(self, spec: SourceSpec) -> pl.LazyFrame:
-        if spec.path is None:
-            raise ValueError(f"FromFile spec has no path: {spec}")
+    def _read_file(self, spec: FileSourceSpec) -> pl.LazyFrame:
         _log.debug(
             "read file path=%s format=%s columns=%d schema_cols=%d",
             spec.path,

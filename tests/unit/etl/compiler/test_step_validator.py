@@ -10,8 +10,7 @@ import pytest
 
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.compiler.validators import _step as step_validator
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._table import TableRef
 
@@ -21,10 +20,8 @@ validate_step = step_validator.validate_step
 
 
 def _build_context() -> StepCompilationContext:
-    source_spec = SourceSpec(
+    source_spec = TableSourceSpec(
         alias="orders",
-        kind=SourceKind.TABLE,
-        format=Format.DELTA,
         table_ref=TableRef("raw.orders"),
     )
     return StepCompilationContext(

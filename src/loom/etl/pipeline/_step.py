@@ -18,8 +18,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
-from loom.etl.io._source import FromFile, FromTable, FromTemp, Sources, SourceSet
-from loom.etl.io._target import IntoFile, IntoTable, IntoTemp
+from loom.etl.io.source import FromFile, FromTable, FromTemp, Sources, SourceSet
+from loom.etl.io.target import IntoFile, IntoTable, IntoTemp
 from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")

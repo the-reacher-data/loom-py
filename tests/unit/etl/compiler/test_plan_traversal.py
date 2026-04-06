@@ -20,8 +20,8 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
-from loom.etl.io._source import FromTable
-from loom.etl.io._target import IntoTable
+from loom.etl.io.source import FromTable
+from loom.etl.io.target import IntoTable
 from loom.etl.pipeline._params import ETLParams
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess

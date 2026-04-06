@@ -22,7 +22,7 @@ from loom.etl.compiler import (
     ParallelProcessGroup,
     ParallelStepGroup,
 )
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 from loom.etl.testing import StubCatalog
 
 

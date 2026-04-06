@@ -12,8 +12,7 @@ from loom.etl.compiler import ETLCompilationError
 from loom.etl.compiler._errors import ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.compiler.validators._param_exprs import validate_param_exprs
-from loom.etl.io._format import Format
-from loom.etl.io._source import SourceKind, SourceSpec
+from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import AppendSpec, ReplaceWhereSpec
 from loom.etl.pipeline._proxy import params as p
 from loom.etl.schema._table import TableRef
@@ -35,10 +34,8 @@ def _replace_where_target(pred: Any) -> TargetBinding:
 def _source_binding(*predicates: Any) -> SourceBinding:
     return SourceBinding(
         alias="data",
-        spec=SourceSpec(
+        spec=TableSourceSpec(
             alias="data",
-            kind=SourceKind.TABLE,
-            format=Format.DELTA,
             table_ref=TableRef("raw.data"),
             predicates=predicates,
         ),

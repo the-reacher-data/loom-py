@@ -148,21 +148,17 @@ def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch)
 def test_plan_and_schema_runtime_contracts() -> None:
     mods = _reload_modules(
         "loom.etl.compiler._plan",
-        "loom.etl.io._format",
         "loom.etl.io._source",
         "loom.etl.io.target._table",
         "loom.etl.schema._table",
     )
     plan_mod = mods["loom.etl.compiler._plan"]
-    format_mod = mods["loom.etl.io._format"]
     source_mod = mods["loom.etl.io._source"]
     target_table_mod = mods["loom.etl.io.target._table"]
     table_mod = mods["loom.etl.schema._table"]
 
-    source_spec = source_mod.SourceSpec(
+    source_spec = source_mod.TableSourceSpec(
         alias="orders",
-        kind=source_mod.SourceKind.TABLE,
-        format=format_mod.Format.DELTA,
         table_ref=table_mod.TableRef("raw.orders"),
     )
     source_binding = plan_mod.SourceBinding(alias="orders", spec=source_spec)
@@ -277,17 +273,6 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
     monkeypatch.setitem(sys.modules, "fsspec", fake_fsspec)
     cleaners_mod.FsspecTempCleaner().delete_tree("s3://bucket/path")
     assert removed == [("bucket/path", True)]
-
-    class _Dbutils:
-        class fs:
-            calls: list[tuple[str, bool]] = []
-
-            @staticmethod
-            def rm(path: str, recurse: bool) -> None:
-                _Dbutils.fs.calls.append((path, recurse))
-
-    cleaners_mod.DbutilsTempCleaner(_Dbutils()).delete_tree("dbfs:/loom/runs")
-    assert _Dbutils.fs.calls == [("dbfs:/loom/runs", True)]
 
     assert cleaners_mod._is_cloud_path("abfss://container/path")
     assert not cleaners_mod._is_cloud_path("/var/lib/loom/path")

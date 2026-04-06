@@ -10,7 +10,7 @@ import msgspec
 import pytest
 
 from loom.etl.io._format import Format
-from loom.etl.io._source import FromFile, FromTable, JsonColumnSpec, SourceSpec
+from loom.etl.io.source import FromFile, FromTable, JsonColumnSpec, SourceSpec
 from loom.etl.schema._schema import ColumnSchema, ListType, LoomDtype, StructField, StructType
 
 

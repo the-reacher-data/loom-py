@@ -30,7 +30,7 @@ def test_definition_modules_support_reload_contracts() -> None:
 
     assert modules["loom.etl.io._format"].Format.CSV.value == "csv"
     assert modules["loom.etl.io._read_options"].CsvReadOptions().separator == ","
-    assert modules["loom.etl.io._write_options"].ParquetWriteOptions().compression == "snappy"
+    assert modules["loom.etl.io._write_options"].ParquetWriteOptions().compression == "zstd"
     assert modules["loom.etl.io.target._file"].FileSpec is not None
     assert modules["loom.etl.io.target._table"].AppendSpec is not None
     assert modules["loom.etl.io.target._temp"].TempSpec is not None
@@ -210,16 +210,18 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
 
 def test_reload_temp_store_module_and_helpers() -> None:
     store_mod = _reload_module("loom.etl.temp._store")
+    polars_temp_mod = _reload_module("loom.etl.backends.polars._temp")
+    spark_temp_mod = _reload_module("loom.etl.backends.spark._temp")
 
     fake_polars = type("LazyFrame", (), {"__module__": "polars.lazyframe.frame"})()
     fake_spark = type("DataFrame", (), {"__module__": "pyspark.sql.dataframe"})()
 
-    assert store_mod._is_polars_lazy_frame(fake_polars)
-    assert store_mod._is_spark_dataframe(fake_spark)
+    assert polars_temp_mod._is_polars_lazy_frame(fake_polars)
+    assert spark_temp_mod._is_spark_dataframe(fake_spark)
 
     base = "/var/lib/loom/test"
-    single = store_mod._arrow_path("orders", base)
-    part = store_mod._arrow_part("orders", base)
+    single = polars_temp_mod._arrow_path("orders", base)
+    part = polars_temp_mod._arrow_part("orders", base)
     assert single.endswith("/orders.arrow")
     assert "/orders/" in part and part.endswith(".arrow")
 
@@ -235,7 +237,10 @@ def test_reload_temp_store_module_and_helpers() -> None:
     class _Spark:
         read = _Reader()
 
-    assert store_mod._probe_spark(_Spark(), "/var/lib/loom/missing") is None
+    assert spark_temp_mod._probe_spark(_Spark(), "/var/lib/loom/missing") is None
+
+    # Verify _join_path still lives in _store for shared path construction
+    assert store_mod._join_path("/var/lib/loom", "runs", "abc") == "/var/lib/loom/runs/abc"
 
     class _ReaderUnexpected:
         def parquet(self, _path: str) -> object:
@@ -245,7 +250,7 @@ def test_reload_temp_store_module_and_helpers() -> None:
         read = _ReaderUnexpected()
 
     with pytest.raises(RuntimeError, match="boom"):
-        store_mod._probe_spark(_SparkUnexpected(), "/var/lib/loom/missing")
+        spark_temp_mod._probe_spark(_SparkUnexpected(), "/var/lib/loom/missing")
 
 
 def test_lazy_pipeline_exports_resolve() -> None:

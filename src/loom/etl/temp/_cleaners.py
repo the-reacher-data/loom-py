@@ -1,12 +1,11 @@
 """TempCleaner implementations for cloud-aware intermediate store cleanup.
 
 :class:`TempCleaner` is a structural :class:`typing.Protocol` — any object
-with a ``delete_tree(path)`` method satisfies it.  Loom ships four concrete
+with a ``delete_tree(path)`` method satisfies it.  Loom ships three concrete
 implementations covering the common environments:
 
 * :class:`LocalTempCleaner`  — local filesystem (``shutil.rmtree``).
 * :class:`FsspecTempCleaner` — cloud URIs via ``fsspec`` auto-discovery.
-* :class:`DbutilsTempCleaner` — Databricks DBFS paths via ``dbutils.fs.rm``.
 * :class:`AutoTempCleaner`   — default: dispatches by path scheme.
 
 Custom implementations
@@ -29,11 +28,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 _log = logging.getLogger(__name__)
 
-_CLOUD_SCHEMES = ("s3://", "gs://", "gcs://", "abfss://", "abfs://", "dbfs:/", "az://")
+_CLOUD_SCHEMES = ("s3://", "gs://", "gcs://", "abfss://", "abfs://", "az://")
 
 
 @runtime_checkable
@@ -116,52 +115,15 @@ class FsspecTempCleaner:
             _log.warning("temp cloud cleanup skipped path=%s reason=%s", path, exc)
 
 
-class DbutilsTempCleaner:
-    """Delete Databricks DBFS paths via ``dbutils.fs.rm``.
-
-    Use this cleaner when ``tmp_root`` is a ``dbfs:/`` path and ``fsspec``
-    cannot reach it.  Pass the ``dbutils`` object injected by the Databricks
-    runtime (notebook global or retrieved from ``databricks-sdk``).
-
-    Args:
-        dbutils: The Databricks ``dbutils`` object.
-
-    Example::
-
-        from loom.etl import ETLRunner, DbutilsTempCleaner
-
-        runner = ETLRunner.from_spark(spark, cleaner=DbutilsTempCleaner(dbutils))
-        runner.run(MyPipeline, MyParams(...))
-    """
-
-    def __init__(self, dbutils: Any) -> None:
-        self._dbutils = dbutils
-
-    def delete_tree(self, path: str) -> None:
-        """Remove *path* recursively via ``dbutils.fs.rm``.
-
-        Failure is non-fatal — a ``WARNING`` is logged instead.
-
-        Args:
-            path: DBFS or cloud path reachable by ``dbutils``.
-        """
-        try:
-            _log.debug("temp cleanup dbutils path=%s", path)
-            self._dbutils.fs.rm(path, recurse=True)
-        except Exception as exc:
-            _log.warning("temp dbutils cleanup skipped path=%s reason=%s", path, exc)
-
-
 class AutoTempCleaner:
     """Default cleaner: dispatches by path scheme.
 
     * Local paths (no URI scheme) → :class:`LocalTempCleaner`.
-    * Cloud URIs (``s3://``, ``gs://``, ``abfss://``, ``dbfs:/``, …) →
+    * Cloud URIs (``s3://``, ``gs://``, ``abfss://``, …) →
       :class:`FsspecTempCleaner`.
 
     This is the default used by :class:`~loom.etl._temp_store.IntermediateStore`
-    when no explicit cleaner is provided.  Replace it with
-    :class:`DbutilsTempCleaner` for DBFS paths on Databricks.
+    when no explicit cleaner is provided.
 
     Example::
 

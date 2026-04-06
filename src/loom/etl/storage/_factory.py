@@ -108,7 +108,8 @@ def make_temp_store(
     Args:
         config:  Any storage config that declares ``tmp_root`` and
                  ``tmp_storage_options`` (satisfies :class:`_TempStoreAware`).
-        spark:   Active SparkSession (Spark backend only).
+        spark:   Active SparkSession.  When provided, the Spark backend is used;
+                 otherwise the Polars Arrow IPC backend is used.
         cleaner: Cloud-aware temp cleaner.
 
     Returns:
@@ -116,12 +117,31 @@ def make_temp_store(
     """
     if not config.tmp_root:
         return None
+    backend = _make_temp_backend(spark, config.tmp_storage_options or {})
     return IntermediateStore(
         tmp_root=config.tmp_root,
-        storage_options=config.tmp_storage_options or {},
-        spark=spark,
+        backend=backend,
         cleaner=cleaner,
     )
+
+
+def _make_temp_backend(spark: Any, storage_options: dict[str, str]) -> Any:
+    """Instantiate the appropriate temp backend for *spark* or Polars.
+
+    Args:
+        spark:           Active SparkSession, or ``None`` for Polars.
+        storage_options: Cloud credentials for the Polars IPC backend.
+
+    Returns:
+        A :class:`~loom.etl.temp._store._TempBackend` instance.
+    """
+    if spark is not None:
+        from loom.etl.backends.spark._temp import _SparkTempBackend
+
+        return _SparkTempBackend(spark)
+    from loom.etl.backends.polars._temp import _PolarsTempBackend
+
+    return _PolarsTempBackend(storage_options)
 
 
 def _make_spark_backends(

@@ -41,7 +41,7 @@ import logging
 import polars as pl
 from polars.datatypes import DataTypeClass as _DataTypeClass
 
-from loom.etl.io._target import SchemaMode
+from loom.etl.io.target import SchemaMode
 from loom.etl.schema._schema import SchemaNotFoundError
 
 _log = logging.getLogger(__name__)
