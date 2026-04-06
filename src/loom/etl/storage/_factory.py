@@ -82,14 +82,15 @@ def make_backends(
 
 def make_observers(
     config: ObservabilityConfig,
-    storage: StorageConfig,
+    storage: StorageConfig | None = None,
     spark: Any = None,
 ) -> list[ETLRunObserver]:
     """Build the observer list from *config*.
 
     Args:
         config:  Observability configuration.
-        storage: Active storage backend configuration.
+        storage: Active storage backend configuration. Required only when
+                 ``config.run_sink`` is enabled.
         spark:   Active SparkSession when using Unity Catalog.
 
     Returns:
@@ -103,6 +104,10 @@ def make_observers(
     if config.log:
         observers.append(StructlogRunObserver(slow_step_threshold_ms=config.slow_step_threshold_ms))
     if config.run_sink is not None:
+        if storage is None:
+            raise ValueError(
+                "make_observers: storage config is required when observability.run_sink is enabled."
+            )
         sink_cfg = config.run_sink
         sink_cfg.validate()
         sink_writer = _make_run_sink_append_writer(storage, sink_cfg, spark)

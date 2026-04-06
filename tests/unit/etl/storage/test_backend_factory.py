@@ -51,6 +51,14 @@ def test_make_observers_log_true_includes_structlog() -> None:
     assert isinstance(observers[0], StructlogRunObserver)
 
 
+def test_make_observers_log_true_without_storage_still_includes_structlog() -> None:
+    config = ObservabilityConfig(log=True)
+    observers = make_observers(config)
+
+    assert len(observers) == 1
+    assert isinstance(observers[0], StructlogRunObserver)
+
+
 def test_make_observers_log_false_returns_empty() -> None:
     config = ObservabilityConfig(log=False)
     observers = make_observers(config, DeltaConfig(root="/tmp/lake"))
@@ -83,6 +91,12 @@ def test_make_observers_rejects_database_destination_for_polars_backend() -> Non
     )
     with pytest.raises(ValueError, match="only supported with Spark/Unity Catalog"):
         make_observers(config, DeltaConfig(root="/tmp/lake"))
+
+
+def test_make_observers_with_run_sink_requires_storage_config() -> None:
+    config = ObservabilityConfig(log=False, run_sink=RunSinkConfig(root="/tmp/runs"))
+    with pytest.raises(ValueError, match="storage config is required"):
+        make_observers(config)
 
 
 # ---------------------------------------------------------------------------
