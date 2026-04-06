@@ -16,6 +16,7 @@ from loom.etl.io.target._table import (
     ReplaceWhereSpec,
     UpsertSpec,
 )
+from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator
 
 from .file import PolarsFileWriter
@@ -75,3 +76,15 @@ class PolarsTargetWriter:
             self._table_writer.write(frame, spec, params_instance, streaming=streaming)
             return
         raise TypeError(f"PolarsTargetWriter does not support target spec: {type(spec)!r}")
+
+    def append(
+        self,
+        frame: pl.LazyFrame,
+        table_ref: TableRef,
+        params_instance: Any,
+        /,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Append rows to *table_ref*, creating the table on first write."""
+        self._table_writer.append(frame, table_ref, params_instance, streaming=streaming)

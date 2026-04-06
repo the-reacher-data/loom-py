@@ -68,7 +68,7 @@ class ETLRunner:
     ) -> ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects."""
         reader, writer, catalog = make_backends(config, spark)
-        observers = make_observers(obs_config or ObservabilityConfig())
+        observers = make_observers(obs_config or ObservabilityConfig(), config, spark)
         temp_store = make_temp_store(config, spark, cleaner)
         return cls(reader, writer, catalog, observers, dispatcher, temp_store)
 

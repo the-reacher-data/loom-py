@@ -373,13 +373,16 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     sink_observer.on_pipeline_end(ctx, events_mod.RunStatus.FAILED, 7)
     assert len(sink.records) == 3
 
-    writes: list[tuple[str, Any]] = []
-    monkeypatch.setattr(
-        delta_sink_mod,
-        "write_deltalake",
-        lambda uri, df, mode, schema_mode, storage_options=None: writes.append((uri, df)),
-    )
-    delta_sink = delta_sink_mod.DeltaRunSink("/var/lib/loom/runs")
+    class _AppendWriter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[Any, Any]] = []
+
+        def append(self, record: Any, table_ref: Any, /) -> None:
+            self.calls.append((record, table_ref))
+
+    _ = monkeypatch
+    append_writer = _AppendWriter()
+    delta_sink = delta_sink_mod.DeltaRunSink(append_writer)
     record = events_mod.StepRunRecord(
         event=events_mod.EventName.STEP_END,
         run_id="r3",
@@ -393,7 +396,8 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
         error=None,
     )
     delta_sink.write(record)
-    assert writes and writes[0][0].endswith("/step_runs")
+    assert append_writer.calls
+    assert append_writer.calls[0][1].ref == "step_runs"
     with pytest.raises(TypeError):
         delta_sink.write(object())  # type: ignore[arg-type]
 

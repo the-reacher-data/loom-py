@@ -120,11 +120,47 @@ class SparkDeltaWriter:
         existing_schema = _native_spark_schema(self._spark, table_ref, self._locator)
 
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
+            if isinstance(spec, ReplacePartitionsSpec):
+                _first_run_overwrite_partitions_spark(frame, spec, self._locator)
+                return
             self._write_frame(frame, spec, params_instance)
             return
 
         validated = spark_apply_schema(frame, existing_schema, spec.schema_mode)
         self._write_frame(validated, spec, params_instance)
+
+    def append(
+        self,
+        frame: DataFrame,
+        table_ref: TableRef,
+        params_instance: Any,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Append rows to *table_ref* and create the table on first write.
+
+        Uses ``schema_mode=EVOLVE`` for append semantics and falls back to
+        ``OVERWRITE`` only when the table does not yet exist.
+
+        Args:
+            frame: Spark DataFrame to append.
+            table_ref: Logical destination table reference.
+            params_instance: Concrete params for predicate resolution.
+            streaming: Ignored — Spark manages its own execution model.
+        """
+        _ = streaming
+        if _native_spark_schema(self._spark, table_ref, self._locator) is None:
+            self.write(
+                frame,
+                ReplaceSpec(table_ref=table_ref, schema_mode=SchemaMode.OVERWRITE),
+                params_instance,
+            )
+            return
+        self.write(
+            frame,
+            AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE),
+            params_instance,
+        )
 
     def _write_upsert_spark(self, frame: DataFrame, spec: UpsertSpec) -> None:
         table_ref = spec.table_ref
@@ -264,6 +300,23 @@ def _first_run_overwrite_spark(
         .mode("overwrite")
         .option("overwriteSchema", "true")
     )
+    _sink(writer, spec.table_ref, locator)
+
+
+def _first_run_overwrite_partitions_spark(
+    df: DataFrame,
+    spec: ReplacePartitionsSpec,
+    locator: TableLocator | None,
+) -> None:
+    """Create a partitioned table on first write for ``replace_partitions``."""
+    writer = (
+        df.write.format("delta")
+        .option("optimizeWrite", "true")
+        .mode("overwrite")
+        .option("overwriteSchema", "true")
+    )
+    if spec.partition_cols:
+        writer = writer.partitionBy(*spec.partition_cols)
     _sink(writer, spec.table_ref, locator)
 
 

@@ -23,7 +23,13 @@ def test_observability_config_defaults_and_conversion() -> None:
     cfg = msgspec.convert(
         {
             "log": False,
-            "run_sink": {"root": "s3://lake/runs", "storage_options": {"AWS_REGION": "eu-west-1"}},
+            "run_sink": {
+                "root": "s3://lake/runs",
+                "storage_options": {"AWS_REGION": "eu-west-1"},
+                "writer": {"compression": "SNAPPY"},
+                "delta_config": {"delta.appendOnly": "true"},
+                "commit": {"userName": "loom"},
+            },
             "slow_step_threshold_ms": 2500,
         },
         ObservabilityConfig,
@@ -31,8 +37,31 @@ def test_observability_config_defaults_and_conversion() -> None:
     assert cfg.log is False
     assert cfg.slow_step_threshold_ms == 2500
     assert cfg.run_sink == RunSinkConfig(
-        root="s3://lake/runs", storage_options={"AWS_REGION": "eu-west-1"}
+        root="s3://lake/runs",
+        storage_options={"AWS_REGION": "eu-west-1"},
+        writer={"compression": "SNAPPY"},
+        delta_config={"delta.appendOnly": "true"},
+        commit={"userName": "loom"},
     )
+
+
+def test_run_sink_config_validate_requires_exactly_one_destination() -> None:
+    RunSinkConfig(root="s3://lake/runs").validate()
+    RunSinkConfig(database="ops").validate()
+
+    try:
+        RunSinkConfig().validate()
+    except ValueError as exc:
+        assert "exactly one destination" in str(exc)
+    else:  # pragma: no cover - defensive branch
+        raise AssertionError("Expected ValueError for empty destination")
+
+    try:
+        RunSinkConfig(root="s3://lake/runs", database="ops").validate()
+    except ValueError as exc:
+        assert "exactly one destination" in str(exc)
+    else:  # pragma: no cover - defensive branch
+        raise AssertionError("Expected ValueError for conflicting destinations")
 
 
 def test_protocol_method_bodies_are_callable() -> None:

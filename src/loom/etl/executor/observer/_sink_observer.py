@@ -47,11 +47,10 @@ class RunSinkObserver:
     Example::
 
         from loom.etl import ETLRunner
-        from loom.etl.executor import RunSinkObserver
-        from loom.etl.executor.observer.sinks import DeltaRunSink
 
-        sink   = DeltaRunSink("s3://my-lake/runs/")
-        runner = ETLRunner.from_yaml("loom.yaml", observers=[RunSinkObserver(sink)])
+        # Preferred: configure ``observability.run_sink`` in YAML and let
+        # ETLRunner wire RunSinkObserver + DeltaRunSink automatically.
+        runner = ETLRunner.from_yaml("loom.yaml")
     """
 
     def __init__(self, sink: RunSink) -> None:

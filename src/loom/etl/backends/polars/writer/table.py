@@ -84,6 +84,40 @@ class PolarsDeltaTableWriter:
             )
         self._write_delta(frame, spec, params_instance, streaming=streaming)
 
+    def append(
+        self,
+        frame: pl.LazyFrame,
+        table_ref: TableRef,
+        params_instance: Any,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Append rows to *table_ref* and create the table on first write.
+
+        Uses ``schema_mode=EVOLVE`` for append semantics and falls back to
+        ``OVERWRITE`` only when the table does not yet exist.
+
+        Args:
+            frame: Lazy frame produced by the step's ``execute()``.
+            table_ref: Logical destination table reference.
+            params_instance: Concrete params for predicate resolution.
+            streaming: Forwarded to the underlying write path.
+        """
+        if _native_polars_schema(self._locator, table_ref) is None:
+            self.write(
+                frame,
+                ReplaceSpec(table_ref=table_ref, schema_mode=SchemaMode.OVERWRITE),
+                params_instance,
+                streaming=streaming,
+            )
+            return
+        self.write(
+            frame,
+            AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE),
+            params_instance,
+            streaming=streaming,
+        )
+
     def _write_delta(
         self,
         frame: pl.LazyFrame,
@@ -94,7 +128,15 @@ class PolarsDeltaTableWriter:
     ) -> None:
         existing_schema = _native_polars_schema(self._locator, spec.table_ref)
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
-            self._write_frame(_collect_frame(frame, streaming), spec, params_instance)
+            collected = _collect_frame(frame, streaming)
+            if isinstance(spec, ReplacePartitionsSpec):
+                _first_run_overwrite_partitions_polars(
+                    self._locator.locate(spec.table_ref),
+                    collected,
+                    spec.partition_cols,
+                )
+                return
+            self._write_frame(collected, spec, params_instance)
             return
 
         validated = apply_schema(frame, existing_schema, spec.schema_mode)
@@ -187,6 +229,22 @@ def _write_replace_where(
 
 def _first_run_overwrite_polars(loc: TableLocation, df: pl.DataFrame) -> None:
     write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **_write_kwargs(loc))
+
+
+def _first_run_overwrite_partitions_polars(
+    loc: TableLocation, df: pl.DataFrame, partition_cols: tuple[str, ...]
+) -> None:
+    kwargs = _write_kwargs(loc)
+    if partition_cols:
+        write_deltalake(
+            loc.uri,
+            df.to_arrow(),
+            mode="overwrite",
+            partition_by=list(partition_cols),
+            **kwargs,
+        )
+        return
+    write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **kwargs)
 
 
 def _collect_partition_combos_polars(

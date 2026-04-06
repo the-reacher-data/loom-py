@@ -20,11 +20,11 @@ class RunSink(Protocol):
 
     Example::
 
-        from loom.etl.executor.observer.sinks import DeltaRunSink
-        from loom.etl.executor import RunSinkObserver
+        from loom.etl import ETLRunner
 
-        sink     = DeltaRunSink(location=TableLocation("s3://my-lake/etl_runs/"))
-        observer = RunSinkObserver(sink)
+        # Configure ``observability.run_sink`` in YAML and let ETLRunner
+        # build the sink with the active backend automatically.
+        runner = ETLRunner.from_yaml("loom.yaml")
     """
 
     def write(self, record: RunRecord) -> None:

@@ -104,7 +104,9 @@ observability:
   log: true
   slow_step_threshold_ms: 30000
   run_sink:
+    # Choose exactly one destination:
     root: /var/lib/loom/lake/_runs
+    # database: ops
 ```
 
 ```python

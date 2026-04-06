@@ -220,6 +220,18 @@ def test_writer_append_adds_rows(tmp_path: Path) -> None:
     assert result.height == 3
 
 
+def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
+    writer = PolarsDeltaWriter(tmp_path)
+    frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
+
+    writer.append(frame, TableRef("staging.append_first"), None)
+
+    result = pl.from_arrow(
+        DeltaTable(str(table_path(tmp_path, TableRef("staging.append_first")))).to_pyarrow_table()
+    )
+    assert result.shape == (1, 2)
+
+
 def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.facts", initial)
@@ -269,6 +281,20 @@ def test_writer_replace_partitions_with_bool_values(tmp_path: Path) -> None:
     )
     assert result.filter(pl.col("active"))["v"].to_list() == [99]
     assert result.filter(~pl.col("active"))["v"].to_list() == [2]
+
+
+def test_writer_replace_partitions_first_run_creates_partitioned_table(tmp_path: Path) -> None:
+    writer = PolarsDeltaWriter(tmp_path)
+    new_data = pl.DataFrame({"year": [2024], "v": [99]})
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.partitioned"),
+        partition_cols=("year",),
+        schema_mode=SchemaMode.OVERWRITE,
+    )
+    writer.write(new_data.lazy(), spec, None)
+
+    dt = DeltaTable(str(table_path(tmp_path, TableRef("staging.partitioned"))))
+    assert dt.metadata().partition_columns == ["year"]
 
 
 def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:

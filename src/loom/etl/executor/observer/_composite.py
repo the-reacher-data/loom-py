@@ -32,12 +32,12 @@ class CompositeObserver:
 
     Example::
 
-        from loom.etl.executor import StructlogRunObserver, RunSinkObserver
+        from loom.etl.executor import NoopRunObserver, StructlogRunObserver
         from loom.etl.executor.observer import CompositeObserver
 
         composite = CompositeObserver([
             StructlogRunObserver(),
-            RunSinkObserver(DeltaRunSink("s3://my-lake/runs/")),
+            NoopRunObserver(),
         ])
     """
 

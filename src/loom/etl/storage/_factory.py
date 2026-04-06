@@ -11,13 +11,22 @@ Internal module — not part of the public API.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any, Protocol
 
 from loom.etl.executor import ETLRunObserver
+from loom.etl.executor.observer._events import (
+    PipelineRunRecord,
+    ProcessRunRecord,
+    RunRecord,
+    StepRunRecord,
+)
+from loom.etl.executor.observer.sinks._append_writer import RunSinkAppendWriter
+from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import DeltaConfig, StorageConfig, UnityCatalogConfig
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
-from loom.etl.storage._observability import ObservabilityConfig
+from loom.etl.storage._observability import ObservabilityConfig, RunSinkConfig
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
 
@@ -71,11 +80,17 @@ def make_backends(
             raise TypeError(f"Unsupported storage config type: {type(config).__name__!r}")
 
 
-def make_observers(config: ObservabilityConfig) -> list[ETLRunObserver]:
+def make_observers(
+    config: ObservabilityConfig,
+    storage: StorageConfig,
+    spark: Any = None,
+) -> list[ETLRunObserver]:
     """Build the observer list from *config*.
 
     Args:
-        config: Observability configuration.
+        config:  Observability configuration.
+        storage: Active storage backend configuration.
+        spark:   Active SparkSession when using Unity Catalog.
 
     Returns:
         Ordered list of :class:`~loom.etl.executor.ETLRunObserver` instances.
@@ -87,14 +102,11 @@ def make_observers(config: ObservabilityConfig) -> list[ETLRunObserver]:
     observers: list[ETLRunObserver] = []
     if config.log:
         observers.append(StructlogRunObserver(slow_step_threshold_ms=config.slow_step_threshold_ms))
-    if config.run_sink is not None and config.run_sink.root:
-        from loom.etl.storage._locator import TableLocation
-
-        location = TableLocation(
-            uri=config.run_sink.root,
-            storage_options=config.run_sink.storage_options,
-        )
-        observers.append(RunSinkObserver(DeltaRunSink(location)))
+    if config.run_sink is not None:
+        sink_cfg = config.run_sink
+        sink_cfg.validate()
+        sink_writer = _make_run_sink_append_writer(storage, sink_cfg, spark)
+        observers.append(RunSinkObserver(DeltaRunSink(sink_writer, database=sink_cfg.database)))
     return observers
 
 
@@ -161,3 +173,128 @@ def _make_polars_backends(
     locator = config.to_locator()
     catalog = DeltaCatalog(locator)
     return PolarsSourceReader(locator), PolarsTargetWriter(locator), catalog
+
+
+class _PolarsRunSinkAppendWriter:
+    def __init__(self, writer: Any) -> None:
+        self._writer = writer
+
+    def append(self, record: RunRecord, table_ref: TableRef, /) -> None:
+        import polars as pl
+
+        frame = pl.DataFrame([_record_row(record)]).lazy()
+        self._writer.append(frame, table_ref, None)
+
+
+class _SparkRunSinkAppendWriter:
+    def __init__(self, spark: Any, writer: Any) -> None:
+        self._spark = spark
+        self._writer = writer
+
+    def append(self, record: RunRecord, table_ref: TableRef, /) -> None:
+        frame = self._spark.createDataFrame([_record_row(record)], schema=_spark_schema(record))
+        self._writer.append(frame, table_ref, None)
+
+
+def _make_run_sink_append_writer(
+    storage: StorageConfig,
+    config: RunSinkConfig,
+    spark: Any,
+) -> RunSinkAppendWriter:
+    from loom.etl.storage._locator import PrefixLocator
+
+    match storage:
+        case DeltaConfig():
+            if config.database:
+                raise ValueError(
+                    "observability.run_sink.database is only supported with Spark/Unity Catalog. "
+                    "For Polars storage, configure observability.run_sink.root."
+                )
+            from loom.etl.backends.polars import PolarsTargetWriter
+
+            locator = PrefixLocator(
+                root=config.root,
+                storage_options=config.storage_options or None,
+                writer=config.writer or None,
+                delta_config=config.delta_config or None,
+                commit=config.commit or None,
+            )
+            return _PolarsRunSinkAppendWriter(PolarsTargetWriter(locator))
+        case UnityCatalogConfig():
+            if spark is None:
+                raise ValueError(
+                    "A SparkSession is required to configure observability.run_sink "
+                    "with Unity Catalog storage."
+                )
+            from loom.etl.backends.spark import SparkTargetWriter
+
+            if config.database:
+                return _SparkRunSinkAppendWriter(spark, SparkTargetWriter(spark, None))
+
+            locator = PrefixLocator(
+                root=config.root,
+                storage_options=config.storage_options or None,
+                writer=config.writer or None,
+                delta_config=config.delta_config or None,
+                commit=config.commit or None,
+            )
+            return _SparkRunSinkAppendWriter(spark, SparkTargetWriter(spark, locator))
+        case _:  # pragma: no cover
+            raise TypeError(f"Unsupported storage config type: {type(storage).__name__!r}")
+
+
+def _record_row(record: RunRecord) -> dict[str, Any]:
+    row = dataclasses.asdict(record)
+    row["event"] = str(row["event"])
+    row["status"] = str(row["status"])
+    return row
+
+
+def _spark_schema(record: RunRecord) -> Any:
+    from pyspark.sql import types as T
+
+    if isinstance(record, PipelineRunRecord):
+        return T.StructType(
+            [
+                T.StructField("event", T.StringType(), False),
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("pipeline", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+            ]
+        )
+    if isinstance(record, ProcessRunRecord):
+        return T.StructType(
+            [
+                T.StructField("event", T.StringType(), False),
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("process_run_id", T.StringType(), False),
+                T.StructField("process", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+            ]
+        )
+    if isinstance(record, StepRunRecord):
+        return T.StructType(
+            [
+                T.StructField("event", T.StringType(), False),
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("step_run_id", T.StringType(), False),
+                T.StructField("step", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+            ]
+        )
+    raise TypeError(f"Unsupported run record type: {type(record)!r}")

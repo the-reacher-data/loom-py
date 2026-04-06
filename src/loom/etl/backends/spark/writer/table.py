@@ -15,6 +15,7 @@ from loom.etl.io.target._table import (
     ReplaceWhereSpec,
     UpsertSpec,
 )
+from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator
 
 
@@ -40,3 +41,14 @@ class SparkDeltaTableWriter:
                 f"SparkDeltaTableWriter only supports TABLE targets; got: {type(spec)!r}"
             )
         self._writer.write(frame, spec, params_instance)
+
+    def append(
+        self,
+        frame: DataFrame,
+        table_ref: TableRef,
+        params_instance: Any,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Append rows to *table_ref*, creating the table on first write."""
+        self._writer.append(frame, table_ref, params_instance, streaming=streaming)

@@ -17,6 +17,7 @@ from loom.etl.io._read_options import CsvReadOptions
 from loom.etl.io.source import FileSourceSpec
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._file import FileSpec
+from loom.etl.io.target._table import ReplacePartitionsSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
@@ -86,6 +87,36 @@ def _seed(
     columns: list[str],
 ) -> None:
     seed_spark_table(table_name, spark.createDataFrame(rows, columns))
+
+
+def test_writer_replace_partitions_first_run_creates_partitioned_table(
+    spark: SparkSession,
+    spark_writer: SparkDeltaWriter,
+    spark_root: Path,
+) -> None:
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.partitioned"),
+        partition_cols=("year",),
+        schema_mode=SchemaMode.OVERWRITE,
+    )
+    frame = spark.createDataFrame([(2024, 99.0)], ["year", "v"])
+    spark_writer.write(frame, spec, None)
+
+    path = spark_table_path(spark_root, TableRef("staging.partitioned"))
+    detail = spark.sql(f"DESCRIBE DETAIL delta.`{path}`").collect()[0].asDict()
+    assert detail["partitionColumns"] == ["year"]
+
+
+def test_writer_append_creates_table_on_first_write(
+    spark: SparkSession,
+    spark_writer: SparkDeltaWriter,
+    spark_root: Path,
+) -> None:
+    frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
+    spark_writer.append(frame, TableRef("staging.append_first"), None)
+
+    path = spark_table_path(spark_root, TableRef("staging.append_first"))
+    assert spark.read.format("delta").load(str(path)).count() == 1
 
 
 class TestRunStepDataFlow:

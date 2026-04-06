@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-import polars as pl
 import pytest
 
 from loom.etl.executor.observer._composite import CompositeObserver
@@ -20,7 +19,7 @@ from loom.etl.executor.observer._events import (
 from loom.etl.executor.observer._sink_observer import RunSinkObserver
 from loom.etl.executor.observer._structlog import StructlogRunObserver, _source_label, _target_label
 from loom.etl.executor.observer.sinks.delta import DeltaRunSink
-from loom.etl.storage._locator import TableLocation
+from loom.etl.schema._table import TableRef
 
 
 class _CaptureObserver:
@@ -60,6 +59,14 @@ class _Sink:
 
     def write(self, record: object) -> None:
         self.records.append(record)
+
+
+class _CaptureAppendWriter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, TableRef]] = []
+
+    def append(self, record: object, table_ref: TableRef, /) -> None:
+        self.calls.append((record, table_ref))
 
 
 def _ctx() -> RunContext:
@@ -153,22 +160,9 @@ def test_run_sink_observer_writes_process_and_pipeline_records_with_ctx() -> Non
 
 
 def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, pl.DataFrame, str, str, dict[str, str] | None]] = []
-
-    def _fake_write(
-        uri: str,
-        df: pl.DataFrame,
-        mode: str,
-        schema_mode: str,
-        storage_options: dict[str, str] | None,
-    ) -> None:
-        calls.append((uri, df, mode, schema_mode, storage_options))
-
-    monkeypatch.setattr("loom.etl.executor.observer.sinks.delta.write_deltalake", _fake_write)
-
-    sink = DeltaRunSink(
-        TableLocation(uri="s3://lake/runs", storage_options={"AWS_REGION": "eu-west-1"})
-    )
+    _ = monkeypatch
+    writer = _CaptureAppendWriter()
+    sink = DeltaRunSink(writer)
 
     record = StepRunRecord(
         event=EventName.STEP_END,
@@ -184,16 +178,32 @@ def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.Monke
     )
     sink.write(record)
 
-    assert len(calls) == 1
-    uri, df, mode, schema_mode, storage_options = calls[0]
-    assert uri == "s3://lake/runs/step_runs"
-    assert mode == "append"
-    assert schema_mode == "merge"
-    assert storage_options == {"AWS_REGION": "eu-west-1"}
-    assert df.shape == (1, 10)
+    assert len(writer.calls) == 1
+    saved_record, table_ref = writer.calls[0]
+    assert saved_record is record
+    assert table_ref == TableRef("step_runs")
 
 
 def test_delta_run_sink_rejects_unknown_record_type() -> None:
-    sink = DeltaRunSink("/var/lib/loom/runs")
+    sink = DeltaRunSink(_CaptureAppendWriter())
     with pytest.raises(TypeError, match="unrecognised record type"):
         sink.write(object())  # type: ignore[arg-type]
+
+
+def test_delta_run_sink_applies_database_prefix() -> None:
+    writer = _CaptureAppendWriter()
+    sink = DeltaRunSink(writer, database="ops")
+    record = PipelineRunRecord(
+        event=EventName.PIPELINE_END,
+        run_id="run-1",
+        correlation_id=None,
+        attempt=1,
+        pipeline="P",
+        started_at=datetime.now(tz=UTC),
+        status=RunStatus.SUCCESS,
+        duration_ms=1,
+        error=None,
+    )
+    sink.write(record)
+
+    assert writer.calls[0][1] == TableRef("ops.pipeline_runs")

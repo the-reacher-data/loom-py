@@ -1,30 +1,19 @@
-"""DeltaRunSink — Delta Lake implementation of RunSink.
+"""DeltaRunSink — Delta-table RunSink powered by the active ETL backend writer.
 
-Writes ETL run records to three Delta tables under a configurable
-:class:`~loom.etl._locator.TableLocation`:
+Writes ETL run records to three Delta tables:
 
-* ``pipeline_runs/``  — one row per completed pipeline run.
-* ``process_runs/``   — one row per completed process run.
-* ``step_runs/``      — one row per completed step run.
+* ``pipeline_runs``  — one row per completed pipeline run.
+* ``process_runs``   — one row per completed process run.
+* ``step_runs``      — one row per completed step run.
 
-Records are appended with ``schema_mode="merge"`` so new fields added to
-record types are handled automatically without a table migration.
-
-Requires the ``etl-polars`` extra (``polars`` + ``deltalake``).
-
-Storage options are forwarded verbatim to delta-rs — pass any key accepted
-by the target object store (AWS, GCS, Azure).
-See https://delta-io.github.io/delta-rs/api/delta_writer/
+This sink does not call ``write_deltalake`` directly.  It delegates to an
+injected append writer so the same backend selected for the pipeline
+(Polars/Spark) is also used for run persistence.
 """
 
 from __future__ import annotations
 
-import dataclasses
-import os
 from typing import Any
-
-import polars as pl
-from deltalake import write_deltalake
 
 from loom.etl.executor.observer._events import (
     PipelineRunRecord,
@@ -32,7 +21,8 @@ from loom.etl.executor.observer._events import (
     RunRecord,
     StepRunRecord,
 )
-from loom.etl.storage._locator import TableLocation, _as_location
+from loom.etl.executor.observer.sinks._append_writer import RunSinkAppendWriter
+from loom.etl.schema._table import TableRef
 
 _TABLE_FOR: dict[type[Any], str] = {
     PipelineRunRecord: "pipeline_runs",
@@ -47,37 +37,25 @@ class DeltaRunSink:
     Implements :class:`~loom.etl.executor.observer.sinks.RunSink`.
 
     Each :meth:`write` call appends one row to the corresponding Delta table
-    under *location*.  Tables are created automatically on first write.
-    No local directory creation is performed — the URI is passed directly
-    to delta-rs, which supports local paths, S3, GCS, and Azure.
+    through the injected append writer. Tables are created automatically on
+    first write by the backend writer implementation.
 
     Args:
-        location: Physical storage address for the run tables.  Accepts a
-                  URI string (e.g. ``"s3://my-lake/runs/"``), a
-                  :class:`pathlib.Path`, or a fully configured
-                  :class:`~loom.etl._locator.TableLocation`.  The table name
-                  (e.g. ``pipeline_runs``) is appended to the URI at write time.
+        writer:   Backend append writer implementation.
+        database: Optional database/schema prefix for table names.
+                  Example: ``"ops"`` writes to ``ops.pipeline_runs``,
+                  ``ops.process_runs``, ``ops.step_runs``.
 
     Example::
 
-        from loom.etl import ETLRunner
-        from loom.etl.executor import RunSinkObserver
-        from loom.etl.executor.observer.sinks import DeltaRunSink
-
-        # Simple — credentials from environment
-        sink = DeltaRunSink("s3://my-lake/runs/")
-
-        # With explicit credentials
-        from loom.etl import TableLocation
-        sink = DeltaRunSink(
-            TableLocation(uri="s3://my-lake/runs/", storage_options={"AWS_REGION": "eu-west-1"})
-        )
-
-        runner = ETLRunner.from_yaml("loom.yaml", observers=[RunSinkObserver(sink)])
+        # Built automatically by ETLRunner.from_yaml / from_config.
+        # Manual wiring is unusual and mostly useful for tests.
+        sink = DeltaRunSink(writer=my_backend_append_writer, database="ops")
     """
 
-    def __init__(self, location: str | os.PathLike[str] | TableLocation) -> None:
-        self._location = _as_location(location)
+    def __init__(self, writer: RunSinkAppendWriter, *, database: str = "") -> None:
+        self._writer = writer
+        self._database = database.strip()
 
     def write(self, record: RunRecord) -> None:
         """Append *record* to the appropriate Delta table.
@@ -91,14 +69,10 @@ class DeltaRunSink:
         table_name = _TABLE_FOR.get(type(record))
         if table_name is None:
             raise TypeError(f"DeltaRunSink: unrecognised record type {type(record)!r}")
+        self._writer.append(record, _table_ref(self._database, table_name))
 
-        uri = f"{self._location.uri.rstrip('/')}/{table_name}"
-        row = dataclasses.asdict(record)
-        df = pl.DataFrame([row])
-        write_deltalake(
-            uri,
-            df,
-            mode="append",
-            schema_mode="merge",
-            storage_options=self._location.storage_options or None,
-        )
+
+def _table_ref(database: str, table_name: str) -> TableRef:
+    if database:
+        return TableRef(f"{database}.{table_name}")
+    return TableRef(table_name)
