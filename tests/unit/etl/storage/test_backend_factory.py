@@ -45,7 +45,7 @@ def test_make_backends_unity_catalog_without_spark_raises() -> None:
 
 def test_make_observers_log_true_includes_structlog() -> None:
     config = ObservabilityConfig(log=True)
-    observers = make_observers(config, DeltaConfig(root="/tmp/lake"))
+    observers = make_observers(config)
 
     assert len(observers) == 1
     assert isinstance(observers[0], StructlogRunObserver)
@@ -61,14 +61,14 @@ def test_make_observers_log_true_without_storage_still_includes_structlog() -> N
 
 def test_make_observers_log_false_returns_empty() -> None:
     config = ObservabilityConfig(log=False)
-    observers = make_observers(config, DeltaConfig(root="/tmp/lake"))
+    observers = make_observers(config)
 
     assert observers == []
 
 
 def test_make_observers_no_sink_when_run_sink_none() -> None:
     config = ObservabilityConfig(log=True, run_sink=None)
-    observers = make_observers(config, DeltaConfig(root="/tmp/lake"))
+    observers = make_observers(config)
 
     assert len(observers) == 1  # only structlog
 
