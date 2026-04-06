@@ -76,9 +76,9 @@ def test_make_observers_no_sink_when_run_sink_none() -> None:
 def test_make_observers_with_run_sink_root_adds_sink_observer() -> None:
     config = ObservabilityConfig(
         log=False,
-        run_sink=RunSinkConfig(root="/tmp/runs"),
+        run_sink=RunSinkConfig(root="/var/lib/loom/runs"),
     )
-    observers = make_observers(config, DeltaConfig(root="/tmp/lake"))
+    observers = make_observers(config, DeltaConfig(root="/var/lib/loom/lake"))
 
     assert len(observers) == 1
     assert type(observers[0]).__name__ == "RunSinkObserver"
@@ -90,11 +90,11 @@ def test_make_observers_rejects_database_destination_for_polars_backend() -> Non
         run_sink=RunSinkConfig(database="ops"),
     )
     with pytest.raises(ValueError, match="only supported with Spark/Unity Catalog"):
-        make_observers(config, DeltaConfig(root="/tmp/lake"))
+        make_observers(config, DeltaConfig(root="/var/lib/loom/lake"))
 
 
 def test_make_observers_with_run_sink_requires_storage_config() -> None:
-    config = ObservabilityConfig(log=False, run_sink=RunSinkConfig(root="/tmp/runs"))
+    config = ObservabilityConfig(log=False, run_sink=RunSinkConfig(root="/var/lib/loom/runs"))
     with pytest.raises(ValueError, match="storage config is required"):
         make_observers(config)
 
