@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from loom.etl.observability.config import ObservabilityConfig
 from loom.etl.runner.config_loader import _load_yaml, _parse_yaml_content, _read_yaml_file
 from loom.etl.storage._config import DeltaConfig
-from loom.etl.storage._observability import ObservabilityConfig
 
 
 def test_parse_yaml_content_reads_storage_and_observability_sections() -> None:

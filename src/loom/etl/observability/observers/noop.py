@@ -1,22 +1,15 @@
-"""NoopRunObserver — lifecycle observer with no side effects.
-
-Internal module — import from :mod:`loom.etl.executor.observer`.
-"""
+"""No-op observer implementation."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from loom.etl.compiler._plan import PipelinePlan, ProcessPlan, StepPlan
-from loom.etl.executor.observer._events import RunContext, RunStatus
+from loom.etl.observability.records import RunContext, RunStatus
 
 
 class NoopRunObserver:
-    """Observer implementation that intentionally does nothing.
-
-    Useful when code expects an :class:`~loom.etl.executor.ETLRunObserver`
-    instance but you explicitly do not want logs or persisted run records.
-    """
+    """Observer implementation that intentionally does nothing."""
 
     def on_pipeline_start(self, _plan: PipelinePlan, _params: Any, _ctx: RunContext) -> None:
         """No-op hook."""
@@ -38,3 +31,6 @@ class NoopRunObserver:
 
     def on_step_error(self, _step_run_id: str, _exc: Exception) -> None:
         """No-op hook."""
+
+
+__all__ = ["NoopRunObserver"]

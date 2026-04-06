@@ -8,8 +8,8 @@ from typing import Any
 import msgspec
 from omegaconf import DictConfig, OmegaConf
 
+from loom.etl.observability.config import ObservabilityConfig
 from loom.etl.storage._config import StorageConfig, convert_storage_config
-from loom.etl.storage._observability import ObservabilityConfig
 
 
 def _read_yaml_file(path: str | os.PathLike[str]) -> str:

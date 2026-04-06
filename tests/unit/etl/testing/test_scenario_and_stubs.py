@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
 from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
+from loom.etl.observability.records import EventName, RunContext, RunStatus
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.testing._scenario import ETLScenario, StepRunnerProto

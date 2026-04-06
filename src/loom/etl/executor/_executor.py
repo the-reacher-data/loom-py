@@ -46,10 +46,10 @@ from loom.etl.compiler._plan import (
     StepPlan,
 )
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.executor.observer._events import RunContext, RunStatus
-from loom.etl.executor.observer._protocol import ETLRunObserver
 from loom.etl.io.source import TempSourceSpec
 from loom.etl.io.target._temp import TempFanInSpec, TempSpec
+from loom.etl.observability.observers.protocol import ETLRunObserver
+from loom.etl.observability.records import RunContext, RunStatus
 from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.temp._store import IntermediateStore
 

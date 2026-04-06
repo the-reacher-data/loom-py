@@ -63,6 +63,7 @@ from loom.etl.io import (
     SourceSet,
     WriteOptions,
 )
+from loom.etl.observability import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.pipeline import ETLParams, ETLPipeline, ETLProcess, ETLStep, ParamExpr, params
 from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.schema import (
@@ -87,9 +88,7 @@ from loom.etl.sql import StepSQL
 from loom.etl.storage import (
     DeltaConfig,
     MappingLocator,
-    ObservabilityConfig,
     PrefixLocator,
-    RunSinkConfig,
     SourceReader,
     StorageBackend,
     StorageConfig,
@@ -172,7 +171,7 @@ __all__ = [
     "UnityCatalogConfig",
     # observability config (YAML-loadable)
     "ObservabilityConfig",
-    "RunSinkConfig",
+    "ExecutionRecordStoreConfig",
     # schema — primitive
     "SchemaMode",
     "ColumnSchema",

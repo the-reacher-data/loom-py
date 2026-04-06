@@ -1,38 +1,4 @@
-"""StructlogRunObserver — structured events via structlog.
-
-Each lifecycle event is emitted as a structlog log entry keyed by
-:class:`~loom.etl.executor.EventName`.  All fields are passed as
-keyword arguments — never interpolated into the message string — so
-processors (JSON, Datadog, …) receive fully structured data.
-
-Data-flow enrichment
---------------------
-``on_step_start`` always emits the resolved source refs / paths and the
-target ref / path alongside the step name and backend.  This makes
-every step's data flow visible in logs without any extra configuration::
-
-    {
-      "event": "step_start",
-      "step": "BuildOrdersStaging",
-      "sources": ["raw.orders", "raw.customers"],
-      "target": "staging.orders",
-      "write_mode": "replace_partitions",
-      "backend": "polars",
-      "run_id": "...",
-      "step_run_id": "..."
-    }
-
-Slow-step warning
------------------
-Pass ``slow_step_threshold_ms`` to emit a ``WARNING``-level ``slow_step``
-event whenever a step exceeds the threshold::
-
-    StructlogRunObserver(slow_step_threshold_ms=60_000)
-
-Configurable via ``observability.slow_step_threshold_ms`` in YAML.
-
-Internal module — import from :mod:`loom.etl.executor.observer`.
-"""
+"""Structured log observer for ETL lifecycle events."""
 
 from __future__ import annotations
 
@@ -40,7 +6,6 @@ from typing import Any
 
 import structlog
 
-from loom.etl.executor.observer._events import EventName, RunContext, RunStatus
 from loom.etl.io.target._file import FileSpec
 from loom.etl.io.target._table import (
     AppendSpec,
@@ -50,36 +15,16 @@ from loom.etl.io.target._table import (
     UpsertSpec,
 )
 from loom.etl.io.target._temp import TempFanInSpec, TempSpec
+from loom.etl.observability.records import EventName, RunContext, RunStatus
 
 _log: Any = structlog.get_logger("loom.etl")
 
 
 class StructlogRunObserver:
-    """Observer that emits fully structured events via structlog.
-
-    Every field is a keyword argument — the event key is an
-    :class:`~loom.etl.executor.EventName` constant, never a raw string.
-    ``correlation_id`` and ``attempt`` are included when present so retry
-    attempts are traceable in log aggregators.
-
-    ``on_step_start`` always includes resolved source refs and the target ref
-    so data flow is visible without extra tooling.
-
-    Added automatically by :meth:`~loom.etl.ETLRunner.from_yaml` when
-    ``observability.log: true`` (the default).  Compatible with any
-    structlog processor chain (JSON, console, Datadog…).
+    """Observer that emits structured lifecycle events through structlog.
 
     Args:
-        slow_step_threshold_ms: When set, emits a ``WARNING``-level
-                                ``slow_step`` event whenever a step's
-                                ``duration_ms`` exceeds this value.
-                                ``None`` disables the warning (default).
-
-    Example::
-
-        import structlog
-        structlog.configure(processors=[structlog.processors.JSONRenderer()])
-        observer = StructlogRunObserver(slow_step_threshold_ms=30_000)
+        slow_step_threshold_ms: Optional threshold to emit ``slow_step`` warnings.
     """
 
     def __init__(self, slow_step_threshold_ms: int | None = None) -> None:
@@ -122,7 +67,7 @@ class StructlogRunObserver:
         )
 
     def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
-        sources = [_source_label(b.spec) for b in plan.source_bindings]
+        sources = [_source_label(binding.spec) for binding in plan.source_bindings]
         _log.info(
             EventName.STEP_START,
             step=plan.step_type.__name__,
@@ -156,13 +101,8 @@ class StructlogRunObserver:
         )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _source_label(spec: Any) -> str:
-    """Return a human-readable label for a source spec."""
+    """Return a readable label for a source spec."""
     if spec.table_ref is not None:
         return str(spec.table_ref.ref)
     if getattr(spec, "temp_name", None) is not None:
@@ -171,7 +111,7 @@ def _source_label(spec: Any) -> str:
 
 
 def _target_label(spec: Any) -> str:
-    """Return a human-readable label for a target spec."""
+    """Return a readable label for a target spec."""
     if spec.table_ref is not None:
         return str(spec.table_ref.ref)
     if getattr(spec, "temp_name", None) is not None:
@@ -180,7 +120,7 @@ def _target_label(spec: Any) -> str:
 
 
 def _write_mode_label(spec: Any) -> str:
-    """Return the write mode string for *spec* without accessing ``.mode``."""
+    """Return the write mode label for the given target spec."""
     match spec:
         case AppendSpec():
             return "append"
@@ -198,3 +138,6 @@ def _write_mode_label(spec: Any) -> str:
             return "file"
         case _:
             return "unknown"
+
+
+__all__ = ["StructlogRunObserver", "_source_label", "_target_label", "_write_mode_label"]

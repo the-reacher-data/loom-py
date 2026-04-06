@@ -5,7 +5,6 @@ from __future__ import annotations
 from ._config import DeltaConfig, StorageBackend, StorageConfig, UnityCatalogConfig
 from ._io import SourceReader, TableDiscovery, TargetWriter
 from ._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from ._observability import ObservabilityConfig, RunSinkConfig
 
 __all__ = [
     "StorageBackend",
@@ -19,6 +18,4 @@ __all__ = [
     "TableLocator",
     "PrefixLocator",
     "MappingLocator",
-    "ObservabilityConfig",
-    "RunSinkConfig",
 ]

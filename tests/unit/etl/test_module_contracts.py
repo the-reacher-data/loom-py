@@ -42,7 +42,7 @@ def test_definition_modules_support_reload_contracts() -> None:
     [
         ("loom.etl", "FromTable"),
         ("loom.etl.compiler", "ETLCompiler"),
-        ("loom.etl.executor", "RunSinkObserver"),
+        ("loom.etl.executor", "ExecutionRecordsObserver"),
         ("loom.etl.io", "IntoTable"),
         ("loom.etl.pipeline", "ETLStep"),
         ("loom.etl.runner", "ETLRunner"),
@@ -52,8 +52,8 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl.temp", "IntermediateStore"),
         ("loom.etl.testing", "PolarsStepRunner"),
         ("loom.etl.compiler.validators", "validate_plan_catalog"),
-        ("loom.etl.executor.observer", "StructlogRunObserver"),
-        ("loom.etl.executor.observer.sinks", "DeltaRunSink"),
+        ("loom.etl.observability", "StructlogRunObserver"),
+        ("loom.etl.observability.stores", "TableExecutionRecordStore"),
     ],
 )
 def test_package_entrypoints_support_reload_contracts(
@@ -67,13 +67,12 @@ def test_package_entrypoints_support_reload_contracts(
 @pytest.mark.parametrize(
     ("module_name", "attribute_name"),
     [
-        ("loom.etl.executor.observer._events", "RunContext"),
-        ("loom.etl.executor.observer._protocol", "ETLRunObserver"),
-        ("loom.etl.executor.observer._sink", "RunSink"),
-        ("loom.etl.executor.observer.sinks.protocol", "RunSink"),
+        ("loom.etl.observability.records", "RunContext"),
+        ("loom.etl.observability.observers.protocol", "ETLRunObserver"),
+        ("loom.etl.observability.stores.protocol", "ExecutionRecordStore"),
         ("loom.etl.pipeline._params", "ETLParams"),
         ("loom.etl.storage._io", "TableDiscovery"),
-        ("loom.etl.storage._observability", "ObservabilityConfig"),
+        ("loom.etl.observability.config", "ObservabilityConfig"),
     ],
 )
 def test_internal_protocol_and_event_modules_support_reload_contracts(
@@ -344,7 +343,7 @@ def test_schema_structural_types_compose_normally() -> None:
 
 
 def test_observer_event_records_hold_runtime_data() -> None:
-    from loom.etl.executor.observer._events import (
+    from loom.etl.observability.records import (
         EventName,
         PipelineRunRecord,
         ProcessRunRecord,

@@ -8,22 +8,22 @@ import msgspec
 
 from loom.etl.io.source import SourceSpec, TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
+from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
-from loom.etl.storage._observability import ObservabilityConfig, RunSinkConfig
 
 
 def test_observability_config_defaults_and_conversion() -> None:
     default = ObservabilityConfig()
     assert default.log is True
-    assert default.run_sink is None
+    assert default.record_store is None
     assert default.slow_step_threshold_ms is None
 
     cfg = msgspec.convert(
         {
             "log": False,
-            "run_sink": {
+            "record_store": {
                 "root": "s3://lake/runs",
                 "storage_options": {"AWS_REGION": "eu-west-1"},
                 "writer": {"compression": "SNAPPY"},
@@ -36,7 +36,7 @@ def test_observability_config_defaults_and_conversion() -> None:
     )
     assert cfg.log is False
     assert cfg.slow_step_threshold_ms == 2500
-    assert cfg.run_sink == RunSinkConfig(
+    assert cfg.record_store == ExecutionRecordStoreConfig(
         root="s3://lake/runs",
         storage_options={"AWS_REGION": "eu-west-1"},
         writer={"compression": "SNAPPY"},
@@ -45,19 +45,19 @@ def test_observability_config_defaults_and_conversion() -> None:
     )
 
 
-def test_run_sink_config_validate_requires_exactly_one_destination() -> None:
-    RunSinkConfig(root="s3://lake/runs").validate()
-    RunSinkConfig(database="ops").validate()
+def test_record_store_config_validate_requires_exactly_one_destination() -> None:
+    ExecutionRecordStoreConfig(root="s3://lake/runs").validate()
+    ExecutionRecordStoreConfig(database="ops").validate()
 
     try:
-        RunSinkConfig().validate()
+        ExecutionRecordStoreConfig().validate()
     except ValueError as exc:
         assert "exactly one destination" in str(exc)
     else:  # pragma: no cover - defensive branch
         raise AssertionError("Expected ValueError for empty destination")
 
     try:
-        RunSinkConfig(root="s3://lake/runs", database="ops").validate()
+        ExecutionRecordStoreConfig(root="s3://lake/runs", database="ops").validate()
     except ValueError as exc:
         assert "exactly one destination" in str(exc)
     else:  # pragma: no cover - defensive branch

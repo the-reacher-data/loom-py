@@ -1,4 +1,4 @@
-"""Tests for the observer protocol, StructlogRunObserver, and RunSinkObserver."""
+"""Tests for the observer protocol, StructlogRunObserver, and ExecutionRecordsObserver."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import pytest
 from loom.etl.executor import (
     ETLRunObserver,
     EventName,
+    ExecutionRecordsObserver,
     NoopRunObserver,
     PipelineRunRecord,
     RunContext,
-    RunSinkObserver,
     RunStatus,
     StepRunRecord,
     StructlogRunObserver,
@@ -22,7 +22,7 @@ from loom.etl.testing import StubRunObserver
 
 
 class _NullSink:
-    def write(self, record: Any) -> None:
+    def write_record(self, record: Any) -> None:
         """Null sink: intentionally discards all records."""
 
 
@@ -32,7 +32,7 @@ class _CapturingSink:
     def __init__(self) -> None:
         self.records: list[Any] = []
 
-    def write(self, record: Any) -> None:
+    def write_record(self, record: Any) -> None:
         self.records.append(record)
 
 
@@ -46,7 +46,7 @@ def test_run_status_values() -> None:
     [
         NoopRunObserver(),
         StructlogRunObserver(),
-        RunSinkObserver(_NullSink()),
+        ExecutionRecordsObserver(_NullSink()),
         StubRunObserver(),
     ],
 )
@@ -128,7 +128,7 @@ def test_structlog_observer_emits_step_start() -> None:
         target_binding = type("TB", (), {"spec": _Spec()})()
         backend = "polars"
 
-    with patch("loom.etl.executor.observer._structlog._log") as mock_log:
+    with patch("loom.etl.observability.observers.structlog._log") as mock_log:
         obs.on_step_start(_FakePlan(), RunContext("run-1"), "step-1")
         mock_log.info.assert_called_once()
         call_args = mock_log.info.call_args
@@ -145,7 +145,7 @@ def test_structlog_observer_emits_step_error_at_error_level() -> None:
     obs = StructlogRunObserver()
     exc = ValueError("bad input")
 
-    with patch("loom.etl.executor.observer._structlog._log") as mock_log:
+    with patch("loom.etl.observability.observers.structlog._log") as mock_log:
         obs.on_step_error("step-1", exc)
         mock_log.error.assert_called_once()
         call_args = mock_log.error.call_args
@@ -157,7 +157,7 @@ def test_structlog_observer_emits_step_error_at_error_level() -> None:
 def test_structlog_observer_emits_step_end() -> None:
     obs = StructlogRunObserver()
 
-    with patch("loom.etl.executor.observer._structlog._log") as mock_log:
+    with patch("loom.etl.observability.observers.structlog._log") as mock_log:
         obs.on_step_end("step-1", RunStatus.SUCCESS, 42)
         mock_log.info.assert_called_once()
         call_args = mock_log.info.call_args
@@ -166,9 +166,9 @@ def test_structlog_observer_emits_step_end() -> None:
         assert call_args[1]["duration_ms"] == 42
 
 
-def test_run_sink_observer_writes_step_record_and_not_on_start() -> None:
+def test_execution_records_observer_writes_step_record_and_not_on_start() -> None:
     sink = _CapturingSink()
-    obs = RunSinkObserver(sink)
+    obs = ExecutionRecordsObserver(sink)
 
     class FakePlan:
         step_type = type("BuildOrders", (), {})
@@ -187,9 +187,9 @@ def test_run_sink_observer_writes_step_record_and_not_on_start() -> None:
     assert record.error is None
 
 
-def test_run_sink_observer_captures_error_in_step_record() -> None:
+def test_execution_records_observer_captures_error_in_step_record() -> None:
     sink = _CapturingSink()
-    obs = RunSinkObserver(sink)
+    obs = ExecutionRecordsObserver(sink)
 
     class FakePlan:
         step_type = type("FailingStep", (), {})
@@ -204,9 +204,9 @@ def test_run_sink_observer_captures_error_in_step_record() -> None:
     assert "disk full" in record.error
 
 
-def test_run_sink_observer_writes_pipeline_record_on_end() -> None:
+def test_execution_records_observer_writes_pipeline_record_on_end() -> None:
     sink = _CapturingSink()
-    obs = RunSinkObserver(sink)
+    obs = ExecutionRecordsObserver(sink)
 
     class FakePlan:
         pipeline_type = type("DailyPipeline", (), {})

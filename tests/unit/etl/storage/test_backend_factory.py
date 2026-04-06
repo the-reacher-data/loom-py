@@ -1,4 +1,4 @@
-"""Unit tests for _backend_factory — make_backends dispatch and make_observers/make_temp_store."""
+"""Unit tests for backend factories and observability observer wiring."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from loom.etl.executor.observer._structlog import StructlogRunObserver
+from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
+from loom.etl.observability.factory import make_observers
+from loom.etl.observability.observers.structlog import StructlogRunObserver
 from loom.etl.storage._config import DeltaConfig, UnityCatalogConfig
-from loom.etl.storage._factory import make_backends, make_observers, make_temp_store
-from loom.etl.storage._observability import ObservabilityConfig, RunSinkConfig
+from loom.etl.storage._factory import make_backends, make_temp_store
 
 # ---------------------------------------------------------------------------
 # make_backends — DeltaConfig → Polars backends
@@ -66,35 +67,37 @@ def test_make_observers_log_false_returns_empty() -> None:
     assert observers == []
 
 
-def test_make_observers_no_sink_when_run_sink_none() -> None:
-    config = ObservabilityConfig(log=True, run_sink=None)
+def test_make_observers_no_store_when_record_store_none() -> None:
+    config = ObservabilityConfig(log=True, record_store=None)
     observers = make_observers(config)
 
     assert len(observers) == 1  # only structlog
 
 
-def test_make_observers_with_run_sink_root_adds_sink_observer() -> None:
+def test_make_observers_with_record_store_root_adds_observer() -> None:
     config = ObservabilityConfig(
         log=False,
-        run_sink=RunSinkConfig(root="/var/lib/loom/runs"),
+        record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs"),
     )
     observers = make_observers(config, DeltaConfig(root="/var/lib/loom/lake"))
 
     assert len(observers) == 1
-    assert type(observers[0]).__name__ == "RunSinkObserver"
+    assert type(observers[0]).__name__ == "ExecutionRecordsObserver"
 
 
 def test_make_observers_rejects_database_destination_for_polars_backend() -> None:
     config = ObservabilityConfig(
         log=False,
-        run_sink=RunSinkConfig(database="ops"),
+        record_store=ExecutionRecordStoreConfig(database="ops"),
     )
     with pytest.raises(ValueError, match="only supported with Spark/Unity Catalog"):
         make_observers(config, DeltaConfig(root="/var/lib/loom/lake"))
 
 
-def test_make_observers_with_run_sink_requires_storage_config() -> None:
-    config = ObservabilityConfig(log=False, run_sink=RunSinkConfig(root="/var/lib/loom/runs"))
+def test_make_observers_with_record_store_requires_storage_config() -> None:
+    config = ObservabilityConfig(
+        log=False, record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs")
+    )
     with pytest.raises(ValueError, match="storage config is required"):
         make_observers(config)
 

@@ -14,17 +14,21 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 from loom.etl.compiler import ETLCompiler
-from loom.etl.executor import ETLExecutor, ETLRunObserver, ParallelDispatcher
-from loom.etl.executor.observer._composite import CompositeObserver
-from loom.etl.executor.observer._events import RunContext
+from loom.etl.executor import ETLExecutor, ParallelDispatcher
+from loom.etl.observability import (
+    CompositeObserver,
+    ETLRunObserver,
+    ObservabilityConfig,
+    RunContext,
+    make_observers,
+)
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.storage._config import StorageConfig, UnityCatalogConfig, convert_storage_config
-from loom.etl.storage._factory import make_backends, make_observers, make_temp_store
+from loom.etl.storage._factory import make_backends, make_temp_store
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
-from loom.etl.storage._observability import ObservabilityConfig
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
 

@@ -7,8 +7,14 @@ from unittest.mock import patch
 
 import pytest
 
-from loom.etl.executor.observer._composite import CompositeObserver
-from loom.etl.executor.observer._events import (
+from loom.etl.observability.observers.composite import CompositeObserver
+from loom.etl.observability.observers.execution_records import ExecutionRecordsObserver
+from loom.etl.observability.observers.structlog import (
+    StructlogRunObserver,
+    _source_label,
+    _target_label,
+)
+from loom.etl.observability.records import (
     EventName,
     PipelineRunRecord,
     ProcessRunRecord,
@@ -16,9 +22,7 @@ from loom.etl.executor.observer._events import (
     RunStatus,
     StepRunRecord,
 )
-from loom.etl.executor.observer._sink_observer import RunSinkObserver
-from loom.etl.executor.observer._structlog import StructlogRunObserver, _source_label, _target_label
-from loom.etl.executor.observer.sinks.delta import DeltaRunSink
+from loom.etl.observability.stores.table import TableExecutionRecordStore
 from loom.etl.schema._table import TableRef
 
 
@@ -57,7 +61,7 @@ class _Sink:
     def __init__(self) -> None:
         self.records: list[object] = []
 
-    def write(self, record: object) -> None:
+    def write_record(self, record: object) -> None:
         self.records.append(record)
 
 
@@ -65,7 +69,7 @@ class _CaptureAppendWriter:
     def __init__(self) -> None:
         self.calls: list[tuple[object, TableRef]] = []
 
-    def append(self, record: object, table_ref: TableRef, /) -> None:
+    def write_record(self, record: object, table_ref: TableRef, /) -> None:
         self.calls.append((record, table_ref))
 
 
@@ -77,7 +81,7 @@ def test_composite_observer_isolates_failures_and_calls_remaining_observers() ->
     capture = _CaptureObserver()
     composite = CompositeObserver([_FailingObserver(), capture])
 
-    with patch("loom.etl.executor.observer._composite._log") as log:
+    with patch("loom.etl.observability.observers.composite._log") as log:
         composite.on_step_end("step-1", RunStatus.SUCCESS, 10)
 
     assert capture.step_end_calls == 1
@@ -114,7 +118,7 @@ def test_structlog_source_and_target_labels(spec: object, expected: str) -> None
 def test_structlog_observer_emits_slow_step_warning_when_threshold_crossed() -> None:
     observer = StructlogRunObserver(slow_step_threshold_ms=100)
 
-    with patch("loom.etl.executor.observer._structlog._log") as log:
+    with patch("loom.etl.observability.observers.structlog._log") as log:
         observer.on_step_end("step-1", RunStatus.SUCCESS, 150)
 
     log.info.assert_called_once_with(
@@ -131,9 +135,9 @@ def test_structlog_observer_emits_slow_step_warning_when_threshold_crossed() -> 
     )
 
 
-def test_run_sink_observer_writes_process_and_pipeline_records_with_ctx() -> None:
+def test_execution_records_observer_writes_process_and_pipeline_records_with_ctx() -> None:
     sink = _Sink()
-    observer = RunSinkObserver(sink)
+    observer = ExecutionRecordsObserver(sink)
 
     process_plan = type("ProcPlan", (), {"process_type": type("MyProcess", (), {})})()
     pipeline_plan = type("PipePlan", (), {"pipeline_type": type("MyPipeline", (), {})})()
@@ -159,10 +163,12 @@ def test_run_sink_observer_writes_process_and_pipeline_records_with_ctx() -> Non
     assert pipeline_record.correlation_id == "corr-1"
 
 
-def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_table_execution_record_store_writes_to_expected_table_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _ = monkeypatch
     writer = _CaptureAppendWriter()
-    sink = DeltaRunSink(writer)
+    sink = TableExecutionRecordStore(writer)
 
     record = StepRunRecord(
         event=EventName.STEP_END,
@@ -176,7 +182,7 @@ def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.Monke
         duration_ms=12,
         error=None,
     )
-    sink.write(record)
+    sink.write_record(record)
 
     assert len(writer.calls) == 1
     saved_record, table_ref = writer.calls[0]
@@ -184,15 +190,15 @@ def test_delta_run_sink_writes_to_expected_table_paths(monkeypatch: pytest.Monke
     assert table_ref == TableRef("step_runs")
 
 
-def test_delta_run_sink_rejects_unknown_record_type() -> None:
-    sink = DeltaRunSink(_CaptureAppendWriter())
+def test_table_execution_record_store_rejects_unknown_record_type() -> None:
+    sink = TableExecutionRecordStore(_CaptureAppendWriter())
     with pytest.raises(TypeError, match="unrecognised record type"):
-        sink.write(object())  # type: ignore[arg-type]
+        sink.write_record(object())  # type: ignore[arg-type]
 
 
-def test_delta_run_sink_applies_database_prefix() -> None:
+def test_table_execution_record_store_applies_database_prefix() -> None:
     writer = _CaptureAppendWriter()
-    sink = DeltaRunSink(writer, database="ops")
+    sink = TableExecutionRecordStore(writer, database="ops")
     record = PipelineRunRecord(
         event=EventName.PIPELINE_END,
         run_id="run-1",
@@ -204,6 +210,6 @@ def test_delta_run_sink_applies_database_prefix() -> None:
         duration_ms=1,
         error=None,
     )
-    sink.write(record)
+    sink.write_record(record)
 
     assert writer.calls[0][1] == TableRef("ops.pipeline_runs")

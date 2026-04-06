@@ -61,7 +61,7 @@ class _Sink:
     def __init__(self) -> None:
         self.records: list[Any] = []
 
-    def write(self, record: Any) -> None:
+    def write_record(self, record: Any) -> None:
         self.records.append(record)
 
 
@@ -313,17 +313,17 @@ def test_proxy_and_locator_runtime_contracts() -> None:
 
 def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     mods = _reload_modules(
-        "loom.etl.executor.observer._composite",
-        "loom.etl.executor.observer._events",
-        "loom.etl.executor.observer._sink_observer",
-        "loom.etl.executor.observer._structlog",
-        "loom.etl.executor.observer.sinks.delta",
+        "loom.etl.observability.observers.composite",
+        "loom.etl.observability.records",
+        "loom.etl.observability.observers.execution_records",
+        "loom.etl.observability.observers.structlog",
+        "loom.etl.observability.stores.table",
     )
-    composite_mod = mods["loom.etl.executor.observer._composite"]
-    events_mod = mods["loom.etl.executor.observer._events"]
-    sink_observer_mod = mods["loom.etl.executor.observer._sink_observer"]
-    structlog_mod = mods["loom.etl.executor.observer._structlog"]
-    delta_sink_mod = mods["loom.etl.executor.observer.sinks.delta"]
+    composite_mod = mods["loom.etl.observability.observers.composite"]
+    events_mod = mods["loom.etl.observability.records"]
+    sink_observer_mod = mods["loom.etl.observability.observers.execution_records"]
+    structlog_mod = mods["loom.etl.observability.observers.structlog"]
+    delta_sink_mod = mods["loom.etl.observability.stores.table"]
 
     capture = _CaptureObserver()
     composite = composite_mod.CompositeObserver([_FailingObserver(), capture])
@@ -359,7 +359,7 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     assert logger.logged
 
     sink = _Sink()
-    sink_observer = sink_observer_mod.RunSinkObserver(sink)
+    sink_observer = sink_observer_mod.ExecutionRecordsObserver(sink)
     ctx = events_mod.RunContext(run_id="r2")
     pipeline_plan = SimpleNamespace(pipeline_type=SimpleNamespace(__name__="Pipe"))
     process_plan = SimpleNamespace(process_type=SimpleNamespace(__name__="Proc"))
@@ -377,12 +377,12 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[Any, Any]] = []
 
-        def append(self, record: Any, table_ref: Any, /) -> None:
+        def write_record(self, record: Any, table_ref: Any, /) -> None:
             self.calls.append((record, table_ref))
 
     _ = monkeypatch
     append_writer = _AppendWriter()
-    delta_sink = delta_sink_mod.DeltaRunSink(append_writer)
+    delta_sink = delta_sink_mod.TableExecutionRecordStore(append_writer)
     record = events_mod.StepRunRecord(
         event=events_mod.EventName.STEP_END,
         run_id="r3",
@@ -395,11 +395,11 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
         duration_ms=1,
         error=None,
     )
-    delta_sink.write(record)
+    delta_sink.write_record(record)
     assert append_writer.calls
     assert append_writer.calls[0][1].ref == "step_runs"
     with pytest.raises(TypeError):
-        delta_sink.write(object())  # type: ignore[arg-type]
+        delta_sink.write_record(object())  # type: ignore[arg-type]
 
 
 def test_testing_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:

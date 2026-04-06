@@ -1,15 +1,4 @@
-"""RunSinkObserver — adapter from observer events to run sink records.
-
-Bridges the :class:`~loom.etl.executor.observer.ETLRunObserver` protocol and
-the :class:`~loom.etl.executor.observer.RunSink` persistence protocol.
-
-Lifecycle events carry partial data (start events carry names, end events carry
-status/duration).  This observer buffers context from ``on_*_start`` calls and
-assembles complete :mod:`~loom.etl.executor.observer._events` records on
-``on_*_end``.
-
-Internal module — import from :mod:`loom.etl.executor.observer`.
-"""
+"""Observer that persists completed lifecycle records into an execution record store."""
 
 from __future__ import annotations
 
@@ -17,7 +6,7 @@ import threading
 from datetime import UTC, datetime
 from typing import Any
 
-from loom.etl.executor.observer._events import (
+from loom.etl.observability.records import (
     EventName,
     PipelineRunRecord,
     ProcessRunRecord,
@@ -25,44 +14,22 @@ from loom.etl.executor.observer._events import (
     RunStatus,
     StepRunRecord,
 )
-from loom.etl.executor.observer._sink import RunSink
+from loom.etl.observability.stores.protocol import ExecutionRecordStore
 
 
-class RunSinkObserver:
-    """Adapter that converts lifecycle events into run records and persists them.
-
-    Buffers start-event context (name, parent IDs, run context) in memory and
-    emits one complete record per unit of work on the corresponding ``on_*_end``
-    call.  Step errors are captured via ``on_step_error`` and included in the
-    subsequent ``on_step_end`` record.
-
-    Thread-safe: parallel step groups call ``on_step_start`` / ``on_step_end``
-    concurrently.  A single lock serialises both the in-memory context buffers
-    and the sink writes so step records are consistent and Delta transactions
-    do not interleave.
+class ExecutionRecordsObserver:
+    """Convert lifecycle callbacks into persisted execution records.
 
     Args:
-        sink: Persistence backend implementing :class:`~loom.etl.executor.RunSink`.
-
-    Example::
-
-        from loom.etl import ETLRunner
-
-        # Preferred: configure ``observability.run_sink`` in YAML and let
-        # ETLRunner wire RunSinkObserver + DeltaRunSink automatically.
-        runner = ETLRunner.from_yaml("loom.yaml")
+        store: Persistence backend implementing :class:`ExecutionRecordStore`.
     """
 
-    def __init__(self, sink: RunSink) -> None:
-        self._sink = sink
+    def __init__(self, store: ExecutionRecordStore) -> None:
+        self._store = store
         self._write_lock = threading.Lock()
-        # run_id → (ctx, pipeline name, started_at)
         self._pipeline_ctx: dict[str, tuple[RunContext, str, datetime]] = {}
-        # process_run_id → (ctx, process name, started_at)
         self._process_ctx: dict[str, tuple[RunContext, str, datetime]] = {}
-        # step_run_id → (ctx, step name, started_at)
         self._step_ctx: dict[str, tuple[RunContext, str, datetime]] = {}
-        # step_run_id → repr(exc)
         self._step_errors: dict[str, str] = {}
 
     def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
@@ -82,7 +49,7 @@ class RunSinkObserver:
             error=None,
         )
         with self._write_lock:
-            self._sink.write(record)
+            self._store.write_record(record)
 
     def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
         self._process_ctx[process_run_id] = (ctx, plan.process_type.__name__, _now())
@@ -102,7 +69,7 @@ class RunSinkObserver:
             error=None,
         )
         with self._write_lock:
-            self._sink.write(record)
+            self._store.write_record(record)
 
     def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
         with self._write_lock:
@@ -125,7 +92,7 @@ class RunSinkObserver:
             error=error,
         )
         with self._write_lock:
-            self._sink.write(record)
+            self._store.write_record(record)
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
         with self._write_lock:
@@ -134,3 +101,6 @@ class RunSinkObserver:
 
 def _now() -> datetime:
     return datetime.now(tz=UTC)
+
+
+__all__ = ["ExecutionRecordsObserver"]
