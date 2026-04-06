@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -213,6 +214,13 @@ class CreateStep(ETLStep[RunParams]):
         return None
 
 
+class AppendWarningStep(ETLStep[RunParams]):
+    target = IntoTable("staging.append_warn").append()
+
+    def execute(self, params: RunParams) -> Any:  # type: ignore[override]
+        return None
+
+
 class ConsumeStep(ETLStep[RunParams]):
     sources = Sources(data=FromTable("staging.new"))
     target = IntoTable("mart.out").replace()
@@ -328,6 +336,28 @@ class TestCompileStep:
         first = compiler.compile_step(ExtractStep)
         second = compiler.compile_step(ExtractStep)
         assert first is second
+
+    def test_compile_step_emits_warning_for_append_target(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._compiler"):
+            ETLCompiler().compile_step(AppendWarningStep)
+        assert (
+            "compile append target step=AppendWarningStep table=staging.append_warn" in caplog.text
+        )
+
+    def test_compile_step_cached_append_warning_is_logged_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        compiler = ETLCompiler()
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._compiler"):
+            compiler.compile_step(AppendWarningStep)
+            compiler.compile_step(AppendWarningStep)
+
+        messages = [
+            r.getMessage() for r in caplog.records if "compile append target" in r.getMessage()
+        ]
+        assert len(messages) == 1
 
     @pytest.mark.parametrize(
         "step_type,error",

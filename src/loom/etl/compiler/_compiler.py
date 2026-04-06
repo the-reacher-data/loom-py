@@ -43,6 +43,7 @@ from loom.etl.compiler.validators import (
     validate_step,
     validate_step_catalog,
 )
+from loom.etl.io.target._table import AppendSpec
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess
 from loom.etl.pipeline._step import ETLStep
@@ -215,6 +216,7 @@ class ETLCompiler:
                 target_binding=target_binding,
             )
         )
+        _warn_append_target(step_type, target_binding.spec)
         return StepPlan(
             step_type=step_type,
             params_type=params_type,
@@ -254,3 +256,13 @@ def _require_params_type(cls: type[Any], kind: str) -> type[Any]:
     if pt is None:
         raise ETLCompilationError.missing_generic_param(cls, kind)
     return cast(type[Any], pt)
+
+
+def _warn_append_target(step_type: type[Any], spec: object) -> None:
+    if isinstance(spec, AppendSpec):
+        _log.warning(
+            "compile append target step=%s table=%s schema_mode=%s",
+            step_type.__name__,
+            spec.table_ref.ref,
+            spec.schema_mode.value,
+        )
