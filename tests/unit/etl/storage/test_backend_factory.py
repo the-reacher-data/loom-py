@@ -9,7 +9,14 @@ import pytest
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
-from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig
+from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import (
+    CatalogConnection,
+    StorageConfig,
+    StorageDefaults,
+    TablePathConfig,
+    TableRoute,
+)
 from loom.etl.storage._factory import make_backends, make_temp_store
 
 
@@ -37,6 +44,43 @@ def test_make_backends_spark_without_session_raises() -> None:
     config = StorageConfig(engine="spark")
     with pytest.raises(ValueError, match="SparkSession"):
         make_backends(config, spark=None)
+
+
+def test_make_backends_polars_catalog_route_uses_uc_uri(monkeypatch: pytest.MonkeyPatch) -> None:
+    from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
+
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def _fake_is_deltatable(uri: str, storage_options: dict[str, str] | None = None) -> bool:
+        calls.append((uri, storage_options))
+        return False
+
+    monkeypatch.setattr(
+        "loom.etl.backends.polars._catalog.DeltaTable.is_deltatable",
+        _fake_is_deltatable,
+    )
+
+    config = StorageConfig(
+        catalogs={
+            "unity": CatalogConnection(workspace="https://dbc.example", token="token-123"),
+        },
+        tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="unity"),),
+    )
+    reader, writer, catalog = make_backends(config)
+
+    assert isinstance(reader, PolarsSourceReader)
+    assert isinstance(writer, PolarsTargetWriter)
+    assert isinstance(catalog, DeltaCatalog)
+    assert catalog.exists(TableRef("raw.orders")) is False
+    assert calls == [
+        (
+            "uc://unity.raw.orders",
+            {
+                "databricks_workspace_url": "https://dbc.example",
+                "databricks_access_token": "token-123",
+            },
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
