@@ -18,6 +18,9 @@ from loom.etl.io.target._table import (
 )
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator
+from loom.etl.storage.route import PathRouteResolver, TableRouteResolver
+from loom.etl.storage.schema.delta import DeltaSchemaReader
+from loom.etl.storage.schema.reader import SchemaReader
 
 from .file import PolarsFileWriter
 from .table import PolarsDeltaTableWriter
@@ -40,8 +43,22 @@ class PolarsTargetWriter:
         writer.write(frame, append_spec, params)
     """
 
-    def __init__(self, locator: str | os.PathLike[str] | TableLocator) -> None:
-        self._table_writer = PolarsDeltaTableWriter(locator)
+    def __init__(
+        self,
+        locator: str | os.PathLike[str] | TableLocator,
+        *,
+        route_resolver: TableRouteResolver | None = None,
+        schema_reader: SchemaReader | None = None,
+    ) -> None:
+        if route_resolver is None:
+            from loom.etl.storage._locator import _as_locator
+
+            route_resolver = PathRouteResolver(_as_locator(locator))
+        self._table_writer = PolarsDeltaTableWriter(
+            locator,
+            route_resolver=route_resolver,
+            schema_reader=schema_reader or DeltaSchemaReader(),
+        )
         self._file_writer = PolarsFileWriter()
 
     def write(
