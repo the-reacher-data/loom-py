@@ -7,6 +7,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
+import msgspec
 import pytest
 
 from loom.etl.schema._table import TableRef
@@ -235,15 +236,18 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
     config_mod = mods["loom.etl.storage._config"]
     cleaners_mod = mods["loom.etl.temp._cleaners"]
 
-    delta = config_mod.convert_storage_config({"root": str(tmp_path / "lake")})
-    assert isinstance(delta, config_mod.DeltaConfig)
-    assert delta.to_locator().locate(TableRef("raw.orders")).uri.endswith("raw/orders")
+    storage = config_mod.convert_storage_config(
+        {"defaults": {"table_path": {"uri": str(tmp_path / "lake")}}}
+    )
+    assert isinstance(storage, config_mod.StorageConfig)
+    assert storage.to_path_locator().locate(TableRef("raw.orders")).uri.endswith("raw/orders")
 
-    unity = config_mod.convert_storage_config({"type": "unity_catalog"})
-    assert isinstance(unity, config_mod.UnityCatalogConfig)
+    spark_storage = config_mod.convert_storage_config({"engine": "spark"})
+    assert isinstance(spark_storage, config_mod.StorageConfig)
+    assert spark_storage.engine == "spark"
 
-    with pytest.raises(ValueError, match="Unknown storage backend"):
-        config_mod.convert_storage_config({"type": "unknown"})
+    with pytest.raises(msgspec.ValidationError):
+        config_mod.convert_storage_config({"engine": "unknown"})
 
     root = tmp_path / "cleanup-local"
     root.mkdir()

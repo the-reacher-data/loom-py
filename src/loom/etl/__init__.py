@@ -86,17 +86,21 @@ from loom.etl.schema import (
 )
 from loom.etl.sql import StepSQL
 from loom.etl.storage import (
-    DeltaConfig,
+    CatalogConnection,
+    FilePathConfig,
+    FileRoute,
     MappingLocator,
     PrefixLocator,
     SourceReader,
-    StorageBackend,
     StorageConfig,
+    StorageDefaults,
+    StorageEngine,
     TableDiscovery,
     TableLocation,
     TableLocator,
+    TablePathConfig,
+    TableRoute,
     TargetWriter,
-    UnityCatalogConfig,
 )
 from loom.etl.temp import (
     AutoTempCleaner,
@@ -165,10 +169,14 @@ __all__ = [
     "PrefixLocator",
     "MappingLocator",
     # storage config (YAML-loadable)
-    "StorageBackend",
+    "StorageEngine",
     "StorageConfig",
-    "DeltaConfig",
-    "UnityCatalogConfig",
+    "StorageDefaults",
+    "CatalogConnection",
+    "TablePathConfig",
+    "TableRoute",
+    "FilePathConfig",
+    "FileRoute",
     # observability config (YAML-loadable)
     "ObservabilityConfig",
     "ExecutionRecordStoreConfig",

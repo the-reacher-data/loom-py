@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import json
 from datetime import date
 from pathlib import Path
@@ -43,25 +42,8 @@ def _read_table(root: Path, ref: str) -> pl.DataFrame:
 
 
 def _fresh_runner_cls() -> type[ETLRunner]:
-    """Reload runtime modules that can be stale after module-level reload tests."""
-    import loom.etl.backends.polars as polars_pkg
-    import loom.etl.backends.polars._predicate as polars_predicate
-    import loom.etl.backends.polars.writer.core as polars_writer_core
-    import loom.etl.backends.polars.writer.file as polars_writer_file
-    import loom.etl.backends.polars.writer.table as polars_writer_table
-    import loom.etl.runner.core as runner_core
-    import loom.etl.sql._predicate_dialect as predicate_dialect
-    import loom.etl.storage._factory as storage_factory
-
-    importlib.reload(predicate_dialect)
-    importlib.reload(polars_predicate)
-    importlib.reload(polars_writer_file)
-    importlib.reload(polars_writer_table)
-    importlib.reload(polars_writer_core)
-    importlib.reload(polars_pkg)
-    importlib.reload(storage_factory)
-    runner_core = importlib.reload(runner_core)
-    return runner_core.ETLRunner
+    """Return ETLRunner class from the currently imported runtime snapshot."""
+    return ETLRunner
 
 
 class RunParams(ETLParams):
@@ -134,7 +116,7 @@ def test_runner_from_dict_executes_end_to_end_pipeline(tmp_path: Path) -> None:
     )
 
     runner = _fresh_runner_cls().from_dict(
-        storage={"root": str(root)},
+        storage={"defaults": {"table_path": {"uri": str(root)}}},
         observability={"log": False},
     )
     runner.run(DailyPipeline, RunParams(run_date=date(2024, 1, 5)))
@@ -158,8 +140,9 @@ def test_runner_from_yaml_applies_include_filter(tmp_path: Path) -> None:
     config_path.write_text(
         f"""
 storage:
-  type: delta
-  root: {root}
+  defaults:
+    table_path:
+      uri: {root}
 observability:
   log: false
 """.strip(),
@@ -242,7 +225,7 @@ def test_runner_handles_json_string_source_and_final_csv_reporting(tmp_path: Pat
         processes = [ReportingProcess]
 
     runner = _fresh_runner_cls().from_dict(
-        storage={"root": str(root)},
+        storage={"defaults": {"table_path": {"uri": str(root)}}},
         observability={"log": False},
     )
     runner.run(ReportingPipeline, RunParams(run_date=date(2024, 1, 5)))

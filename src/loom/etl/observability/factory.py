@@ -12,7 +12,7 @@ from loom.etl.observability.stores.table import TableExecutionRecordStore
 from loom.etl.observability.writers.polars import PolarsExecutionRecordWriter
 from loom.etl.observability.writers.protocol import ExecutionRecordWriter
 from loom.etl.observability.writers.spark import SparkExecutionRecordWriter
-from loom.etl.storage._config import DeltaConfig, StorageConfig, UnityCatalogConfig
+from loom.etl.storage._config import StorageConfig
 
 
 def make_observers(
@@ -52,46 +52,42 @@ def _make_execution_record_writer(
 ) -> ExecutionRecordWriter:
     from loom.etl.storage._locator import PrefixLocator
 
-    match storage:
-        case DeltaConfig():
-            if config.database:
-                raise ValueError(
-                    "observability.record_store.database is only supported "
-                    "with Spark/Unity Catalog. "
-                    "For Delta/Polars storage, configure "
-                    "observability.record_store.root."
-                )
-            from loom.etl.backends.polars import PolarsTargetWriter
-
-            locator = PrefixLocator(
-                root=config.root,
-                storage_options=config.storage_options or None,
-                writer=config.writer or None,
-                delta_config=config.delta_config or None,
-                commit=config.commit or None,
+    if config.database:
+        if storage.engine != "spark":
+            raise ValueError(
+                "observability.record_store.database is only supported "
+                "with storage.engine='spark'. "
+                "For storage.engine='polars', configure observability.record_store.root."
             )
-            return PolarsExecutionRecordWriter(PolarsTargetWriter(locator))
-        case UnityCatalogConfig():
-            if spark is None:
-                raise ValueError(
-                    "A SparkSession is required to configure observability.record_store "
-                    "with Unity Catalog storage."
-                )
-            from loom.etl.backends.spark import SparkTargetWriter
-
-            if config.database:
-                return SparkExecutionRecordWriter(spark, SparkTargetWriter(spark, None))
-
-            locator = PrefixLocator(
-                root=config.root,
-                storage_options=config.storage_options or None,
-                writer=config.writer or None,
-                delta_config=config.delta_config or None,
-                commit=config.commit or None,
+        if spark is None:
+            raise ValueError(
+                "A SparkSession is required to configure observability.record_store "
+                "when database destination is enabled."
             )
-            return SparkExecutionRecordWriter(spark, SparkTargetWriter(spark, locator))
-        case _:
-            raise TypeError(f"Unsupported storage config type: {type(storage).__name__!r}")
+        from loom.etl.backends.spark import SparkTargetWriter
+
+        return SparkExecutionRecordWriter(spark, SparkTargetWriter(spark, None))
+
+    locator = PrefixLocator(
+        root=config.root,
+        storage_options=config.storage_options or None,
+        writer=config.writer or None,
+        delta_config=config.delta_config or None,
+        commit=config.commit or None,
+    )
+    if storage.engine == "spark":
+        if spark is None:
+            raise ValueError(
+                "A SparkSession is required to configure observability.record_store "
+                "when storage.engine='spark'."
+            )
+        from loom.etl.backends.spark import SparkTargetWriter
+
+        return SparkExecutionRecordWriter(spark, SparkTargetWriter(spark, locator))
+
+    from loom.etl.backends.polars import PolarsTargetWriter
+
+    return PolarsExecutionRecordWriter(PolarsTargetWriter(locator))
 
 
 __all__ = ["make_observers"]

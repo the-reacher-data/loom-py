@@ -1,235 +1,205 @@
-"""Unit tests for DeltaConfig, UnityCatalogConfig and convert_storage_config."""
+"""Unit tests for StorageConfig and convert_storage_config."""
 
 from __future__ import annotations
-
-from collections.abc import Callable
-from typing import Any
 
 import msgspec
 import pytest
 
 from loom.etl.storage._config import (
-    DeltaConfig,
-    StorageBackend,
-    TableOverride,
-    UnityCatalogConfig,
+    CatalogConnection,
+    FilePathConfig,
+    FileRoute,
+    StorageConfig,
+    StorageDefaults,
+    StorageEngine,
+    TablePathConfig,
+    TableRoute,
     convert_storage_config,
 )
 from loom.etl.storage._locator import MappingLocator, PrefixLocator
 
 
-class TestDeltaConfig:
+def _default_path(uri: str) -> StorageDefaults:
+    return StorageDefaults(table_path=TablePathConfig(uri=uri))
+
+
+class TestStorageConfig:
     def test_defaults(self) -> None:
-        config = DeltaConfig()
-        assert config.type == "delta"
-        assert config.root == ""
-        assert config.storage_options == {}
-        assert config.writer == {}
-        assert config.delta_config == {}
-        assert config.commit == {}
-        assert config.tables == {}
+        config = StorageConfig()
+        assert config.engine == "polars"
+        assert config.catalogs == {}
+        assert config.defaults == StorageDefaults()
+        assert config.tables == ()
+        assert config.files == ()
         assert config.tmp_root == ""
         assert config.tmp_storage_options == {}
 
-    @pytest.mark.parametrize(
-        "kwargs,check",
-        [
-            (
-                {"root": "s3://my-lake/"},
-                lambda c: c.root == "s3://my-lake/",
-            ),
-            (
-                {"root": "s3://my-lake/", "storage_options": {"AWS_REGION": "eu-west-1"}},
-                lambda c: c.storage_options["AWS_REGION"] == "eu-west-1",
-            ),
-            (
-                {"writer": {"compression": "SNAPPY"}},
-                lambda c: c.writer["compression"] == "SNAPPY",
-            ),
-            (
-                {"root": "s3://lake/", "tmp_root": "s3://lake/tmp/"},
-                lambda c: c.tmp_root == "s3://lake/tmp/",
-            ),
-        ],
-    )
-    def test_direct_construction(
-        self,
-        kwargs: dict[str, Any],
-        check: Callable[[DeltaConfig], bool],
-    ) -> None:
-        assert check(DeltaConfig(**kwargs))
+    def test_engine_enum_values(self) -> None:
+        assert StorageEngine.POLARS.value == "polars"
+        assert StorageEngine.SPARK.value == "spark"
 
-    def test_is_frozen(self) -> None:
-        config = DeltaConfig(root="s3://lake/")
-        with pytest.raises((TypeError, AttributeError)):
-            config.root = "s3://other/"  # type: ignore[misc]
+    def test_validate_accepts_minimal_path_defaults(self) -> None:
+        config = StorageConfig(defaults=_default_path("s3://my-lake"))
+        config.validate()
 
-    @pytest.mark.parametrize(
-        "base,replace,check",
-        [
-            (
-                DeltaConfig(root="s3://prod/", writer={"compression": "SNAPPY"}),
-                {"root": "s3://staging/"},
-                lambda new, old: new.root == "s3://staging/" and new.writer == old.writer,
-            ),
-            (
-                DeltaConfig(root="s3://lake/", writer={"compression": "SNAPPY"}),
-                {"writer": {"compression": "ZSTD", "compression_level": 3}},
-                lambda new, old: (
-                    new.writer["compression"] == "ZSTD" and old.writer["compression"] == "SNAPPY"
+    def test_validate_rejects_duplicate_table_names(self) -> None:
+        config = StorageConfig(
+            tables=(
+                TableRoute(name="raw.orders", path=TablePathConfig(uri="s3://raw/orders")),
+                TableRoute(name="raw.orders", path=TablePathConfig(uri="s3://raw/orders-v2")),
+            )
+        )
+        with pytest.raises(ValueError, match="duplicate name"):
+            config.validate()
+
+    def test_validate_rejects_duplicate_file_names(self) -> None:
+        config = StorageConfig(
+            files=(
+                FileRoute(name="daily.csv", path=FilePathConfig(uri="s3://a/daily.csv")),
+                FileRoute(name="daily.csv", path=FilePathConfig(uri="s3://b/daily.csv")),
+            )
+        )
+        with pytest.raises(ValueError, match="duplicate name"):
+            config.validate()
+
+    def test_validate_rejects_missing_route_destination(self) -> None:
+        config = StorageConfig(tables=(TableRoute(name="raw.orders"),))
+        with pytest.raises(ValueError, match="exactly one destination"):
+            config.validate()
+
+    def test_validate_rejects_route_with_both_ref_and_path(self) -> None:
+        config = StorageConfig(
+            tables=(
+                TableRoute(
+                    name="raw.orders",
+                    ref="main.raw.orders",
+                    path=TablePathConfig(uri="s3://raw/orders"),
                 ),
-            ),
-            (
-                DeltaConfig(root="s3://lake/", storage_options={"AWS_REGION": "eu-west-1"}),
-                {"storage_options": {"AWS_REGION": "us-east-1"}},
-                lambda new, old: (
-                    new.storage_options["AWS_REGION"] == "us-east-1"
-                    and old.storage_options["AWS_REGION"] == "eu-west-1"
-                ),
-            ),
-        ],
-    )
-    def test_replace(
-        self,
-        base: DeltaConfig,
-        replace: dict[str, Any],
-        check: Callable[[DeltaConfig, DeltaConfig], bool],
-    ) -> None:
-        updated = msgspec.structs.replace(base, **replace)
-        assert check(updated, base)
+            )
+        )
+        with pytest.raises(ValueError, match="exactly one destination"):
+            config.validate()
+
+    def test_validate_rejects_invalid_ref_shape(self) -> None:
+        config = StorageConfig(tables=(TableRoute(name="raw.orders", ref="orders"),))
+        with pytest.raises(ValueError, match="schema.table"):
+            config.validate()
+
+    def test_validate_rejects_unknown_catalog_key(self) -> None:
+        config = StorageConfig(
+            tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="finance"),)
+        )
+        with pytest.raises(ValueError, match="not defined in storage.catalogs"):
+            config.validate()
+
+    def test_validate_accepts_two_part_ref_with_catalog_key(self) -> None:
+        config = StorageConfig(
+            catalogs={"default": CatalogConnection()},
+            tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="default"),),
+        )
+        config.validate()
+
+    def test_validate_accepts_three_part_ref_without_catalog_key(self) -> None:
+        config = StorageConfig(tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),))
+        config.validate()
 
     @pytest.mark.parametrize(
         "config,error",
         [
-            (DeltaConfig(writer={"nonexistent_key": "value"}), "writer"),
-            (DeltaConfig(commit={"nonexistent_commit_key": "value"}), "commit"),
             (
-                DeltaConfig(
-                    root="s3://lake/",
-                    tables={"raw.orders": TableOverride(writer={"bad_key": "x"})},
+                StorageConfig(defaults=_default_path("s3://lake"), tables=()),
+                None,
+            ),
+            (
+                StorageConfig(
+                    defaults=StorageDefaults(
+                        table_path=TablePathConfig(uri="s3://lake", writer={"bad": 1})
+                    )
                 ),
-                "tables.raw.orders.writer",
+                "writer",
+            ),
+            (
+                StorageConfig(
+                    defaults=StorageDefaults(
+                        table_path=TablePathConfig(uri="s3://lake", commit={"bad": 1})
+                    )
+                ),
+                "commit",
             ),
         ],
     )
-    def test_validate_invalid_options_raise(self, config: DeltaConfig, error: str) -> None:
+    def test_validate_writer_and_commit_options(
+        self,
+        config: StorageConfig,
+        error: str | None,
+    ) -> None:
+        if error is None:
+            config.validate()
+            return
         with pytest.raises(TypeError, match=error):
             config.validate()
 
-    def test_validate_empty_writer_passes(self) -> None:
-        DeltaConfig().validate()
+    def test_has_catalog_routes(self) -> None:
+        config = StorageConfig(tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),))
+        assert config.has_catalog_routes() is True
+        assert config.has_path_routes() is False
+
+    def test_has_path_routes(self) -> None:
+        config = StorageConfig(defaults=_default_path("s3://my-lake"))
+        assert config.has_catalog_routes() is False
+        assert config.has_path_routes() is True
 
     @pytest.mark.parametrize(
         "config,expected_type",
         [
-            (DeltaConfig(root="s3://lake/"), PrefixLocator),
+            (StorageConfig(defaults=_default_path("s3://lake")), PrefixLocator),
             (
-                DeltaConfig(
-                    root="s3://lake/",
-                    tables={"raw.orders": TableOverride(root="s3://raw-account/raw/")},
+                StorageConfig(
+                    defaults=_default_path("s3://default"),
+                    tables=(
+                        TableRoute(
+                            name="raw.orders",
+                            path=TablePathConfig(uri="s3://finance/raw/orders"),
+                        ),
+                    ),
                 ),
                 MappingLocator,
             ),
         ],
     )
-    def test_to_locator(self, config: DeltaConfig, expected_type: type[object]) -> None:
-        assert isinstance(config.to_locator(), expected_type)
+    def test_to_path_locator(self, config: StorageConfig, expected_type: type[object]) -> None:
+        assert isinstance(config.to_path_locator(), expected_type)
 
-
-class TestUnityCatalogConfig:
-    def test_minimal_defaults(self) -> None:
-        config = UnityCatalogConfig(type="unity_catalog")
-        assert config.type == "unity_catalog"
-        assert config.workspace_url == ""
-        assert config.catalog == ""
-        assert config.token == ""
-        assert config.tables == {}
-
-    def test_explicit_fields(self) -> None:
-        config = UnityCatalogConfig(
-            type="unity_catalog",
-            workspace_url="https://my-workspace.azuredatabricks.net",
-            catalog="my_catalog",
-            token="dapi-xxx",
-        )
-        assert config.workspace_url == "https://my-workspace.azuredatabricks.net"
-        assert config.catalog == "my_catalog"
-        assert config.token == "dapi-xxx"
-
-    def test_replace(self) -> None:
-        base = UnityCatalogConfig(type="unity_catalog", catalog="prod")
-        dev = msgspec.structs.replace(base, catalog="dev")
-        assert dev.catalog == "dev"
-        assert base.catalog == "prod"
-
-    def test_is_frozen(self) -> None:
-        config = UnityCatalogConfig(type="unity_catalog")
-        with pytest.raises((TypeError, AttributeError)):
-            config.catalog = "other"  # type: ignore[misc]
+    def test_to_path_locator_without_path_routes_raises(self) -> None:
+        config = StorageConfig()
+        with pytest.raises(ValueError, match="no path routes configured"):
+            config.to_path_locator()
 
 
 class TestConvertStorageConfig:
-    @pytest.mark.parametrize(
-        "raw,expected_type,extra_check",
-        [
-            (
-                {"root": "s3://my-lake/"},
-                DeltaConfig,
-                lambda c: c.root == "s3://my-lake/",
-            ),
-            (
-                {"type": "delta", "root": "s3://lake/"},
-                DeltaConfig,
-                lambda c: c.type == "delta",
-            ),
-            (
-                {"type": "unity_catalog"},
-                UnityCatalogConfig,
-                lambda c: c.type == "unity_catalog",
-            ),
-            (
-                {},
-                DeltaConfig,
-                lambda c: c.root == "",
-            ),
-        ],
-    )
-    def test_convert_valid_dispatch(
-        self,
-        raw: dict[str, Any],
-        expected_type: type[DeltaConfig | UnityCatalogConfig],
-        extra_check: Callable[[DeltaConfig | UnityCatalogConfig], bool],
-    ) -> None:
+    def test_convert_valid_shape(self) -> None:
+        raw = {
+            "engine": "polars",
+            "defaults": {
+                "table_path": {
+                    "uri": "s3://my-lake",
+                    "storage_options": {"AWS_REGION": "eu-west-1"},
+                }
+            },
+            "tables": [
+                {"name": "raw.orders", "path": {"uri": "s3://raw/orders"}},
+                {"name": "sys.customers", "ref": "main.crm.customers"},
+            ],
+        }
         config = convert_storage_config(raw)
-        assert isinstance(config, expected_type)
-        assert extra_check(config)
+        assert isinstance(config, StorageConfig)
+        assert config.engine == StorageEngine.POLARS.value
+        assert len(config.tables) == 2
 
-    @pytest.mark.parametrize(
-        "raw,exc,error",
-        [
-            ({"type": "unknown_backend"}, ValueError, "Unknown storage backend"),
-            ({"root": 123}, msgspec.ValidationError, ""),
-        ],
-    )
-    def test_convert_errors(
-        self,
-        raw: dict[str, Any],
-        exc: type[Exception],
-        error: str,
-    ) -> None:
-        if error:
-            with pytest.raises(exc, match=error):
-                convert_storage_config(raw)
-            return
-        with pytest.raises(exc):
-            convert_storage_config(raw)
+    def test_convert_invalid_engine_raises(self) -> None:
+        with pytest.raises(msgspec.ValidationError):
+            convert_storage_config({"engine": "unknown"})
 
-
-class TestStorageBackendEnum:
-    def test_values_and_comparison(self) -> None:
-        delta = DeltaConfig()
-        uc = UnityCatalogConfig(type="unity_catalog")
-        assert StorageBackend.DELTA.value == "delta"
-        assert StorageBackend.UNITY_CATALOG.value == "unity_catalog"
-        assert delta.type == StorageBackend.DELTA.value
-        assert uc.type == StorageBackend.UNITY_CATALOG.value
+    def test_convert_invalid_field_type_raises(self) -> None:
+        with pytest.raises(msgspec.ValidationError):
+            convert_storage_config({"tmp_storage_options": ["bad"]})

@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
@@ -20,6 +21,7 @@ from loom.etl.compiler._plan import (
 )
 from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
+from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 RunnerFactory = Callable[..., ETLRunner]
@@ -209,25 +211,22 @@ class TestRunnerRun:
 
 
 class TestRunnerFromConfig:
-    def test_from_config_unity_catalog_without_spark_raises(self) -> None:
-        from loom.etl.storage._config import UnityCatalogConfig
-
+    def test_from_config_spark_engine_without_spark_raises(self) -> None:
         with pytest.raises(ValueError, match="SparkSession"):
-            ETLRunner.from_config(UnityCatalogConfig(type="unity_catalog"))
+            ETLRunner.from_config(StorageConfig(engine="spark"))
 
-    def test_from_config_unity_catalog_with_spark_builds_spark_backends(self) -> None:
+    def test_from_config_spark_engine_with_spark_builds_spark_backends(self) -> None:
         pytest.importorskip("pyspark")
 
         from unittest.mock import MagicMock
 
         from loom.etl.backends.spark._catalog import SparkCatalog
-        from loom.etl.backends.spark._reader import SparkDeltaReader
-        from loom.etl.storage._config import UnityCatalogConfig
+        from loom.etl.backends.spark.reader import SparkSourceReader
 
         spark = MagicMock()
-        runner = ETLRunner.from_config(UnityCatalogConfig(type="unity_catalog"), spark=spark)
+        runner = ETLRunner.from_config(StorageConfig(engine="spark"), spark=spark)
 
-        assert isinstance(runner._executor._reader, SparkDeltaReader)
+        assert isinstance(runner._executor._reader, SparkSourceReader)
         assert isinstance(runner._compiler._catalog, SparkCatalog)
 
     @pytest.mark.parametrize(
@@ -237,56 +236,57 @@ class TestRunnerFromConfig:
             ("tmp", True),
         ],
     )
-    def test_from_config_delta_builds_polars_backends(
+    def test_from_config_polars_path_builds_polars_backends(
         self,
         tmp_path: Path,
         tmp_suffix: str | None,
         has_temp_store: bool,
     ) -> None:
-        from loom.etl.backends.polars._reader import PolarsDeltaReader
+        from loom.etl.backends.polars.reader import PolarsSourceReader
         from loom.etl.backends.polars.writer import PolarsTargetWriter
-        from loom.etl.storage._config import DeltaConfig
 
-        config = DeltaConfig(
-            root=str(tmp_path),
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
             tmp_root=str(tmp_path / tmp_suffix) if tmp_suffix else "",
         )
         runner = ETLRunner.from_config(config)
 
-        assert isinstance(runner._executor._reader, PolarsDeltaReader)
+        assert isinstance(runner._executor._reader, PolarsSourceReader)
         assert isinstance(runner._executor._writer, PolarsTargetWriter)
         assert (runner._temp_store is not None) is has_temp_store
 
 
 class TestRunnerFromDict:
-    def test_from_dict_delta_builds_polars_backends(self, tmp_path: Path) -> None:
-        from loom.etl.backends.polars._reader import PolarsDeltaReader
+    def test_from_dict_polars_path_builds_polars_backends(self, tmp_path: Path) -> None:
+        from loom.etl.backends.polars.reader import PolarsSourceReader
 
-        runner = ETLRunner.from_dict({"root": str(tmp_path)})
-        assert isinstance(runner._executor._reader, PolarsDeltaReader)
+        runner = ETLRunner.from_dict({"defaults": {"table_path": {"uri": str(tmp_path)}}})
+        assert isinstance(runner._executor._reader, PolarsSourceReader)
 
     @pytest.mark.parametrize(
         "storage,error,match",
         [
-            ({"type": "unity_catalog"}, ValueError, "SparkSession"),
-            ({"type": "unknown_backend"}, ValueError, "Unknown storage backend"),
+            ({"engine": "spark"}, ValueError, "SparkSession"),
+            ({"engine": "unknown"}, msgspec.ValidationError, ""),
         ],
     )
     def test_from_dict_errors(
         self, storage: dict[str, Any], error: type[Exception], match: str
     ) -> None:
-        with pytest.raises(error, match=match):
+        if match:
+            with pytest.raises(error, match=match):
+                ETLRunner.from_dict(storage)
+            return
+        with pytest.raises(error):
             ETLRunner.from_dict(storage)
 
     def test_from_dict_invalid_storage_shape_raises(self) -> None:
-        import msgspec
-
         with pytest.raises(msgspec.ValidationError):
-            ETLRunner.from_dict({"root": 123})
+            ETLRunner.from_dict({"defaults": {"table_path": {"uri": 123}}})
 
     def test_from_dict_with_observability_dict(self, tmp_path: Path) -> None:
         runner = ETLRunner.from_dict(
-            {"root": str(tmp_path)},
+            {"defaults": {"table_path": {"uri": str(tmp_path)}}},
             observability={"log": False},
         )
         assert runner is not None
@@ -294,15 +294,16 @@ class TestRunnerFromDict:
 
 class TestRunnerCleaner:
     def test_from_config_with_injected_cleaner(self, tmp_path: Path) -> None:
-        from loom.etl.storage._config import DeltaConfig
-
         deleted: list[str] = []
 
         class SpyCleaner:
             def delete_tree(self, path: str) -> None:
                 deleted.append(path)
 
-        config = DeltaConfig(root=str(tmp_path), tmp_root=str(tmp_path / "tmp"))
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            tmp_root=str(tmp_path / "tmp"),
+        )
         runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
 
         assert runner._temp_store is not None

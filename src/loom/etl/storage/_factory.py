@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from loom.etl.storage._config import DeltaConfig, StorageConfig, UnityCatalogConfig
+from loom.etl.storage._config import StorageConfig
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
@@ -37,20 +37,16 @@ def make_backends(
         Triple of ``(reader, writer, catalog)``.
 
     Raises:
-        ValueError: If *config* is UnityCatalogConfig and *spark* is ``None``.
+        ValueError: If Spark engine is requested but no SparkSession is provided.
     """
-    match config:
-        case DeltaConfig():
-            return _make_polars_backends(config)
-        case UnityCatalogConfig():
-            if spark is None:
-                raise ValueError(
-                    "A SparkSession is required for UnityCatalogConfig. "
-                    "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
-                )
-            return _make_spark_backends(spark)
-        case _:
-            raise TypeError(f"Unsupported storage config type: {type(config).__name__!r}")
+    if config.engine == "spark":
+        if spark is None:
+            raise ValueError(
+                "A SparkSession is required when storage.engine='spark'. "
+                "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
+            )
+        return _make_spark_backends(config, spark)
+    return _make_polars_backends(config)
 
 
 def make_temp_store(
@@ -80,19 +76,39 @@ def _make_temp_backend(spark: Any, storage_options: dict[str, str]) -> Any:
 
 
 def _make_spark_backends(
+    config: StorageConfig,
     spark: Any,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
+    from loom.etl.backends.polars import DeltaCatalog
     from loom.etl.backends.spark import SparkCatalog, SparkSourceReader, SparkTargetWriter
 
-    catalog = SparkCatalog(spark)
-    return SparkSourceReader(spark), SparkTargetWriter(spark, None), catalog
+    has_catalog_routes = config.has_catalog_routes()
+    has_path_routes = config.has_path_routes()
+    if has_catalog_routes and has_path_routes:
+        raise ValueError(
+            "Mixed catalog+path table routing for Spark is not wired yet in factory. "
+            "Use catalog-only or path-only routes for now."
+        )
+
+    if has_catalog_routes or not has_path_routes:
+        spark_catalog = SparkCatalog(spark)
+        return SparkSourceReader(spark), SparkTargetWriter(spark, None), spark_catalog
+
+    locator = config.to_path_locator()
+    delta_catalog = DeltaCatalog(locator)
+    return SparkSourceReader(spark, locator), SparkTargetWriter(spark, locator), delta_catalog
 
 
 def _make_polars_backends(
-    config: DeltaConfig,
+    config: StorageConfig,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
     from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
 
-    locator = config.to_locator()
+    if config.has_catalog_routes():
+        raise ValueError(
+            "Catalog table routes are not wired for Polars yet. "
+            "Use path routes/defaults until we complete the writer-side design."
+        )
+    locator = config.to_path_locator()
     catalog = DeltaCatalog(locator)
     return PolarsSourceReader(locator), PolarsTargetWriter(locator), catalog

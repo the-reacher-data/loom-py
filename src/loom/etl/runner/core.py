@@ -26,7 +26,7 @@ from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
-from loom.etl.storage._config import StorageConfig, UnityCatalogConfig, convert_storage_config
+from loom.etl.storage._config import StorageConfig, convert_storage_config
 from loom.etl.storage._factory import make_backends, make_temp_store
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.temp._cleaners import TempCleaner
@@ -99,8 +99,8 @@ class ETLRunner:
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
     ) -> ETLRunner:
-        """Build an :class:`ETLRunner` for Databricks Unity Catalog."""
-        config = UnityCatalogConfig(type="unity_catalog")
+        """Build an :class:`ETLRunner` using Spark as the execution engine."""
+        config = StorageConfig(engine="spark")
         return cls.from_config(
             config, obs_config, spark=spark, dispatcher=dispatcher, cleaner=cleaner
         )
