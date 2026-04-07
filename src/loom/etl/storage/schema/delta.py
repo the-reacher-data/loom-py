@@ -91,12 +91,8 @@ def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
 
 
 def _to_pyarrow_schema(raw_schema: object) -> pa.Schema:
-    if isinstance(raw_schema, pa.Schema):
-        return raw_schema
-    to_pyarrow = getattr(raw_schema, "to_pyarrow", None)
-    if callable(to_pyarrow):
-        return pa.schema(to_pyarrow())
     to_arrow = getattr(raw_schema, "to_arrow", None)
-    if callable(to_arrow):
-        return pa.schema(to_arrow())
-    raise TypeError(f"Unsupported Delta schema object: {type(raw_schema)!r}")
+    if not callable(to_arrow):
+        raise TypeError(f"Unsupported Delta schema object: {type(raw_schema)!r}")
+    # deltalake>=1.5 returns arro3 schema; normalize to PyArrow for stable dtype mapping.
+    return pa.schema(to_arrow())
