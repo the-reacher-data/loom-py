@@ -221,8 +221,7 @@ class _SingleLocationLocator:
 
 
 def _write_kwargs(loc: TableLocation) -> dict[str, Any]:
-    from deltalake import CommitProperties
-    from deltalake.table import WriterProperties
+    from deltalake import CommitProperties, WriterProperties
 
     return {
         "storage_options": loc.storage_options or None,

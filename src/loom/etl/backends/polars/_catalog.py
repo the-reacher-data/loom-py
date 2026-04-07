@@ -115,7 +115,7 @@ class DeltaCatalog:
     def schema(self, ref: TableRef) -> tuple[ColumnSchema, ...] | None:
         """Return the current schema from the Delta log, or ``None`` if absent.
 
-        Reads ``DeltaTable.schema().to_pyarrow()`` so the result always
+        Reads Delta schema through the Python binding so the result always
         reflects what is actually on disk.
 
         Args:
@@ -131,7 +131,7 @@ class DeltaCatalog:
         except TableNotFoundError:
             return None
 
-        arrow_schema: pa.Schema = dt.schema().to_pyarrow()
+        arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
         return tuple(
             ColumnSchema(
                 name=field.name,
@@ -143,3 +143,15 @@ class DeltaCatalog:
 
     def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
         """No-op — Delta maintains its own schema in the transaction log."""
+
+
+def _to_pyarrow_schema(raw_schema: object) -> pa.Schema:
+    if isinstance(raw_schema, pa.Schema):
+        return raw_schema
+    to_pyarrow = getattr(raw_schema, "to_pyarrow", None)
+    if callable(to_pyarrow):
+        return pa.schema(to_pyarrow())
+    to_arrow = getattr(raw_schema, "to_arrow", None)
+    if callable(to_arrow):
+        return pa.schema(to_arrow())
+    raise TypeError(f"Unsupported Delta schema object: {type(raw_schema)!r}")

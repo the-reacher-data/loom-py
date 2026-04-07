@@ -61,7 +61,7 @@ class DeltaSchemaReader:
         except TableNotFoundError:
             return None
 
-        arrow_schema: pa.Schema = dt.schema().to_pyarrow()
+        arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
         return PhysicalSchema(
             columns=_columns_from_arrow(arrow_schema),
             partition_columns=tuple(dt.metadata().partition_columns),
@@ -88,3 +88,15 @@ def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
         arrow_type,
     )
     return LoomDtype.NULL
+
+
+def _to_pyarrow_schema(raw_schema: object) -> pa.Schema:
+    if isinstance(raw_schema, pa.Schema):
+        return raw_schema
+    to_pyarrow = getattr(raw_schema, "to_pyarrow", None)
+    if callable(to_pyarrow):
+        return pa.schema(to_pyarrow())
+    to_arrow = getattr(raw_schema, "to_arrow", None)
+    if callable(to_arrow):
+        return pa.schema(to_arrow())
+    raise TypeError(f"Unsupported Delta schema object: {type(raw_schema)!r}")

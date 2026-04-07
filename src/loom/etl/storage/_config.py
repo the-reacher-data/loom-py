@@ -258,7 +258,7 @@ def _validate_writer(writer: dict[str, Any], *, context: str) -> None:
     if not writer:
         return
     try:
-        from deltalake.table import WriterProperties
+        from deltalake import WriterProperties
 
         WriterProperties(**writer)
     except TypeError as exc:
