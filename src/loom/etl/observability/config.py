@@ -46,12 +46,15 @@ class ObservabilityConfig(msgspec.Struct, frozen=True):
 
     Args:
         log: Enables structured runtime logs via :class:`StructlogRunObserver`.
+        otel: Enables OpenTelemetry tracing via :class:`OtelRunObserver`.
+              Requires the ``etl-otel`` extra (``opentelemetry-api``).
         record_store: Enables persisted execution records via
             :class:`ExecutionRecordsObserver`.
         slow_step_threshold_ms: Optional slow-step warning threshold.
     """
 
     log: bool = True
+    otel: bool = False
     record_store: ExecutionRecordStoreConfig | None = None
     slow_step_threshold_ms: int | None = None
 

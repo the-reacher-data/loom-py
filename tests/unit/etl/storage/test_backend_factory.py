@@ -67,6 +67,27 @@ def test_make_observers_log_false_returns_empty() -> None:
     assert observers == []
 
 
+def test_make_observers_otel_true_includes_otel_observer() -> None:
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    config = ObservabilityConfig(log=False, otel=True)
+    observers = make_observers(config)
+
+    assert len(observers) == 1
+    assert isinstance(observers[0], OtelRunObserver)
+
+
+def test_make_observers_log_and_otel_true_includes_both() -> None:
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    config = ObservabilityConfig(log=True, otel=True)
+    observers = make_observers(config)
+
+    assert len(observers) == 2
+    assert isinstance(observers[0], StructlogRunObserver)
+    assert isinstance(observers[1], OtelRunObserver)
+
+
 def test_make_observers_no_store_when_record_store_none() -> None:
     config = ObservabilityConfig(log=True, record_store=None)
     observers = make_observers(config)

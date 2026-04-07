@@ -24,6 +24,10 @@ def make_observers(
     observers: list[ETLRunObserver] = []
     if config.log:
         observers.append(StructlogRunObserver(slow_step_threshold_ms=config.slow_step_threshold_ms))
+    if config.otel:
+        from loom.etl.observability.observers.otel import OtelRunObserver
+
+        observers.append(OtelRunObserver())
     if config.record_store is None:
         return observers
     if storage is None:

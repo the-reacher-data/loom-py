@@ -213,3 +213,248 @@ def test_table_execution_record_store_applies_database_prefix() -> None:
     sink.write_record(record)
 
     assert writer.calls[0][1] == TableRef("ops.pipeline_runs")
+
+
+# ---------------------------------------------------------------------------
+# PolarsExecutionRecordWriter — schema
+# ---------------------------------------------------------------------------
+
+
+def test_polars_schema_has_no_null_dtype_columns_for_none_optional_fields() -> None:
+    """Ensure _polars_schema returns String (not Null) for optional fields."""
+    import polars as pl
+
+    from loom.etl.observability.writers.polars import _polars_schema
+
+    # All optional fields (correlation_id, error) are None
+    for record in [
+        StepRunRecord(
+            event=EventName.STEP_END,
+            run_id="r",
+            correlation_id=None,
+            attempt=1,
+            step_run_id="s",
+            step="S",
+            started_at=datetime.now(tz=UTC),
+            status=RunStatus.SUCCESS,
+            duration_ms=1,
+            error=None,
+        ),
+        ProcessRunRecord(
+            event=EventName.PROCESS_END,
+            run_id="r",
+            correlation_id=None,
+            attempt=1,
+            process_run_id="p",
+            process="P",
+            started_at=datetime.now(tz=UTC),
+            status=RunStatus.SUCCESS,
+            duration_ms=1,
+            error=None,
+        ),
+        PipelineRunRecord(
+            event=EventName.PIPELINE_END,
+            run_id="r",
+            correlation_id=None,
+            attempt=1,
+            pipeline="Pipe",
+            started_at=datetime.now(tz=UTC),
+            status=RunStatus.SUCCESS,
+            duration_ms=1,
+            error=None,
+        ),
+    ]:
+        schema = _polars_schema(record)
+        null_cols = [name for name, dtype in schema.items() if dtype == pl.Null]
+        assert null_cols == [], f"Null dtype found in {type(record).__name__}: {null_cols}"
+
+
+def test_polars_schema_rejects_unknown_record_type() -> None:
+    from loom.etl.observability.writers.polars import _polars_schema
+
+    with pytest.raises(TypeError, match="Unsupported execution record type"):
+        _polars_schema(object())  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# OtelRunObserver
+# ---------------------------------------------------------------------------
+
+
+def _make_span_mock() -> object:
+    from unittest.mock import MagicMock
+
+    return MagicMock()
+
+
+def _make_tracer_mock(span: object) -> object:
+    from unittest.mock import MagicMock
+
+    tracer = MagicMock()
+    tracer.start_span.return_value = span
+    return tracer
+
+
+def _pipeline_plan() -> object:
+    return type("PipePlan", (), {"pipeline_type": type("MyPipeline", (), {})})()
+
+
+def _process_plan() -> object:
+    return type("ProcPlan", (), {"process_type": type("MyProcess", (), {})})()
+
+
+def _step_plan() -> object:
+    target_spec = type(
+        "Spec",
+        (),
+        {"table_ref": type("T", (), {"ref": "staging.orders"})(), "temp_name": None, "path": None},
+    )()
+    target_binding = type("TB", (), {"spec": target_spec})()
+    return type(
+        "StepPlan",
+        (),
+        {"step_type": type("MyStep", (), {}), "target_binding": target_binding},
+    )()
+
+
+def test_otel_observer_starts_and_ends_pipeline_span() -> None:
+    from unittest.mock import patch
+
+    from opentelemetry.trace import StatusCode
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    span = _make_span_mock()
+    tracer = _make_tracer_mock(span)
+
+    with patch("loom.etl.observability.observers.otel._tracer", tracer):
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-1", attempt=2)
+        observer.on_pipeline_start(_pipeline_plan(), None, ctx)
+        observer.on_pipeline_end(ctx, RunStatus.SUCCESS, 500)
+
+    tracer.start_span.assert_called_once()
+    call_name = tracer.start_span.call_args[0][0]
+    assert call_name == "loom.etl.pipeline"
+    span.set_status.assert_called_once_with(StatusCode.OK)
+    span.end.assert_called_once()
+
+
+def test_otel_observer_sets_error_status_on_pipeline_failure() -> None:
+    from unittest.mock import patch
+
+    from opentelemetry.trace import StatusCode
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    span = _make_span_mock()
+    tracer = _make_tracer_mock(span)
+
+    with patch("loom.etl.observability.observers.otel._tracer", tracer):
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-1")
+        observer.on_pipeline_start(_pipeline_plan(), None, ctx)
+        observer.on_pipeline_end(ctx, RunStatus.FAILED, 200)
+
+    span.set_status.assert_called_once_with(StatusCode.ERROR)
+
+
+def test_otel_observer_starts_process_span_as_pipeline_child() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    pipeline_span = MagicMock()
+    process_span = MagicMock()
+    tracer = MagicMock()
+    tracer.start_span.side_effect = [pipeline_span, process_span]
+
+    with patch("loom.etl.observability.observers.otel._tracer", tracer):
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-1")
+        observer.on_pipeline_start(_pipeline_plan(), None, ctx)
+        observer.on_process_start(_process_plan(), ctx, "proc-1")
+        observer.on_process_end("proc-1", RunStatus.SUCCESS, 100)
+
+    assert tracer.start_span.call_count == 2
+    # Second call should have a context derived from the pipeline span
+    _, kwargs = tracer.start_span.call_args_list[1]
+    assert kwargs.get("context") is not None
+    process_span.end.assert_called_once()
+
+
+def test_otel_observer_starts_step_span_with_target_attributes() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    pipeline_span = MagicMock()
+    step_span = MagicMock()
+    tracer = MagicMock()
+    tracer.start_span.side_effect = [pipeline_span, step_span]
+
+    with patch("loom.etl.observability.observers.otel._tracer", tracer):
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-1")
+        observer.on_pipeline_start(_pipeline_plan(), None, ctx)
+        observer.on_step_start(_step_plan(), ctx, "step-1")
+        observer.on_step_end("step-1", RunStatus.SUCCESS, 50)
+
+    _, kwargs = tracer.start_span.call_args_list[1]
+    attrs = kwargs.get("attributes", {})
+    assert attrs.get("loom.step") == "MyStep"
+    assert attrs.get("loom.target") == "staging.orders"
+    step_span.end.assert_called_once()
+
+
+def test_otel_observer_records_exception_on_step_error() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    pipeline_span = MagicMock()
+    step_span = MagicMock()
+    tracer = MagicMock()
+    tracer.start_span.side_effect = [pipeline_span, step_span]
+
+    exc = ValueError("boom")
+
+    with patch("loom.etl.observability.observers.otel._tracer", tracer):
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-1")
+        observer.on_pipeline_start(_pipeline_plan(), None, ctx)
+        observer.on_step_start(_step_plan(), ctx, "step-1")
+        observer.on_step_error("step-1", exc)
+        observer.on_step_end("step-1", RunStatus.FAILED, 10)
+
+    step_span.record_exception.assert_called_once_with(exc)
+
+
+def test_otel_observer_tolerates_end_without_matching_start() -> None:
+    """on_*_end for unknown IDs must not raise."""
+    from unittest.mock import patch
+
+    from opentelemetry.trace import NonRecordingSpan
+
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    with patch("loom.etl.observability.observers.otel._tracer") as tracer:
+        tracer.start_span.return_value = NonRecordingSpan(
+            type(
+                "SC",
+                (),
+                {
+                    "is_valid": False,
+                    "is_remote": False,
+                    "trace_flags": 0,
+                    "trace_id": 0,
+                    "span_id": 0,
+                },
+            )()
+        )
+        observer = OtelRunObserver()
+        ctx = RunContext(run_id="run-x")
+        # No start called — should not raise
+        observer.on_pipeline_end(ctx, RunStatus.SUCCESS, 0)
+        observer.on_process_end("unknown-proc", RunStatus.SUCCESS, 0)
+        observer.on_step_end("unknown-step", RunStatus.SUCCESS, 0)
