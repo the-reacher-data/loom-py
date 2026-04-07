@@ -202,6 +202,46 @@ def test_execution_records_observer_captures_error_in_step_record() -> None:
     record = sink.records[0]
     assert record.status == RunStatus.FAILED
     assert "disk full" in record.error
+    assert record.error_type == "RuntimeError"
+    assert record.error_message == "disk full"
+
+
+def test_execution_records_observer_propagates_failure_to_process_and_pipeline() -> None:
+    sink = _CapturingSink()
+    obs = ExecutionRecordsObserver(sink)
+
+    class _PipePlan:
+        pipeline_type = type("DailyPipeline", (), {})
+
+    class _ProcPlan:
+        process_type = type("PreparedProcess", (), {})
+
+    class _StepPlan:
+        step_type = type("FailingStep", (), {})
+
+    ctx = RunContext("run-1")
+    obs.on_pipeline_start(_PipePlan(), object(), ctx)
+    obs.on_process_start(_ProcPlan(), ctx, "proc-1")
+    obs.on_step_start(_StepPlan(), RunContext("run-1", process_run_id="proc-1"), "step-1")
+    obs.on_step_error("step-1", ValueError("bad cast"))
+    obs.on_step_end("step-1", RunStatus.FAILED, 7)
+    obs.on_process_end("proc-1", RunStatus.FAILED, 8)
+    obs.on_pipeline_end(ctx, RunStatus.FAILED, 9)
+
+    process_record = sink.records[-2]
+    pipeline_record = sink.records[-1]
+
+    assert process_record.status == RunStatus.FAILED
+    assert process_record.failed_step == "FailingStep"
+    assert process_record.failed_step_run_id == "step-1"
+    assert process_record.error_type == "ValueError"
+    assert process_record.error_message == "bad cast"
+
+    assert pipeline_record.status == RunStatus.FAILED
+    assert pipeline_record.failed_step == "FailingStep"
+    assert pipeline_record.failed_step_run_id == "step-1"
+    assert pipeline_record.error_type == "ValueError"
+    assert pipeline_record.error_message == "bad cast"
 
 
 def test_execution_records_observer_writes_pipeline_record_on_end() -> None:

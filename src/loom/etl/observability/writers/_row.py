@@ -11,7 +11,9 @@ from loom.etl.observability.records import ExecutionRecord
 def record_to_row(record: ExecutionRecord) -> dict[str, Any]:
     """Convert an execution record dataclass into a plain row mapping."""
     row = dataclasses.asdict(record)
-    row["event"] = str(row["event"])
+    # Persist only snapshot fields in Delta tables; lifecycle event type is
+    # still used by log observers but does not add analytical value here.
+    row.pop("event", None)
     row["status"] = str(row["status"])
     return row
 

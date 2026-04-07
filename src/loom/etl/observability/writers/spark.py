@@ -33,7 +33,6 @@ def _spark_schema(record: ExecutionRecord) -> Any:
     if isinstance(record, PipelineRunRecord):
         return t.StructType(
             [
-                t.StructField("event", t.StringType(), False),
                 t.StructField("run_id", t.StringType(), False),
                 t.StructField("correlation_id", t.StringType(), True),
                 t.StructField("attempt", t.LongType(), False),
@@ -42,12 +41,15 @@ def _spark_schema(record: ExecutionRecord) -> Any:
                 t.StructField("status", t.StringType(), False),
                 t.StructField("duration_ms", t.LongType(), False),
                 t.StructField("error", t.StringType(), True),
+                t.StructField("error_type", t.StringType(), True),
+                t.StructField("error_message", t.StringType(), True),
+                t.StructField("failed_step_run_id", t.StringType(), True),
+                t.StructField("failed_step", t.StringType(), True),
             ]
         )
     if isinstance(record, ProcessRunRecord):
         return t.StructType(
             [
-                t.StructField("event", t.StringType(), False),
                 t.StructField("run_id", t.StringType(), False),
                 t.StructField("correlation_id", t.StringType(), True),
                 t.StructField("attempt", t.LongType(), False),
@@ -57,12 +59,15 @@ def _spark_schema(record: ExecutionRecord) -> Any:
                 t.StructField("status", t.StringType(), False),
                 t.StructField("duration_ms", t.LongType(), False),
                 t.StructField("error", t.StringType(), True),
+                t.StructField("error_type", t.StringType(), True),
+                t.StructField("error_message", t.StringType(), True),
+                t.StructField("failed_step_run_id", t.StringType(), True),
+                t.StructField("failed_step", t.StringType(), True),
             ]
         )
     if isinstance(record, StepRunRecord):
         return t.StructType(
             [
-                t.StructField("event", t.StringType(), False),
                 t.StructField("run_id", t.StringType(), False),
                 t.StructField("correlation_id", t.StringType(), True),
                 t.StructField("attempt", t.LongType(), False),
@@ -72,6 +77,9 @@ def _spark_schema(record: ExecutionRecord) -> Any:
                 t.StructField("status", t.StringType(), False),
                 t.StructField("duration_ms", t.LongType(), False),
                 t.StructField("error", t.StringType(), True),
+                t.StructField("process_run_id", t.StringType(), True),
+                t.StructField("error_type", t.StringType(), True),
+                t.StructField("error_message", t.StringType(), True),
             ]
         )
     raise TypeError(f"Unsupported execution record type: {type(record)!r}")

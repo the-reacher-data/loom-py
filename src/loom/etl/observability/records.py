@@ -35,12 +35,14 @@ class RunContext:
         correlation_id: Optional logical job id grouping retries.
         attempt: 1-based attempt counter.
         last_attempt: ``True`` when no more retries are expected.
+        process_run_id: Optional current process id when executing inside a process.
     """
 
     run_id: str
     correlation_id: str | None = None
     attempt: int = 1
     last_attempt: bool = True
+    process_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,10 @@ class PipelineRunRecord:
         status: Terminal status.
         duration_ms: Wall-clock duration in milliseconds.
         error: ``repr(exc)`` on failure, ``None`` on success.
+        error_type: Exception class name when failed.
+        error_message: Exception message when failed.
+        failed_step_run_id: Step run id that caused the failure.
+        failed_step: Step class name that caused the failure.
     """
 
     event: EventName
@@ -68,6 +74,10 @@ class PipelineRunRecord:
     status: RunStatus
     duration_ms: int
     error: str | None
+    error_type: str | None = None
+    error_message: str | None = None
+    failed_step_run_id: str | None = None
+    failed_step: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +94,10 @@ class ProcessRunRecord:
     status: RunStatus
     duration_ms: int
     error: str | None
+    error_type: str | None = None
+    error_message: str | None = None
+    failed_step_run_id: str | None = None
+    failed_step: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +114,9 @@ class StepRunRecord:
     status: RunStatus
     duration_ms: int
     error: str | None
+    process_run_id: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
 
 
 ExecutionRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord

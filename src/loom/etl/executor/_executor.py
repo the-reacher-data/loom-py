@@ -34,6 +34,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Any
 
 from loom.etl.compiler._plan import (
@@ -171,10 +172,11 @@ class ETLExecutor:
         start = time.monotonic()
         for obs in self._observers:
             obs.on_process_start(plan, ctx, process_run_id)
+        process_ctx = replace(ctx, process_run_id=process_run_id)
         status = RunStatus.SUCCESS
         try:
             for node in plan.nodes:
-                self._run_process_node(node, params, ctx)
+                self._run_process_node(node, params, process_ctx)
         except Exception:
             status = RunStatus.FAILED
             raise

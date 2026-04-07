@@ -24,7 +24,6 @@ from loom.etl.schema._table import TableRef
 
 _PIPELINE_SCHEMA = pl.Schema(
     {
-        "event": pl.String,
         "run_id": pl.String,
         "correlation_id": pl.String,
         "attempt": pl.Int64,
@@ -33,12 +32,15 @@ _PIPELINE_SCHEMA = pl.Schema(
         "status": pl.String,
         "duration_ms": pl.Int64,
         "error": pl.String,
+        "error_type": pl.String,
+        "error_message": pl.String,
+        "failed_step_run_id": pl.String,
+        "failed_step": pl.String,
     }  # type: ignore[arg-type]  # mixed DataType class vs instance — valid at runtime
 )
 
 _PROCESS_SCHEMA = pl.Schema(
     {
-        "event": pl.String,
         "run_id": pl.String,
         "correlation_id": pl.String,
         "attempt": pl.Int64,
@@ -48,12 +50,15 @@ _PROCESS_SCHEMA = pl.Schema(
         "status": pl.String,
         "duration_ms": pl.Int64,
         "error": pl.String,
+        "error_type": pl.String,
+        "error_message": pl.String,
+        "failed_step_run_id": pl.String,
+        "failed_step": pl.String,
     }  # type: ignore[arg-type]
 )
 
 _STEP_SCHEMA = pl.Schema(
     {
-        "event": pl.String,
         "run_id": pl.String,
         "correlation_id": pl.String,
         "attempt": pl.Int64,
@@ -63,6 +68,9 @@ _STEP_SCHEMA = pl.Schema(
         "status": pl.String,
         "duration_ms": pl.Int64,
         "error": pl.String,
+        "process_run_id": pl.String,
+        "error_type": pl.String,
+        "error_message": pl.String,
     }  # type: ignore[arg-type]
 )
 
