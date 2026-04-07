@@ -1,6 +1,7 @@
 """Write planning/execution contracts for ETL storage."""
 
 from loom.etl.storage.write.exec import FrameT, WriteExecutor
+from loom.etl.storage.write.generic import GenericTargetWriter
 from loom.etl.storage.write.ops import (
     AppendOp,
     ReplaceOp,
@@ -14,6 +15,7 @@ from loom.etl.storage.write.plan import TableWriteSpec, WritePlanner
 __all__ = [
     "FrameT",
     "WriteExecutor",
+    "GenericTargetWriter",
     "TableWriteSpec",
     "WritePlanner",
     "AppendOp",

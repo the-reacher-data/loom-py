@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from loom.etl.storage._config import StorageConfig
 from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage.route import RoutedCatalog, build_table_resolver
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
 
@@ -82,21 +83,14 @@ def _make_spark_backends(
     from loom.etl.backends.polars import DeltaCatalog
     from loom.etl.backends.spark import SparkCatalog, SparkSourceReader, SparkTargetWriter
 
-    has_catalog_routes = config.has_catalog_routes()
-    has_path_routes = config.has_path_routes()
-    if has_catalog_routes and has_path_routes:
-        raise ValueError(
-            "Mixed catalog+path table routing for Spark is not wired yet in factory. "
-            "Use catalog-only or path-only routes for now."
-        )
-
-    if has_catalog_routes or not has_path_routes:
-        spark_catalog = SparkCatalog(spark)
-        return SparkSourceReader(spark), SparkTargetWriter(spark, None), spark_catalog
-
-    locator = config.to_path_locator()
-    delta_catalog = DeltaCatalog(locator)
-    return SparkSourceReader(spark, locator), SparkTargetWriter(spark, locator), delta_catalog
+    route_resolver = build_table_resolver(config)
+    path_catalog = DeltaCatalog(config.to_path_locator()) if config.has_path_routes() else None
+    catalog = RoutedCatalog(route_resolver, catalog=SparkCatalog(spark), path=path_catalog)
+    return (
+        SparkSourceReader(spark, route_resolver=route_resolver),
+        SparkTargetWriter(spark, None, route_resolver=route_resolver),
+        catalog,
+    )
 
 
 def _make_polars_backends(

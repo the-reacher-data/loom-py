@@ -9,6 +9,12 @@ from pyspark.sql import DataFrame, SparkSession
 
 from loom.etl.io.source import TableSourceSpec
 from loom.etl.storage._locator import TableLocator, _as_locator
+from loom.etl.storage.route import (
+    CatalogRouteResolver,
+    CatalogTarget,
+    PathRouteResolver,
+    TableRouteResolver,
+)
 
 from ._shared import apply_json_decode_spark, apply_predicates_spark, apply_source_schema_spark
 
@@ -20,17 +26,24 @@ class SparkDeltaTableReader:
         self,
         spark: SparkSession,
         locator: str | os.PathLike[str] | TableLocator | None = None,
+        *,
+        route_resolver: TableRouteResolver | None = None,
     ) -> None:
         self._spark = spark
-        self._locator = _as_locator(locator) if locator is not None else None
+        if route_resolver is None:
+            if locator is None:
+                route_resolver = CatalogRouteResolver()
+            else:
+                route_resolver = PathRouteResolver(_as_locator(locator))
+        self._resolver = route_resolver
 
     def read(self, spec: TableSourceSpec, params_instance: Any) -> DataFrame:
         """Read a TABLE source spec into a Spark DataFrame."""
-        if self._locator is None:
-            df = self._spark.table(spec.table_ref.ref)
+        target = self._resolver.resolve(spec.table_ref)
+        if isinstance(target, CatalogTarget):
+            df = self._spark.table(target.catalog_ref.ref)
         else:
-            loc = self._locator.locate(spec.table_ref)
-            df = self._spark.read.format("delta").load(loc.uri)
+            df = self._spark.read.format("delta").load(target.location.uri)
 
         if spec.columns:
             df = df.select(list(spec.columns))

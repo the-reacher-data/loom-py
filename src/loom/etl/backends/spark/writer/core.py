@@ -18,6 +18,8 @@ from loom.etl.io.target._table import (
 )
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator
+from loom.etl.storage.route import CatalogRouteResolver, PathRouteResolver, TableRouteResolver
+from loom.etl.storage.schema.reader import SchemaReader
 
 from .file import SparkFileWriter
 from .table import SparkDeltaTableWriter
@@ -46,8 +48,21 @@ class SparkTargetWriter:
         self,
         spark: SparkSession,
         locator: str | os.PathLike[str] | TableLocator | None,
+        *,
+        route_resolver: TableRouteResolver | None = None,
+        schema_reader: SchemaReader | None = None,
     ) -> None:
-        self._table_writer = SparkDeltaTableWriter(spark, locator)
+        if route_resolver is None:
+            if locator is None:
+                route_resolver = CatalogRouteResolver()
+            else:
+                route_resolver = PathRouteResolver(_as_locator(locator))
+        self._table_writer = SparkDeltaTableWriter(
+            spark,
+            locator,
+            route_resolver=route_resolver,
+            schema_reader=schema_reader,
+        )
         self._file_writer = SparkFileWriter()
 
     def write(
@@ -92,3 +107,9 @@ class SparkTargetWriter:
     ) -> None:
         """Append rows to *table_ref*, creating the table on first write."""
         self._table_writer.append(frame, table_ref, params_instance, streaming=streaming)
+
+
+def _as_locator(locator: str | os.PathLike[str] | TableLocator) -> TableLocator:
+    from loom.etl.storage._locator import _as_locator as coerce_locator
+
+    return coerce_locator(locator)
