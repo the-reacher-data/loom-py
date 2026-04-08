@@ -178,7 +178,7 @@ def test_execution_records_observer_writes_step_record_and_not_on_start() -> Non
 
     obs.on_step_end("step-1", RunStatus.SUCCESS, 100)
     assert len(sink.records) == 1
-    record = sink.records[0]
+    [record] = sink.records
     assert isinstance(record, StepRunRecord)
     assert record.run_id == "run-1"
     assert record.step == "BuildOrders"
@@ -199,7 +199,7 @@ def test_execution_records_observer_captures_error_in_step_record() -> None:
     obs.on_step_end("step-1", RunStatus.FAILED, 50)
 
     assert len(sink.records) == 1
-    record = sink.records[0]
+    [record] = sink.records
     assert record.status == RunStatus.FAILED
     assert "disk full" in record.error
     assert record.error_type == "RuntimeError"
@@ -228,8 +228,8 @@ def test_execution_records_observer_propagates_failure_to_process_and_pipeline()
     obs.on_process_end("proc-1", RunStatus.FAILED, 8)
     obs.on_pipeline_end(ctx, RunStatus.FAILED, 9)
 
-    process_record = sink.records[-2]
-    pipeline_record = sink.records[-1]
+    assert len(sink.records) >= 2
+    process_record, pipeline_record = sink.records[-2:]
 
     assert process_record.status == RunStatus.FAILED
     assert process_record.failed_step == "FailingStep"
@@ -256,7 +256,7 @@ def test_execution_records_observer_writes_pipeline_record_on_end() -> None:
     obs.on_pipeline_end(ctx, RunStatus.SUCCESS, 300)
 
     assert len(sink.records) == 1
-    record = sink.records[0]
+    [record] = sink.records
     assert isinstance(record, PipelineRunRecord)
     assert record.pipeline == "DailyPipeline"
     assert record.status == RunStatus.SUCCESS
