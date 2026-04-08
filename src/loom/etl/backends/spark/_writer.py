@@ -44,6 +44,7 @@ from loom.etl.sql._upsert import (
     _build_upsert_predicate,
     _build_upsert_update_cols,
     _log_partition_combos,
+    _UpsertLike,
     _warn_no_partition_cols,
 )
 from loom.etl.storage._locator import TableLocator, _as_locator
@@ -121,7 +122,9 @@ class SparkDeltaWriter:
 
         if existing_schema is None and spec.schema_mode is SchemaMode.OVERWRITE:
             if isinstance(spec, ReplacePartitionsSpec):
-                _first_run_overwrite_partitions_spark(frame, spec, self._locator)
+                _first_run_overwrite_partitions_spark(
+                    frame, spec.partition_cols, table_ref, self._locator
+                )
                 return
             self._write_frame(frame, spec, params_instance)
             return
@@ -168,11 +171,11 @@ class SparkDeltaWriter:
 
         if existing_schema is None:
             _log.debug("upsert spark first run — creating table=%s", table_ref.ref)
-            _first_run_overwrite_spark(frame, spec, self._locator)
+            _first_run_overwrite_spark(frame, table_ref, self._locator)
             return
 
         validated = spark_apply_schema(frame, existing_schema, spec.schema_mode)
-        _merge_spark(self._spark, validated, spec, self._locator)
+        _merge_spark(self._spark, validated, spec, table_ref, self._locator)
 
     def _write_frame(
         self,
@@ -182,7 +185,9 @@ class SparkDeltaWriter:
     ) -> None:
         match spec:
             case ReplacePartitionsSpec():
-                _write_replace_partitions_spark(df, spec, self._locator)
+                _write_replace_partitions_spark(
+                    df, spec.partition_cols, spec.table_ref, self._locator
+                )
                 return
         writer = df.write.format("delta").option("optimizeWrite", "true")
         match spec:
@@ -241,33 +246,35 @@ def _apply_append(writer: DataFrameWriter, spec: AppendSpec) -> DataFrameWriter:
 
 def _write_replace_partitions_spark(
     df: DataFrame,
-    spec: ReplacePartitionsSpec,
+    partition_cols: tuple[str, ...],
+    table_ref: TableRef,
     locator: TableLocator | None,
 ) -> None:
-    """Write a ``ReplacePartitionsSpec`` using a single Spark action.
+    """Write a replace-partitions operation using a single Spark action.
 
     Collects distinct partition combinations once, guards against an empty
     frame, then writes with ``replaceWhere``.  Avoids the double-job pattern
     of calling ``isEmpty()`` followed by a separate ``collect()``.
 
     Args:
-        df:      Source Spark DataFrame (schema-validated).
-        spec:    Spec carrying partition columns and table reference.
-        locator: Path-based locator, or ``None`` for Unity Catalog.
+        df:             Source Spark DataFrame (schema-validated).
+        partition_cols: Columns that define partition boundaries.
+        table_ref:      Logical table reference.
+        locator:        Path-based locator, or ``None`` for Unity Catalog.
     """
-    rows = df.select(*spec.partition_cols).distinct().collect()
+    rows = df.select(*partition_cols).distinct().collect()
     if not rows:
-        _log.warning("replace_partitions table=%s has 0 rows — nothing written", spec.table_ref.ref)
+        _log.warning("replace_partitions table=%s has 0 rows — nothing written", table_ref.ref)
         return
-    predicate = _build_partition_predicate((row.asDict() for row in rows), spec.partition_cols)
+    predicate = _build_partition_predicate((row.asDict() for row in rows), partition_cols)
     writer = (
-        df.sortWithinPartitions(*spec.partition_cols)
+        df.sortWithinPartitions(*partition_cols)
         .write.format("delta")
         .option("optimizeWrite", "true")
         .mode("overwrite")
         .option("replaceWhere", predicate)
     )
-    _sink(writer, spec.table_ref, locator)
+    _sink(writer, table_ref, locator)
 
 
 def _apply_replace_where(
@@ -286,13 +293,18 @@ def _apply_overwrite(writer: DataFrameWriter, spec: ReplaceSpec) -> DataFrameWri
 
 def _first_run_overwrite_spark(
     df: DataFrame,
-    spec: UpsertSpec,
+    table_ref: TableRef,
     locator: TableLocator | None,
 ) -> None:
     """Create the Delta table on the first UPSERT run (no existing table).
 
     Uses a plain overwrite with ``overwriteSchema=true`` so the table and
     schema are initialised from the frame.  Subsequent runs use MERGE.
+
+    Args:
+        df:        Source Spark DataFrame.
+        table_ref: Logical table reference.
+        locator:   Path-based locator, or ``None`` for Unity Catalog.
     """
     writer = (
         df.write.format("delta")
@@ -300,24 +312,32 @@ def _first_run_overwrite_spark(
         .mode("overwrite")
         .option("overwriteSchema", "true")
     )
-    _sink(writer, spec.table_ref, locator)
+    _sink(writer, table_ref, locator)
 
 
 def _first_run_overwrite_partitions_spark(
     df: DataFrame,
-    spec: ReplacePartitionsSpec,
+    partition_cols: tuple[str, ...],
+    table_ref: TableRef,
     locator: TableLocator | None,
 ) -> None:
-    """Create a partitioned table on first write for ``replace_partitions``."""
+    """Create a partitioned table on first write for ``replace_partitions``.
+
+    Args:
+        df:             Source Spark DataFrame.
+        partition_cols: Columns to partition by.
+        table_ref:      Logical table reference.
+        locator:        Path-based locator, or ``None`` for Unity Catalog.
+    """
     writer = (
         df.write.format("delta")
         .option("optimizeWrite", "true")
         .mode("overwrite")
         .option("overwriteSchema", "true")
     )
-    if spec.partition_cols:
-        writer = writer.partitionBy(*spec.partition_cols)
-    _sink(writer, spec.table_ref, locator)
+    if partition_cols:
+        writer = writer.partitionBy(*partition_cols)
+    _sink(writer, table_ref, locator)
 
 
 def _collect_partition_combos_for_merge_spark(
@@ -351,7 +371,7 @@ def _collect_partition_combos_for_merge_spark(
 
 def _resolve_delta_table_spark(
     spark: SparkSession,
-    spec: UpsertSpec,
+    table_ref: TableRef,
     locator: TableLocator | None,
 ) -> Any:
     """Resolve the Delta table handle for a MERGE operation.
@@ -359,9 +379,9 @@ def _resolve_delta_table_spark(
     Uses ``forPath`` for path-based locators and ``forName`` for Unity Catalog.
 
     Args:
-        spark:   Active SparkSession.
-        spec:    Upsert spec carrying the table reference.
-        locator: Path-based locator, or ``None`` for Unity Catalog.
+        spark:     Active SparkSession.
+        table_ref: Logical table reference.
+        locator:   Path-based locator, or ``None`` for Unity Catalog.
 
     Returns:
         A ``DeltaTable`` instance aliased to :data:`~loom.etl._upsert.TARGET_ALIAS`.
@@ -369,33 +389,35 @@ def _resolve_delta_table_spark(
     from delta.tables import DeltaTable
 
     if locator is not None:
-        uri = locator.locate(spec.table_ref).uri
+        uri = locator.locate(table_ref).uri
         return DeltaTable.forPath(spark, uri).alias(TARGET_ALIAS)
-    return DeltaTable.forName(spark, spec.table_ref.ref).alias(TARGET_ALIAS)
+    return DeltaTable.forName(spark, table_ref.ref).alias(TARGET_ALIAS)
 
 
 def _merge_spark(
     spark: SparkSession,
     df: DataFrame,
-    spec: UpsertSpec,
+    op: _UpsertLike,
+    table_ref: TableRef,
     locator: TableLocator | None,
 ) -> None:
     """Execute a Delta MERGE (UPSERT) for the Spark backend.
 
     Args:
-        spark:   Active SparkSession.
-        df:      Source DataFrame (after schema validation).
-        spec:    Upsert spec carrying keys, partition cols, exclude/include.
-        locator: Path-based locator, or ``None`` for Unity Catalog.
+        spark:     Active SparkSession.
+        df:        Source DataFrame (after schema validation).
+        op:        Upsert configuration carrying keys, partition cols, exclude/include.
+        table_ref: Logical table reference.
+        locator:   Path-based locator, or ``None`` for Unity Catalog.
     """
-    table_ref_str = spec.table_ref.ref
-    combos = _collect_partition_combos_for_merge_spark(df, spec.partition_cols, table_ref_str)
-    predicate = _build_upsert_predicate(combos, spec, TARGET_ALIAS, SOURCE_ALIAS)
-    update_cols = _build_upsert_update_cols(tuple(df.columns), spec)
+    table_ref_str = table_ref.ref
+    combos = _collect_partition_combos_for_merge_spark(df, op.partition_cols, table_ref_str)
+    predicate = _build_upsert_predicate(combos, op, TARGET_ALIAS, SOURCE_ALIAS)
+    update_cols = _build_upsert_update_cols(tuple(df.columns), op)
     update_set = _build_update_set(update_cols, SOURCE_ALIAS)
     insert_values = _build_insert_values(tuple(df.columns), SOURCE_ALIAS)
 
-    dt = _resolve_delta_table_spark(spark, spec, locator)
+    dt = _resolve_delta_table_spark(spark, table_ref, locator)
     (
         dt.merge(df.alias(SOURCE_ALIAS), predicate)
         .whenMatchedUpdate(set=update_set)

@@ -24,14 +24,34 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Protocol
 
-from loom.etl.io.target._table import UpsertSpec
 from loom.etl.sql.literals import sql_literal
 
 _log = logging.getLogger(__name__)
 
 TARGET_ALIAS = "t"
+
+
+class _UpsertLike(Protocol):
+    """Structural protocol satisfied by both ``UpsertSpec`` and ``UpsertOp``.
+
+    Declared as read-only properties so frozen dataclasses satisfy it.
+    """
+
+    @property
+    def upsert_keys(self) -> tuple[str, ...]: ...
+
+    @property
+    def partition_cols(self) -> tuple[str, ...]: ...
+
+    @property
+    def upsert_exclude(self) -> tuple[str, ...]: ...
+
+    @property
+    def upsert_include(self) -> tuple[str, ...]: ...
+
+
 SOURCE_ALIAS = "s"
 _SQL_AND = " AND "
 
@@ -64,7 +84,7 @@ def _build_join_clause(
 
 def _build_upsert_predicate(
     combos: list[dict[str, Any]],
-    spec: UpsertSpec,
+    spec: _UpsertLike,
     target_alias: str,
     source_alias: str,
 ) -> str:
@@ -99,7 +119,7 @@ def _build_upsert_predicate(
 
 def _build_upsert_update_cols(
     df_columns: tuple[str, ...],
-    spec: UpsertSpec,
+    spec: _UpsertLike,
 ) -> tuple[str, ...]:
     """Compute the columns to update on MATCH, respecting exclude/include.
 

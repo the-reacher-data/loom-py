@@ -11,14 +11,8 @@ from deltalake import write_deltalake
 
 from loom.etl.backends.polars._schema import apply_schema
 from loom.etl.io.target import SchemaMode
-from loom.etl.io.target._table import (
-    AppendSpec,
-    ReplacePartitionsSpec,
-    ReplaceSpec,
-    ReplaceWhereSpec,
-    UpsertSpec,
-)
 from loom.etl.schema._table import TableRef
+from loom.etl.sql._predicate import PredicateNode
 from loom.etl.sql._predicate_sql import predicate_to_sql
 from loom.etl.sql._upsert import (
     SOURCE_ALIAS,
@@ -67,96 +61,70 @@ class PolarsWriteExecutor:
 
     def _exec_append(self, frame: pl.LazyFrame, op: AppendOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
-        spec = AppendSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
-            _collect_frame(validated, streaming=op.streaming), spec, params_instance, locator
+            _collect_frame(validated, streaming=op.streaming), op, params_instance, locator
         )
 
     def _exec_replace(self, frame: pl.LazyFrame, op: ReplaceOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
-        spec = ReplaceSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
             _warn_uc_first_create(cast(PathTarget, op.target))
             _write_frame(
-                _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
+                _collect_frame(frame, streaming=op.streaming), op, params_instance, locator
             )
             return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
-            _collect_frame(validated, streaming=op.streaming), spec, params_instance, locator
+            _collect_frame(validated, streaming=op.streaming), op, params_instance, locator
         )
 
     def _exec_replace_partitions(
         self, frame: pl.LazyFrame, op: ReplacePartitionsOp, _params_instance: Any
     ) -> None:
         locator = _locator_for_target(op.target)
-        spec = ReplacePartitionsSpec(
-            table_ref=op.target.logical_ref,
-            partition_cols=op.partition_cols,
-            schema_mode=op.schema_mode,
-        )
+        loc = locator.locate(op.target.logical_ref)
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
             _warn_uc_first_create(cast(PathTarget, op.target))
             _first_run_overwrite_partitions_polars(
-                locator.locate(spec.table_ref),
-                _collect_frame(frame, streaming=op.streaming),
-                spec.partition_cols,
+                loc, _collect_frame(frame, streaming=op.streaming), op.partition_cols
             )
             return
-
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_replace_partitions(
-            locator.locate(spec.table_ref),
-            _collect_frame(validated, streaming=op.streaming),
-            spec,
+            loc, _collect_frame(validated, streaming=op.streaming), op.partition_cols
         )
 
     def _exec_replace_where(
         self, frame: pl.LazyFrame, op: ReplaceWhereOp, params_instance: Any
     ) -> None:
         locator = _locator_for_target(op.target)
-        spec = ReplaceWhereSpec(
-            table_ref=op.target.logical_ref,
-            replace_predicate=op.replace_predicate,
-            schema_mode=op.schema_mode,
-        )
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
             _warn_uc_first_create(cast(PathTarget, op.target))
             _write_frame(
-                _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
+                _collect_frame(frame, streaming=op.streaming), op, params_instance, locator
             )
             return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
-            _collect_frame(validated, streaming=op.streaming), spec, params_instance, locator
+            _collect_frame(validated, streaming=op.streaming), op, params_instance, locator
         )
 
     def _exec_upsert(self, frame: pl.LazyFrame, op: UpsertOp, _params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
-        spec = UpsertSpec(
-            table_ref=op.target.logical_ref,
-            upsert_keys=op.upsert_keys,
-            partition_cols=op.partition_cols,
-            upsert_exclude=op.upsert_exclude,
-            upsert_include=op.upsert_include,
-            schema_mode=op.schema_mode,
-        )
         if op.streaming:
             _log.warning(
                 "streaming=True has no effect on UPSERT (table=%s) — "
                 "MERGE requires full materialisation; ignoring",
-                spec.table_ref.ref,
+                op.target.logical_ref.ref,
             )
-
-        loc = locator.locate(spec.table_ref)
+        loc = locator.locate(op.target.logical_ref)
         if op.existing_schema is None:
             _warn_uc_first_create(cast(PathTarget, op.target))
             _first_run_overwrite_polars(loc, frame.collect())
             return
-
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
-        _merge_polars(loc, validated.collect(), spec)
+        _merge_polars(loc, validated.collect(), op)
 
 
 def _validated_frame(
@@ -191,18 +159,18 @@ def _warn_uc_first_create(target: PathTarget) -> None:
 
 def _write_frame(
     df: pl.DataFrame,
-    spec: AppendSpec | ReplaceSpec | ReplaceWhereSpec,
+    op: AppendOp | ReplaceOp | ReplaceWhereOp,
     params: Any,
     locator: TableLocator,
 ) -> None:
-    loc = locator.locate(spec.table_ref)
-    match spec:
-        case AppendSpec():
+    loc = locator.locate(op.target.logical_ref)
+    match op:
+        case AppendOp():
             write_deltalake(loc.uri, df, mode="append", **_write_kwargs(loc))
-        case ReplaceSpec():
+        case ReplaceOp():
             write_deltalake(loc.uri, df, mode="overwrite", **_write_kwargs(loc))
-        case ReplaceWhereSpec():
-            _write_replace_where(loc, df, spec, params)
+        case ReplaceWhereOp():
+            _write_replace_where(loc, df, op.replace_predicate, params)
 
 
 def _locator_for_target(target: CatalogTarget | PathTarget) -> TableLocator:
@@ -240,22 +208,22 @@ def _write_kwargs(loc: TableLocation) -> dict[str, Any]:
 
 
 def _write_replace_partitions(
-    loc: TableLocation, df: pl.DataFrame, spec: ReplacePartitionsSpec
+    loc: TableLocation, df: pl.DataFrame, partition_cols: tuple[str, ...]
 ) -> None:
     if df.is_empty():
         _log.warning("replace_partitions table=%s has 0 rows — nothing written", loc.uri)
         return
     predicate = _build_partition_predicate(
-        df.select(list(spec.partition_cols)).unique().iter_rows(named=True),
-        spec.partition_cols,
+        df.select(list(partition_cols)).unique().iter_rows(named=True),
+        partition_cols,
     )
     write_deltalake(loc.uri, df, mode="overwrite", predicate=predicate, **_write_kwargs(loc))
 
 
 def _write_replace_where(
-    loc: TableLocation, df: pl.DataFrame, spec: ReplaceWhereSpec, params: Any
+    loc: TableLocation, df: pl.DataFrame, predicate_node: PredicateNode, params: Any
 ) -> None:
-    predicate = predicate_to_sql(spec.replace_predicate, params)
+    predicate = predicate_to_sql(predicate_node, params)
     write_deltalake(loc.uri, df, mode="overwrite", predicate=predicate, **_write_kwargs(loc))
 
 
@@ -268,13 +236,7 @@ def _first_run_overwrite_partitions_polars(
 ) -> None:
     kwargs = _write_kwargs(loc)
     if partition_cols:
-        write_deltalake(
-            loc.uri,
-            df,
-            mode="overwrite",
-            partition_by=list(partition_cols),
-            **kwargs,
-        )
+        write_deltalake(loc.uri, df, mode="overwrite", partition_by=list(partition_cols), **kwargs)
         return
     write_deltalake(loc.uri, df, mode="overwrite", **kwargs)
 
@@ -292,13 +254,13 @@ def _collect_partition_combos_for_merge_polars(
     return combos
 
 
-def _merge_polars(loc: TableLocation, df: pl.DataFrame, spec: UpsertSpec) -> None:
+def _merge_polars(loc: TableLocation, df: pl.DataFrame, op: UpsertOp) -> None:
     from deltalake import DeltaTable
 
-    table_ref_str = spec.table_ref.ref
-    combos = _collect_partition_combos_for_merge_polars(df, spec.partition_cols, table_ref_str)
-    predicate = _build_upsert_predicate(combos, spec, TARGET_ALIAS, SOURCE_ALIAS)
-    update_cols = _build_upsert_update_cols(tuple(df.columns), spec)
+    table_ref_str = op.target.logical_ref.ref
+    combos = _collect_partition_combos_for_merge_polars(df, op.partition_cols, table_ref_str)
+    predicate = _build_upsert_predicate(combos, op, TARGET_ALIAS, SOURCE_ALIAS)
+    update_cols = _build_upsert_update_cols(tuple(df.columns), op)
     update_set = _build_update_set(update_cols, SOURCE_ALIAS)
     insert_values = _build_insert_values(tuple(df.columns), SOURCE_ALIAS)
 
