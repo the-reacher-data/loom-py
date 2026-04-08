@@ -41,6 +41,9 @@ from loom.etl.observability.observers.structlog import _target_label, _write_mod
 from loom.etl.observability.records import RunContext, RunStatus
 
 _tracer = trace.get_tracer("loom.etl")
+_ATTR_RUN_ID = "loom.run_id"
+_ATTR_STATUS = "loom.status"
+_ATTR_DURATION_MS = "loom.duration_ms"
 
 
 class OtelRunObserver:
@@ -71,7 +74,7 @@ class OtelRunObserver:
             "loom.etl.pipeline",
             attributes={
                 "loom.pipeline": plan.pipeline_type.__name__,
-                "loom.run_id": ctx.run_id,
+                _ATTR_RUN_ID: ctx.run_id,
                 "loom.attempt": ctx.attempt,
             },
         )
@@ -83,8 +86,8 @@ class OtelRunObserver:
             span = self._pipeline_spans.pop(ctx.run_id, None)
         if span is None:
             return
-        span.set_attribute("loom.status", str(status))
-        span.set_attribute("loom.duration_ms", duration_ms)
+        span.set_attribute(_ATTR_STATUS, str(status))
+        span.set_attribute(_ATTR_DURATION_MS, duration_ms)
         span.set_status(StatusCode.OK if status == RunStatus.SUCCESS else StatusCode.ERROR)
         span.end()
 
@@ -98,7 +101,7 @@ class OtelRunObserver:
             attributes={
                 "loom.process": plan.process_type.__name__,
                 "loom.process_run_id": process_run_id,
-                "loom.run_id": ctx.run_id,
+                _ATTR_RUN_ID: ctx.run_id,
             },
         )
         with self._lock:
@@ -109,8 +112,8 @@ class OtelRunObserver:
             span = self._process_spans.pop(process_run_id, None)
         if span is None:
             return
-        span.set_attribute("loom.status", str(status))
-        span.set_attribute("loom.duration_ms", duration_ms)
+        span.set_attribute(_ATTR_STATUS, str(status))
+        span.set_attribute(_ATTR_DURATION_MS, duration_ms)
         span.set_status(StatusCode.OK if status == RunStatus.SUCCESS else StatusCode.ERROR)
         span.end()
 
@@ -124,7 +127,7 @@ class OtelRunObserver:
             attributes={
                 "loom.step": plan.step_type.__name__,
                 "loom.step_run_id": step_run_id,
-                "loom.run_id": ctx.run_id,
+                _ATTR_RUN_ID: ctx.run_id,
                 "loom.target": _target_label(plan.target_binding.spec),
                 "loom.write_mode": _write_mode_label(plan.target_binding.spec),
             },
@@ -137,8 +140,8 @@ class OtelRunObserver:
             span = self._step_spans.pop(step_run_id, None)
         if span is None:
             return
-        span.set_attribute("loom.status", str(status))
-        span.set_attribute("loom.duration_ms", duration_ms)
+        span.set_attribute(_ATTR_STATUS, str(status))
+        span.set_attribute(_ATTR_DURATION_MS, duration_ms)
         span.set_status(StatusCode.OK if status == RunStatus.SUCCESS else StatusCode.ERROR)
         span.end()
 
