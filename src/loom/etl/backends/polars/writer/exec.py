@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from deltalake import write_deltalake
@@ -77,7 +77,7 @@ class PolarsWriteExecutor:
         locator = _locator_for_target(op.target)
         spec = ReplaceSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
-            _warn_uc_first_create(op.target)
+            _warn_uc_first_create(cast(PathTarget, op.target))
             _write_frame(
                 _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
             )
@@ -97,7 +97,7 @@ class PolarsWriteExecutor:
             schema_mode=op.schema_mode,
         )
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
-            _warn_uc_first_create(op.target)
+            _warn_uc_first_create(cast(PathTarget, op.target))
             _first_run_overwrite_partitions_polars(
                 locator.locate(spec.table_ref),
                 _collect_frame(frame, streaming=op.streaming),
@@ -122,7 +122,7 @@ class PolarsWriteExecutor:
             schema_mode=op.schema_mode,
         )
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
-            _warn_uc_first_create(op.target)
+            _warn_uc_first_create(cast(PathTarget, op.target))
             _write_frame(
                 _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
             )
@@ -151,7 +151,7 @@ class PolarsWriteExecutor:
 
         loc = locator.locate(spec.table_ref)
         if op.existing_schema is None:
-            _warn_uc_first_create(op.target)
+            _warn_uc_first_create(cast(PathTarget, op.target))
             _first_run_overwrite_polars(loc, frame.collect())
             return
 
@@ -177,9 +177,7 @@ def _collect_frame(frame: pl.LazyFrame, *, streaming: bool) -> pl.DataFrame:
     return frame.collect(engine="streaming" if streaming else "auto")
 
 
-def _warn_uc_first_create(target: CatalogTarget | PathTarget) -> None:
-    if isinstance(target, CatalogTarget):
-        return
+def _warn_uc_first_create(target: PathTarget) -> None:
     if not target.location.uri.lower().startswith("uc://"):
         return
     _log.warning(

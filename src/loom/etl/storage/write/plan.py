@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any
 
 from loom.etl.io.target._table import (
     AppendSpec,
@@ -27,153 +27,154 @@ from loom.etl.storage.write.ops import (
 
 TableWriteSpec = AppendSpec | ReplaceSpec | ReplacePartitionsSpec | ReplaceWhereSpec | UpsertSpec
 
-
-class PlanHandler(Protocol):
-    """Build a write operation for one target spec type."""
-
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        """Build one write operation."""
-        ...
+# Callable contract for handler functions registered in WritePlanner.
+# Signature: (spec, *, target, existing_schema, streaming) -> WriteOperation
+PlanBuildFn = Callable[..., WriteOperation]
 
 
-@dataclass(frozen=True)
-class _AppendHandler:
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        if not isinstance(spec, AppendSpec):
-            raise TypeError(f"Expected AppendSpec, got {type(spec)!r}")
-        return AppendOp(
-            target=target,
-            schema_mode=spec.schema_mode,
-            streaming=streaming,
-            existing_schema=existing_schema,
-        )
+def _build_append(
+    spec: AppendSpec,
+    *,
+    target: ResolvedTarget,
+    existing_schema: PhysicalSchema | None,
+    streaming: bool,
+) -> WriteOperation:
+    return AppendOp(
+        target=target,
+        schema_mode=spec.schema_mode,
+        streaming=streaming,
+        existing_schema=existing_schema,
+    )
 
 
-@dataclass(frozen=True)
-class _ReplaceHandler:
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        if not isinstance(spec, ReplaceSpec):
-            raise TypeError(f"Expected ReplaceSpec, got {type(spec)!r}")
-        return ReplaceOp(
-            target=target,
-            schema_mode=spec.schema_mode,
-            streaming=streaming,
-            existing_schema=existing_schema,
-        )
+def _build_replace(
+    spec: ReplaceSpec,
+    *,
+    target: ResolvedTarget,
+    existing_schema: PhysicalSchema | None,
+    streaming: bool,
+) -> WriteOperation:
+    return ReplaceOp(
+        target=target,
+        schema_mode=spec.schema_mode,
+        streaming=streaming,
+        existing_schema=existing_schema,
+    )
 
 
-@dataclass(frozen=True)
-class _ReplacePartitionsHandler:
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        if not isinstance(spec, ReplacePartitionsSpec):
-            raise TypeError(f"Expected ReplacePartitionsSpec, got {type(spec)!r}")
-        return ReplacePartitionsOp(
-            target=target,
-            partition_cols=spec.partition_cols,
-            schema_mode=spec.schema_mode,
-            streaming=streaming,
-            existing_schema=existing_schema,
-        )
+def _build_replace_partitions(
+    spec: ReplacePartitionsSpec,
+    *,
+    target: ResolvedTarget,
+    existing_schema: PhysicalSchema | None,
+    streaming: bool,
+) -> WriteOperation:
+    return ReplacePartitionsOp(
+        target=target,
+        partition_cols=spec.partition_cols,
+        schema_mode=spec.schema_mode,
+        streaming=streaming,
+        existing_schema=existing_schema,
+    )
 
 
-@dataclass(frozen=True)
-class _ReplaceWhereHandler:
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        if not isinstance(spec, ReplaceWhereSpec):
-            raise TypeError(f"Expected ReplaceWhereSpec, got {type(spec)!r}")
-        return ReplaceWhereOp(
-            target=target,
-            replace_predicate=spec.replace_predicate,
-            schema_mode=spec.schema_mode,
-            streaming=streaming,
-            existing_schema=existing_schema,
-        )
+def _build_replace_where(
+    spec: ReplaceWhereSpec,
+    *,
+    target: ResolvedTarget,
+    existing_schema: PhysicalSchema | None,
+    streaming: bool,
+) -> WriteOperation:
+    return ReplaceWhereOp(
+        target=target,
+        replace_predicate=spec.replace_predicate,
+        schema_mode=spec.schema_mode,
+        streaming=streaming,
+        existing_schema=existing_schema,
+    )
 
 
-@dataclass(frozen=True)
-class _UpsertHandler:
-    def build(
-        self,
-        spec: TableWriteSpec,
-        *,
-        target: ResolvedTarget,
-        existing_schema: PhysicalSchema | None,
-        streaming: bool,
-    ) -> WriteOperation:
-        if not isinstance(spec, UpsertSpec):
-            raise TypeError(f"Expected UpsertSpec, got {type(spec)!r}")
-        return UpsertOp(
-            target=target,
-            upsert_keys=spec.upsert_keys,
-            partition_cols=spec.partition_cols,
-            upsert_exclude=spec.upsert_exclude,
-            upsert_include=spec.upsert_include,
-            schema_mode=spec.schema_mode,
-            streaming=streaming,
-            existing_schema=existing_schema,
-        )
+def _build_upsert(
+    spec: UpsertSpec,
+    *,
+    target: ResolvedTarget,
+    existing_schema: PhysicalSchema | None,
+    streaming: bool,
+) -> WriteOperation:
+    return UpsertOp(
+        target=target,
+        upsert_keys=spec.upsert_keys,
+        partition_cols=spec.partition_cols,
+        upsert_exclude=spec.upsert_exclude,
+        upsert_include=spec.upsert_include,
+        schema_mode=spec.schema_mode,
+        streaming=streaming,
+        existing_schema=existing_schema,
+    )
 
 
 class WritePlanner:
-    """Plan write operations from table target specs."""
+    """Plan write operations from table target specs.
+
+    Resolves the storage route and snapshots the existing physical schema
+    exactly once per spec, then delegates construction of the concrete
+    :class:`~loom.etl.storage.write.WriteOperation` to a registered handler.
+
+    Args:
+        resolver:     Resolves a :class:`~loom.etl.schema._table.TableRef` to
+                      its :class:`~loom.etl.storage.route.model.ResolvedTarget`.
+        schema_reader: Reads the current physical schema of a resolved target.
+        handlers:     Override the default spec-type → builder mapping.
+                      Keys must be concrete spec classes; values must be
+                      :data:`PlanBuildFn` callables.
+
+    Example::
+
+        planner = WritePlanner(resolver=my_resolver, schema_reader=my_schema_reader)
+        op = planner.plan(IntoTable("raw.orders").replace()._to_spec())
+    """
 
     def __init__(
         self,
         resolver: TableRouteResolver,
         schema_reader: SchemaReader,
-        handlers: dict[type[object], PlanHandler] | None = None,
+        handlers: dict[type[Any], PlanBuildFn] | None = None,
     ) -> None:
         self._resolver = resolver
         self._schema_reader = schema_reader
-        self._handlers: dict[type[object], PlanHandler] = handlers or _default_handlers()
+        self._handlers: dict[type[Any], PlanBuildFn] = handlers or _default_handlers()
 
-    def register(self, spec_type: type[object], handler: PlanHandler) -> None:
-        """Register/override the planner handler for *spec_type*."""
+    def register(self, spec_type: type[Any], handler: PlanBuildFn) -> None:
+        """Register or override the builder for *spec_type*.
+
+        Args:
+            spec_type: Concrete spec class (e.g. ``AppendSpec``).  Registering
+                       an already-known type silently replaces the existing builder.
+            handler:   Callable with signature
+                       ``(spec, *, target, existing_schema, streaming) -> WriteOperation``.
+        """
         self._handlers[spec_type] = handler
 
     def plan(self, spec: TableWriteSpec, *, streaming: bool = False) -> WriteOperation:
-        """Resolve route + schema once and return a write operation."""
+        """Resolve route + schema once and return a write operation.
+
+        Args:
+            spec:      Compiled table write spec.
+            streaming: Pass ``True`` to request streaming collection where
+                       supported by the backend executor.
+
+        Returns:
+            A fully resolved :class:`~loom.etl.storage.write.WriteOperation`.
+
+        Raises:
+            TypeError: When no handler is registered for ``type(spec)``.
+        """
         target = self._resolver.resolve(spec.table_ref)
         existing_schema = self._schema_reader.read_schema(target)
         handler = self._handlers.get(type(spec))
         if handler is None:
             raise TypeError(f"Unsupported table target spec: {type(spec)!r}")
-        return handler.build(
+        return handler(
             spec,
             target=target,
             existing_schema=existing_schema,
@@ -181,11 +182,11 @@ class WritePlanner:
         )
 
 
-def _default_handlers() -> dict[type[object], PlanHandler]:
+def _default_handlers() -> dict[type[Any], PlanBuildFn]:
     return {
-        AppendSpec: _AppendHandler(),
-        ReplaceSpec: _ReplaceHandler(),
-        ReplacePartitionsSpec: _ReplacePartitionsHandler(),
-        ReplaceWhereSpec: _ReplaceWhereHandler(),
-        UpsertSpec: _UpsertHandler(),
+        AppendSpec: _build_append,
+        ReplaceSpec: _build_replace,
+        ReplacePartitionsSpec: _build_replace_partitions,
+        ReplaceWhereSpec: _build_replace_where,
+        UpsertSpec: _build_upsert,
     }

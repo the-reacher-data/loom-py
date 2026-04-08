@@ -212,10 +212,13 @@ def test_reload_temp_store_module_and_helpers() -> None:
     polars_temp_mod = _reload_module("loom.etl.backends.polars._temp")
     spark_temp_mod = _reload_module("loom.etl.backends.spark._temp")
 
-    fake_polars = type("LazyFrame", (), {"__module__": "polars.lazyframe.frame"})()
+    import polars as pl
+
+    real_polars = pl.DataFrame().lazy()
     fake_spark = type("DataFrame", (), {"__module__": "pyspark.sql.dataframe"})()
 
-    assert polars_temp_mod._is_polars_lazy_frame(fake_polars)
+    assert polars_temp_mod._is_polars_lazy_frame(real_polars)
+    assert not polars_temp_mod._is_polars_lazy_frame(object())
     assert spark_temp_mod._is_spark_dataframe(fake_spark)
 
     base = "/var/lib/loom/test"

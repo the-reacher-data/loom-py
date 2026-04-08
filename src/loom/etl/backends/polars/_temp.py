@@ -111,8 +111,7 @@ class _PolarsTempBackend:
 
 def _is_polars_lazy_frame(obj: Any) -> bool:
     """Return ``True`` when *obj* is a ``polars.LazyFrame``."""
-    t = type(obj)
-    return t.__module__.startswith("polars") and t.__name__ == "LazyFrame"
+    return isinstance(obj, pl.LazyFrame)
 
 
 def _arrow_path(name: str, base: str) -> str:
