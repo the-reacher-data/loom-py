@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import pytest
 from deltalake import write_deltalake
 
-from loom.etl.schema._schema import LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocation
 from loom.etl.storage.route import CatalogTarget, PathTarget
 from loom.etl.storage.schema.delta import DeltaSchemaReader
+from loom.etl.storage.schema.model import PolarsPhysicalSchema
 
 
 def _path_target(uri: str) -> PathTarget:
@@ -20,7 +22,7 @@ def _path_target(uri: str) -> PathTarget:
     )
 
 
-def test_delta_schema_reader_returns_none_for_missing_table(tmp_path) -> None:
+def test_delta_schema_reader_returns_none_for_missing_table(tmp_path: Path) -> None:
     reader = DeltaSchemaReader()
 
     schema = reader.read_schema(_path_target(str(tmp_path / "missing")))
@@ -28,7 +30,7 @@ def test_delta_schema_reader_returns_none_for_missing_table(tmp_path) -> None:
     assert schema is None
 
 
-def test_delta_schema_reader_reads_columns_and_partitions(tmp_path) -> None:
+def test_delta_schema_reader_reads_columns_and_partitions(tmp_path: Path) -> None:
     table_path = tmp_path / "staging" / "orders"
     table_path.mkdir(parents=True, exist_ok=True)
     write_deltalake(
@@ -42,12 +44,11 @@ def test_delta_schema_reader_reads_columns_and_partitions(tmp_path) -> None:
     schema = reader.read_schema(_path_target(str(table_path)))
 
     assert schema is not None
-    assert tuple(col.name for col in schema.columns) == ("id", "year", "amount")
-    assert tuple(col.dtype for col in schema.columns) == (
-        LoomDtype.INT64,
-        LoomDtype.INT64,
-        LoomDtype.FLOAT64,
-    )
+    assert isinstance(schema, PolarsPhysicalSchema)
+    assert tuple(schema.schema.names()) == ("id", "year", "amount")
+    assert schema.schema["id"] == pl.Int64
+    assert schema.schema["year"] == pl.Int64
+    assert schema.schema["amount"] == pl.Float64
     assert schema.partition_columns == ("year",)
 
 

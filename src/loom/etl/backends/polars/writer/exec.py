@@ -8,7 +8,6 @@ from typing import Any
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.backends.polars._schema import apply_schema
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import (
@@ -33,7 +32,7 @@ from loom.etl.sql._upsert import (
 )
 from loom.etl.storage._locator import TableLocation, TableLocator
 from loom.etl.storage.route import CatalogTarget, PathTarget
-from loom.etl.storage.schema.model import PhysicalSchema
+from loom.etl.storage.schema.model import PhysicalSchema, PolarsPhysicalSchema
 from loom.etl.storage.write import (
     AppendOp,
     ReplaceOp,
@@ -168,13 +167,15 @@ class PolarsWriteExecutor:
 def _validated_frame(
     frame: pl.LazyFrame, existing_schema: PhysicalSchema | None, mode: SchemaMode
 ) -> pl.LazyFrame:
-    return apply_schema(frame, _to_polars_schema(existing_schema), mode)
+    return apply_schema(frame, _as_polars_schema(existing_schema), mode)
 
 
-def _to_polars_schema(schema: PhysicalSchema | None) -> pl.Schema | None:
+def _as_polars_schema(schema: PhysicalSchema | None) -> pl.Schema | None:
     if schema is None:
         return None
-    return pl.Schema({col.name: loom_type_to_polars(col.dtype) for col in schema.columns})
+    if not isinstance(schema, PolarsPhysicalSchema):
+        raise TypeError(f"Polars executor expected PolarsPhysicalSchema, got {type(schema)!r}.")
+    return schema.schema
 
 
 def _collect_frame(frame: pl.LazyFrame, *, streaming: bool) -> pl.DataFrame:

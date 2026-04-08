@@ -7,7 +7,6 @@ from typing import Any
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as t
 
-from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.backends.spark._schema import spark_apply_schema
 from loom.etl.backends.spark._writer import (
     _apply_append,
@@ -30,7 +29,7 @@ from loom.etl.io.target._table import (
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocation, TableLocator
 from loom.etl.storage.route import CatalogTarget, PathTarget
-from loom.etl.storage.schema.model import PhysicalSchema
+from loom.etl.storage.schema.model import PhysicalSchema, SparkPhysicalSchema
 from loom.etl.storage.write import (
     AppendOp,
     ReplaceOp,
@@ -136,22 +135,15 @@ class SparkWriteExecutor:
 def _validated_frame(
     frame: DataFrame, existing_schema: PhysicalSchema | None, mode: SchemaMode
 ) -> DataFrame:
-    return spark_apply_schema(frame, _to_struct_type(existing_schema), mode)
+    return spark_apply_schema(frame, _as_struct_type(existing_schema), mode)
 
 
-def _to_struct_type(schema: PhysicalSchema | None) -> t.StructType | None:
+def _as_struct_type(schema: PhysicalSchema | None) -> t.StructType | None:
     if schema is None:
         return None
-    return t.StructType(
-        [
-            t.StructField(
-                name=col.name,
-                dataType=loom_type_to_spark(col.dtype),
-                nullable=col.nullable,
-            )
-            for col in schema.columns
-        ]
-    )
+    if not isinstance(schema, SparkPhysicalSchema):
+        raise TypeError(f"Spark executor expected SparkPhysicalSchema, got {type(schema)!r}.")
+    return schema.schema
 
 
 def _write_frame(

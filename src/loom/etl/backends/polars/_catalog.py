@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import os
 
+import polars as pl
 from deltalake import DeltaTable
 
+from loom.etl.backends.polars._dtype import polars_to_loom_type
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.schema.delta import read_delta_physical_schema
+from loom.etl.storage.schema.model import PolarsPhysicalSchema
 
 
 class DeltaCatalog:
@@ -79,7 +82,20 @@ class DeltaCatalog:
         schema = read_delta_physical_schema(loc.uri, loc.storage_options)
         if schema is None:
             return None
-        return schema.columns
+        if not isinstance(schema, PolarsPhysicalSchema):
+            raise TypeError(f"DeltaCatalog expected PolarsPhysicalSchema, got {type(schema)!r}.")
+        return _to_column_schema(schema.schema)
 
     def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
         """No-op — Delta maintains its own schema in the transaction log."""
+
+
+def _to_column_schema(schema: pl.Schema) -> tuple[ColumnSchema, ...]:
+    return tuple(
+        ColumnSchema(
+            name=name,
+            dtype=polars_to_loom_type(dtype),
+            nullable=True,
+        )
+        for name, dtype in schema.items()
+    )

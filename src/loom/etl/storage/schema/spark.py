@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from pyspark.errors import AnalysisException
 from pyspark.sql import SparkSession
 
-from loom.etl.backends.spark._dtype import spark_to_loom
-from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage.route.model import CatalogTarget, ResolvedTarget
-from loom.etl.storage.schema.model import PhysicalSchema
+from loom.etl.storage.schema.model import PhysicalSchema, SparkPhysicalSchema
 
 
 class SparkSchemaReader:
@@ -29,8 +25,8 @@ class SparkSchemaReader:
         if not self._spark.catalog.tableExists(ref):
             return None
         df = self._spark.table(ref)
-        return PhysicalSchema(
-            columns=_spark_columns(df.schema.fields),
+        return SparkPhysicalSchema(
+            schema=df.schema,
             partition_columns=_partition_columns_for_name(self._spark, ref),
         )
 
@@ -39,21 +35,10 @@ class SparkSchemaReader:
             df = self._spark.read.format("delta").load(uri)
         except AnalysisException:
             return None
-        return PhysicalSchema(
-            columns=_spark_columns(df.schema.fields),
+        return SparkPhysicalSchema(
+            schema=df.schema,
             partition_columns=_partition_columns_for_path(self._spark, uri),
         )
-
-
-def _spark_columns(fields: Sequence[object]) -> tuple[ColumnSchema, ...]:
-    from pyspark.sql import types as t
-
-    typed = tuple(fields)
-    return tuple(
-        ColumnSchema(name=f.name, dtype=spark_to_loom(f.dataType), nullable=f.nullable)
-        for f in typed
-        if isinstance(f, t.StructField)
-    )
 
 
 def _partition_columns_for_name(spark: SparkSession, ref: str) -> tuple[str, ...]:

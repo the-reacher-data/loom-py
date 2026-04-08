@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import polars as pl
+
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import (
     AppendSpec,
@@ -10,7 +12,6 @@ from loom.etl.io.target._table import (
     ReplaceWhereSpec,
     UpsertSpec,
 )
-from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef, col
 from loom.etl.storage._locator import PrefixLocator, TableLocation
 from loom.etl.storage.route import (
@@ -22,7 +23,7 @@ from loom.etl.storage.route import (
     PathRouteResolver,
     PathTarget,
 )
-from loom.etl.storage.schema import PhysicalSchema
+from loom.etl.storage.schema.model import PhysicalSchema, PolarsPhysicalSchema
 from loom.etl.storage.write import (
     AppendOp,
     ReplaceOp,
@@ -78,7 +79,7 @@ def test_composite_route_resolver_applies_override_then_default() -> None:
 
 
 def test_write_planner_reads_schema_once_and_builds_append_op() -> None:
-    schema = PhysicalSchema(columns=(ColumnSchema("id", LoomDtype.INT64),))
+    schema: PhysicalSchema = PolarsPhysicalSchema(schema=pl.Schema({"id": pl.Int64}))
     schema_reader = _StubSchemaReader(schema)
     planner = WritePlanner(
         resolver=CatalogRouteResolver(),

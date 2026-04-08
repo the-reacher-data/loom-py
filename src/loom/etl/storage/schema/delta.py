@@ -2,42 +2,13 @@
 
 from __future__ import annotations
 
-import logging
-
+import polars as pl
 import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.storage.route.model import CatalogTarget, PathTarget, ResolvedTarget
-from loom.etl.storage.schema.model import PhysicalSchema
-
-_log = logging.getLogger(__name__)
-
-_ARROW_STR_TO_LOOM: dict[str, LoomDtype] = {
-    "int8": LoomDtype.INT8,
-    "int16": LoomDtype.INT16,
-    "int32": LoomDtype.INT32,
-    "int64": LoomDtype.INT64,
-    "uint8": LoomDtype.UINT8,
-    "uint16": LoomDtype.UINT16,
-    "uint32": LoomDtype.UINT32,
-    "uint64": LoomDtype.UINT64,
-    "float": LoomDtype.FLOAT32,
-    "double": LoomDtype.FLOAT64,
-    "string": LoomDtype.UTF8,
-    "large_string": LoomDtype.UTF8,
-    "utf8": LoomDtype.UTF8,
-    "binary": LoomDtype.BINARY,
-    "large_binary": LoomDtype.BINARY,
-    "bool": LoomDtype.BOOLEAN,
-    "date32[day]": LoomDtype.DATE,
-    "timestamp[us]": LoomDtype.DATETIME,
-    "timestamp[us, tz=UTC]": LoomDtype.DATETIME,
-    "duration[us]": LoomDtype.DURATION,
-    "time64[us]": LoomDtype.TIME,
-    "null": LoomDtype.NULL,
-}
+from loom.etl.storage.schema.model import PhysicalSchema, PolarsPhysicalSchema
 
 
 class DeltaSchemaReader:
@@ -76,33 +47,10 @@ def read_delta_physical_schema(
         dt = DeltaTable(uri, storage_options=storage_options or None)
     except TableNotFoundError:
         return None
-    arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
-    return PhysicalSchema(
-        columns=_columns_from_arrow(arrow_schema),
+    return PolarsPhysicalSchema(
+        schema=pl.Schema(_to_pyarrow_schema(dt.schema())),
         partition_columns=tuple(dt.metadata().partition_columns),
     )
-
-
-def _columns_from_arrow(schema: pa.Schema) -> tuple[ColumnSchema, ...]:
-    return tuple(
-        ColumnSchema(
-            name=field.name,
-            dtype=_arrow_to_loom(field.type),
-            nullable=field.nullable,
-        )
-        for field in schema
-    )
-
-
-def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
-    dtype = _ARROW_STR_TO_LOOM.get(str(arrow_type))
-    if dtype is not None:
-        return dtype
-    _log.warning(
-        "DeltaSchemaReader: unsupported Arrow type %r mapped to LoomDtype.NULL",
-        arrow_type,
-    )
-    return LoomDtype.NULL
 
 
 def _to_pyarrow_schema(raw_schema: object) -> pa.Schema:
