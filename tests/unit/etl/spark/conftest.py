@@ -19,10 +19,7 @@ pytest.importorskip("delta")
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 
-from loom.etl.backends.polars import DeltaCatalog  # noqa: E402
 from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
-from loom.etl.backends.spark._dtype import spark_to_loom  # noqa: E402
-from loom.etl.schema._schema import ColumnSchema  # noqa: E402
 from loom.etl.schema._table import TableRef  # noqa: E402
 from loom.etl.testing.spark import SparkStepRunner, SparkTestSession  # noqa: E402
 
@@ -51,12 +48,6 @@ def spark_root(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-def spark_catalog(spark_root: Path) -> DeltaCatalog:
-    """Fresh DeltaCatalog per test (backed by spark_root)."""
-    return DeltaCatalog(spark_root)
-
-
-@pytest.fixture
 def spark_reader(spark: SparkSession, spark_root: Path) -> SparkDeltaReader:
     """SparkDeltaReader pointing at spark_root."""
     return SparkDeltaReader(spark, spark_root)
@@ -80,7 +71,6 @@ def spark_table_path(root: Path, ref: TableRef) -> Path:
 def seed_spark_table(
     spark: SparkSession,
     spark_root: Path,
-    spark_catalog: DeltaCatalog,
 ) -> Callable[[str | TableRef, DataFrame], Path]:
     """Factory fixture that writes a Spark DataFrame as a real Delta table
     and registers its schema in the catalog.
@@ -94,10 +84,6 @@ def seed_spark_table(
         path = spark_table_path(spark_root, table_ref)
         path.mkdir(parents=True, exist_ok=True)
         data.write.format("delta").mode("overwrite").save(str(path))
-        schema = tuple(
-            ColumnSchema(name=f.name, dtype=spark_to_loom(f.dataType)) for f in data.schema.fields
-        )
-        spark_catalog.update_schema(table_ref, schema)
         return path
 
     return _seed

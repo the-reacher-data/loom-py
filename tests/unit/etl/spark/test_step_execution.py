@@ -11,6 +11,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, IntoTable
+from loom.etl.backends.spark._dtype import spark_to_loom
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.io._read_options import CsvReadOptions
@@ -59,9 +60,6 @@ class _PayloadContract:
     items: int
 
 
-SeedSparkTable = Callable[[str, DataFrame], None]
-
-
 @dataclass(frozen=True)
 class CountScenario:
     step_type: type[ETLStep[NoParams]]
@@ -77,16 +75,6 @@ class CountScenario:
 def _read(spark: SparkSession, root: Path, ref: str) -> DataFrame:
     path = spark_table_path(root, TableRef(ref))
     return spark.read.format("delta").load(str(path))
-
-
-def _seed(
-    spark: SparkSession,
-    seed_spark_table: SeedSparkTable,
-    table_name: str,
-    rows: list[tuple[object, ...]],
-    columns: list[str],
-) -> None:
-    seed_spark_table(table_name, spark.createDataFrame(rows, columns))
 
 
 def test_writer_replace_partitions_first_run_creates_partitioned_table(
@@ -148,24 +136,18 @@ class TestRunStepDataFlow:
         self,
         scenario: CountScenario,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
         spark_root: Path,
     ) -> None:
-        _seed(
-            spark,
-            seed_spark_table,
+        seed_spark_table(
             scenario.source_table,
-            scenario.source_rows,
-            scenario.source_columns,
+            spark.createDataFrame(scenario.source_rows, scenario.source_columns),
         )
-        _seed(
-            spark,
-            seed_spark_table,
+        seed_spark_table(
             scenario.target_table,
-            scenario.target_rows,
-            scenario.target_columns,
+            spark.createDataFrame(scenario.target_rows, scenario.target_columns),
         )
 
         plan = ETLCompiler().compile_step(scenario.step_type)
@@ -176,24 +158,18 @@ class TestRunStepDataFlow:
     def test_run_step_replace_overwrites_and_applies_transform(
         self,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
         spark_root: Path,
     ) -> None:
-        _seed(
-            spark,
-            seed_spark_table,
+        seed_spark_table(
             "raw.orders",
-            [(1, 10.0), (2, 20.0), (3, 30.0)],
-            ["id", "amount"],
+            spark.createDataFrame([(1, 10.0), (2, 20.0), (3, 30.0)], ["id", "amount"]),
         )
-        _seed(
-            spark,
-            seed_spark_table,
+        seed_spark_table(
             "staging.orders",
-            [(99, 999.0)],
-            ["id", "amount"],
+            spark.createDataFrame([(99, 999.0)], ["id", "amount"]),
         )
 
         plan = ETLCompiler().compile_step(DoubleAmountStep)
@@ -208,12 +184,18 @@ class TestRunStepEvents:
     def test_run_step_emits_success_events(
         self,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
     ) -> None:
-        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
-        _seed(spark, seed_spark_table, "staging.orders", [(0, 0.0)], ["id", "amount"])
+        seed_spark_table(
+            "raw.orders",
+            spark.createDataFrame([(1, 1.0)], ["id", "amount"]),
+        )
+        seed_spark_table(
+            "staging.orders",
+            spark.createDataFrame([(0, 0.0)], ["id", "amount"]),
+        )
 
         observer = StubRunObserver()
         plan = ETLCompiler().compile_step(DoubleAmountStep)
@@ -242,11 +224,14 @@ class TestRunStepContracts:
     def test_writer_raises_schema_not_found_without_registered_schema(
         self,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
     ) -> None:
-        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+        seed_spark_table(
+            "raw.orders",
+            spark.createDataFrame([(1, 1.0)], ["id", "amount"]),
+        )
 
         plan = ETLCompiler().compile_step(DoubleAmountStep)
         with pytest.raises(SchemaNotFoundError):
@@ -256,12 +241,14 @@ class TestRunStepContracts:
         self,
         spark: SparkSession,
         spark_root: Path,
-        spark_catalog,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
     ) -> None:
-        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+        seed_spark_table(
+            "raw.orders",
+            spark.createDataFrame([(1, 1.0)], ["id", "amount"]),
+        )
 
         class OverwriteStep(ETLStep[NoParams]):
             orders: FromTable = FromTable("raw.orders")  # type: ignore[assignment]
@@ -273,39 +260,37 @@ class TestRunStepContracts:
         plan = ETLCompiler().compile_step(OverwriteStep)
         ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
 
-        assert spark_catalog.exists(TableRef("staging.new"))
         assert _read(spark, spark_root, "staging.new").count() == 1
 
     def test_seed_registers_correct_schema_in_catalog(
         self,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
-        spark_catalog,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
+        spark_root: Path,
     ) -> None:
-        _seed(spark, seed_spark_table, "raw.orders", [(1, 1.0)], ["id", "amount"])
+        seed_spark_table(
+            "raw.orders",
+            spark.createDataFrame([(1, 1.0)], ["id", "amount"]),
+        )
 
-        schema = spark_catalog.schema(TableRef("raw.orders"))
-        assert schema is not None
-        assert schema[0].name == "id"
-        assert schema[0].dtype is LoomDtype.INT64
-        assert schema[1].name == "amount"
-        assert schema[1].dtype is LoomDtype.FLOAT64
+        fields = _read(spark, spark_root, "raw.orders").schema.fields
+        assert fields[0].name == "id"
+        assert spark_to_loom(fields[0].dataType) is LoomDtype.INT64
+        assert fields[1].name == "amount"
+        assert spark_to_loom(fields[1].dataType) is LoomDtype.FLOAT64
 
     def test_run_step_supports_csv_reporting_target(
         self,
         spark: SparkSession,
-        seed_spark_table: SeedSparkTable,
+        seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
         spark_reader: SparkDeltaReader,
         spark_writer: SparkDeltaWriter,
         tmp_path: Path,
     ) -> None:
         report_path = tmp_path / "report.csv"
-        _seed(
-            spark,
-            seed_spark_table,
+        seed_spark_table(
             "raw.orders",
-            [(1, 10.0), (2, 20.0)],
-            ["id", "amount"],
+            spark.createDataFrame([(1, 10.0), (2, 20.0)], ["id", "amount"]),
         )
 
         class ReportStep(ETLStep[NoParams]):
