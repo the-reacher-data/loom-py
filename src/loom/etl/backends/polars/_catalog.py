@@ -10,64 +10,14 @@ credentials per table.  See https://delta-io.github.io/delta-rs/api/delta_writer
 
 from __future__ import annotations
 
-import logging
 import os
 
-import pyarrow as pa
 from deltalake import DeltaTable
-from deltalake.exceptions import TableNotFoundError
 
-from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator, _as_locator
-
-_log = logging.getLogger(__name__)
-
-# PyArrow string representation → LoomDtype
-# Stable because PyArrow's __str__ for primitive types is well-defined.
-
-_ARROW_STR_TO_LOOM: dict[str, LoomDtype] = {
-    "int8": LoomDtype.INT8,
-    "int16": LoomDtype.INT16,
-    "int32": LoomDtype.INT32,
-    "int64": LoomDtype.INT64,
-    "uint8": LoomDtype.UINT8,
-    "uint16": LoomDtype.UINT16,
-    "uint32": LoomDtype.UINT32,
-    "uint64": LoomDtype.UINT64,
-    "float": LoomDtype.FLOAT32,
-    "double": LoomDtype.FLOAT64,
-    "string": LoomDtype.UTF8,
-    "large_string": LoomDtype.UTF8,
-    "utf8": LoomDtype.UTF8,
-    "binary": LoomDtype.BINARY,
-    "large_binary": LoomDtype.BINARY,
-    "bool": LoomDtype.BOOLEAN,
-    "date32[day]": LoomDtype.DATE,
-    "timestamp[us]": LoomDtype.DATETIME,
-    "timestamp[us, tz=UTC]": LoomDtype.DATETIME,
-    "duration[us]": LoomDtype.DURATION,
-    "time64[us]": LoomDtype.TIME,
-    "null": LoomDtype.NULL,
-}
-
-
-def _arrow_to_loom(arrow_type: pa.DataType) -> LoomDtype:
-    """Map a PyArrow DataType to a LoomDtype using the type's string representation.
-
-    Returns ``LoomDtype.NULL`` for unknown or unsupported types (e.g. nested
-    structs, maps, decimals, non-UTC timestamps).  Emits a ``WARNING`` so
-    callers can detect catalog schema gaps without raising at read time.
-    """
-    result = _ARROW_STR_TO_LOOM.get(str(arrow_type))
-    if result is None:
-        _log.warning(
-            "DeltaCatalog: unsupported Arrow type %r — mapped to LoomDtype.NULL; "
-            "declare an explicit schema override if this column is used in validation",
-            arrow_type,
-        )
-        return LoomDtype.NULL
-    return result
+from loom.etl.storage.schema.delta import read_delta_physical_schema
 
 
 class DeltaCatalog:
@@ -126,28 +76,10 @@ class DeltaCatalog:
             ``None`` when the table does not yet exist.
         """
         loc = self._locator.locate(ref)
-        try:
-            dt = DeltaTable(loc.uri, storage_options=loc.storage_options or None)
-        except TableNotFoundError:
+        schema = read_delta_physical_schema(loc.uri, loc.storage_options)
+        if schema is None:
             return None
-
-        arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
-        return tuple(
-            ColumnSchema(
-                name=field.name,
-                dtype=_arrow_to_loom(field.type),
-                nullable=field.nullable,
-            )
-            for field in arrow_schema
-        )
+        return schema.columns
 
     def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
         """No-op — Delta maintains its own schema in the transaction log."""
-
-
-def _to_pyarrow_schema(raw_schema: object) -> pa.Schema:
-    to_arrow = getattr(raw_schema, "to_arrow", None)
-    if not callable(to_arrow):
-        raise TypeError(f"Unsupported Delta schema object: {type(raw_schema)!r}")
-    # deltalake>=1.5 returns arro3 schema; normalize to PyArrow for stable dtype mapping.
-    return pa.schema(to_arrow())

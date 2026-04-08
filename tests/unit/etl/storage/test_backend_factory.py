@@ -83,6 +83,53 @@ def test_make_backends_polars_catalog_route_uses_uc_uri(monkeypatch: pytest.Monk
     ]
 
 
+def test_make_backends_polars_two_part_uc_ref_requires_catalog_key() -> None:
+    config = StorageConfig(
+        tables=(TableRoute(name="raw.orders", ref="raw.orders"),),
+    )
+    with pytest.raises(ValueError, match="2-part refs require route.catalog"):
+        make_backends(config)
+
+
+def test_make_backends_spark_catalog_route_uses_unity_storage_options_for_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def _fake_is_deltatable(uri: str, storage_options: dict[str, str] | None = None) -> bool:
+        calls.append((uri, storage_options))
+        return True
+
+    monkeypatch.setattr(
+        "loom.etl.backends.polars._catalog.DeltaTable.is_deltatable",
+        _fake_is_deltatable,
+    )
+
+    spark = MagicMock()
+    spark.catalog.tableExists.return_value = False
+    config = StorageConfig(
+        engine="spark",
+        catalogs={
+            "unity": CatalogConnection(workspace="https://dbc.example", token="token-123"),
+        },
+        tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="unity"),),
+    )
+    _reader, _writer, catalog = make_backends(config, spark=spark)
+
+    assert catalog.exists(TableRef("raw.orders")) is True
+    assert calls == [
+        (
+            "uc://unity.raw.orders",
+            {
+                "databricks_workspace_url": "https://dbc.example",
+                "databricks_access_token": "token-123",
+            },
+        )
+    ]
+
+
 # ---------------------------------------------------------------------------
 # make_observers
 # ---------------------------------------------------------------------------

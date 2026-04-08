@@ -220,14 +220,14 @@ class TestRunnerFromConfig:
 
         from unittest.mock import MagicMock
 
-        from loom.etl.backends.spark._catalog import SparkCatalog
         from loom.etl.backends.spark.reader import SparkSourceReader
+        from loom.etl.storage.route.catalog import RoutedCatalog
 
         spark = MagicMock()
         runner = ETLRunner.from_config(StorageConfig(engine="spark"), spark=spark)
 
         assert isinstance(runner._executor._reader, SparkSourceReader)
-        assert isinstance(runner._compiler._catalog, SparkCatalog)
+        assert isinstance(runner._compiler._catalog, RoutedCatalog)
 
     @pytest.mark.parametrize(
         "tmp_suffix,has_temp_store",

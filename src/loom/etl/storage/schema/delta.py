@@ -53,19 +53,34 @@ class DeltaSchemaReader:
         if not isinstance(target, PathTarget):
             raise TypeError(f"Unsupported resolved target: {type(target)!r}")
 
-        try:
-            dt = DeltaTable(
-                target.location.uri,
-                storage_options=target.location.storage_options or None,
-            )
-        except TableNotFoundError:
-            return None
-
-        arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
-        return PhysicalSchema(
-            columns=_columns_from_arrow(arrow_schema),
-            partition_columns=tuple(dt.metadata().partition_columns),
+        return read_delta_physical_schema(
+            target.location.uri,
+            target.location.storage_options,
         )
+
+
+def read_delta_physical_schema(
+    uri: str,
+    storage_options: dict[str, str] | None = None,
+) -> PhysicalSchema | None:
+    """Read physical schema directly from a Delta table URI.
+
+    Args:
+        uri: Delta table URI/path (including ``uc://catalog.schema.table``).
+        storage_options: Optional delta-rs storage options.
+
+    Returns:
+        Physical schema when the table exists, else ``None``.
+    """
+    try:
+        dt = DeltaTable(uri, storage_options=storage_options or None)
+    except TableNotFoundError:
+        return None
+    arrow_schema: pa.Schema = _to_pyarrow_schema(dt.schema())
+    return PhysicalSchema(
+        columns=_columns_from_arrow(arrow_schema),
+        partition_columns=tuple(dt.metadata().partition_columns),
+    )
 
 
 def _columns_from_arrow(schema: pa.Schema) -> tuple[ColumnSchema, ...]:

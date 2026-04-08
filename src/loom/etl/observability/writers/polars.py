@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import polars as pl
+from polars.datatypes import DataTypeClass
 
 from loom.etl.observability.records import (
     ExecutionRecord,
@@ -16,87 +17,81 @@ from loom.etl.observability.writers._row import record_to_row
 from loom.etl.schema._table import TableRef
 
 # ---------------------------------------------------------------------------
-# Explicit per-record-type Polars schemas
+# Explicit Polars schemas — prevent Null dtype inference for optional fields
+# (correlation_id, error, error_type, etc.) which Delta Lake rejects.
 # ---------------------------------------------------------------------------
-# These schemas are required to avoid Polars inferring `Null` dtype for
-# optional fields (correlation_id, error) when they are None on first write.
-# The order must match dataclasses.asdict() field order for each record type.
+
+_S: pl.DataType | DataTypeClass = pl.String
+_I64: pl.DataType | DataTypeClass = pl.Int64
+_TS: pl.DataType | DataTypeClass = pl.Datetime("us", "UTC")
 
 _PIPELINE_SCHEMA = pl.Schema(
     {
-        "run_id": pl.String,
-        "correlation_id": pl.String,
-        "attempt": pl.Int64,
-        "pipeline": pl.String,
-        "started_at": pl.Datetime("us", "UTC"),
-        "status": pl.String,
-        "duration_ms": pl.Int64,
-        "error": pl.String,
-        "error_type": pl.String,
-        "error_message": pl.String,
-        "failed_step_run_id": pl.String,
-        "failed_step": pl.String,
-    }  # type: ignore[arg-type]  # mixed DataType class vs instance — valid at runtime
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "pipeline": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "error_type": _S,
+        "error_message": _S,
+        "failed_step_run_id": _S,
+        "failed_step": _S,
+    }
 )
-
 _PROCESS_SCHEMA = pl.Schema(
     {
-        "run_id": pl.String,
-        "correlation_id": pl.String,
-        "attempt": pl.Int64,
-        "process_run_id": pl.String,
-        "process": pl.String,
-        "started_at": pl.Datetime("us", "UTC"),
-        "status": pl.String,
-        "duration_ms": pl.Int64,
-        "error": pl.String,
-        "error_type": pl.String,
-        "error_message": pl.String,
-        "failed_step_run_id": pl.String,
-        "failed_step": pl.String,
-    }  # type: ignore[arg-type]
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "process_run_id": _S,
+        "process": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "error_type": _S,
+        "error_message": _S,
+        "failed_step_run_id": _S,
+        "failed_step": _S,
+    }
 )
-
 _STEP_SCHEMA = pl.Schema(
     {
-        "run_id": pl.String,
-        "correlation_id": pl.String,
-        "attempt": pl.Int64,
-        "step_run_id": pl.String,
-        "step": pl.String,
-        "started_at": pl.Datetime("us", "UTC"),
-        "status": pl.String,
-        "duration_ms": pl.Int64,
-        "error": pl.String,
-        "process_run_id": pl.String,
-        "error_type": pl.String,
-        "error_message": pl.String,
-    }  # type: ignore[arg-type]
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "step_run_id": _S,
+        "step": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "process_run_id": _S,
+        "error_type": _S,
+        "error_message": _S,
+    }
 )
+
+_SCHEMA_BY_TYPE: dict[type, pl.Schema] = {
+    PipelineRunRecord: _PIPELINE_SCHEMA,
+    ProcessRunRecord: _PROCESS_SCHEMA,
+    StepRunRecord: _STEP_SCHEMA,
+}
 
 
 def _polars_schema(record: ExecutionRecord) -> pl.Schema:
     """Return the explicit Polars schema for *record*.
 
-    Prevents Polars from inferring ``Null`` dtype for optional fields
-    (``correlation_id``, ``error``) when their value is ``None``.
-
-    Args:
-        record: A completed execution record.
-
-    Returns:
-        Polars schema with fully-typed columns.
-
     Raises:
         TypeError: When *record* is not a recognised record type.
     """
-    if isinstance(record, PipelineRunRecord):
-        return _PIPELINE_SCHEMA
-    if isinstance(record, ProcessRunRecord):
-        return _PROCESS_SCHEMA
-    if isinstance(record, StepRunRecord):
-        return _STEP_SCHEMA
-    raise TypeError(f"Unsupported execution record type: {type(record)!r}")
+    schema = _SCHEMA_BY_TYPE.get(type(record))
+    if schema is None:
+        raise TypeError(f"Unsupported execution record type: {type(record)!r}")
+    return schema
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +102,11 @@ def _polars_schema(record: ExecutionRecord) -> pl.Schema:
 class PolarsExecutionRecordWriter:
     """Write execution records through the Polars target writer ``append`` API.
 
-    Uses an explicit per-record-type Polars schema so that optional fields
-    (``correlation_id``, ``error``) are always written as nullable ``String``
-    columns — never inferred as ``Null`` dtype, which Delta Lake rejects.
+    Uses explicit per-record-type schemas so all optional fields are typed as
+    nullable ``String`` — never inferred as ``Null`` dtype, which Delta Lake rejects.
 
     Args:
-        writer: A ``PolarsTargetWriter`` (or any object with an ``append``
-                method compatible with that interface).
+        writer: Any object exposing an ``append(frame, table_ref, params)`` method.
     """
 
     def __init__(self, writer: Any) -> None:
