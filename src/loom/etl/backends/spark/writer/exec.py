@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -45,7 +46,7 @@ class SparkWriteExecutor:
 
     def __init__(self, spark: SparkSession) -> None:
         self._spark = spark
-        self._handlers = {
+        self._handlers: dict[type[WriteOperation], Callable[..., None]] = {
             AppendOp: self._exec_append,
             ReplaceOp: self._exec_replace,
             ReplacePartitionsOp: self._exec_replace_partitions,
@@ -60,17 +61,13 @@ class SparkWriteExecutor:
             raise TypeError(f"Unsupported write operation: {type(op)!r}")
         handler(frame, op, params_instance)
 
-    def _exec_append(self, frame: DataFrame, op: WriteOperation, params_instance: Any) -> None:
-        if not isinstance(op, AppendOp):
-            raise TypeError(f"Expected AppendOp, got {type(op)!r}")
+    def _exec_append(self, frame: DataFrame, op: AppendOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
         spec = AppendSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(validated, spec, params_instance, locator)
 
-    def _exec_replace(self, frame: DataFrame, op: WriteOperation, params_instance: Any) -> None:
-        if not isinstance(op, ReplaceOp):
-            raise TypeError(f"Expected ReplaceOp, got {type(op)!r}")
+    def _exec_replace(self, frame: DataFrame, op: ReplaceOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
         spec = ReplaceSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
@@ -80,10 +77,8 @@ class SparkWriteExecutor:
         _write_frame(validated, spec, params_instance, locator)
 
     def _exec_replace_partitions(
-        self, frame: DataFrame, op: WriteOperation, _params_instance: Any
+        self, frame: DataFrame, op: ReplacePartitionsOp, _params_instance: Any
     ) -> None:
-        if not isinstance(op, ReplacePartitionsOp):
-            raise TypeError(f"Expected ReplacePartitionsOp, got {type(op)!r}")
         locator = _locator_for_target(op.target)
         spec = ReplacePartitionsSpec(
             table_ref=op.target.logical_ref,
@@ -97,10 +92,8 @@ class SparkWriteExecutor:
         _write_replace_partitions_spark(validated, spec, locator)
 
     def _exec_replace_where(
-        self, frame: DataFrame, op: WriteOperation, params_instance: Any
+        self, frame: DataFrame, op: ReplaceWhereOp, params_instance: Any
     ) -> None:
-        if not isinstance(op, ReplaceWhereOp):
-            raise TypeError(f"Expected ReplaceWhereOp, got {type(op)!r}")
         locator = _locator_for_target(op.target)
         spec = ReplaceWhereSpec(
             table_ref=op.target.logical_ref,
@@ -113,9 +106,7 @@ class SparkWriteExecutor:
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(validated, spec, params_instance, locator)
 
-    def _exec_upsert(self, frame: DataFrame, op: WriteOperation, _params_instance: Any) -> None:
-        if not isinstance(op, UpsertOp):
-            raise TypeError(f"Expected UpsertOp, got {type(op)!r}")
+    def _exec_upsert(self, frame: DataFrame, op: UpsertOp, _params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
         spec = UpsertSpec(
             table_ref=op.target.logical_ref,
