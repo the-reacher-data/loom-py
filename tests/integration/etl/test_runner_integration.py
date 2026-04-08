@@ -10,7 +10,7 @@ pytest.importorskip("polars")
 pytest.importorskip("deltalake")
 
 import polars as pl
-from deltalake import DeltaTable, write_deltalake
+from deltalake import write_deltalake
 
 from loom.etl import (
     ETLParams,
@@ -34,11 +34,11 @@ def _table_path(root: Path, ref: str) -> Path:
 def _seed_table(root: Path, ref: str, frame: pl.DataFrame) -> None:
     path = _table_path(root, ref)
     path.mkdir(parents=True, exist_ok=True)
-    write_deltalake(str(path), frame.to_arrow(), mode="overwrite")
+    write_deltalake(str(path), frame, mode="overwrite")
 
 
 def _read_table(root: Path, ref: str) -> pl.DataFrame:
-    return pl.from_arrow(DeltaTable(str(_table_path(root, ref))).to_pyarrow_table())
+    return pl.scan_delta(str(_table_path(root, ref))).collect()
 
 
 def _fresh_runner_cls() -> type[ETLRunner]:

@@ -35,7 +35,7 @@ def test_delta_schema_reader_reads_columns_and_partitions(tmp_path: Path) -> Non
     table_path.mkdir(parents=True, exist_ok=True)
     write_deltalake(
         str(table_path),
-        pl.DataFrame({"id": [1, 2], "year": [2024, 2024], "amount": [10.0, 20.0]}).to_arrow(),
+        pl.DataFrame({"id": [1, 2], "year": [2024, 2024], "amount": [10.0, 20.0]}),
         mode="overwrite",
         partition_by=["year"],
     )

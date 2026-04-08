@@ -44,7 +44,12 @@ def _file_source_spec() -> FileSourceSpec:
 def _seed(root: Path, ref: str, data: pl.DataFrame) -> None:
     path = table_path(root, TableRef(ref))
     path.mkdir(parents=True, exist_ok=True)
-    write_deltalake(str(path), data.to_arrow(), mode="overwrite")
+    write_deltalake(str(path), data, mode="overwrite")
+
+
+def _read_table(root: Path, ref: str) -> pl.DataFrame:
+    path = table_path(root, TableRef(ref))
+    return pl.scan_delta(str(path)).collect()
 
 
 def _spec(ref: str, schema_mode: SchemaMode = SchemaMode.STRICT) -> ReplaceSpec:
@@ -118,11 +123,7 @@ def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "v": [1.0]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
-    result = pl.from_arrow(
-        __import__("deltalake")
-        .DeltaTable(str(table_path(tmp_path, TableRef("staging.out"))))
-        .to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.out")
     assert result["id"].to_list() == [1]
 
 
@@ -131,9 +132,7 @@ def test_writer_strict_drops_extra_column(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "extra": ["x"]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.out")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.out")
     assert "extra" not in result.columns
     assert result["id"].to_list() == [1]
 
@@ -163,9 +162,7 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()  # label missing
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.EVOLVE), None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.out")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.out")
     assert "label" in result.columns
     written_rows = result.filter(pl.col("id") == 1)
     assert written_rows["label"][0] is None
@@ -221,9 +218,7 @@ def test_writer_append_adds_rows(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path)
     frame = pl.DataFrame({"id": [1, 2], "v": [1.0, 2.0]}).lazy()
     writer.write(frame, AppendSpec(table_ref=TableRef("staging.ledger")), None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.ledger")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.ledger")
     assert result.height == 3
 
 
@@ -233,9 +228,7 @@ def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
 
     writer.append(frame, TableRef("staging.append_first"), None)
 
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.append_first")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.append_first")
     assert result.shape == (1, 2)
 
 
@@ -282,9 +275,7 @@ def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path)
         partition_cols=("year",),
     )
     writer.write(new_data.lazy(), spec, None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.facts")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.facts")
     assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
     assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
 
@@ -299,9 +290,7 @@ def test_writer_replace_partitions_with_string_values(tmp_path: Path) -> None:
         partition_cols=("region",),
     )
     writer.write(new_data.lazy(), spec, None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.regions")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.regions")
     assert result.filter(pl.col("region") == "us")["v"].to_list() == [99]
     assert result.filter(pl.col("region") == "eu")["v"].to_list() == [2]
 
@@ -316,9 +305,7 @@ def test_writer_replace_partitions_with_bool_values(tmp_path: Path) -> None:
         partition_cols=("active",),
     )
     writer.write(new_data.lazy(), spec, None)
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.flags")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.flags")
     assert result.filter(pl.col("active"))["v"].to_list() == [99]
     assert result.filter(~pl.col("active"))["v"].to_list() == [2]
 
@@ -345,9 +332,7 @@ def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
     pred = col("year") == p.run_date.year
     spec = IntoTable("staging.yearly").replace_where(pred)._to_spec()
     writer.write(new_data.lazy(), spec, _DateParams(run_date=date(2024, 1, 1)))
-    result = pl.from_arrow(
-        DeltaTable(str(table_path(tmp_path, TableRef("staging.yearly")))).to_pyarrow_table()
-    )
+    result = _read_table(tmp_path, "staging.yearly")
     assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
     assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
 

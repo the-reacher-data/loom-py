@@ -26,7 +26,7 @@ from .conftest import table_path
 def _seed_delta(root: Path, ref: str, data: pl.DataFrame) -> Path:
     path = table_path(root, TableRef(ref))
     path.mkdir(parents=True, exist_ok=True)
-    write_deltalake(str(path), data.to_arrow(), mode="overwrite")
+    write_deltalake(str(path), data, mode="overwrite")
     return path
 
 

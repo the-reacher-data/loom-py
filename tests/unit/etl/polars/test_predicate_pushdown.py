@@ -116,7 +116,7 @@ def test_unsupported_node_raises() -> None:
 def _seed_partitioned(root: Path, ref: str, data: pl.DataFrame) -> None:
     path = table_path(root, TableRef(ref))
     path.mkdir(parents=True, exist_ok=True)
-    write_deltalake(str(path), data.to_arrow(), mode="overwrite")
+    write_deltalake(str(path), data, mode="overwrite")
 
 
 def _spec_with_pred(ref: str, *predicates: object) -> TableSourceSpec:

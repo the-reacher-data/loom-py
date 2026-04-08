@@ -5,15 +5,14 @@ Parquet).
 
 Delta tables
 ------------
-Uses ``DeltaTable.to_pyarrow_dataset()`` for lazy scanning to avoid
-Polars ↔ deltalake Schema API version skew.
+Uses ``pl.scan_delta()`` for lazy scanning directly against delta-rs.
 
 Predicate pushdown
 ~~~~~~~~~~~~~~~~~~
 Predicates declared via ``.where()`` are converted to ``polars.Expr`` via
 :func:`~loom.etl.backends.polars._predicate.predicate_to_polars` and applied
 as ``LazyFrame.filter()`` calls.  Polars' lazy optimizer pushes these filters
-into the PyArrow dataset scanner, which performs:
+into the Delta scan, which performs:
 
 * **Partition pruning** — skips partition directories whose column values
   exclude the predicate (no I/O for those files).
@@ -37,7 +36,7 @@ to its :class:`~loom.etl._schema.LoomDtype` via ``with_columns(cast(...))``.
 Cast is applied **lazily** — no materialization occurs.  Extra columns in
 the source not declared in the schema pass through unchanged.
 
-Storage options are forwarded verbatim to delta-rs — the locator resolves
+Storage options are forwarded verbatim to delta-rs. The locator resolves
 credentials per table.  See https://delta-io.github.io/delta-rs/api/delta_writer/
 """
 
@@ -48,7 +47,6 @@ import os
 from typing import Any
 
 import polars as pl
-from deltalake import DeltaTable
 
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.backends.polars._predicate import predicate_to_polars
@@ -130,10 +128,7 @@ class PolarsDeltaReader:
             len(spec.schema),
         )
         loc = self._locator.locate(ref)
-        dataset = DeltaTable(
-            loc.uri, storage_options=loc.storage_options or None
-        ).to_pyarrow_dataset()
-        frame: pl.LazyFrame = pl.scan_pyarrow_dataset(dataset)
+        frame = pl.scan_delta(loc.uri, storage_options=loc.storage_options or None)
         for pred in spec.predicates:
             frame = frame.filter(predicate_to_polars(pred, params_instance))
         if spec.columns:

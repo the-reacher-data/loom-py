@@ -209,9 +209,9 @@ def _write_frame(
     loc = locator.locate(spec.table_ref)
     match spec:
         case AppendSpec():
-            write_deltalake(loc.uri, df.to_arrow(), mode="append", **_write_kwargs(loc))
+            write_deltalake(loc.uri, df, mode="append", **_write_kwargs(loc))
         case ReplaceSpec():
-            write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **_write_kwargs(loc))
+            write_deltalake(loc.uri, df, mode="overwrite", **_write_kwargs(loc))
         case ReplaceWhereSpec():
             _write_replace_where(loc, df, spec, params)
 
@@ -260,22 +260,18 @@ def _write_replace_partitions(
         df.select(list(spec.partition_cols)).unique().iter_rows(named=True),
         spec.partition_cols,
     )
-    write_deltalake(
-        loc.uri, df.to_arrow(), mode="overwrite", predicate=predicate, **_write_kwargs(loc)
-    )
+    write_deltalake(loc.uri, df, mode="overwrite", predicate=predicate, **_write_kwargs(loc))
 
 
 def _write_replace_where(
     loc: TableLocation, df: pl.DataFrame, spec: ReplaceWhereSpec, params: Any
 ) -> None:
     predicate = predicate_to_sql(spec.replace_predicate, params)
-    write_deltalake(
-        loc.uri, df.to_arrow(), mode="overwrite", predicate=predicate, **_write_kwargs(loc)
-    )
+    write_deltalake(loc.uri, df, mode="overwrite", predicate=predicate, **_write_kwargs(loc))
 
 
 def _first_run_overwrite_polars(loc: TableLocation, df: pl.DataFrame) -> None:
-    write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **_write_kwargs(loc))
+    write_deltalake(loc.uri, df, mode="overwrite", **_write_kwargs(loc))
 
 
 def _first_run_overwrite_partitions_polars(
@@ -285,13 +281,13 @@ def _first_run_overwrite_partitions_polars(
     if partition_cols:
         write_deltalake(
             loc.uri,
-            df.to_arrow(),
+            df,
             mode="overwrite",
             partition_by=list(partition_cols),
             **kwargs,
         )
         return
-    write_deltalake(loc.uri, df.to_arrow(), mode="overwrite", **kwargs)
+    write_deltalake(loc.uri, df, mode="overwrite", **kwargs)
 
 
 def _collect_partition_combos_for_merge_polars(
@@ -320,7 +316,7 @@ def _merge_polars(loc: TableLocation, df: pl.DataFrame, spec: UpsertSpec) -> Non
     dt = DeltaTable(loc.uri, storage_options=loc.storage_options or {})
     (
         dt.merge(
-            source=df.to_arrow(),
+            source=df,
             predicate=predicate,
             source_alias=SOURCE_ALIAS,
             target_alias=TARGET_ALIAS,

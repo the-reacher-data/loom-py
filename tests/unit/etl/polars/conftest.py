@@ -17,7 +17,7 @@ pytest.importorskip("polars")
 pytest.importorskip("deltalake")
 
 import polars as pl  # noqa: E402 — import after importorskip guard
-from deltalake import DeltaTable, write_deltalake  # noqa: E402
+from deltalake import write_deltalake  # noqa: E402
 
 from loom.etl.io.source import SourceSpec  # noqa: E402
 from loom.etl.io.target import TargetSpec  # noqa: E402
@@ -92,7 +92,7 @@ def seed_table(
         path = table_path(delta_root, table_ref)
         path.mkdir(parents=True, exist_ok=True)
         # Use deltalake directly to avoid polars<->deltalake version skew
-        write_deltalake(str(path), data.to_arrow(), mode="overwrite")
+        write_deltalake(str(path), data, mode="overwrite")
         schema = tuple(
             ColumnSchema(name=col, dtype=_polars_dtype_to_loom(dt))
             for col, dt in zip(data.columns, data.dtypes, strict=True)
@@ -121,13 +121,13 @@ class MinimalPolarsDeltaReader:
     def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
         """Return a lazy scan of the Delta table referenced by *spec*.
 
-        Uses ``DeltaTable.to_pyarrow_dataset()`` + ``pl.scan_pyarrow_dataset``
-        to avoid polars ↔ deltalake Schema API version skew.
+        Uses ``pl.scan_delta()`` to avoid requiring a local ``pyarrow``
+        dependency in test environments.
         """
+        _ = params_instance
         assert spec.table_ref is not None, f"expected TABLE source, got {spec}"
         path = table_path(self._root, spec.table_ref)
-        dataset = DeltaTable(str(path)).to_pyarrow_dataset()
-        return pl.scan_pyarrow_dataset(dataset)
+        return pl.scan_delta(str(path))
 
 
 class MinimalPolarsDeltaWriter:
@@ -153,13 +153,14 @@ class MinimalPolarsDeltaWriter:
         streaming: bool = False,
     ) -> None:
         """Collect *frame* and write it to the Delta table referenced by *spec*."""
+        _ = params_instance
         assert hasattr(spec, "table_ref") and spec.table_ref is not None, (
             f"expected TABLE target, got {spec}"
         )  # type: ignore[union-attr]
         path = table_path(self._root, spec.table_ref)  # type: ignore[union-attr]
         path.mkdir(parents=True, exist_ok=True)
         delta_mode = "overwrite" if isinstance(spec, ReplaceSpec) else "append"
-        write_deltalake(str(path), frame.collect().to_arrow(), mode=delta_mode)
+        write_deltalake(str(path), frame.collect(), mode=delta_mode)
 
 
 @pytest.fixture

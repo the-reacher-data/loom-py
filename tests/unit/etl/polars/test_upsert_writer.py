@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
-from deltalake import DeltaTable, write_deltalake
+from deltalake import write_deltalake
 
 from loom.etl.backends.polars import PolarsDeltaWriter
 from loom.etl.io.target import SchemaMode
@@ -43,14 +43,13 @@ def _upsert_spec(
 
 def _read_table(root: Path, ref: str) -> pl.DataFrame:
     path = table_path(root, TableRef(ref))
-    dataset = DeltaTable(str(path)).to_pyarrow_dataset()
-    return pl.scan_pyarrow_dataset(dataset).collect()
+    return pl.scan_delta(str(path)).collect()
 
 
 def _seed_table(root: Path, ref: str, data: pl.DataFrame) -> None:
     path = table_path(root, TableRef(ref))
     path.mkdir(parents=True, exist_ok=True)
-    write_deltalake(str(path), data.to_arrow(), mode="overwrite")
+    write_deltalake(str(path), data, mode="overwrite")
 
 
 def _writer(root: Path) -> PolarsDeltaWriter:

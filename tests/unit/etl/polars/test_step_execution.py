@@ -9,9 +9,10 @@ automatically when either package is absent (enforced by ``conftest.py``).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import polars as pl
 import pytest
-from deltalake import DeltaTable
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
@@ -23,10 +24,10 @@ from loom.etl.testing import StubRunObserver
 from .conftest import MinimalPolarsDeltaReader, MinimalPolarsDeltaWriter, table_path
 
 
-def _read_delta(root, ref: str) -> pl.DataFrame:
-    """Read a Delta table via PyArrow to avoid polars ↔ deltalake schema skew."""
+def _read_delta(root: Path, ref: str) -> pl.DataFrame:
+    """Read a Delta table through Polars native Delta scan."""
     path = table_path(root, TableRef(ref))
-    return pl.from_arrow(DeltaTable(str(path)).to_pyarrow_table())
+    return pl.scan_delta(str(path)).collect()
 
 
 class NoParams(ETLParams):
