@@ -50,7 +50,12 @@ class DailyPipeline(ETLPipeline[DailyParams]):
     processes = [DailyProcess]
 
 
-runner = ETLRunner.from_dict(storage={"root": "/var/lib/loom/lake"})
+runner = ETLRunner.from_dict(
+    storage={
+        "engine": "polars",
+        "defaults": {"table_path": {"uri": "/var/lib/loom/lake"}},
+    }
+)
 runner.run(DailyPipeline, DailyParams(run_date=date(2026, 3, 30)))
 ```
 
@@ -93,11 +98,39 @@ class ReportPipeline(ETLPipeline[DailyParams]):
     processes = [ReportProcess]
 ```
 
-## YAML config + observability
+## YAML config (Polars path + Unity Catalog)
 
 ```yaml
 storage:
-  root: /var/lib/loom/lake
+  engine: polars
+
+  catalogs:
+    default:
+      provider: unity
+      workspace: ${oc.env:DATABRICKS_WORKSPACE_URL}
+      token: ${oc.env:DATABRICKS_ACCESS_TOKEN}
+
+  defaults:
+    table_path:
+      uri: s3://my-lake
+      storage_options:
+        AWS_REGION: ${oc.env:AWS_REGION}
+        AWS_ACCESS_KEY_ID: ${oc.env:AWS_ACCESS_KEY_ID}
+        AWS_SECRET_ACCESS_KEY: ${oc.env:AWS_SECRET_ACCESS_KEY}
+
+  tables:
+    # UC route
+    - name: raw.orders
+      ref: bronze.orders
+      catalog: default
+
+    # Direct Delta path route
+    - name: staging.events
+      path:
+        uri: s3://my-lake/staging/events
+        storage_options:
+          AWS_REGION: ${oc.env:AWS_REGION}
+
   tmp_root: /var/lib/loom/lake/_tmp
 
 observability:
@@ -114,6 +147,10 @@ from loom.etl import ETLRunner
 
 runner = ETLRunner.from_yaml("config/etl.yaml")
 ```
+
+When a Polars write targets `uc://...` and the table does not exist yet, Loom emits a warning.
+The write goes through delta-rs, but catalog registration is not guaranteed for first-create flows.
+For production, pre-create UC tables with Spark SQL/Databricks before the ETL run.
 
 ## Running only selected stages
 

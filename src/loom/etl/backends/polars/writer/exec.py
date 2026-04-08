@@ -80,6 +80,7 @@ class PolarsWriteExecutor:
         locator = _locator_for_target(op.target)
         spec = ReplaceSpec(table_ref=op.target.logical_ref, schema_mode=op.schema_mode)
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+            _warn_uc_first_create(op.target)
             _write_frame(
                 _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
             )
@@ -101,6 +102,7 @@ class PolarsWriteExecutor:
             schema_mode=op.schema_mode,
         )
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+            _warn_uc_first_create(op.target)
             _first_run_overwrite_partitions_polars(
                 locator.locate(spec.table_ref),
                 _collect_frame(frame, streaming=op.streaming),
@@ -127,6 +129,7 @@ class PolarsWriteExecutor:
             schema_mode=op.schema_mode,
         )
         if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+            _warn_uc_first_create(op.target)
             _write_frame(
                 _collect_frame(frame, streaming=op.streaming), spec, params_instance, locator
             )
@@ -157,6 +160,7 @@ class PolarsWriteExecutor:
 
         loc = locator.locate(spec.table_ref)
         if op.existing_schema is None:
+            _warn_uc_first_create(op.target)
             _first_run_overwrite_polars(loc, frame.collect())
             return
 
@@ -180,6 +184,20 @@ def _as_polars_schema(schema: PhysicalSchema | None) -> pl.Schema | None:
 
 def _collect_frame(frame: pl.LazyFrame, *, streaming: bool) -> pl.DataFrame:
     return frame.collect(engine="streaming" if streaming else "auto")
+
+
+def _warn_uc_first_create(target: CatalogTarget | PathTarget) -> None:
+    if isinstance(target, CatalogTarget):
+        return
+    if not target.location.uri.lower().startswith("uc://"):
+        return
+    _log.warning(
+        "polars write first-create for Unity Catalog ref=%s uri=%s. "
+        "delta-rs writes Delta log data, but catalog registration is not guaranteed; "
+        "pre-create the table in UC (Spark SQL/Databricks) before this write.",
+        target.logical_ref.ref,
+        target.location.uri,
+    )
 
 
 def _write_frame(

@@ -20,12 +20,19 @@ from loom.etl.io.target._table import AppendSpec, ReplacePartitionsSpec, Replace
 from loom.etl.pipeline._proxy import params as p
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._locator import MappingLocator, TableLocation
+from loom.etl.storage.schema.model import PhysicalSchema
 
 from .conftest import table_path
 
 
 class _DateParams(ETLParams):
     run_date: date
+
+
+class _MissingSchemaReader:
+    def read_schema(self, _target: object) -> PhysicalSchema | None:
+        return None
 
 
 def _file_source_spec() -> FileSourceSpec:
@@ -230,6 +237,39 @@ def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
         DeltaTable(str(table_path(tmp_path, TableRef("staging.append_first")))).to_pyarrow_table()
     )
     assert result.shape == (1, 2)
+
+
+def test_writer_warns_on_polars_uc_first_create(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from loom.etl.backends.polars.writer import exec as writer_exec
+
+    writes: list[tuple[str, str]] = []
+
+    def _fake_write_deltalake(table_or_uri: str, _data: object, **kwargs: object) -> None:
+        mode = kwargs.get("mode")
+        writes.append((table_or_uri, str(mode)))
+
+    monkeypatch.setattr(writer_exec, "write_deltalake", _fake_write_deltalake)
+    caplog.set_level("WARNING", logger="loom.etl.backends.polars.writer.exec")
+
+    locator = MappingLocator(
+        mapping={
+            "raw.uc_orders": TableLocation(
+                uri="uc://main.raw.orders",
+                storage_options={
+                    "databricks_workspace_url": "https://dbc.example",
+                    "databricks_access_token": "token-123",
+                },
+            )
+        }
+    )
+    writer = PolarsDeltaWriter(locator, schema_reader=_MissingSchemaReader())
+    writer.append(pl.DataFrame({"id": [1]}).lazy(), TableRef("raw.uc_orders"), None)
+
+    assert writes == [("uc://main.raw.orders", "overwrite")]
+    assert "catalog registration is not guaranteed" in caplog.text
 
 
 def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
