@@ -46,6 +46,22 @@ def test_make_backends_spark_without_session_raises() -> None:
         make_backends(config, spark=None)
 
 
+def test_make_backends_prefers_spark_when_session_is_provided() -> None:
+    from unittest.mock import MagicMock
+
+    from loom.etl.backends.spark.reader import SparkSourceReader
+    from loom.etl.backends.spark.writer import SparkTargetWriter
+    from loom.etl.storage.route.catalog import RoutedCatalog
+
+    spark = MagicMock()
+    config = StorageConfig(engine="polars")
+    reader, writer, catalog = make_backends(config, spark=spark)
+
+    assert isinstance(reader, SparkSourceReader)
+    assert isinstance(writer, SparkTargetWriter)
+    assert isinstance(catalog, RoutedCatalog)
+
+
 def test_make_backends_polars_catalog_route_uses_uc_uri(monkeypatch: pytest.MonkeyPatch) -> None:
     from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
 

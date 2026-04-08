@@ -5,6 +5,7 @@ Internal module — not part of the public API.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from loom.etl.schema._schema import ColumnSchema
@@ -27,6 +28,13 @@ class _TempStoreAware(Protocol):
     def tmp_storage_options(self) -> dict[str, str]: ...
 
 
+@dataclass(frozen=True)
+class _BackendBundle:
+    reader: SourceReader
+    writer: TargetWriter
+    catalog: TableDiscovery
+
+
 def make_backends(
     config: StorageConfig,
     spark: Any = None,
@@ -40,17 +48,20 @@ def make_backends(
     Returns:
         Triple of ``(reader, writer, catalog)``.
 
+    Selection rule:
+        * ``spark is not None`` -> Spark backends.
+        * ``spark is None`` -> Polars backends.
+
     Raises:
-        ValueError: If Spark engine is requested but no SparkSession is provided.
+        ValueError: If ``storage.engine='spark'`` but ``spark`` is not provided.
     """
-    if config.engine == "spark":
-        if spark is None:
-            raise ValueError(
-                "A SparkSession is required when storage.engine='spark'. "
-                "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
-            )
-        return _make_spark_backends(config, spark)
-    return _make_polars_backends(config)
+    if config.engine == "spark" and spark is None:
+        raise ValueError(
+            "A SparkSession is required when storage.engine='spark'. "
+            "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
+        )
+    bundle = _build_backend_bundle(config, spark)
+    return bundle.reader, bundle.writer, bundle.catalog
 
 
 def make_temp_store(
@@ -79,10 +90,21 @@ def _make_temp_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     return _PolarsTempBackend(storage_options)
 
 
+def _build_backend_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
+    if spark is not None:
+        return _build_spark_bundle(config, spark)
+    return _build_polars_bundle(config)
+
+
 def _make_spark_backends(
     config: StorageConfig,
     spark: Any,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
+    bundle = _build_spark_bundle(config, spark)
+    return bundle.reader, bundle.writer, bundle.catalog
+
+
+def _build_spark_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
     from loom.etl.backends.polars import DeltaCatalog
     from loom.etl.backends.spark import SparkCatalog, SparkSourceReader, SparkTargetWriter
 
@@ -97,21 +119,30 @@ def _make_spark_backends(
             unity_catalog_keys=frozenset(config.catalogs),
         )
     catalog = RoutedCatalog(route_resolver, catalog=catalog_backend, path=path_catalog)
-    return (
-        SparkSourceReader(spark, route_resolver=route_resolver),
-        SparkTargetWriter(spark, None, route_resolver=route_resolver),
-        catalog,
+    return _BackendBundle(
+        reader=SparkSourceReader(spark, route_resolver=route_resolver),
+        writer=SparkTargetWriter(spark, None, route_resolver=route_resolver),
+        catalog=catalog,
     )
 
 
 def _make_polars_backends(
     config: StorageConfig,
 ) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
+    bundle = _build_polars_bundle(config)
+    return bundle.reader, bundle.writer, bundle.catalog
+
+
+def _build_polars_bundle(config: StorageConfig) -> _BackendBundle:
     from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
 
     locator = _build_polars_locator(config)
     catalog = DeltaCatalog(locator)
-    return PolarsSourceReader(locator), PolarsTargetWriter(locator), catalog
+    return _BackendBundle(
+        reader=PolarsSourceReader(locator),
+        writer=PolarsTargetWriter(locator),
+        catalog=catalog,
+    )
 
 
 def _build_polars_locator(config: StorageConfig) -> TableLocator:
