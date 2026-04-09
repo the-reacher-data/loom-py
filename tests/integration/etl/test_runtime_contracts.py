@@ -151,11 +151,13 @@ def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch)
 def test_plan_and_schema_runtime_contracts() -> None:
     mods = _reload_modules(
         "loom.etl.compiler._plan",
+        "loom.etl.runner.filtering",
         "loom.etl.io.source._specs",
         "loom.etl.io.target._table",
         "loom.etl.schema._table",
     )
     plan_mod = mods["loom.etl.compiler._plan"]
+    filtering_mod = mods["loom.etl.runner.filtering"]
     source_mod = mods["loom.etl.io.source._specs"]
     target_table_mod = mods["loom.etl.io.target._table"]
     table_mod = mods["loom.etl.schema._table"]
@@ -200,13 +202,13 @@ def test_plan_and_schema_runtime_contracts() -> None:
         "StepB",
     ]
 
-    mapped_steps = plan_mod._map_process_nodes(
+    mapped_steps = filtering_mod._map_process_nodes(
         proc.nodes,
         lambda step: step if step.step_type.__name__ == "StepB" else None,
     )
     assert len(mapped_steps) == 1
 
-    mapped_processes = plan_mod._map_pipeline_nodes(
+    mapped_processes = filtering_mod._map_pipeline_nodes(
         pipeline.nodes,
         lambda p: p if p.process_type.__name__ == "Proc" else None,
     )

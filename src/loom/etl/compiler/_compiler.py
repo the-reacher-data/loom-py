@@ -34,7 +34,7 @@ from loom.etl.compiler._plan import (
     ProcessStepNode,
     StepPlan,
 )
-from loom.etl.compiler.validators import (
+from loom.etl.compiler._validators import (
     StepCompilationContext,
     validate_params_compat,
     validate_plan_catalog,

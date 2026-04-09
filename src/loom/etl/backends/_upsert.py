@@ -26,7 +26,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol
 
-from loom.etl.backends._predicate_sql import sql_literal
+from loom.etl.backends._predicate import sql_literal
 
 _log = logging.getLogger(__name__)
 

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from loom.etl.compiler._plan import (
+    ParallelProcessGroup,
+    ParallelStepGroup,
     PipelinePlan,
+    PipelineProcessNode,
     ProcessPlan,
-    _map_pipeline_nodes,
-    _map_process_nodes,
+    ProcessStepNode,
+    StepPlan,
     iter_all_steps,
     iter_processes,
 )
@@ -58,3 +63,45 @@ def _collect_all_names(plan: PipelinePlan) -> frozenset[str]:
     names = {proc.process_type.__name__ for proc in iter_processes(plan)}
     names.update(step.step_type.__name__ for step in iter_all_steps(plan))
     return frozenset(names)
+
+
+def _map_pipeline_nodes(
+    nodes: tuple[PipelineProcessNode, ...],
+    fn: Callable[[ProcessPlan], ProcessPlan | None],
+) -> tuple[PipelineProcessNode, ...]:
+    """Map/filter process nodes while preserving parallel-group shape."""
+    result: list[PipelineProcessNode] = []
+    for node in nodes:
+        match node:
+            case ProcessPlan():
+                mapped = fn(node)
+                if mapped is not None:
+                    result.append(mapped)
+            case ParallelProcessGroup(plans=plans):
+                kept = tuple(proc for proc in (fn(proc) for proc in plans) if proc is not None)
+                if len(kept) == 1:
+                    result.append(kept[0])
+                elif kept:
+                    result.append(ParallelProcessGroup(plans=kept))
+    return tuple(result)
+
+
+def _map_process_nodes(
+    nodes: tuple[ProcessStepNode, ...],
+    fn: Callable[[StepPlan], StepPlan | None],
+) -> tuple[ProcessStepNode, ...]:
+    """Map/filter step nodes while preserving parallel-group shape."""
+    result: list[ProcessStepNode] = []
+    for node in nodes:
+        match node:
+            case StepPlan():
+                mapped = fn(node)
+                if mapped is not None:
+                    result.append(mapped)
+            case ParallelStepGroup(plans=plans):
+                kept = tuple(step for step in (fn(step) for step in plans) if step is not None)
+                if len(kept) == 1:
+                    result.append(kept[0])
+                elif kept:
+                    result.append(ParallelStepGroup(plans=kept))
+    return tuple(result)

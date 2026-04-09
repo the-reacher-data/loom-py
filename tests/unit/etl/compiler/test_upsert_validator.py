@@ -8,7 +8,7 @@ import pytest
 
 from loom.etl import ETLParams, ETLStep, IntoTable
 from loom.etl.compiler import ETLCompilationError
-from loom.etl.compiler.validators._upsert import validate_upsert_spec
+from loom.etl.compiler._validators import validate_upsert_spec
 
 
 class _P(ETLParams):

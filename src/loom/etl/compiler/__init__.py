@@ -11,6 +11,18 @@ from loom.etl.compiler._plan import (
     StepPlan,
     TargetBinding,
 )
+from loom.etl.compiler._validators import (
+    StepCompilationContext,
+    validate_execute_signature,
+    validate_param_exprs,
+    validate_params_compat,
+    validate_plan_catalog,
+    validate_plan_temps,
+    validate_process_catalog,
+    validate_step,
+    validate_step_catalog,
+    validate_upsert_spec,
+)
 
 __all__ = [
     "ETLCompiler",
@@ -23,4 +35,14 @@ __all__ = [
     "TargetBinding",
     "ParallelStepGroup",
     "ParallelProcessGroup",
+    "StepCompilationContext",
+    "validate_execute_signature",
+    "validate_param_exprs",
+    "validate_params_compat",
+    "validate_plan_catalog",
+    "validate_plan_temps",
+    "validate_process_catalog",
+    "validate_step",
+    "validate_step_catalog",
+    "validate_upsert_spec",
 ]

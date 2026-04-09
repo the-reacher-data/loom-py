@@ -1,4 +1,4 @@
-"""Tests for compiler.validators._step."""
+"""Tests for compiler._validators.validate_step."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from loom.etl.compiler import _validators as step_validator
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
-from loom.etl.compiler.validators import _step as step_validator
 from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._table import TableRef

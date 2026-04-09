@@ -272,7 +272,7 @@ def test_writer_warns_on_polars_uc_first_create(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from loom.etl.backends.polars import _backend as polars_backend
+    from loom.etl.backends.polars import _writer as polars_writer_module
 
     writes: list[tuple[str, str]] = []
 
@@ -280,8 +280,8 @@ def test_writer_warns_on_polars_uc_first_create(
         mode = kwargs.get("mode")
         writes.append((table_or_uri, str(mode)))
 
-    monkeypatch.setattr(polars_backend, "write_deltalake", _fake_write_deltalake)
-    caplog.set_level("WARNING", logger="loom.etl.backends.polars._backend")
+    monkeypatch.setattr(polars_writer_module, "write_deltalake", _fake_write_deltalake)
+    caplog.set_level("WARNING", logger="loom.etl.backends.polars._writer")
 
     locator = MappingLocator(
         mapping={

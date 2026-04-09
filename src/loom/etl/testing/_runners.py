@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-from loom.etl.backends._predicate_sql import predicate_to_sql
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor
 from loom.etl.io.source import SourceSpec

@@ -36,7 +36,7 @@ Testing stubs::
 
 Namespaced API (discoverable by bounded context)::
 
-    from loom.etl import io, pipeline, runner, schema, sql, storage
+    from loom.etl import io, pipeline, runner, schema, storage
     from loom.etl.storage import temp
 
 Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of

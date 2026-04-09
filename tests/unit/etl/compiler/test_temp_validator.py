@@ -18,7 +18,7 @@ from loom.etl import (
     IntoTemp,
 )
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
-from loom.etl.compiler.validators._temp import validate_plan_temps
+from loom.etl.compiler._validators import validate_plan_temps
 
 
 class P(ETLParams):

@@ -12,7 +12,6 @@ import pytest
     [
         "loom.etl",
         "loom.etl.compiler",
-        "loom.etl.compiler.validators",
         "loom.etl.executor",
         "loom.etl.observability",
         "loom.etl.observability.stores",
@@ -21,7 +20,6 @@ import pytest
         "loom.etl.pipeline",
         "loom.etl.runner",
         "loom.etl.schema",
-        "loom.etl.sql",
         "loom.etl.storage",
         "loom.etl.storage.temp",
         "loom.etl.testing",
@@ -36,12 +34,9 @@ def test_all_exports_are_resolvable(module_name: str) -> None:
 
 def test_lazy_modules_raise_attribute_error_for_unknown_symbol() -> None:
     pipeline_module = importlib.import_module("loom.etl.pipeline")
-    sql_module = importlib.import_module("loom.etl.sql")
 
     with pytest.raises(AttributeError, match="has no attribute"):
         _ = pipeline_module.DOES_NOT_EXIST
-    with pytest.raises(AttributeError, match="has no attribute"):
-        _ = sql_module.DOES_NOT_EXIST
 
 
 def test_top_level_aliases_are_discoverable() -> None:

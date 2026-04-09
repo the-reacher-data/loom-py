@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +14,7 @@ if TYPE_CHECKING:
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
+from loom.etl.executor._executor import _new_run_id
 from loom.etl.observability import (
     CompositeObserver,
     ETLRunObserver,
@@ -164,10 +164,6 @@ class ETLRunner:
                 "cleanup_stale_temps() requires a tmp_root to be configured in storage YAML."
             )
         self._temp_store.cleanup_stale(older_than_seconds=older_than_seconds)
-
-
-def _new_run_id() -> str:
-    return str(uuid.uuid4())
 
 
 __all__ = ["ETLRunner", "InvalidStageError"]

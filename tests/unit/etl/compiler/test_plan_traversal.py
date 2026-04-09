@@ -12,8 +12,6 @@ from loom.etl.compiler._plan import (
     PipelinePlan,
     ProcessPlan,
     StepPlan,
-    _map_pipeline_nodes,
-    _map_process_nodes,
     iter_all_steps,
     iter_processes,
     iter_steps_in_process,
@@ -26,6 +24,7 @@ from loom.etl.pipeline._params import ETLParams
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess
 from loom.etl.pipeline._step import ETLStep
+from loom.etl.runner.filtering import _map_pipeline_nodes, _map_process_nodes
 
 
 class P(ETLParams):  # type: ignore[misc]

@@ -1,4 +1,4 @@
-"""Unit tests for shared UPSERT/MERGE helpers in ``loom.etl.sql``."""
+"""Unit tests for shared UPSERT/MERGE helpers in backend utilities."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.backends._predicate_sql import sql_literal
+from loom.etl.backends._predicate import sql_literal
 from loom.etl.backends._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,

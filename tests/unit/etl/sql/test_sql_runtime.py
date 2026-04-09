@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 
 from loom.etl import col, params
-from loom.etl.backends._predicate_sql import predicate_to_sql
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.pipeline._sql import resolve_sql
 from loom.etl.pipeline._step_sql import StepSQL, _extract_stepsql_types
 

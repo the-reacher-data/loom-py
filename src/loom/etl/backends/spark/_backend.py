@@ -10,7 +10,7 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.readwriter import DataFrameWriter
 
-from loom.etl.backends._predicate_sql import predicate_to_sql
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.io._format import Format
 from loom.etl.io._read_options import CsvReadOptions, JsonReadOptions
 from loom.etl.io._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions

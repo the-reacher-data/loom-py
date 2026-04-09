@@ -5,7 +5,6 @@ Internal module — not part of the public API.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 from loom.etl.storage._config import CatalogConnection, StorageConfig
@@ -24,12 +23,6 @@ class _TempStoreAware(Protocol):
 
     @property
     def tmp_storage_options(self) -> dict[str, str]: ...
-
-
-@dataclass(frozen=True)
-class _BackendBundle:
-    reader: SourceReader
-    writer: TargetWriter
 
 
 def make_backends(
@@ -57,8 +50,7 @@ def make_backends(
             "A SparkSession is required when storage.engine='spark'. "
             "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
         )
-    bundle = _build_backend_bundle(config, spark)
-    return bundle.reader, bundle.writer
+    return _build_backend_pair(config, spark)
 
 
 def make_temp_store(
@@ -87,19 +79,19 @@ def _make_temp_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     return _PolarsTempBackend(storage_options)
 
 
-def _build_backend_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
+def _build_backend_pair(config: StorageConfig, spark: Any) -> tuple[SourceReader, TargetWriter]:
     if spark is not None:
-        return _build_spark_bundle(config, spark)
-    return _build_polars_bundle(config)
+        return _build_spark_pair(config, spark)
+    return _build_polars_pair(config)
 
 
-def _build_spark_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
+def _build_spark_pair(config: StorageConfig, spark: Any) -> tuple[SourceReader, TargetWriter]:
     from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter
 
     route_resolver = build_table_resolver(config)
-    return _BackendBundle(
-        reader=SparkSourceReader(spark, route_resolver=route_resolver),
-        writer=SparkTargetWriter(
+    return (
+        SparkSourceReader(spark, route_resolver=route_resolver),
+        SparkTargetWriter(
             spark,
             None,
             route_resolver=route_resolver,
@@ -108,13 +100,13 @@ def _build_spark_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
     )
 
 
-def _build_polars_bundle(config: StorageConfig) -> _BackendBundle:
+def _build_polars_pair(config: StorageConfig) -> tuple[SourceReader, TargetWriter]:
     from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
     locator = _build_polars_locator(config)
-    return _BackendBundle(
-        reader=PolarsSourceReader(locator),
-        writer=PolarsTargetWriter(locator, missing_table_policy=config.missing_table_policy),
+    return (
+        PolarsSourceReader(locator),
+        PolarsTargetWriter(locator, missing_table_policy=config.missing_table_policy),
     )
 
 

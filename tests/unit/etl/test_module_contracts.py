@@ -47,11 +47,10 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl.pipeline", "ETLStep"),
         ("loom.etl.runner", "ETLRunner"),
         ("loom.etl.schema", "ColumnSchema"),
-        ("loom.etl.sql", "resolve_sql"),
         ("loom.etl.storage", "StorageConfig"),
         ("loom.etl.storage.temp", "IntermediateStore"),
         ("loom.etl.testing", "PolarsStepRunner"),
-        ("loom.etl.compiler.validators", "validate_plan_catalog"),
+        ("loom.etl.compiler", "validate_plan_catalog"),
         ("loom.etl.observability", "StructlogRunObserver"),
         ("loom.etl.observability.stores", "TableExecutionRecordStore"),
     ],
@@ -92,14 +91,14 @@ def test_reload_sql_and_compiler_definition_modules_with_basic_usage() -> None:
         "loom.etl.io.target",
         "loom.etl.io.source._predicate",
         "loom.etl.io.source._predicate_dialect",
-        "loom.etl.backends._predicate_sql",
+        "loom.etl.backends._predicate",
     )
 
     compiler_errors = modules["loom.etl.compiler._errors"]
     target_variants = modules["loom.etl.io.target"]
     predicate_nodes = modules["loom.etl.io.source._predicate"]
     predicate_dialect = modules["loom.etl.io.source._predicate_dialect"]
-    predicate_sql = modules["loom.etl.backends._predicate_sql"]
+    predicate_utils = modules["loom.etl.backends._predicate"]
 
     class _Step:
         __qualname__ = "ReloadStep"
@@ -149,7 +148,7 @@ def test_reload_sql_and_compiler_definition_modules_with_basic_usage() -> None:
     node = predicate_nodes.EqPred(left=1, right=1)
     rendered = predicate_dialect.fold_predicate(node, object(), _Dialect())
     assert rendered == "lit:1=lit:1"
-    assert callable(predicate_sql.predicate_to_sql)
+    assert callable(predicate_utils.predicate_to_sql)
 
 
 def test_runner_error_message_includes_requested_include_set() -> None:
@@ -264,8 +263,9 @@ def test_lazy_pipeline_exports_resolve() -> None:
 
 
 def test_lazy_sql_exports_resolve() -> None:
+    from loom.etl.backends._predicate import sql_literal
     from loom.etl.pipeline import StepSQL
-    from loom.etl.sql import resolve_sql, sql_literal
+    from loom.etl.pipeline._sql import resolve_sql
 
     assert StepSQL is not None
     assert callable(resolve_sql)
@@ -441,10 +441,3 @@ def test_public_root_exports_are_importable() -> None:
 
     for name in ("FromTable", "IntoTable", "ETLRunner", "TableRef", "StepSQL"):
         assert hasattr(etl, name)
-
-
-def test_sql_module_rejects_unknown_lazy_symbol() -> None:
-    import loom.etl.sql as sql
-
-    with pytest.raises(AttributeError, match="has no attribute"):
-        _ = sql.DOES_NOT_EXIST

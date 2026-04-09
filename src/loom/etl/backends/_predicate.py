@@ -1,29 +1,26 @@
-"""Predicate → SQL string serialiser.
+"""Predicate renderers for backend execution.
 
-Converts a :data:`~loom.etl.io.source._predicate.PredicateNode` tree into
-an ANSI SQL predicate string suitable for Delta Lake ``replaceWhere``.
+This module keeps one predicate AST (`io/source/_predicate.py`) and offers
+backend render targets:
 
-Internal module — not part of the public API.
+- SQL string (`predicate_to_sql`)
+- Polars expression (`predicate_to_polars`)
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loom.etl.io.source._predicate import PredicateNode
 from loom.etl.io.source._predicate_dialect import PredicateDialect, fold_predicate
 
+if TYPE_CHECKING:
+    import polars as pl
+
 
 def sql_literal(value: Any) -> str:
-    """Render a Python scalar as a SQL literal.
-
-    Args:
-        value: Python scalar to render.
-
-    Returns:
-        SQL literal string.
-    """
+    """Render a Python scalar as a SQL literal."""
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, datetime):
@@ -42,9 +39,6 @@ class _SqlPredicateDialect(PredicateDialect[str]):
         return name
 
     def literal(self, value: Any) -> str:
-        # Preserve current behavior for binary predicates:
-        # plain string leaves are emitted raw (unquoted).
-        # IN-lists use _in_literal() below, which quotes strings.
         if isinstance(value, str):
             return value
         if isinstance(value, bool):
@@ -91,21 +85,60 @@ class _SqlPredicateDialect(PredicateDialect[str]):
         return str(value)
 
 
+class _PolarsPredicateDialect(PredicateDialect["pl.Expr"]):
+    """Render predicate nodes as Polars expressions."""
+
+    def __init__(self) -> None:
+        import polars as pl
+
+        self._pl = pl
+
+    def column(self, name: str) -> pl.Expr:
+        return self._pl.col(name)
+
+    def literal(self, value: Any) -> pl.Expr:
+        return self._pl.lit(value)
+
+    def eq(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left == right
+
+    def ne(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left != right
+
+    def gt(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left > right
+
+    def ge(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left >= right
+
+    def lt(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left < right
+
+    def le(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left <= right
+
+    def in_(self, ref: pl.Expr, values: tuple[Any, ...]) -> pl.Expr:
+        return ref.is_in(list(values))
+
+    def and_(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left & right
+
+    def or_(self, left: pl.Expr, right: pl.Expr) -> pl.Expr:
+        return left | right
+
+    def not_(self, operand: pl.Expr) -> pl.Expr:
+        return ~operand
+
+
 _SQL_PREDICATE_DIALECT = _SqlPredicateDialect()
+_POLARS_PREDICATE_DIALECT = _PolarsPredicateDialect()
 
 
 def predicate_to_sql(node: PredicateNode, params_instance: Any) -> str:
-    """Serialise *node* to an ANSI SQL predicate string.
-
-    Args:
-        node:            Root predicate node produced by the column / param DSL.
-        params_instance: Concrete params used to resolve
-                         :class:`~loom.etl._proxy.ParamExpr` leaf values.
-
-    Returns:
-        SQL predicate string, e.g. ``"year = 2024 AND month = 1"``.
-
-    Raises:
-        TypeError: If an unrecognised node type is encountered.
-    """
+    """Serialise *node* to ANSI SQL predicate string."""
     return fold_predicate(node, params_instance, _SQL_PREDICATE_DIALECT)
+
+
+def predicate_to_polars(node: PredicateNode, params_instance: Any) -> pl.Expr:
+    """Convert *node* to ``polars.Expr`` for ``LazyFrame.filter``."""
+    return fold_predicate(node, params_instance, _POLARS_PREDICATE_DIALECT)

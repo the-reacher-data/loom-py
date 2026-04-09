@@ -10,7 +10,7 @@ import pytest
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding
-from loom.etl.compiler.validators._structural import (
+from loom.etl.compiler._validators import (
     validate_execute_signature,
     validate_params_compat,
 )
@@ -44,11 +44,6 @@ def test_params_compat_same_type_passes() -> None:
 
 def test_params_compat_subclass_passes() -> None:
     # ExtendedParams is structurally compatible — has all BaseParams fields
-    validate_params_compat(object, BaseParams, ExtendedParams)
-
-
-def test_params_compat_duck_type_passes() -> None:
-    # ExtendedParams has run_date — duck-type compatible with BaseParams
     validate_params_compat(object, BaseParams, ExtendedParams)
 
 

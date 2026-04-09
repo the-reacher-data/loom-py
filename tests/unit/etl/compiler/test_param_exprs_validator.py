@@ -1,4 +1,4 @@
-"""Unit tests for compiler.validators._param_exprs — ParamExpr field validation."""
+"""Unit tests for compiler._validators ParamExpr field validation."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from loom.etl import ETLParams, ETLStep, IntoTable, col
 from loom.etl.compiler import ETLCompilationError
 from loom.etl.compiler._errors import ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
-from loom.etl.compiler.validators._param_exprs import validate_param_exprs
+from loom.etl.compiler._validators import validate_param_exprs
 from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target._table import AppendSpec, ReplaceWhereSpec
 from loom.etl.pipeline._proxy import params as p

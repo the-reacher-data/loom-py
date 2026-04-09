@@ -152,56 +152,6 @@ def iter_all_steps(plan: PipelinePlan) -> Iterator[StepPlan]:
         yield from iter_steps_in_process(proc)
 
 
-def _map_pipeline_nodes(
-    nodes: tuple[PipelineProcessNode, ...],
-    fn: Callable[[ProcessPlan], ProcessPlan | None],
-) -> tuple[PipelineProcessNode, ...]:
-    """Map/Filter process nodes while preserving parallel-group shape.
-
-    ``fn`` receives concrete :class:`ProcessPlan` items. Returning ``None``
-    drops the item. Parallel groups with a single kept process are collapsed
-    into a plain :class:`ProcessPlan`.
-    """
-    result: list[PipelineProcessNode] = []
-    for node in nodes:
-        match node:
-            case ProcessPlan():
-                if mapped := fn(node):
-                    result.append(mapped)
-            case ParallelProcessGroup(plans=plans):
-                kept = tuple(proc for proc in (fn(proc) for proc in plans) if proc is not None)
-                if len(kept) == 1:
-                    result.append(kept[0])
-                elif kept:
-                    result.append(ParallelProcessGroup(plans=kept))
-    return tuple(result)
-
-
-def _map_process_nodes(
-    nodes: tuple[ProcessStepNode, ...],
-    fn: Callable[[StepPlan], StepPlan | None],
-) -> tuple[ProcessStepNode, ...]:
-    """Map/Filter step nodes while preserving parallel-group shape.
-
-    ``fn`` receives concrete :class:`StepPlan` items. Returning ``None``
-    drops the item. Parallel groups with a single kept step are collapsed
-    into a plain :class:`StepPlan`.
-    """
-    result: list[ProcessStepNode] = []
-    for node in nodes:
-        match node:
-            case StepPlan():
-                if mapped := fn(node):
-                    result.append(mapped)
-            case ParallelStepGroup(plans=plans):
-                kept = tuple(step for step in (fn(step) for step in plans) if step is not None)
-                if len(kept) == 1:
-                    result.append(kept[0])
-                elif kept:
-                    result.append(ParallelStepGroup(plans=kept))
-    return tuple(result)
-
-
 def visit_pipeline_nodes(
     nodes: tuple[PipelineProcessNode, ...],
     on_process: Callable[[ProcessPlan], None],
