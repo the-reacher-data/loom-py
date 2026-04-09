@@ -8,6 +8,7 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -22,7 +23,8 @@ from loom.etl.backends._upsert import (
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import UpsertSpec
+from loom.etl.io.target._table import AppendSpec, UpsertSpec
+from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocation, _as_locator
 from loom.etl.storage.routing import (
@@ -33,6 +35,7 @@ from loom.etl.storage.routing import (
     TableRouteResolver,
 )
 from loom.etl.storage.schema import PolarsPhysicalSchema
+from loom.etl.storage.schema.delta import read_delta_physical_schema
 
 from ._file_writer import PolarsFileWriter
 from ._schema import apply_schema
@@ -66,8 +69,6 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
         streaming: bool = False,
     ) -> None:
         """Append frame to table (legacy API, creates table on first write)."""
-        from loom.etl.io.target._table import AppendSpec
-
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
 
@@ -77,8 +78,6 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
 
     def _physical_schema(self, target: ResolvedTarget) -> PolarsPhysicalSchema | None:
         """Read physical schema from Delta log."""
-        from loom.etl.storage.schema.delta import read_delta_physical_schema
-
         if isinstance(target, CatalogTarget):
             raise ValueError(
                 "Polars backend only supports path targets; "
@@ -111,8 +110,6 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
         """Convert predicate to SQL (Polars uses internal SQL representation)."""
-        from loom.etl.backends._predicate import predicate_to_sql
-
         return predicate_to_sql(predicate, params)
 
     # ====================================================================

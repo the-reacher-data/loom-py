@@ -6,8 +6,12 @@ import logging
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 
 from loom.etl.backends._predicate import predicate_to_sql
+from loom.etl.backends.spark._dtype import loom_type_to_spark
+from loom.etl.io._format import Format
+from loom.etl.io._read_options import CsvReadOptions, JsonReadOptions
 from loom.etl.io.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage.protocols import SourceReader
@@ -15,6 +19,7 @@ from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
     PathRouteResolver,
+    ResolvedTarget,
     TableRouteResolver,
 )
 
