@@ -101,9 +101,9 @@ class SourceReader(Protocol):
     * Returning a *lazy* frame where the backend supports it
       (e.g. ``polars.LazyFrame``, ``pyspark.sql.DataFrame``).
 
-    Example (Polars Delta)::
+    Example (Polars backend)::
 
-        class PolarsDeltaReader:
+        class PolarsSourceReader:
             def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
                 filters = translate_predicates(spec.predicates, params_instance)
                 return pl.scan_delta(catalog_path(spec.table_ref)).filter(filters)
@@ -134,9 +134,9 @@ class TargetWriter(Protocol):
     (e.g. ``LazyFrame.collect()``) **only at write time** — the framework
     never materialises frames before passing them here.
 
-    Example (Polars Delta)::
+    Example (Polars backend)::
 
-        class PolarsDeltaWriter:
+        class PolarsTargetWriter:
             def write(
                 self, frame: pl.LazyFrame, spec: TargetSpec, params_instance: Any
             ) -> None:

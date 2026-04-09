@@ -1,4 +1,4 @@
-"""Integration tests for PolarsDeltaReader column projection.
+"""Integration tests for PolarsSourceReader column projection.
 
 Verifies that .columns() on FromTable and FromFile pushes column selection
 down to the Parquet scanner — only declared columns are materialised.
@@ -11,7 +11,7 @@ from pathlib import Path
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl.backends.polars import PolarsDeltaReader
+from loom.etl.backends.polars import PolarsSourceReader
 from loom.etl.io._format import Format
 from loom.etl.io.source import FileSourceSpec, FromFile, FromTable, TableSourceSpec
 from loom.etl.schema._table import TableRef
@@ -30,8 +30,8 @@ def _seed_delta(root: Path, ref: str, data: pl.DataFrame) -> Path:
     return path
 
 
-def _reader(root: Path) -> PolarsDeltaReader:
-    return PolarsDeltaReader(str(root))
+def _reader(root: Path) -> PolarsSourceReader:
+    return PolarsSourceReader(str(root))
 
 
 def _table_spec(ref: str, columns: tuple[str, ...] = ()) -> TableSourceSpec:

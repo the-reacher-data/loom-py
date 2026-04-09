@@ -1,4 +1,4 @@
-"""Integration tests for PolarsDeltaWriter UPSERT/MERGE.
+"""Integration tests for PolarsTargetWriter UPSERT/MERGE.
 
 Requires polars and deltalake.  The module is skipped automatically when
 either is absent (see conftest.py).
@@ -11,7 +11,7 @@ from pathlib import Path
 import polars as pl
 from deltalake import write_deltalake
 
-from loom.etl.backends.polars import PolarsDeltaWriter
+from loom.etl.backends.polars import PolarsTargetWriter
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import UpsertSpec
 from loom.etl.schema._table import TableRef
@@ -57,8 +57,8 @@ def _writer(
     root: Path,
     *,
     missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
-) -> PolarsDeltaWriter:
-    return PolarsDeltaWriter(str(root), missing_table_policy=missing_table_policy)
+) -> PolarsTargetWriter:
+    return PolarsTargetWriter(str(root), missing_table_policy=missing_table_policy)
 
 
 # ---------------------------------------------------------------------------

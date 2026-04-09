@@ -103,11 +103,11 @@ def seed_table(
     return _seed
 
 
-class MinimalPolarsDeltaReader:
+class MinimalPolarsSourceReader:
     """Minimal :class:`~loom.etl._io.SourceReader` backed by ``pl.scan_delta()``.
 
     No predicate pushdown — reads the full table as a lazy frame.
-    Intended only for use in tests until the full ``PolarsDeltaReader``
+    Intended only for use in tests until the full ``PolarsSourceReader``
     (sprint 5) is introduced.
 
     Args:
@@ -130,11 +130,11 @@ class MinimalPolarsDeltaReader:
         return pl.scan_delta(str(path))
 
 
-class MinimalPolarsDeltaWriter:
+class MinimalPolarsTargetWriter:
     """Minimal :class:`~loom.etl._io.TargetWriter` backed by ``write_delta()``.
 
     Supports ``REPLACE`` (overwrite) and ``APPEND`` write modes.
-    Intended only for use in tests until the full ``PolarsDeltaWriter``
+    Intended only for use in tests until the full ``PolarsTargetWriter``
     (sprint 5) is introduced.
 
     Args:
@@ -164,12 +164,12 @@ class MinimalPolarsDeltaWriter:
 
 
 @pytest.fixture
-def polars_reader(delta_root: Path) -> MinimalPolarsDeltaReader:
+def polars_reader(delta_root: Path) -> MinimalPolarsSourceReader:
     """Pre-sprint-5 Polars + Delta source reader for integration tests."""
-    return MinimalPolarsDeltaReader(delta_root)
+    return MinimalPolarsSourceReader(delta_root)
 
 
 @pytest.fixture
-def polars_writer(delta_root: Path) -> MinimalPolarsDeltaWriter:
+def polars_writer(delta_root: Path) -> MinimalPolarsTargetWriter:
     """Pre-sprint-5 Polars + Delta target writer for integration tests."""
-    return MinimalPolarsDeltaWriter(delta_root)
+    return MinimalPolarsTargetWriter(delta_root)

@@ -10,7 +10,7 @@ import pytest
 from deltalake import write_deltalake
 
 from loom.etl import ETLParams, col
-from loom.etl.backends.polars import PolarsDeltaReader
+from loom.etl.backends.polars import PolarsSourceReader
 from loom.etl.backends.polars._predicate import predicate_to_polars
 from loom.etl.io.source import TableSourceSpec
 from loom.etl.pipeline._proxy import params as p
@@ -126,7 +126,7 @@ def _spec_with_pred(ref: str, *predicates: object) -> TableSourceSpec:
 def test_reader_applies_eq_predicate(tmp_path: Path) -> None:
     data = pl.DataFrame({"year": [2023, 2024, 2024], "v": [1, 2, 3]})
     _seed_partitioned(tmp_path, "raw.facts", data)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     result = reader.read(_spec_with_pred("raw.facts", col("year") == 2024), _PARAMS).collect()
     assert result["year"].to_list() == [2024, 2024]
     assert result["v"].to_list() == [2, 3]
@@ -135,7 +135,7 @@ def test_reader_applies_eq_predicate(tmp_path: Path) -> None:
 def test_reader_applies_param_predicate(tmp_path: Path) -> None:
     data = pl.DataFrame({"year": [2023, 2024, 2025], "v": [10, 20, 30]})
     _seed_partitioned(tmp_path, "raw.facts", data)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     result = reader.read(
         _spec_with_pred("raw.facts", col("year") == p.run_date.year), _PARAMS
     ).collect()
@@ -145,7 +145,7 @@ def test_reader_applies_param_predicate(tmp_path: Path) -> None:
 def test_reader_applies_compound_predicate(tmp_path: Path) -> None:
     data = pl.DataFrame({"year": [2024, 2024, 2023], "month": [1, 3, 3], "v": [1, 2, 3]})
     _seed_partitioned(tmp_path, "raw.facts", data)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     pred = (col("year") == p.run_date.year) & (col("month") == p.run_date.month)
     result = reader.read(_spec_with_pred("raw.facts", pred), _PARAMS).collect()
     assert result["v"].to_list() == [2]
@@ -154,7 +154,7 @@ def test_reader_applies_compound_predicate(tmp_path: Path) -> None:
 def test_reader_no_predicate_returns_full_table(tmp_path: Path) -> None:
     data = pl.DataFrame({"year": [2023, 2024], "v": [1, 2]})
     _seed_partitioned(tmp_path, "raw.facts", data)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     spec = TableSourceSpec(alias="data", table_ref=TableRef("raw.facts"))
     result = reader.read(spec, _PARAMS).collect()
     assert result.height == 2

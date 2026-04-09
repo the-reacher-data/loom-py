@@ -38,8 +38,11 @@ class SparkReadOps:
         columns: tuple[str, ...] | None = None,
         predicates: tuple[Any, ...] = (),
         params: Any = None,
+        schema: tuple[ColumnSchema, ...] = (),
+        json_columns: tuple[Any, ...] = (),
     ) -> DataFrame:
         """Read Delta table from catalog or path."""
+        _ = schema, json_columns
         if isinstance(target, CatalogTarget):
             df = self._spark.table(target.catalog_ref.ref)
         else:
@@ -204,6 +207,10 @@ class SparkSchemaOps:
         """Spark DataFrames are already eager."""
         return frame
 
+    def to_sql(self, predicate: Any, params: Any) -> str:
+        """Translate predicate node to SQL expression."""
+        return predicate_to_sql(predicate, params)
+
     def _to_loom(self, dtype: T.DataType) -> LoomType:
         """Convert Spark type to Loom."""
         from loom.etl.backends.spark._dtype import spark_to_loom
@@ -318,10 +325,14 @@ class SparkWriteOps:
         *,
         keys: tuple[str, ...],
         partition_cols: tuple[str, ...],
+        upsert_exclude: tuple[str, ...] = (),
+        upsert_include: tuple[str, ...] = (),
         schema_mode: SchemaMode,
         existing_schema: SparkPhysicalSchema | None,
+        streaming: bool = False,
     ) -> None:
         """Upsert/merge."""
+        _ = upsert_exclude, upsert_include, streaming
         aligned = self._schema.align(frame, existing_schema, schema_mode)
 
         if isinstance(target, CatalogTarget):
@@ -358,8 +369,11 @@ class SparkWriteOps:
         path: str,
         format: str | Format,
         options: Any = None,
+        *,
+        streaming: bool = False,
     ) -> None:
         """Write file (CSV, JSON, Parquet, Delta)."""
+        _ = streaming
         fmt = format.value if isinstance(format, Format) else format
 
         if fmt == "delta":

@@ -20,54 +20,15 @@ _log = logging.getLogger(__name__)
 
 
 class PolarsFileWriter:
-    """Write FILE targets with Polars DataFrame writers.
-
-    Supports CSV, Parquet and JSON (NDJSON) formats.
-
-    When ``streaming=False`` (default), the lazy frame is collected once
-    before writing via ``DataFrame.write_*``.
-
-    When ``streaming=True``, writing uses the zero-copy ``LazyFrame.sink_*``
-    API — the frame is never fully materialised in memory.  The plan must be
-    streaming-compatible; Polars will raise ``InvalidOperationError`` if it
-    contains operations that cannot be streamed (e.g. global sort, window
-    functions).
-
-    Backend-specific options are forwarded verbatim via
-    ``write_options.kwargs``.
-
-    Example::
-
-        writer = PolarsFileWriter()
-        writer.write(lazy_frame, file_spec)
-        writer.write(lazy_frame, file_spec, streaming=True)
-    """
+    """Write FILE targets with Polars DataFrame writers."""
 
     def write(self, frame: pl.LazyFrame, spec: FileSpec, *, streaming: bool = False) -> None:
-        """Write *frame* to the path declared in *spec*.
-
-        Args:
-            frame:     Lazy frame produced by the step's ``execute()``.
-            spec:      File target spec carrying path, format, and write options.
-            streaming: When ``True``, uses ``LazyFrame.sink_*`` for true
-                       zero-copy streaming output.  When ``False`` (default),
-                       collects the frame first then calls ``DataFrame.write_*``.
-
-        Raises:
-            KeyError:              When ``spec.format`` is not supported.
-            InvalidOperationError: When ``streaming=True`` but the plan
-                                   contains non-streaming operations.
-        """
+        """Write *frame* to the path declared in *spec*."""
         if streaming:
             _log.debug("streaming write: sink_%s path=%s", spec.format, spec.path)
             _STREAMING_WRITERS[spec.format](frame, spec.path, spec.write_options)
         else:
             _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
-
-
-# ---------------------------------------------------------------------------
-# Collect writers  (DataFrame.write_*)
-# ---------------------------------------------------------------------------
 
 
 _Options = WriteOptions | None
@@ -100,11 +61,6 @@ _FILE_WRITERS: dict[Format, _DataFrameWriter] = {
     Format.PARQUET: _write_parquet_file,
     Format.JSON: _write_json_file,
 }
-
-
-# ---------------------------------------------------------------------------
-# Streaming writers  (LazyFrame.sink_*)
-# ---------------------------------------------------------------------------
 
 
 def _sink_csv_file(frame: pl.LazyFrame, path: str, options: _Options) -> None:

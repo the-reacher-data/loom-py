@@ -13,16 +13,9 @@ from loom.etl.backends.spark._backend import (
     SparkWriteOps,
 )
 from loom.etl.backends.spark._catalog import SparkCatalog
-from loom.etl.backends.spark._io_compat import (
-    SparkSourceReader,
-    SparkTargetWriter,
-)
 from loom.etl.backends.spark._schema import spark_apply_schema
+from loom.etl.backends.spark.io import SparkSourceReader, SparkTargetWriter
 from loom.etl.testing.spark import SparkTestSession
-
-# Compatibility aliases
-SparkDeltaReader = SparkSourceReader
-SparkDeltaWriter = SparkTargetWriter
 
 __all__ = [
     "SparkBackend",

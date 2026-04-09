@@ -1,4 +1,4 @@
-"""Integration tests for DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter."""
+"""Integration tests for DeltaCatalog, PolarsSourceReader, PolarsTargetWriter."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from loom.etl import ETLParams, col
-from loom.etl.backends.polars import DeltaCatalog, PolarsDeltaReader, PolarsDeltaWriter
+from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
 from loom.etl.backends.polars._schema import SchemaNotFoundError
 from loom.etl.io._format import Format
 from loom.etl.io.source import FileSourceSpec, TableSourceSpec
@@ -106,7 +106,7 @@ def test_catalog_update_schema_is_noop(tmp_path: Path) -> None:
 
 def test_reader_returns_lazy_frame(tmp_path: Path) -> None:
     _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1, 2]}))
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     result = reader.read(_source_spec("raw.orders"), None)
     assert isinstance(result, pl.LazyFrame)
 
@@ -114,14 +114,14 @@ def test_reader_returns_lazy_frame(tmp_path: Path) -> None:
 def test_reader_reads_correct_data(tmp_path: Path) -> None:
     data = pl.DataFrame({"id": [1, 2, 3], "v": [10, 20, 30]})
     _seed(tmp_path, "raw.events", data)
-    result = PolarsDeltaReader(tmp_path).read(_source_spec("raw.events"), None).collect()
+    result = PolarsSourceReader(tmp_path).read(_source_spec("raw.events"), None).collect()
     assert result["id"].to_list() == [1, 2, 3]
     assert result["v"].to_list() == [10, 20, 30]
 
 
 def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:
     _seed(tmp_path, "staging.out", pl.DataFrame({"id": [0], "v": [0.0]}))
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "v": [1.0]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
     result = _read_table(tmp_path, "staging.out")
@@ -130,7 +130,7 @@ def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:
 
 def test_writer_strict_drops_extra_column(tmp_path: Path) -> None:
     _seed(tmp_path, "staging.out", pl.DataFrame({"id": [0]}))
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "extra": ["x"]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
     result = _read_table(tmp_path, "staging.out")
@@ -139,7 +139,7 @@ def test_writer_strict_drops_extra_column(tmp_path: Path) -> None:
 
 
 def test_writer_raises_schema_not_found_when_table_missing(tmp_path: Path) -> None:
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()
     with pytest.raises(SchemaNotFoundError):
         writer.write(frame, _spec("staging.new", schema_mode=SchemaMode.STRICT), None)
@@ -148,7 +148,7 @@ def test_writer_raises_schema_not_found_when_table_missing(tmp_path: Path) -> No
 def test_writer_overwrite_creates_table_when_missing(tmp_path: Path) -> None:
     """OVERWRITE on a non-existent table creates it from the frame schema."""
     catalog = DeltaCatalog(tmp_path)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1, 2], "v": [10, 20]}).lazy()
     writer.write(frame, _spec("staging.new", schema_mode=SchemaMode.OVERWRITE), None)
     assert catalog.exists(TableRef("staging.new"))
@@ -160,7 +160,7 @@ def test_writer_overwrite_creates_table_when_missing(tmp_path: Path) -> None:
 def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     """EVOLVE: columns missing from frame are written as nulls."""
     _seed(tmp_path, "staging.out", pl.DataFrame({"id": [0], "label": ["x"]}))
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()  # label missing
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.EVOLVE), None)
     result = _read_table(tmp_path, "staging.out")
@@ -170,7 +170,7 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
 
 
 def test_writer_reads_latest_schema_between_consecutive_writes(tmp_path: Path) -> None:
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     ref = TableRef("staging.evolving")
 
     writer.write(
@@ -203,7 +203,7 @@ def test_reader_reads_csv_file(tmp_path: Path) -> None:
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
     spec = FileSourceSpec(alias="data", path=str(csv_path), format=Format.CSV)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     lf = reader.read(spec, None)
     df = lf.collect()
     assert df.shape == (2, 2)
@@ -221,7 +221,7 @@ def test_reader_applies_source_schema_on_csv(tmp_path: Path) -> None:
         ColumnSchema("amount", LoomDtype.FLOAT64),
     )
     spec = FileSourceSpec(alias="data", path=str(csv_path), format=Format.CSV, schema=schema)
-    reader = PolarsDeltaReader(tmp_path)
+    reader = PolarsSourceReader(tmp_path)
     df = reader.read(spec, None).collect()
     assert df["id"].dtype == pl.Int64
     assert df["amount"].dtype == pl.Float64
@@ -231,7 +231,7 @@ def test_writer_writes_csv_file(tmp_path: Path) -> None:
     """FILE targets (CSV) are now supported."""
     out_path = tmp_path / "out.csv"
     frame = pl.DataFrame({"id": [1, 2], "name": ["a", "b"]}).lazy()
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     writer.write(frame, _file_target_spec_local(str(out_path)), None)
     result = pl.read_csv(str(out_path))
     assert result.shape == (2, 2)
@@ -243,7 +243,7 @@ def _file_target_spec_local(path: str) -> FileSpec:
 
 def test_writer_append_adds_rows(tmp_path: Path) -> None:
     _seed(tmp_path, "staging.ledger", pl.DataFrame({"id": [0], "v": [0.0]}))
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1, 2], "v": [1.0, 2.0]}).lazy()
     writer.write(frame, AppendSpec(table_ref=TableRef("staging.ledger")), None)
     result = _read_table(tmp_path, "staging.ledger")
@@ -251,7 +251,7 @@ def test_writer_append_adds_rows(tmp_path: Path) -> None:
 
 
 def test_writer_append_first_write_requires_create_policy(tmp_path: Path) -> None:
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
 
     with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
@@ -259,7 +259,7 @@ def test_writer_append_first_write_requires_create_policy(tmp_path: Path) -> Non
 
 
 def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
-    writer = PolarsDeltaWriter(tmp_path, missing_table_policy=MissingTablePolicy.CREATE)
+    writer = PolarsTargetWriter(tmp_path, missing_table_policy=MissingTablePolicy.CREATE)
     frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
 
     writer.append(frame, TableRef("staging.append_first"), None)
@@ -272,7 +272,7 @@ def test_writer_warns_on_polars_uc_first_create(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from loom.etl.backends.polars.writer import exec as writer_exec
+    from loom.etl.backends.polars import _backend as polars_backend
 
     writes: list[tuple[str, str]] = []
 
@@ -280,8 +280,8 @@ def test_writer_warns_on_polars_uc_first_create(
         mode = kwargs.get("mode")
         writes.append((table_or_uri, str(mode)))
 
-    monkeypatch.setattr(writer_exec, "write_deltalake", _fake_write_deltalake)
-    caplog.set_level("WARNING", logger="loom.etl.backends.polars.writer.exec")
+    monkeypatch.setattr(polars_backend, "write_deltalake", _fake_write_deltalake)
+    caplog.set_level("WARNING", logger="loom.etl.backends.polars._backend")
 
     locator = MappingLocator(
         mapping={
@@ -294,7 +294,7 @@ def test_writer_warns_on_polars_uc_first_create(
             )
         }
     )
-    writer = PolarsDeltaWriter(
+    writer = PolarsTargetWriter(
         locator,
         schema_reader=_MissingSchemaReader(),
         missing_table_policy=MissingTablePolicy.CREATE,
@@ -308,7 +308,7 @@ def test_writer_warns_on_polars_uc_first_create(
 def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.facts", initial)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     new_data = pl.DataFrame({"year": [2024], "v": [99]})
     spec = ReplacePartitionsSpec(
         table_ref=TableRef("staging.facts"),
@@ -323,7 +323,7 @@ def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path)
 def test_writer_replace_partitions_with_string_values(tmp_path: Path) -> None:
     initial = pl.DataFrame({"region": ["us", "eu"], "v": [1, 2]})
     _seed(tmp_path, "staging.regions", initial)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     new_data = pl.DataFrame({"region": ["us"], "v": [99]})
     spec = ReplacePartitionsSpec(
         table_ref=TableRef("staging.regions"),
@@ -338,7 +338,7 @@ def test_writer_replace_partitions_with_string_values(tmp_path: Path) -> None:
 def test_writer_replace_partitions_with_bool_values(tmp_path: Path) -> None:
     initial = pl.DataFrame({"active": [True, False], "v": [1, 2]})
     _seed(tmp_path, "staging.flags", initial)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     new_data = pl.DataFrame({"active": [True], "v": [99]})
     spec = ReplacePartitionsSpec(
         table_ref=TableRef("staging.flags"),
@@ -351,7 +351,7 @@ def test_writer_replace_partitions_with_bool_values(tmp_path: Path) -> None:
 
 
 def test_writer_replace_partitions_first_run_creates_partitioned_table(tmp_path: Path) -> None:
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     new_data = pl.DataFrame({"year": [2024], "v": [99]})
     spec = ReplacePartitionsSpec(
         table_ref=TableRef("staging.partitioned"),
@@ -367,7 +367,7 @@ def test_writer_replace_partitions_first_run_creates_partitioned_table(tmp_path:
 def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.yearly", initial)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     new_data = pl.DataFrame({"year": [2024], "v": [99]})
     pred = col("year") == p.run_date.year
     spec = IntoTable("staging.yearly").replace_where(pred)._to_spec()
@@ -381,7 +381,7 @@ def test_writer_updates_catalog_schema_after_write(tmp_path: Path) -> None:
     """Catalog schema reflects the written frame after a successful write."""
     _seed(tmp_path, "staging.out", pl.DataFrame({"id": [0]}))
     catalog = DeltaCatalog(tmp_path)
-    writer = PolarsDeltaWriter(tmp_path)
+    writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
     schema = catalog.schema(TableRef("staging.out"))

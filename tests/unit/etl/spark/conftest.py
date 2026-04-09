@@ -19,7 +19,7 @@ pytest.importorskip("delta")
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 
-from loom.etl.backends.spark import SparkDeltaReader, SparkDeltaWriter  # noqa: E402
+from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter  # noqa: E402
 from loom.etl.schema._table import TableRef  # noqa: E402
 from loom.etl.testing.spark import SparkStepRunner, SparkTestSession  # noqa: E402
 
@@ -48,18 +48,18 @@ def spark_root(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-def spark_reader(spark: SparkSession, spark_root: Path) -> SparkDeltaReader:
-    """SparkDeltaReader pointing at spark_root."""
-    return SparkDeltaReader(spark, spark_root)
+def spark_reader(spark: SparkSession, spark_root: Path) -> SparkSourceReader:
+    """SparkSourceReader pointing at spark_root."""
+    return SparkSourceReader(spark, spark_root)
 
 
 @pytest.fixture
 def spark_writer(
     spark: SparkSession,
     spark_root: Path,
-) -> SparkDeltaWriter:
-    """SparkDeltaWriter pointing at spark_root."""
-    return SparkDeltaWriter(spark, spark_root)
+) -> SparkTargetWriter:
+    """SparkTargetWriter pointing at spark_root."""
+    return SparkTargetWriter(spark, spark_root)
 
 
 def spark_table_path(root: Path, ref: TableRef) -> Path:

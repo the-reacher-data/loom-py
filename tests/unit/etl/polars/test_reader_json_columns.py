@@ -1,4 +1,4 @@
-"""Unit tests for JSON column decoding in PolarsDeltaReader (_apply_json_decode)."""
+"""Unit tests for JSON column decoding in PolarsSourceReader (_apply_json_decode)."""
 
 from __future__ import annotations
 

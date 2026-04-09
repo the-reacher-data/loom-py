@@ -47,7 +47,7 @@ def test_make_backends_spark_without_session_raises() -> None:
 def test_make_backends_prefers_spark_when_session_is_provided() -> None:
     from unittest.mock import MagicMock
 
-    from loom.etl.backends.spark._io_compat import SparkSourceReader, SparkTargetWriter
+    from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter
 
     spark = MagicMock()
     config = StorageConfig(engine="polars")
@@ -105,7 +105,7 @@ def test_make_backends_polars_two_part_uc_ref_requires_catalog_key() -> None:
 def test_make_backends_spark_catalog_route_builds_backends() -> None:
     from unittest.mock import MagicMock
 
-    from loom.etl.backends.spark._io_compat import SparkSourceReader, SparkTargetWriter
+    from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter
 
     spark = MagicMock()
     config = StorageConfig(

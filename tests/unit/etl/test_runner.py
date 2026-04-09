@@ -211,7 +211,7 @@ class TestRunnerFromConfig:
 
         from unittest.mock import MagicMock
 
-        from loom.etl.backends.spark._io_compat import SparkSourceReader
+        from loom.etl.backends.spark import SparkSourceReader
 
         spark = MagicMock()
         runner = ETLRunner.from_config(StorageConfig(engine="spark"), spark=spark)
@@ -232,8 +232,7 @@ class TestRunnerFromConfig:
         tmp_suffix: str | None,
         has_temp_store: bool,
     ) -> None:
-        from loom.etl.backends.polars.reader import PolarsSourceReader
-        from loom.etl.backends.polars.writer import PolarsTargetWriter
+        from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
@@ -248,7 +247,7 @@ class TestRunnerFromConfig:
 
 class TestRunnerFromDict:
     def test_from_dict_polars_path_builds_polars_backends(self, tmp_path: Path) -> None:
-        from loom.etl.backends.polars.reader import PolarsSourceReader
+        from loom.etl.backends.polars import PolarsSourceReader
 
         runner = ETLRunner.from_dict({"defaults": {"table_path": {"uri": str(tmp_path)}}})
         assert isinstance(runner._executor._reader, PolarsSourceReader)

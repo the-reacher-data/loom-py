@@ -21,7 +21,7 @@ from loom.etl.schema._schema import LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
 
-from .conftest import MinimalPolarsDeltaReader, MinimalPolarsDeltaWriter, table_path
+from .conftest import MinimalPolarsSourceReader, MinimalPolarsTargetWriter, table_path
 
 
 def _read_delta(root: Path, ref: str) -> pl.DataFrame:
@@ -66,8 +66,8 @@ class AppendStep(ETLStep[NoParams]):
 
 def test_run_step_writes_transformed_data(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
     delta_root,
 ) -> None:
     """execute() result lands in the target Delta table."""
@@ -83,8 +83,8 @@ def test_run_step_writes_transformed_data(
 
 def test_run_step_row_count_preserved(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
     delta_root,
 ) -> None:
     """Target table has the same number of rows as the source."""
@@ -99,8 +99,8 @@ def test_run_step_row_count_preserved(
 
 def test_run_step_replace_overwrites_existing_target(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
     delta_root,
 ) -> None:
     """REPLACE mode overwrites any prior content in the target table."""
@@ -118,8 +118,8 @@ def test_run_step_replace_overwrites_existing_target(
 
 def test_run_step_append_adds_rows(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
     delta_root,
 ) -> None:
     """APPEND mode grows the target table on each write."""
@@ -136,8 +136,8 @@ def test_run_step_append_adds_rows(
 
 def test_run_step_emits_start_and_end_events(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
 ) -> None:
     """Observer receives step_start then step_end(success) on a clean run."""
     seed_table("raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
@@ -152,7 +152,7 @@ def test_run_step_emits_start_and_end_events(
 
 def test_run_step_emits_error_event_on_failure(
     delta_root,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_writer: MinimalPolarsTargetWriter,
 ) -> None:
     """Observer receives step_error + step_end(failed) when a step raises."""
 
@@ -185,8 +185,8 @@ class StreamingReplaceStep(ETLStep[NoParams]):
 
 def test_streaming_step_writes_correct_data(
     seed_table,
-    polars_reader: MinimalPolarsDeltaReader,
-    polars_writer: MinimalPolarsDeltaWriter,
+    polars_reader: MinimalPolarsSourceReader,
+    polars_writer: MinimalPolarsTargetWriter,
     delta_root,
 ) -> None:
     """A step with streaming=True produces the same result as a non-streaming step."""

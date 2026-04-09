@@ -24,7 +24,7 @@ from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.testing import StubRunObserver
 
-from .conftest import SparkDeltaReader, SparkDeltaWriter, spark_table_path
+from .conftest import SparkSourceReader, SparkTargetWriter, spark_table_path
 
 
 class NoParams(ETLParams):
@@ -80,7 +80,7 @@ def _read(spark: SparkSession, root: Path, ref: str) -> DataFrame:
 
 def test_writer_replace_partitions_first_run_creates_partitioned_table(
     spark: SparkSession,
-    spark_writer: SparkDeltaWriter,
+    spark_writer: SparkTargetWriter,
     spark_root: Path,
 ) -> None:
     spec = ReplacePartitionsSpec(
@@ -100,7 +100,7 @@ def test_writer_append_creates_table_on_first_write(
     spark: SparkSession,
     spark_root: Path,
 ) -> None:
-    spark_writer = SparkDeltaWriter(
+    spark_writer = SparkTargetWriter(
         spark, spark_root, missing_table_policy=MissingTablePolicy.CREATE
     )
     frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
@@ -112,7 +112,7 @@ def test_writer_append_creates_table_on_first_write(
 
 def test_writer_append_first_write_requires_create_policy(
     spark: SparkSession,
-    spark_writer: SparkDeltaWriter,
+    spark_writer: SparkTargetWriter,
 ) -> None:
     frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
     with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
@@ -149,8 +149,8 @@ class TestRunStepDataFlow:
         scenario: CountScenario,
         spark: SparkSession,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
         spark_root: Path,
     ) -> None:
         seed_spark_table(
@@ -171,8 +171,8 @@ class TestRunStepDataFlow:
         self,
         spark: SparkSession,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
         spark_root: Path,
     ) -> None:
         seed_spark_table(
@@ -197,8 +197,8 @@ class TestRunStepEvents:
         self,
         spark: SparkSession,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
     ) -> None:
         seed_spark_table(
             "raw.orders",
@@ -216,7 +216,7 @@ class TestRunStepEvents:
         assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
         assert observer.step_statuses == [RunStatus.SUCCESS]
 
-    def test_run_step_emits_error_event_on_failure(self, spark_writer: SparkDeltaWriter) -> None:
+    def test_run_step_emits_error_event_on_failure(self, spark_writer: SparkTargetWriter) -> None:
         class FailingReader:
             def read(self, spec: object, params: object) -> DataFrame:  # type: ignore[override]
                 raise RuntimeError("spark read failure")
@@ -237,8 +237,8 @@ class TestRunStepContracts:
         self,
         spark: SparkSession,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
     ) -> None:
         seed_spark_table(
             "raw.orders",
@@ -254,8 +254,8 @@ class TestRunStepContracts:
         spark: SparkSession,
         spark_root: Path,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
     ) -> None:
         seed_spark_table(
             "raw.orders",
@@ -295,8 +295,8 @@ class TestRunStepContracts:
         self,
         spark: SparkSession,
         seed_spark_table: Callable[[str | TableRef, DataFrame], Path],
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
         tmp_path: Path,
     ) -> None:
         report_path = tmp_path / "report.csv"
@@ -326,8 +326,8 @@ class TestSparkReaderWriterTypeGuards:
         self,
         spark: SparkSession,
         tmp_path: Path,
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
     ) -> None:
         in_path = tmp_path / "in.csv"
         in_path.write_text("id;amount\n1;10.0\n2;20.0\n", encoding="utf-8")
@@ -350,7 +350,7 @@ class TestSparkReaderWriterTypeGuards:
 
     def test_unified_reader_rejects_unsupported_csv_skip_rows(
         self,
-        spark_reader: SparkDeltaReader,
+        spark_reader: SparkSourceReader,
         tmp_path: Path,
     ) -> None:
         read_spec = FileSourceSpec(
@@ -364,7 +364,7 @@ class TestSparkReaderWriterTypeGuards:
 
     def test_unified_reader_parses_json_string_column_from_json_file(
         self,
-        spark_reader: SparkDeltaReader,
+        spark_reader: SparkSourceReader,
         tmp_path: Path,
     ) -> None:
         source_path = tmp_path / "events.json"
@@ -388,8 +388,8 @@ class TestSparkReaderWriterTypeGuards:
     def test_unified_components_reject_xlsx_without_plugin(
         self,
         spark: SparkSession,
-        spark_reader: SparkDeltaReader,
-        spark_writer: SparkDeltaWriter,
+        spark_reader: SparkSourceReader,
+        spark_writer: SparkTargetWriter,
         tmp_path: Path,
     ) -> None:
         input_path = tmp_path / "data.xlsx"
