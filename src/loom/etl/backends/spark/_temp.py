@@ -8,13 +8,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from loom.etl.temp._store import _join_path
+from loom.etl.storage.temp._store import _join_path
 
 _log = logging.getLogger(__name__)
 
 
 class _SparkTempBackend:
-    """PySpark Parquet backend for :class:`~loom.etl.temp._store.IntermediateStore`.
+    """PySpark Parquet backend for :class:`~loom.etl.storage.temp._store.IntermediateStore`.
 
     Writes Spark DataFrames as Parquet directories via ``df.write.parquet()``
     and reads them back via ``spark.read.parquet()``.  Cuts the lineage DAG;

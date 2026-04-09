@@ -18,8 +18,8 @@ from __future__ import annotations
 import typing
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
+from loom.etl.pipeline._sql import resolve_sql
 from loom.etl.pipeline._step import ETLStep
-from loom.etl.sql._sql import resolve_sql
 
 ParamsT = TypeVar("ParamsT")
 FrameT = TypeVar("FrameT")
@@ -47,25 +47,6 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
     .. warning::
         Avoid interpolating raw string params directly.  Use
         ``FromTable.where()`` for source-level filtering instead.
-
-    Example::
-
-        class BuildOrdersStep(StepSQL[DailyParams, pl.LazyFrame]):
-            sources = Sources(
-                orders=FromTable("raw.orders").where(
-                    col("year") == params.run_date.year
-                ),
-                customers=FromTable("raw.customers"),
-            )
-            target = IntoTable("staging.orders").replace_where(
-                col("year") == params.run_date.year
-            )
-            sql = \"\"\"
-                SELECT o.id, o.amount, c.name,
-                       {{ params.run_date.year }} AS year
-                FROM orders o
-                JOIN customers c ON o.customer_id = c.id
-            \"\"\"
     """
 
     sql: ClassVar[str]
@@ -86,11 +67,6 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
         )
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
 def _extract_stepsql_types(cls: type) -> tuple[type | None, type | None]:
     for base in getattr(cls, "__orig_bases__", ()):
         origin = getattr(base, "__origin__", None)
@@ -107,10 +83,7 @@ def _generate_execute(cls: type, return_type: type) -> None:
 
     def execute(self: Any, params: Any, **frames: Any) -> Any:
         query = _resolve_query(type(self), params)
-        first = next(iter(frames.values()), None)
-        if first is not None and _is_spark_frame(first):
-            return _run_spark_sql(frames, query)
-        return _run_polars_sql(frames, query)
+        return _run_sql(frames, query)
 
     execute.__annotations__["return"] = return_type
     cls.execute = execute  # type: ignore[attr-defined]
@@ -127,20 +100,23 @@ def _is_spark_frame(obj: Any) -> bool:
     return type(obj).__module__.startswith("pyspark")
 
 
-def _run_polars_sql(frames: dict[str, Any], query: str) -> Any:
-    import polars as pl
+def _run_sql(frames: dict[str, Any], query: str) -> Any:
+    first = next(iter(frames.values()), None)
+    if first is None:
+        raise ValueError("StepSQL requires at least one source frame.")
+    if _is_spark_frame(first):
+        return _spark_sql(frames, query)
+    return _polars_sql(frames, query)
 
-    return pl.SQLContext(frames).execute(query)
+
+def _polars_sql(frames: dict[str, Any], query: str) -> Any:
+    from loom.etl.backends.polars._backend import PolarsReadOps
+
+    return PolarsReadOps().sql(frames, query)
 
 
-def _run_spark_sql(frames: dict[str, Any], query: str) -> Any:
+def _spark_sql(frames: dict[str, Any], query: str) -> Any:
+    from loom.etl.backends.spark._backend import SparkReadOps
+
     first = next(iter(frames.values()))
-    spark = first.sparkSession
-    # newSession() — isolated view catalog, shared SparkContext, no data movement.
-    # Python wrapper is GC'd when execute() returns; JVM session stays alive via
-    # the query plan until writer.save() completes.
-    # NEVER call isolated.stop() — it would stop the shared SparkContext.
-    isolated = spark.newSession()
-    for alias, df in frames.items():
-        isolated.createDataFrame(df.rdd, df.schema).createOrReplaceTempView(alias)
-    return isolated.sql(query)
+    return SparkReadOps(first.sparkSession).sql(frames, query)

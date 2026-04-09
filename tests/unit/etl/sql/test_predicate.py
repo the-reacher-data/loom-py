@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from loom.etl.pipeline._proxy import ParamExpr
-from loom.etl.schema._table import UnboundColumnRef, col
-from loom.etl.sql._predicate import (
+from loom.etl.io.source._predicate import (
     AndPred,
     EqPred,
     GePred,
@@ -16,6 +14,8 @@ from loom.etl.sql._predicate import (
     NotPred,
     OrPred,
 )
+from loom.etl.pipeline._proxy import ParamExpr
+from loom.etl.schema._table import UnboundColumnRef, col
 
 
 def test_eq_pred_from_col_and_literal() -> None:

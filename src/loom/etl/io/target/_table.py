@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from loom.etl.io.source._predicate import PredicateNode
 from loom.etl.io.target._into import SchemaMode
 from loom.etl.schema._table import TableRef
-from loom.etl.sql._predicate import PredicateNode
 
 
 @dataclass(frozen=True)

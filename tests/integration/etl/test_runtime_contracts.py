@@ -232,9 +232,9 @@ def test_plan_and_schema_runtime_contracts() -> None:
 def test_storage_config_and_temp_cleaners_runtime_contracts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mods = _reload_modules("loom.etl.storage._config", "loom.etl.temp._cleaners")
+    mods = _reload_modules("loom.etl.storage._config", "loom.etl.storage.temp._cleaners")
     config_mod = mods["loom.etl.storage._config"]
-    cleaners_mod = mods["loom.etl.temp._cleaners"]
+    cleaners_mod = mods["loom.etl.storage.temp._cleaners"]
 
     storage = config_mod.convert_storage_config(
         {"defaults": {"table_path": {"uri": str(tmp_path / "lake")}}}

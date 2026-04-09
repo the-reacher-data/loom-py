@@ -9,7 +9,7 @@ from pyspark.sql import DataFrame, SparkSession
 from loom.etl.backends.io import GenericSourceReader, GenericTargetWriter
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
-from loom.etl.storage.route import (
+from loom.etl.storage.routing import (
     CatalogRouteResolver,
     PathRouteResolver,
     TableRouteResolver,

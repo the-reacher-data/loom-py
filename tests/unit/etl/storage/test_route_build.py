@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import CatalogConnection, StorageConfig, TableRoute
-from loom.etl.storage.route import CatalogTarget, build_table_resolver
+from loom.etl.storage.routing import CatalogTarget, build_table_resolver
 
 
 def test_build_table_resolver_qualifies_two_part_override_with_route_catalog() -> None:

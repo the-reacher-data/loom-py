@@ -23,7 +23,7 @@ import pytest
         "loom.etl.schema",
         "loom.etl.sql",
         "loom.etl.storage",
-        "loom.etl.temp",
+        "loom.etl.storage.temp",
         "loom.etl.testing",
     ],
 )

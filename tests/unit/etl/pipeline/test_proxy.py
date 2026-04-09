@@ -8,8 +8,8 @@ from datetime import date
 import pytest
 
 from loom.etl import ETLParams
+from loom.etl.io.source._predicate import EqPred, InPred
 from loom.etl.pipeline._proxy import ParamExpr, _ParamProxy, params, resolve_param_expr
-from loom.etl.sql._predicate import EqPred, InPred
 
 
 class RunParams(ETLParams):  # type: ignore[misc]

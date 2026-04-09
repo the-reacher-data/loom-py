@@ -10,9 +10,9 @@ import polars as pl
 import pytest
 
 from loom.etl import col, params
-from loom.etl.sql._predicate_sql import predicate_to_sql
-from loom.etl.sql._sql import resolve_sql
-from loom.etl.sql._step_sql import StepSQL, _extract_stepsql_types
+from loom.etl.backends._predicate_sql import predicate_to_sql
+from loom.etl.pipeline._sql import resolve_sql
+from loom.etl.pipeline._step_sql import StepSQL, _extract_stepsql_types
 
 
 @dataclass(frozen=True)
@@ -130,8 +130,8 @@ def test_stepsql_routes_to_spark_when_first_frame_is_spark_like(
 ) -> None:
     sentinel = object()
 
-    monkeypatch.setattr("loom.etl.sql._step_sql._run_spark_sql", lambda frames, query: sentinel)
-    monkeypatch.setattr("loom.etl.sql._step_sql._run_polars_sql", lambda frames, query: None)
+    monkeypatch.setattr("loom.etl.pipeline._step_sql._spark_sql", lambda frames, query: sentinel)
+    monkeypatch.setattr("loom.etl.pipeline._step_sql._polars_sql", lambda frames, query: None)
 
     result = _RouteStep().execute(_params(), frame=_FakeSparkFrame())
     assert result is sentinel
@@ -140,8 +140,8 @@ def test_stepsql_routes_to_spark_when_first_frame_is_spark_like(
 def test_stepsql_routes_to_polars_when_frame_is_not_spark(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel = object()
 
-    monkeypatch.setattr("loom.etl.sql._step_sql._run_spark_sql", lambda frames, query: None)
-    monkeypatch.setattr("loom.etl.sql._step_sql._run_polars_sql", lambda frames, query: sentinel)
+    monkeypatch.setattr("loom.etl.pipeline._step_sql._spark_sql", lambda frames, query: None)
+    monkeypatch.setattr("loom.etl.pipeline._step_sql._polars_sql", lambda frames, query: sentinel)
 
     result = _RouteStep().execute(_params(), frame=object())
     assert result is sentinel

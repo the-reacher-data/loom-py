@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from loom.etl.sql.literals import sql_literal
+from loom.etl.backends._predicate_sql import sql_literal
 
 _PLACEHOLDER = re.compile(r"\{\{([^{}]+)\}\}")
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar, cast
 
-from loom.etl.backends._io_common import ensure_can_create_missing_table
+from loom.etl.backends._protocols import ComputeBackend
 from loom.etl.io.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.io.target import SchemaMode, TargetSpec
 from loom.etl.io.target._table import (
@@ -14,12 +14,41 @@ from loom.etl.io.target._table import (
     ReplaceWhereSpec,
     UpsertSpec,
 )
+from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
-from loom.etl.storage._io import SourceReader, TargetWriter
-from loom.etl.storage.route import ResolvedTarget, TableRouteResolver
+from loom.etl.storage.protocols import SourceReader, TargetWriter
+from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
 
 _InputFrameT = TypeVar("_InputFrameT")
+
+
+def _ensure_can_create_missing_table(
+    *,
+    target: ResolvedTarget,
+    schema_mode: SchemaMode,
+    missing_table_policy: MissingTablePolicy,
+) -> None:
+    """Validate whether the write path may create a missing destination table."""
+    if _can_create_missing_table(
+        schema_mode=schema_mode, missing_table_policy=missing_table_policy
+    ):
+        return
+    raise SchemaNotFoundError(
+        f"Destination table does not yet exist: {target}. "
+        "Use SchemaMode.OVERWRITE or set storage.missing_table_policy='create'."
+    )
+
+
+def _can_create_missing_table(
+    *,
+    schema_mode: SchemaMode,
+    missing_table_policy: MissingTablePolicy,
+) -> bool:
+    """Return ``True`` when table creation is allowed for missing destination."""
+    if missing_table_policy is MissingTablePolicy.CREATE:
+        return True
+    return schema_mode is SchemaMode.OVERWRITE
 
 
 class GenericSourceReader(SourceReader, Generic[_InputFrameT]):
@@ -28,7 +57,7 @@ class GenericSourceReader(SourceReader, Generic[_InputFrameT]):
     def __init__(
         self,
         *,
-        backend: Any,
+        backend: ComputeBackend[_InputFrameT, Any],
         resolver: TableRouteResolver,
         reader_name: str,
         unsupported_source_hint: str | None = None,
@@ -80,7 +109,7 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     def __init__(
         self,
         *,
-        backend: Any,
+        backend: ComputeBackend[_InputFrameT, Any],
         resolver: TableRouteResolver,
         missing_table_policy: MissingTablePolicy,
         writer_name: str,
@@ -159,7 +188,11 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     ) -> None:
         existing = self._backend.schema.physical(target)
         if existing is None:
-            self._ensure_can_create(target, spec.schema_mode)
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
             materialized = self._backend.schema.materialize(frame, streaming)
             self._backend.write.create(materialized, target, schema_mode=spec.schema_mode)
             return
@@ -176,7 +209,11 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     ) -> None:
         existing = self._backend.schema.physical(target)
         if existing is None:
-            self._ensure_can_create(target, spec.schema_mode)
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
             materialized = self._backend.schema.materialize(frame, streaming)
             self._backend.write.create(materialized, target, schema_mode=spec.schema_mode)
             return
@@ -193,7 +230,11 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     ) -> None:
         existing = self._backend.schema.physical(target)
         if existing is None:
-            self._ensure_can_create(target, spec.schema_mode)
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
             materialized = self._backend.schema.materialize(frame, streaming)
             self._backend.write.create(
                 materialized,
@@ -221,7 +262,11 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     ) -> None:
         existing = self._backend.schema.physical(target)
         if existing is None:
-            self._ensure_can_create(target, spec.schema_mode)
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
             materialized = self._backend.schema.materialize(frame, streaming)
             self._backend.write.create(materialized, target, schema_mode=spec.schema_mode)
             return
@@ -244,7 +289,11 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
     ) -> None:
         existing = self._backend.schema.physical(target)
         if existing is None:
-            self._ensure_can_create(target, spec.schema_mode)
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
             materialized = self._backend.schema.materialize(frame, streaming=False)
             self._backend.write.create(
                 materialized,
@@ -265,11 +314,4 @@ class GenericTargetWriter(TargetWriter, Generic[_InputFrameT]):
             schema_mode=spec.schema_mode,
             existing_schema=existing,
             streaming=streaming,
-        )
-
-    def _ensure_can_create(self, target: ResolvedTarget, schema_mode: SchemaMode) -> None:
-        ensure_can_create_missing_table(
-            target=target,
-            schema_mode=schema_mode,
-            missing_table_policy=self._missing_table_policy,
         )

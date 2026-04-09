@@ -11,7 +11,7 @@ from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
-from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage.protocols import SourceReader, TableDiscovery, TargetWriter
 
 
 def test_observability_config_defaults_and_conversion() -> None:

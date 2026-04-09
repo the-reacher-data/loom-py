@@ -52,8 +52,8 @@ import os
 import time
 from typing import Any, Protocol, runtime_checkable
 
-from loom.etl.temp._cleaners import AutoTempCleaner, TempCleaner, _is_cloud_path
-from loom.etl.temp._scope import TempScope
+from loom.etl.storage.temp._cleaners import AutoTempCleaner, TempCleaner, _is_cloud_path
+from loom.etl.storage.temp._scope import TempScope
 
 _log = logging.getLogger(__name__)
 

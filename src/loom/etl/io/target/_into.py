@@ -25,10 +25,10 @@ from typing import Any
 from loom.etl.io._format import Format
 from loom.etl.io._utils import _clone_slots
 from loom.etl.io._write_options import WriteOptions
+from loom.etl.io.source._predicate import AndPred, EqPred, PredicateNode
 from loom.etl.pipeline._proxy import ParamExpr
 from loom.etl.schema._table import TableRef, UnboundColumnRef
-from loom.etl.sql._predicate import AndPred, EqPred, PredicateNode
-from loom.etl.temp._scope import TempScope
+from loom.etl.storage.temp._scope import TempScope
 
 
 class SchemaMode(StrEnum):

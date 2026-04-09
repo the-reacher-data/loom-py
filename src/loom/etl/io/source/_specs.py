@@ -124,7 +124,7 @@ class TempSourceSpec:
 
     Produced by :meth:`~loom.etl.io.source.FromTemp._to_spec`.
     Consumed by the executor to retrieve data from
-    :class:`~loom.etl.temp._store.IntermediateStore`.
+    :class:`~loom.etl.storage.temp._store.IntermediateStore`.
 
     Args:
         alias:     Name matching the ``execute()`` parameter.

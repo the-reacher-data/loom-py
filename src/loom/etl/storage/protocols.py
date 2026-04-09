@@ -6,7 +6,7 @@ diverse implementations (delta-rs, Spark, in-memory stubs).
 
 Dependency direction
 --------------------
-``_io.py`` depends only on domain types (``TableRef``, ``SourceSpec``,
+``protocols.py`` depends only on domain types (``TableRef``, ``SourceSpec``,
 ``TargetSpec``).  It does **not** import from the compiler layer, avoiding
 circular dependencies.
 """

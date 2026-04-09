@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
+from loom.etl.io.source._predicate import PredicateNode
+from loom.etl.io.source._predicate_dialect import PredicateDialect, fold_predicate
 from loom.etl.pipeline._proxy import params
 from loom.etl.schema._table import col
-from loom.etl.sql._predicate import PredicateNode
-from loom.etl.sql._predicate_dialect import PredicateDialect, fold_predicate
 
 
 @dataclass(frozen=True)

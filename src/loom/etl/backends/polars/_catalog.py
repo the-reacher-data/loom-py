@@ -19,8 +19,8 @@ from loom.etl.backends.polars._dtype import polars_to_loom_type
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocator, _as_locator
+from loom.etl.storage.schema import PolarsPhysicalSchema
 from loom.etl.storage.schema.delta import read_delta_physical_schema
-from loom.etl.storage.schema.model import PolarsPhysicalSchema
 
 
 class DeltaCatalog:

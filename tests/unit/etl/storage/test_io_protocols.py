@@ -8,7 +8,7 @@ from loom.etl.io.source import TableSourceSpec
 from loom.etl.io.target import TargetSpec
 from loom.etl.io.target._table import ReplaceSpec
 from loom.etl.schema._table import TableRef
-from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage.protocols import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 _SENTINEL = object()

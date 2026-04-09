@@ -38,6 +38,7 @@ from typing import Any, Generic, TypeVar
 from loom.etl.io._format import Format
 from loom.etl.io._read_options import ReadOptions
 from loom.etl.io._utils import _clone_slots
+from loom.etl.io.source._predicate import PredicateNode
 from loom.etl.io.source._specs import (
     FileSourceSpec,
     JsonColumnSpec,
@@ -53,7 +54,6 @@ from loom.etl.schema._contract import (
 )
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.schema._table import TableRef
-from loom.etl.sql._predicate import PredicateNode
 
 ParamsT = TypeVar("ParamsT")
 

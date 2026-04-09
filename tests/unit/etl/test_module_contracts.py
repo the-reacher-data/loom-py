@@ -47,9 +47,9 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl.pipeline", "ETLStep"),
         ("loom.etl.runner", "ETLRunner"),
         ("loom.etl.schema", "ColumnSchema"),
-        ("loom.etl.sql", "StepSQL"),
+        ("loom.etl.sql", "resolve_sql"),
         ("loom.etl.storage", "StorageConfig"),
-        ("loom.etl.temp", "IntermediateStore"),
+        ("loom.etl.storage.temp", "IntermediateStore"),
         ("loom.etl.testing", "PolarsStepRunner"),
         ("loom.etl.compiler.validators", "validate_plan_catalog"),
         ("loom.etl.observability", "StructlogRunObserver"),
@@ -71,7 +71,7 @@ def test_package_entrypoints_support_reload_contracts(
         ("loom.etl.observability.observers.protocol", "ETLRunObserver"),
         ("loom.etl.observability.stores.protocol", "ExecutionRecordStore"),
         ("loom.etl.pipeline._params", "ETLParams"),
-        ("loom.etl.storage._io", "TableDiscovery"),
+        ("loom.etl.storage.protocols", "TableDiscovery"),
         ("loom.etl.observability.config", "ObservabilityConfig"),
     ],
 )
@@ -82,7 +82,7 @@ def test_internal_protocol_and_event_modules_support_reload_contracts(
     module = _reload_module(module_name)
     assert getattr(module, attribute_name) is not None
 
-    temp_scope = _reload_module("loom.etl.temp._scope")
+    temp_scope = _reload_module("loom.etl.storage.temp._scope")
     assert temp_scope.TempScope.RUN.value == "run"
 
 
@@ -90,16 +90,16 @@ def test_reload_sql_and_compiler_definition_modules_with_basic_usage() -> None:
     modules = _reload_modules(
         "loom.etl.compiler._errors",
         "loom.etl.io.target",
-        "loom.etl.sql._predicate",
-        "loom.etl.sql._predicate_dialect",
-        "loom.etl.sql._predicate_sql",
+        "loom.etl.io.source._predicate",
+        "loom.etl.io.source._predicate_dialect",
+        "loom.etl.backends._predicate_sql",
     )
 
     compiler_errors = modules["loom.etl.compiler._errors"]
     target_variants = modules["loom.etl.io.target"]
-    predicate_nodes = modules["loom.etl.sql._predicate"]
-    predicate_dialect = modules["loom.etl.sql._predicate_dialect"]
-    predicate_sql = modules["loom.etl.sql._predicate_sql"]
+    predicate_nodes = modules["loom.etl.io.source._predicate"]
+    predicate_dialect = modules["loom.etl.io.source._predicate_dialect"]
+    predicate_sql = modules["loom.etl.backends._predicate_sql"]
 
     class _Step:
         __qualname__ = "ReloadStep"
@@ -208,7 +208,7 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
 
 
 def test_reload_temp_store_module_and_helpers() -> None:
-    store_mod = _reload_module("loom.etl.temp._store")
+    store_mod = _reload_module("loom.etl.storage.temp._store")
     polars_temp_mod = _reload_module("loom.etl.backends.polars._temp")
     spark_temp_mod = _reload_module("loom.etl.backends.spark._temp")
 
@@ -264,7 +264,8 @@ def test_lazy_pipeline_exports_resolve() -> None:
 
 
 def test_lazy_sql_exports_resolve() -> None:
-    from loom.etl.sql import StepSQL, resolve_sql, sql_literal
+    from loom.etl.pipeline import StepSQL
+    from loom.etl.sql import resolve_sql, sql_literal
 
     assert StepSQL is not None
     assert callable(resolve_sql)
@@ -305,7 +306,7 @@ def test_target_variant_specs_store_expected_fields() -> None:
     from loom.etl.io.target._table import AppendSpec, ReplaceSpec
     from loom.etl.io.target._temp import TempFanInSpec, TempSpec
     from loom.etl.schema._table import TableRef
-    from loom.etl.temp._scope import TempScope
+    from loom.etl.storage.temp._scope import TempScope
 
     table = TableRef("staging.orders")
     file_spec = FileSpec(path="/var/lib/loom/out.csv", format=Format.CSV)
@@ -400,7 +401,7 @@ def test_observer_event_records_hold_runtime_data() -> None:
 def test_storage_protocols_runtime_checkable_contracts() -> None:
     from loom.etl.schema._schema import ColumnSchema, LoomDtype
     from loom.etl.schema._table import TableRef
-    from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+    from loom.etl.storage.protocols import SourceReader, TableDiscovery, TargetWriter
 
     class _Catalog:
         def exists(self, ref: TableRef) -> bool:
@@ -429,7 +430,7 @@ def test_storage_protocols_runtime_checkable_contracts() -> None:
 
 
 def test_temp_scope_enum_values_are_stable() -> None:
-    from loom.etl.temp._scope import TempScope
+    from loom.etl.storage.temp._scope import TempScope
 
     assert TempScope.RUN.value == "run"
     assert TempScope.CORRELATION.value == "correlation"

@@ -162,7 +162,7 @@ class TestNoopAndProtocol:
         spark.catalog.tableExists.assert_not_called()
 
     def test_spark_catalog_satisfies_table_discovery_protocol(self) -> None:
-        from loom.etl.storage._io import TableDiscovery
+        from loom.etl.storage.protocols import TableDiscovery
 
         catalog = SparkCatalog(_mock_spark({}))
         assert isinstance(catalog, TableDiscovery)

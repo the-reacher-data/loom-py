@@ -86,8 +86,8 @@ def test_reader_columns_preserves_row_count(tmp_path: Path) -> None:
 
 
 def test_reader_columns_combined_with_predicate(tmp_path: Path) -> None:
+    from loom.etl.io.source._predicate import EqPred
     from loom.etl.schema._table import UnboundColumnRef
-    from loom.etl.sql._predicate import EqPred
 
     data = pl.DataFrame(
         {

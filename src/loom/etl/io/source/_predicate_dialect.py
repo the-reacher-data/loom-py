@@ -1,6 +1,6 @@
 """Shared predicate fold with pluggable render dialects.
 
-This module centralizes traversal of :mod:`loom.etl.sql._predicate` nodes.
+This module centralizes traversal of :mod:`loom.etl.io.source._predicate` nodes.
 Backends provide a small ``PredicateDialect`` implementation that defines
 how each logical/comparison operation is rendered.
 """
@@ -10,9 +10,7 @@ from __future__ import annotations
 from functools import singledispatch
 from typing import Any, Protocol, TypeVar
 
-from loom.etl.pipeline._proxy import ParamExpr, resolve_param_expr
-from loom.etl.schema._table import UnboundColumnRef
-from loom.etl.sql._predicate import (
+from loom.etl.io.source._predicate import (
     AndPred,
     EqPred,
     GePred,
@@ -25,6 +23,8 @@ from loom.etl.sql._predicate import (
     OrPred,
     PredicateNode,
 )
+from loom.etl.pipeline._proxy import ParamExpr, resolve_param_expr
+from loom.etl.schema._table import UnboundColumnRef
 
 T = TypeVar("T")
 

@@ -9,8 +9,8 @@ import polars as pl
 from loom.etl.backends.io import GenericSourceReader, GenericTargetWriter
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
-from loom.etl.storage.route import PathRouteResolver, TableRouteResolver
-from loom.etl.storage.schema.reader import SchemaReader
+from loom.etl.storage.routing import PathRouteResolver, TableRouteResolver
+from loom.etl.storage.schema import SchemaReader
 
 from ._backend import PolarsBackend
 

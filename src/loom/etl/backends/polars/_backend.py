@@ -9,6 +9,18 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
+from loom.etl.backends._predicate_sql import predicate_to_sql
+from loom.etl.backends._upsert import (
+    SOURCE_ALIAS,
+    TARGET_ALIAS,
+    _build_insert_values,
+    _build_partition_predicate,
+    _build_update_set,
+    _build_upsert_predicate,
+    _build_upsert_update_cols,
+    _log_partition_combos,
+    _warn_no_partition_cols,
+)
 from loom.etl.backends.polars._dtype import polars_to_loom_type
 from loom.etl.backends.polars._predicate import predicate_to_polars
 from loom.etl.backends.polars._reader import (
@@ -22,23 +34,10 @@ from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._file import FileSpec
 from loom.etl.schema._schema import ColumnSchema, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
-from loom.etl.sql._predicate_sql import predicate_to_sql
-from loom.etl.sql._upsert import (
-    SOURCE_ALIAS,
-    TARGET_ALIAS,
-    _build_insert_values,
-    _build_partition_predicate,
-    _build_update_set,
-    _build_upsert_predicate,
-    _build_upsert_update_cols,
-    _log_partition_combos,
-    _warn_no_partition_cols,
-)
 from loom.etl.storage._locator import TableLocation, TableLocator, _as_locator
-from loom.etl.storage.route.model import CatalogTarget, PathTarget, ResolvedTarget
+from loom.etl.storage.routing import CatalogTarget, PathTarget, ResolvedTarget
+from loom.etl.storage.schema import PolarsPhysicalSchema, SchemaReader
 from loom.etl.storage.schema.delta import DeltaSchemaReader, read_delta_physical_schema
-from loom.etl.storage.schema.model import PolarsPhysicalSchema
-from loom.etl.storage.schema.reader import SchemaReader
 
 from ._file_writer import PolarsFileWriter
 
@@ -89,6 +88,12 @@ class PolarsReadOps:
             frame = frame.select(list(columns))
         frame = _apply_source_schema(frame, schema)
         return _apply_json_decode(frame, json_columns)
+
+    def sql(self, frames: dict[str, pl.LazyFrame], query: str) -> pl.LazyFrame:
+        """Execute SQL query against in-memory Polars frames."""
+        if not frames:
+            raise ValueError("Polars SQL execution requires at least one input frame.")
+        return pl.SQLContext(frames).execute(query)
 
 
 class PolarsSchemaOps:

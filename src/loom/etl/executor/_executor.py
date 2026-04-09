@@ -50,8 +50,8 @@ from loom.etl.io.source import TempSourceSpec
 from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 from loom.etl.observability.observers.protocol import ETLRunObserver
 from loom.etl.observability.records import RunContext, RunStatus
-from loom.etl.storage._io import SourceReader, TargetWriter
-from loom.etl.temp._store import IntermediateStore
+from loom.etl.storage.protocols import SourceReader, TargetWriter
+from loom.etl.storage.temp._store import IntermediateStore
 
 _log = logging.getLogger(__name__)
 

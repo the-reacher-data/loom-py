@@ -47,7 +47,7 @@ from loom.etl.io.target._table import AppendSpec
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess
 from loom.etl.pipeline._step import ETLStep
-from loom.etl.storage._io import TableDiscovery
+from loom.etl.storage.protocols import TableDiscovery
 
 _log = logging.getLogger(__name__)
 

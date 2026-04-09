@@ -9,6 +9,7 @@ import pytest
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
+from loom.etl.runner._wiring import make_backends, make_temp_store
 from loom.etl.storage._config import (
     CatalogConnection,
     StorageConfig,
@@ -16,7 +17,6 @@ from loom.etl.storage._config import (
     TablePathConfig,
     TableRoute,
 )
-from loom.etl.storage._factory import make_backends, make_temp_store
 
 
 def _path_defaults(root: str) -> StorageDefaults:
@@ -202,7 +202,7 @@ def test_make_temp_store_no_root_returns_none() -> None:
 
 
 def test_make_temp_store_with_root_returns_store(tmp_path: Path) -> None:
-    from loom.etl.temp._store import IntermediateStore
+    from loom.etl.storage.temp._store import IntermediateStore
 
     root = tmp_path / "lake"
     config = StorageConfig(tmp_root=str(root / "tmp"))

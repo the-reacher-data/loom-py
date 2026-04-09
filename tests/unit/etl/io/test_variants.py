@@ -18,7 +18,7 @@ from loom.etl.io.target._table import (
 from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 from loom.etl.pipeline._proxy import params
 from loom.etl.schema._table import TableRef
-from loom.etl.temp._scope import TempScope
+from loom.etl.storage.temp._scope import TempScope
 
 _REF = TableRef("staging.out")
 _PRED = col("year") == params.run_date.year

@@ -22,7 +22,7 @@ from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import MappingLocator, TableLocation
-from loom.etl.storage.schema.model import PhysicalSchema
+from loom.etl.storage.schema import PhysicalSchema
 
 from .conftest import table_path
 

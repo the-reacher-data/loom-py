@@ -10,15 +10,15 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql.readwriter import DataFrameWriter
 
+from loom.etl.backends._predicate_sql import predicate_to_sql
 from loom.etl.io._format import Format
 from loom.etl.io._read_options import CsvReadOptions, JsonReadOptions
 from loom.etl.io._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions
 from loom.etl.io.target import SchemaMode
 from loom.etl.schema._schema import ColumnSchema, LoomType
 from loom.etl.schema._table import TableRef
-from loom.etl.sql._predicate_sql import predicate_to_sql
-from loom.etl.storage.route.model import CatalogTarget, ResolvedTarget
-from loom.etl.storage.schema.model import SparkPhysicalSchema
+from loom.etl.storage.routing import CatalogTarget, ResolvedTarget
+from loom.etl.storage.schema import SparkPhysicalSchema
 
 
 class SparkReadOps:
@@ -55,6 +55,15 @@ class SparkReadOps:
             df = df.filter(predicate_to_sql(pred, params))
 
         return df
+
+    def sql(self, frames: dict[str, DataFrame], query: str) -> DataFrame:
+        """Execute SQL query against in-memory Spark frames."""
+        if not frames:
+            raise ValueError("Spark SQL execution requires at least one input frame.")
+        isolated = self._spark.newSession()
+        for alias, df in frames.items():
+            isolated.createDataFrame(df.rdd, df.schema).createOrReplaceTempView(alias)
+        return isolated.sql(query)
 
     # ==========================================================================
     # FILE READ

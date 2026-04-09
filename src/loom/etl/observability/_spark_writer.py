@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 from loom.etl.observability.records import (
@@ -10,21 +11,17 @@ from loom.etl.observability.records import (
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.observability.writers._row import record_to_row
 from loom.etl.schema._table import TableRef
 
 
-class SparkExecutionRecordWriter:
-    """Write execution records through the Spark target writer ``append`` API."""
-
-    def __init__(self, spark: Any, writer: Any) -> None:
-        self._spark = spark
-        self._writer = writer
-
-    def write_record(self, record: ExecutionRecord, table_ref: TableRef, /) -> None:
-        """Append one execution record row to *table_ref*."""
-        frame = self._spark.createDataFrame([record_to_row(record)], schema=_spark_schema(record))
-        self._writer.append(frame, table_ref, None)
+def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
+    """Convert an execution record dataclass into a plain row mapping."""
+    row = dataclasses.asdict(record)
+    # Persist only snapshot fields in Delta tables; lifecycle event type is
+    # still used by log observers but does not add analytical value here.
+    row.pop("event", None)
+    row["status"] = str(row["status"])
+    return row
 
 
 def _spark_schema(record: ExecutionRecord) -> Any:
@@ -83,6 +80,19 @@ def _spark_schema(record: ExecutionRecord) -> Any:
             ]
         )
     raise TypeError(f"Unsupported execution record type: {type(record)!r}")
+
+
+class SparkExecutionRecordWriter:
+    """Write execution records through the Spark target writer ``append`` API."""
+
+    def __init__(self, spark: Any, writer: Any) -> None:
+        self._spark = spark
+        self._writer = writer
+
+    def write_record(self, record: ExecutionRecord, table_ref: TableRef, /) -> None:
+        """Append one execution record row to *table_ref*."""
+        frame = self._spark.createDataFrame([_record_to_row(record)], schema=_spark_schema(record))
+        self._writer.append(frame, table_ref, None)
 
 
 __all__ = ["SparkExecutionRecordWriter"]

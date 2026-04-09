@@ -10,7 +10,7 @@ from loom.etl.observability.records import (
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.observability.writers.protocol import ExecutionRecordWriter
+from loom.etl.observability.stores.protocol import ExecutionRecordWriter
 from loom.etl.schema._table import TableRef
 
 _TABLE_FOR: dict[type[Any], str] = {

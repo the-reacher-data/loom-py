@@ -36,7 +36,8 @@ Testing stubs::
 
 Namespaced API (discoverable by bounded context)::
 
-    from loom.etl import io, pipeline, runner, schema, sql, storage, temp
+    from loom.etl import io, pipeline, runner, schema, sql, storage
+    from loom.etl.storage import temp
 
 Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
@@ -64,7 +65,15 @@ from loom.etl.io import (
     WriteOptions,
 )
 from loom.etl.observability import ExecutionRecordStoreConfig, ObservabilityConfig
-from loom.etl.pipeline import ETLParams, ETLPipeline, ETLProcess, ETLStep, ParamExpr, params
+from loom.etl.pipeline import (
+    ETLParams,
+    ETLPipeline,
+    ETLProcess,
+    ETLStep,
+    ParamExpr,
+    StepSQL,
+    params,
+)
 from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.schema import (
     ArrayType,
@@ -84,7 +93,6 @@ from loom.etl.schema import (
     TableRef,
     col,
 )
-from loom.etl.sql import StepSQL
 from loom.etl.storage import (
     CatalogConnection,
     FilePathConfig,
@@ -102,7 +110,7 @@ from loom.etl.storage import (
     TableRoute,
     TargetWriter,
 )
-from loom.etl.temp import (
+from loom.etl.storage.temp import (
     AutoTempCleaner,
     FsspecTempCleaner,
     IntermediateStore,

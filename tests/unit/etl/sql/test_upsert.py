@@ -6,9 +6,8 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io.target._table import UpsertSpec
-from loom.etl.schema._table import TableRef
-from loom.etl.sql._upsert import (
+from loom.etl.backends._predicate_sql import sql_literal
+from loom.etl.backends._upsert import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
     _build_insert_values,
@@ -18,7 +17,8 @@ from loom.etl.sql._upsert import (
     _build_upsert_predicate,
     _build_upsert_update_cols,
 )
-from loom.etl.sql.literals import sql_literal
+from loom.etl.io.target._table import UpsertSpec
+from loom.etl.schema._table import TableRef
 
 
 def _upsert_spec(

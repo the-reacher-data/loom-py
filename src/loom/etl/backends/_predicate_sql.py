@@ -1,17 +1,38 @@
 """Predicate → SQL string serialiser.
 
-Converts a :data:`~loom.etl._predicate.PredicateNode` tree into an ANSI SQL
-predicate string suitable for Delta Lake ``replaceWhere``.
+Converts a :data:`~loom.etl.io.source._predicate.PredicateNode` tree into
+an ANSI SQL predicate string suitable for Delta Lake ``replaceWhere``.
 
 Internal module — not part of the public API.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
-from loom.etl.sql._predicate import PredicateNode
-from loom.etl.sql._predicate_dialect import PredicateDialect, fold_predicate
+from loom.etl.io.source._predicate import PredicateNode
+from loom.etl.io.source._predicate_dialect import PredicateDialect, fold_predicate
+
+
+def sql_literal(value: Any) -> str:
+    """Render a Python scalar as a SQL literal.
+
+    Args:
+        value: Python scalar to render.
+
+    Returns:
+        SQL literal string.
+    """
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, datetime):
+        return f"'{value.isoformat()}'"
+    if isinstance(value, date):
+        return f"'{value.isoformat()}'"
+    if isinstance(value, str):
+        return f"'{value.replace(chr(39), chr(39) * 2)}'"
+    return str(value)
 
 
 class _SqlPredicateDialect(PredicateDialect[str]):

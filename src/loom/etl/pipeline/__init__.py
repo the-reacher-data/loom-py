@@ -5,11 +5,12 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__all__ = ["ETLParams", "ETLStep", "ETLProcess", "ETLPipeline", "params", "ParamExpr"]
+__all__ = ["ETLParams", "ETLStep", "StepSQL", "ETLProcess", "ETLPipeline", "params", "ParamExpr"]
 
 _EXPORTS: dict[str, str] = {
     "ETLParams": "loom.etl.pipeline._params",
     "ETLStep": "loom.etl.pipeline._step",
+    "StepSQL": "loom.etl.pipeline._step_sql",
     "ETLProcess": "loom.etl.pipeline._process",
     "ETLPipeline": "loom.etl.pipeline._pipeline",
     "params": "loom.etl.pipeline._proxy",

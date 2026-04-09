@@ -11,8 +11,8 @@ import polars as pl
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-from loom.etl.storage.route.model import CatalogTarget, PathTarget, ResolvedTarget
-from loom.etl.storage.schema.model import PhysicalSchema, PolarsPhysicalSchema
+from loom.etl.storage.routing import CatalogTarget, PathTarget, ResolvedTarget
+from loom.etl.storage.schema import PhysicalSchema, PolarsPhysicalSchema
 
 
 class DeltaSchemaReader:

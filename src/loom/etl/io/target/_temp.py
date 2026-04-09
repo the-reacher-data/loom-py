@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from loom.etl.temp._scope import TempScope
+from loom.etl.storage.temp._scope import TempScope
 
 
 @dataclass(frozen=True)

@@ -10,9 +10,9 @@ from deltalake import write_deltalake
 
 from loom.etl.schema._table import TableRef
 from loom.etl.storage._locator import TableLocation
-from loom.etl.storage.route import CatalogTarget, PathTarget
+from loom.etl.storage.routing import CatalogTarget, PathTarget
+from loom.etl.storage.schema import PolarsPhysicalSchema
 from loom.etl.storage.schema.delta import DeltaSchemaReader
-from loom.etl.storage.schema.model import PolarsPhysicalSchema
 
 
 def _path_target(uri: str) -> PathTarget:

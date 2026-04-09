@@ -23,14 +23,14 @@ from loom.etl.observability import (
     make_observers,
 )
 from loom.etl.pipeline._pipeline import ETLPipeline
+from loom.etl.runner._wiring import make_backends, make_temp_store
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.storage._config import StorageConfig, convert_storage_config
-from loom.etl.storage._factory import make_backends, make_temp_store
-from loom.etl.storage._io import SourceReader, TargetWriter
-from loom.etl.temp._cleaners import TempCleaner
-from loom.etl.temp._store import IntermediateStore
+from loom.etl.storage.protocols import SourceReader, TargetWriter
+from loom.etl.storage.temp._cleaners import TempCleaner
+from loom.etl.storage.temp._store import IntermediateStore
 
 _log = logging.getLogger(__name__)
 

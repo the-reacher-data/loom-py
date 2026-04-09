@@ -15,7 +15,7 @@ from loom.etl.compiler._plan import (
 )
 from loom.etl.io.source._specs import TableSourceSpec
 from loom.etl.schema._table import TableRef
-from loom.etl.storage._io import TableDiscovery
+from loom.etl.storage.protocols import TableDiscovery
 
 _SCHEMA_MODE_OVERWRITE = "overwrite"
 

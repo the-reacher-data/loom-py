@@ -14,7 +14,7 @@ where-clause expressions read naturally::
 
 from __future__ import annotations
 
-from loom.etl.sql._predicate import _ColOps
+from loom.etl.io.source._predicate import _ColOps
 
 
 class TableRef:

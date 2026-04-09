@@ -13,14 +13,14 @@ from typing import Any
 import fsspec.core
 import polars as pl
 
-from loom.etl.temp._cleaners import _is_cloud_path
-from loom.etl.temp._store import _join_path
+from loom.etl.storage.temp._cleaners import _is_cloud_path
+from loom.etl.storage.temp._store import _join_path
 
 _log = logging.getLogger(__name__)
 
 
 class _PolarsTempBackend:
-    """Polars Arrow IPC backend for :class:`~loom.etl.temp._store.IntermediateStore`.
+    """Polars Arrow IPC backend for :class:`~loom.etl.storage.temp._store.IntermediateStore`.
 
     Writes Polars :class:`polars.LazyFrame` instances as Arrow IPC files via
     ``sink_ipc()`` (streaming, no in-memory collect) and reads them back via

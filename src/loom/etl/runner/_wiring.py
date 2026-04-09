@@ -1,4 +1,4 @@
-"""Storage backend factory for reader/writer and temp store wiring.
+"""Runtime wiring helpers for ETL runner dependencies.
 
 Internal module — not part of the public API.
 """
@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from loom.etl.storage._config import CatalogConnection, StorageConfig
-from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from loom.etl.storage.route import build_table_resolver
-from loom.etl.temp._cleaners import TempCleaner
-from loom.etl.temp._store import IntermediateStore
+from loom.etl.storage.protocols import SourceReader, TargetWriter
+from loom.etl.storage.routing import build_table_resolver
+from loom.etl.storage.temp._cleaners import TempCleaner
+from loom.etl.storage.temp._store import IntermediateStore
 
 
 class _TempStoreAware(Protocol):
@@ -189,3 +189,6 @@ def _unity_storage_options_from_connection(connection: CatalogConnection) -> dic
     if connection.token:
         options["databricks_access_token"] = connection.token
     return options
+
+
+__all__ = ["make_backends", "make_temp_store"]

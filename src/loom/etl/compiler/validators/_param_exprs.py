@@ -15,8 +15,8 @@ from typing import Any, Protocol, cast
 
 from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
+from loom.etl.io.source._predicate import PredicateNode
 from loom.etl.pipeline._proxy import ParamExpr
-from loom.etl.sql._predicate import PredicateNode
 
 
 class _PredicateShape(Enum):

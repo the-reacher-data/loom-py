@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from loom.etl.temp._cleaners import (
+from loom.etl.storage.temp._cleaners import (
     AutoTempCleaner,
     FsspecTempCleaner,
     LocalTempCleaner,
@@ -169,7 +169,7 @@ def test_auto_cleaner_dispatches_abfss_path_to_fsspec() -> None:
 
 
 def test_intermediate_store_uses_injected_cleaner(tmp_path: Path) -> None:
-    from loom.etl.temp._store import IntermediateStore
+    from loom.etl.storage.temp._store import IntermediateStore
 
     called: list[str] = []
 
@@ -185,7 +185,7 @@ def test_intermediate_store_uses_injected_cleaner(tmp_path: Path) -> None:
 
 
 def test_intermediate_store_uses_auto_cleaner_by_default(tmp_path: Path) -> None:
-    from loom.etl.temp._store import IntermediateStore
+    from loom.etl.storage.temp._store import IntermediateStore
 
     store = IntermediateStore(tmp_root=str(tmp_path))
     run_dir = tmp_path / "runs" / "run-abc"
@@ -199,7 +199,7 @@ def test_intermediate_store_uses_auto_cleaner_by_default(tmp_path: Path) -> None
 def test_cleanup_stale_warns_for_cloud_root(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
-    from loom.etl.temp._store import IntermediateStore
+    from loom.etl.storage.temp._store import IntermediateStore
 
     store = IntermediateStore(tmp_root="s3://bucket/tmp")
     with caplog.at_level(logging.WARNING, logger="loom.etl._temp_store"):

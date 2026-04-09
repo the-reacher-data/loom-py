@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from loom.etl.sql._predicate import (
+from loom.etl.io.source._predicate import (
     _ColOps,
 )
 

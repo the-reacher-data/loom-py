@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import polars as pl
@@ -13,13 +14,7 @@ from loom.etl.observability.records import (
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.observability.writers._row import record_to_row
 from loom.etl.schema._table import TableRef
-
-# ---------------------------------------------------------------------------
-# Explicit Polars schemas — prevent Null dtype inference for optional fields
-# (correlation_id, error, error_type, etc.) which Delta Lake rejects.
-# ---------------------------------------------------------------------------
 
 _S: pl.DataType | DataTypeClass = pl.String
 _I64: pl.DataType | DataTypeClass = pl.Int64
@@ -82,21 +77,22 @@ _SCHEMA_BY_TYPE: dict[type, pl.Schema] = {
 }
 
 
-def _polars_schema(record: ExecutionRecord) -> pl.Schema:
-    """Return the explicit Polars schema for *record*.
+def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
+    """Convert an execution record dataclass into a plain row mapping."""
+    row = dataclasses.asdict(record)
+    # Persist only snapshot fields in Delta tables; lifecycle event type is
+    # still used by log observers but does not add analytical value here.
+    row.pop("event", None)
+    row["status"] = str(row["status"])
+    return row
 
-    Raises:
-        TypeError: When *record* is not a recognised record type.
-    """
+
+def _polars_schema(record: ExecutionRecord) -> pl.Schema:
+    """Return the explicit Polars schema for *record*."""
     schema = _SCHEMA_BY_TYPE.get(type(record))
     if schema is None:
         raise TypeError(f"Unsupported execution record type: {type(record)!r}")
     return schema
-
-
-# ---------------------------------------------------------------------------
-# Writer
-# ---------------------------------------------------------------------------
 
 
 class PolarsExecutionRecordWriter:
@@ -113,13 +109,8 @@ class PolarsExecutionRecordWriter:
         self._writer = writer
 
     def write_record(self, record: ExecutionRecord, table_ref: TableRef, /) -> None:
-        """Append one execution record row to *table_ref*.
-
-        Args:
-            record:    A completed pipeline, process, or step run record.
-            table_ref: Destination table reference.
-        """
-        row = record_to_row(record)
+        """Append one execution record row to *table_ref*."""
+        row = _record_to_row(record)
         frame = pl.from_dicts([row], schema=_polars_schema(record)).lazy()
         self._writer.append(frame, table_ref, None)
 

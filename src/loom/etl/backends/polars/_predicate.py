@@ -26,8 +26,8 @@ from typing import Any
 
 import polars as pl
 
-from loom.etl.sql._predicate import PredicateNode
-from loom.etl.sql._predicate_dialect import PredicateDialect, fold_predicate
+from loom.etl.io.source._predicate import PredicateNode
+from loom.etl.io.source._predicate_dialect import PredicateDialect, fold_predicate
 
 
 class _PolarsPredicateDialect(PredicateDialect[pl.Expr]):

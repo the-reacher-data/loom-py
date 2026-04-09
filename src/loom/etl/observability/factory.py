@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.etl.observability._polars_writer import PolarsExecutionRecordWriter
+from loom.etl.observability._spark_writer import SparkExecutionRecordWriter
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.observability.observers.execution_records import ExecutionRecordsObserver
 from loom.etl.observability.observers.protocol import ETLRunObserver
 from loom.etl.observability.observers.structlog import StructlogRunObserver
+from loom.etl.observability.stores.protocol import ExecutionRecordWriter
 from loom.etl.observability.stores.table import TableExecutionRecordStore
-from loom.etl.observability.writers.polars import PolarsExecutionRecordWriter
-from loom.etl.observability.writers.protocol import ExecutionRecordWriter
-from loom.etl.observability.writers.spark import SparkExecutionRecordWriter
 from loom.etl.storage._config import StorageConfig
 
 
