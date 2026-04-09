@@ -7,6 +7,7 @@ name to either a catalog reference or a physical Delta path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -20,6 +21,13 @@ class StorageEngine(StrEnum):
 
     POLARS = "polars"
     SPARK = "spark"
+
+
+class MissingTablePolicy(StrEnum):
+    """Policy used when a TABLE target does not exist at write time."""
+
+    SCHEMA_MODE = "schema_mode"
+    CREATE = "create"
 
 
 class CatalogConnection(msgspec.Struct, frozen=True):
@@ -157,6 +165,7 @@ class StorageConfig(msgspec.Struct, frozen=True):
 
     Args:
         engine: Engine guardrail.
+        missing_table_policy: First-run policy for missing destination tables.
         catalogs: Catalog connection map.
         defaults: Default path settings.
         tables: Per-logical-table routes.
@@ -166,6 +175,7 @@ class StorageConfig(msgspec.Struct, frozen=True):
     """
 
     engine: Literal["polars", "spark"] = "polars"
+    missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE
     catalogs: dict[str, CatalogConnection] = {}
     defaults: StorageDefaults = StorageDefaults()
     tables: tuple[TableRoute, ...] = ()
@@ -191,6 +201,7 @@ class StorageConfig(msgspec.Struct, frozen=True):
             table_route.validate(catalogs=self.catalogs, context=f"tables[{idx}]")
         for idx, file_route in enumerate(self.files):
             file_route.validate(context=f"files[{idx}]")
+        self._validate_polars_uc_credentials()
 
     def has_catalog_routes(self) -> bool:
         """Return ``True`` when at least one table route uses ``ref``."""
@@ -229,6 +240,26 @@ class StorageConfig(msgspec.Struct, frozen=True):
             )
         return MappingLocator(mapping=mapping, default=default_location)
 
+    def _validate_polars_uc_credentials(self) -> None:
+        if self.engine != StorageEngine.POLARS.value:
+            return
+        for idx, table_route in enumerate(self.tables):
+            if not table_route.ref.strip():
+                continue
+            catalog_key = _resolve_polars_catalog_key(table_route, self.catalogs)
+            if not catalog_key:
+                raise ValueError(
+                    "Polars UC routes require credentials in storage.catalogs. "
+                    f"Missing mapping for storage.tables[{idx}] (ref={table_route.ref!r}). "
+                    "Set tables[].catalog or define matching storage.catalogs entry."
+                )
+            connection = self.catalogs[catalog_key]
+            if not connection.workspace.strip() or not connection.token.strip():
+                raise ValueError(
+                    f"storage.catalogs[{catalog_key!r}] must define non-empty workspace and token "
+                    "for Polars UC routes."
+                )
+
 
 def convert_storage_config(raw: dict[str, Any]) -> StorageConfig:
     """Convert a resolved plain dict into :class:`StorageConfig`."""
@@ -247,6 +278,23 @@ def _ensure_unique_names(names: Any, *, context: str) -> None:
         if name in seen:
             raise ValueError(f"{context} contains duplicate name {name!r}")
         seen.add(name)
+
+
+def _resolve_polars_catalog_key(
+    route: TableRoute,
+    catalogs: Mapping[str, CatalogConnection],
+) -> str:
+    explicit_key = route.catalog.strip()
+    if explicit_key:
+        return explicit_key
+
+    parts = tuple(part for part in route.ref.split(".") if part)
+    if len(parts) == 2:
+        return "default" if "default" in catalogs else ""
+    if len(parts) == 3:
+        catalog_from_ref = parts[0]
+        return catalog_from_ref if catalog_from_ref in catalogs else ""
+    return ""
 
 
 # ---------------------------------------------------------------------------

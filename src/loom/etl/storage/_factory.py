@@ -1,4 +1,4 @@
-"""Storage backend factory for reader/writer/catalog and temp store wiring.
+"""Storage backend factory for reader/writer and temp store wiring.
 
 Internal module — not part of the public API.
 """
@@ -8,12 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from loom.etl.schema._schema import ColumnSchema
-from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import CatalogConnection, StorageConfig
-from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from loom.etl.storage.route import RoutedCatalog, build_table_resolver
+from loom.etl.storage.route import build_table_resolver
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
 
@@ -32,21 +30,20 @@ class _TempStoreAware(Protocol):
 class _BackendBundle:
     reader: SourceReader
     writer: TargetWriter
-    catalog: TableDiscovery
 
 
 def make_backends(
     config: StorageConfig,
     spark: Any = None,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    """Instantiate reader, writer, and catalog from *config*.
+) -> tuple[SourceReader, TargetWriter]:
+    """Instantiate reader and writer from *config*.
 
     Args:
         config: Resolved storage config.
         spark: Active SparkSession. Required for Unity Catalog.
 
     Returns:
-        Triple of ``(reader, writer, catalog)``.
+        Pair ``(reader, writer)``.
 
     Selection rule:
         * ``spark is not None`` -> Spark backends.
@@ -61,7 +58,7 @@ def make_backends(
             "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
         )
     bundle = _build_backend_bundle(config, spark)
-    return bundle.reader, bundle.writer, bundle.catalog
+    return bundle.reader, bundle.writer
 
 
 def make_temp_store(
@@ -96,52 +93,28 @@ def _build_backend_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
     return _build_polars_bundle(config)
 
 
-def _make_spark_backends(
-    config: StorageConfig,
-    spark: Any,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    bundle = _build_spark_bundle(config, spark)
-    return bundle.reader, bundle.writer, bundle.catalog
-
-
 def _build_spark_bundle(config: StorageConfig, spark: Any) -> _BackendBundle:
-    from loom.etl.backends.polars import DeltaCatalog
-    from loom.etl.backends.spark import SparkCatalog, SparkSourceReader, SparkTargetWriter
+    from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter
 
     route_resolver = build_table_resolver(config)
-    path_catalog = DeltaCatalog(config.to_path_locator()) if config.has_path_routes() else None
-    spark_catalog = SparkCatalog(spark)
-    catalog_backend: TableDiscovery = spark_catalog
-    if config.catalogs:
-        catalog_backend = _SparkCatalogDiscovery(
-            spark_catalog=spark_catalog,
-            unity_catalog=DeltaCatalog(_UnityCatalogLocator(config)),
-            unity_catalog_keys=frozenset(config.catalogs),
-        )
-    catalog = RoutedCatalog(route_resolver, catalog=catalog_backend, path=path_catalog)
     return _BackendBundle(
         reader=SparkSourceReader(spark, route_resolver=route_resolver),
-        writer=SparkTargetWriter(spark, None, route_resolver=route_resolver),
-        catalog=catalog,
+        writer=SparkTargetWriter(
+            spark,
+            None,
+            route_resolver=route_resolver,
+            missing_table_policy=config.missing_table_policy,
+        ),
     )
 
 
-def _make_polars_backends(
-    config: StorageConfig,
-) -> tuple[SourceReader, TargetWriter, TableDiscovery]:
-    bundle = _build_polars_bundle(config)
-    return bundle.reader, bundle.writer, bundle.catalog
-
-
 def _build_polars_bundle(config: StorageConfig) -> _BackendBundle:
-    from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
+    from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
     locator = _build_polars_locator(config)
-    catalog = DeltaCatalog(locator)
     return _BackendBundle(
         reader=PolarsSourceReader(locator),
-        writer=PolarsTargetWriter(locator),
-        catalog=catalog,
+        writer=PolarsTargetWriter(locator, missing_table_policy=config.missing_table_policy),
     )
 
 
@@ -183,6 +156,8 @@ def _qualify_polars_catalog_ref(
 ) -> tuple[str, str]:
     parts = tuple(part for part in ref.split(".") if part)
     if len(parts) == 3:
+        if catalog_key:
+            return ref, catalog_key
         catalog_name = parts[0]
         return ref, catalog_name if catalog_name in config.catalogs else ""
     if len(parts) == 2:
@@ -214,54 +189,3 @@ def _unity_storage_options_from_connection(connection: CatalogConnection) -> dic
     if connection.token:
         options["databricks_access_token"] = connection.token
     return options
-
-
-class _UnityCatalogLocator:
-    def __init__(self, config: StorageConfig) -> None:
-        self._catalogs = config.catalogs
-
-    def locate(self, ref: TableRef) -> TableLocation:
-        parts = tuple(part for part in ref.ref.split(".") if part)
-        if len(parts) != 3:
-            raise KeyError(
-                f"Unity catalog locator requires 'catalog.schema.table', got {ref.ref!r}."
-            )
-        catalog_key = parts[0]
-        connection = self._catalogs.get(catalog_key)
-        if connection is None:
-            raise KeyError(f"No unity catalog connection configured for catalog {catalog_key!r}.")
-        return TableLocation(
-            uri=f"uc://{ref.ref}",
-            storage_options=_unity_storage_options_from_connection(connection),
-        )
-
-
-class _SparkCatalogDiscovery:
-    def __init__(
-        self,
-        *,
-        spark_catalog: TableDiscovery,
-        unity_catalog: TableDiscovery,
-        unity_catalog_keys: frozenset[str],
-    ) -> None:
-        self._spark_catalog = spark_catalog
-        self._unity_catalog = unity_catalog
-        self._unity_catalog_keys = unity_catalog_keys
-
-    def exists(self, ref: TableRef) -> bool:
-        return self._delegate(ref).exists(ref)
-
-    def columns(self, ref: TableRef) -> tuple[str, ...]:
-        return self._delegate(ref).columns(ref)
-
-    def schema(self, ref: TableRef) -> tuple[ColumnSchema, ...] | None:
-        return self._delegate(ref).schema(ref)
-
-    def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
-        self._delegate(ref).update_schema(ref, schema)
-
-    def _delegate(self, ref: TableRef) -> TableDiscovery:
-        parts = tuple(part for part in ref.ref.split(".") if part)
-        if len(parts) == 3 and parts[0] in self._unity_catalog_keys:
-            return self._unity_catalog
-        return self._spark_catalog

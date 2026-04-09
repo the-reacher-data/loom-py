@@ -22,7 +22,7 @@ from loom.etl.compiler._plan import (
 from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig
-from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
+from loom.etl.testing import StubSourceReader, StubTargetWriter
 
 RunnerFactory = Callable[..., ETLRunner]
 
@@ -87,19 +87,10 @@ def params() -> P:
 @pytest.fixture
 def runner_factory() -> RunnerFactory:
     def _make(observers: Sequence[Any] | None = None) -> ETLRunner:
-        catalog = StubCatalog(
-            tables={
-                "raw.orders": ("id",),
-                "staging.a": ("id",),
-                "staging.b": ("id",),
-                "staging.c": ("id",),
-            }
-        )
         reader = StubSourceReader({"raw.orders": object()})
         return ETLRunner(
             reader,
             StubTargetWriter(),
-            catalog,
             observers=list(observers or ()),
         )
 
@@ -220,14 +211,13 @@ class TestRunnerFromConfig:
 
         from unittest.mock import MagicMock
 
-        from loom.etl.backends.spark.reader import SparkSourceReader
-        from loom.etl.storage.route.catalog import RoutedCatalog
+        from loom.etl.backends.spark._io_compat import SparkSourceReader
 
         spark = MagicMock()
         runner = ETLRunner.from_config(StorageConfig(engine="spark"), spark=spark)
 
         assert isinstance(runner._executor._reader, SparkSourceReader)
-        assert isinstance(runner._compiler._catalog, RoutedCatalog)
+        assert runner._compiler._catalog is None
 
     @pytest.mark.parametrize(
         "tmp_suffix,has_temp_store",

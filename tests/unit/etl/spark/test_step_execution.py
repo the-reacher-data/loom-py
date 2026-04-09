@@ -21,6 +21,7 @@ from loom.etl.io.target._file import FileSpec
 from loom.etl.io.target._table import ReplacePartitionsSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.testing import StubRunObserver
 
 from .conftest import SparkDeltaReader, SparkDeltaWriter, spark_table_path
@@ -97,14 +98,25 @@ def test_writer_replace_partitions_first_run_creates_partitioned_table(
 
 def test_writer_append_creates_table_on_first_write(
     spark: SparkSession,
-    spark_writer: SparkDeltaWriter,
     spark_root: Path,
 ) -> None:
+    spark_writer = SparkDeltaWriter(
+        spark, spark_root, missing_table_policy=MissingTablePolicy.CREATE
+    )
     frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
     spark_writer.append(frame, TableRef("staging.append_first"), None)
 
     path = spark_table_path(spark_root, TableRef("staging.append_first"))
     assert spark.read.format("delta").load(str(path)).count() == 1
+
+
+def test_writer_append_first_write_requires_create_policy(
+    spark: SparkSession,
+    spark_writer: SparkDeltaWriter,
+) -> None:
+    frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
+    with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
+        spark_writer.append(frame, TableRef("staging.append_first"), None)
 
 
 class TestRunStepDataFlow:
@@ -310,27 +322,6 @@ class TestRunStepContracts:
 
 
 class TestSparkReaderWriterTypeGuards:
-    def test_legacy_delta_components_reject_file_specs(
-        self,
-        spark: SparkSession,
-    ) -> None:
-        from loom.etl.backends.spark._reader import SparkDeltaReader as SparkDeltaTableReader
-        from loom.etl.backends.spark._writer import SparkDeltaWriter as SparkDeltaTableWriter
-
-        reader = SparkDeltaTableReader(spark, None)
-        writer = SparkDeltaTableWriter(spark, None)
-
-        # With typed specs, the legacy reader only accepts TableSourceSpec.
-        # Passing a FileSourceSpec (a runtime contract violation) raises AttributeError.
-        read_spec = FileSourceSpec(alias="data", path="s3://bucket/data.csv", format=Format.CSV)
-        with pytest.raises((TypeError, AttributeError)):
-            reader.read(read_spec, None)  # type: ignore[arg-type]
-
-        write_spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
-        frame = spark.createDataFrame([(1,)], ["id"])
-        with pytest.raises(TypeError, match="TABLE targets"):
-            writer.write(frame, write_spec, None)
-
     def test_unified_components_support_file_specs(
         self,
         spark: SparkSession,

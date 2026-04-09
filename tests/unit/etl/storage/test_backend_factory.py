@@ -9,7 +9,6 @@ import pytest
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
-from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import (
     CatalogConnection,
     StorageConfig,
@@ -30,14 +29,13 @@ def _path_defaults(root: str) -> StorageDefaults:
 
 
 def test_make_backends_polars_path_defaults_returns_polars_types(tmp_path: Path) -> None:
-    from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
+    from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
     config = StorageConfig(defaults=_path_defaults(str(tmp_path / "test-lake")))
-    reader, writer, catalog = make_backends(config)
+    reader, writer = make_backends(config)
 
     assert isinstance(reader, PolarsSourceReader)
     assert isinstance(writer, PolarsTargetWriter)
-    assert isinstance(catalog, DeltaCatalog)
 
 
 def test_make_backends_spark_without_session_raises() -> None:
@@ -49,32 +47,18 @@ def test_make_backends_spark_without_session_raises() -> None:
 def test_make_backends_prefers_spark_when_session_is_provided() -> None:
     from unittest.mock import MagicMock
 
-    from loom.etl.backends.spark.reader import SparkSourceReader
-    from loom.etl.backends.spark.writer import SparkTargetWriter
-    from loom.etl.storage.route.catalog import RoutedCatalog
+    from loom.etl.backends.spark._io_compat import SparkSourceReader, SparkTargetWriter
 
     spark = MagicMock()
     config = StorageConfig(engine="polars")
-    reader, writer, catalog = make_backends(config, spark=spark)
+    reader, writer = make_backends(config, spark=spark)
 
     assert isinstance(reader, SparkSourceReader)
     assert isinstance(writer, SparkTargetWriter)
-    assert isinstance(catalog, RoutedCatalog)
 
 
-def test_make_backends_polars_catalog_route_uses_uc_uri(monkeypatch: pytest.MonkeyPatch) -> None:
-    from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
-
-    calls: list[tuple[str, dict[str, str] | None]] = []
-
-    def _fake_is_deltatable(uri: str, storage_options: dict[str, str] | None = None) -> bool:
-        calls.append((uri, storage_options))
-        return False
-
-    monkeypatch.setattr(
-        "loom.etl.backends.polars._catalog.DeltaTable.is_deltatable",
-        _fake_is_deltatable,
-    )
+def test_make_backends_polars_catalog_route_builds_backends() -> None:
+    from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
     config = StorageConfig(
         catalogs={
@@ -82,21 +66,32 @@ def test_make_backends_polars_catalog_route_uses_uc_uri(monkeypatch: pytest.Monk
         },
         tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="unity"),),
     )
-    reader, writer, catalog = make_backends(config)
+    reader, writer = make_backends(config)
 
     assert isinstance(reader, PolarsSourceReader)
     assert isinstance(writer, PolarsTargetWriter)
-    assert isinstance(catalog, DeltaCatalog)
-    assert catalog.exists(TableRef("raw.orders")) is False
-    assert calls == [
-        (
-            "uc://unity.raw.orders",
-            {
-                "databricks_workspace_url": "https://dbc.example",
-                "databricks_access_token": "token-123",
-            },
-        )
-    ]
+
+
+def test_make_backends_polars_mixed_routes_builds_backends(tmp_path: Path) -> None:
+    from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+
+    config = StorageConfig(
+        defaults=_path_defaults(str(tmp_path / "lake")),
+        catalogs={
+            "unity": CatalogConnection(workspace="https://dbc.example", token="token-123"),
+        },
+        tables=(
+            TableRoute(
+                name="raw.path_orders",
+                path=TablePathConfig(uri=str(tmp_path / "explicit" / "orders")),
+            ),
+            TableRoute(name="raw.uc_orders", ref="raw.orders", catalog="unity"),
+        ),
+    )
+
+    reader, writer = make_backends(config)
+    assert isinstance(reader, PolarsSourceReader)
+    assert isinstance(writer, PolarsTargetWriter)
 
 
 def test_make_backends_polars_two_part_uc_ref_requires_catalog_key() -> None:
@@ -107,24 +102,12 @@ def test_make_backends_polars_two_part_uc_ref_requires_catalog_key() -> None:
         make_backends(config)
 
 
-def test_make_backends_spark_catalog_route_uses_unity_storage_options_for_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_make_backends_spark_catalog_route_builds_backends() -> None:
     from unittest.mock import MagicMock
 
-    calls: list[tuple[str, dict[str, str] | None]] = []
-
-    def _fake_is_deltatable(uri: str, storage_options: dict[str, str] | None = None) -> bool:
-        calls.append((uri, storage_options))
-        return True
-
-    monkeypatch.setattr(
-        "loom.etl.backends.polars._catalog.DeltaTable.is_deltatable",
-        _fake_is_deltatable,
-    )
+    from loom.etl.backends.spark._io_compat import SparkSourceReader, SparkTargetWriter
 
     spark = MagicMock()
-    spark.catalog.tableExists.return_value = False
     config = StorageConfig(
         engine="spark",
         catalogs={
@@ -132,18 +115,9 @@ def test_make_backends_spark_catalog_route_uses_unity_storage_options_for_discov
         },
         tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="unity"),),
     )
-    _reader, _writer, catalog = make_backends(config, spark=spark)
-
-    assert catalog.exists(TableRef("raw.orders")) is True
-    assert calls == [
-        (
-            "uc://unity.raw.orders",
-            {
-                "databricks_workspace_url": "https://dbc.example",
-                "databricks_access_token": "token-123",
-            },
-        )
-    ]
+    reader, writer = make_backends(config, spark=spark)
+    assert isinstance(reader, SparkSourceReader)
+    assert isinstance(writer, SparkTargetWriter)
 
 
 # ---------------------------------------------------------------------------

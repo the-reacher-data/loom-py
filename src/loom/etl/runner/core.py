@@ -28,7 +28,7 @@ from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.storage._config import StorageConfig, convert_storage_config
 from loom.etl.storage._factory import make_backends, make_temp_store
-from loom.etl.storage._io import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.storage._io import SourceReader, TargetWriter
 from loom.etl.temp._cleaners import TempCleaner
 from loom.etl.temp._store import IntermediateStore
 
@@ -41,7 +41,6 @@ class ETLRunner:
     Args:
         reader: Source reader implementation.
         writer: Target writer implementation.
-        catalog: Catalog used for schema validation at compile time.
         observers: Lifecycle observers wrapped in a composite observer.
         dispatcher: Parallel task dispatcher.
     """
@@ -50,14 +49,13 @@ class ETLRunner:
         self,
         reader: SourceReader,
         writer: TargetWriter,
-        catalog: TableDiscovery,
         observers: Sequence[ETLRunObserver] = (),
         dispatcher: ParallelDispatcher | None = None,
         temp_store: IntermediateStore | None = None,
     ) -> None:
         composite = CompositeObserver(observers)
         self._executor = ETLExecutor(reader, writer, (composite,), dispatcher, temp_store)
-        self._compiler = ETLCompiler(catalog)
+        self._compiler = ETLCompiler()
         self._temp_store = temp_store
 
     @classmethod
@@ -71,10 +69,10 @@ class ETLRunner:
         cleaner: TempCleaner | None = None,
     ) -> ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects."""
-        reader, writer, catalog = make_backends(config, spark)
+        reader, writer = make_backends(config, spark)
         observers = make_observers(obs_config or ObservabilityConfig(), config, spark)
         temp_store = make_temp_store(config, spark, cleaner)
-        return cls(reader, writer, catalog, observers, dispatcher, temp_store)
+        return cls(reader, writer, observers, dispatcher, temp_store)
 
     @classmethod
     def from_yaml(

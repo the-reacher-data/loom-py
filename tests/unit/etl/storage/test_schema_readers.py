@@ -61,3 +61,60 @@ def test_delta_schema_reader_rejects_catalog_target() -> None:
 
     with pytest.raises(ValueError, match="path targets"):
         reader.read_schema(target)
+
+
+def test_delta_schema_reader_passes_uc_uri_and_storage_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    class _FakeSchema:
+        def json(self) -> dict[str, object]:
+            return {
+                "type": "struct",
+                "fields": [
+                    {"name": "id", "type": "long", "nullable": False, "metadata": {}},
+                ],
+            }
+
+    class _FakeMetadata:
+        partition_columns = ["year"]
+
+    class _FakeDeltaTable:
+        def __init__(self, uri: str, storage_options: dict[str, str] | None = None) -> None:
+            calls.append((uri, storage_options))
+
+        def schema(self) -> _FakeSchema:
+            return _FakeSchema()
+
+        def metadata(self) -> _FakeMetadata:
+            return _FakeMetadata()
+
+    monkeypatch.setattr("loom.etl.storage.schema.delta.DeltaTable", _FakeDeltaTable)
+
+    target = PathTarget(
+        logical_ref=TableRef("raw.orders"),
+        location=TableLocation(
+            uri="uc://main.raw.orders",
+            storage_options={
+                "databricks_workspace_url": "https://dbc.example",
+                "databricks_access_token": "token-123",
+            },
+        ),
+    )
+
+    schema = DeltaSchemaReader().read_schema(target)
+
+    assert schema is not None
+    assert isinstance(schema, PolarsPhysicalSchema)
+    assert tuple(schema.schema.names()) == ("id",)
+    assert schema.partition_columns == ("year",)
+    assert calls == [
+        (
+            "uc://main.raw.orders",
+            {
+                "databricks_workspace_url": "https://dbc.example",
+                "databricks_access_token": "token-123",
+            },
+        )
+    ]

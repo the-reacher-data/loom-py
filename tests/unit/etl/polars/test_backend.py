@@ -20,6 +20,7 @@ from loom.etl.io.target._table import AppendSpec, ReplacePartitionsSpec, Replace
 from loom.etl.pipeline._proxy import params as p
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import MappingLocator, TableLocation
 from loom.etl.storage.schema.model import PhysicalSchema
 
@@ -168,6 +169,33 @@ def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
     assert written_rows["label"][0] is None
 
 
+def test_writer_reads_latest_schema_between_consecutive_writes(tmp_path: Path) -> None:
+    writer = PolarsDeltaWriter(tmp_path)
+    ref = TableRef("staging.evolving")
+
+    writer.write(
+        pl.DataFrame({"id": [1]}).lazy(),
+        ReplaceSpec(table_ref=ref, schema_mode=SchemaMode.OVERWRITE),
+        None,
+    )
+    write_deltalake(
+        str(table_path(tmp_path, ref)),
+        pl.DataFrame({"id": [2], "amount": [20.0]}),
+        mode="overwrite",
+        schema_mode="overwrite",
+    )
+    writer.write(
+        pl.DataFrame({"id": [3], "amount": [30.0]}).lazy(),
+        AppendSpec(table_ref=ref, schema_mode=SchemaMode.STRICT),
+        None,
+    )
+
+    result = _read_table(tmp_path, ref.ref).sort("id")
+    assert result.columns == ["id", "amount"]
+    assert result["id"].to_list() == [2, 3]
+    assert result["amount"].to_list() == [20.0, 30.0]
+
+
 def test_reader_reads_csv_file(tmp_path: Path) -> None:
     """FILE sources are now supported — reader dispatches to _read_file."""
     from loom.etl.io._format import Format
@@ -222,8 +250,16 @@ def test_writer_append_adds_rows(tmp_path: Path) -> None:
     assert result.height == 3
 
 
-def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
+def test_writer_append_first_write_requires_create_policy(tmp_path: Path) -> None:
     writer = PolarsDeltaWriter(tmp_path)
+    frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
+
+    with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
+        writer.append(frame, TableRef("staging.append_first"), None)
+
+
+def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
+    writer = PolarsDeltaWriter(tmp_path, missing_table_policy=MissingTablePolicy.CREATE)
     frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
 
     writer.append(frame, TableRef("staging.append_first"), None)
@@ -258,7 +294,11 @@ def test_writer_warns_on_polars_uc_first_create(
             )
         }
     )
-    writer = PolarsDeltaWriter(locator, schema_reader=_MissingSchemaReader())
+    writer = PolarsDeltaWriter(
+        locator,
+        schema_reader=_MissingSchemaReader(),
+        missing_table_policy=MissingTablePolicy.CREATE,
+    )
     writer.append(pl.DataFrame({"id": [1]}).lazy(), TableRef("raw.uc_orders"), None)
 
     assert writes == [("uc://main.raw.orders", "overwrite")]

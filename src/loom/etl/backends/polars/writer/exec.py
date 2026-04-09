@@ -11,6 +11,7 @@ from deltalake import write_deltalake
 
 from loom.etl.backends.polars._schema import apply_schema
 from loom.etl.io.target import SchemaMode
+from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.schema._table import TableRef
 from loom.etl.sql._predicate import PredicateNode
 from loom.etl.sql._predicate_sql import predicate_to_sql
@@ -25,6 +26,7 @@ from loom.etl.sql._upsert import (
     _log_partition_combos,
     _warn_no_partition_cols,
 )
+from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocation, TableLocator
 from loom.etl.storage.route import CatalogTarget, PathTarget
 from loom.etl.storage.schema.model import PhysicalSchema, PolarsPhysicalSchema
@@ -43,7 +45,12 @@ _log = logging.getLogger(__name__)
 class PolarsWriteExecutor:
     """Execute write operations against Delta-RS table targets."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+    ) -> None:
+        self._missing_table_policy = missing_table_policy
         self._handlers: dict[type[WriteOperation], Callable[..., None]] = {
             AppendOp: self._exec_append,
             ReplaceOp: self._exec_replace,
@@ -61,6 +68,12 @@ class PolarsWriteExecutor:
 
     def _exec_append(self, frame: pl.LazyFrame, op: AppendOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
+        if op.existing_schema is None:
+            self._ensure_can_create(op.target, op.schema_mode)
+            loc = locator.locate(op.target.logical_ref)
+            _warn_uc_first_create(cast(PathTarget, op.target))
+            _first_run_create_polars(loc, _collect_frame(frame, streaming=op.streaming))
+            return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
             _collect_frame(validated, streaming=op.streaming), op, params_instance, locator
@@ -68,11 +81,11 @@ class PolarsWriteExecutor:
 
     def _exec_replace(self, frame: pl.LazyFrame, op: ReplaceOp, params_instance: Any) -> None:
         locator = _locator_for_target(op.target)
-        if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+        if op.existing_schema is None:
+            self._ensure_can_create(op.target, op.schema_mode)
+            loc = locator.locate(op.target.logical_ref)
             _warn_uc_first_create(cast(PathTarget, op.target))
-            _write_frame(
-                _collect_frame(frame, streaming=op.streaming), op, params_instance, locator
-            )
+            _first_run_create_polars(loc, _collect_frame(frame, streaming=op.streaming))
             return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
@@ -84,9 +97,10 @@ class PolarsWriteExecutor:
     ) -> None:
         locator = _locator_for_target(op.target)
         loc = locator.locate(op.target.logical_ref)
-        if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+        if op.existing_schema is None:
+            self._ensure_can_create(op.target, op.schema_mode)
             _warn_uc_first_create(cast(PathTarget, op.target))
-            _first_run_overwrite_partitions_polars(
+            _first_run_create_polars(
                 loc, _collect_frame(frame, streaming=op.streaming), op.partition_cols
             )
             return
@@ -99,11 +113,11 @@ class PolarsWriteExecutor:
         self, frame: pl.LazyFrame, op: ReplaceWhereOp, params_instance: Any
     ) -> None:
         locator = _locator_for_target(op.target)
-        if op.existing_schema is None and op.schema_mode is SchemaMode.OVERWRITE:
+        if op.existing_schema is None:
+            self._ensure_can_create(op.target, op.schema_mode)
+            loc = locator.locate(op.target.logical_ref)
             _warn_uc_first_create(cast(PathTarget, op.target))
-            _write_frame(
-                _collect_frame(frame, streaming=op.streaming), op, params_instance, locator
-            )
+            _first_run_create_polars(loc, _collect_frame(frame, streaming=op.streaming))
             return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _write_frame(
@@ -120,11 +134,27 @@ class PolarsWriteExecutor:
             )
         loc = locator.locate(op.target.logical_ref)
         if op.existing_schema is None:
+            self._ensure_can_create(op.target, op.schema_mode)
             _warn_uc_first_create(cast(PathTarget, op.target))
-            _first_run_overwrite_polars(loc, frame.collect())
+            _first_run_create_polars(loc, frame.collect(), op.partition_cols)
             return
         validated = _validated_frame(frame, op.existing_schema, op.schema_mode)
         _merge_polars(loc, validated.collect(), op)
+
+    def _ensure_can_create(
+        self, target: CatalogTarget | PathTarget, schema_mode: SchemaMode
+    ) -> None:
+        if self._can_create_on_missing(schema_mode):
+            return
+        raise SchemaNotFoundError(
+            f"Destination table does not yet exist: {target}. "
+            "Use SchemaMode.OVERWRITE or set storage.missing_table_policy='create'."
+        )
+
+    def _can_create_on_missing(self, schema_mode: SchemaMode) -> bool:
+        if self._missing_table_policy is MissingTablePolicy.CREATE:
+            return True
+        return schema_mode is SchemaMode.OVERWRITE
 
 
 def _validated_frame(
@@ -227,12 +257,10 @@ def _write_replace_where(
     write_deltalake(loc.uri, df, mode="overwrite", predicate=predicate, **_write_kwargs(loc))
 
 
-def _first_run_overwrite_polars(loc: TableLocation, df: pl.DataFrame) -> None:
-    write_deltalake(loc.uri, df, mode="overwrite", **_write_kwargs(loc))
-
-
-def _first_run_overwrite_partitions_polars(
-    loc: TableLocation, df: pl.DataFrame, partition_cols: tuple[str, ...]
+def _first_run_create_polars(
+    loc: TableLocation,
+    df: pl.DataFrame,
+    partition_cols: tuple[str, ...] = (),
 ) -> None:
     kwargs = _write_kwargs(loc)
     if partition_cols:

@@ -16,11 +16,12 @@ from loom.etl.io.target._table import (
     UpsertSpec,
 )
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.route import PathRouteResolver, TableRouteResolver
 from loom.etl.storage.schema.delta import DeltaSchemaReader
 from loom.etl.storage.schema.reader import SchemaReader
-from loom.etl.storage.write import GenericTargetWriter, ReplaceOp, WritePlanner
+from loom.etl.storage.write import GenericTargetWriter, WritePlanner
 
 from .exec import PolarsWriteExecutor
 
@@ -34,12 +35,13 @@ class PolarsDeltaTableWriter:
         *,
         route_resolver: TableRouteResolver | None = None,
         schema_reader: SchemaReader | None = None,
+        missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
     ) -> None:
         normalized_locator = _as_locator(locator)
         if route_resolver is None:
             route_resolver = PathRouteResolver(normalized_locator)
         self._planner = WritePlanner(route_resolver, schema_reader or DeltaSchemaReader())
-        self._executor = PolarsWriteExecutor()
+        self._executor = PolarsWriteExecutor(missing_table_policy=missing_table_policy)
         self._writer: GenericTargetWriter[pl.LazyFrame] = GenericTargetWriter(
             planner=self._planner,
             executor=self._executor,
@@ -71,20 +73,9 @@ class PolarsDeltaTableWriter:
         streaming: bool = False,
     ) -> None:
         """Append rows to *table_ref*, creating the table on first write."""
-        op = self._planner.plan(
+        self.write(
+            frame,
             AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE),
+            params_instance,
             streaming=streaming,
         )
-        if op.existing_schema is None:
-            self._executor.execute(
-                frame,
-                ReplaceOp(
-                    target=op.target,
-                    schema_mode=SchemaMode.OVERWRITE,
-                    streaming=streaming,
-                    existing_schema=None,
-                ),
-                params_instance,
-            )
-            return
-        self._executor.execute(frame, op, params_instance)

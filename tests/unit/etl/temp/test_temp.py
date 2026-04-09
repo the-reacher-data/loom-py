@@ -234,7 +234,7 @@ class TestRunnerTempCleanup:
     ) -> None:
         from loom.etl.runner import ETLRunner
 
-        runner = ETLRunner(StubSourceReader({}), StubTargetWriter(), StubCatalog(tables={}))
+        runner = ETLRunner(StubSourceReader({}), StubTargetWriter())
         with pytest.raises(RuntimeError, match="tmp_root"):
             cleanup_fn(runner)
 

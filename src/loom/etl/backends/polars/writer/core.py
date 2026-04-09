@@ -17,6 +17,7 @@ from loom.etl.io.target._table import (
     UpsertSpec,
 )
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator
 from loom.etl.storage.route import PathRouteResolver, TableRouteResolver
 from loom.etl.storage.schema.delta import DeltaSchemaReader
@@ -49,6 +50,7 @@ class PolarsTargetWriter:
         *,
         route_resolver: TableRouteResolver | None = None,
         schema_reader: SchemaReader | None = None,
+        missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
     ) -> None:
         if route_resolver is None:
             from loom.etl.storage._locator import _as_locator
@@ -58,6 +60,7 @@ class PolarsTargetWriter:
             locator,
             route_resolver=route_resolver,
             schema_reader=schema_reader or DeltaSchemaReader(),
+            missing_table_policy=missing_table_policy,
         )
         self._file_writer = PolarsFileWriter()
 

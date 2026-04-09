@@ -9,6 +9,7 @@ from loom.etl.storage._config import (
     CatalogConnection,
     FilePathConfig,
     FileRoute,
+    MissingTablePolicy,
     StorageConfig,
     StorageDefaults,
     StorageEngine,
@@ -27,6 +28,7 @@ class TestStorageConfig:
     def test_defaults(self) -> None:
         config = StorageConfig()
         assert config.engine == "polars"
+        assert config.missing_table_policy == MissingTablePolicy.SCHEMA_MODE
         assert config.catalogs == {}
         assert config.defaults == StorageDefaults()
         assert config.tables == ()
@@ -94,13 +96,46 @@ class TestStorageConfig:
 
     def test_validate_accepts_two_part_ref_with_catalog_key(self) -> None:
         config = StorageConfig(
-            catalogs={"default": CatalogConnection()},
+            catalogs={
+                "default": CatalogConnection(
+                    workspace="https://dbc.example",
+                    token="token-123",
+                )
+            },
             tables=(TableRoute(name="raw.orders", ref="raw.orders", catalog="default"),),
         )
         config.validate()
 
     def test_validate_accepts_three_part_ref_without_catalog_key(self) -> None:
+        config = StorageConfig(
+            engine="spark",
+            tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),),
+        )
+        config.validate()
+
+    def test_validate_rejects_polars_three_part_ref_without_catalog_credentials(self) -> None:
         config = StorageConfig(tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),))
+        with pytest.raises(ValueError, match="Polars UC routes require credentials"):
+            config.validate()
+
+    def test_validate_rejects_polars_uc_catalog_with_empty_credentials(self) -> None:
+        config = StorageConfig(
+            catalogs={"main": CatalogConnection()},
+            tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),),
+        )
+        with pytest.raises(ValueError, match="non-empty workspace and token"):
+            config.validate()
+
+    def test_validate_accepts_polars_three_part_ref_with_catalog_alias(self) -> None:
+        config = StorageConfig(
+            catalogs={
+                "unity": CatalogConnection(
+                    workspace="https://dbc.example",
+                    token="token-123",
+                )
+            },
+            tables=(TableRoute(name="raw.orders", ref="main.raw.orders", catalog="unity"),),
+        )
         config.validate()
 
     @pytest.mark.parametrize(

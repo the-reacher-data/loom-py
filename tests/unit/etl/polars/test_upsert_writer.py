@@ -15,6 +15,7 @@ from loom.etl.backends.polars import PolarsDeltaWriter
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._table import UpsertSpec
 from loom.etl.schema._table import TableRef
+from loom.etl.storage._config import MissingTablePolicy
 
 from .conftest import table_path
 
@@ -52,8 +53,12 @@ def _seed_table(root: Path, ref: str, data: pl.DataFrame) -> None:
     write_deltalake(str(path), data, mode="overwrite")
 
 
-def _writer(root: Path) -> PolarsDeltaWriter:
-    return PolarsDeltaWriter(str(root))
+def _writer(
+    root: Path,
+    *,
+    missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+) -> PolarsDeltaWriter:
+    return PolarsDeltaWriter(str(root), missing_table_policy=missing_table_policy)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +67,7 @@ def _writer(root: Path) -> PolarsDeltaWriter:
 
 
 def test_upsert_first_run_creates_table(tmp_path: Path) -> None:
-    writer = _writer(tmp_path)
+    writer = _writer(tmp_path, missing_table_policy=MissingTablePolicy.CREATE)
     frame = pl.LazyFrame({"id": [1, 2], "name": ["alice", "bob"]})
     spec = _upsert_spec("test.orders", keys=("id",))
 
