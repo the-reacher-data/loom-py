@@ -98,17 +98,11 @@ class ReportPipeline(ETLPipeline[DailyParams]):
     processes = [ReportProcess]
 ```
 
-## YAML config (Polars path + Unity Catalog)
+## YAML config (Polars path)
 
 ```yaml
 storage:
   engine: polars
-
-  catalogs:
-    default:
-      provider: unity
-      workspace: ${oc.env:DATABRICKS_WORKSPACE_URL}
-      token: ${oc.env:DATABRICKS_ACCESS_TOKEN}
 
   defaults:
     table_path:
@@ -117,19 +111,6 @@ storage:
         AWS_REGION: ${oc.env:AWS_REGION}
         AWS_ACCESS_KEY_ID: ${oc.env:AWS_ACCESS_KEY_ID}
         AWS_SECRET_ACCESS_KEY: ${oc.env:AWS_SECRET_ACCESS_KEY}
-
-  tables:
-    # UC route
-    - name: raw.orders
-      ref: bronze.orders
-      catalog: default
-
-    # Direct Delta path route
-    - name: staging.events
-      path:
-        uri: s3://my-lake/staging/events
-        storage_options:
-          AWS_REGION: ${oc.env:AWS_REGION}
 
   tmp_root: /var/lib/loom/lake/_tmp
 
@@ -147,10 +128,6 @@ from loom.etl import ETLRunner
 
 runner = ETLRunner.from_yaml("config/etl.yaml")
 ```
-
-When a Polars write targets `uc://...` and the table does not exist yet, Loom emits a warning.
-The write goes through delta-rs, but catalog registration is not guaranteed for first-create flows.
-For production, pre-create UC tables with Spark SQL/Databricks before the ETL run.
 
 ## Running only selected stages
 
@@ -188,7 +165,3 @@ Use the built-in test harnesses:
 
 These let you seed source tables, run one step in isolation, and assert output
 without wiring full storage infrastructure.
-
-## API reference
-
-See {doc}`../reference/api/etl` for autodoc pages.
