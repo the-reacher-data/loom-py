@@ -110,13 +110,12 @@ def _run_sql(frames: dict[str, Any], query: str) -> Any:
 
 
 def _polars_sql(frames: dict[str, Any], query: str) -> Any:
-    from loom.etl.backends.polars._backend import PolarsReadOps
+    from loom.etl.backends.polars._reader import execute_sql
 
-    return PolarsReadOps().sql(frames, query)
+    return execute_sql(frames, query)
 
 
 def _spark_sql(frames: dict[str, Any], query: str) -> Any:
-    from loom.etl.backends.spark._backend import SparkReadOps
+    from loom.etl.backends.spark._reader import execute_sql
 
-    first = next(iter(frames.values()))
-    return SparkReadOps(first.sparkSession).sql(frames, query)
+    return execute_sql(frames, query)

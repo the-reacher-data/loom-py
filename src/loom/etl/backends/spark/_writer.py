@@ -8,6 +8,7 @@ from typing import Any
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql import types as T
 
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._upsert import (
@@ -15,9 +16,12 @@ from loom.etl.backends._upsert import (
     _warn_no_partition_cols,
 )
 from loom.etl.backends._write_policy import _WritePolicy
+from loom.etl.backends.spark._schema import spark_apply_schema
+from loom.etl.io._format import Format
+from loom.etl.io._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions
 from loom.etl.io.target import SchemaMode
 from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import UpsertSpec
+from loom.etl.io.target._table import AppendSpec, UpsertSpec
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
@@ -68,8 +72,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
         streaming: bool = False,
     ) -> None:
         """Append frame to table (legacy API, creates table on first write)."""
-        from loom.etl.io.target._table import AppendSpec
-
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
 
@@ -79,8 +81,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
 
     def _physical_schema(self, target: ResolvedTarget) -> SparkPhysicalSchema | None:
         """Read physical schema from Spark/Delta."""
-        from pyspark.sql import types as T
-
         if isinstance(target, CatalogTarget):
             if not self._spark.catalog.tableExists(target.catalog_ref.ref):
                 return None
@@ -103,8 +103,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
         """Align frame schema with existing."""
         if existing_schema is None or mode is SchemaMode.OVERWRITE:
             return frame
-
-        from loom.etl.backends.spark._schema import spark_apply_schema
 
         return spark_apply_schema(frame, existing_schema.schema, mode)
 
@@ -257,7 +255,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
     ) -> None:
         """Write to file (CSV, JSON, Parquet)."""
         _ = streaming
-        from loom.etl.io._format import Format
 
         fmt = spec.format.value if isinstance(spec.format, Format) else spec.format
 
@@ -266,8 +263,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
             return
 
         if fmt == "csv":
-            from loom.etl.io._write_options import CsvWriteOptions
-
             opts = (
                 spec.write_options
                 if isinstance(spec.write_options, CsvWriteOptions)
@@ -284,8 +279,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
             return
 
         if fmt == "json":
-            from loom.etl.io._write_options import JsonWriteOptions
-
             opts = (
                 spec.write_options
                 if isinstance(spec.write_options, JsonWriteOptions)
@@ -298,8 +291,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
             return
 
         if fmt == "parquet":
-            from loom.etl.io._write_options import ParquetWriteOptions
-
             opts = (
                 spec.write_options
                 if isinstance(spec.write_options, ParquetWriteOptions)

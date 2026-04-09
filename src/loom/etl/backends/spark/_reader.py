@@ -19,7 +19,6 @@ from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
     PathRouteResolver,
-    ResolvedTarget,
     TableRouteResolver,
 )
 
@@ -102,9 +101,6 @@ class SparkSourceReader(SourceReader):
 
     def _read_file_by_format(self, path: str, format: Any, options: Any) -> DataFrame:
         """Dispatch to format-specific reader."""
-        from loom.etl.io._format import Format
-        from loom.etl.io._read_options import CsvReadOptions, JsonReadOptions
-
         fmt = format.value if isinstance(format, Format) else format
 
         if fmt == "delta":
@@ -141,10 +137,6 @@ class SparkSourceReader(SourceReader):
         if not schema:
             return df
 
-        from pyspark.sql import functions as F
-
-        from loom.etl.backends.spark._dtype import loom_type_to_spark
-
         for col in schema:
             df = df.withColumn(col.name, F.col(col.name).cast(loom_type_to_spark(col.dtype)))
         return df
@@ -154,14 +146,22 @@ class SparkSourceReader(SourceReader):
         if not json_columns:
             return df
 
-        from pyspark.sql import functions as F
-
-        from loom.etl.backends.spark._dtype import loom_type_to_spark
-
         for jc in json_columns:
             schema_ddl = loom_type_to_spark(jc.loom_type).simpleString()
             df = df.withColumn(jc.column, F.from_json(F.col(jc.column), schema_ddl))
         return df
 
 
-__all__ = ["SparkSourceReader"]
+def execute_sql(frames: dict[str, DataFrame], query: str) -> DataFrame:
+    """Execute SQL query against temporary views created from Spark frames."""
+    first = next(iter(frames.values()), None)
+    if first is None:
+        raise ValueError("StepSQL requires at least one source frame.")
+
+    isolated = first.sparkSession.newSession()
+    for name, frame in frames.items():
+        isolated.createDataFrame(frame.rdd, frame.schema).createOrReplaceTempView(name)
+    return isolated.sql(query)
+
+
+__all__ = ["SparkSourceReader", "execute_sql"]

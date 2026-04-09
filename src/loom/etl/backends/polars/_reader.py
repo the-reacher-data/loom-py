@@ -149,9 +149,20 @@ def _apply_json_decode(frame: pl.LazyFrame, json_columns: tuple[Any, ...]) -> pl
     return frame.with_columns(exprs)
 
 
+def execute_sql(frames: dict[str, pl.LazyFrame], query: str) -> pl.LazyFrame:
+    """Execute SQL query against lazy frames registered in a SQLContext.
+
+    Registers each frame by its key in the context and executes the query.
+    """
+    ctx = pl.SQLContext()
+    for name, frame in frames.items():
+        ctx.register(name, frame)
+    return ctx.execute(query, eager=False)
+
+
 # Bind methods to class for internal use
 PolarsSourceReader._apply_source_schema = staticmethod(_apply_source_schema)
 PolarsSourceReader._apply_json_decode = staticmethod(_apply_json_decode)
 
 
-__all__ = ["PolarsSourceReader", "_apply_source_schema", "_apply_json_decode"]
+__all__ = ["PolarsSourceReader", "execute_sql", "_apply_source_schema", "_apply_json_decode"]
