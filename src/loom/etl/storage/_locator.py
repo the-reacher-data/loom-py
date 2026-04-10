@@ -26,7 +26,6 @@ valid ``storage_options`` keys per cloud provider.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -99,7 +98,7 @@ class PrefixLocator:
 
     Args:
         root:            Root URI — local path or cloud URI.  Accepts
-                         ``str`` or any :class:`os.PathLike` (e.g. a
+                         ``str`` (cloud URI like ``s3://bucket/path`` or
                          ``pathlib.Path``); converted to ``str`` internally.
         storage_options: Cloud credentials.
                          See https://delta-io.github.io/delta-rs/api/delta_writer/
@@ -128,7 +127,7 @@ class PrefixLocator:
 
     def __init__(
         self,
-        root: str | os.PathLike[str],
+        root: str,
         storage_options: dict[str, str] | None = None,
         writer: dict[str, Any] | None = None,
         delta_config: dict[str, str | None] | None = None,
@@ -231,7 +230,7 @@ class MappingLocator:
         )
 
 
-def _as_locator(locator: str | os.PathLike[str] | TableLocator) -> TableLocator:
+def _as_locator(locator: str | TableLocator) -> TableLocator:
     """Coerce a root URI / path to a :class:`PrefixLocator`, or return *locator* as-is.
 
     Backends call this in their constructors so callers can pass a plain string
@@ -243,7 +242,7 @@ def _as_locator(locator: str | os.PathLike[str] | TableLocator) -> TableLocator:
     return PrefixLocator(locator)
 
 
-def _as_location(location: str | os.PathLike[str] | TableLocation) -> TableLocation:
+def _as_location(location: str | TableLocation) -> TableLocation:
     """Coerce a URI string / path to a :class:`TableLocation`, or return *location* as-is.
 
     Sink constructors call this so callers can pass a plain URI string for the

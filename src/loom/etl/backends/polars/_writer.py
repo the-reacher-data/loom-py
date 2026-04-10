@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import polars as pl
@@ -46,7 +45,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
     def __init__(
         self,
-        locator: str | os.PathLike[str] | TableLocator,
+        locator: str | TableLocator,
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,

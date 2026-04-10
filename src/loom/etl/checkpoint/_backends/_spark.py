@@ -9,6 +9,8 @@ import logging
 import threading
 from typing import Any
 
+from pyspark.sql import functions as F
+
 from loom.etl.checkpoint._cleaners import _join_path
 
 _log = logging.getLogger(__name__)
@@ -123,8 +125,6 @@ def _probe_spark(spark: Any, path: str) -> Any | None:
 
 def _align_spark_to_existing(frame: Any, schema: Any) -> Any:
     """Cast/reorder *frame* to *schema* and drop extra columns."""
-    from pyspark.sql import functions as F
-
     source_cols = set(frame.columns)
     projected: list[Any] = []
     for field in schema.fields:

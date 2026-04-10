@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import Any
 
 import polars as pl
 
+from loom.etl.backends._format_registry import resolve_format_handler
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
@@ -25,7 +25,7 @@ class PolarsSourceReader(SourceReader):
 
     def __init__(
         self,
-        locator: str | os.PathLike[str] | TableLocator,
+        locator: str | TableLocator,
         *,
         route_resolver: TableRouteResolver | None = None,
     ) -> None:
@@ -87,16 +87,13 @@ class PolarsSourceReader(SourceReader):
     @staticmethod
     def _read_file_by_format(path: str, format: Any, options: Any) -> pl.LazyFrame:
         """Dispatch to format-specific reader."""
-        fmt = format if isinstance(format, Format) else Format(format)
         readers: dict[Format, Callable[[str, Any], pl.LazyFrame]] = {
             Format.CSV: PolarsSourceReader._read_csv,
             Format.JSON: PolarsSourceReader._read_json,
             Format.XLSX: PolarsSourceReader._read_xlsx,
             Format.PARQUET: PolarsSourceReader._read_parquet,
         }
-        reader = readers.get(fmt)
-        if reader is None:
-            raise ValueError(f"Unsupported format: {fmt}")
+        reader = resolve_format_handler(format, readers)
         return reader(path, options)
 
     @staticmethod

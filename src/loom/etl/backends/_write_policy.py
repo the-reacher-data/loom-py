@@ -101,6 +101,22 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             )
 
         target = self._resolver.resolve(spec.table_ref)
+        self._dispatch_table_write(frame, target, spec, params_instance, streaming)
+
+    def _dispatch_table_write(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        """Dispatch table write to specific handler.
+
+        This method centralizes the dispatch logic for all table write operations.
+        When adding a new write mode (e.g., MergeSpec, DeleteWhereSpec), add a
+        new case here and implement the corresponding ``_do_*`` method.
+        """
         match spec:
             case AppendSpec():
                 self._do_append(frame, target, spec, streaming)

@@ -43,12 +43,9 @@ the public API and may change without notice.
 """
 
 from loom.etl.checkpoint import (
-    AutoTempCleaner,
+    CheckpointCleaner,
     CheckpointScope,
     CheckpointStore,
-    FsspecTempCleaner,
-    LocalTempCleaner,
-    TempCleaner,
 )
 from loom.etl.declarative import (
     CsvReadOptions,
@@ -138,13 +135,9 @@ __all__ = [
     "IntoFile",
     "IntoTemp",
     # intermediates
+    "CheckpointCleaner",
     "CheckpointScope",
     "CheckpointStore",
-    # temp cleaners
-    "TempCleaner",
-    "LocalTempCleaner",
-    "FsspecTempCleaner",
-    "AutoTempCleaner",
     # format
     "Format",
     # read options

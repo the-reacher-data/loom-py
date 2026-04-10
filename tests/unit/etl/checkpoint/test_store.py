@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -168,28 +167,6 @@ class TestCheckpointStore:
         CheckpointStore(root=str(tmp_path)).cleanup_run("does-not-exist")
 
     @pytest.mark.parametrize(
-        "old_offset_days,should_delete",
-        [
-            (2, True),
-            (0, False),
-        ],
-    )
-    def test_cleanup_stale_behavior(
-        self,
-        tmp_path: Path,
-        old_offset_days: int,
-        should_delete: bool,
-    ) -> None:
-        store = CheckpointStore(root=str(tmp_path))
-        run_dir = tmp_path / "runs" / "run-x"
-        run_dir.mkdir(parents=True)
-        if old_offset_days:
-            old_time = run_dir.stat().st_mtime - old_offset_days * 86_400
-            os.utime(run_dir, (old_time, old_time))
-        store.cleanup_stale(older_than_seconds=86_400)
-        assert run_dir.exists() is (not should_delete)
-
-    @pytest.mark.parametrize(
         "scope,data,error,match",
         [
             (
@@ -219,22 +196,12 @@ class TestCheckpointStore:
 
 
 class TestRunnerTempCleanup:
-    @pytest.mark.parametrize(
-        "cleanup_fn",
-        [
-            lambda runner: runner.cleanup_correlation("job-123"),
-            lambda runner: runner.cleanup_stale_temps(),
-        ],
-    )
-    def test_runner_cleanup_without_temp_store_raises(
-        self,
-        cleanup_fn: Callable[[Any], None],
-    ) -> None:
+    def test_runner_cleanup_correlation_without_temp_store_raises(self) -> None:
         from loom.etl.runner import ETLRunner
 
         runner = ETLRunner(StubSourceReader({}), StubTargetWriter())
         with pytest.raises(RuntimeError, match="tmp_root"):
-            cleanup_fn(runner)
+            runner.cleanup_correlation("job-123")
 
 
 def _build_orphan_pipeline() -> type[ETLPipeline[P]]:

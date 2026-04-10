@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -251,23 +250,6 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
     with pytest.raises(msgspec.ValidationError):
         config_mod.convert_storage_config({"engine": "unknown"})
 
-    root = tmp_path / "cleanup-local"
-    root.mkdir()
-    (root / "a.txt").write_text("x", encoding="utf-8")
-    cleaners_mod.LocalTempCleaner().delete_tree(str(root))
-    assert not root.exists()
-
-    auto = cleaners_mod.AutoTempCleaner()
-    local_spy = _spy_cleaner()
-    cloud_spy = _spy_cleaner()
-    monkeypatch.setattr(auto, "_local", local_spy)
-    monkeypatch.setattr(auto, "_cloud", cloud_spy)
-    local_path = str(tmp_path / "cleanup-auto-local")
-    auto.delete_tree(local_path)
-    auto.delete_tree("s3://bucket/tmp")
-    assert local_spy.paths == [local_path]
-    assert cloud_spy.paths == ["s3://bucket/tmp"]
-
     removed: list[tuple[str, bool]] = []
 
     class _Fs:
@@ -277,8 +259,8 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
         def rm(self, path: str, recursive: bool) -> None:
             removed.append((path, recursive))
 
-    fake_fsspec = SimpleNamespace(core=SimpleNamespace(url_to_fs=lambda _: (_Fs(), "bucket/path")))
-    monkeypatch.setitem(sys.modules, "fsspec", fake_fsspec)
+    fake_core = SimpleNamespace(url_to_fs=lambda *_args, **_kwargs: (_Fs(), "bucket/path"))
+    monkeypatch.setattr(cleaners_mod.fsspec, "core", fake_core)
     cleaners_mod.FsspecTempCleaner().delete_tree("s3://bucket/path")
     assert removed == [("bucket/path", True)]
 

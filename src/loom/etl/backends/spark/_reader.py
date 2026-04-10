@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from loom.etl.backends._format_registry import resolve_format_handler
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.declarative._format import Format
@@ -34,7 +34,7 @@ class SparkSourceReader(SourceReader):
     def __init__(
         self,
         spark: SparkSession,
-        locator: str | os.PathLike[str] | TableLocator | None = None,
+        locator: str | TableLocator | None = None,
         *,
         route_resolver: TableRouteResolver | None = None,
     ) -> None:
@@ -106,17 +106,14 @@ class SparkSourceReader(SourceReader):
 
     def _read_file_by_format(self, path: str, format: Any, options: Any) -> DataFrame:
         """Dispatch to format-specific reader."""
-        fmt = format.value if isinstance(format, Format) else format
-        readers: dict[str, Callable[[str, Any], DataFrame]] = {
-            "delta": self._read_delta_file,
-            "csv": self._read_csv_file,
-            "json": self._read_json_file,
-            "parquet": self._read_parquet_file,
-            "xlsx": self._read_xlsx_file,
+        readers: dict[Format, Callable[[str, Any], DataFrame]] = {
+            Format.DELTA: self._read_delta_file,
+            Format.CSV: self._read_csv_file,
+            Format.JSON: self._read_json_file,
+            Format.PARQUET: self._read_parquet_file,
+            Format.XLSX: self._read_xlsx_file,
         }
-        reader = readers.get(fmt)
-        if reader is None:
-            raise ValueError(f"Unsupported format: {fmt}")
+        reader = resolve_format_handler(format, readers)
         return reader(path, options)
 
     def _read_delta_file(self, path: str, _options: Any) -> DataFrame:

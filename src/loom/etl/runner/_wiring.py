@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from loom.etl.checkpoint import CheckpointStore, TempCleaner
+from loom.etl.checkpoint import CheckpointStore, FsspecTempCleaner, TempCleaner
 from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
 from loom.etl.checkpoint._cleaners import _is_cloud_path
@@ -68,11 +68,14 @@ def make_checkpoint_store(
             "checkpoint_root must be a cloud URI (s3://, gs://, abfss://, ...). "
             "Local checkpoint paths are not supported."
         )
+    resolved_cleaner = cleaner or FsspecTempCleaner(
+        storage_options=config.checkpoint_storage_options or {}
+    )
     backend = _make_checkpoint_backend(spark, config.checkpoint_storage_options or {})
     return CheckpointStore(
         root=config.checkpoint_root,
         backend=backend,
-        cleaner=cleaner,
+        cleaner=resolved_cleaner,
     )
 
 

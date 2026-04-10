@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
+from collections.abc import Callable
 from typing import Any, cast
 
 from delta.tables import DeltaTable
@@ -11,6 +11,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
+from loom.etl.backends._format_registry import resolve_format_handler
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -49,7 +50,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
     def __init__(
         self,
         spark: SparkSession,
-        locator: str | os.PathLike[str] | TableLocator | None = None,
+        locator: str | TableLocator | None = None,
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
@@ -256,57 +257,59 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
     ) -> None:
         """Write to file (CSV, JSON, Parquet)."""
         _ = streaming
+        writers: dict[Format, Callable[[DataFrame, FileSpec], None]] = {
+            Format.DELTA: self._write_delta_file,
+            Format.CSV: self._write_csv_file,
+            Format.JSON: self._write_json_file,
+            Format.PARQUET: self._write_parquet_file,
+            Format.XLSX: self._write_xlsx_file,
+        }
+        writer = resolve_format_handler(spec.format, writers)
+        writer(frame, spec)
 
-        fmt = spec.format.value if isinstance(spec.format, Format) else spec.format
+    def _write_delta_file(self, frame: DataFrame, spec: FileSpec) -> None:
+        frame.write.format("delta").mode("overwrite").save(spec.path)
 
-        if fmt == "delta":
-            frame.write.format("delta").mode("overwrite").save(spec.path)
-            return
+    def _write_csv_file(self, frame: DataFrame, spec: FileSpec) -> None:
+        csv_opts = (
+            spec.write_options
+            if isinstance(spec.write_options, CsvWriteOptions)
+            else CsvWriteOptions()
+        )
+        writer = (
+            frame.write.mode("overwrite")
+            .option("sep", csv_opts.separator)
+            .option("header", str(csv_opts.has_header).lower())
+        )
+        for key, value in csv_opts.kwargs:
+            writer = writer.option(key, str(value))
+        writer.csv(spec.path)
 
-        if fmt == "csv":
-            csv_opts = (
-                spec.write_options
-                if isinstance(spec.write_options, CsvWriteOptions)
-                else CsvWriteOptions()
-            )
-            writer = (
-                frame.write.mode("overwrite")
-                .option("sep", csv_opts.separator)
-                .option("header", str(csv_opts.has_header).lower())
-            )
-            for key, value in csv_opts.kwargs:
-                writer = writer.option(key, str(value))
-            writer.csv(spec.path)
-            return
+    def _write_json_file(self, frame: DataFrame, spec: FileSpec) -> None:
+        json_opts = (
+            spec.write_options
+            if isinstance(spec.write_options, JsonWriteOptions)
+            else JsonWriteOptions()
+        )
+        writer = frame.write.mode("overwrite")
+        for key, value in json_opts.kwargs:
+            writer = writer.option(key, str(value))
+        writer.json(spec.path)
 
-        if fmt == "json":
-            json_opts = (
-                spec.write_options
-                if isinstance(spec.write_options, JsonWriteOptions)
-                else JsonWriteOptions()
-            )
-            writer = frame.write.mode("overwrite")
-            for key, value in json_opts.kwargs:
-                writer = writer.option(key, str(value))
-            writer.json(spec.path)
-            return
+    def _write_parquet_file(self, frame: DataFrame, spec: FileSpec) -> None:
+        parquet_opts = (
+            spec.write_options
+            if isinstance(spec.write_options, ParquetWriteOptions)
+            else ParquetWriteOptions()
+        )
+        writer = frame.write.mode("overwrite").option("compression", parquet_opts.compression)
+        for key, value in parquet_opts.kwargs:
+            writer = writer.option(key, str(value))
+        writer.parquet(spec.path)
 
-        if fmt == "parquet":
-            parquet_opts = (
-                spec.write_options
-                if isinstance(spec.write_options, ParquetWriteOptions)
-                else ParquetWriteOptions()
-            )
-            writer = frame.write.mode("overwrite").option("compression", parquet_opts.compression)
-            for key, value in parquet_opts.kwargs:
-                writer = writer.option(key, str(value))
-            writer.parquet(spec.path)
-            return
-
-        if fmt == "xlsx":
-            raise TypeError("Spark backend does not support XLSX format.")
-
-        raise ValueError(f"Unsupported format: {fmt}")
+    @staticmethod
+    def _write_xlsx_file(_frame: DataFrame, _spec: FileSpec) -> None:
+        raise TypeError("Spark backend does not support XLSX format.")
 
     # ====================================================================
     # Helpers

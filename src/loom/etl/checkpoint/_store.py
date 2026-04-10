@@ -40,9 +40,6 @@ Cleanup
 * :meth:`cleanup_correlation` — removes ``correlations/{correlation_id}/``.
   Called by :class:`~loom.etl.ETLRunner` on successful last attempt, or
   manually via :meth:`~loom.etl.ETLRunner.cleanup_correlation`.
-
-* :meth:`cleanup_stale` — removes run directories older than a threshold.
-  Useful for garbage-collecting orphaned runs after a crash.
 """
 
 from __future__ import annotations
@@ -50,13 +47,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol, runtime_checkable
 
-from loom.etl.checkpoint._cleaners import (
-    AutoTempCleaner,
-    TempCleaner,
-    _is_cloud_path,
-    _join_path,
-    _stale_local_dirs,
-)
+from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
+from loom.etl.checkpoint._cleaners import CheckpointCleaner, TempCleaner
+from loom.etl.checkpoint._paths import correlation_scope_base, run_scope_base, scope_base
 from loom.etl.checkpoint._scope import CheckpointScope
 
 _log = logging.getLogger(__name__)
@@ -99,21 +92,14 @@ class CheckpointStore:
     runtime type switching.
 
     Args:
-        root: Root directory (local path or cloud URI) where
-              intermediates are stored.
-        backend:  Physical I/O backend.  Defaults to
-                  :class:`~loom.etl.checkpoint._backends._polars._PolarsCheckpointBackend`
-                  with no cloud credentials — suitable for local paths.
-        cleaner:  Strategy for deleting checkpoint trees.  Defaults to
-                  :class:`~loom.etl.checkpoint.AutoTempCleaner`.
+        root: Root cloud URI where intermediates are stored.
+        backend:  Physical I/O backend. Defaults to Polars checkpoint backend.
+        cleaner: Cleaner implementation used to delete checkpoint trees.
 
     Example::
 
-        from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
-
-        root = os.environ["LOOM_CHECKPOINT_ROOT"]
         store = CheckpointStore(
-            root=root,
+            root="s3://my-bucket/loom-checkpoints",
             backend=_PolarsCheckpointBackend(storage_options={}),
         )
         store.put("orders", run_id="abc", correlation_id=None,
@@ -128,10 +114,8 @@ class CheckpointStore:
         cleaner: TempCleaner | None = None,
     ) -> None:
         self._root = root.rstrip("/")
-        self._cleaner: TempCleaner = cleaner if cleaner is not None else AutoTempCleaner()
-        self._backend: _CheckpointBackend = (
-            backend if backend is not None else _default_polars_backend()
-        )
+        self._cleaner = cleaner if cleaner is not None else CheckpointCleaner()
+        self._backend = backend if backend is not None else _PolarsCheckpointBackend({})
 
     # ------------------------------------------------------------------
     # Public write / read
@@ -172,7 +156,12 @@ class CheckpointStore:
                 "Pass correlation_id= to ETLRunner.run()."
             )
         _log.debug("checkpoint put name=%r scope=%s append=%s", name, scope, append)
-        base = self._scope_base(run_id=run_id, correlation_id=correlation_id, scope=scope)
+        base = scope_base(
+            self._root,
+            run_id=run_id,
+            correlation_id=correlation_id,
+            scope=scope,
+        )
         self._backend.write(name, base, data, append=append)
 
     def get(
@@ -199,17 +188,13 @@ class CheckpointStore:
         Raises:
             FileNotFoundError: When no intermediate exists at either path.
         """
-        run_base = self._scope_base(
-            run_id=run_id, correlation_id=correlation_id, scope=CheckpointScope.RUN
-        )
+        run_base = run_scope_base(self._root, run_id)
         result = self._backend.probe(name, run_base)
         if result is not None:
             _log.debug("checkpoint get name=%r scope=run", name)
             return result
         if correlation_id is not None:
-            corr_base = self._scope_base(
-                run_id=run_id, correlation_id=correlation_id, scope=CheckpointScope.CORRELATION
-            )
+            corr_base = correlation_scope_base(self._root, correlation_id)
             result = self._backend.probe(name, corr_base)
             if result is not None:
                 _log.debug("checkpoint get name=%r scope=correlation", name)
@@ -231,7 +216,7 @@ class CheckpointStore:
         Args:
             run_id: UUID of the pipeline run to clean.
         """
-        path = _join_path(self._root, "runs", run_id)
+        path = run_scope_base(self._root, run_id)
         _log.debug("checkpoint cleanup run path=%s", path)
         self._cleaner.delete_tree(path)
 
@@ -244,73 +229,6 @@ class CheckpointStore:
         Args:
             correlation_id: Logical job ID whose intermediates to purge.
         """
-        path = _join_path(self._root, "correlations", correlation_id)
+        path = correlation_scope_base(self._root, correlation_id)
         _log.debug("checkpoint cleanup correlation path=%s", path)
         self._cleaner.delete_tree(path)
-
-    def cleanup_stale(self, *, older_than_seconds: int = 86_400) -> None:
-        """Remove run directories not modified within *older_than_seconds*.
-
-        Only supported for local ``root`` paths — cloud storage does not
-        expose directory modification times via the OS.  For cloud environments
-        configure a bucket lifecycle / retention policy on ``root`` instead.
-
-        Args:
-            older_than_seconds: Age threshold in seconds.  Defaults to 86 400
-                                (24 hours).
-        """
-        runs_root = _join_path(self._root, "runs")
-        if _is_cloud_path(runs_root):
-            _log.warning(
-                "cleanup_stale not supported for cloud root=%s — "
-                "configure a bucket lifecycle policy instead.",
-                self._root,
-            )
-            return
-        stale_dirs = _stale_local_dirs(runs_root, older_than_seconds=older_than_seconds)
-        for path in stale_dirs:
-            _log.debug("checkpoint cleanup stale dir=%s", path)
-            self._cleaner.delete_tree(path)
-        removed = len(stale_dirs)
-        if removed:
-            _log.info(
-                "checkpoint cleanup stale removed=%d older_than_seconds=%d",
-                removed,
-                older_than_seconds,
-            )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _scope_base(
-        self,
-        *,
-        run_id: str,
-        correlation_id: str | None,
-        scope: CheckpointScope,
-    ) -> str:
-        if scope is CheckpointScope.CORRELATION:
-            if correlation_id is None:
-                raise RuntimeError(
-                    "_scope_base called with scope=CORRELATION but correlation_id=None. "
-                    "This is a framework bug — please report it."
-                )
-            return _join_path(self._root, "correlations", correlation_id)
-        return _join_path(self._root, "runs", run_id)
-
-
-# ---------------------------------------------------------------------------
-# Module-level helpers — shared path utilities
-# ---------------------------------------------------------------------------
-
-
-def _default_polars_backend() -> _CheckpointBackend:
-    """Return a Polars Arrow IPC backend with empty storage options.
-
-    Imported lazily to avoid a mandatory ``polars`` import at module level —
-    callers that only use Spark do not need Polars installed.
-    """
-    from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
-
-    return _PolarsCheckpointBackend(storage_options={})

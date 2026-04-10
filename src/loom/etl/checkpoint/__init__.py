@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-from ._cleaners import (
-    AutoTempCleaner,
-    FsspecTempCleaner,
-    LocalTempCleaner,
-    TempCleaner,
-)
-from ._scope import CheckpointScope
-from ._store import CheckpointStore
+from loom.etl.checkpoint._cleaners import CheckpointCleaner, FsspecTempCleaner, TempCleaner
+from loom.etl.checkpoint._scope import CheckpointScope
+from loom.etl.checkpoint._store import CheckpointStore
 
 __all__ = [
+    "CheckpointCleaner",
     "CheckpointScope",
     "CheckpointStore",
     "TempCleaner",
-    "LocalTempCleaner",
     "FsspecTempCleaner",
-    "AutoTempCleaner",
 ]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import msgspec
@@ -12,7 +11,7 @@ from loom.etl.observability.config import ObservabilityConfig
 from loom.etl.storage._config import StorageConfig, convert_storage_config
 
 
-def _read_yaml_file(path: str | os.PathLike[str]) -> str:
+def _read_yaml_file(path: str) -> str:
     """Read raw YAML text from a local filesystem path."""
     with open(path, encoding="utf-8") as fh:
         return fh.read()
@@ -50,6 +49,6 @@ def _parse_yaml_content(content: str) -> tuple[StorageConfig, ObservabilityConfi
     return storage_config, obs_config
 
 
-def _load_yaml(path: str | os.PathLike[str]) -> tuple[StorageConfig, ObservabilityConfig]:
+def _load_yaml(path: str) -> tuple[StorageConfig, ObservabilityConfig]:
     """Read a YAML file from the filesystem and parse it."""
     return _parse_yaml_content(_read_yaml_file(path))

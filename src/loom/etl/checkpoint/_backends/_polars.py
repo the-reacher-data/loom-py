@@ -10,10 +10,11 @@ from typing import Any, TypeGuard
 import fsspec.core
 import polars as pl
 
-from loom.etl.checkpoint._cleaners import _is_cloud_path, _join_path
+from loom.etl.checkpoint._cleaners import _join_path
 
 _log = logging.getLogger(__name__)
 _WRITING = ".writing"
+_CLOUD_SCHEMES = ("s3://", "gs://", "gcs://", "abfss://", "abfs://", "az://")
 
 
 def _is_polars_lazy_frame(value: Any) -> TypeGuard[pl.LazyFrame]:
@@ -34,7 +35,7 @@ class _PolarsCheckpointBackend:
         scan_path = self._find_arrow(name, base)
         if scan_path is None:
             return None
-        kwargs: dict[str, Any] = {"memory_map": not _is_cloud_path(base)}
+        kwargs: dict[str, Any] = {"memory_map": not base.startswith(_CLOUD_SCHEMES)}
         if self._storage_options:
             kwargs["storage_options"] = self._storage_options
         return pl.scan_ipc(scan_path, **kwargs)

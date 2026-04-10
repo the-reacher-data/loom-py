@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from datetime import UTC, datetime
 from types import ModuleType
+from typing import Any, cast
 
 import pytest
 
@@ -105,7 +106,7 @@ def test_reload_sql_and_compiler_definition_modules_with_basic_usage() -> None:
     class _Step:
         __qualname__ = "ReloadStep"
 
-    err = compiler_errors.ETLCompilationError.missing_target(_Step)  # type: ignore[arg-type]
+    err = compiler_errors.ETLCompilationError.missing_target(_Step)
     assert err.code is compiler_errors.ETLErrorCode.MISSING_TARGET
     assert "ReloadStep" in str(err)
     assert "TargetSpec" in target_variants.__all__
@@ -211,7 +212,7 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
 
 
 def test_reload_checkpoint_store_module_and_helpers() -> None:
-    store_mod = _reload_module("loom.etl.checkpoint._store")
+    _reload_module("loom.etl.checkpoint._store")
     polars_temp_mod = _reload_module("loom.etl.checkpoint._backends._polars")
     spark_temp_mod = _reload_module("loom.etl.checkpoint._backends._spark")
 
@@ -244,8 +245,10 @@ def test_reload_checkpoint_store_module_and_helpers() -> None:
 
     assert spark_temp_mod._probe_spark(_Spark(), "/var/lib/loom/missing") is None
 
-    # Verify _join_path still lives in _store for shared path construction
-    assert store_mod._join_path("/var/lib/loom", "runs", "abc") == "/var/lib/loom/runs/abc"
+    # Verify _join_path lives in _paths for shared path construction
+    paths_mod = _reload_module("loom.etl.checkpoint._paths")
+    join_path = cast(Any, vars(paths_mod)["_join_path"])
+    assert join_path("/var/lib/loom", "runs", "abc") == "/var/lib/loom/runs/abc"
 
     class _ReaderUnexpected:
         def parquet(self, _path: str) -> object:

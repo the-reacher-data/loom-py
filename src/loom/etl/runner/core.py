@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -76,7 +75,7 @@ class ETLRunner:
     @classmethod
     def from_yaml(
         cls,
-        path: str | os.PathLike[str],
+        path: str,
         *,
         spark: SparkSession | None = None,
         dispatcher: ParallelDispatcher | None = None,
@@ -156,15 +155,6 @@ class ETLRunner:
                 "to be configured in storage YAML."
             )
         self._checkpoint_store.cleanup_correlation(correlation_id)
-
-    def cleanup_stale_temps(self, *, older_than_seconds: int = 86_400) -> None:
-        """Remove run directories not modified within *older_than_seconds*."""
-        if self._checkpoint_store is None:
-            raise RuntimeError(
-                "cleanup_stale_temps() requires checkpoint_root (storage.tmp_root) "
-                "to be configured in storage YAML."
-            )
-        self._checkpoint_store.cleanup_stale(older_than_seconds=older_than_seconds)
 
 
 __all__ = ["ETLRunner", "InvalidStageError"]
