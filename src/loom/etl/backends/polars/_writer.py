@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import polars as pl
@@ -33,7 +34,7 @@ from loom.etl.storage import (
     TableLocation,
     TableRouteResolver,
 )
-from loom.etl.storage._locator import _as_locator
+from loom.etl.storage._locator import TableLocator, _as_locator
 
 from ._file_writer import PolarsFileWriter
 
@@ -45,7 +46,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
     def __init__(
         self,
-        locator: str,
+        locator: str | os.PathLike[str] | TableLocator,
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,

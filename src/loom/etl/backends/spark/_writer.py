@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+import os
+from typing import Any, cast
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as T
+from pyspark.sql.column import Column
 
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
@@ -29,7 +31,7 @@ from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.storage._config import MissingTablePolicy
-from loom.etl.storage._locator import _as_locator
+from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
@@ -47,7 +49,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
     def __init__(
         self,
         spark: SparkSession,
-        locator: str | None = None,
+        locator: str | os.PathLike[str] | TableLocator | None = None,
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
@@ -240,8 +242,8 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         (
             dt.alias(TARGET_ALIAS)
             .merge(frame.alias(SOURCE_ALIAS), merge_plan.predicate)
-            .whenMatchedUpdate(set=merge_plan.update_set)
-            .whenNotMatchedInsert(values=merge_plan.insert_values)
+            .whenMatchedUpdate(set=cast(dict[str, str | Column], merge_plan.update_set))
+            .whenNotMatchedInsert(values=cast(dict[str, str | Column], merge_plan.insert_values))
             .execute()
         )
 
@@ -262,41 +264,41 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             return
 
         if fmt == "csv":
-            opts = (
+            csv_opts = (
                 spec.write_options
                 if isinstance(spec.write_options, CsvWriteOptions)
                 else CsvWriteOptions()
             )
             writer = (
                 frame.write.mode("overwrite")
-                .option("sep", opts.separator)
-                .option("header", str(opts.has_header).lower())
+                .option("sep", csv_opts.separator)
+                .option("header", str(csv_opts.has_header).lower())
             )
-            for key, value in opts.kwargs:
+            for key, value in csv_opts.kwargs:
                 writer = writer.option(key, str(value))
             writer.csv(spec.path)
             return
 
         if fmt == "json":
-            opts = (
+            json_opts = (
                 spec.write_options
                 if isinstance(spec.write_options, JsonWriteOptions)
                 else JsonWriteOptions()
             )
             writer = frame.write.mode("overwrite")
-            for key, value in opts.kwargs:
+            for key, value in json_opts.kwargs:
                 writer = writer.option(key, str(value))
             writer.json(spec.path)
             return
 
         if fmt == "parquet":
-            opts = (
+            parquet_opts = (
                 spec.write_options
                 if isinstance(spec.write_options, ParquetWriteOptions)
                 else ParquetWriteOptions()
             )
-            writer = frame.write.mode("overwrite").option("compression", opts.compression)
-            for key, value in opts.kwargs:
+            writer = frame.write.mode("overwrite").option("compression", parquet_opts.compression)
+            for key, value in parquet_opts.kwargs:
                 writer = writer.option(key, str(value))
             writer.parquet(spec.path)
             return

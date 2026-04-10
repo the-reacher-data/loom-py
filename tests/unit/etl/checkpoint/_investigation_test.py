@@ -47,9 +47,8 @@ def test_reproduce_async_issue_no_delay(debug_checkpoint_dir: str) -> None:
     files_after_first = list(orders_dir.iterdir())
     print(f"[TEST] Files after first write: {len(files_after_first)}")
     for f in files_after_first:
-        print(
-            f"  - {f.name} (exists: {f.exists()}, size: {f.stat().st_size if f.exists() else 'N/A'})"
-        )
+        size = f.stat().st_size if f.exists() else "N/A"
+        print(f"  - {f.name} (exists: {f.exists()}, size: {size})")
 
     print("\n[TEST] Writing second frame (inmediatamente)...")
     try:

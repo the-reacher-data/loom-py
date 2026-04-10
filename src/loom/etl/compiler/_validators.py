@@ -30,6 +30,7 @@ from loom.etl.compiler._plan import (
 )
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source._specs import TableSourceSpec, TempSourceSpec
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.runtime.contracts import TableDiscovery
@@ -37,12 +38,8 @@ from loom.etl.runtime.contracts import TableDiscovery
 _SCHEMA_MODE_OVERWRITE = "overwrite"
 
 
-class _TableRefLike(Protocol):
-    ref: str
-
-
 class _TableTargetSpecLike(Protocol):
-    table_ref: _TableRefLike
+    table_ref: TableRef
     schema_mode: object
 
 
@@ -433,7 +430,7 @@ def _check_target(step: StepPlan, catalog: TableDiscovery, will_create: set[str]
     if not _is_table_target_spec(raw_spec):
         return
     spec = raw_spec
-    table_ref = cast(_TableRefLike, spec.table_ref)
+    table_ref = spec.table_ref
     if (
         _enum_value(spec.schema_mode) != _SCHEMA_MODE_OVERWRITE
         and table_ref.ref not in will_create

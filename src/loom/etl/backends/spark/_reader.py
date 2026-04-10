@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -15,7 +16,7 @@ from loom.etl.declarative._read_options import CsvReadOptions, JsonReadOptions
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
-from loom.etl.storage._locator import _as_locator
+from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
@@ -32,7 +33,7 @@ class SparkSourceReader(SourceReader):
     def __init__(
         self,
         spark: SparkSession,
-        locator: str | None = None,
+        locator: str | os.PathLike[str] | TableLocator | None = None,
         *,
         route_resolver: TableRouteResolver | None = None,
     ) -> None:
@@ -110,25 +111,25 @@ class SparkSourceReader(SourceReader):
             return self._spark.read.format("delta").load(path)
 
         if fmt == "csv":
-            opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
-            if opts.skip_rows:
+            csv_opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
+            if csv_opts.skip_rows:
                 raise ValueError("Spark backend does not support skip_rows for CSV files.")
             reader = (
-                self._spark.read.option("sep", opts.separator)
-                .option("header", str(opts.has_header).lower())
-                .option("encoding", opts.encoding)
+                self._spark.read.option("sep", csv_opts.separator)
+                .option("header", str(csv_opts.has_header).lower())
+                .option("encoding", csv_opts.encoding)
                 .option("inferSchema", "true")
             )
-            if opts.null_values:
-                reader = reader.option("nullValue", opts.null_values[0])
-            if opts.infer_schema_length is None:
+            if csv_opts.null_values:
+                reader = reader.option("nullValue", csv_opts.null_values[0])
+            if csv_opts.infer_schema_length is None:
                 reader = reader.option("samplingRatio", "1.0")
             return reader.csv(path)
 
         if fmt == "json":
-            opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
+            json_opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
             reader = self._spark.read.option("inferSchema", "true")
-            if opts.infer_schema_length is None:
+            if json_opts.infer_schema_length is None:
                 reader = reader.option("samplingRatio", "1.0")
             return reader.json(path)
 
