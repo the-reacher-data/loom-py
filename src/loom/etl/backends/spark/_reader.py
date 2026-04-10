@@ -10,11 +10,12 @@ from pyspark.sql import functions as F
 
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends.spark._dtype import loom_type_to_spark
-from loom.etl.io._format import Format
-from loom.etl.io._read_options import CsvReadOptions, JsonReadOptions
-from loom.etl.io.source import FileSourceSpec, SourceSpec, TableSourceSpec
+from loom.etl.declarative._format import Format
+from loom.etl.declarative._read_options import CsvReadOptions, JsonReadOptions
+from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
+from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
-from loom.etl.storage.protocols import SourceReader
+from loom.etl.storage._locator import _as_locator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
@@ -41,8 +42,6 @@ class SparkSourceReader(SourceReader):
             if locator is None:
                 resolver: TableRouteResolver = CatalogRouteResolver()
             else:
-                from loom.etl.storage._locator import _as_locator
-
                 resolver = PathRouteResolver(_as_locator(locator))
         else:
             resolver = route_resolver
@@ -59,8 +58,12 @@ class SparkSourceReader(SourceReader):
 
         raise TypeError(
             f"SparkSourceReader does not support source kind {spec.kind!r}. "
-            "TEMP sources are handled by IntermediateStore."
+            "TEMP sources are handled by CheckpointStore."
         )
+
+    def execute_sql(self, frames: dict[str, Any], query: str) -> DataFrame:
+        """Execute SQL query against backend frames."""
+        return execute_sql(frames, query)
 
     def _read_table(self, spec: TableSourceSpec, params: Any) -> DataFrame:
         """Read Delta table."""
@@ -108,6 +111,8 @@ class SparkSourceReader(SourceReader):
 
         if fmt == "csv":
             opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
+            if opts.skip_rows:
+                raise ValueError("Spark backend does not support skip_rows for CSV files.")
             reader = (
                 self._spark.read.option("sep", opts.separator)
                 .option("header", str(opts.has_header).lower())
@@ -129,6 +134,9 @@ class SparkSourceReader(SourceReader):
 
         if fmt == "parquet":
             return self._spark.read.parquet(path)
+
+        if fmt == "xlsx":
+            raise TypeError("Spark backend does not support XLSX format.")
 
         raise ValueError(f"Unsupported format: {fmt}")
 

@@ -10,7 +10,7 @@ from typing import Any
 import msgspec
 import pytest
 
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
 
 
 def _reload_modules(*names: str) -> dict[str, ModuleType]:
@@ -68,10 +68,10 @@ class _Sink:
 
 def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     mods = _reload_modules(
-        "loom.etl.io.source._from",
-        "loom.etl.io.source",
-        "loom.etl.io.target._into",
-        "loom.etl.io.target",
+        "loom.etl.declarative.source._from",
+        "loom.etl.declarative.source",
+        "loom.etl.declarative.target._into",
+        "loom.etl.declarative.target",
         "loom.etl.pipeline._params",
         "loom.etl.pipeline._pipeline",
         "loom.etl.pipeline._process",
@@ -79,8 +79,8 @@ def test_binding_and_pipeline_runtime_contracts(monkeypatch: pytest.MonkeyPatch)
         "loom.etl.compiler._binding",
     )
     binding_mod = mods["loom.etl.compiler._binding"]
-    source_mod = mods["loom.etl.io.source._from"]
-    target_mod = mods["loom.etl.io.target._into"]
+    source_mod = mods["loom.etl.declarative.source._from"]
+    target_mod = mods["loom.etl.declarative.target._into"]
     params_mod = mods["loom.etl.pipeline._params"]
     pipeline_mod = mods["loom.etl.pipeline._pipeline"]
     process_mod = mods["loom.etl.pipeline._process"]
@@ -152,15 +152,15 @@ def test_plan_and_schema_runtime_contracts() -> None:
     mods = _reload_modules(
         "loom.etl.compiler._plan",
         "loom.etl.runner.filtering",
-        "loom.etl.io.source._specs",
-        "loom.etl.io.target._table",
-        "loom.etl.schema._table",
+        "loom.etl.declarative.source._specs",
+        "loom.etl.declarative.target._table",
+        "loom.etl.declarative.expr._refs",
     )
     plan_mod = mods["loom.etl.compiler._plan"]
     filtering_mod = mods["loom.etl.runner.filtering"]
-    source_mod = mods["loom.etl.io.source._specs"]
-    target_table_mod = mods["loom.etl.io.target._table"]
-    table_mod = mods["loom.etl.schema._table"]
+    source_mod = mods["loom.etl.declarative.source._specs"]
+    target_table_mod = mods["loom.etl.declarative.target._table"]
+    table_mod = mods["loom.etl.declarative.expr._refs"]
 
     source_spec = source_mod.TableSourceSpec(
         alias="orders",
@@ -234,9 +234,9 @@ def test_plan_and_schema_runtime_contracts() -> None:
 def test_storage_config_and_temp_cleaners_runtime_contracts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mods = _reload_modules("loom.etl.storage._config", "loom.etl.storage.temp._cleaners")
+    mods = _reload_modules("loom.etl.storage._config", "loom.etl.checkpoint._cleaners")
     config_mod = mods["loom.etl.storage._config"]
-    cleaners_mod = mods["loom.etl.storage.temp._cleaners"]
+    cleaners_mod = mods["loom.etl.checkpoint._cleaners"]
 
     storage = config_mod.convert_storage_config(
         {"defaults": {"table_path": {"uri": str(tmp_path / "lake")}}}
@@ -287,8 +287,8 @@ def test_storage_config_and_temp_cleaners_runtime_contracts(
 
 
 def test_proxy_and_locator_runtime_contracts() -> None:
-    mods = _reload_modules("loom.etl.pipeline._proxy", "loom.etl.storage._locator")
-    proxy_mod = mods["loom.etl.pipeline._proxy"]
+    mods = _reload_modules("loom.etl.declarative.expr._params", "loom.etl.storage._locator")
+    proxy_mod = mods["loom.etl.declarative.expr._params"]
     locator_mod = mods["loom.etl.storage._locator"]
 
     expr = proxy_mod.params.run_date.year

@@ -13,14 +13,14 @@ from pyspark.sql import functions as F
 from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, IntoTable
 from loom.etl.backends.spark._dtype import spark_to_loom
 from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative._read_options import CsvReadOptions
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import FileSourceSpec
+from loom.etl.declarative.target import SchemaMode
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import ReplacePartitionsSpec
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
-from loom.etl.io._read_options import CsvReadOptions
-from loom.etl.io.source import FileSourceSpec
-from loom.etl.io.target import SchemaMode
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import ReplacePartitionsSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
-from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.testing import StubRunObserver
 

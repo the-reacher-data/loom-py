@@ -20,7 +20,7 @@ pytest.importorskip("delta")
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 
 from loom.etl.backends.spark import SparkSourceReader, SparkTargetWriter  # noqa: E402
-from loom.etl.schema._table import TableRef  # noqa: E402
+from loom.etl.declarative.expr._refs import TableRef  # noqa: E402
 from loom.etl.testing.spark import SparkStepRunner, SparkTestSession  # noqa: E402
 
 

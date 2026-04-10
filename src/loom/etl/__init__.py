@@ -36,14 +36,21 @@ Testing stubs::
 
 Namespaced API (discoverable by bounded context)::
 
-    from loom.etl import io, pipeline, runner, schema, storage
-    from loom.etl.storage import temp
+    from loom.etl import declarative, pipeline, runner, schema, storage, runtime
 
 Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
 """
 
-from loom.etl.io import (
+from loom.etl.checkpoint import (
+    AutoTempCleaner,
+    CheckpointScope,
+    CheckpointStore,
+    FsspecTempCleaner,
+    LocalTempCleaner,
+    TempCleaner,
+)
+from loom.etl.declarative import (
     CsvReadOptions,
     CsvWriteOptions,
     ExcelReadOptions,
@@ -75,6 +82,7 @@ from loom.etl.pipeline import (
     params,
 )
 from loom.etl.runner import ETLRunner, InvalidStageError
+from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.schema import (
     ArrayType,
     CategoricalType,
@@ -99,24 +107,13 @@ from loom.etl.storage import (
     FileRoute,
     MappingLocator,
     PrefixLocator,
-    SourceReader,
     StorageConfig,
     StorageDefaults,
     StorageEngine,
-    TableDiscovery,
     TableLocation,
     TableLocator,
     TablePathConfig,
     TableRoute,
-    TargetWriter,
-)
-from loom.etl.storage.temp import (
-    AutoTempCleaner,
-    FsspecTempCleaner,
-    IntermediateStore,
-    LocalTempCleaner,
-    TempCleaner,
-    TempScope,
 )
 
 __all__ = [
@@ -141,8 +138,8 @@ __all__ = [
     "IntoFile",
     "IntoTemp",
     # intermediates
-    "TempScope",
-    "IntermediateStore",
+    "CheckpointScope",
+    "CheckpointStore",
     # temp cleaners
     "TempCleaner",
     "LocalTempCleaner",

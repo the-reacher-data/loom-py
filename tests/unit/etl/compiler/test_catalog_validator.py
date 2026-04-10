@@ -10,7 +10,7 @@ import pytest
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompilationError, ETLCompiler, validate_plan_catalog
 from loom.etl.compiler._plan import PipelinePlan
-from loom.etl.io.target import SchemaMode
+from loom.etl.declarative.target import SchemaMode
 from loom.etl.testing import StubCatalog
 
 

@@ -12,9 +12,9 @@ import polars as pl
 from deltalake import write_deltalake
 
 from loom.etl.backends.polars import PolarsTargetWriter
-from loom.etl.io.target import SchemaMode
-from loom.etl.io.target._table import UpsertSpec
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.target import SchemaMode
+from loom.etl.declarative.target._table import UpsertSpec
 from loom.etl.storage._config import MissingTablePolicy
 
 from .conftest import table_path

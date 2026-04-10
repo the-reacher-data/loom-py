@@ -28,11 +28,11 @@ from loom.etl.compiler._plan import (
     visit_pipeline_nodes,
     visit_process_nodes,
 )
-from loom.etl.io.source._predicate import PredicateNode
-from loom.etl.io.source._specs import TableSourceSpec, TempSourceSpec
-from loom.etl.io.target import TargetSpec
-from loom.etl.pipeline._proxy import ParamExpr
-from loom.etl.storage.protocols import TableDiscovery
+from loom.etl.declarative.expr._params import ParamExpr
+from loom.etl.declarative.expr._predicate import PredicateNode
+from loom.etl.declarative.source._specs import TableSourceSpec, TempSourceSpec
+from loom.etl.declarative.target import TargetSpec
+from loom.etl.runtime.contracts import TableDiscovery
 
 _SCHEMA_MODE_OVERWRITE = "overwrite"
 
@@ -128,6 +128,8 @@ def validate_execute_signature(
     sig = inspect.signature(step_type.execute)
     params = list(sig.parameters.values())
     _validate_params_arg(step_type, params, params_type)
+    if _is_sql_step_type(step_type):
+        return
     kw_only = _collect_kw_only_frames(params)
     source_aliases = {b.alias for b in source_bindings}
     _check_missing_frames(step_type, source_aliases, kw_only)
@@ -172,6 +174,11 @@ def _validate_params_arg(
 
 def _collect_kw_only_frames(params: list[inspect.Parameter]) -> dict[str, inspect.Parameter]:
     return {p.name: p for p in params if p.kind is inspect.Parameter.KEYWORD_ONLY}
+
+
+def _is_sql_step_type(step_type: type[Any]) -> bool:
+    """Return ``True`` when step type follows StepSQL marker contract."""
+    return bool(getattr(step_type, "_loom_sql_step", False))
 
 
 def _check_missing_frames(

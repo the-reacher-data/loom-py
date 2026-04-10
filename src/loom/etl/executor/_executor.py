@@ -37,6 +37,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
+from loom.etl.checkpoint import CheckpointStore
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
     ParallelStepGroup,
@@ -45,13 +46,12 @@ from loom.etl.compiler._plan import (
     ProcessPlan,
     StepPlan,
 )
+from loom.etl.declarative.source import TempSourceSpec
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.io.source import TempSourceSpec
-from loom.etl.io.target._temp import TempFanInSpec, TempSpec
 from loom.etl.observability.observers.protocol import ETLRunObserver
 from loom.etl.observability.records import RunContext, RunStatus
-from loom.etl.storage.protocols import SourceReader, TargetWriter
-from loom.etl.storage.temp._store import IntermediateStore
+from loom.etl.runtime.contracts import SourceReader, TargetWriter
 
 _log = logging.getLogger(__name__)
 
@@ -89,13 +89,13 @@ class ETLExecutor:
         writer: TargetWriter,
         observers: Sequence[ETLRunObserver] = (),
         dispatcher: ParallelDispatcher | None = None,
-        temp_store: IntermediateStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._observers: Sequence[ETLRunObserver] = observers
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
-        self._temp_store: IntermediateStore | None = temp_store
+        self._checkpoint_store: CheckpointStore | None = checkpoint_store
 
     def run_pipeline(
         self,
@@ -218,7 +218,12 @@ class ETLExecutor:
         status = RunStatus.SUCCESS
         try:
             frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
-            result = plan.step_type().execute(params, **frames)
+            step = plan.step_type()
+            if _is_sql_step(step):
+                query = _render_sql_query(step, params)
+                result = self._reader.execute_sql(frames, query)
+            else:
+                result = step.execute(params, **frames)
             self._write_target(
                 result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
             )
@@ -231,19 +236,19 @@ class ETLExecutor:
             for obs in self._observers:
                 obs.on_step_end(step_run_id, status, _ms(start))
 
-    def _require_temp_store(self, temp_name: str) -> IntermediateStore:
-        """Return the intermediate store, or raise if unconfigured."""
-        if self._temp_store is None:
+    def _require_checkpoint_store(self, name: str) -> CheckpointStore:
+        """Return the checkpoint store, or raise if unconfigured."""
+        if self._checkpoint_store is None:
             raise RuntimeError(
-                f"Step uses temp intermediate {temp_name!r} but no intermediate store is "
-                "configured. Set 'temp:' in your storage config or pass a TempCleaner."
+                f"Step uses checkpoint intermediate {name!r} but no checkpoint store is "
+                "configured. Set 'checkpoint:' in your storage config."
             )
-        return self._temp_store
+        return self._checkpoint_store
 
     def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
         if isinstance(spec, TempSourceSpec):
             _log.debug("read source kind=TEMP name=%s", spec.temp_name)
-            return self._require_temp_store(spec.temp_name).get(
+            return self._require_checkpoint_store(spec.temp_name).get(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,
@@ -260,7 +265,7 @@ class ETLExecutor:
     ) -> None:
         if isinstance(spec, (TempSpec, TempFanInSpec)):
             _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
-            self._require_temp_store(spec.temp_name).put(
+            self._require_checkpoint_store(spec.temp_name).put(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,
@@ -276,13 +281,13 @@ class ETLExecutor:
             self._writer.write(result, spec, params, streaming=streaming)
 
     def _cleanup_temps(self, ctx: RunContext, status: RunStatus) -> None:
-        if self._temp_store is None:
+        if self._checkpoint_store is None:
             return
-        self._temp_store.cleanup_run(ctx.run_id)
+        self._checkpoint_store.cleanup_run(ctx.run_id)
         if ctx.correlation_id is None:
             return
         if status is RunStatus.SUCCESS and ctx.last_attempt:
-            self._temp_store.cleanup_correlation(ctx.correlation_id)
+            self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
         elif status is RunStatus.FAILED and ctx.last_attempt:
             _log.warning(
                 "CORRELATION intermediates were NOT cleaned — pipeline failed on last attempt. "
@@ -326,3 +331,23 @@ def _new_run_id() -> str:
 def _ms(start: float) -> int:
     """Elapsed milliseconds since ``start`` (from ``time.monotonic()``)."""
     return int((time.monotonic() - start) * 1000)
+
+
+def _is_sql_step(step: Any) -> bool:
+    """Return ``True`` when *step* follows StepSQL marker contract."""
+    return bool(getattr(step, "_loom_sql_step", False))
+
+
+def _render_sql_query(step: Any, params: Any) -> str:
+    """Render SQL query from a StepSQL-like step instance."""
+    render = getattr(step, "render_sql", None)
+    if not callable(render):
+        raise TypeError(
+            f"{type(step).__qualname__} is marked as SQL step but has no callable render_sql()."
+        )
+    query = render(params)
+    if not isinstance(query, str):
+        raise TypeError(
+            f"{type(step).__qualname__}.render_sql() must return str, got {type(query)!r}."
+        )
+    return query

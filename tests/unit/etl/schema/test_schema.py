@@ -6,15 +6,15 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io.target import IntoTable, SchemaMode
-from loom.etl.io.target._table import (
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.target import IntoTable, SchemaMode
+from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     UpsertSpec,
 )
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubCatalog
 
 ORDERS_SCHEMA = (

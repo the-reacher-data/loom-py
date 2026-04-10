@@ -8,13 +8,13 @@ from typing import Any
 import polars as pl
 from polars.datatypes import DataTypeClass
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import (
     ExecutionRecord,
     PipelineRunRecord,
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.schema._table import TableRef
 
 _S: pl.DataType | DataTypeClass = pl.String
 _I64: pl.DataType | DataTypeClass = pl.Int64

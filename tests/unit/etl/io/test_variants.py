@@ -5,20 +5,20 @@ from __future__ import annotations
 import pytest
 
 from loom.etl import col
-from loom.etl.io._format import Format
-from loom.etl.io.target import SchemaMode, TargetSpec
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import (
+from loom.etl.checkpoint import CheckpointScope
+from loom.etl.declarative._format import Format
+from loom.etl.declarative.expr._params import params
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.target import SchemaMode, TargetSpec
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
     UpsertSpec,
 )
-from loom.etl.io.target._temp import TempFanInSpec, TempSpec
-from loom.etl.pipeline._proxy import params
-from loom.etl.schema._table import TableRef
-from loom.etl.storage.temp._scope import TempScope
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 
 _REF = TableRef("staging.out")
 _PRED = col("year") == params.run_date.year
@@ -80,8 +80,8 @@ class TestTableVariants:
             ReplaceWhereSpec(table_ref=_REF, replace_predicate=_PRED),
             UpsertSpec(table_ref=_REF, upsert_keys=("id",)),
             FileSpec(path="s3://bucket/out.csv", format=Format.CSV),
-            TempSpec(temp_name="normalized", temp_scope=TempScope.RUN),
-            TempFanInSpec(temp_name="parts", temp_scope=TempScope.RUN),
+            TempSpec(temp_name="normalized", temp_scope=CheckpointScope.RUN),
+            TempFanInSpec(temp_name="parts", temp_scope=CheckpointScope.RUN),
         ],
     )
     def test_all_variants_are_target_spec(self, spec: object) -> None:
@@ -103,15 +103,15 @@ class TestFileSpec:
 
 class TestTempVariants:
     def test_temp_spec(self) -> None:
-        spec = TempSpec(temp_name="norm", temp_scope=TempScope.RUN)
+        spec = TempSpec(temp_name="norm", temp_scope=CheckpointScope.RUN)
         assert spec.temp_name == "norm"
-        assert spec.temp_scope is TempScope.RUN
+        assert spec.temp_scope is CheckpointScope.RUN
 
     def test_temp_fan_in_spec(self) -> None:
-        spec = TempFanInSpec(temp_name="parts", temp_scope=TempScope.RUN)
+        spec = TempFanInSpec(temp_name="parts", temp_scope=CheckpointScope.RUN)
         assert spec.temp_name == "parts"
 
     def test_temp_and_fan_in_are_distinct_types(self) -> None:
-        assert type(TempSpec(temp_name="x", temp_scope=TempScope.RUN)) is not type(
-            TempFanInSpec(temp_name="x", temp_scope=TempScope.RUN)
+        assert type(TempSpec(temp_name="x", temp_scope=CheckpointScope.RUN)) is not type(
+            TempFanInSpec(temp_name="x", temp_scope=CheckpointScope.RUN)
         )

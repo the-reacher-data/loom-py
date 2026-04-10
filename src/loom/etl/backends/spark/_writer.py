@@ -7,22 +7,29 @@ from typing import Any
 
 from delta.tables import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from loom.etl.backends._predicate import predicate_to_sql
-from loom.etl.backends._upsert import (
+from loom.etl.backends._merge import (
+    SOURCE_ALIAS,
+    TARGET_ALIAS,
+    _build_merge_plan,
     _log_partition_combos,
     _warn_no_partition_cols,
 )
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
-from loom.etl.backends.spark._schema import spark_apply_schema
-from loom.etl.io._format import Format
-from loom.etl.io._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions
-from loom.etl.io.target import SchemaMode
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import AppendSpec, UpsertSpec
+from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
+from loom.etl.declarative._format import Format
+from loom.etl.declarative._write_options import (
+    CsvWriteOptions,
+    JsonWriteOptions,
+    ParquetWriteOptions,
+)
+from loom.etl.declarative.target import SchemaMode
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.storage._config import MissingTablePolicy
+from loom.etl.storage._locator import _as_locator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
     CatalogTarget,
@@ -30,12 +37,11 @@ from loom.etl.storage.routing import (
     ResolvedTarget,
     TableRouteResolver,
 )
-from loom.etl.storage.schema import SparkPhysicalSchema
 
 _log = logging.getLogger(__name__)
 
 
-class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
+class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema]):
     """Spark target writer using Delta Lake."""
 
     def __init__(
@@ -52,8 +58,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
             if locator is None:
                 resolver: TableRouteResolver = CatalogRouteResolver()
             else:
-                from loom.etl.storage._locator import _as_locator
-
                 resolver = PathRouteResolver(_as_locator(locator))
         else:
             resolver = route_resolver
@@ -104,10 +108,10 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
         if existing_schema is None or mode is SchemaMode.OVERWRITE:
             return frame
 
-        return spark_apply_schema(frame, existing_schema.schema, mode)
+        return apply_schema_spark(frame, existing_schema.schema, mode)
 
-    def _materialize(self, frame: DataFrame, streaming: bool) -> DataFrame:
-        """Spark DataFrames are already eager."""
+    def _materialize_for_write(self, frame: DataFrame, streaming: bool) -> DataFrame:
+        """Return Spark frame unchanged (already materialized/eager)."""
         _ = streaming
         return frame
 
@@ -219,30 +223,25 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
         """Merge frame into target using Delta MERGE (delta-spark)."""
         _ = existing_schema
 
-        # Get DeltaTable using delta-spark library
         if isinstance(target, CatalogTarget):
             dt = DeltaTable.forName(self._spark, target.catalog_ref.ref)
         else:
             dt = DeltaTable.forPath(self._spark, target.location.uri)
 
-        # Build merge predicate: join on upsert keys + partition cols
-        all_keys = list(spec.upsert_keys) + list(spec.partition_cols)
-        merge_pred = " AND ".join(f"target.{k} = source.{k}" for k in all_keys)
+        combos = self._collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
+        merge_plan = _build_merge_plan(
+            combos=combos,
+            spec=spec,
+            df_columns=tuple(frame.columns),
+            target_alias=TARGET_ALIAS,
+            source_alias=SOURCE_ALIAS,
+        )
 
-        # Determine columns to update (exclude upsert keys by default)
-        if spec.upsert_include:
-            update_cols = list(spec.upsert_include)
-        elif spec.upsert_exclude:
-            update_cols = [c for c in frame.columns if c not in spec.upsert_exclude]
-        else:
-            update_cols = [c for c in frame.columns if c not in spec.upsert_keys]
-
-        # Execute MERGE
         (
-            dt.alias("target")
-            .merge(frame.alias("source"), merge_pred)
-            .whenMatchedUpdate(set={c: F.col(f"source.{c}") for c in update_cols})
-            .whenNotMatchedInsert(values={c: F.col(f"source.{c}") for c in frame.columns})
+            dt.alias(TARGET_ALIAS)
+            .merge(frame.alias(SOURCE_ALIAS), merge_plan.predicate)
+            .whenMatchedUpdate(set=merge_plan.update_set)
+            .whenNotMatchedInsert(values=merge_plan.insert_values)
             .execute()
         )
 
@@ -302,6 +301,9 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
             writer.parquet(spec.path)
             return
 
+        if fmt == "xlsx":
+            raise TypeError("Spark backend does not support XLSX format.")
+
         raise ValueError(f"Unsupported format: {fmt}")
 
     # ====================================================================
@@ -329,21 +331,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, SparkPhysicalSchema]):
         result = [{c: row[c] for c in partition_cols} for row in combos]
         _log_partition_combos(result, table_ref)
         return result
-
-    class _MergeSpecAdapter:
-        """Adapter to make UpsertSpec compatible with shared _upsert.py helpers."""
-
-        def __init__(
-            self,
-            upsert_keys: tuple[str, ...],
-            partition_cols: tuple[str, ...],
-            upsert_exclude: tuple[str, ...],
-            upsert_include: tuple[str, ...],
-        ) -> None:
-            self.upsert_keys = upsert_keys
-            self.partition_cols = partition_cols
-            self.upsert_exclude = upsert_exclude
-            self.upsert_include = upsert_include
 
 
 __all__ = ["SparkTargetWriter"]

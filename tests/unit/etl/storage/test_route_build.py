@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.storage._config import CatalogConnection, StorageConfig, TableRoute
 from loom.etl.storage.routing import CatalogTarget, build_table_resolver
 

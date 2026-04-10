@@ -8,42 +8,39 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
-from loom.etl.backends._predicate import predicate_to_sql
-from loom.etl.backends._upsert import (
+from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
-    _build_insert_values,
+    _build_merge_plan,
     _build_partition_predicate,
-    _build_update_set,
-    _build_upsert_predicate,
-    _build_upsert_update_cols,
     _log_partition_combos,
     _warn_no_partition_cols,
 )
+from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
-from loom.etl.io.target import SchemaMode
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import AppendSpec, UpsertSpec
-from loom.etl.schema._table import TableRef
-from loom.etl.storage._config import MissingTablePolicy
-from loom.etl.storage._locator import TableLocation, _as_locator
-from loom.etl.storage.routing import (
-    CatalogTarget,
+from loom.etl.backends.polars._schema import (
+    PolarsPhysicalSchema,
+    apply_schema_polars,
+    read_delta_physical_schema,
+)
+from loom.etl.declarative.target import SchemaMode
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
+from loom.etl.storage import (
+    MissingTablePolicy,
     PathRouteResolver,
     PathTarget,
-    ResolvedTarget,
+    TableLocation,
     TableRouteResolver,
 )
-from loom.etl.storage.schema import PolarsPhysicalSchema
-from loom.etl.storage.schema.delta import read_delta_physical_schema
+from loom.etl.storage._locator import _as_locator
 
 from ._file_writer import PolarsFileWriter
-from ._schema import apply_schema
 
 _log = logging.getLogger(__name__)
 
 
-class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
+class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysicalSchema]):
     """Polars target writer using delta-rs for Delta tables."""
 
     def __init__(
@@ -62,7 +59,7 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
 
     def append(
         self,
-        frame: pl.DataFrame,
+        frame: pl.LazyFrame,
         table_ref: Any,
         params_instance: Any,
         *,
@@ -76,14 +73,8 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     # Schema Hooks
     # ====================================================================
 
-    def _physical_schema(self, target: ResolvedTarget) -> PolarsPhysicalSchema | None:
+    def _physical_schema(self, target: PathTarget) -> PolarsPhysicalSchema | None:
         """Read physical schema from Delta log."""
-        if isinstance(target, CatalogTarget):
-            raise ValueError(
-                "Polars backend only supports path targets; "
-                f"got catalog target for {target.logical_ref.ref!r}."
-            )
-
         physical = read_delta_physical_schema(
             target.location.uri,
             target.location.storage_options,
@@ -102,10 +93,10 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     ) -> pl.LazyFrame:
         """Align frame schema with existing."""
         schema = existing_schema.schema if existing_schema is not None else None
-        return apply_schema(frame, schema, mode)
+        return apply_schema_polars(frame, schema, mode)
 
-    def _materialize(self, frame: pl.LazyFrame, streaming: bool) -> pl.DataFrame:
-        """Collect lazy frame to DataFrame."""
+    def _materialize_for_write(self, frame: pl.LazyFrame, streaming: bool) -> pl.DataFrame:
+        """Collect lazy frame to DataFrame before Delta write."""
         return frame.collect(engine="streaming" if streaming else "auto")
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
@@ -119,14 +110,14 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     def _create(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         schema_mode: SchemaMode,
         partition_cols: tuple[str, ...] = (),
     ) -> None:
         """Create new Delta table."""
         _ = schema_mode
-        location = self._target_location(target)
+        location = target.location
         self._warn_uc_first_create(target)
         kwargs = self._write_kwargs(location)
 
@@ -144,31 +135,31 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     def _append(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         schema_mode: SchemaMode,
     ) -> None:
         """Append to existing Delta table."""
         _ = schema_mode
-        location = self._target_location(target)
+        location = target.location
         write_deltalake(location.uri, frame, mode="append", **self._write_kwargs(location))
 
     def _replace(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         schema_mode: SchemaMode,
     ) -> None:
         """Overwrite existing Delta table."""
         _ = schema_mode
-        location = self._target_location(target)
+        location = target.location
         write_deltalake(location.uri, frame, mode="overwrite", **self._write_kwargs(location))
 
     def _replace_partitions(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         partition_cols: tuple[str, ...],
         schema_mode: SchemaMode,
@@ -179,7 +170,7 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
             _log.warning("replace_partitions table=%s has 0 rows — nothing written", target)
             return
 
-        location = self._target_location(target)
+        location = target.location
         predicate = _build_partition_predicate(
             frame.select(list(partition_cols)).unique().iter_rows(named=True),
             partition_cols,
@@ -195,14 +186,14 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     def _replace_where(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         predicate: str,
         schema_mode: SchemaMode,
     ) -> None:
         """Overwrite rows matching SQL predicate."""
         _ = schema_mode
-        location = self._target_location(target)
+        location = target.location
         write_deltalake(
             location.uri,
             frame,
@@ -214,76 +205,56 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
     def _upsert(
         self,
         frame: pl.DataFrame,
-        target: ResolvedTarget,
+        target: PathTarget,
         *,
         spec: UpsertSpec,
         existing_schema: PolarsPhysicalSchema,
     ) -> None:
         """Merge frame into target using Delta MERGE."""
         _ = existing_schema
-        location = self._target_location(target)
+        location = target.location
 
         # Collect partition combinations for pre-filter
         combos = self._collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
 
-        # Build MERGE spec adapter for shared helpers
-        merge_spec = self._MergeSpecAdapter(
-            upsert_keys=spec.upsert_keys,
-            partition_cols=spec.partition_cols,
-            upsert_exclude=spec.upsert_exclude,
-            upsert_include=spec.upsert_include,
+        merge_plan = _build_merge_plan(
+            combos=combos,
+            spec=spec,
+            df_columns=tuple(frame.columns),
+            target_alias=TARGET_ALIAS,
+            source_alias=SOURCE_ALIAS,
         )
 
-        # Build predicate and column sets using shared helpers
-        predicate = _build_upsert_predicate(combos, merge_spec, TARGET_ALIAS, SOURCE_ALIAS)
-        update_cols = _build_upsert_update_cols(tuple(frame.columns), merge_spec)
-        update_set = _build_update_set(update_cols, SOURCE_ALIAS)
-        insert_values = _build_insert_values(tuple(frame.columns), SOURCE_ALIAS)
-
-        # Execute MERGE
         dt = DeltaTable(location.uri, storage_options=location.storage_options or {})
         (
             dt.merge(
                 source=frame,
-                predicate=predicate,
+                predicate=merge_plan.predicate,
                 source_alias=SOURCE_ALIAS,
                 target_alias=TARGET_ALIAS,
             )
-            .when_matched_update(updates=update_set)
-            .when_not_matched_insert(updates=insert_values)
+            .when_matched_update(updates=merge_plan.update_set)
+            .when_not_matched_insert(updates=merge_plan.insert_values)
             .execute()
         )
 
     def _write_file(
         self,
-        frame: pl.DataFrame,
+        frame: pl.LazyFrame,
         spec: FileSpec,
         *,
         streaming: bool,
     ) -> None:
         """Write to file (CSV, JSON, Parquet)."""
-        _ = streaming
-        self._file_writer.write(frame, spec, streaming=False)
+        self._file_writer.write(frame, spec, streaming=streaming)
 
     # ====================================================================
     # Helpers
     # ====================================================================
 
     @staticmethod
-    def _target_location(target: ResolvedTarget) -> TableLocation:
-        """Extract TableLocation from ResolvedTarget."""
-        if isinstance(target, CatalogTarget):
-            raise ValueError(
-                "Polars backend only supports path targets; "
-                f"got catalog target for {target.logical_ref.ref!r}."
-            )
-        return target.location
-
-    @staticmethod
-    def _warn_uc_first_create(target: ResolvedTarget) -> None:
+    def _warn_uc_first_create(target: PathTarget) -> None:
         """Warn about UC table creation limitations."""
-        if not isinstance(target, PathTarget):
-            return
         if not target.location.uri.lower().startswith("uc://"):
             return
         _log.warning(
@@ -317,21 +288,6 @@ class PolarsTargetWriter(_WritePolicy[pl.DataFrame, PolarsPhysicalSchema]):
         combos = frame.unique(subset=list(partition_cols)).select(list(partition_cols)).to_dicts()
         _log_partition_combos(combos, table_ref)
         return combos
-
-    class _MergeSpecAdapter:
-        """Adapter to make UpsertSpec compatible with shared _upsert.py helpers."""
-
-        def __init__(
-            self,
-            upsert_keys: tuple[str, ...],
-            partition_cols: tuple[str, ...],
-            upsert_exclude: tuple[str, ...],
-            upsert_include: tuple[str, ...],
-        ) -> None:
-            self.upsert_keys = upsert_keys
-            self.partition_cols = partition_cols
-            self.upsert_exclude = upsert_exclude
-            self.upsert_include = upsert_include
 
 
 __all__ = ["PolarsTargetWriter"]

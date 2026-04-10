@@ -9,7 +9,7 @@ import pytest
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
-from loom.etl.runner._wiring import make_backends, make_temp_store
+from loom.etl.runner._wiring import make_backends, make_checkpoint_store
 from loom.etl.storage._config import (
     CatalogConnection,
     StorageConfig,
@@ -190,22 +190,21 @@ def test_make_observers_record_store_requires_storage_config() -> None:
 
 
 # ---------------------------------------------------------------------------
-# make_temp_store
+# make_checkpoint_store
 # ---------------------------------------------------------------------------
 
 
-def test_make_temp_store_no_root_returns_none() -> None:
+def test_make_checkpoint_store_no_root_returns_none() -> None:
     config = StorageConfig()
-    result = make_temp_store(config)
+    result = make_checkpoint_store(config)
 
     assert result is None
 
 
-def test_make_temp_store_with_root_returns_store(tmp_path: Path) -> None:
-    from loom.etl.storage.temp._store import IntermediateStore
+def test_make_checkpoint_store_with_root_returns_store() -> None:
+    from loom.etl.checkpoint import CheckpointStore
 
-    root = tmp_path / "lake"
-    config = StorageConfig(tmp_root=str(root / "tmp"))
-    result = make_temp_store(config)
+    config = StorageConfig(tmp_root="s3://bucket/checkpoints")
+    result = make_checkpoint_store(config)
 
-    assert isinstance(result, IntermediateStore)
+    assert isinstance(result, CheckpointStore)

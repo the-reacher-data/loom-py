@@ -8,29 +8,19 @@ import polars as pl
 import pytest
 from deltalake import write_deltalake
 
-from loom.etl.schema._table import TableRef
-from loom.etl.storage._locator import TableLocation
-from loom.etl.storage.routing import CatalogTarget, PathTarget
-from loom.etl.storage.schema import PolarsPhysicalSchema
-from loom.etl.storage.schema.delta import DeltaSchemaReader
+from loom.etl.backends.polars._schema import (
+    PolarsPhysicalSchema,
+    read_delta_physical_schema,
+)
 
 
-def _path_target(uri: str) -> PathTarget:
-    return PathTarget(
-        logical_ref=TableRef("staging.orders"),
-        location=TableLocation(uri=uri),
-    )
-
-
-def test_delta_schema_reader_returns_none_for_missing_table(tmp_path: Path) -> None:
-    reader = DeltaSchemaReader()
-
-    schema = reader.read_schema(_path_target(str(tmp_path / "missing")))
+def test_read_delta_physical_schema_returns_none_for_missing_table(tmp_path: Path) -> None:
+    schema = read_delta_physical_schema(str(tmp_path / "missing"))
 
     assert schema is None
 
 
-def test_delta_schema_reader_reads_columns_and_partitions(tmp_path: Path) -> None:
+def test_read_delta_physical_schema_reads_columns_and_partitions(tmp_path: Path) -> None:
     table_path = tmp_path / "staging" / "orders"
     table_path.mkdir(parents=True, exist_ok=True)
     write_deltalake(
@@ -40,8 +30,7 @@ def test_delta_schema_reader_reads_columns_and_partitions(tmp_path: Path) -> Non
         partition_by=["year"],
     )
 
-    reader = DeltaSchemaReader()
-    schema = reader.read_schema(_path_target(str(table_path)))
+    schema = read_delta_physical_schema(str(table_path))
 
     assert schema is not None
     assert isinstance(schema, PolarsPhysicalSchema)
@@ -52,18 +41,7 @@ def test_delta_schema_reader_reads_columns_and_partitions(tmp_path: Path) -> Non
     assert schema.partition_columns == ("year",)
 
 
-def test_delta_schema_reader_rejects_catalog_target() -> None:
-    reader = DeltaSchemaReader()
-    target = CatalogTarget(
-        logical_ref=TableRef("raw.orders"),
-        catalog_ref=TableRef("main.raw.orders"),
-    )
-
-    with pytest.raises(ValueError, match="path targets"):
-        reader.read_schema(target)
-
-
-def test_delta_schema_reader_passes_uc_uri_and_storage_options(
+def test_read_delta_physical_schema_passes_storage_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, dict[str, str] | None]] = []
@@ -90,20 +68,13 @@ def test_delta_schema_reader_passes_uc_uri_and_storage_options(
         def metadata(self) -> _FakeMetadata:
             return _FakeMetadata()
 
-    monkeypatch.setattr("loom.etl.storage.schema.delta.DeltaTable", _FakeDeltaTable)
+    monkeypatch.setattr("loom.etl.backends.polars._schema.DeltaTable", _FakeDeltaTable)
 
-    target = PathTarget(
-        logical_ref=TableRef("raw.orders"),
-        location=TableLocation(
-            uri="uc://main.raw.orders",
-            storage_options={
-                "databricks_workspace_url": "https://dbc.example",
-                "databricks_access_token": "token-123",
-            },
-        ),
-    )
-
-    schema = DeltaSchemaReader().read_schema(target)
+    storage_options = {
+        "databricks_workspace_url": "https://dbc.example",
+        "databricks_access_token": "token-123",
+    }
+    schema = read_delta_physical_schema("uc://main.raw.orders", storage_options)
 
     assert schema is not None
     assert isinstance(schema, PolarsPhysicalSchema)

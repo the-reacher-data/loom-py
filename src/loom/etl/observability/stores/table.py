@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import (
     ExecutionRecord,
     PipelineRunRecord,
@@ -11,7 +12,6 @@ from loom.etl.observability.records import (
     StepRunRecord,
 )
 from loom.etl.observability.stores.protocol import ExecutionRecordWriter
-from loom.etl.schema._table import TableRef
 
 _TABLE_FOR: dict[type[Any], str] = {
     PipelineRunRecord: "pipeline_runs",

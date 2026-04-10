@@ -7,22 +7,24 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from loom.etl.storage._config import CatalogConnection, StorageConfig
+from loom.etl.checkpoint import CheckpointStore, TempCleaner
+from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
+from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
+from loom.etl.checkpoint._cleaners import _is_cloud_path
+from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.storage import CatalogConnection, StorageConfig
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
-from loom.etl.storage.protocols import SourceReader, TargetWriter
 from loom.etl.storage.routing import build_table_resolver
-from loom.etl.storage.temp._cleaners import TempCleaner
-from loom.etl.storage.temp._store import IntermediateStore
 
 
-class _TempStoreAware(Protocol):
+class _CheckpointConfig(Protocol):
     """Structural protocol satisfied by every StorageConfig variant."""
 
     @property
-    def tmp_root(self) -> str: ...
+    def checkpoint_root(self) -> str: ...
 
     @property
-    def tmp_storage_options(self) -> dict[str, str]: ...
+    def checkpoint_storage_options(self) -> dict[str, str]: ...
 
 
 def make_backends(
@@ -53,30 +55,31 @@ def make_backends(
     return _build_backend_pair(config, spark)
 
 
-def make_temp_store(
-    config: _TempStoreAware,
+def make_checkpoint_store(
+    config: _CheckpointConfig,
     spark: Any = None,
     cleaner: TempCleaner | None = None,
-) -> IntermediateStore | None:
-    """Build an intermediate store from config or return ``None`` when disabled."""
-    if not config.tmp_root:
+) -> CheckpointStore | None:
+    """Build a checkpoint store from config or return ``None`` when disabled."""
+    if not config.checkpoint_root:
         return None
-    backend = _make_temp_backend(spark, config.tmp_storage_options or {})
-    return IntermediateStore(
-        tmp_root=config.tmp_root,
+    if not _is_cloud_path(config.checkpoint_root):
+        raise ValueError(
+            "checkpoint_root must be a cloud URI (s3://, gs://, abfss://, ...). "
+            "Local checkpoint paths are not supported."
+        )
+    backend = _make_checkpoint_backend(spark, config.checkpoint_storage_options or {})
+    return CheckpointStore(
+        root=config.checkpoint_root,
         backend=backend,
         cleaner=cleaner,
     )
 
 
-def _make_temp_backend(spark: Any, storage_options: dict[str, str]) -> Any:
+def _make_checkpoint_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     if spark is not None:
-        from loom.etl.backends.spark._temp import _SparkTempBackend
-
-        return _SparkTempBackend(spark)
-    from loom.etl.backends.polars._temp import _PolarsTempBackend
-
-    return _PolarsTempBackend(storage_options)
+        return _SparkCheckpointBackend(spark)
+    return _PolarsCheckpointBackend(storage_options)
 
 
 def _build_backend_pair(config: StorageConfig, spark: Any) -> tuple[SourceReader, TargetWriter]:
@@ -183,4 +186,4 @@ def _unity_storage_options_from_connection(connection: CatalogConnection) -> dic
     return options
 
 
-__all__ = ["make_backends", "make_temp_store"]
+__all__ = ["make_backends", "make_checkpoint_store"]

@@ -7,14 +7,14 @@ from collections.abc import Callable
 
 import polars as pl
 
-from loom.etl.io._format import Format
-from loom.etl.io._write_options import (
+from loom.etl.declarative._format import Format
+from loom.etl.declarative._write_options import (
     CsvWriteOptions,
     JsonWriteOptions,
     ParquetWriteOptions,
     WriteOptions,
 )
-from loom.etl.io.target._file import FileSpec
+from loom.etl.declarative.target._file import FileSpec
 
 _log = logging.getLogger(__name__)
 

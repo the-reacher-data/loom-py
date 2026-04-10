@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from loom.etl.io.source import SourceSpec
-from loom.etl.io.target import TargetSpec
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import SourceSpec
+from loom.etl.declarative.target import TargetSpec
 from loom.etl.observability.records import EventName, RunContext, RunStatus
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.schema._table import TableRef
 
 _UNKNOWN_DTYPE = LoomDtype.NULL
 
@@ -99,6 +99,15 @@ class StubSourceReader:
     def read(self, spec: SourceSpec, _params_instance: Any) -> Any:
         """Return the pre-seeded frame for ``spec.alias``, or ``None``."""
         return self._frames.get(spec.alias)
+
+    def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:
+        """SQL execution is not supported by the generic in-memory stub."""
+        _ = frames
+        _ = query
+        raise NotImplementedError(
+            "StubSourceReader.execute_sql() is not implemented. "
+            "Use backend-specific readers/runners for StepSQL tests."
+        )
 
 
 class StubTargetWriter:

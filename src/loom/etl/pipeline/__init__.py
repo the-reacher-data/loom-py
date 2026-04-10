@@ -13,8 +13,8 @@ _EXPORTS: dict[str, str] = {
     "StepSQL": "loom.etl.pipeline._step_sql",
     "ETLProcess": "loom.etl.pipeline._process",
     "ETLPipeline": "loom.etl.pipeline._pipeline",
-    "params": "loom.etl.pipeline._proxy",
-    "ParamExpr": "loom.etl.pipeline._proxy",
+    "params": "loom.etl.declarative.expr._params",
+    "ParamExpr": "loom.etl.declarative.expr._params",
 }
 
 

@@ -6,11 +6,18 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.etl.io._format import Format
-from loom.etl.io.source import FromFile, FromTable, FromTemp, SourceKind, Sources, SourceSet
-from loom.etl.pipeline._proxy import params
+from loom.etl.declarative._format import Format
+from loom.etl.declarative.expr._params import params
+from loom.etl.declarative.expr._refs import TableRef, col
+from loom.etl.declarative.source import (
+    FromFile,
+    FromTable,
+    FromTemp,
+    SourceKind,
+    Sources,
+    SourceSet,
+)
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.schema._table import TableRef, col
 
 
 @pytest.fixture

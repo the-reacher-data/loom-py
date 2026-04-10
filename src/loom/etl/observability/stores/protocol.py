@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import ExecutionRecord
-from loom.etl.schema._table import TableRef
 
 
 class ExecutionRecordStore(Protocol):

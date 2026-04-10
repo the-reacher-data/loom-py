@@ -9,8 +9,8 @@ from typing import Any
 import msgspec
 import pytest
 
-from loom.etl.io._format import Format
-from loom.etl.io.source import FromFile, FromTable, JsonColumnSpec, SourceSpec
+from loom.etl.declarative._format import Format
+from loom.etl.declarative.source import FromFile, FromTable, JsonColumnSpec, SourceSpec
 from loom.etl.schema._schema import ColumnSchema, ListType, LoomDtype, StructField, StructType
 
 
@@ -141,7 +141,7 @@ class TestParseJsonState:
         assert spec.json_columns[1].column == expected_columns[1]
 
     def test_from_table_parse_json_preserves_other_state(self) -> None:
-        from loom.etl.schema._table import col
+        from loom.etl.declarative.expr._refs import col
 
         spec = (
             FromTable("raw.events")
@@ -156,7 +156,7 @@ class TestParseJsonState:
         assert len(spec.json_columns) == 1
 
     def test_from_file_parse_json_preserves_other_state(self) -> None:
-        from loom.etl.io._read_options import JsonReadOptions
+        from loom.etl.declarative._read_options import JsonReadOptions
 
         spec = (
             FromFile("s3://raw/e.json", format=Format.JSON)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from loom.etl.io._utils import _clone_slots
+from loom.etl.declarative._utils import _clone_slots
 
 
 class _SlotObj:

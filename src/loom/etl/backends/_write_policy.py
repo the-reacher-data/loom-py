@@ -9,21 +9,23 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from loom.etl.io.target import SchemaMode, TargetSpec
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import (
+from loom.etl.declarative.target import SchemaMode, TargetSpec
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
     UpsertSpec,
 )
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
+from loom.etl.runtime.contracts import TargetWriter
 from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
-from loom.etl.storage.protocols import TargetWriter
 from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
 
-FrameT = TypeVar("FrameT")
+InputFrameT = TypeVar("InputFrameT")
+WriteFrameT = TypeVar("WriteFrameT")
 PhysicalSchemaT = TypeVar("PhysicalSchemaT")
 
 
@@ -50,12 +52,10 @@ def _can_create_missing_table(
     missing_table_policy: MissingTablePolicy,
 ) -> bool:
     """Return ``True`` when table creation is allowed for missing destination."""
-    if missing_table_policy is MissingTablePolicy.CREATE:
-        return True
-    return schema_mode is SchemaMode.OVERWRITE
+    return missing_table_policy is MissingTablePolicy.CREATE or schema_mode is SchemaMode.OVERWRITE
 
 
-class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
+class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchemaT]):
     """Base class for backend-specific target writers using Template Method pattern.
 
     Implements the shared write policy:
@@ -81,7 +81,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def write(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         spec: TargetSpec,
         params_instance: Any,
         /,
@@ -92,21 +92,26 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
         if isinstance(spec, FileSpec):
             self._write_file(frame, spec, streaming=streaming)
             return
+        if isinstance(spec, (TempSpec, TempFanInSpec)):
+            raise TypeError(
+                f"{type(self).__name__} does not support temp targets; "
+                "TEMP writes are handled by CheckpointStore in ETLExecutor."
+            )
 
         target = self._resolver.resolve(spec.table_ref)
-
-        if isinstance(spec, AppendSpec):
-            self._do_append(frame, target, spec, streaming)
-        elif isinstance(spec, ReplaceSpec):
-            self._do_replace(frame, target, spec, streaming)
-        elif isinstance(spec, ReplacePartitionsSpec):
-            self._do_replace_partitions(frame, target, spec, streaming)
-        elif isinstance(spec, ReplaceWhereSpec):
-            self._do_replace_where(frame, target, spec, params_instance, streaming)
-        elif isinstance(spec, UpsertSpec):
-            self._do_upsert(frame, target, spec, streaming)
-        else:
-            raise TypeError(f"Unsupported target spec: {type(spec)!r}")
+        match spec:
+            case AppendSpec():
+                self._do_append(frame, target, spec, streaming)
+            case ReplaceSpec():
+                self._do_replace(frame, target, spec, streaming)
+            case ReplacePartitionsSpec():
+                self._do_replace_partitions(frame, target, spec, streaming)
+            case ReplaceWhereSpec():
+                self._do_replace_where(frame, target, spec, params_instance, streaming)
+            case UpsertSpec():
+                self._do_upsert(frame, target, spec, streaming)
+            case _:
+                raise TypeError(f"Unsupported target spec: {type(spec)!r}")
 
     # ========================================================================
     # Template Methods (shared policy)
@@ -114,7 +119,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _do_append(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         target: ResolvedTarget,
         spec: AppendSpec,
         streaming: bool,
@@ -127,16 +132,16 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize(frame, streaming)
+            materialized = self._materialize_for_write(frame, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize(aligned, streaming)
+        materialized = self._materialize_for_write(aligned, streaming)
         self._append(materialized, target, schema_mode=spec.schema_mode)
 
     def _do_replace(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         target: ResolvedTarget,
         spec: ReplaceSpec,
         streaming: bool,
@@ -149,16 +154,16 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize(frame, streaming)
+            materialized = self._materialize_for_write(frame, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize(aligned, streaming)
+        materialized = self._materialize_for_write(aligned, streaming)
         self._replace(materialized, target, schema_mode=spec.schema_mode)
 
     def _do_replace_partitions(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         target: ResolvedTarget,
         spec: ReplacePartitionsSpec,
         streaming: bool,
@@ -171,7 +176,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize(frame, streaming)
+            materialized = self._materialize_for_write(frame, streaming)
             self._create(
                 materialized,
                 target,
@@ -180,7 +185,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
             )
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize(aligned, streaming)
+        materialized = self._materialize_for_write(aligned, streaming)
         self._replace_partitions(
             materialized,
             target,
@@ -190,7 +195,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _do_replace_where(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         target: ResolvedTarget,
         spec: ReplaceWhereSpec,
         params_instance: Any,
@@ -204,12 +209,12 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize(frame, streaming)
+            materialized = self._materialize_for_write(frame, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         predicate = self._predicate_to_sql(spec.replace_predicate, params_instance)
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize(aligned, streaming)
+        materialized = self._materialize_for_write(aligned, streaming)
         self._replace_where(
             materialized,
             target,
@@ -219,7 +224,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _do_upsert(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         target: ResolvedTarget,
         spec: UpsertSpec,
         streaming: bool,
@@ -232,7 +237,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize(frame, streaming=False)
+            materialized = self._materialize_for_write(frame, streaming=False)
             self._create(
                 materialized,
                 target,
@@ -241,7 +246,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
             )
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize(aligned, streaming=False)
+        materialized = self._materialize_for_write(aligned, streaming=False)
         self._upsert(
             materialized,
             target,
@@ -259,15 +264,15 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _align(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         existing_schema: PhysicalSchemaT | None,
         mode: SchemaMode,
-    ) -> FrameT:
+    ) -> InputFrameT:
         """Align frame schema with existing."""
         raise NotImplementedError
 
-    def _materialize(self, frame: FrameT, streaming: bool) -> FrameT:
-        """Materialize frame (collect if lazy)."""
+    def _materialize_for_write(self, frame: InputFrameT, streaming: bool) -> WriteFrameT:
+        """Convert input frame into write-ready frame for backend sinks."""
         raise NotImplementedError
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
@@ -276,7 +281,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _create(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
@@ -287,7 +292,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _append(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
@@ -297,7 +302,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _replace(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
@@ -307,7 +312,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _replace_partitions(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         partition_cols: tuple[str, ...],
@@ -318,7 +323,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _replace_where(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         predicate: str,
@@ -329,7 +334,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _upsert(
         self,
-        frame: FrameT,
+        frame: WriteFrameT,
         target: ResolvedTarget,
         *,
         spec: UpsertSpec,
@@ -340,7 +345,7 @@ class _WritePolicy(TargetWriter, Generic[FrameT, PhysicalSchemaT]):
 
     def _write_file(
         self,
-        frame: FrameT,
+        frame: InputFrameT,
         spec: FileSpec,
         *,
         streaming: bool,

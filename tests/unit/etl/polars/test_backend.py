@@ -1,4 +1,4 @@
-"""Integration tests for DeltaCatalog, PolarsSourceReader, PolarsTargetWriter."""
+"""Integration tests for PolarsSourceReader and PolarsTargetWriter."""
 
 from __future__ import annotations
 
@@ -10,19 +10,18 @@ import pytest
 from deltalake import DeltaTable, write_deltalake
 
 from loom.etl import ETLParams, col
-from loom.etl.backends.polars import DeltaCatalog, PolarsSourceReader, PolarsTargetWriter
-from loom.etl.backends.polars._schema import SchemaNotFoundError
-from loom.etl.io._format import Format
-from loom.etl.io.source import FileSourceSpec, TableSourceSpec
-from loom.etl.io.target import IntoTable, SchemaMode
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
-from loom.etl.pipeline._proxy import params as p
+from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+from loom.etl.backends.polars._schema import PolarsPhysicalSchema, SchemaNotFoundError
+from loom.etl.declarative._format import Format
+from loom.etl.declarative.expr._params import params as p
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import FileSourceSpec, TableSourceSpec
+from loom.etl.declarative.target import IntoTable, SchemaMode
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import MappingLocator, TableLocation
-from loom.etl.storage.schema import PhysicalSchema
 
 from .conftest import table_path
 
@@ -32,12 +31,12 @@ class _DateParams(ETLParams):
 
 
 class _MissingSchemaReader:
-    def read_schema(self, _target: object) -> PhysicalSchema | None:
+    def read_schema(self, _target: object) -> PolarsPhysicalSchema | None:
         return None
 
 
 def _file_source_spec() -> FileSourceSpec:
-    from loom.etl.io._format import Format
+    from loom.etl.declarative._format import Format
 
     return FileSourceSpec(alias="data", path="s3://bucket/data.csv", format=Format.CSV)
 
@@ -59,49 +58,6 @@ def _spec(ref: str, schema_mode: SchemaMode = SchemaMode.STRICT) -> ReplaceSpec:
 
 def _source_spec(ref: str) -> TableSourceSpec:
     return TableSourceSpec(alias="data", table_ref=TableRef(ref))
-
-
-def test_catalog_exists_false_for_missing_table(tmp_path: Path) -> None:
-    catalog = DeltaCatalog(tmp_path)
-    assert not catalog.exists(TableRef("raw.orders"))
-
-
-def test_catalog_exists_true_after_write(tmp_path: Path) -> None:
-    _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1]}))
-    catalog = DeltaCatalog(tmp_path)
-    assert catalog.exists(TableRef("raw.orders"))
-
-
-def test_catalog_schema_returns_none_for_missing_table(tmp_path: Path) -> None:
-    assert DeltaCatalog(tmp_path).schema(TableRef("raw.orders")) is None
-
-
-def test_catalog_schema_reflects_written_table(tmp_path: Path) -> None:
-    _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
-    schema = DeltaCatalog(tmp_path).schema(TableRef("raw.orders"))
-    assert schema is not None
-    names = [col.name for col in schema]
-    assert names == ["id", "amount"]
-    assert schema[0].dtype is LoomDtype.INT64
-    assert schema[1].dtype is LoomDtype.FLOAT64
-
-
-def test_catalog_columns_derived_from_schema(tmp_path: Path) -> None:
-    _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1], "amount": [1.0]}))
-    cols = DeltaCatalog(tmp_path).columns(TableRef("raw.orders"))
-    assert cols == ("id", "amount")
-
-
-def test_catalog_update_schema_is_noop(tmp_path: Path) -> None:
-    """DeltaCatalog ignores update_schema — Delta log is the source of truth."""
-    _seed(tmp_path, "raw.orders", pl.DataFrame({"id": [1]}))
-    catalog = DeltaCatalog(tmp_path)
-    new_schema = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("fake", LoomDtype.UTF8))
-    catalog.update_schema(TableRef("raw.orders"), new_schema)
-    # Schema still reflects what Delta has on disk, not the injected value
-    schema = catalog.schema(TableRef("raw.orders"))
-    assert schema is not None
-    assert len(schema) == 1
 
 
 def test_reader_returns_lazy_frame(tmp_path: Path) -> None:
@@ -147,14 +103,13 @@ def test_writer_raises_schema_not_found_when_table_missing(tmp_path: Path) -> No
 
 def test_writer_overwrite_creates_table_when_missing(tmp_path: Path) -> None:
     """OVERWRITE on a non-existent table creates it from the frame schema."""
-    catalog = DeltaCatalog(tmp_path)
     writer = PolarsTargetWriter(tmp_path)
+    ref = TableRef("staging.new")
     frame = pl.DataFrame({"id": [1, 2], "v": [10, 20]}).lazy()
-    writer.write(frame, _spec("staging.new", schema_mode=SchemaMode.OVERWRITE), None)
-    assert catalog.exists(TableRef("staging.new"))
-    schema = catalog.schema(TableRef("staging.new"))
-    assert schema is not None
-    assert [col.name for col in schema] == ["id", "v"]
+    writer.write(frame, _spec(ref.ref, schema_mode=SchemaMode.OVERWRITE), None)
+    assert DeltaTable.is_deltatable(str(table_path(tmp_path, ref)))
+    written = _read_table(tmp_path, ref.ref)
+    assert written.columns == ["id", "v"]
 
 
 def test_writer_evolve_fills_missing_columns(tmp_path: Path) -> None:
@@ -198,7 +153,7 @@ def test_writer_reads_latest_schema_between_consecutive_writes(tmp_path: Path) -
 
 def test_reader_reads_csv_file(tmp_path: Path) -> None:
     """FILE sources are now supported — reader dispatches to _read_file."""
-    from loom.etl.io._format import Format
+    from loom.etl.declarative._format import Format
 
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
@@ -212,7 +167,7 @@ def test_reader_reads_csv_file(tmp_path: Path) -> None:
 
 def test_reader_applies_source_schema_on_csv(tmp_path: Path) -> None:
     """with_schema() casts declared columns at read time."""
-    from loom.etl.io._format import Format
+    from loom.etl.declarative._format import Format
 
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("id,amount\n1,9.99\n2,19.99\n")
@@ -281,6 +236,7 @@ def test_writer_warns_on_polars_uc_first_create(
         writes.append((table_or_uri, str(mode)))
 
     monkeypatch.setattr(polars_writer_module, "write_deltalake", _fake_write_deltalake)
+    monkeypatch.setattr(polars_writer_module, "read_delta_physical_schema", lambda *_args: None)
     caplog.set_level("WARNING", logger="loom.etl.backends.polars._writer")
 
     locator = MappingLocator(
@@ -296,7 +252,6 @@ def test_writer_warns_on_polars_uc_first_create(
     )
     writer = PolarsTargetWriter(
         locator,
-        schema_reader=_MissingSchemaReader(),
         missing_table_policy=MissingTablePolicy.CREATE,
     )
     writer.append(pl.DataFrame({"id": [1]}).lazy(), TableRef("raw.uc_orders"), None)
@@ -377,13 +332,11 @@ def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
     assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
 
 
-def test_writer_updates_catalog_schema_after_write(tmp_path: Path) -> None:
-    """Catalog schema reflects the written frame after a successful write."""
+def test_writer_persists_schema_after_write(tmp_path: Path) -> None:
+    """Physical table schema reflects the written frame after a successful write."""
     _seed(tmp_path, "staging.out", pl.DataFrame({"id": [0]}))
-    catalog = DeltaCatalog(tmp_path)
     writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
-    schema = catalog.schema(TableRef("staging.out"))
-    assert schema is not None
-    assert schema[0].dtype is LoomDtype.INT64
+    result = _read_table(tmp_path, "staging.out")
+    assert result.schema["id"] == pl.Int64

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from loom.etl.declarative.expr._refs import TableRef, col
+
 from ._contract import JsonContract, SchemaContract, resolve_json_type, resolve_schema
 from ._schema import (
     ArrayType,
@@ -19,7 +21,6 @@ from ._schema import (
     StructField,
     StructType,
 )
-from ._table import TableRef, col
 
 __all__ = [
     "SchemaContract",

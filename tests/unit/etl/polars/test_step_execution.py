@@ -16,9 +16,9 @@ import pytest
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.executor import ETLExecutor, EventName, RunStatus
 from loom.etl.schema._schema import LoomDtype
-from loom.etl.schema._table import TableRef
 from loom.etl.testing import StubRunObserver
 
 from .conftest import MinimalPolarsSourceReader, MinimalPolarsTargetWriter, table_path

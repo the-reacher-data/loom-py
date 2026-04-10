@@ -5,16 +5,14 @@ Public API:
 - SparkTargetWriter: TargetWriter protocol implementation
 """
 
-from loom.etl.backends.spark._catalog import SparkCatalog
 from loom.etl.backends.spark._reader import SparkSourceReader
-from loom.etl.backends.spark._schema import spark_apply_schema
+from loom.etl.backends.spark._schema import apply_schema_spark
 from loom.etl.backends.spark._writer import SparkTargetWriter
 from loom.etl.testing.spark import SparkTestSession
 
 __all__ = [
-    "SparkCatalog",
     "SparkSourceReader",
     "SparkTargetWriter",
     "SparkTestSession",
-    "spark_apply_schema",
+    "apply_schema_spark",
 ]

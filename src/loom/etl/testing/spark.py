@@ -38,9 +38,9 @@ from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 
 from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative.source import SourceSpec
+from loom.etl.declarative.target import TargetSpec
 from loom.etl.executor import ETLExecutor
-from loom.etl.io.source import SourceSpec
-from loom.etl.io.target import TargetSpec
 from loom.etl.testing._result import StepResult
 
 
@@ -151,6 +151,15 @@ class _SparkStubReader:
         table_ref = getattr(spec, "table_ref", None)
         key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]
+
+    def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:
+        first = next(iter(frames.values()), None)
+        if first is None:
+            raise ValueError("StepSQL requires at least one source frame.")
+        isolated = first.sparkSession.newSession()
+        for name, frame in frames.items():
+            isolated.createDataFrame(frame.rdd, frame.schema).createOrReplaceTempView(name)
+        return isolated.sql(query)
 
 
 class SparkStepRunner:

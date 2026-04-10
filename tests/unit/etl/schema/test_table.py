@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from loom.etl.io.source._predicate import EqPred, GtPred, InPred
-from loom.etl.pipeline._proxy import ParamExpr
-from loom.etl.schema._table import ColumnRef, TableRef, UnboundColumnRef, col
+from loom.etl.declarative.expr._params import ParamExpr
+from loom.etl.declarative.expr._predicate import EqPred, GtPred, InPred
+from loom.etl.declarative.expr._refs import ColumnRef, TableRef, UnboundColumnRef, col
 
 
 class TestTableRefAndColumns:

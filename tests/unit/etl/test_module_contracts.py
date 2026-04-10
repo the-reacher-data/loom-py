@@ -19,21 +19,23 @@ def _reload_modules(*names: str) -> dict[str, ModuleType]:
 
 def test_definition_modules_support_reload_contracts() -> None:
     modules = _reload_modules(
-        "loom.etl.io._format",
-        "loom.etl.io._read_options",
-        "loom.etl.io._write_options",
-        "loom.etl.io.target._file",
-        "loom.etl.io.target._table",
-        "loom.etl.io.target._temp",
+        "loom.etl.declarative._format",
+        "loom.etl.declarative._read_options",
+        "loom.etl.declarative._write_options",
+        "loom.etl.declarative.target._file",
+        "loom.etl.declarative.target._table",
+        "loom.etl.declarative.target._temp",
         "loom.etl.schema._schema",
     )
 
-    assert modules["loom.etl.io._format"].Format.CSV.value == "csv"
-    assert modules["loom.etl.io._read_options"].CsvReadOptions().separator == ","
-    assert modules["loom.etl.io._write_options"].ParquetWriteOptions().compression == "zstd"
-    assert modules["loom.etl.io.target._file"].FileSpec is not None
-    assert modules["loom.etl.io.target._table"].AppendSpec is not None
-    assert modules["loom.etl.io.target._temp"].TempSpec is not None
+    assert modules["loom.etl.declarative._format"].Format.CSV.value == "csv"
+    assert modules["loom.etl.declarative._read_options"].CsvReadOptions().separator == ","
+    assert (
+        modules["loom.etl.declarative._write_options"].ParquetWriteOptions().compression == "zstd"
+    )
+    assert modules["loom.etl.declarative.target._file"].FileSpec is not None
+    assert modules["loom.etl.declarative.target._table"].AppendSpec is not None
+    assert modules["loom.etl.declarative.target._temp"].TempSpec is not None
     assert modules["loom.etl.schema._schema"].ColumnSchema is not None
 
 
@@ -43,12 +45,12 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl", "FromTable"),
         ("loom.etl.compiler", "ETLCompiler"),
         ("loom.etl.executor", "ExecutionRecordsObserver"),
-        ("loom.etl.io", "IntoTable"),
+        ("loom.etl.declarative", "IntoTable"),
         ("loom.etl.pipeline", "ETLStep"),
         ("loom.etl.runner", "ETLRunner"),
         ("loom.etl.schema", "ColumnSchema"),
         ("loom.etl.storage", "StorageConfig"),
-        ("loom.etl.storage.temp", "IntermediateStore"),
+        ("loom.etl.checkpoint", "CheckpointStore"),
         ("loom.etl.testing", "PolarsStepRunner"),
         ("loom.etl.compiler", "validate_plan_catalog"),
         ("loom.etl.observability", "StructlogRunObserver"),
@@ -70,7 +72,7 @@ def test_package_entrypoints_support_reload_contracts(
         ("loom.etl.observability.observers.protocol", "ETLRunObserver"),
         ("loom.etl.observability.stores.protocol", "ExecutionRecordStore"),
         ("loom.etl.pipeline._params", "ETLParams"),
-        ("loom.etl.storage.protocols", "TableDiscovery"),
+        ("loom.etl.runtime.contracts", "TableDiscovery"),
         ("loom.etl.observability.config", "ObservabilityConfig"),
     ],
 )
@@ -81,23 +83,23 @@ def test_internal_protocol_and_event_modules_support_reload_contracts(
     module = _reload_module(module_name)
     assert getattr(module, attribute_name) is not None
 
-    temp_scope = _reload_module("loom.etl.storage.temp._scope")
-    assert temp_scope.TempScope.RUN.value == "run"
+    temp_scope = _reload_module("loom.etl.checkpoint._scope")
+    assert temp_scope.CheckpointScope.RUN.value == "run"
 
 
 def test_reload_sql_and_compiler_definition_modules_with_basic_usage() -> None:
     modules = _reload_modules(
         "loom.etl.compiler._errors",
-        "loom.etl.io.target",
-        "loom.etl.io.source._predicate",
-        "loom.etl.io.source._predicate_dialect",
+        "loom.etl.declarative.target",
+        "loom.etl.declarative.expr._predicate",
+        "loom.etl.declarative.expr._predicate_dialect",
         "loom.etl.backends._predicate",
     )
 
     compiler_errors = modules["loom.etl.compiler._errors"]
-    target_variants = modules["loom.etl.io.target"]
-    predicate_nodes = modules["loom.etl.io.source._predicate"]
-    predicate_dialect = modules["loom.etl.io.source._predicate_dialect"]
+    target_variants = modules["loom.etl.declarative.target"]
+    predicate_nodes = modules["loom.etl.declarative.expr._predicate"]
+    predicate_dialect = modules["loom.etl.declarative.expr._predicate_dialect"]
     predicate_utils = modules["loom.etl.backends._predicate"]
 
     class _Step:
@@ -162,12 +164,14 @@ def test_runner_error_message_includes_requested_include_set() -> None:
 
 
 def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
-    modules = _reload_modules("loom.etl.io.source._from", "loom.etl.io.target._into")
-    source_mod = modules["loom.etl.io.source._from"]
-    target_mod = modules["loom.etl.io.target._into"]
+    modules = _reload_modules(
+        "loom.etl.declarative.source._from", "loom.etl.declarative.target._into"
+    )
+    source_mod = modules["loom.etl.declarative.source._from"]
+    target_mod = modules["loom.etl.declarative.target._into"]
 
-    from loom.etl.pipeline._proxy import params
-    from loom.etl.schema._table import col
+    from loom.etl.declarative.expr._params import params
+    from loom.etl.declarative.expr._refs import col
 
     source_spec = (
         source_mod.FromTable("raw.orders")
@@ -206,10 +210,10 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
     assert temp_target.temp_name == "parts"
 
 
-def test_reload_temp_store_module_and_helpers() -> None:
-    store_mod = _reload_module("loom.etl.storage.temp._store")
-    polars_temp_mod = _reload_module("loom.etl.backends.polars._temp")
-    spark_temp_mod = _reload_module("loom.etl.backends.spark._temp")
+def test_reload_checkpoint_store_module_and_helpers() -> None:
+    store_mod = _reload_module("loom.etl.checkpoint._store")
+    polars_temp_mod = _reload_module("loom.etl.checkpoint._backends._polars")
+    spark_temp_mod = _reload_module("loom.etl.checkpoint._backends._spark")
 
     import polars as pl
 
@@ -273,14 +277,14 @@ def test_lazy_sql_exports_resolve() -> None:
 
 
 def test_format_enum_values_are_stable() -> None:
-    from loom.etl.io._format import Format
+    from loom.etl.declarative._format import Format
 
     assert Format.CSV.value == "csv"
     assert Format.DELTA.value == "delta"
 
 
 def test_read_options_defaults_and_overrides() -> None:
-    from loom.etl.io._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
+    from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
 
     csv = CsvReadOptions()
     js = JsonReadOptions(infer_schema_length=None)
@@ -292,7 +296,7 @@ def test_read_options_defaults_and_overrides() -> None:
 
 
 def test_write_options_defaults_and_overrides() -> None:
-    from loom.etl.io._write_options import CsvWriteOptions, ParquetWriteOptions
+    from loom.etl.declarative._write_options import CsvWriteOptions, ParquetWriteOptions
 
     csv = CsvWriteOptions(separator=";")
     pq = ParquetWriteOptions(compression="zstd")
@@ -301,25 +305,25 @@ def test_write_options_defaults_and_overrides() -> None:
 
 
 def test_target_variant_specs_store_expected_fields() -> None:
-    from loom.etl.io._format import Format
-    from loom.etl.io.target._file import FileSpec
-    from loom.etl.io.target._table import AppendSpec, ReplaceSpec
-    from loom.etl.io.target._temp import TempFanInSpec, TempSpec
-    from loom.etl.schema._table import TableRef
-    from loom.etl.storage.temp._scope import TempScope
+    from loom.etl.checkpoint._scope import CheckpointScope
+    from loom.etl.declarative._format import Format
+    from loom.etl.declarative.expr._refs import TableRef
+    from loom.etl.declarative.target._file import FileSpec
+    from loom.etl.declarative.target._table import AppendSpec, ReplaceSpec
+    from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 
     table = TableRef("staging.orders")
     file_spec = FileSpec(path="/var/lib/loom/out.csv", format=Format.CSV)
     append = AppendSpec(table_ref=table)
     replace = ReplaceSpec(table_ref=table)
-    temp = TempSpec(temp_name="tmp_orders", temp_scope=TempScope.RUN)
-    fan_in = TempFanInSpec(temp_name="tmp_parts", temp_scope=TempScope.CORRELATION)
+    temp = TempSpec(temp_name="tmp_orders", temp_scope=CheckpointScope.RUN)
+    fan_in = TempFanInSpec(temp_name="tmp_parts", temp_scope=CheckpointScope.CORRELATION)
 
     assert file_spec.path == "/var/lib/loom/out.csv"
     assert append.table_ref == table
     assert replace.table_ref == table
     assert temp.temp_name == "tmp_orders"
-    assert fan_in.temp_scope is TempScope.CORRELATION
+    assert fan_in.temp_scope is CheckpointScope.CORRELATION
 
 
 def test_schema_structural_types_compose_normally() -> None:
@@ -399,9 +403,9 @@ def test_observer_event_records_hold_runtime_data() -> None:
 
 
 def test_storage_protocols_runtime_checkable_contracts() -> None:
+    from loom.etl.declarative.expr._refs import TableRef
+    from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
     from loom.etl.schema._schema import ColumnSchema, LoomDtype
-    from loom.etl.schema._table import TableRef
-    from loom.etl.storage.protocols import SourceReader, TableDiscovery, TargetWriter
 
     class _Catalog:
         def exists(self, ref: TableRef) -> bool:
@@ -420,6 +424,9 @@ def test_storage_protocols_runtime_checkable_contracts() -> None:
         def read(self, spec: object, params_instance: object) -> object:
             return object()
 
+        def execute_sql(self, frames: dict[str, object], query: str) -> object:
+            return object()
+
     class _Writer:
         def write(self, frame: object, spec: object, params_instance: object) -> None:
             return None
@@ -430,10 +437,10 @@ def test_storage_protocols_runtime_checkable_contracts() -> None:
 
 
 def test_temp_scope_enum_values_are_stable() -> None:
-    from loom.etl.storage.temp._scope import TempScope
+    from loom.etl.checkpoint._scope import CheckpointScope
 
-    assert TempScope.RUN.value == "run"
-    assert TempScope.CORRELATION.value == "correlation"
+    assert CheckpointScope.RUN.value == "run"
+    assert CheckpointScope.CORRELATION.value == "correlation"
 
 
 def test_public_root_exports_are_importable() -> None:

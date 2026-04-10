@@ -201,7 +201,22 @@ class StorageConfig(msgspec.Struct, frozen=True):
             table_route.validate(catalogs=self.catalogs, context=f"tables[{idx}]")
         for idx, file_route in enumerate(self.files):
             file_route.validate(context=f"files[{idx}]")
+        if self.tmp_root and not _is_cloud_uri(self.tmp_root):
+            raise ValueError(
+                "storage.tmp_root must be a cloud URI (s3://, gs://, abfss://, ...). "
+                "Local checkpoint roots are not supported."
+            )
         self._validate_polars_uc_credentials()
+
+    @property
+    def checkpoint_root(self) -> str:
+        """Checkpoint root URI (canonical alias of ``tmp_root``)."""
+        return self.tmp_root
+
+    @property
+    def checkpoint_storage_options(self) -> dict[str, str]:
+        """Checkpoint storage options (canonical alias of ``tmp_storage_options``)."""
+        return self.tmp_storage_options
 
     def has_catalog_routes(self) -> bool:
         """Return ``True`` when at least one table route uses ``ref``."""
@@ -295,6 +310,11 @@ def _resolve_polars_catalog_key(
         catalog_from_ref = parts[0]
         return catalog_from_ref if catalog_from_ref in catalogs else ""
     return ""
+
+
+def _is_cloud_uri(path: str) -> bool:
+    schemes = ("s3://", "gs://", "gcs://", "abfss://", "abfs://", "az://")
+    return path.startswith(schemes)
 
 
 # ---------------------------------------------------------------------------

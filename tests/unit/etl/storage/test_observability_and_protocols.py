@@ -6,12 +6,12 @@ from typing import Any
 
 import msgspec
 
-from loom.etl.io.source import SourceSpec, TableSourceSpec
-from loom.etl.io.target._table import ReplaceSpec
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import SourceSpec, TableSourceSpec
+from loom.etl.declarative.target._table import ReplaceSpec
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
+from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.schema._table import TableRef
-from loom.etl.storage.protocols import SourceReader, TableDiscovery, TargetWriter
 
 
 def test_observability_config_defaults_and_conversion() -> None:
@@ -74,6 +74,7 @@ def test_protocol_method_bodies_are_callable() -> None:
     assert TableDiscovery.schema(object(), TableRef("raw.orders")) is None
     assert TableDiscovery.update_schema(object(), TableRef("raw.orders"), schema) is None
     assert SourceReader.read(object(), src_spec, None) is None
+    assert SourceReader.execute_sql(object(), {}, "SELECT 1") is None
     assert TargetWriter.write(object(), object(), target_spec, None) is None
 
 
@@ -94,6 +95,9 @@ class _CatalogImpl:
 class _ReaderImpl:
     def read(self, spec: SourceSpec, params_instance: Any, /) -> Any:
         return {"alias": spec.alias, "params": params_instance}
+
+    def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:
+        return {"frames": frames, "query": query}
 
 
 class _WriterImpl:

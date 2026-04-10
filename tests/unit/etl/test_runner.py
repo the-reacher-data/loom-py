@@ -220,29 +220,29 @@ class TestRunnerFromConfig:
         assert runner._compiler._catalog is None
 
     @pytest.mark.parametrize(
-        "tmp_suffix,has_temp_store",
+        "checkpoint_enabled,has_checkpoint_store",
         [
-            (None, False),
-            ("tmp", True),
+            (False, False),
+            (True, True),
         ],
     )
     def test_from_config_polars_path_builds_polars_backends(
         self,
         tmp_path: Path,
-        tmp_suffix: str | None,
-        has_temp_store: bool,
+        checkpoint_enabled: bool,
+        has_checkpoint_store: bool,
     ) -> None:
         from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
-            tmp_root=str(tmp_path / tmp_suffix) if tmp_suffix else "",
+            tmp_root="s3://bucket/checkpoints" if checkpoint_enabled else "",
         )
         runner = ETLRunner.from_config(config)
 
         assert isinstance(runner._executor._reader, PolarsSourceReader)
         assert isinstance(runner._executor._writer, PolarsTargetWriter)
-        assert (runner._temp_store is not None) is has_temp_store
+        assert (runner._checkpoint_store is not None) is has_checkpoint_store
 
 
 class TestRunnerFromDict:
@@ -291,10 +291,10 @@ class TestRunnerCleaner:
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
-            tmp_root=str(tmp_path / "tmp"),
+            tmp_root="s3://bucket/checkpoints",
         )
         runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
 
-        assert runner._temp_store is not None
-        runner._temp_store.cleanup_run("run-xyz")
+        assert runner._checkpoint_store is not None
+        runner._checkpoint_store.cleanup_run("run-xyz")
         assert any("run-xyz" in path for path in deleted)

@@ -8,20 +8,20 @@ from typing import Any
 import pytest
 
 from loom.etl import col
-from loom.etl.io._format import Format
-from loom.etl.io.target import IntoFile, IntoTable, IntoTemp, SchemaMode
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import (
+from loom.etl.checkpoint import CheckpointScope
+from loom.etl.declarative._format import Format
+from loom.etl.declarative.expr._params import params
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.target import IntoFile, IntoTable, IntoTemp, SchemaMode
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
     UpsertSpec,
 )
-from loom.etl.io.target._temp import TempFanInSpec, TempSpec
-from loom.etl.pipeline._proxy import params
-from loom.etl.schema._table import TableRef
-from loom.etl.storage.temp._scope import TempScope
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 
 
 class TestIntoTableModes:
@@ -174,18 +174,18 @@ class TestIntoTemp:
         ],
     )
     def test_to_spec_selects_variant(self, append: bool, expected_type: type[Any]) -> None:
-        spec = IntoTemp("normalized", scope=TempScope.CORRELATION, append=append)._to_spec()
+        spec = IntoTemp("normalized", scope=CheckpointScope.CORRELATION, append=append)._to_spec()
         assert isinstance(spec, expected_type)
         assert spec.temp_name == "normalized"
-        assert spec.temp_scope is TempScope.CORRELATION
+        assert spec.temp_scope is CheckpointScope.CORRELATION
 
     def test_exposes_properties(self) -> None:
-        target = IntoTemp("parts", scope=TempScope.RUN, append=True)
+        target = IntoTemp("parts", scope=CheckpointScope.RUN, append=True)
         assert target.temp_name == "parts"
-        assert target.scope is TempScope.RUN
+        assert target.scope is CheckpointScope.RUN
         assert target.append is True
 
     def test_repr_includes_name_scope_and_append(self) -> None:
-        repr_value = repr(IntoTemp("parts", scope=TempScope.RUN, append=True))
+        repr_value = repr(IntoTemp("parts", scope=CheckpointScope.RUN, append=True))
         assert "IntoTemp('parts'" in repr_value
         assert "append=True" in repr_value

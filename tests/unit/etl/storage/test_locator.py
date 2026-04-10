@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.storage._locator import (
     MappingLocator,
     PrefixLocator,

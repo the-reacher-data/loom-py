@@ -12,10 +12,10 @@ from loom.etl.compiler import ETLCompilationError
 from loom.etl.compiler._errors import ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.compiler._validators import validate_param_exprs
-from loom.etl.io.source import TableSourceSpec
-from loom.etl.io.target._table import AppendSpec, ReplaceWhereSpec
-from loom.etl.pipeline._proxy import params as p
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._params import params as p
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import TableSourceSpec
+from loom.etl.declarative.target._table import AppendSpec, ReplaceWhereSpec
 
 
 class _P(ETLParams):

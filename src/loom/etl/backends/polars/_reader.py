@@ -7,14 +7,13 @@ from typing import Any
 
 import polars as pl
 
-from loom.etl.io._format import Format
-from loom.etl.io._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
-from loom.etl.io.source import FileSourceSpec, SourceSpec, TableSourceSpec
+from loom.etl.declarative._format import Format
+from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
+from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
+from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage._locator import _as_locator
-from loom.etl.storage.protocols import SourceReader
 from loom.etl.storage.routing import (
-    CatalogTarget,
     PathRouteResolver,
     TableRouteResolver,
 )
@@ -47,21 +46,21 @@ class PolarsSourceReader(SourceReader):
 
         raise TypeError(
             f"PolarsSourceReader does not support source kind {spec.kind!r}. "
-            "TEMP sources are handled by IntermediateStore."
+            "TEMP sources are handled by CheckpointStore."
         )
+
+    def execute_sql(self, frames: dict[str, Any], query: str) -> pl.LazyFrame:
+        """Execute SQL query against backend frames."""
+        return execute_sql(frames, query)
 
     def _read_table(self, spec: TableSourceSpec, params: Any) -> pl.LazyFrame:
         """Read Delta table."""
         target = self._resolver.resolve(spec.table_ref)
-
-        if isinstance(target, CatalogTarget):
-            raise ValueError(
-                "Polars backend only supports path targets for table reads; "
-                f"got catalog target for {target.logical_ref.ref!r}."
-            )
-
-        location = target.location
-        frame = pl.scan_delta(location.uri, storage_options=location.storage_options or None)
+        # Polars siempre usa PathRouteResolver -> PathTarget
+        frame = pl.scan_delta(
+            target.location.uri,
+            storage_options=target.location.storage_options or None,
+        )
 
         # Apply predicates
         for predicate in spec.predicates:

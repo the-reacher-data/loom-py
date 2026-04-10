@@ -1,14 +1,8 @@
 """StepSQL — SQL-first ETL step.
 
-Declares the transformation as a SQL string instead of a Python
-``execute()`` method.  Sources are registered as temp views keyed by
-their ``Sources`` alias.  Params can be interpolated via
-``{{ params.x.y }}`` placeholders.
-
-The backend is inferred from the second type parameter:
-
-* ``StepSQL[Params, pl.LazyFrame]``          → Polars (``pl.SQLContext``)
-* ``StepSQL[Params, pyspark.sql.DataFrame]`` → Spark  (``newSession()`` isolation)
+Declares the transformation as SQL text instead of implementing a Python
+``execute()`` body. SQL is rendered by the step, then executed by the runtime
+reader backend (Spark/Polars) via ``SourceReader.execute_sql``.
 
 Internal — not part of the public API surface, exposed via ``loom.etl``.
 """
@@ -35,21 +29,13 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
     is registered as a view.  Target write modes work identically to
     :class:`~loom.etl.ETLStep`.
 
-    Backend is inferred from the second type parameter:
-
-    * ``StepSQL[Params, pl.LazyFrame]``          → Polars
-    * ``StepSQL[Params, pyspark.sql.DataFrame]`` → Spark
-
-    For Spark, each execution uses an isolated ``spark.newSession()`` so
-    parallel steps never share the same view catalog.  The session is
-    released when the result DataFrame goes out of scope after the write.
-
     .. warning::
         Avoid interpolating raw string params directly.  Use
         ``FromTable.where()`` for source-level filtering instead.
     """
 
     sql: ClassVar[str]
+    _loom_sql_step: ClassVar[bool] = True
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -61,10 +47,16 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
             _generate_execute(cls, frame_type)
 
     def execute(self, params: Any, **frames: Any) -> Any:
+        _ = params
+        _ = frames
         raise NotImplementedError(
-            f"{type(self).__qualname__}: declare a 'sql' ClassVar instead of execute(). "
-            "Use StepSQL[ParamsT, ReturnType] to declare the backend."
+            f"{type(self).__qualname__} is a SQL step. "
+            "It is executed by ETLExecutor via SourceReader.execute_sql()."
         )
+
+    def render_sql(self, params: Any) -> str:
+        """Render SQL for current params instance."""
+        return _resolve_query(type(self), params)
 
 
 def _extract_stepsql_types(cls: type) -> tuple[type | None, type | None]:
@@ -79,11 +71,15 @@ def _extract_stepsql_types(cls: type) -> tuple[type | None, type | None]:
 
 
 def _generate_execute(cls: type, return_type: type) -> None:
-    """Inject a backend-dispatching execute() with the correct return annotation."""
+    """Inject execute() return annotation inferred from StepSQL generic."""
 
     def execute(self: Any, params: Any, **frames: Any) -> Any:
-        query = _resolve_query(type(self), params)
-        return _run_sql(frames, query)
+        _ = params
+        _ = frames
+        raise NotImplementedError(
+            f"{type(self).__qualname__} is a SQL step. "
+            "It is executed by ETLExecutor via SourceReader.execute_sql()."
+        )
 
     execute.__annotations__["return"] = return_type
     cls.execute = execute  # type: ignore[attr-defined]
@@ -94,28 +90,3 @@ def _resolve_query(cls: type, params: Any) -> str:
     if callable(raw):
         return raw(params)  # type: ignore[no-any-return]
     return resolve_sql(raw, params)
-
-
-def _is_spark_frame(obj: Any) -> bool:
-    return type(obj).__module__.startswith("pyspark")
-
-
-def _run_sql(frames: dict[str, Any], query: str) -> Any:
-    first = next(iter(frames.values()), None)
-    if first is None:
-        raise ValueError("StepSQL requires at least one source frame.")
-    if _is_spark_frame(first):
-        return _spark_sql(frames, query)
-    return _polars_sql(frames, query)
-
-
-def _polars_sql(frames: dict[str, Any], query: str) -> Any:
-    from loom.etl.backends.polars._reader import execute_sql
-
-    return execute_sql(frames, query)
-
-
-def _spark_sql(frames: dict[str, Any], query: str) -> Any:
-    from loom.etl.backends.spark._reader import execute_sql
-
-    return execute_sql(frames, query)

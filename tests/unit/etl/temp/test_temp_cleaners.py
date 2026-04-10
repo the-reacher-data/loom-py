@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from loom.etl.storage.temp._cleaners import (
+from loom.etl.checkpoint._cleaners import (
     AutoTempCleaner,
     FsspecTempCleaner,
     LocalTempCleaner,
@@ -164,12 +164,12 @@ def test_auto_cleaner_dispatches_abfss_path_to_fsspec() -> None:
 
 
 # ---------------------------------------------------------------------------
-# IntermediateStore integration — cleaner is called on cleanup
+# CheckpointStore integration — cleaner is called on cleanup
 # ---------------------------------------------------------------------------
 
 
-def test_intermediate_store_uses_injected_cleaner(tmp_path: Path) -> None:
-    from loom.etl.storage.temp._store import IntermediateStore
+def test_checkpoint_store_uses_injected_cleaner(tmp_path: Path) -> None:
+    from loom.etl.checkpoint import CheckpointStore
 
     called: list[str] = []
 
@@ -177,17 +177,17 @@ def test_intermediate_store_uses_injected_cleaner(tmp_path: Path) -> None:
         def delete_tree(self, path: str) -> None:
             called.append(path)
 
-    store = IntermediateStore(tmp_root=str(tmp_path), cleaner=SpyCleaner())
+    store = CheckpointStore(root=str(tmp_path), cleaner=SpyCleaner())
     store.cleanup_run("run-123")
 
     assert len(called) == 1
     assert called[0].endswith("runs/run-123")
 
 
-def test_intermediate_store_uses_auto_cleaner_by_default(tmp_path: Path) -> None:
-    from loom.etl.storage.temp._store import IntermediateStore
+def test_checkpoint_store_uses_auto_cleaner_by_default(tmp_path: Path) -> None:
+    from loom.etl.checkpoint import CheckpointStore
 
-    store = IntermediateStore(tmp_root=str(tmp_path))
+    store = CheckpointStore(root=str(tmp_path))
     run_dir = tmp_path / "runs" / "run-abc"
     run_dir.mkdir(parents=True)
 
@@ -199,10 +199,10 @@ def test_intermediate_store_uses_auto_cleaner_by_default(tmp_path: Path) -> None
 def test_cleanup_stale_warns_for_cloud_root(caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
-    from loom.etl.storage.temp._store import IntermediateStore
+    from loom.etl.checkpoint import CheckpointStore
 
-    store = IntermediateStore(tmp_root="s3://bucket/tmp")
-    with caplog.at_level(logging.WARNING, logger="loom.etl._temp_store"):
+    store = CheckpointStore(root="s3://bucket/tmp")
+    with caplog.at_level(logging.WARNING, logger="loom.etl.checkpoint._store"):
         store.cleanup_stale(older_than_seconds=3600)
 
     assert any("lifecycle policy" in r.message for r in caplog.records)

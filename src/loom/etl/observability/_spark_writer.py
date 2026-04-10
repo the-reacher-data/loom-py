@@ -5,13 +5,13 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import (
     ExecutionRecord,
     PipelineRunRecord,
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.schema._table import TableRef
 
 
 def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:

@@ -288,8 +288,7 @@ class SchemaNotFoundError(Exception):
 
     Register the schema via :meth:`~loom.etl._io.TableDiscovery.update_schema`
     before the first write, or use a backend that creates the table explicitly
-    (e.g. :class:`~loom.etl.backends.polars.DeltaCatalog` with a pre-created
-    Delta table, or :attr:`~loom.etl._target.SchemaMode.OVERWRITE` for first write).
+    (for example with :attr:`~loom.etl._target.SchemaMode.OVERWRITE` on first write).
     """
 
 

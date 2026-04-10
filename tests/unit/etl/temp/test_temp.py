@@ -1,4 +1,4 @@
-"""Tests for IntoTemp, FromTemp, TempScope and IntermediateStore."""
+"""Tests for IntoTemp, FromTemp, CheckpointScope and CheckpointStore."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from loom.etl import (
+    CheckpointScope,
     ETLParams,
     ETLPipeline,
     ETLProcess,
@@ -20,11 +21,10 @@ from loom.etl import (
     IntoTable,
     IntoTemp,
     Sources,
-    TempScope,
 )
+from loom.etl.checkpoint import CheckpointStore
 from loom.etl.compiler import ETLCompilationError, ETLCompiler
-from loom.etl.io.source import SourceKind
-from loom.etl.storage.temp._store import IntermediateStore
+from loom.etl.declarative.source import SourceKind
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 
@@ -64,9 +64,9 @@ def catalog() -> StubCatalog:
 class TestTempSpecConstruction:
     @pytest.mark.parametrize(
         "scope",
-        [TempScope.RUN, TempScope.CORRELATION],
+        [CheckpointScope.RUN, CheckpointScope.CORRELATION],
     )
-    def test_into_temp_scope_contract(self, scope: TempScope) -> None:
+    def test_into_temp_scope_contract(self, scope: CheckpointScope) -> None:
         target = IntoTemp("orders", scope=scope)
         assert target.temp_name == "orders"
         assert target.scope is scope
@@ -139,7 +139,7 @@ class TestCompilerTempValidation:
         ETLCompiler(catalog).compile(_build_parallel_then_consume_pipeline())
 
 
-class TestIntermediateStore:
+class TestCheckpointStore:
     @pytest.mark.parametrize(
         "cleanup_fn,subdir,key",
         [
@@ -154,18 +154,18 @@ class TestIntermediateStore:
     def test_cleanup_removes_directory(
         self,
         tmp_path: Path,
-        cleanup_fn: Callable[[IntermediateStore, str], None],
+        cleanup_fn: Callable[[CheckpointStore, str], None],
         subdir: str,
         key: str,
     ) -> None:
-        store = IntermediateStore(tmp_root=str(tmp_path))
+        store = CheckpointStore(root=str(tmp_path))
         directory = tmp_path / subdir / key
         directory.mkdir(parents=True)
         cleanup_fn(store, key)
         assert not directory.exists()
 
     def test_cleanup_run_is_noop_when_missing(self, tmp_path: Path) -> None:
-        IntermediateStore(tmp_root=str(tmp_path)).cleanup_run("does-not-exist")
+        CheckpointStore(root=str(tmp_path)).cleanup_run("does-not-exist")
 
     @pytest.mark.parametrize(
         "old_offset_days,should_delete",
@@ -180,7 +180,7 @@ class TestIntermediateStore:
         old_offset_days: int,
         should_delete: bool,
     ) -> None:
-        store = IntermediateStore(tmp_root=str(tmp_path))
+        store = CheckpointStore(root=str(tmp_path))
         run_dir = tmp_path / "runs" / "run-x"
         run_dir.mkdir(parents=True)
         if old_offset_days:
@@ -193,31 +193,29 @@ class TestIntermediateStore:
         "scope,data,error,match",
         [
             (
-                TempScope.RUN,
+                CheckpointScope.RUN,
                 {"not": "a frame"},
                 TypeError,
                 "Polars backend expects polars.LazyFrame",
             ),
-            (TempScope.CORRELATION, object(), ValueError, "correlation_id"),
+            (CheckpointScope.CORRELATION, object(), ValueError, "correlation_id"),
         ],
     )
     def test_store_put_validation(
         self,
         tmp_path: Path,
-        scope: TempScope,
+        scope: CheckpointScope,
         data: object,
         error: type[Exception],
         match: str,
     ) -> None:
-        store = IntermediateStore(tmp_root=str(tmp_path))
+        store = CheckpointStore(root=str(tmp_path))
         with pytest.raises(error, match=match):
             store.put("x", run_id="r", correlation_id=None, scope=scope, data=data)
 
     def test_store_get_raises_when_missing(self, tmp_path: Path) -> None:
         with pytest.raises(FileNotFoundError):
-            IntermediateStore(tmp_root=str(tmp_path)).get(
-                "missing", run_id="r", correlation_id=None
-            )
+            CheckpointStore(root=str(tmp_path)).get("missing", run_id="r", correlation_id=None)
 
 
 class TestRunnerTempCleanup:

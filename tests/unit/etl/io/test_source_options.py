@@ -19,7 +19,7 @@ from loom.etl import (
     ParquetReadOptions,
     ParquetWriteOptions,
 )
-from loom.etl.io.source import SourceKind, SourceSpec
+from loom.etl.declarative.source import SourceKind, SourceSpec
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 SCHEMA = (
@@ -43,7 +43,7 @@ class TestFromTableWithSchema:
         assert original._to_spec("orders").schema == ()
 
     def test_with_schema_preserves_predicates(self) -> None:
-        from loom.etl.schema._table import col
+        from loom.etl.declarative.expr._refs import col
 
         enriched = FromTable("raw.orders").where(col("year") == 2024).with_schema(SCHEMA)
         assert len(enriched.predicates) == 1

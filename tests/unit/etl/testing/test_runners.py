@@ -10,12 +10,12 @@ import pytest
 
 from loom.etl import col
 from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative.expr._params import params
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import FileSourceSpec, TableSourceSpec
+from loom.etl.declarative.target._table import ReplaceSpec, ReplaceWhereSpec
 from loom.etl.executor import ETLExecutor
-from loom.etl.io.source import FileSourceSpec, TableSourceSpec
-from loom.etl.io.target._table import ReplaceSpec, ReplaceWhereSpec
-from loom.etl.pipeline._proxy import params
 from loom.etl.schema._schema import LoomDtype
-from loom.etl.schema._table import TableRef
 from loom.etl.testing._result import StepResult
 from loom.etl.testing._runners import (
     PolarsStepRunner,
@@ -51,7 +51,7 @@ def test_polars_stub_reader_resolves_table_ref_or_alias() -> None:
     file_frame = pl.DataFrame({"id": [2]}).lazy()
     reader = _PolarsStubReader({"raw.orders": table_frame, "events": file_frame})
 
-    from loom.etl.io._format import Format
+    from loom.etl.declarative._format import Format
 
     table_spec = TableSourceSpec(alias="orders", table_ref=TableRef("raw.orders"))
     file_spec = FileSourceSpec(alias="events", path="s3://bucket/events.csv", format=Format.CSV)

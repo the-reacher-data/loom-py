@@ -1,4 +1,4 @@
-"""Unit tests for spark_apply_schema — native PySpark StructType contract."""
+"""Unit tests for apply_schema_spark — native PySpark StructType contract."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
-from loom.etl.backends.spark._schema import SchemaNotFoundError, spark_apply_schema
-from loom.etl.io.target import SchemaMode
+from loom.etl.backends.spark._schema import SchemaNotFoundError, apply_schema_spark
+from loom.etl.declarative.target import SchemaMode
 from loom.etl.testing import ETLScenario
 
 _ID_AMOUNT_SCHEMA = T.StructType(
@@ -29,12 +29,12 @@ def _snapshot(df: DataFrame) -> tuple[T.StructType, list[dict[str, object]]]:
 def test_raises_schema_not_found_when_schema_is_none(mode: SchemaMode, spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
     with pytest.raises(SchemaNotFoundError):
-        spark_apply_schema(frame, None, mode)
+        apply_schema_spark(frame, None, mode)
 
 
 def test_overwrite_passthrough_identity(spark: SparkSession) -> None:
     frame = spark.createDataFrame([(1, 1.0)], ["id", "amount"])
-    assert spark_apply_schema(frame, None, SchemaMode.OVERWRITE) is frame
+    assert apply_schema_spark(frame, None, SchemaMode.OVERWRITE) is frame
 
 
 def test_strict_casts_fills_missing_and_drops_extra_columns(spark: SparkSession) -> None:
@@ -47,7 +47,7 @@ def test_strict_casts_fills_missing_and_drops_extra_columns(spark: SparkSession)
     )
     frame = spark.createDataFrame([(1, "1.5", "drop-me")], ["id", "amount", "extra"])
 
-    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out = apply_schema_spark(frame, schema, SchemaMode.STRICT)
     out_schema, rows = _snapshot(out)
     row = rows[0]
 
@@ -70,7 +70,7 @@ def test_evolve_casts_and_keeps_extra_columns(spark: SparkSession) -> None:
     )
     frame = spark.createDataFrame([(1, "2.5", "keep-me")], ["id", "amount", "extra"])
 
-    out = spark_apply_schema(frame, schema, SchemaMode.EVOLVE)
+    out = apply_schema_spark(frame, schema, SchemaMode.EVOLVE)
     out_schema, _ = _snapshot(out)
 
     assert "extra" in out_schema.fieldNames()
@@ -116,7 +116,7 @@ def test_struct_cast_is_recursive(spark: SparkSession) -> None:
     )
     frame = spark.createDataFrame([((1, ("2",)),)], schema=input_schema)
 
-    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out = apply_schema_spark(frame, schema, SchemaMode.STRICT)
     out = out.select(
         F.col("point.x").alias("x"),
         F.col("point.meta.z").alias("z"),
@@ -147,7 +147,7 @@ def test_missing_struct_column_is_null_filled_recursively(spark: SparkSession) -
     )
     frame = spark.createDataFrame([(1,)], ["id"])
 
-    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out = apply_schema_spark(frame, schema, SchemaMode.STRICT)
     out_schema, rows = _snapshot(out)
     row = rows[0]
 
@@ -164,7 +164,7 @@ def test_missing_array_column_is_null_filled_with_exact_type(spark: SparkSession
     )
     frame = spark.createDataFrame([(1,)], ["id"])
 
-    out = spark_apply_schema(frame, schema, SchemaMode.STRICT)
+    out = apply_schema_spark(frame, schema, SchemaMode.STRICT)
     out_schema, rows = _snapshot(out)
     row = rows[0]
 
@@ -203,13 +203,13 @@ def test_apply_schema_passes_with_matching_frame(spark: SparkSession) -> None:
     columns = ["id", "amount"]
 
     frame_overwrite = spark.createDataFrame(base_rows, columns)
-    result_overwrite = spark_apply_schema(frame_overwrite, None, SchemaMode.OVERWRITE)
+    result_overwrite = apply_schema_spark(frame_overwrite, None, SchemaMode.OVERWRITE)
     assert_df_equality(result_overwrite, frame_overwrite)
 
     frame_strict = spark.createDataFrame(base_rows, columns)
-    result_strict = spark_apply_schema(frame_strict, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT)
+    result_strict = apply_schema_spark(frame_strict, _ID_AMOUNT_SCHEMA, SchemaMode.STRICT)
     assert_df_equality(result_strict, frame_strict, ignore_nullable=True)
 
     frame_evolve = spark.createDataFrame(base_rows, columns)
-    result_evolve = spark_apply_schema(frame_evolve, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE)
+    result_evolve = apply_schema_spark(frame_evolve, _ID_AMOUNT_SCHEMA, SchemaMode.EVOLVE)
     assert_df_equality(result_evolve, frame_evolve, ignore_nullable=True)

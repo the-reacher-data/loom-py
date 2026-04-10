@@ -6,15 +6,15 @@ from typing import Any
 
 import structlog
 
-from loom.etl.io.target._file import FileSpec
-from loom.etl.io.target._table import (
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
     UpsertSpec,
 )
-from loom.etl.io.target._temp import TempFanInSpec, TempSpec
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.observability.records import EventName, RunContext, RunStatus
 
 _log: Any = structlog.get_logger("loom.etl")

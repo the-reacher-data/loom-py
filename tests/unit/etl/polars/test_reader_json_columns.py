@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from loom.etl.backends.polars._reader import _apply_json_decode
-from loom.etl.io.source import JsonColumnSpec
+from loom.etl.declarative.source import JsonColumnSpec
 from loom.etl.schema._schema import ListType, LoomDtype, StructField, StructType
 
 # ---------------------------------------------------------------------------

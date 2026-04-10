@@ -8,10 +8,10 @@ import polars as pl
 
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative.source import SourceSpec
+from loom.etl.declarative.target import TargetSpec
+from loom.etl.declarative.target._table import ReplaceWhereSpec
 from loom.etl.executor import ETLExecutor
-from loom.etl.io.source import SourceSpec
-from loom.etl.io.target import TargetSpec
-from loom.etl.io.target._table import ReplaceWhereSpec
 from loom.etl.testing._result import StepResult
 
 
@@ -38,6 +38,12 @@ class _PolarsStubReader:
         table_ref = getattr(spec, "table_ref", None)
         key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]
+
+    def execute_sql(self, frames: dict[str, Any], query: str, /) -> pl.LazyFrame:
+        ctx = pl.SQLContext()
+        for name, frame in frames.items():
+            ctx.register(name, frame)
+        return ctx.execute(query, eager=False)
 
 
 def _build_lazy_frame(data: list[tuple[Any, ...]], columns: list[str]) -> pl.LazyFrame:

@@ -10,9 +10,9 @@ import pytest
 
 from loom.etl.compiler import _validators as step_validator
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
-from loom.etl.io.source import TableSourceSpec
-from loom.etl.io.target._table import ReplaceSpec
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import TableSourceSpec
+from loom.etl.declarative.target._table import ReplaceSpec
 
 step_validator = importlib.reload(step_validator)
 StepCompilationContext = step_validator.StepCompilationContext

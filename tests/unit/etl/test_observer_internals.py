@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.observers.composite import CompositeObserver
 from loom.etl.observability.observers.execution_records import ExecutionRecordsObserver
 from loom.etl.observability.observers.structlog import (
@@ -23,7 +24,6 @@ from loom.etl.observability.records import (
     StepRunRecord,
 )
 from loom.etl.observability.stores.table import TableExecutionRecordStore
-from loom.etl.schema._table import TableRef
 
 
 class _CaptureObserver:

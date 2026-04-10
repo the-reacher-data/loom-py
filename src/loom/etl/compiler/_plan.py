@@ -10,8 +10,8 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from loom.etl.io.source import SourceSpec
-from loom.etl.io.target import TargetSpec
+from loom.etl.declarative.source import SourceSpec
+from loom.etl.declarative.target import TargetSpec
 
 
 @dataclass(frozen=True)

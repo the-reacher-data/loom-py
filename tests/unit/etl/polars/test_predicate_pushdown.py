@@ -12,9 +12,9 @@ from deltalake import write_deltalake
 from loom.etl import ETLParams, col
 from loom.etl.backends._predicate import predicate_to_polars
 from loom.etl.backends.polars import PolarsSourceReader
-from loom.etl.io.source import TableSourceSpec
-from loom.etl.pipeline._proxy import params as p
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._params import params as p
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source import TableSourceSpec
 
 from .conftest import table_path
 

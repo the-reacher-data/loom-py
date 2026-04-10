@@ -30,7 +30,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
 
 
 @dataclass(frozen=True)

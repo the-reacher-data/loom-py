@@ -12,6 +12,7 @@ import msgspec
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
+from loom.etl.checkpoint import CheckpointStore, TempCleaner
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
 from loom.etl.executor._executor import _new_run_id
@@ -23,14 +24,12 @@ from loom.etl.observability import (
     make_observers,
 )
 from loom.etl.pipeline._pipeline import ETLPipeline
-from loom.etl.runner._wiring import make_backends, make_temp_store
+from loom.etl.runner._wiring import make_backends, make_checkpoint_store
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
+from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig, convert_storage_config
-from loom.etl.storage.protocols import SourceReader, TargetWriter
-from loom.etl.storage.temp._cleaners import TempCleaner
-from loom.etl.storage.temp._store import IntermediateStore
 
 _log = logging.getLogger(__name__)
 
@@ -51,12 +50,12 @@ class ETLRunner:
         writer: TargetWriter,
         observers: Sequence[ETLRunObserver] = (),
         dispatcher: ParallelDispatcher | None = None,
-        temp_store: IntermediateStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         composite = CompositeObserver(observers)
-        self._executor = ETLExecutor(reader, writer, (composite,), dispatcher, temp_store)
+        self._executor = ETLExecutor(reader, writer, (composite,), dispatcher, checkpoint_store)
         self._compiler = ETLCompiler()
-        self._temp_store = temp_store
+        self._checkpoint_store = checkpoint_store
 
     @classmethod
     def from_config(
@@ -71,8 +70,8 @@ class ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects."""
         reader, writer = make_backends(config, spark)
         observers = make_observers(obs_config or ObservabilityConfig(), config, spark)
-        temp_store = make_temp_store(config, spark, cleaner)
-        return cls(reader, writer, observers, dispatcher, temp_store)
+        checkpoint_store = make_checkpoint_store(config, spark, cleaner)
+        return cls(reader, writer, observers, dispatcher, checkpoint_store)
 
     @classmethod
     def from_yaml(
@@ -151,19 +150,21 @@ class ETLRunner:
 
     def cleanup_correlation(self, correlation_id: str) -> None:
         """Remove all CORRELATION-scope intermediates for *correlation_id*."""
-        if self._temp_store is None:
+        if self._checkpoint_store is None:
             raise RuntimeError(
-                "cleanup_correlation() requires a tmp_root to be configured in storage YAML."
+                "cleanup_correlation() requires checkpoint_root (storage.tmp_root) "
+                "to be configured in storage YAML."
             )
-        self._temp_store.cleanup_correlation(correlation_id)
+        self._checkpoint_store.cleanup_correlation(correlation_id)
 
     def cleanup_stale_temps(self, *, older_than_seconds: int = 86_400) -> None:
         """Remove run directories not modified within *older_than_seconds*."""
-        if self._temp_store is None:
+        if self._checkpoint_store is None:
             raise RuntimeError(
-                "cleanup_stale_temps() requires a tmp_root to be configured in storage YAML."
+                "cleanup_stale_temps() requires checkpoint_root (storage.tmp_root) "
+                "to be configured in storage YAML."
             )
-        self._temp_store.cleanup_stale(older_than_seconds=older_than_seconds)
+        self._checkpoint_store.cleanup_stale(older_than_seconds=older_than_seconds)
 
 
 __all__ = ["ETLRunner", "InvalidStageError"]

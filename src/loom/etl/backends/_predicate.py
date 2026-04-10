@@ -12,8 +12,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
-from loom.etl.io.source._predicate import PredicateNode
-from loom.etl.io.source._predicate_dialect import PredicateDialect, fold_predicate
+from loom.etl.declarative.expr._predicate import PredicateNode
+from loom.etl.declarative.expr._predicate_dialect import PredicateDialect, fold_predicate
 
 if TYPE_CHECKING:
     import polars as pl

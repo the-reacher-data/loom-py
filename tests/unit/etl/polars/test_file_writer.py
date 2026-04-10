@@ -8,9 +8,9 @@ import polars as pl
 
 from loom.etl.backends.polars import _file_writer as file_mod
 from loom.etl.backends.polars._file_writer import PolarsFileWriter
-from loom.etl.io._format import Format
-from loom.etl.io._write_options import CsvWriteOptions
-from loom.etl.io.target._file import FileSpec
+from loom.etl.declarative._format import Format
+from loom.etl.declarative._write_options import CsvWriteOptions
+from loom.etl.declarative.target._file import FileSpec
 
 
 def test_write_streaming_dispatches_to_sink_writer(monkeypatch) -> None:

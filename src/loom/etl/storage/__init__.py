@@ -1,4 +1,4 @@
-"""Storage config, location mapping, routing, and runtime protocols."""
+"""Storage config, location mapping, and routing."""
 
 from __future__ import annotations
 
@@ -14,9 +14,7 @@ __all__ = [
     "TableRoute",
     "FilePathConfig",
     "FileRoute",
-    "TableDiscovery",
-    "SourceReader",
-    "TargetWriter",
+    "MissingTablePolicy",
     "TableLocation",
     "TableLocator",
     "PrefixLocator",
@@ -44,10 +42,7 @@ _EXPORTS: dict[str, str] = {
     "TableRoute": "loom.etl.storage._config",
     "FilePathConfig": "loom.etl.storage._config",
     "FileRoute": "loom.etl.storage._config",
-    # protocols
-    "TableDiscovery": "loom.etl.storage.protocols",
-    "SourceReader": "loom.etl.storage.protocols",
-    "TargetWriter": "loom.etl.storage.protocols",
+    "MissingTablePolicy": "loom.etl.storage._config",
     # locator
     "TableLocation": "loom.etl.storage._locator",
     "TableLocator": "loom.etl.storage._locator",

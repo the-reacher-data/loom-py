@@ -11,6 +11,10 @@ import pytest
 
 from loom.etl import col, params
 from loom.etl.backends._predicate import predicate_to_sql
+from loom.etl.compiler import ETLCompiler
+from loom.etl.declarative.source import FromTable, Sources
+from loom.etl.declarative.target import IntoTable
+from loom.etl.executor import ETLExecutor
 from loom.etl.pipeline._sql import resolve_sql
 from loom.etl.pipeline._step_sql import StepSQL, _extract_stepsql_types
 
@@ -99,52 +103,59 @@ class _DynamicStep(StepSQL[_SqlParams, pl.LazyFrame]):
         return f"SELECT id, {p.run_date.year} AS run_year FROM orders"
 
 
-def test_stepsql_generates_execute_for_polars_backend() -> None:
-    orders = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.0]}).lazy()
-    out_static = _StaticStep().execute(_params(), orders=orders).collect()
-    out_dynamic = _DynamicStep().execute(_params(), orders=orders).collect()
-
-    assert out_static.columns == ["id", "amount"]
-    assert out_dynamic.columns == ["id", "run_year"]
-    assert out_dynamic["run_year"].to_list() == [2024, 2024]
+def test_stepsql_renders_query_from_static_and_dynamic_sql() -> None:
+    assert _StaticStep().render_sql(_params()) == "SELECT id, amount FROM orders"
+    assert _DynamicStep().render_sql(_params()) == "SELECT id, 2024 AS run_year FROM orders"
 
 
-class _FakeSparkFrame:
-    __module__ = "pyspark.sql.dataframe"
+class _ExecReader:
+    def __init__(self, frame: Any, result: Any) -> None:
+        self._frame = frame
+        self._result = result
+        self.captured_frames: dict[str, Any] | None = None
+        self.captured_query: str | None = None
 
+    def read(self, spec: Any, _params_instance: Any, /) -> Any:
+        _ = spec
+        return self._frame
+
+    def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:
+        self.captured_frames = frames
+        self.captured_query = query
+        return self._result
+
+
+class _ExecWriter:
     def __init__(self) -> None:
-        self._spark_session = object()
+        self.written: Any = None
 
-    def __getattr__(self, name: str) -> object:
-        if name == "sparkSession":
-            return self._spark_session
-        raise AttributeError(name)
+    def write(
+        self, frame: Any, spec: Any, params_instance: Any, /, *, streaming: bool = False
+    ) -> None:
+        _ = spec
+        _ = params_instance
+        _ = streaming
+        self.written = frame
 
 
 class _RouteStep(StepSQL[_SqlParams, object]):
+    sources = Sources(frame=FromTable("raw.frame"))
+    target = IntoTable("staging.out").replace()
     sql = "SELECT 1 AS value"
 
 
-def test_stepsql_routes_to_spark_when_first_frame_is_spark_like(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_stepsql_executor_delegates_sql_to_reader() -> None:
+    plan = ETLCompiler().compile_step(_RouteStep)
     sentinel = object()
+    source_frame = object()
+    reader = _ExecReader(source_frame, sentinel)
+    writer = _ExecWriter()
 
-    monkeypatch.setattr("loom.etl.pipeline._step_sql._spark_sql", lambda frames, query: sentinel)
-    monkeypatch.setattr("loom.etl.pipeline._step_sql._polars_sql", lambda frames, query: None)
+    ETLExecutor(reader, writer).run_step(plan, _params())
 
-    result = _RouteStep().execute(_params(), frame=_FakeSparkFrame())
-    assert result is sentinel
-
-
-def test_stepsql_routes_to_polars_when_frame_is_not_spark(monkeypatch: pytest.MonkeyPatch) -> None:
-    sentinel = object()
-
-    monkeypatch.setattr("loom.etl.pipeline._step_sql._spark_sql", lambda frames, query: None)
-    monkeypatch.setattr("loom.etl.pipeline._step_sql._polars_sql", lambda frames, query: sentinel)
-
-    result = _RouteStep().execute(_params(), frame=object())
-    assert result is sentinel
+    assert reader.captured_query == "SELECT 1 AS value"
+    assert reader.captured_frames == {"frame": source_frame}
+    assert writer.written is sentinel
 
 
 def test_stepsql_extract_types_on_non_stepsql_class_returns_none() -> None:
@@ -155,5 +166,7 @@ def test_stepsql_extract_types_on_non_stepsql_class_returns_none() -> None:
 
 
 def test_base_stepsql_execute_raises_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="declare a 'sql' ClassVar"):
+    with pytest.raises(
+        NotImplementedError, match="executed by ETLExecutor via SourceReader.execute_sql"
+    ):
         StepSQL().execute(_params())  # type: ignore[misc]

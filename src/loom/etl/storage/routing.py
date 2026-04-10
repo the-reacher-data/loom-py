@@ -13,11 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.runtime.contracts import TableDiscovery
 from loom.etl.schema._schema import ColumnSchema
-from loom.etl.schema._table import TableRef
 from loom.etl.storage._config import StorageConfig
 from loom.etl.storage._locator import PrefixLocator, TableLocation, TableLocator
-from loom.etl.storage.protocols import TableDiscovery
 
 
 @dataclass(frozen=True)

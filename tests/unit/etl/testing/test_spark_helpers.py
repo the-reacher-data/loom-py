@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from loom.etl.io.target._table import ReplaceSpec
-from loom.etl.schema._table import TableRef
+from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.target._table import ReplaceSpec
 from loom.etl.testing import spark as spark_testing
 
 

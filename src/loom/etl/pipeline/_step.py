@@ -4,8 +4,8 @@
 one target, and a pure ``execute()`` transformation method.
 
 The backend (Polars, Spark) is determined by the configured
-:class:`~loom.etl.storage.protocols.SourceReader` and
-:class:`~loom.etl.storage.protocols.TargetWriter` injected at runner build time —
+:class:`~loom.etl.runtime.contracts.SourceReader` and
+:class:`~loom.etl.runtime.contracts.TargetWriter` injected at runner build time —
 no declaration is needed on the step itself.
 
 Definition-time validation (via ``__init_subclass__``) catches the most
@@ -18,8 +18,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
-from loom.etl.io.source import FromFile, FromTable, FromTemp, Sources, SourceSet
-from loom.etl.io.target import IntoFile, IntoTable, IntoTemp
+from loom.etl.declarative.source import FromFile, FromTable, FromTemp, Sources, SourceSet
+from loom.etl.declarative.target import IntoFile, IntoTable, IntoTemp
 from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")
