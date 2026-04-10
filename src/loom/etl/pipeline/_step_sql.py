@@ -2,7 +2,7 @@
 
 Declares the transformation as SQL text instead of implementing a Python
 ``execute()`` body. SQL is rendered by the step, then executed by the runtime
-reader backend (Spark/Polars) via ``SourceReader.execute_sql``.
+reader backend (Spark/Polars) via ``SQLExecutor.execute_sql``.
 
 Internal — not part of the public API surface, exposed via ``loom.etl``.
 """
@@ -51,7 +51,7 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
         _ = frames
         raise NotImplementedError(
             f"{type(self).__qualname__} is a SQL step. "
-            "It is executed by ETLExecutor via SourceReader.execute_sql()."
+            "It is executed by ETLExecutor via SQLExecutor.execute_sql()."
         )
 
     def render_sql(self, params: Any) -> str:
@@ -78,7 +78,7 @@ def _generate_execute(cls: type, return_type: type) -> None:
         _ = frames
         raise NotImplementedError(
             f"{type(self).__qualname__} is a SQL step. "
-            "It is executed by ETLExecutor via SourceReader.execute_sql()."
+            "It is executed by ETLExecutor via SQLExecutor.execute_sql()."
         )
 
     execute.__annotations__["return"] = return_type

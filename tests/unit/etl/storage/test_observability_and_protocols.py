@@ -10,7 +10,7 @@ from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import SourceSpec, TableSourceSpec
 from loom.etl.declarative.target._table import ReplaceSpec
 from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
-from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TableDiscovery, TargetWriter
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 
@@ -74,7 +74,7 @@ def test_protocol_method_bodies_are_callable() -> None:
     assert TableDiscovery.schema(object(), TableRef("raw.orders")) is None
     assert TableDiscovery.update_schema(object(), TableRef("raw.orders"), schema) is None
     assert SourceReader.read(object(), src_spec, None) is None
-    assert SourceReader.execute_sql(object(), {}, "SELECT 1") is None
+    assert SQLExecutor.execute_sql(object(), {}, "SELECT 1") is None
     assert TargetWriter.write(object(), object(), target_spec, None) is None
 
 
@@ -110,4 +110,5 @@ class _WriterImpl:
 def test_runtime_protocol_checks_for_concrete_impls() -> None:
     assert isinstance(_CatalogImpl(), TableDiscovery)
     assert isinstance(_ReaderImpl(), SourceReader)
+    assert isinstance(_ReaderImpl(), SQLExecutor)
     assert isinstance(_WriterImpl(), TargetWriter)

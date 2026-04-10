@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import Any
 
 import polars as pl
@@ -87,38 +88,52 @@ class PolarsSourceReader(SourceReader):
     def _read_file_by_format(path: str, format: Any, options: Any) -> pl.LazyFrame:
         """Dispatch to format-specific reader."""
         fmt = format if isinstance(format, Format) else Format(format)
+        readers: dict[Format, Callable[[str, Any], pl.LazyFrame]] = {
+            Format.CSV: PolarsSourceReader._read_csv,
+            Format.JSON: PolarsSourceReader._read_json,
+            Format.XLSX: PolarsSourceReader._read_xlsx,
+            Format.PARQUET: PolarsSourceReader._read_parquet,
+        }
+        reader = readers.get(fmt)
+        if reader is None:
+            raise ValueError(f"Unsupported format: {fmt}")
+        return reader(path, options)
 
-        if fmt == Format.CSV:
-            csv_opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
-            kwargs: dict[str, Any] = {
-                "separator": csv_opts.separator,
-                "has_header": csv_opts.has_header,
-                "encoding": csv_opts.encoding,
-                "infer_schema_length": csv_opts.infer_schema_length,
-                "skip_rows": csv_opts.skip_rows,
-            }
-            if csv_opts.null_values:
-                kwargs["null_values"] = list(csv_opts.null_values)
-            return pl.scan_csv(path, **kwargs)
+    @staticmethod
+    def _read_csv(path: str, options: Any) -> pl.LazyFrame:
+        csv_opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
+        kwargs: dict[str, Any] = {
+            "separator": csv_opts.separator,
+            "has_header": csv_opts.has_header,
+            "encoding": csv_opts.encoding,
+            "infer_schema_length": csv_opts.infer_schema_length,
+            "skip_rows": csv_opts.skip_rows,
+        }
+        if csv_opts.null_values:
+            kwargs["null_values"] = list(csv_opts.null_values)
+        return pl.scan_csv(path, **kwargs)
 
-        if fmt == Format.JSON:
-            json_opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
-            return pl.scan_ndjson(path, infer_schema_length=json_opts.infer_schema_length)
+    @staticmethod
+    def _read_json(path: str, options: Any) -> pl.LazyFrame:
+        json_opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
+        return pl.scan_ndjson(path, infer_schema_length=json_opts.infer_schema_length)
 
-        if fmt == Format.XLSX:
-            excel_opts = options if isinstance(options, ExcelReadOptions) else ExcelReadOptions()
-            if excel_opts.sheet_name is not None:
-                df = pl.read_excel(
-                    path, sheet_name=excel_opts.sheet_name, has_header=excel_opts.has_header
-                )
-            else:
-                df = pl.read_excel(path, has_header=excel_opts.has_header)
-            return df.lazy()
+    @staticmethod
+    def _read_xlsx(path: str, options: Any) -> pl.LazyFrame:
+        excel_opts = options if isinstance(options, ExcelReadOptions) else ExcelReadOptions()
+        if excel_opts.sheet_name is not None:
+            df = pl.read_excel(
+                path,
+                sheet_name=excel_opts.sheet_name,
+                has_header=excel_opts.has_header,
+            )
+        else:
+            df = pl.read_excel(path, has_header=excel_opts.has_header)
+        return df.lazy()
 
-        if fmt == Format.PARQUET:
-            return pl.scan_parquet(path)
-
-        raise ValueError(f"Unsupported format: {fmt}")
+    @staticmethod
+    def _read_parquet(path: str, _options: Any) -> pl.LazyFrame:
+        return pl.scan_parquet(path)
 
     @staticmethod
     def _apply_source_schema(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) -> pl.LazyFrame:

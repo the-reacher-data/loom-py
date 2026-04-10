@@ -404,7 +404,7 @@ def test_observer_event_records_hold_runtime_data() -> None:
 
 def test_storage_protocols_runtime_checkable_contracts() -> None:
     from loom.etl.declarative.expr._refs import TableRef
-    from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
+    from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TableDiscovery, TargetWriter
     from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
     class _Catalog:
@@ -433,6 +433,7 @@ def test_storage_protocols_runtime_checkable_contracts() -> None:
 
     assert isinstance(_Catalog(), TableDiscovery)
     assert isinstance(_Reader(), SourceReader)
+    assert isinstance(_Reader(), SQLExecutor)
     assert isinstance(_Writer(), TargetWriter)
 
 

@@ -48,11 +48,15 @@ Cleanup
 from __future__ import annotations
 
 import logging
-import os
-import time
 from typing import Any, Protocol, runtime_checkable
 
-from loom.etl.checkpoint._cleaners import AutoTempCleaner, TempCleaner, _is_cloud_path, _join_path
+from loom.etl.checkpoint._cleaners import (
+    AutoTempCleaner,
+    TempCleaner,
+    _is_cloud_path,
+    _join_path,
+    _stale_local_dirs,
+)
 from loom.etl.checkpoint._scope import CheckpointScope
 
 _log = logging.getLogger(__name__)
@@ -263,15 +267,11 @@ class CheckpointStore:
                 self._root,
             )
             return
-        if not os.path.isdir(runs_root):
-            return
-        cutoff = time.time() - older_than_seconds
-        removed = 0
-        for entry in os.scandir(runs_root):
-            if entry.is_dir() and entry.stat().st_mtime < cutoff:
-                _log.debug("checkpoint cleanup stale dir=%s", entry.path)
-                self._cleaner.delete_tree(entry.path)
-                removed += 1
+        stale_dirs = _stale_local_dirs(runs_root, older_than_seconds=older_than_seconds)
+        for path in stale_dirs:
+            _log.debug("checkpoint cleanup stale dir=%s", path)
+            self._cleaner.delete_tree(path)
+        removed = len(stale_dirs)
         if removed:
             _log.info(
                 "checkpoint cleanup stale removed=%d older_than_seconds=%d",

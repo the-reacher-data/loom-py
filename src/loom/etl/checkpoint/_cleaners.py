@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 from typing import Protocol, runtime_checkable
 
 _log = logging.getLogger(__name__)
@@ -160,3 +161,15 @@ def _join_path(base: str, *parts: str) -> str:
     if not root:
         return f"/{suffix}" if suffix else "/"
     return f"{root}/{suffix}" if suffix else root
+
+
+def _stale_local_dirs(root: str, *, older_than_seconds: int) -> tuple[str, ...]:
+    """Return local child directories older than the given threshold."""
+    if not os.path.isdir(root):
+        return ()
+    cutoff = time.time() - older_than_seconds
+    stale: list[str] = []
+    for entry in os.scandir(root):
+        if entry.is_dir() and entry.stat().st_mtime < cutoff:
+            stale.append(entry.path)
+    return tuple(stale)

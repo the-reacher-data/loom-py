@@ -51,7 +51,7 @@ from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.observability.observers.protocol import ETLRunObserver
 from loom.etl.observability.records import RunContext, RunStatus
-from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
 
 _log = logging.getLogger(__name__)
 
@@ -221,7 +221,8 @@ class ETLExecutor:
             step = plan.step_type()
             if _is_sql_step(step):
                 query = _render_sql_query(step, params)
-                result = self._reader.execute_sql(frames, query)
+                sql_reader = self._require_sql_executor(step)
+                result = sql_reader.execute_sql(frames, query)
             else:
                 result = step.execute(params, **frames)
             self._write_target(
@@ -244,6 +245,15 @@ class ETLExecutor:
                 "configured. Set 'checkpoint:' in your storage config."
             )
         return self._checkpoint_store
+
+    def _require_sql_executor(self, step: Any) -> SQLExecutor:
+        """Return reader as SQLExecutor, or raise a clear configuration error."""
+        if isinstance(self._reader, SQLExecutor):
+            return self._reader
+        raise TypeError(
+            f"Step {type(step).__qualname__!r} is SQL-based but configured reader "
+            f"{type(self._reader).__qualname__!r} does not implement SQLExecutor."
+        )
 
     def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
         if isinstance(spec, TempSourceSpec):

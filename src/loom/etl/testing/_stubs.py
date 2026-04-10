@@ -105,7 +105,7 @@ class StubSourceReader:
         _ = frames
         _ = query
         raise NotImplementedError(
-            "StubSourceReader.execute_sql() is not implemented. "
+            "StubSourceReader does not implement SQLExecutor.execute_sql(). "
             "Use backend-specific readers/runners for StepSQL tests."
         )
 

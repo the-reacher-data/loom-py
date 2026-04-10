@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -106,40 +107,50 @@ class SparkSourceReader(SourceReader):
     def _read_file_by_format(self, path: str, format: Any, options: Any) -> DataFrame:
         """Dispatch to format-specific reader."""
         fmt = format.value if isinstance(format, Format) else format
+        readers: dict[str, Callable[[str, Any], DataFrame]] = {
+            "delta": self._read_delta_file,
+            "csv": self._read_csv_file,
+            "json": self._read_json_file,
+            "parquet": self._read_parquet_file,
+            "xlsx": self._read_xlsx_file,
+        }
+        reader = readers.get(fmt)
+        if reader is None:
+            raise ValueError(f"Unsupported format: {fmt}")
+        return reader(path, options)
 
-        if fmt == "delta":
-            return self._spark.read.format("delta").load(path)
+    def _read_delta_file(self, path: str, _options: Any) -> DataFrame:
+        return self._spark.read.format("delta").load(path)
 
-        if fmt == "csv":
-            csv_opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
-            if csv_opts.skip_rows:
-                raise ValueError("Spark backend does not support skip_rows for CSV files.")
-            reader = (
-                self._spark.read.option("sep", csv_opts.separator)
-                .option("header", str(csv_opts.has_header).lower())
-                .option("encoding", csv_opts.encoding)
-                .option("inferSchema", "true")
-            )
-            if csv_opts.null_values:
-                reader = reader.option("nullValue", csv_opts.null_values[0])
-            if csv_opts.infer_schema_length is None:
-                reader = reader.option("samplingRatio", "1.0")
-            return reader.csv(path)
+    def _read_csv_file(self, path: str, options: Any) -> DataFrame:
+        csv_opts = options if isinstance(options, CsvReadOptions) else CsvReadOptions()
+        if csv_opts.skip_rows:
+            raise ValueError("Spark backend does not support skip_rows for CSV files.")
+        reader = (
+            self._spark.read.option("sep", csv_opts.separator)
+            .option("header", str(csv_opts.has_header).lower())
+            .option("encoding", csv_opts.encoding)
+            .option("inferSchema", "true")
+        )
+        if csv_opts.null_values:
+            reader = reader.option("nullValue", csv_opts.null_values[0])
+        if csv_opts.infer_schema_length is None:
+            reader = reader.option("samplingRatio", "1.0")
+        return reader.csv(path)
 
-        if fmt == "json":
-            json_opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
-            reader = self._spark.read.option("inferSchema", "true")
-            if json_opts.infer_schema_length is None:
-                reader = reader.option("samplingRatio", "1.0")
-            return reader.json(path)
+    def _read_json_file(self, path: str, options: Any) -> DataFrame:
+        json_opts = options if isinstance(options, JsonReadOptions) else JsonReadOptions()
+        reader = self._spark.read.option("inferSchema", "true")
+        if json_opts.infer_schema_length is None:
+            reader = reader.option("samplingRatio", "1.0")
+        return reader.json(path)
 
-        if fmt == "parquet":
-            return self._spark.read.parquet(path)
+    def _read_parquet_file(self, path: str, _options: Any) -> DataFrame:
+        return self._spark.read.parquet(path)
 
-        if fmt == "xlsx":
-            raise TypeError("Spark backend does not support XLSX format.")
-
-        raise ValueError(f"Unsupported format: {fmt}")
+    def _read_xlsx_file(self, path: str, _options: Any) -> DataFrame:
+        _ = path
+        raise TypeError("Spark backend does not support XLSX format.")
 
     def _apply_source_schema(self, df: DataFrame, schema: tuple[ColumnSchema, ...]) -> DataFrame:
         """Cast declared columns to their LoomDtype equivalents."""

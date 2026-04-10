@@ -87,6 +87,11 @@ class SourceReader(Protocol):
         """
         ...
 
+
+@runtime_checkable
+class SQLExecutor(Protocol):
+    """Optional capability protocol for SQL execution over source frames."""
+
     def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:
         """Execute a SQL query against backend frames.
 
@@ -120,4 +125,4 @@ class TargetWriter(Protocol):
         ...
 
 
-__all__ = ["TableDiscovery", "SourceReader", "TargetWriter"]
+__all__ = ["TableDiscovery", "SourceReader", "SQLExecutor", "TargetWriter"]

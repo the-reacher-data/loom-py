@@ -43,7 +43,7 @@ from loom.etl.compiler._validators import (
     validate_step,
     validate_step_catalog,
 )
-from loom.etl.declarative.target._table import AppendSpec
+from loom.etl.declarative.target import AppendSpec
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.pipeline._process import ETLProcess
 from loom.etl.pipeline._step import ETLStep

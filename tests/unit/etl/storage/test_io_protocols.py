@@ -8,7 +8,7 @@ from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import TableSourceSpec
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.declarative.target._table import ReplaceSpec
-from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TableDiscovery, TargetWriter
 from loom.etl.testing import StubCatalog, StubSourceReader, StubTargetWriter
 
 _SENTINEL = object()
@@ -97,5 +97,5 @@ def test_protocol_stub_bodies_execute_without_errors() -> None:
     assert TableDiscovery.schema(object(), ref) is None
     assert TableDiscovery.update_schema(object(), ref, ()) is None
     assert SourceReader.read(object(), spec, None) is None
-    assert SourceReader.execute_sql(object(), {}, "SELECT 1") is None
+    assert SQLExecutor.execute_sql(object(), {}, "SELECT 1") is None
     assert TargetWriter.write(object(), object(), target, None) is None

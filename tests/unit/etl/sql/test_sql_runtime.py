@@ -167,6 +167,6 @@ def test_stepsql_extract_types_on_non_stepsql_class_returns_none() -> None:
 
 def test_base_stepsql_execute_raises_not_implemented() -> None:
     with pytest.raises(
-        NotImplementedError, match="executed by ETLExecutor via SourceReader.execute_sql"
+        NotImplementedError, match="executed by ETLExecutor via SQLExecutor.execute_sql"
     ):
         StepSQL().execute(_params())  # type: ignore[misc]

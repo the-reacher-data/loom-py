@@ -9,16 +9,18 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from loom.etl.declarative.target import SchemaMode, TargetSpec
-from loom.etl.declarative.target._file import FileSpec
-from loom.etl.declarative.target._table import (
+from loom.etl.declarative.target import (
     AppendSpec,
+    FileSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
+    SchemaMode,
+    TargetSpec,
+    TempFanInSpec,
+    TempSpec,
     UpsertSpec,
 )
-from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.runtime.contracts import TargetWriter
 from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
