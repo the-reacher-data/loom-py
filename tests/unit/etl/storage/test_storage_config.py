@@ -49,6 +49,16 @@ class TestStorageConfig:
         with pytest.raises(ValueError, match="cloud URI"):
             config.validate()
 
+    @pytest.mark.parametrize("tmp_root", ["s3://", "gs://", "abfss://", "file:///tmp/loom"])
+    def test_validate_rejects_invalid_checkpoint_cloud_uri(self, tmp_root: str) -> None:
+        config = StorageConfig(tmp_root=tmp_root)
+        with pytest.raises(ValueError, match="cloud URI"):
+            config.validate()
+
+    def test_validate_accepts_r2_checkpoint_root(self) -> None:
+        config = StorageConfig(tmp_root="r2://my-bucket/checkpoints")
+        config.validate()
+
     def test_validate_rejects_duplicate_table_names(self) -> None:
         config = StorageConfig(
             tables=(

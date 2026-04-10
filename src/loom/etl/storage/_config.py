@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import msgspec
 
@@ -313,8 +314,13 @@ def _resolve_polars_catalog_key(
 
 
 def _is_cloud_uri(path: str) -> bool:
-    schemes = ("s3://", "gs://", "gcs://", "abfss://", "abfs://", "az://")
-    return path.startswith(schemes)
+    cloud_schemes = frozenset({"s3", "gs", "gcs", "abfss", "abfs", "az", "r2"})
+    parsed = urlparse(path.strip())
+    if parsed.scheme.lower() not in cloud_schemes:
+        return False
+    # Cloud roots must include authority/bucket/container to avoid accepting
+    # incomplete URIs like "s3://".
+    return bool(parsed.netloc)
 
 
 # ---------------------------------------------------------------------------
