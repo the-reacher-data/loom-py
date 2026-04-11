@@ -43,7 +43,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import StatusCode, set_span_in_context
 
 from loom.etl.observability.config import OtelConfig
-from loom.etl.observability.observers.structlog import _target_label, _write_mode_label
+from loom.etl.observability.observers._labels import target_label, write_mode_label
 from loom.etl.observability.records import RunContext, RunStatus
 
 _tracer = trace.get_tracer("loom.etl")
@@ -165,8 +165,8 @@ class OtelRunObserver:
                 "loom.step": plan.step_type.__name__,
                 "loom.step_run_id": step_run_id,
                 _ATTR_RUN_ID: ctx.run_id,
-                "loom.target": _target_label(plan.target_binding.spec),
-                "loom.write_mode": _write_mode_label(plan.target_binding.spec),
+                "loom.target": target_label(plan.target_binding.spec),
+                "loom.write_mode": write_mode_label(plan.target_binding.spec),
             },
         )
         with self._lock:

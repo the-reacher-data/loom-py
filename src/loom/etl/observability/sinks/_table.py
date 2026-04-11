@@ -2,22 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import (
     ExecutionRecord,
-    PipelineRunRecord,
-    ProcessRunRecord,
-    StepRunRecord,
+    get_record_table_name,
 )
 from loom.etl.observability.sinks._protocol import ExecutionRecordWriter
-
-_TABLE_FOR: dict[type[Any], str] = {
-    PipelineRunRecord: "pipeline_runs",
-    ProcessRunRecord: "process_runs",
-    StepRunRecord: "step_runs",
-}
 
 
 class TableExecutionRecordStore:
@@ -34,9 +24,7 @@ class TableExecutionRecordStore:
 
     def write_record(self, record: ExecutionRecord) -> None:
         """Append *record* to the corresponding table."""
-        table_name = _TABLE_FOR.get(type(record))
-        if table_name is None:
-            raise TypeError(f"TableExecutionRecordStore: unrecognised record type {type(record)!r}")
+        table_name = get_record_table_name(type(record))
         self._writer.write_record(record, _table_ref(self._database, table_name))
 
 

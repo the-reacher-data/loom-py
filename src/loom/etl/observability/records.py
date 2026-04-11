@@ -26,17 +26,34 @@ class EventName(StrEnum):
     STEP_ERROR = "step_error"
 
 
+class RecordField(StrEnum):
+    """Field names for execution records."""
+
+    PIPELINE_RUNS = "pipeline_runs"
+    PROCESS_RUNS = "process_runs"
+    STEP_RUNS = "step_runs"
+    EVENT = "event"
+    RUN_ID = "run_id"
+    CORRELATION_ID = "correlation_id"
+    ATTEMPT = "attempt"
+    STARTED_AT = "started_at"
+    STATUS = "status"
+    DURATION_MS = "duration_ms"
+    ERROR = "error"
+    ERROR_TYPE = "error_type"
+    ERROR_MESSAGE = "error_message"
+    FAILED_STEP_RUN_ID = "failed_step_run_id"
+    FAILED_STEP = "failed_step"
+    PIPELINE = "pipeline"
+    PROCESS_RUN_ID = "process_run_id"
+    PROCESS = "process"
+    STEP_RUN_ID = "step_run_id"
+    STEP = "step"
+
+
 @dataclass(frozen=True)
 class RunContext:
-    """Execution context shared across all events of a pipeline attempt.
-
-    Args:
-        run_id: UUID generated per attempt.
-        correlation_id: Optional logical job id grouping retries.
-        attempt: 1-based attempt counter.
-        last_attempt: ``True`` when no more retries are expected.
-        process_run_id: Optional current process id when executing inside a process.
-    """
+    """Execution context shared across all events of a pipeline attempt."""
 
     run_id: str
     correlation_id: str | None = None
@@ -47,23 +64,7 @@ class RunContext:
 
 @dataclass(frozen=True)
 class PipelineRunRecord:
-    """Snapshot of a completed pipeline run.
-
-    Args:
-        event: Lifecycle event that produced this record.
-        run_id: UUID unique to this attempt.
-        correlation_id: Retry-group identifier.
-        attempt: 1-based retry counter.
-        pipeline: Pipeline class name.
-        started_at: UTC timestamp when pipeline started.
-        status: Terminal status.
-        duration_ms: Wall-clock duration in milliseconds.
-        error: ``repr(exc)`` on failure, ``None`` on success.
-        error_type: Exception class name when failed.
-        error_message: Exception message when failed.
-        failed_step_run_id: Step run id that caused the failure.
-        failed_step: Step class name that caused the failure.
-    """
+    """Snapshot of a completed pipeline run."""
 
     event: EventName
     run_id: str
@@ -121,12 +122,25 @@ class StepRunRecord:
 
 ExecutionRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord
 
+_TABLE_MAP: dict[type[ExecutionRecord], str] = {
+    PipelineRunRecord: RecordField.PIPELINE_RUNS,
+    ProcessRunRecord: RecordField.PROCESS_RUNS,
+    StepRunRecord: RecordField.STEP_RUNS,
+}
+
+
+def get_record_table_name(record_type: type[ExecutionRecord]) -> str:
+    """Get table name for a given record type."""
+    return _TABLE_MAP[record_type]
+
 
 __all__ = [
     "EventName",
     "ExecutionRecord",
+    "get_record_table_name",
     "PipelineRunRecord",
     "ProcessRunRecord",
+    "RecordField",
     "RunContext",
     "RunStatus",
     "StepRunRecord",

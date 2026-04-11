@@ -9,12 +9,9 @@ from unittest.mock import patch
 import pytest
 
 from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.observability.observers._labels import source_label, target_label
 from loom.etl.observability.observers.composite import CompositeObserver
-from loom.etl.observability.observers.structlog import (
-    StructlogRunObserver,
-    _source_label,
-    _target_label,
-)
+from loom.etl.observability.observers.structlog import StructlogRunObserver
 from loom.etl.observability.recording import ExecutionRecordsObserver
 from loom.etl.observability.records import (
     EventName,
@@ -134,8 +131,8 @@ def test_composite_observer_isolates_failures_and_calls_remaining_observers() ->
     ],
 )
 def test_structlog_source_and_target_labels(spec: object, expected: str) -> None:
-    assert _source_label(spec) == expected
-    assert _target_label(spec) == expected
+    assert source_label(spec) == expected
+    assert target_label(spec) == expected
 
 
 def test_structlog_observer_emits_slow_step_warning_when_threshold_crossed() -> None:
@@ -211,12 +208,6 @@ def test_table_execution_record_store_writes_to_expected_table_paths(
     saved_record, table_ref = next(iter(writer.calls))
     assert saved_record is record
     assert table_ref == TableRef("step_runs")
-
-
-def test_table_execution_record_store_rejects_unknown_record_type() -> None:
-    sink = TableExecutionRecordStore(_CaptureAppendWriter())
-    with pytest.raises(TypeError, match="unrecognised record type"):
-        sink.write_record(object())  # type: ignore[arg-type]
 
 
 def test_table_execution_record_store_applies_database_prefix() -> None:

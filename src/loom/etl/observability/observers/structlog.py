@@ -6,15 +6,11 @@ from typing import Any
 
 import structlog
 
-from loom.etl.declarative.target._file import FileSpec
-from loom.etl.declarative.target._table import (
-    AppendSpec,
-    ReplacePartitionsSpec,
-    ReplaceSpec,
-    ReplaceWhereSpec,
-    UpsertSpec,
+from loom.etl.observability.observers._labels import (
+    source_label,
+    target_label,
+    write_mode_label,
 )
-from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.observability.records import EventName, RunContext, RunStatus
 
 _log: Any = structlog.get_logger("loom.etl")
@@ -67,13 +63,13 @@ class StructlogRunObserver:
         )
 
     def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
-        sources = [_source_label(binding.spec) for binding in plan.source_bindings]
+        sources = [source_label(binding.spec) for binding in plan.source_bindings]
         _log.info(
             EventName.STEP_START,
             step=plan.step_type.__name__,
             sources=sources,
-            target=_target_label(plan.target_binding.spec),
-            write_mode=_write_mode_label(plan.target_binding.spec),
+            target=target_label(plan.target_binding.spec),
+            write_mode=write_mode_label(plan.target_binding.spec),
             run_id=ctx.run_id,
             step_run_id=step_run_id,
         )
@@ -101,43 +97,4 @@ class StructlogRunObserver:
         )
 
 
-def _source_label(spec: Any) -> str:
-    """Return a readable label for a source spec."""
-    if spec.table_ref is not None:
-        return str(spec.table_ref.ref)
-    if getattr(spec, "temp_name", None) is not None:
-        return f"temp:{spec.temp_name}"
-    return str(spec.path) if spec.path else "?"
-
-
-def _target_label(spec: Any) -> str:
-    """Return a readable label for a target spec."""
-    if spec.table_ref is not None:
-        return str(spec.table_ref.ref)
-    if getattr(spec, "temp_name", None) is not None:
-        return f"temp:{spec.temp_name}"
-    return str(spec.path) if spec.path else "?"
-
-
-def _write_mode_label(spec: Any) -> str:
-    """Return the write mode label for the given target spec."""
-    match spec:
-        case AppendSpec():
-            return "append"
-        case ReplaceSpec():
-            return "replace"
-        case ReplacePartitionsSpec():
-            return "replace_partitions"
-        case ReplaceWhereSpec():
-            return "replace_where"
-        case UpsertSpec():
-            return "upsert"
-        case TempSpec() | TempFanInSpec():
-            return "temp"
-        case FileSpec():
-            return "file"
-        case _:
-            return "unknown"
-
-
-__all__ = ["StructlogRunObserver", "_source_label", "_target_label", "_write_mode_label"]
+__all__ = ["StructlogRunObserver", "source_label", "target_label", "write_mode_label"]
