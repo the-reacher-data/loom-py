@@ -68,7 +68,7 @@ from loom.etl.declarative import (
     SourceSet,
     WriteOptions,
 )
-from loom.etl.observability import ExecutionRecordStoreConfig, ObservabilityConfig
+from loom.etl.observability import ExecutionRecordStoreConfig, ObservabilityConfig, OtelConfig
 from loom.etl.pipeline import (
     ETLParams,
     ETLPipeline,
@@ -177,6 +177,7 @@ __all__ = [
     "FileRoute",
     # observability config (YAML-loadable)
     "ObservabilityConfig",
+    "OtelConfig",
     "ExecutionRecordStoreConfig",
     # schema — primitive
     "SchemaMode",

@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
+from loom.etl.observability.config import (
+    ExecutionRecordStoreConfig,
+    ObservabilityConfig,
+    OtelConfig,
+)
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
 from loom.etl.runner._wiring import make_backends, make_checkpoint_store
@@ -159,6 +163,20 @@ def test_make_observers_log_and_otel_true_includes_both() -> None:
     assert len(observers) == 2
     assert isinstance(observers[0], StructlogRunObserver)
     assert isinstance(observers[1], OtelRunObserver)
+
+
+def test_make_observers_with_otel_config_enables_otel_observer() -> None:
+    from loom.etl.observability.observers.otel import OtelRunObserver
+
+    config = ObservabilityConfig(
+        log=False,
+        otel=False,
+        otel_config=OtelConfig(service_name="loom-tests"),
+    )
+    observers = make_observers(config)
+
+    assert len(observers) == 1
+    assert isinstance(observers[0], OtelRunObserver)
 
 
 def test_make_observers_with_record_store_root_adds_observer() -> None:

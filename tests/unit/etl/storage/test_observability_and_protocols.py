@@ -9,7 +9,11 @@ import msgspec
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import SourceSpec, TableSourceSpec
 from loom.etl.declarative.target._table import ReplaceSpec
-from loom.etl.observability.config import ExecutionRecordStoreConfig, ObservabilityConfig
+from loom.etl.observability.config import (
+    ExecutionRecordStoreConfig,
+    ObservabilityConfig,
+    OtelConfig,
+)
 from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TableDiscovery, TargetWriter
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
@@ -17,6 +21,7 @@ from loom.etl.schema._schema import ColumnSchema, LoomDtype
 def test_observability_config_defaults_and_conversion() -> None:
     default = ObservabilityConfig()
     assert default.log is True
+    assert default.otel_config is None
     assert default.record_store is None
     assert default.slow_step_threshold_ms is None
 
@@ -42,6 +47,36 @@ def test_observability_config_defaults_and_conversion() -> None:
         writer={"compression": "SNAPPY"},
         delta_config={"delta.appendOnly": "true"},
         commit={"userName": "loom"},
+    )
+
+
+def test_observability_config_supports_open_otel_config() -> None:
+    cfg = msgspec.convert(
+        {
+            "log": False,
+            "otel_config": {
+                "service_name": "loom-etl",
+                "protocol": "grpc",
+                "endpoint": "http://collector:4317",
+                "headers": {"x-api-key": "token"},
+                "resource_attributes": {"env": "prod"},
+                "span_attributes": {"team": "data-platform"},
+                "exporter_kwargs": {"timeout": 10},
+                "span_processor_kwargs": {"max_export_batch_size": 256},
+            },
+        },
+        ObservabilityConfig,
+    )
+
+    assert cfg.otel_config == OtelConfig(
+        service_name="loom-etl",
+        protocol="grpc",
+        endpoint="http://collector:4317",
+        headers={"x-api-key": "token"},
+        resource_attributes={"env": "prod"},
+        span_attributes={"team": "data-platform"},
+        exporter_kwargs={"timeout": 10},
+        span_processor_kwargs={"max_export_batch_size": 256},
     )
 
 

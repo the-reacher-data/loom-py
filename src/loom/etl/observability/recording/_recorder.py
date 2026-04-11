@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from loom.etl.compiler._plan import PipelinePlan, ProcessPlan, StepPlan
 from loom.etl.observability.records import (
     EventName,
     PipelineRunRecord,
@@ -35,7 +36,7 @@ class ExecutionRecordsObserver:
         self._process_failures: dict[str, _FailureContext] = {}
         self._pipeline_failures: dict[str, _FailureContext] = {}
 
-    def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
+    def on_pipeline_start(self, plan: PipelinePlan, _params: Any, ctx: RunContext) -> None:
         with self._write_lock:
             self._pipeline_ctx[ctx.run_id] = (ctx, plan.pipeline_type.__name__, _now())
 
@@ -63,7 +64,7 @@ class ExecutionRecordsObserver:
         )
         self._store.write_record(record)
 
-    def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
+    def on_process_start(self, plan: ProcessPlan, ctx: RunContext, process_run_id: str) -> None:
         with self._write_lock:
             self._process_ctx[process_run_id] = (ctx, plan.process_type.__name__, _now())
 
@@ -92,7 +93,7 @@ class ExecutionRecordsObserver:
         )
         self._store.write_record(record)
 
-    def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
+    def on_step_start(self, plan: StepPlan, ctx: RunContext, step_run_id: str) -> None:
         with self._write_lock:
             self._step_ctx[step_run_id] = (ctx, plan.step_type.__name__, _now())
 
