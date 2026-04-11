@@ -9,12 +9,12 @@ import pytest
 
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.observers.composite import CompositeObserver
-from loom.etl.observability.observers.execution_records import ExecutionRecordsObserver
 from loom.etl.observability.observers.structlog import (
     StructlogRunObserver,
     _source_label,
     _target_label,
 )
+from loom.etl.observability.recording import ExecutionRecordsObserver
 from loom.etl.observability.records import (
     EventName,
     PipelineRunRecord,
@@ -23,7 +23,7 @@ from loom.etl.observability.records import (
     RunStatus,
     StepRunRecord,
 )
-from loom.etl.observability.stores.table import TableExecutionRecordStore
+from loom.etl.observability.sinks import TableExecutionRecordStore
 
 
 class _CaptureObserver:
@@ -224,7 +224,7 @@ def test_polars_schema_has_no_null_dtype_columns_for_none_optional_fields() -> N
     """Ensure _polars_schema returns String (not Null) for optional fields."""
     import polars as pl
 
-    from loom.etl.observability._polars_writer import _polars_schema
+    from loom.etl.observability.sinks._polars import _polars_schema
 
     # All optional fields (correlation_id, error) are None
     for record in [
@@ -270,7 +270,7 @@ def test_polars_schema_has_no_null_dtype_columns_for_none_optional_fields() -> N
 
 
 def test_polars_schema_rejects_unknown_record_type() -> None:
-    from loom.etl.observability._polars_writer import _polars_schema
+    from loom.etl.observability.sinks._polars import _polars_schema
 
     with pytest.raises(TypeError, match="Unsupported execution record type"):
         _polars_schema(object())  # type: ignore[arg-type]

@@ -66,22 +66,25 @@ class PolarsSourceReader(SourceReader):
         for predicate in spec.predicates:
             frame = frame.filter(predicate_to_polars(predicate, params))
 
-        if spec.columns:
-            frame = frame.select(list(spec.columns))
-
-        frame = self._apply_source_schema(frame, spec.schema)
-        frame = self._apply_json_decode(frame, spec.json_columns)
-        return frame
+        return self._finalize_source_frame(frame, spec)
 
     def _read_file(self, spec: FileSourceSpec) -> pl.LazyFrame:
         """Read file (CSV, JSON, XLSX, Parquet)."""
         frame = self._read_file_by_format(spec.path, spec.format, spec.read_options)
+        return self._finalize_source_frame(frame, spec)
 
+    def _finalize_source_frame(
+        self,
+        frame: pl.LazyFrame,
+        spec: TableSourceSpec | FileSourceSpec,
+    ) -> pl.LazyFrame:
+        """Apply post-read transformations: columns, schema, json decode."""
         if spec.columns:
             frame = frame.select(list(spec.columns))
-
-        frame = self._apply_source_schema(frame, spec.schema)
-        frame = self._apply_json_decode(frame, spec.json_columns)
+        if spec.schema:
+            frame = self._apply_source_schema(frame, spec.schema)
+        if spec.json_columns:
+            frame = self._apply_json_decode(frame, spec.json_columns)
         return frame
 
     @staticmethod

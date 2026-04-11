@@ -80,28 +80,25 @@ class SparkSourceReader(SourceReader):
         for pred in spec.predicates:
             df = df.filter(predicate_to_sql(pred, params))
 
-        # Apply column projection
-        if spec.columns:
-            df = df.select(list(spec.columns))
-
-        # Apply schema casting
-        df = self._apply_source_schema(df, spec.schema)
-
-        # Apply JSON decoding
-        df = self._apply_json_decode(df, spec.json_columns)
-
-        return df
+        return self._finalize_source_frame(df, spec)
 
     def _read_file(self, spec: FileSourceSpec) -> DataFrame:
         """Read file (CSV, JSON, Parquet)."""
         df = self._read_file_by_format(spec.path, spec.format, spec.read_options)
+        return self._finalize_source_frame(df, spec)
 
+    def _finalize_source_frame(
+        self,
+        df: DataFrame,
+        spec: TableSourceSpec | FileSourceSpec,
+    ) -> DataFrame:
+        """Apply post-read transformations: columns, schema, json decode."""
         if spec.columns:
             df = df.select(list(spec.columns))
-
-        df = self._apply_source_schema(df, spec.schema)
-        df = self._apply_json_decode(df, spec.json_columns)
-
+        if spec.schema:
+            df = self._apply_source_schema(df, spec.schema)
+        if spec.json_columns:
+            df = self._apply_json_decode(df, spec.json_columns)
         return df
 
     def _read_file_by_format(self, path: str, format: Any, options: Any) -> DataFrame:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+from pyspark.sql import types as _spark_types
+
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import (
     ExecutionRecord,
@@ -25,7 +27,7 @@ def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
 
 
 def _spark_schema(record: ExecutionRecord) -> Any:
-    from pyspark.sql import types as t
+    t = _spark_types
 
     if isinstance(record, PipelineRunRecord):
         return t.StructType(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import msgspec
 import pytest
 
@@ -44,8 +46,9 @@ class TestStorageConfig:
         config = StorageConfig(defaults=_default_path("s3://my-lake"))
         config.validate()
 
-    def test_validate_rejects_local_checkpoint_root(self) -> None:
-        config = StorageConfig(tmp_root="/tmp/loom-checkpoints")
+    def test_validate_rejects_local_checkpoint_root(self, tmp_path: Path) -> None:
+        local_path = tmp_path / "loom-checkpoints"
+        config = StorageConfig(tmp_root=str(local_path))
         with pytest.raises(ValueError, match="cloud URI"):
             config.validate()
 

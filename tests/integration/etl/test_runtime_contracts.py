@@ -303,15 +303,15 @@ def test_observer_runtime_contracts(monkeypatch: pytest.MonkeyPatch) -> None:
     mods = _reload_modules(
         "loom.etl.observability.observers.composite",
         "loom.etl.observability.records",
-        "loom.etl.observability.observers.execution_records",
+        "loom.etl.observability.recording._recorder",
         "loom.etl.observability.observers.structlog",
-        "loom.etl.observability.stores.table",
+        "loom.etl.observability.sinks._table",
     )
     composite_mod = mods["loom.etl.observability.observers.composite"]
     events_mod = mods["loom.etl.observability.records"]
-    sink_observer_mod = mods["loom.etl.observability.observers.execution_records"]
+    sink_observer_mod = mods["loom.etl.observability.recording._recorder"]
     structlog_mod = mods["loom.etl.observability.observers.structlog"]
-    delta_sink_mod = mods["loom.etl.observability.stores.table"]
+    delta_sink_mod = mods["loom.etl.observability.sinks._table"]
 
     capture = _CaptureObserver()
     composite = composite_mod.CompositeObserver([_FailingObserver(), capture])

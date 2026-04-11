@@ -15,7 +15,7 @@ from loom.etl.observability.records import (
     RunStatus,
     StepRunRecord,
 )
-from loom.etl.observability.stores.protocol import ExecutionRecordStore
+from loom.etl.observability.sinks._protocol import ExecutionRecordStore
 
 
 class ExecutionRecordsObserver:
@@ -36,11 +36,16 @@ class ExecutionRecordsObserver:
         self._pipeline_failures: dict[str, _FailureContext] = {}
 
     def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
-        self._pipeline_ctx[ctx.run_id] = (ctx, plan.pipeline_type.__name__, _now())
+        with self._write_lock:
+            self._pipeline_ctx[ctx.run_id] = (ctx, plan.pipeline_type.__name__, _now())
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
-        stored_ctx, pipeline, started_at = self._pipeline_ctx.pop(ctx.run_id)
-        failure = self._pipeline_failures.pop(ctx.run_id, None)
+        with self._write_lock:
+            start_ctx = self._pipeline_ctx.pop(ctx.run_id, None)
+            failure = self._pipeline_failures.pop(ctx.run_id, None)
+        if start_ctx is None:
+            return
+        stored_ctx, pipeline, started_at = start_ctx
         record = PipelineRunRecord(
             event=EventName.PIPELINE_END,
             run_id=stored_ctx.run_id,
@@ -56,15 +61,19 @@ class ExecutionRecordsObserver:
             failed_step_run_id=failure.step_run_id if failure is not None else None,
             failed_step=failure.step if failure is not None else None,
         )
-        with self._write_lock:
-            self._store.write_record(record)
+        self._store.write_record(record)
 
     def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
-        self._process_ctx[process_run_id] = (ctx, plan.process_type.__name__, _now())
+        with self._write_lock:
+            self._process_ctx[process_run_id] = (ctx, plan.process_type.__name__, _now())
 
     def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
-        stored_ctx, process, started_at = self._process_ctx.pop(process_run_id)
-        failure = self._process_failures.pop(process_run_id, None)
+        with self._write_lock:
+            start_ctx = self._process_ctx.pop(process_run_id, None)
+            failure = self._process_failures.pop(process_run_id, None)
+        if start_ctx is None:
+            return
+        stored_ctx, process, started_at = start_ctx
         record = ProcessRunRecord(
             event=EventName.PROCESS_END,
             run_id=stored_ctx.run_id,
@@ -81,8 +90,7 @@ class ExecutionRecordsObserver:
             failed_step_run_id=failure.step_run_id if failure is not None else None,
             failed_step=failure.step if failure is not None else None,
         )
-        with self._write_lock:
-            self._store.write_record(record)
+        self._store.write_record(record)
 
     def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
         with self._write_lock:
@@ -90,7 +98,10 @@ class ExecutionRecordsObserver:
 
     def on_step_end(self, step_run_id: str, status: RunStatus, duration_ms: int) -> None:
         with self._write_lock:
-            stored_ctx, step, started_at = self._step_ctx.pop(step_run_id)
+            start_ctx = self._step_ctx.pop(step_run_id, None)
+            if start_ctx is None:
+                return
+            stored_ctx, step, started_at = start_ctx
             error = self._step_errors.pop(step_run_id, None)
             if status is RunStatus.FAILED and error is not None:
                 failure = _FailureContext(
@@ -118,8 +129,7 @@ class ExecutionRecordsObserver:
             error_type=error.error_type if error is not None else None,
             error_message=error.error_message if error is not None else None,
         )
-        with self._write_lock:
-            self._store.write_record(record)
+        self._store.write_record(record)
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
         with self._write_lock:

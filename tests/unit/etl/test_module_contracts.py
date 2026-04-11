@@ -55,7 +55,7 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl.testing", "PolarsStepRunner"),
         ("loom.etl.compiler", "validate_plan_catalog"),
         ("loom.etl.observability", "StructlogRunObserver"),
-        ("loom.etl.observability.stores", "TableExecutionRecordStore"),
+        ("loom.etl.observability.sinks", "TableExecutionRecordStore"),
     ],
 )
 def test_package_entrypoints_support_reload_contracts(
@@ -71,7 +71,7 @@ def test_package_entrypoints_support_reload_contracts(
     [
         ("loom.etl.observability.records", "RunContext"),
         ("loom.etl.observability.observers.protocol", "ETLRunObserver"),
-        ("loom.etl.observability.stores.protocol", "ExecutionRecordStore"),
+        ("loom.etl.observability.sinks._protocol", "ExecutionRecordStore"),
         ("loom.etl.pipeline._params", "ETLParams"),
         ("loom.etl.runtime.contracts", "TableDiscovery"),
         ("loom.etl.observability.config", "ObservabilityConfig"),

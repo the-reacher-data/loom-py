@@ -11,7 +11,7 @@ from loom.etl.observability.records import (
     ProcessRunRecord,
     StepRunRecord,
 )
-from loom.etl.observability.stores.protocol import ExecutionRecordWriter
+from loom.etl.observability.sinks._protocol import ExecutionRecordWriter
 
 _TABLE_FOR: dict[type[Any], str] = {
     PipelineRunRecord: "pipeline_runs",
