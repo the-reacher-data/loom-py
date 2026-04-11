@@ -11,6 +11,8 @@ from loom.etl.checkpoint import CheckpointStore, FsspecTempCleaner, TempCleaner
 from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
 from loom.etl.checkpoint._cleaners import _is_cloud_path
+from loom.etl.observability.config import ObservabilityConfig
+from loom.etl.observability.sinks import ExecutionRecordWriter
 from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
@@ -80,6 +82,21 @@ def make_checkpoint_store(
     )
 
 
+def make_execution_record_writer(
+    storage: StorageConfig,
+    observability: ObservabilityConfig,
+    spark: Any = None,
+) -> ExecutionRecordWriter | None:
+    """Build execution-record writer from storage/observability configs."""
+    store_cfg = observability.record_store
+    if store_cfg is None:
+        return None
+    store_cfg.validate()
+    engine = _resolve_engine(storage, spark)
+    provider = load_backend_provider(engine)
+    return provider.create_execution_record_writer(storage, store_cfg, spark)
+
+
 def _make_checkpoint_backend(spark: Any, storage_options: dict[str, str]) -> Any:
     if spark is not None:
         return _SparkCheckpointBackend(spark)
@@ -92,4 +109,4 @@ def _resolve_engine(config: StorageConfig, spark: Any) -> str:
     return config.engine
 
 
-__all__ = ["make_backends", "make_checkpoint_store"]
+__all__ = ["make_backends", "make_checkpoint_store", "make_execution_record_writer"]

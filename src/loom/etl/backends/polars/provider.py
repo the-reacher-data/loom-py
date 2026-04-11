@@ -6,6 +6,8 @@ from typing import Any
 
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
+from loom.etl.observability.config import ExecutionRecordStoreConfig
+from loom.etl.observability.sinks import ExecutionRecordWriter, TargetExecutionRecordWriter
 from loom.etl.runner._providers import BackendProvider
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import CatalogConnection, StorageConfig
@@ -26,6 +28,30 @@ class PolarsProvider(BackendProvider):
             PolarsSourceReader(locator),
             PolarsTargetWriter(locator, missing_table_policy=config.missing_table_policy),
         )
+
+    def create_execution_record_writer(
+        self,
+        config: StorageConfig,
+        record_store: ExecutionRecordStoreConfig,
+        spark: Any = None,
+    ) -> ExecutionRecordWriter:
+        _ = (config, spark)
+        if record_store.database:
+            raise ValueError(
+                "observability.record_store.database is only supported "
+                "with storage.engine='spark'. "
+                "For storage.engine='polars', configure observability.record_store.root."
+            )
+
+        locator = PrefixLocator(
+            root=record_store.root,
+            storage_options=record_store.storage_options or None,
+            writer=record_store.writer or None,
+            delta_config=record_store.delta_config or None,
+            commit=record_store.commit or None,
+        )
+        target_writer = PolarsTargetWriter(locator)
+        return TargetExecutionRecordWriter(target_writer)
 
 
 def _build_polars_locator(config: StorageConfig) -> TableLocator:

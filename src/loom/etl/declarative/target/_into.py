@@ -19,7 +19,6 @@ set by chaining a write-intent method::
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Any
 
 from loom.etl.checkpoint import CheckpointScope
@@ -29,29 +28,16 @@ from loom.etl.declarative._write_options import WriteOptions
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import AndPred, EqPred, PredicateNode
 from loom.etl.declarative.expr._refs import TableRef, UnboundColumnRef
-
-
-class SchemaMode(StrEnum):
-    """Schema evolution strategy applied by the target writer before each write.
-
-    Declared alongside the write mode on :class:`IntoTable`::
-
-        target = IntoTable("staging.orders").replace(schema=SchemaMode.EVOLVE)
-
-    Values:
-
-    * ``STRICT``    — default; fails if the frame's types are incompatible with
-                      the existing table schema.  Safest option.
-    * ``EVOLVE``    — adds columns present in the frame but absent in the table
-                      schema (``mergeSchema`` in Delta).  Existing columns are
-                      still validated for type compatibility.
-    * ``OVERWRITE`` — replaces the table schema with the frame's schema.
-                      Only valid with :meth:`~IntoTable.replace`.  Use with care.
-    """
-
-    STRICT = "strict"
-    EVOLVE = "evolve"
-    OVERWRITE = "overwrite"
+from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._schema_mode import SchemaMode
+from loom.etl.declarative.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    ReplaceWhereSpec,
+    UpsertSpec,
+)
+from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 
 
 def _build_eq_predicate(values: dict[str, ParamExpr]) -> PredicateNode:
@@ -93,9 +79,6 @@ class IntoTable:
         table_ref = TableRef(ref) if isinstance(ref, str) else ref
         self._ref = table_ref
         # Default write mode is REPLACE.  Call a write-mode method to change it.
-        # Local import: _table.py imports SchemaMode from this module — circular at top level.
-        from loom.etl.declarative.target._table import ReplaceSpec
-
         self._spec: Any = ReplaceSpec(table_ref=table_ref)
 
     def append(self, *, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
@@ -108,8 +91,6 @@ class IntoTable:
         Returns:
             New ``IntoTable`` with APPEND mode.
         """
-        from loom.etl.declarative.target._table import AppendSpec
-
         return self._with(AppendSpec(table_ref=self._ref, schema_mode=schema))
 
     def replace(self, *, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
@@ -126,8 +107,6 @@ class IntoTable:
         Returns:
             New ``IntoTable`` with REPLACE mode.
         """
-        from loom.etl.declarative.target._table import ReplaceSpec
-
         return self._with(ReplaceSpec(table_ref=self._ref, schema_mode=schema))
 
     def replace_partitions(
@@ -172,8 +151,6 @@ class IntoTable:
             )
         if not cols and values is None:
             raise ValueError("replace_partitions: pass column names or values=")
-
-        from loom.etl.declarative.target._table import ReplacePartitionsSpec, ReplaceWhereSpec
 
         if values is not None:
             predicate = _build_eq_predicate(values)
@@ -221,8 +198,6 @@ class IntoTable:
                 col("date").between(params.start_date, params.end_date)
             )
         """
-        from loom.etl.declarative.target._table import ReplaceWhereSpec
-
         return self._with(
             ReplaceWhereSpec(
                 table_ref=self._ref,
@@ -276,8 +251,6 @@ class IntoTable:
                 exclude=("created_at",),
             )
         """
-        from loom.etl.declarative.target._table import UpsertSpec
-
         return self._with(
             UpsertSpec(
                 table_ref=self._ref,
@@ -345,8 +318,6 @@ class IntoFile:
         return new
 
     def _to_spec(self) -> Any:
-        from loom.etl.declarative.target._file import FileSpec  # local — avoids circular import
-
         return FileSpec(path=self._path, format=self._format, write_options=self._write_options)
 
     def __repr__(self) -> str:
@@ -416,11 +387,6 @@ class IntoTemp:
         return self._append
 
     def _to_spec(self) -> Any:
-        from loom.etl.declarative.target._temp import (
-            TempFanInSpec,
-            TempSpec,
-        )  # local — avoids circular import
-
         if self._append:
             return TempFanInSpec(temp_name=self._name, temp_scope=self._scope)
         return TempSpec(temp_name=self._name, temp_scope=self._scope)

@@ -13,6 +13,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 import msgspec
+from deltalake import CommitProperties, WriterProperties
 
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 
@@ -332,8 +333,6 @@ def _validate_writer(writer: dict[str, Any], *, context: str) -> None:
     if not writer:
         return
     try:
-        from deltalake import WriterProperties
-
         WriterProperties(**writer)
     except TypeError as exc:
         raise TypeError(f"Invalid key in storage.{context}: {exc}") from exc
@@ -343,8 +342,6 @@ def _validate_commit(commit: dict[str, Any], *, context: str) -> None:
     if not commit:
         return
     try:
-        from deltalake import CommitProperties
-
         CommitProperties(**commit)
     except TypeError as exc:
         raise TypeError(f"Invalid key in storage.{context}: {exc}") from exc

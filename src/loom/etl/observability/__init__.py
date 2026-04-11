@@ -24,9 +24,10 @@ from loom.etl.observability.records import (
 )
 from loom.etl.observability.sinks import (
     ExecutionRecordStore,
-    PolarsExecutionRecordWriter,
-    SparkExecutionRecordWriter,
+    ExecutionRecordWriter,
+    RecordFrameTargetWriter,
     TableExecutionRecordStore,
+    TargetExecutionRecordWriter,
 )
 
 __all__ = [
@@ -35,19 +36,20 @@ __all__ = [
     "EventName",
     "ExecutionRecord",
     "ExecutionRecordStore",
+    "ExecutionRecordWriter",
     "ExecutionRecordStoreConfig",
     "ExecutionRecordsObserver",
     "NoopRunObserver",
     "ObservabilityConfig",
     "OtelConfig",
     "PipelineRunRecord",
-    "PolarsExecutionRecordWriter",
     "ProcessRunRecord",
+    "RecordFrameTargetWriter",
     "RunContext",
     "RunStatus",
-    "SparkExecutionRecordWriter",
     "StepRunRecord",
     "StructlogRunObserver",
     "TableExecutionRecordStore",
+    "TargetExecutionRecordWriter",
     "make_observers",
 ]

@@ -23,7 +23,11 @@ from loom.etl.observability import (
     make_observers,
 )
 from loom.etl.pipeline._pipeline import ETLPipeline
-from loom.etl.runner._wiring import make_backends, make_checkpoint_store
+from loom.etl.runner._wiring import (
+    make_backends,
+    make_checkpoint_store,
+    make_execution_record_writer,
+)
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
@@ -67,8 +71,10 @@ class ETLRunner:
         cleaner: TempCleaner | None = None,
     ) -> ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects."""
+        resolved_obs_config = obs_config or ObservabilityConfig()
         reader, writer = make_backends(config, spark)
-        observers = make_observers(obs_config or ObservabilityConfig(), config, spark)
+        record_writer = make_execution_record_writer(config, resolved_obs_config, spark)
+        observers = make_observers(resolved_obs_config, record_writer=record_writer)
         checkpoint_store = make_checkpoint_store(config, spark, cleaner)
         return cls(reader, writer, observers, dispatcher, checkpoint_store)
 

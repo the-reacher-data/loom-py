@@ -14,7 +14,11 @@ from loom.etl.observability.config import (
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
 from loom.etl.runner._providers import load_backend_provider
-from loom.etl.runner._wiring import make_backends, make_checkpoint_store
+from loom.etl.runner._wiring import (
+    make_backends,
+    make_checkpoint_store,
+    make_execution_record_writer,
+)
 from loom.etl.storage._config import (
     CatalogConnection,
     StorageConfig,
@@ -26,6 +30,11 @@ from loom.etl.storage._config import (
 
 def _path_defaults(root: str) -> StorageDefaults:
     return StorageDefaults(table_path=TablePathConfig(uri=root))
+
+
+class _DummyExecutionRecordWriter:
+    def write_record(self, record: object, table_ref: object, /) -> None:
+        _ = (record, table_ref)
 
 
 # ---------------------------------------------------------------------------
@@ -195,26 +204,45 @@ def test_make_observers_with_record_store_root_adds_observer() -> None:
         log=False,
         record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs"),
     )
-    observers = make_observers(config, StorageConfig())
+    observers = make_observers(config, record_writer=_DummyExecutionRecordWriter())
 
     assert len(observers) == 1
     assert type(observers[0]).__name__ == "ExecutionRecordsObserver"
 
 
-def test_make_observers_rejects_database_destination_for_polars_engine() -> None:
-    config = ObservabilityConfig(
+def test_make_execution_record_writer_rejects_database_destination_for_polars_engine() -> None:
+    obs_config = ObservabilityConfig(
         log=False,
         record_store=ExecutionRecordStoreConfig(database="ops"),
     )
     with pytest.raises(ValueError, match="storage.engine='spark'"):
-        make_observers(config, StorageConfig(engine="polars"))
+        make_execution_record_writer(StorageConfig(engine="polars"), obs_config)
 
 
-def test_make_observers_record_store_requires_storage_config() -> None:
+def test_make_execution_record_writer_polars_root_returns_writer() -> None:
+    obs_config = ObservabilityConfig(
+        log=False,
+        record_store=ExecutionRecordStoreConfig(root="s3://bucket/runs"),
+    )
+    writer = make_execution_record_writer(StorageConfig(engine="polars"), obs_config)
+    assert writer is not None
+    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+
+
+def test_make_execution_record_writer_spark_database_requires_session() -> None:
+    obs_config = ObservabilityConfig(
+        log=False,
+        record_store=ExecutionRecordStoreConfig(database="ops"),
+    )
+    with pytest.raises(ValueError, match="SparkSession"):
+        make_execution_record_writer(StorageConfig(engine="spark"), obs_config, spark=None)
+
+
+def test_make_observers_record_store_requires_record_writer() -> None:
     config = ObservabilityConfig(
         log=False, record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs")
     )
-    with pytest.raises(ValueError, match="storage config is required"):
+    with pytest.raises(ValueError, match="record_writer is required"):
         make_observers(config)
 
 

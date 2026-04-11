@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -23,7 +24,7 @@ from loom.etl.observability.records import (
     RunStatus,
     StepRunRecord,
 )
-from loom.etl.observability.sinks import TableExecutionRecordStore
+from loom.etl.observability.sinks import TableExecutionRecordStore, TargetExecutionRecordWriter
 
 
 class _CaptureObserver:
@@ -71,6 +72,28 @@ class _CaptureAppendWriter:
 
     def write_record(self, record: object, table_ref: TableRef, /) -> None:
         self.calls.append((record, table_ref))
+
+
+class _CaptureTargetWriter:
+    def __init__(self) -> None:
+        self.to_frame_calls: list[list[object]] = []
+        self.append_calls: list[tuple[object, TableRef, object]] = []
+
+    def to_frame(self, records: Sequence[object], /) -> object:
+        self.to_frame_calls.append(list(records))
+        return {"rows": records}
+
+    def append(
+        self,
+        frame: object,
+        table_ref: TableRef,
+        params_instance: object,
+        /,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        _ = streaming
+        self.append_calls.append((frame, table_ref, params_instance))
 
 
 def _ctx() -> RunContext:
@@ -218,64 +241,36 @@ def test_table_execution_record_store_applies_database_prefix() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PolarsExecutionRecordWriter — schema
+# TargetExecutionRecordWriter
 # ---------------------------------------------------------------------------
 
 
-def test_polars_schema_has_no_null_dtype_columns_for_none_optional_fields() -> None:
-    """Ensure _polars_schema returns String (not Null) for optional fields."""
-    import polars as pl
+def test_target_execution_record_writer_uses_to_frame_then_append() -> None:
+    target_writer = _CaptureTargetWriter()
+    writer = TargetExecutionRecordWriter(target_writer)
+    record = StepRunRecord(
+        event=EventName.STEP_END,
+        run_id="run-1",
+        correlation_id=None,
+        attempt=1,
+        step_run_id="step-1",
+        step="MyStep",
+        started_at=datetime.now(tz=UTC),
+        status=RunStatus.SUCCESS,
+        duration_ms=12,
+        error=None,
+    )
 
-    from loom.etl.observability.sinks._polars import _polars_schema
+    writer.write_record(record, TableRef("step_runs"))
 
-    # All optional fields (correlation_id, error) are None
-    for record in [
-        StepRunRecord(
-            event=EventName.STEP_END,
-            run_id="r",
-            correlation_id=None,
-            attempt=1,
-            step_run_id="s",
-            step="S",
-            started_at=datetime.now(tz=UTC),
-            status=RunStatus.SUCCESS,
-            duration_ms=1,
-            error=None,
-        ),
-        ProcessRunRecord(
-            event=EventName.PROCESS_END,
-            run_id="r",
-            correlation_id=None,
-            attempt=1,
-            process_run_id="p",
-            process="P",
-            started_at=datetime.now(tz=UTC),
-            status=RunStatus.SUCCESS,
-            duration_ms=1,
-            error=None,
-        ),
-        PipelineRunRecord(
-            event=EventName.PIPELINE_END,
-            run_id="r",
-            correlation_id=None,
-            attempt=1,
-            pipeline="Pipe",
-            started_at=datetime.now(tz=UTC),
-            status=RunStatus.SUCCESS,
-            duration_ms=1,
-            error=None,
-        ),
-    ]:
-        schema = _polars_schema(record)
-        null_cols = [name for name, dtype in schema.items() if dtype == pl.Null]
-        assert null_cols == [], f"Null dtype found in {type(record).__name__}: {null_cols}"
-
-
-def test_polars_schema_rejects_unknown_record_type() -> None:
-    from loom.etl.observability.sinks._polars import _polars_schema
-
-    with pytest.raises(TypeError, match="Unsupported execution record type"):
-        _polars_schema(object())  # type: ignore[arg-type]
+    assert len(target_writer.to_frame_calls) == 1
+    frame_records = next(iter(target_writer.to_frame_calls))
+    assert len(frame_records) == 1
+    assert frame_records[0] is record
+    assert len(target_writer.append_calls) == 1
+    _, table_ref, params_instance = next(iter(target_writer.append_calls))
+    assert table_ref == TableRef("step_runs")
+    assert params_instance is None
 
 
 # ---------------------------------------------------------------------------

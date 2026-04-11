@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Sequence
+from typing import Any, Protocol
 
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.records import ExecutionRecord
@@ -22,4 +23,22 @@ class ExecutionRecordWriter(Protocol):
         """Write *record* to *table_ref*."""
 
 
-__all__ = ["ExecutionRecordStore", "ExecutionRecordWriter"]
+class RecordFrameTargetWriter(Protocol):
+    """Target-writer capability required to persist execution records."""
+
+    def to_frame(self, records: Sequence[ExecutionRecord], /) -> Any:
+        """Convert execution records into backend frame type."""
+
+    def append(
+        self,
+        frame: Any,
+        table_ref: TableRef,
+        params_instance: Any,
+        /,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Append backend frame into destination table."""
+
+
+__all__ = ["ExecutionRecordStore", "ExecutionRecordWriter", "RecordFrameTargetWriter"]

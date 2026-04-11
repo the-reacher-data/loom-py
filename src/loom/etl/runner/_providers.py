@@ -5,6 +5,8 @@ from __future__ import annotations
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, Protocol, cast, runtime_checkable
 
+from loom.etl.observability.config import ExecutionRecordStoreConfig
+from loom.etl.observability.sinks import ExecutionRecordWriter
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
 
@@ -21,6 +23,15 @@ class BackendProvider(Protocol):
         spark: Any = None,
     ) -> tuple[SourceReader, TargetWriter]:
         """Create backend reader/writer pair for one engine."""
+        ...
+
+    def create_execution_record_writer(
+        self,
+        config: StorageConfig,
+        record_store: ExecutionRecordStoreConfig,
+        spark: Any = None,
+    ) -> ExecutionRecordWriter:
+        """Create execution-record writer for observability record store."""
         ...
 
 

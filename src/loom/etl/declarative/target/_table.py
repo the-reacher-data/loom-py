@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.expr._refs import TableRef
-from loom.etl.declarative.target._into import SchemaMode
+from loom.etl.declarative.target._schema_mode import SchemaMode
 
 
 @dataclass(frozen=True)

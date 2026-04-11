@@ -25,7 +25,8 @@ Non-table targets:
 """
 
 from loom.etl.declarative.target._file import FileSpec
-from loom.etl.declarative.target._into import IntoFile, IntoTable, IntoTemp, SchemaMode
+from loom.etl.declarative.target._into import IntoFile, IntoTable, IntoTemp
+from loom.etl.declarative.target._schema_mode import SchemaMode
 from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
