@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
@@ -33,8 +32,8 @@ from loom.etl.observability.records import (
     ExecutionRecord,
     PipelineRunRecord,
     ProcessRunRecord,
-    RunStatus,
     StepRunRecord,
+    execution_record_to_row,
 )
 from loom.etl.storage import (
     MissingTablePolicy,
@@ -144,7 +143,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             raise TypeError(
                 "PolarsTargetWriter.to_frame requires homogeneous record types per batch."
             )
-        rows = [_record_to_row(record) for record in records]
+        rows = [execution_record_to_row(record) for record in records]
         return pl.from_dicts(rows, schema=_polars_record_schema(first)).lazy()
 
     # ====================================================================
@@ -391,14 +390,6 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
 
 __all__ = ["PolarsTargetWriter"]
-
-
-def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
-    """Convert an execution record dataclass into a plain row mapping."""
-    row = dataclasses.asdict(record)
-    row.pop("event", None)
-    row["status"] = str(cast(RunStatus, row["status"]))
-    return row
 
 
 def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -36,8 +35,8 @@ from loom.etl.observability.records import (
     ExecutionRecord,
     PipelineRunRecord,
     ProcessRunRecord,
-    RunStatus,
     StepRunRecord,
+    execution_record_to_row,
 )
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
@@ -100,7 +99,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             raise TypeError(
                 "SparkTargetWriter.to_frame requires homogeneous record types per batch."
             )
-        rows = [_record_to_row(record) for record in records]
+        rows = [execution_record_to_row(record) for record in records]
         return self._spark.createDataFrame(rows, schema=_spark_record_schema(first))
 
     # ====================================================================
@@ -360,14 +359,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
 
 
 __all__ = ["SparkTargetWriter"]
-
-
-def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
-    """Convert an execution record dataclass into a plain row mapping."""
-    row = dataclasses.asdict(record)
-    row.pop("event", None)
-    row["status"] = str(cast(RunStatus, row["status"]))
-    return row
 
 
 def _spark_record_schema(record: ExecutionRecord) -> T.StructType:

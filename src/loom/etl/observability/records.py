@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 
 class RunStatus(StrEnum):
@@ -134,9 +136,18 @@ def get_record_table_name(record_type: type[ExecutionRecord]) -> str:
     return _TABLE_MAP[record_type]
 
 
+def execution_record_to_row(record: ExecutionRecord) -> dict[str, Any]:
+    """Convert execution record dataclass into a row mapping for sinks."""
+    row = dataclasses.asdict(record)
+    row.pop("event", None)
+    row["status"] = str(row["status"])
+    return row
+
+
 __all__ = [
     "EventName",
     "ExecutionRecord",
+    "execution_record_to_row",
     "get_record_table_name",
     "PipelineRunRecord",
     "ProcessRunRecord",
