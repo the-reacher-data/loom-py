@@ -44,6 +44,7 @@ from loom.etl.compiler._plan import (
     PipelinePlan,
     PipelineProcessNode,
     ProcessPlan,
+    ProcessStepNode,
     StepPlan,
 )
 from loom.etl.declarative.source import TempSourceSpec
@@ -175,8 +176,7 @@ class ETLExecutor:
         status = RunStatus.SUCCESS
         try:
             for node in plan.nodes:
-                process_node: StepPlan | ParallelStepGroup = node
-                self._run_process_node(process_node, params, process_ctx)
+                self._run_process_node(node, params, process_ctx)
         except Exception:
             status = RunStatus.FAILED
             raise
@@ -323,9 +323,7 @@ class ETLExecutor:
             case ProcessPlan():
                 self.run_process(node, params, ctx)
 
-    def _run_process_node(
-        self, node: StepPlan | ParallelStepGroup, params: Any, ctx: RunContext
-    ) -> None:
+    def _run_process_node(self, node: ProcessStepNode, params: Any, ctx: RunContext) -> None:
         match node:
             case ParallelStepGroup(plans=plans):
                 self._dispatch_parallel(self.run_step, plans, params, ctx)

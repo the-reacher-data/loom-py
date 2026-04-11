@@ -16,7 +16,7 @@ class SparkSchemaAligner:
     def iter_schema(self, schema: T.StructType) -> list[tuple[str, Any]]:
         return [(f.name, f.dataType) for f in schema.fields]
 
-    def cast_column(self, frame: DataFrame, name: str, dtype: T.DataType) -> tuple[str, Column]:
+    def cast_column(self, name: str, dtype: T.DataType) -> tuple[str, Column]:
         return name, self._cast_col(name, dtype)
 
     def _cast_col(self, col_ref: str, dtype: T.DataType) -> Column:

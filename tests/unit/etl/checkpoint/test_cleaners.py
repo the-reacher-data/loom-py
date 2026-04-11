@@ -43,7 +43,7 @@ def test_cleaner_logs_warning_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _raise(*_args: object, **_kwargs: object) -> tuple[object, str]:
-        raise Exception("no credentials")
+        raise PermissionError("no credentials")
 
     monkeypatch.setattr(fsspec_core, "url_to_fs", _raise)
 

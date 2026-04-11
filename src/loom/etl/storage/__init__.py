@@ -2,8 +2,31 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from loom.etl.storage._config import (
+    CatalogConnection,
+    FilePathConfig,
+    FileRoute,
+    MissingTablePolicy,
+    StorageConfig,
+    StorageDefaults,
+    StorageEngine,
+    TablePathConfig,
+    TableRoute,
+)
+from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
+from loom.etl.storage.routing import (
+    CatalogRouteResolver,
+    CatalogTarget,
+    CompositeRouteResolver,
+    FixedCatalogRouteResolver,
+    FixedPathRouteResolver,
+    PathRouteResolver,
+    PathTarget,
+    ResolvedTarget,
+    RoutedCatalog,
+    TableRouteResolver,
+    build_table_resolver,
+)
 
 __all__ = [
     "StorageEngine",
@@ -31,43 +54,3 @@ __all__ = [
     "RoutedCatalog",
     "build_table_resolver",
 ]
-
-_EXPORTS: dict[str, str] = {
-    # config
-    "StorageEngine": "loom.etl.storage._config",
-    "StorageConfig": "loom.etl.storage._config",
-    "StorageDefaults": "loom.etl.storage._config",
-    "CatalogConnection": "loom.etl.storage._config",
-    "TablePathConfig": "loom.etl.storage._config",
-    "TableRoute": "loom.etl.storage._config",
-    "FilePathConfig": "loom.etl.storage._config",
-    "FileRoute": "loom.etl.storage._config",
-    "MissingTablePolicy": "loom.etl.storage._config",
-    # locator
-    "TableLocation": "loom.etl.storage._locator",
-    "TableLocator": "loom.etl.storage._locator",
-    "PrefixLocator": "loom.etl.storage._locator",
-    "MappingLocator": "loom.etl.storage._locator",
-    # routing
-    "CatalogTarget": "loom.etl.storage.routing",
-    "PathTarget": "loom.etl.storage.routing",
-    "ResolvedTarget": "loom.etl.storage.routing",
-    "TableRouteResolver": "loom.etl.storage.routing",
-    "CatalogRouteResolver": "loom.etl.storage.routing",
-    "PathRouteResolver": "loom.etl.storage.routing",
-    "FixedCatalogRouteResolver": "loom.etl.storage.routing",
-    "FixedPathRouteResolver": "loom.etl.storage.routing",
-    "CompositeRouteResolver": "loom.etl.storage.routing",
-    "RoutedCatalog": "loom.etl.storage.routing",
-    "build_table_resolver": "loom.etl.storage.routing",
-}
-
-
-def __getattr__(name: str) -> Any:
-    module_path = _EXPORTS.get(name)
-    if module_path is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(module_path)
-    value = getattr(module, name)
-    globals()[name] = value
-    return value

@@ -15,9 +15,7 @@ class PolarsSchemaAligner:
     def iter_schema(self, schema: pl.Schema) -> list[tuple[str, Any]]:
         return [(name, dtype) for name, dtype in schema.items()]
 
-    def cast_column(
-        self, frame: pl.LazyFrame, name: str, dtype: pl.DataType | _DataTypeClass
-    ) -> tuple[str, pl.Expr]:
+    def cast_column(self, name: str, dtype: pl.DataType | _DataTypeClass) -> tuple[str, pl.Expr]:
         return name, self._cast_expr(pl.col(name), dtype)
 
     def _cast_expr(self, expr: pl.Expr, dtype: pl.DataType | _DataTypeClass) -> pl.Expr:

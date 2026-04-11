@@ -2,27 +2,11 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from loom.etl.declarative.expr._params import ParamExpr, params
+from loom.etl.pipeline._params import ETLParams
+from loom.etl.pipeline._pipeline import ETLPipeline
+from loom.etl.pipeline._process import ETLProcess
+from loom.etl.pipeline._step import ETLStep
+from loom.etl.pipeline._step_sql import StepSQL
 
 __all__ = ["ETLParams", "ETLStep", "StepSQL", "ETLProcess", "ETLPipeline", "params", "ParamExpr"]
-
-_EXPORTS: dict[str, str] = {
-    "ETLParams": "loom.etl.pipeline._params",
-    "ETLStep": "loom.etl.pipeline._step",
-    "StepSQL": "loom.etl.pipeline._step_sql",
-    "ETLProcess": "loom.etl.pipeline._process",
-    "ETLPipeline": "loom.etl.pipeline._pipeline",
-    "params": "loom.etl.declarative.expr._params",
-    "ParamExpr": "loom.etl.declarative.expr._params",
-}
-
-
-def __getattr__(name: str) -> Any:
-    module_path = _EXPORTS.get(name)
-    if module_path is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(module_path)
-    value = getattr(module, name)
-    globals()[name] = value
-    return value

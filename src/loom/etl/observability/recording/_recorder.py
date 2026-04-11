@@ -51,8 +51,6 @@ class ExecutionRecordsObserver:
             run_id=ctx.run_id,
             context_dict=self._pipeline_ctx,
             failure_dict=self._pipeline_failures,
-            status=status,
-            duration_ms=duration_ms,
             record_factory=lambda ctx, name, failure: PipelineRunRecord(
                 event=EventName.PIPELINE_END,
                 run_id=ctx.run_ctx.run_id,
@@ -85,8 +83,6 @@ class ExecutionRecordsObserver:
             run_id=process_run_id,
             context_dict=self._process_ctx,
             failure_dict=self._process_failures,
-            status=status,
-            duration_ms=duration_ms,
             record_factory=lambda ctx, name, failure: ProcessRunRecord(
                 event=EventName.PROCESS_END,
                 run_id=ctx.run_ctx.run_id,
@@ -161,8 +157,6 @@ class ExecutionRecordsObserver:
         run_id: str,
         context_dict: dict[str, _EntityContext],
         failure_dict: dict[str, _FailureContext],
-        status: RunStatus,
-        duration_ms: int,
         record_factory: Callable[[_EntityContext, str, _FailureContext | None], ExecutionRecord],
     ) -> ExecutionRecord | None:
         """Generic record creation helper for pipeline and process end events.
@@ -171,8 +165,6 @@ class ExecutionRecordsObserver:
             run_id: Unique identifier for the entity run.
             context_dict: Storage dict containing start context.
             failure_dict: Storage dict containing failure context.
-            status: Terminal status of the run.
-            duration_ms: Wall-clock duration in milliseconds.
             record_factory: Factory function to create the specific record type.
 
         Returns:

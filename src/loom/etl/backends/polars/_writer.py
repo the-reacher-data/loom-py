@@ -40,6 +40,7 @@ from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
     PathTarget,
+    ResolvedTarget,
     TableLocation,
     TableRouteResolver,
 )
@@ -150,11 +151,12 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     # Schema Hooks
     # ====================================================================
 
-    def _physical_schema(self, target: PathTarget) -> PolarsPhysicalSchema | None:
+    def _physical_schema(self, target: ResolvedTarget) -> PolarsPhysicalSchema | None:
         """Read physical schema from Delta log."""
+        path_target = self._as_path_target(target)
         physical = read_delta_physical_schema(
-            target.location.uri,
-            target.location.storage_options,
+            path_target.location.uri,
+            path_target.location.storage_options,
         )
         if physical is None:
             return None
@@ -187,15 +189,16 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     def _create(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
         partition_cols: tuple[str, ...] = (),
     ) -> None:
         """Create new Delta table."""
+        path_target = self._as_path_target(target)
         _ = schema_mode
-        location = target.location
-        self._warn_uc_first_create(target)
+        location = path_target.location
+        self._warn_uc_first_create(path_target)
         kwargs = self._write_kwargs(location)
 
         if partition_cols:
@@ -212,42 +215,45 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     def _append(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
     ) -> None:
         """Append to existing Delta table."""
+        path_target = self._as_path_target(target)
         _ = schema_mode
-        location = target.location
+        location = path_target.location
         write_deltalake(location.uri, frame, mode="append", **self._write_kwargs(location))
 
     def _replace(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         schema_mode: SchemaMode,
     ) -> None:
         """Overwrite existing Delta table."""
+        path_target = self._as_path_target(target)
         _ = schema_mode
-        location = target.location
+        location = path_target.location
         write_deltalake(location.uri, frame, mode="overwrite", **self._write_kwargs(location))
 
     def _replace_partitions(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         partition_cols: tuple[str, ...],
         schema_mode: SchemaMode,
     ) -> None:
         """Overwrite partitions present in frame."""
+        path_target = self._as_path_target(target)
         _ = schema_mode
         if frame.is_empty():
-            _log.warning("replace_partitions table=%s has 0 rows — nothing written", target)
+            _log.warning("replace_partitions table=%s has 0 rows — nothing written", path_target)
             return
 
-        location = target.location
+        location = path_target.location
         predicate = _build_partition_predicate(
             frame.select(list(partition_cols)).unique().iter_rows(named=True),
             partition_cols,
@@ -263,14 +269,15 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     def _replace_where(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         predicate: str,
         schema_mode: SchemaMode,
     ) -> None:
         """Overwrite rows matching SQL predicate."""
+        path_target = self._as_path_target(target)
         _ = schema_mode
-        location = target.location
+        location = path_target.location
         write_deltalake(
             location.uri,
             frame,
@@ -282,17 +289,22 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     def _upsert(
         self,
         frame: pl.DataFrame,
-        target: PathTarget,
+        target: ResolvedTarget,
         *,
         spec: UpsertSpec,
         existing_schema: PolarsPhysicalSchema,
     ) -> None:
         """Merge frame into target using Delta MERGE."""
+        path_target = self._as_path_target(target)
         _ = existing_schema
-        location = target.location
+        location = path_target.location
 
         # Collect partition combinations for pre-filter
-        combos = self._collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
+        combos = self._collect_partition_combos(
+            frame,
+            spec.partition_cols,
+            path_target.logical_ref.ref,
+        )
 
         merge_plan = _build_merge_plan(
             combos=combos,
@@ -340,6 +352,17 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             "pre-create the table in UC (Spark SQL/Databricks) before this write.",
             target.logical_ref.ref,
             target.location.uri,
+        )
+
+    @staticmethod
+    def _as_path_target(target: ResolvedTarget) -> PathTarget:
+        """Validate and narrow resolved target to path target for Polars writes."""
+        if isinstance(target, PathTarget):
+            return target
+        raise TypeError(
+            "PolarsTargetWriter requires path-resolved targets. "
+            "Configure routing so catalog refs resolve to PathTarget "
+            "(e.g. uc://catalog.schema.table)."
         )
 
     @staticmethod

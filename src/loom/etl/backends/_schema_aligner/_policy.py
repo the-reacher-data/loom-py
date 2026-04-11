@@ -51,7 +51,7 @@ class SchemaAlignmentPolicy(Generic[FrameT, SchemaT]):
         casts: list[tuple[str, Any]] = []
 
         for name, dtype in decision.present:
-            casts.append(self._aligner.cast_column(frame, name, dtype))
+            casts.append(self._aligner.cast_column(name, dtype))
 
         for name, dtype in decision.missing:
             casts.append(self._aligner.null_column(name, dtype))

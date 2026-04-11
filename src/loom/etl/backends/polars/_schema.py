@@ -129,9 +129,10 @@ def _struct_fields_to_dict(raw_fields: object) -> dict[str, pl.DataType]:
     """Convert Delta struct fields to Polars field dict."""
     if not _is_sequence(raw_fields):
         raise TypeError(f"Delta struct fields must be a sequence, got {type(raw_fields)!r}")
+    field_nodes: Sequence[object] = tuple(raw_fields)
 
     fields: dict[str, pl.DataType] = {}
-    for raw_field in raw_fields:
+    for raw_field in field_nodes:
         name, dtype = _parse_field(raw_field)
         fields[name] = dtype
     return fields
