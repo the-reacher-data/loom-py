@@ -165,3 +165,9 @@ Use the built-in test harnesses:
 
 These let you seed source tables, run one step in isolation, and assert output
 without wiring full storage infrastructure.
+
+## API reference
+
+The ETL API reference is generated from public docstrings:
+
+- [ETL API reference](../reference/api/etl)

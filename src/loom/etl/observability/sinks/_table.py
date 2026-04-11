@@ -24,7 +24,12 @@ class TableExecutionRecordStore:
 
     def write_record(self, record: ExecutionRecord) -> None:
         """Append *record* to the corresponding table."""
-        table_name = get_record_table_name(type(record))
+        try:
+            table_name = get_record_table_name(type(record))
+        except KeyError as exc:
+            raise TypeError(
+                f"TableExecutionRecordStore: unrecognised record type {type(record)!r}"
+            ) from exc
         self._writer.write_record(record, _table_ref(self._database, table_name))
 
 

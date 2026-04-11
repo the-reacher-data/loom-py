@@ -8,6 +8,7 @@ autodoc output easier to navigate.
    :maxdepth: 2
 
    api/core
+   api/etl
    api/repository
    api/rest
    api/testing

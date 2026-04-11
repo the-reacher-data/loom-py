@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from loom.etl.backends.spark.provider import SparkProvider
 from loom.etl.observability.config import (
     ExecutionRecordStoreConfig,
     ObservabilityConfig,
@@ -35,6 +39,19 @@ def _path_defaults(root: str) -> StorageDefaults:
 class _DummyExecutionRecordWriter:
     def write_record(self, record: object, table_ref: object, /) -> None:
         _ = (record, table_ref)
+
+
+class _DummyTargetWriter:
+    def __init__(self) -> None:
+        self.to_frame_calls: list[list[object]] = []
+        self.append_calls: list[tuple[object, object, object]] = []
+
+    def to_frame(self, records: list[object], /) -> object:
+        self.to_frame_calls.append(records)
+        return {"rows": records}
+
+    def append(self, frame: object, table_ref: object, params_instance: object, /) -> None:
+        self.append_calls.append((frame, table_ref, params_instance))
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +161,26 @@ def test_load_backend_provider_rejects_unknown_engine() -> None:
         load_backend_provider("duckdb")
 
 
+def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _DummyEP:
+        name = "polars"
+
+        def load(self) -> type[Any]:
+            from loom.etl.backends.polars.provider import PolarsProvider
+
+            return PolarsProvider
+
+    providers_module = importlib.import_module("loom.etl.runner._providers")
+    monkeypatch.setattr(
+        providers_module,
+        "entry_points",
+        lambda: {"loom.etl.backends": [_DummyEP()]},
+    )
+
+    provider = load_backend_provider("polars")
+    assert type(provider).__name__ == "PolarsProvider"
+
+
 # ---------------------------------------------------------------------------
 # make_observers
 # ---------------------------------------------------------------------------
@@ -238,6 +275,48 @@ def test_make_execution_record_writer_spark_database_requires_session() -> None:
         make_execution_record_writer(StorageConfig(engine="spark"), obs_config, spark=None)
 
 
+def test_spark_provider_record_writer_root_returns_target_writer_wrapper() -> None:
+    from unittest.mock import MagicMock
+
+    spark = MagicMock()
+    provider = SparkProvider()
+    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+
+    writer = provider.create_execution_record_writer(
+        StorageConfig(engine="spark"),
+        store,
+        spark=spark,
+    )
+    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+
+
+def test_target_execution_record_writer_direct_module_import_executes_frame_and_append() -> None:
+    from loom.etl.declarative.expr._refs import TableRef
+    from loom.etl.observability.records import EventName, PipelineRunRecord, RunStatus
+
+    writer_module = importlib.reload(
+        importlib.import_module("loom.etl.observability.sinks._writer")
+    )
+    target_writer = _DummyTargetWriter()
+    writer = writer_module.TargetExecutionRecordWriter(target_writer)
+
+    record = PipelineRunRecord(
+        event=EventName.PIPELINE_END,
+        run_id="run-1",
+        correlation_id=None,
+        attempt=1,
+        pipeline="DailyPipeline",
+        started_at=datetime.now(UTC),
+        status=RunStatus.SUCCESS,
+        duration_ms=1,
+        error=None,
+    )
+
+    writer.write_record(record, TableRef("ops.pipeline_runs"))
+    assert len(target_writer.to_frame_calls) == 1
+    assert len(target_writer.append_calls) == 1
+
+
 def test_make_observers_record_store_requires_record_writer() -> None:
     config = ObservabilityConfig(
         log=False, record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs")
@@ -265,3 +344,13 @@ def test_make_checkpoint_store_with_root_returns_store() -> None:
     result = make_checkpoint_store(config)
 
     assert isinstance(result, CheckpointStore)
+
+
+def test_schema_mode_module_import_exports_expected_values() -> None:
+    schema_mode_module = importlib.reload(
+        importlib.import_module("loom.etl.declarative.target._schema_mode")
+    )
+    assert schema_mode_module.SchemaMode.STRICT.value == "strict"
+    assert schema_mode_module.SchemaMode.EVOLVE.value == "evolve"
+    assert schema_mode_module.SchemaMode.OVERWRITE.value == "overwrite"
+    assert schema_mode_module.__all__ == ["SchemaMode"]
