@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from delta.tables import DeltaTable
@@ -31,6 +32,13 @@ from loom.etl.declarative._write_options import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
+from loom.etl.observability.records import (
+    ExecutionRecord,
+    PipelineRunRecord,
+    ProcessRunRecord,
+    RunStatus,
+    StepRunRecord,
+)
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import (
@@ -81,6 +89,19 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         """Append frame to table (legacy API, creates table on first write)."""
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
+
+    def to_frame(self, records: Sequence[ExecutionRecord], /) -> DataFrame:
+        """Convert execution records into a Spark DataFrame."""
+        if not records:
+            raise ValueError("SparkTargetWriter.to_frame requires at least one record.")
+        first = records[0]
+        record_type = type(first)
+        if any(type(record) is not record_type for record in records):
+            raise TypeError(
+                "SparkTargetWriter.to_frame requires homogeneous record types per batch."
+            )
+        rows = [_record_to_row(record) for record in records]
+        return self._spark.createDataFrame(rows, schema=_spark_record_schema(first))
 
     # ====================================================================
     # Schema Hooks
@@ -339,3 +360,67 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
 
 
 __all__ = ["SparkTargetWriter"]
+
+
+def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
+    """Convert an execution record dataclass into a plain row mapping."""
+    row = dataclasses.asdict(record)
+    row.pop("event", None)
+    row["status"] = str(cast(RunStatus, row["status"]))
+    return row
+
+
+def _spark_record_schema(record: ExecutionRecord) -> T.StructType:
+    if isinstance(record, PipelineRunRecord):
+        return T.StructType(
+            [
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("pipeline", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+                T.StructField("error_type", T.StringType(), True),
+                T.StructField("error_message", T.StringType(), True),
+                T.StructField("failed_step_run_id", T.StringType(), True),
+                T.StructField("failed_step", T.StringType(), True),
+            ]
+        )
+    if isinstance(record, ProcessRunRecord):
+        return T.StructType(
+            [
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("process_run_id", T.StringType(), False),
+                T.StructField("process", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+                T.StructField("error_type", T.StringType(), True),
+                T.StructField("error_message", T.StringType(), True),
+                T.StructField("failed_step_run_id", T.StringType(), True),
+                T.StructField("failed_step", T.StringType(), True),
+            ]
+        )
+    if isinstance(record, StepRunRecord):
+        return T.StructType(
+            [
+                T.StructField("run_id", T.StringType(), False),
+                T.StructField("correlation_id", T.StringType(), True),
+                T.StructField("attempt", T.LongType(), False),
+                T.StructField("step_run_id", T.StringType(), False),
+                T.StructField("step", T.StringType(), False),
+                T.StructField("started_at", T.TimestampType(), False),
+                T.StructField("status", T.StringType(), False),
+                T.StructField("duration_ms", T.LongType(), False),
+                T.StructField("error", T.StringType(), True),
+                T.StructField("process_run_id", T.StringType(), True),
+                T.StructField("error_type", T.StringType(), True),
+                T.StructField("error_message", T.StringType(), True),
+            ]
+        )
+    raise TypeError(f"Unsupported execution record type: {type(record)!r}")

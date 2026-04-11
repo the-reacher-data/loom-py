@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
+from polars.datatypes import DataTypeClass
 
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
@@ -26,6 +29,13 @@ from loom.etl.backends.polars._schema import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
+from loom.etl.observability.records import (
+    ExecutionRecord,
+    PipelineRunRecord,
+    ProcessRunRecord,
+    RunStatus,
+    StepRunRecord,
+)
 from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
@@ -38,6 +48,60 @@ from loom.etl.storage._locator import TableLocator, _as_locator
 from ._file_writer import PolarsFileWriter
 
 _log = logging.getLogger(__name__)
+
+_S: pl.DataType | DataTypeClass = pl.String
+_I64: pl.DataType | DataTypeClass = pl.Int64
+_TS: pl.DataType | DataTypeClass = pl.Datetime("us", "UTC")
+
+_PIPELINE_SCHEMA = pl.Schema(
+    {
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "pipeline": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "error_type": _S,
+        "error_message": _S,
+        "failed_step_run_id": _S,
+        "failed_step": _S,
+    }
+)
+_PROCESS_SCHEMA = pl.Schema(
+    {
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "process_run_id": _S,
+        "process": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "error_type": _S,
+        "error_message": _S,
+        "failed_step_run_id": _S,
+        "failed_step": _S,
+    }
+)
+_STEP_SCHEMA = pl.Schema(
+    {
+        "run_id": _S,
+        "correlation_id": _S,
+        "attempt": _I64,
+        "step_run_id": _S,
+        "step": _S,
+        "started_at": _TS,
+        "status": _S,
+        "duration_ms": _I64,
+        "error": _S,
+        "process_run_id": _S,
+        "error_type": _S,
+        "error_message": _S,
+    }
+)
 
 
 class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysicalSchema]):
@@ -68,6 +132,19 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         """Append frame to table (legacy API, creates table on first write)."""
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
+
+    def to_frame(self, records: Sequence[ExecutionRecord], /) -> pl.LazyFrame:
+        """Convert execution records into a Polars LazyFrame."""
+        if not records:
+            raise ValueError("PolarsTargetWriter.to_frame requires at least one record.")
+        first = records[0]
+        record_type = type(first)
+        if any(type(record) is not record_type for record in records):
+            raise TypeError(
+                "PolarsTargetWriter.to_frame requires homogeneous record types per batch."
+            )
+        rows = [_record_to_row(record) for record in records]
+        return pl.from_dicts(rows, schema=_polars_record_schema(first)).lazy()
 
     # ====================================================================
     # Schema Hooks
@@ -291,3 +368,21 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
 
 __all__ = ["PolarsTargetWriter"]
+
+
+def _record_to_row(record: ExecutionRecord) -> dict[str, Any]:
+    """Convert an execution record dataclass into a plain row mapping."""
+    row = dataclasses.asdict(record)
+    row.pop("event", None)
+    row["status"] = str(cast(RunStatus, row["status"]))
+    return row
+
+
+def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:
+    if isinstance(record, PipelineRunRecord):
+        return _PIPELINE_SCHEMA
+    if isinstance(record, ProcessRunRecord):
+        return _PROCESS_SCHEMA
+    if isinstance(record, StepRunRecord):
+        return _STEP_SCHEMA
+    raise TypeError(f"Unsupported execution record type: {type(record)!r}")

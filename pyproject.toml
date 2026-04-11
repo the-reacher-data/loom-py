@@ -56,6 +56,10 @@ celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
 [project.entry-points."pytest11"]
 loom-spark = "loom.etl.testing.spark"
 
+[project.entry-points."loom.etl.backends"]
+polars = "loom.etl.backends.polars.provider:PolarsProvider"
+spark = "loom.etl.backends.spark.provider:SparkProvider"
+
 [build-system]
 requires = ["hatchling>=1.24.0"]
 build-backend = "hatchling.build"

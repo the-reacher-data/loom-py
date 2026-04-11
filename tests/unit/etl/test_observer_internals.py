@@ -185,7 +185,7 @@ def test_table_execution_record_store_writes_to_expected_table_paths(
     sink.write_record(record)
 
     assert len(writer.calls) == 1
-    saved_record, table_ref = writer.calls[0]
+    saved_record, table_ref = next(iter(writer.calls))
     assert saved_record is record
     assert table_ref == TableRef("step_runs")
 
@@ -212,7 +212,9 @@ def test_table_execution_record_store_applies_database_prefix() -> None:
     )
     sink.write_record(record)
 
-    assert writer.calls[0][1] == TableRef("ops.pipeline_runs")
+    assert len(writer.calls) == 1
+    _, table_ref = next(iter(writer.calls))
+    assert table_ref == TableRef("ops.pipeline_runs")
 
 
 # ---------------------------------------------------------------------------

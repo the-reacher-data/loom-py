@@ -13,6 +13,7 @@ from loom.etl.observability.config import (
 )
 from loom.etl.observability.factory import make_observers
 from loom.etl.observability.observers.structlog import StructlogRunObserver
+from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runner._wiring import make_backends, make_checkpoint_store
 from loom.etl.storage._config import (
     CatalogConnection,
@@ -122,6 +123,16 @@ def test_make_backends_spark_catalog_route_builds_backends() -> None:
     reader, writer = make_backends(config, spark=spark)
     assert isinstance(reader, SparkSourceReader)
     assert isinstance(writer, SparkTargetWriter)
+
+
+def test_load_backend_provider_resolves_registered_providers() -> None:
+    assert type(load_backend_provider("polars")).__name__ == "PolarsProvider"
+    assert type(load_backend_provider("spark")).__name__ == "SparkProvider"
+
+
+def test_load_backend_provider_rejects_unknown_engine() -> None:
+    with pytest.raises(ValueError, match="No backend provider registered"):
+        load_backend_provider("duckdb")
 
 
 # ---------------------------------------------------------------------------
