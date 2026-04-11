@@ -14,6 +14,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  pull-requests: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -30,6 +31,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -75,16 +77,6 @@ jobs:
           Manual release triggered from branch: ${SOURCE_BRANCH}
           EOF
 
-      - name: Update CHANGELOG.md
-        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -s CHANGELOG_RELEASE.md ]; then
-            cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
-            mv CHANGELOG_MERGED.md CHANGELOG.md
-          fi
-
       - name: Sync project version
         if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
@@ -95,27 +87,37 @@ jobs:
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
 
-      - name: Commit version bump and changelog
-        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
+      - name: Open version bump PR
+        if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add pyproject.toml
-          if git diff --cached --quiet; then
-            echo "Nothing to commit for pyproject.toml"
-          fi
-          if [ -f CHANGELOG.md ]; then
-            git add CHANGELOG.md
+          BRANCH="docs/release-v${VERSION}"
+          git checkout -b "${BRANCH}"
+
+          if [ -f CHANGELOG_RELEASE.md ]; then
+            cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
+            mv CHANGELOG_MERGED.md CHANGELOG.md
           fi
 
-          git diff --cached --quiet && { echo "No changes to commit"; exit 0; }
-          git commit -m "chore(release): bump version to ${VERSION} [skip ci]"
-          git push origin HEAD:master
+          git add pyproject.toml CHANGELOG.md
+          git diff --staged --quiet && exit 0
+          git commit -m "chore(release): bump version to ${VERSION}"
+          git push origin "${BRANCH}"
+
+          gh pr create \
+            --title "chore(release): bump version to ${VERSION}" \
+            --body "Automated version bump and changelog update after release v${VERSION}." \
+            --base master \
+            --head "${BRANCH}"
+
+          gh pr merge "${BRANCH}" --squash --auto --delete-branch
 
       - name: Build package
         if: ${{ steps.version.outputs.deploy == 'true' }}

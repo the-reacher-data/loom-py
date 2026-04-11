@@ -24,9 +24,41 @@ rest = [
 sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
 config = ["omegaconf>=2.3,<3.0"]
 cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
+etl-polars = [
+    "polars>=1.0,<2.0",
+    "deltalake>=1.5,<2.0",
+    "fsspec>=2024.2.0",
+    "opentelemetry-api>=1.20,<2.0",
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
+]
+etl-spark = [
+    "pyspark>=3.5,<4.0",
+    "delta-spark>=3.2,<4.0",
+    "findspark>=2.0,<3.0",
+    "fsspec>=2024.2.0",
+    "opentelemetry-api>=1.20,<2.0",
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
+]
+etl-otel = [
+    "opentelemetry-api>=1.20,<2.0",
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
+]
 pyspark = ["pyspark>=3.5,<4.0"]
 prometheus = ["prometheus-client>=0.20"]
 celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
+
+[project.entry-points."pytest11"]
+loom-spark = "loom.etl.testing.spark"
+
+[project.entry-points."loom.etl.backends"]
+polars = "loom.etl.backends.polars.provider:PolarsProvider"
+spark = "loom.etl.backends.spark.provider:SparkProvider"
 
 [build-system]
 requires = ["hatchling>=1.24.0"]
@@ -48,13 +80,25 @@ dev = [
     "pyright>=1.1.390,<2.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pyjwt>=2.12.0",
     "redis>=5.0.0",
     "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
+    "polars>=1.0,<2.0",
+    "deltalake>=1.5,<2.0",
+    "fsspec>=2024.2.0",
     "httpx>=0.28.1",
     "httptools>=0.6,<1.0",
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
+    "delta-spark>=3.2,<4.0",
+    "chispa>=0.10,<1.0",
+    "pytest-cov>=7.1.0",
+    "findspark>=2.0.1",
+    "opentelemetry-api>=1.20,<2.0",
+    "opentelemetry-sdk>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -87,12 +131,19 @@ extend-immutable-calls = [
 pythonVersion = "3.11"
 include = ["src"]
 typeCheckingMode = "standard"
+reportMissingModuleSource = "none"
+reportMissingImports = "none"
+ignore = ["src/loom/etl/testing/spark.py"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 mypy_path = ["src"]
 exclude = ["^tests/"]
+
+[[tool.mypy.overrides]]
+module = ["pyspark.*", "delta.*", "findspark", "fsspec.*", "chispa.*", "pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

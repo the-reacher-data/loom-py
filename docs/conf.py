@@ -6,6 +6,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -52,7 +53,14 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
 
-def _skip_duplicate_reexports(app, what, name, obj, skip, options):
+def _skip_duplicate_reexports(
+    app: Any,
+    what: str,
+    name: str,
+    obj: Any,
+    skip: bool,
+    options: Any,
+) -> bool:
     """Skip known re-exported symbols that duplicate canonical API objects."""
     del what, obj, options
     current_module = app.env.temp_data.get("autodoc:module")
@@ -81,9 +89,13 @@ intersphinx_mapping = {
 autodoc_mock_imports = [
     "aiocache",
     "celery",
+    "deltalake",
     "fastapi",
+    "fsspec",
     "kombu",
     "omegaconf",
+    "polars",
+    "pyarrow",
     "prometheus_client",
     "pydantic",
     "pyspark",
@@ -94,6 +106,6 @@ autodoc_mock_imports = [
 ]
 
 
-def setup(app):
+def setup(app: Any) -> None:
     """Register Sphinx hooks."""
     app.connect("autodoc-skip-member", _skip_duplicate_reexports)
