@@ -57,7 +57,7 @@ def test_observability_config_supports_open_otel_config() -> None:
             "otel_config": {
                 "service_name": "loom-etl",
                 "protocol": "grpc",
-                "endpoint": "http://collector:4317",
+                "endpoint": "https://collector:4317",
                 "headers": {"x-api-key": "token"},
                 "resource_attributes": {"env": "prod"},
                 "span_attributes": {"team": "data-platform"},
@@ -71,7 +71,7 @@ def test_observability_config_supports_open_otel_config() -> None:
     assert cfg.otel_config == OtelConfig(
         service_name="loom-etl",
         protocol="grpc",
-        endpoint="http://collector:4317",
+        endpoint="https://collector:4317",
         headers={"x-api-key": "token"},
         resource_attributes={"env": "prod"},
         span_attributes={"team": "data-platform"},
