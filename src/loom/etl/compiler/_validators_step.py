@@ -14,6 +14,7 @@ from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.target import TargetSpec
+from loom.etl.pipeline._step_sql import StepSQL
 
 
 class _BinaryPredicateLike(Protocol):
@@ -130,7 +131,7 @@ def _collect_kw_only_frames(params: list[inspect.Parameter]) -> dict[str, inspec
 
 
 def _is_sql_step_type(step_type: type[Any]) -> bool:
-    return bool(getattr(step_type, "_loom_sql_step", False))
+    return issubclass(step_type, StepSQL)
 
 
 def _check_missing_frames(

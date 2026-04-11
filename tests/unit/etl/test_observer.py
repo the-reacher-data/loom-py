@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -17,6 +18,12 @@ from loom.etl.executor import (
     RunStatus,
     StepRunRecord,
     StructlogRunObserver,
+)
+from loom.etl.observability.recording._recorder import (
+    _build_pipeline_record,
+    _build_process_record,
+    _EntityContext,
+    _FailureContext,
 )
 from loom.etl.testing import StubRunObserver
 
@@ -260,3 +267,85 @@ def test_execution_records_observer_writes_pipeline_record_on_end() -> None:
     assert isinstance(record, PipelineRunRecord)
     assert record.pipeline == "DailyPipeline"
     assert record.status == RunStatus.SUCCESS
+
+
+def test_build_pipeline_record_without_failure() -> None:
+    entity_ctx = _EntityContext(
+        run_ctx=RunContext("run-1", correlation_id="corr-1", attempt=2),
+        name="DailyPipeline",
+        started_at=datetime.now(tz=UTC),
+    )
+    record = _build_pipeline_record(entity_ctx, None, status=RunStatus.SUCCESS, duration_ms=120)
+
+    assert record.run_id == "run-1"
+    assert record.pipeline == "DailyPipeline"
+    assert record.status is RunStatus.SUCCESS
+    assert record.error is None
+    assert record.failed_step_run_id is None
+
+
+def test_build_pipeline_record_with_failure() -> None:
+    entity_ctx = _EntityContext(
+        run_ctx=RunContext("run-1"),
+        name="DailyPipeline",
+        started_at=datetime.now(tz=UTC),
+    )
+    failure = _FailureContext(
+        step_run_id="step-1",
+        step="BadStep",
+        error="ValueError('boom')",
+        error_type="ValueError",
+        error_message="boom",
+    )
+    record = _build_pipeline_record(entity_ctx, failure, status=RunStatus.FAILED, duration_ms=5)
+
+    assert record.status is RunStatus.FAILED
+    assert record.error_type == "ValueError"
+    assert record.failed_step == "BadStep"
+    assert record.failed_step_run_id == "step-1"
+
+
+def test_build_process_record_without_failure() -> None:
+    entity_ctx = _EntityContext(
+        run_ctx=RunContext("run-1", correlation_id="corr-1", attempt=2),
+        name="PreparedProcess",
+        started_at=datetime.now(tz=UTC),
+    )
+    record = _build_process_record(
+        entity_ctx,
+        "proc-1",
+        None,
+        status=RunStatus.SUCCESS,
+        duration_ms=30,
+    )
+
+    assert record.run_id == "run-1"
+    assert record.process_run_id == "proc-1"
+    assert record.process == "PreparedProcess"
+    assert record.error is None
+
+
+def test_build_process_record_with_failure() -> None:
+    entity_ctx = _EntityContext(
+        run_ctx=RunContext("run-1"),
+        name="PreparedProcess",
+        started_at=datetime.now(tz=UTC),
+    )
+    failure = _FailureContext(
+        step_run_id="step-1",
+        step="BadStep",
+        error="RuntimeError('x')",
+        error_type="RuntimeError",
+        error_message="x",
+    )
+    record = _build_process_record(
+        entity_ctx,
+        "proc-1",
+        failure,
+        status=RunStatus.FAILED,
+        duration_ms=12,
+    )
+
+    assert record.status is RunStatus.FAILED
+    assert record.error_type == "RuntimeError"
+    assert record.failed_step == "BadStep"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -11,7 +10,6 @@ from typing import Any
 from loom.etl.compiler._plan import PipelinePlan, ProcessPlan, StepPlan
 from loom.etl.observability.records import (
     EventName,
-    ExecutionRecord,
     PipelineRunRecord,
     ProcessRunRecord,
     RunContext,
@@ -47,28 +45,19 @@ class ExecutionRecordsObserver:
             )
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
-        record = self._create_record(
-            run_id=ctx.run_id,
-            context_dict=self._pipeline_ctx,
-            failure_dict=self._pipeline_failures,
-            record_factory=lambda ctx, name, failure: PipelineRunRecord(
-                event=EventName.PIPELINE_END,
-                run_id=ctx.run_ctx.run_id,
-                correlation_id=ctx.run_ctx.correlation_id,
-                attempt=ctx.run_ctx.attempt,
-                pipeline=name,
-                started_at=ctx.started_at,
+        with self._write_lock:
+            entity_ctx = self._pipeline_ctx.pop(ctx.run_id, None)
+            failure = self._pipeline_failures.pop(ctx.run_id, None)
+        if entity_ctx is None:
+            return
+        self._store.write_record(
+            _build_pipeline_record(
+                entity_ctx,
+                failure,
                 status=status,
                 duration_ms=duration_ms,
-                error=failure.error if failure else None,
-                error_type=failure.error_type if failure else None,
-                error_message=failure.error_message if failure else None,
-                failed_step_run_id=failure.step_run_id if failure else None,
-                failed_step=failure.step if failure else None,
-            ),
+            )
         )
-        if record:
-            self._store.write_record(record)
 
     def on_process_start(self, plan: ProcessPlan, ctx: RunContext, process_run_id: str) -> None:
         with self._write_lock:
@@ -79,29 +68,20 @@ class ExecutionRecordsObserver:
             )
 
     def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
-        record = self._create_record(
-            run_id=process_run_id,
-            context_dict=self._process_ctx,
-            failure_dict=self._process_failures,
-            record_factory=lambda ctx, name, failure: ProcessRunRecord(
-                event=EventName.PROCESS_END,
-                run_id=ctx.run_ctx.run_id,
-                correlation_id=ctx.run_ctx.correlation_id,
-                attempt=ctx.run_ctx.attempt,
-                process_run_id=process_run_id,
-                process=name,
-                started_at=ctx.started_at,
+        with self._write_lock:
+            entity_ctx = self._process_ctx.pop(process_run_id, None)
+            failure = self._process_failures.pop(process_run_id, None)
+        if entity_ctx is None:
+            return
+        self._store.write_record(
+            _build_process_record(
+                entity_ctx,
+                process_run_id,
+                failure,
                 status=status,
                 duration_ms=duration_ms,
-                error=failure.error if failure else None,
-                error_type=failure.error_type if failure else None,
-                error_message=failure.error_message if failure else None,
-                failed_step_run_id=failure.step_run_id if failure else None,
-                failed_step=failure.step if failure else None,
-            ),
+            )
         )
-        if record:
-            self._store.write_record(record)
 
     def on_step_start(self, plan: StepPlan, ctx: RunContext, step_run_id: str) -> None:
         with self._write_lock:
@@ -152,33 +132,6 @@ class ExecutionRecordsObserver:
         with self._write_lock:
             self._step_errors[step_run_id] = _error_details(exc)
 
-    def _create_record(
-        self,
-        run_id: str,
-        context_dict: dict[str, _EntityContext],
-        failure_dict: dict[str, _FailureContext],
-        record_factory: Callable[[_EntityContext, str, _FailureContext | None], ExecutionRecord],
-    ) -> ExecutionRecord | None:
-        """Generic record creation helper for pipeline and process end events.
-
-        Args:
-            run_id: Unique identifier for the entity run.
-            context_dict: Storage dict containing start context.
-            failure_dict: Storage dict containing failure context.
-            record_factory: Factory function to create the specific record type.
-
-        Returns:
-            The created record or None if context not found.
-        """
-        with self._write_lock:
-            ctx = context_dict.pop(run_id, None)
-            failure = failure_dict.pop(run_id, None)
-
-        if ctx is None:
-            return None
-
-        return record_factory(ctx, ctx.name, failure)
-
 
 def _now() -> datetime:
     return datetime.now(tz=UTC)
@@ -214,6 +167,58 @@ def _error_details(exc: Exception) -> _ErrorDetails:
         error=repr(exc),
         error_type=type(exc).__name__,
         error_message=str(exc),
+    )
+
+
+def _build_pipeline_record(
+    entity_ctx: _EntityContext,
+    failure: _FailureContext | None,
+    *,
+    status: RunStatus,
+    duration_ms: int,
+) -> PipelineRunRecord:
+    """Build pipeline end record from captured context and optional failure."""
+    return PipelineRunRecord(
+        event=EventName.PIPELINE_END,
+        run_id=entity_ctx.run_ctx.run_id,
+        correlation_id=entity_ctx.run_ctx.correlation_id,
+        attempt=entity_ctx.run_ctx.attempt,
+        pipeline=entity_ctx.name,
+        started_at=entity_ctx.started_at,
+        status=status,
+        duration_ms=duration_ms,
+        error=failure.error if failure else None,
+        error_type=failure.error_type if failure else None,
+        error_message=failure.error_message if failure else None,
+        failed_step_run_id=failure.step_run_id if failure else None,
+        failed_step=failure.step if failure else None,
+    )
+
+
+def _build_process_record(
+    entity_ctx: _EntityContext,
+    process_run_id: str,
+    failure: _FailureContext | None,
+    *,
+    status: RunStatus,
+    duration_ms: int,
+) -> ProcessRunRecord:
+    """Build process end record from captured context and optional failure."""
+    return ProcessRunRecord(
+        event=EventName.PROCESS_END,
+        run_id=entity_ctx.run_ctx.run_id,
+        correlation_id=entity_ctx.run_ctx.correlation_id,
+        attempt=entity_ctx.run_ctx.attempt,
+        process_run_id=process_run_id,
+        process=entity_ctx.name,
+        started_at=entity_ctx.started_at,
+        status=status,
+        duration_ms=duration_ms,
+        error=failure.error if failure else None,
+        error_type=failure.error_type if failure else None,
+        error_message=failure.error_message if failure else None,
+        failed_step_run_id=failure.step_run_id if failure else None,
+        failed_step=failure.step if failure else None,
     )
 
 

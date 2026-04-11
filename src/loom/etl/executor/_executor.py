@@ -52,6 +52,7 @@ from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.observability.observers.protocol import ETLRunObserver
 from loom.etl.observability.records import RunContext, RunStatus
+from loom.etl.pipeline._step_sql import StepSQL
 from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
 
 _log = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ class ETLExecutor:
         try:
             frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
             step = plan.step_type()
-            if _is_sql_step(step):
+            if isinstance(step, StepSQL):
                 query = _render_sql_query(step, params)
                 sql_reader = self._require_sql_executor(step)
                 result = sql_reader.execute_sql(frames, query)
@@ -339,11 +340,6 @@ def _new_run_id() -> str:
 def _ms(start: float) -> int:
     """Elapsed milliseconds since ``start`` (from ``time.monotonic()``)."""
     return int((time.monotonic() - start) * 1000)
-
-
-def _is_sql_step(step: Any) -> bool:
-    """Return ``True`` when *step* follows StepSQL marker contract."""
-    return bool(getattr(step, "_loom_sql_step", False))
 
 
 def _render_sql_query(step: Any, params: Any) -> str:

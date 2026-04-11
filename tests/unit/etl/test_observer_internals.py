@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from unittest.mock import patch
+from threading import Thread
+from unittest.mock import MagicMock, patch
 
 import pytest
+from opentelemetry.trace import NonRecordingSpan, StatusCode
 
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.observability.observers._labels import source_label, target_label
 from loom.etl.observability.observers.composite import CompositeObserver
+from loom.etl.observability.observers.otel import OtelRunObserver, _SpanRegistry
 from loom.etl.observability.observers.structlog import StructlogRunObserver
 from loom.etl.observability.recording import ExecutionRecordsObserver
 from loom.etl.observability.records import (
@@ -270,14 +273,10 @@ def test_target_execution_record_writer_uses_to_frame_then_append() -> None:
 
 
 def _make_span_mock() -> object:
-    from unittest.mock import MagicMock
-
     return MagicMock()
 
 
 def _make_tracer_mock(span: object) -> object:
-    from unittest.mock import MagicMock
-
     tracer = MagicMock()
     tracer.start_span.return_value = span
     return tracer
@@ -306,12 +305,6 @@ def _step_plan() -> object:
 
 
 def test_otel_observer_starts_and_ends_pipeline_span() -> None:
-    from unittest.mock import patch
-
-    from opentelemetry.trace import StatusCode
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     span = _make_span_mock()
     tracer = _make_tracer_mock(span)
 
@@ -329,12 +322,6 @@ def test_otel_observer_starts_and_ends_pipeline_span() -> None:
 
 
 def test_otel_observer_sets_error_status_on_pipeline_failure() -> None:
-    from unittest.mock import patch
-
-    from opentelemetry.trace import StatusCode
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     span = _make_span_mock()
     tracer = _make_tracer_mock(span)
 
@@ -348,10 +335,6 @@ def test_otel_observer_sets_error_status_on_pipeline_failure() -> None:
 
 
 def test_otel_observer_starts_process_span_as_pipeline_child() -> None:
-    from unittest.mock import MagicMock, patch
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     pipeline_span = MagicMock()
     process_span = MagicMock()
     tracer = MagicMock()
@@ -372,10 +355,6 @@ def test_otel_observer_starts_process_span_as_pipeline_child() -> None:
 
 
 def test_otel_observer_starts_step_span_with_target_attributes() -> None:
-    from unittest.mock import MagicMock, patch
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     pipeline_span = MagicMock()
     step_span = MagicMock()
     tracer = MagicMock()
@@ -396,10 +375,6 @@ def test_otel_observer_starts_step_span_with_target_attributes() -> None:
 
 
 def test_otel_observer_records_exception_on_step_error() -> None:
-    from unittest.mock import MagicMock, patch
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     pipeline_span = MagicMock()
     step_span = MagicMock()
     tracer = MagicMock()
@@ -420,12 +395,6 @@ def test_otel_observer_records_exception_on_step_error() -> None:
 
 def test_otel_observer_tolerates_end_without_matching_start() -> None:
     """on_*_end for unknown IDs must not raise."""
-    from unittest.mock import patch
-
-    from opentelemetry.trace import NonRecordingSpan
-
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
     with patch("loom.etl.observability.observers.otel._tracer") as tracer:
         tracer.start_span.return_value = NonRecordingSpan(
             type(
@@ -446,3 +415,34 @@ def test_otel_observer_tolerates_end_without_matching_start() -> None:
         observer.on_pipeline_end(ctx, RunStatus.SUCCESS, 0)
         observer.on_process_end("unknown-proc", RunStatus.SUCCESS, 0)
         observer.on_step_end("unknown-step", RunStatus.SUCCESS, 0)
+
+
+def test_span_registry_pop_missing_returns_none() -> None:
+    registry = _SpanRegistry()
+    assert registry.pop("missing") is None
+
+
+def test_span_registry_supports_concurrent_put_get_pop() -> None:
+    registry = _SpanRegistry()
+    total = 200
+
+    def _worker(start: int, end: int) -> None:
+        for i in range(start, end):
+            key = f"k-{i}"
+            value = object()
+            registry.put(key, value)
+            assert registry.get(key) is value
+
+    threads = [Thread(target=_worker, args=(0, 100)), Thread(target=_worker, args=(100, total))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    popped = 0
+    for i in range(total):
+        value = registry.pop(f"k-{i}")
+        if value is not None:
+            popped += 1
+
+    assert popped == total

@@ -76,7 +76,7 @@ class OtelRunObserver:
     errors are recorded via ``span.record_exception`` in ``on_step_error``.
 
     Thread-safe: parallel step groups call ``on_step_start`` / ``on_step_end``
-    concurrently — all span dicts are guarded by a single lock.
+    concurrently — span registries guard access with internal locks.
 
     Example::
 
@@ -95,10 +95,9 @@ class OtelRunObserver:
         self._tracer = tracer if tracer is not None else _tracer
         self._static_attributes = dict(static_attributes or {})
         self._tracer_provider = tracer_provider
-        self._lock = threading.Lock()
-        self._pipeline_spans: dict[str, Any] = {}
-        self._process_spans: dict[str, Any] = {}
-        self._step_spans: dict[str, Any] = {}
+        self._pipeline_spans = _SpanRegistry()
+        self._process_spans = _SpanRegistry()
+        self._step_spans = _SpanRegistry()
 
     def on_pipeline_start(self, plan: Any, _params: Any, ctx: RunContext) -> None:
         span = self._tracer.start_span(
@@ -110,12 +109,10 @@ class OtelRunObserver:
                 "loom.attempt": ctx.attempt,
             },
         )
-        with self._lock:
-            self._pipeline_spans[ctx.run_id] = span
+        self._pipeline_spans.put(ctx.run_id, span)
 
     def on_pipeline_end(self, ctx: RunContext, status: RunStatus, duration_ms: int) -> None:
-        with self._lock:
-            span = self._pipeline_spans.pop(ctx.run_id, None)
+        span = self._pipeline_spans.pop(ctx.run_id)
         if span is None:
             return
         span.set_attribute(_ATTR_STATUS, str(status))
@@ -127,8 +124,7 @@ class OtelRunObserver:
             provider.force_flush()
 
     def on_process_start(self, plan: Any, ctx: RunContext, process_run_id: str) -> None:
-        with self._lock:
-            pipeline_span = self._pipeline_spans.get(ctx.run_id)
+        pipeline_span = self._pipeline_spans.get(ctx.run_id)
         parent_ctx = set_span_in_context(pipeline_span) if pipeline_span is not None else None
         span = self._tracer.start_span(
             "loom.etl.process",
@@ -140,12 +136,10 @@ class OtelRunObserver:
                 _ATTR_RUN_ID: ctx.run_id,
             },
         )
-        with self._lock:
-            self._process_spans[process_run_id] = span
+        self._process_spans.put(process_run_id, span)
 
     def on_process_end(self, process_run_id: str, status: RunStatus, duration_ms: int) -> None:
-        with self._lock:
-            span = self._process_spans.pop(process_run_id, None)
+        span = self._process_spans.pop(process_run_id)
         if span is None:
             return
         span.set_attribute(_ATTR_STATUS, str(status))
@@ -154,8 +148,7 @@ class OtelRunObserver:
         span.end()
 
     def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
-        with self._lock:
-            pipeline_span = self._pipeline_spans.get(ctx.run_id)
+        pipeline_span = self._pipeline_spans.get(ctx.run_id)
         parent_ctx = set_span_in_context(pipeline_span) if pipeline_span is not None else None
         span = self._tracer.start_span(
             "loom.etl.step",
@@ -169,12 +162,10 @@ class OtelRunObserver:
                 "loom.write_mode": write_mode_label(plan.target_binding.spec),
             },
         )
-        with self._lock:
-            self._step_spans[step_run_id] = span
+        self._step_spans.put(step_run_id, span)
 
     def on_step_end(self, step_run_id: str, status: RunStatus, duration_ms: int) -> None:
-        with self._lock:
-            span = self._step_spans.pop(step_run_id, None)
+        span = self._step_spans.pop(step_run_id)
         if span is None:
             return
         span.set_attribute(_ATTR_STATUS, str(status))
@@ -183,12 +174,31 @@ class OtelRunObserver:
         span.end()
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
-        with self._lock:
-            span = self._step_spans.get(step_run_id)
+        span = self._step_spans.get(step_run_id)
         if span is None:
             return
         span.record_exception(exc)
         span.set_status(StatusCode.ERROR, description=repr(exc))
+
+
+class _SpanRegistry:
+    """Thread-safe in-memory span registry."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._spans: dict[str, Any] = {}
+
+    def put(self, key: str, span: Any) -> None:
+        with self._lock:
+            self._spans[key] = span
+
+    def get(self, key: str) -> Any | None:
+        with self._lock:
+            return self._spans.get(key)
+
+    def pop(self, key: str) -> Any | None:
+        with self._lock:
+            return self._spans.pop(key, None)
 
 
 def build_otel_observer(config: OtelConfig | None) -> OtelRunObserver:

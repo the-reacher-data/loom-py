@@ -35,7 +35,6 @@ class StepSQL(ETLStep[ParamsT], Generic[ParamsT, FrameT]):
     """
 
     sql: ClassVar[str]
-    _loom_sql_step: ClassVar[bool] = True
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
