@@ -6,7 +6,9 @@ import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
+
+from loom.etl.schema import ColumnSchema, DatetimeType, LoomDtype
 
 
 class RunStatus(StrEnum):
@@ -84,10 +86,7 @@ class PipelineRunRecord:
 
     def to_row(self) -> dict[str, Any]:
         """Convert record into a storage row mapping."""
-        row = dataclasses.asdict(self)
-        row.pop("event", None)
-        row["status"] = str(row["status"])
-        return row
+        return _record_to_row(self)
 
 
 @dataclass(frozen=True)
@@ -111,10 +110,7 @@ class ProcessRunRecord:
 
     def to_row(self) -> dict[str, Any]:
         """Convert record into a storage row mapping."""
-        row = dataclasses.asdict(self)
-        row.pop("event", None)
-        row["status"] = str(row["status"])
-        return row
+        return _record_to_row(self)
 
 
 @dataclass(frozen=True)
@@ -137,13 +133,87 @@ class StepRunRecord:
 
     def to_row(self) -> dict[str, Any]:
         """Convert record into a storage row mapping."""
-        row = dataclasses.asdict(self)
-        row.pop("event", None)
-        row["status"] = str(row["status"])
-        return row
+        return _record_to_row(self)
 
 
 ExecutionRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord
+
+
+def _record_to_row(record: Any) -> dict[str, Any]:
+    row = dataclasses.asdict(record)
+    row.pop("event", None)
+    row["status"] = str(row["status"])
+    return row
+
+
+_PIPELINE_RECORD_SCHEMA: tuple[ColumnSchema, ...] = (
+    ColumnSchema("run_id", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("correlation_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("attempt", LoomDtype.INT64, nullable=False),
+    ColumnSchema("pipeline", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("started_at", DatetimeType("us", "UTC"), nullable=False),
+    ColumnSchema("status", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("duration_ms", LoomDtype.INT64, nullable=False),
+    ColumnSchema("error", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_type", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_message", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("failed_step_run_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("failed_step", LoomDtype.UTF8, nullable=True),
+)
+
+_PROCESS_RECORD_SCHEMA: tuple[ColumnSchema, ...] = (
+    ColumnSchema("run_id", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("correlation_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("attempt", LoomDtype.INT64, nullable=False),
+    ColumnSchema("process_run_id", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("process", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("started_at", DatetimeType("us", "UTC"), nullable=False),
+    ColumnSchema("status", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("duration_ms", LoomDtype.INT64, nullable=False),
+    ColumnSchema("error", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_type", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_message", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("failed_step_run_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("failed_step", LoomDtype.UTF8, nullable=True),
+)
+
+_STEP_RECORD_SCHEMA: tuple[ColumnSchema, ...] = (
+    ColumnSchema("run_id", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("correlation_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("attempt", LoomDtype.INT64, nullable=False),
+    ColumnSchema("step_run_id", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("step", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("started_at", DatetimeType("us", "UTC"), nullable=False),
+    ColumnSchema("status", LoomDtype.UTF8, nullable=False),
+    ColumnSchema("duration_ms", LoomDtype.INT64, nullable=False),
+    ColumnSchema("error", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("process_run_id", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_type", LoomDtype.UTF8, nullable=True),
+    ColumnSchema("error_message", LoomDtype.UTF8, nullable=True),
+)
+
+_RECORD_SCHEMA_MAP: Final[dict[type[ExecutionRecord], tuple[ColumnSchema, ...]]] = {
+    PipelineRunRecord: _PIPELINE_RECORD_SCHEMA,
+    ProcessRunRecord: _PROCESS_RECORD_SCHEMA,
+    StepRunRecord: _STEP_RECORD_SCHEMA,
+}
+
+
+def get_record_schema(record_type: type[ExecutionRecord]) -> tuple[ColumnSchema, ...]:
+    """Return the canonical :class:`~loom.etl.schema.ColumnSchema` tuple for *record_type*.
+
+    Args:
+        record_type: One of ``PipelineRunRecord``, ``ProcessRunRecord``, or ``StepRunRecord``.
+
+    Returns:
+        Ordered tuple of column schemas that describes the storage representation
+        produced by :meth:`~ExecutionRecord.to_row`.
+
+    Raises:
+        KeyError: If *record_type* has no registered schema.
+    """
+    return _RECORD_SCHEMA_MAP[record_type]
+
 
 _TABLE_MAP: dict[type[ExecutionRecord], str] = {
     PipelineRunRecord: RecordField.PIPELINE_RUNS,
@@ -160,6 +230,7 @@ def get_record_table_name(record_type: type[ExecutionRecord]) -> str:
 __all__ = [
     "EventName",
     "ExecutionRecord",
+    "get_record_schema",
     "get_record_table_name",
     "PipelineRunRecord",
     "ProcessRunRecord",

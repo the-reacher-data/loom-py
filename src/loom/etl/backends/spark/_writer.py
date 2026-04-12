@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from delta.tables import DeltaTable
+from pyspark.errors.exceptions.base import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as T
 from pyspark.sql.column import Column
@@ -21,6 +22,7 @@ from loom.etl.backends._merge import (
 )
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
+from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
@@ -31,12 +33,7 @@ from loom.etl.declarative._write_options import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
-from loom.etl.observability.records import (
-    ExecutionRecord,
-    PipelineRunRecord,
-    ProcessRunRecord,
-    StepRunRecord,
-)
+from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import (
@@ -117,7 +114,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         try:
             dt = DeltaTable.forPath(self._spark, target.location.uri)
             return SparkPhysicalSchema(schema=dt.toDF().schema)
-        except Exception:
+        except AnalysisException:
             return None
 
     def _align(
@@ -204,7 +201,8 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             return
 
         predicates = [
-            f"({' AND '.join(f'{c} = {repr(row[c])}' for c in partition_cols)})" for row in rows
+            f"({' AND '.join(f'{c} = {_sql_literal(row[c])}' for c in partition_cols)})"
+            for row in rows
         ]
         predicate = " OR ".join(predicates)
 
@@ -360,57 +358,30 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
 __all__ = ["SparkTargetWriter"]
 
 
+def _sql_literal(value: Any) -> str:
+    """Format *value* as a SQL literal safe for use in a predicate string.
+
+    Handles the types typically found in Delta partition columns: integers,
+    floats, strings, booleans, ``None``, and date/datetime objects (via their
+    ``str()`` representation which produces ISO-8601 strings).
+
+    Args:
+        value: Python scalar value from a Spark Row.
+
+    Returns:
+        SQL literal string.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def _spark_record_schema(record: ExecutionRecord) -> T.StructType:
-    if isinstance(record, PipelineRunRecord):
-        return T.StructType(
-            [
-                T.StructField("run_id", T.StringType(), False),
-                T.StructField("correlation_id", T.StringType(), True),
-                T.StructField("attempt", T.LongType(), False),
-                T.StructField("pipeline", T.StringType(), False),
-                T.StructField("started_at", T.TimestampType(), False),
-                T.StructField("status", T.StringType(), False),
-                T.StructField("duration_ms", T.LongType(), False),
-                T.StructField("error", T.StringType(), True),
-                T.StructField("error_type", T.StringType(), True),
-                T.StructField("error_message", T.StringType(), True),
-                T.StructField("failed_step_run_id", T.StringType(), True),
-                T.StructField("failed_step", T.StringType(), True),
-            ]
-        )
-    if isinstance(record, ProcessRunRecord):
-        return T.StructType(
-            [
-                T.StructField("run_id", T.StringType(), False),
-                T.StructField("correlation_id", T.StringType(), True),
-                T.StructField("attempt", T.LongType(), False),
-                T.StructField("process_run_id", T.StringType(), False),
-                T.StructField("process", T.StringType(), False),
-                T.StructField("started_at", T.TimestampType(), False),
-                T.StructField("status", T.StringType(), False),
-                T.StructField("duration_ms", T.LongType(), False),
-                T.StructField("error", T.StringType(), True),
-                T.StructField("error_type", T.StringType(), True),
-                T.StructField("error_message", T.StringType(), True),
-                T.StructField("failed_step_run_id", T.StringType(), True),
-                T.StructField("failed_step", T.StringType(), True),
-            ]
-        )
-    if isinstance(record, StepRunRecord):
-        return T.StructType(
-            [
-                T.StructField("run_id", T.StringType(), False),
-                T.StructField("correlation_id", T.StringType(), True),
-                T.StructField("attempt", T.LongType(), False),
-                T.StructField("step_run_id", T.StringType(), False),
-                T.StructField("step", T.StringType(), False),
-                T.StructField("started_at", T.TimestampType(), False),
-                T.StructField("status", T.StringType(), False),
-                T.StructField("duration_ms", T.LongType(), False),
-                T.StructField("error", T.StringType(), True),
-                T.StructField("process_run_id", T.StringType(), True),
-                T.StructField("error_type", T.StringType(), True),
-                T.StructField("error_message", T.StringType(), True),
-            ]
-        )
-    raise TypeError(f"Unsupported execution record type: {type(record)!r}")
+    cols = get_record_schema(type(record))
+    return T.StructType(
+        [T.StructField(c.name, loom_type_to_spark(c.dtype), c.nullable) for c in cols]
+    )

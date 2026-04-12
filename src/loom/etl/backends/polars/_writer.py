@@ -8,7 +8,6 @@ from typing import Any
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
-from polars.datatypes import DataTypeClass
 
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
@@ -28,12 +27,7 @@ from loom.etl.backends.polars._schema import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
-from loom.etl.observability.records import (
-    ExecutionRecord,
-    PipelineRunRecord,
-    ProcessRunRecord,
-    StepRunRecord,
-)
+from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
@@ -44,63 +38,10 @@ from loom.etl.storage import (
 )
 from loom.etl.storage._locator import TableLocator, _as_locator
 
+from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
 
 _log = logging.getLogger(__name__)
-
-_S: pl.DataType | DataTypeClass = pl.String
-_I64: pl.DataType | DataTypeClass = pl.Int64
-_TS: pl.DataType | DataTypeClass = pl.Datetime("us", "UTC")
-
-_PIPELINE_SCHEMA = pl.Schema(
-    {
-        "run_id": _S,
-        "correlation_id": _S,
-        "attempt": _I64,
-        "pipeline": _S,
-        "started_at": _TS,
-        "status": _S,
-        "duration_ms": _I64,
-        "error": _S,
-        "error_type": _S,
-        "error_message": _S,
-        "failed_step_run_id": _S,
-        "failed_step": _S,
-    }
-)
-_PROCESS_SCHEMA = pl.Schema(
-    {
-        "run_id": _S,
-        "correlation_id": _S,
-        "attempt": _I64,
-        "process_run_id": _S,
-        "process": _S,
-        "started_at": _TS,
-        "status": _S,
-        "duration_ms": _I64,
-        "error": _S,
-        "error_type": _S,
-        "error_message": _S,
-        "failed_step_run_id": _S,
-        "failed_step": _S,
-    }
-)
-_STEP_SCHEMA = pl.Schema(
-    {
-        "run_id": _S,
-        "correlation_id": _S,
-        "attempt": _I64,
-        "step_run_id": _S,
-        "step": _S,
-        "started_at": _TS,
-        "status": _S,
-        "duration_ms": _I64,
-        "error": _S,
-        "process_run_id": _S,
-        "error_type": _S,
-        "error_message": _S,
-    }
-)
 
 
 class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysicalSchema]):
@@ -156,10 +97,6 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             path_target.location.uri,
             path_target.location.storage_options,
         )
-        if physical is None:
-            return None
-        if not isinstance(physical, PolarsPhysicalSchema):
-            raise TypeError(f"Expected PolarsPhysicalSchema, got {type(physical)!r}.")
         return physical
 
     def _align(
@@ -392,10 +329,5 @@ __all__ = ["PolarsTargetWriter"]
 
 
 def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:
-    if isinstance(record, PipelineRunRecord):
-        return _PIPELINE_SCHEMA
-    if isinstance(record, ProcessRunRecord):
-        return _PROCESS_SCHEMA
-    if isinstance(record, StepRunRecord):
-        return _STEP_SCHEMA
-    raise TypeError(f"Unsupported execution record type: {type(record)!r}")
+    cols = get_record_schema(type(record))
+    return pl.Schema({c.name: loom_type_to_polars(c.dtype) for c in cols})

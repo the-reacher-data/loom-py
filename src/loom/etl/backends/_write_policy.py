@@ -7,6 +7,7 @@ while delegating backend-specific operations to abstract hooks.
 
 from __future__ import annotations
 
+from abc import abstractmethod
 from typing import Any, Generic, TypeVar
 
 from loom.etl.declarative.target import (
@@ -276,10 +277,11 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
     # Abstract Hooks (backend-specific implementations)
     # ========================================================================
 
+    @abstractmethod
     def _physical_schema(self, target: ResolvedTarget) -> PhysicalSchemaT | None:
         """Read physical schema for target, or None if not exists."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _align(
         self,
         frame: InputFrameT,
@@ -287,16 +289,16 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         mode: SchemaMode,
     ) -> InputFrameT:
         """Align frame schema with existing."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _materialize_for_write(self, frame: InputFrameT, streaming: bool) -> WriteFrameT:
         """Convert input frame into write-ready frame for backend sinks."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
         """Convert predicate to SQL string."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _create(
         self,
         frame: WriteFrameT,
@@ -306,8 +308,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         partition_cols: tuple[str, ...] = (),
     ) -> None:
         """Create new table."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _append(
         self,
         frame: WriteFrameT,
@@ -316,8 +318,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         schema_mode: SchemaMode,
     ) -> None:
         """Append to existing table."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _replace(
         self,
         frame: WriteFrameT,
@@ -326,8 +328,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         schema_mode: SchemaMode,
     ) -> None:
         """Replace existing table."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _replace_partitions(
         self,
         frame: WriteFrameT,
@@ -337,8 +339,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         schema_mode: SchemaMode,
     ) -> None:
         """Replace partitions in existing table."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _replace_where(
         self,
         frame: WriteFrameT,
@@ -348,8 +350,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         schema_mode: SchemaMode,
     ) -> None:
         """Replace where predicate matches."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _upsert(
         self,
         frame: WriteFrameT,
@@ -359,8 +361,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         existing_schema: PhysicalSchemaT,
     ) -> None:
         """Upsert/merge into existing table."""
-        raise NotImplementedError
 
+    @abstractmethod
     def _write_file(
         self,
         frame: InputFrameT,
@@ -369,7 +371,6 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Write to file (CSV, JSON, Parquet)."""
-        raise NotImplementedError
 
 
 __all__ = ["_WritePolicy"]
