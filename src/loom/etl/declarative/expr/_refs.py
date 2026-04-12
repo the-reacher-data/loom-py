@@ -27,6 +27,23 @@ class TableRef:
         """Column namespace for bound references."""
         return _ColumnNamespace(self)
 
+    def qualify(self, default_catalog: str) -> TableRef:
+        """Return a catalog-qualified reference when the ref is 2-part.
+
+        If the ref already contains 3 parts (catalog.schema.table) or
+        *default_catalog* is empty, the original reference is returned unchanged.
+
+        Args:
+            default_catalog: Catalog name to prepend when the ref is 2-part.
+
+        Returns:
+            New ``TableRef`` with catalog prefix, or self if already qualified.
+        """
+        parts = self._ref.split(".")
+        if len(parts) == 2 and default_catalog:
+            return TableRef(f"{default_catalog}.{self._ref}")
+        return self
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TableRef):
             return NotImplemented

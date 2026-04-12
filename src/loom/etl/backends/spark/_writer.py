@@ -36,7 +36,6 @@ from loom.etl.observability.records import (
     PipelineRunRecord,
     ProcessRunRecord,
     StepRunRecord,
-    execution_record_to_row,
 )
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._locator import TableLocator, _as_locator
@@ -99,7 +98,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             raise TypeError(
                 "SparkTargetWriter.to_frame requires homogeneous record types per batch."
             )
-        rows = [execution_record_to_row(record) for record in records]
+        rows = [record.to_row() for record in records]
         return self._spark.createDataFrame(rows, schema=_spark_record_schema(first))
 
     # ====================================================================

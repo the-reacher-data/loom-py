@@ -130,7 +130,7 @@ class ExecutionRecordsObserver:
 
     def on_step_error(self, step_run_id: str, exc: Exception) -> None:
         with self._write_lock:
-            self._step_errors[step_run_id] = _error_details(exc)
+            self._step_errors[step_run_id] = _ErrorDetails.from_exception(exc)
 
 
 def _now() -> datetime:
@@ -152,6 +152,14 @@ class _ErrorDetails:
     error_type: str
     error_message: str
 
+    @classmethod
+    def from_exception(cls, exc: Exception) -> _ErrorDetails:
+        return cls(
+            error=repr(exc),
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+        )
+
 
 @dataclass(frozen=True)
 class _FailureContext:
@@ -160,14 +168,6 @@ class _FailureContext:
     error: str
     error_type: str
     error_message: str
-
-
-def _error_details(exc: Exception) -> _ErrorDetails:
-    return _ErrorDetails(
-        error=repr(exc),
-        error_type=type(exc).__name__,
-        error_message=str(exc),
-    )
 
 
 def _build_pipeline_record(

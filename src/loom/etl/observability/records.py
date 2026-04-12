@@ -82,6 +82,13 @@ class PipelineRunRecord:
     failed_step_run_id: str | None = None
     failed_step: str | None = None
 
+    def to_row(self) -> dict[str, Any]:
+        """Convert record into a storage row mapping."""
+        row = dataclasses.asdict(self)
+        row.pop("event", None)
+        row["status"] = str(row["status"])
+        return row
+
 
 @dataclass(frozen=True)
 class ProcessRunRecord:
@@ -102,6 +109,13 @@ class ProcessRunRecord:
     failed_step_run_id: str | None = None
     failed_step: str | None = None
 
+    def to_row(self) -> dict[str, Any]:
+        """Convert record into a storage row mapping."""
+        row = dataclasses.asdict(self)
+        row.pop("event", None)
+        row["status"] = str(row["status"])
+        return row
+
 
 @dataclass(frozen=True)
 class StepRunRecord:
@@ -121,6 +135,13 @@ class StepRunRecord:
     error_type: str | None = None
     error_message: str | None = None
 
+    def to_row(self) -> dict[str, Any]:
+        """Convert record into a storage row mapping."""
+        row = dataclasses.asdict(self)
+        row.pop("event", None)
+        row["status"] = str(row["status"])
+        return row
+
 
 ExecutionRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord
 
@@ -136,18 +157,9 @@ def get_record_table_name(record_type: type[ExecutionRecord]) -> str:
     return _TABLE_MAP[record_type]
 
 
-def execution_record_to_row(record: ExecutionRecord) -> dict[str, Any]:
-    """Convert execution record dataclass into a row mapping for sinks."""
-    row = dataclasses.asdict(record)
-    row.pop("event", None)
-    row["status"] = str(row["status"])
-    return row
-
-
 __all__ = [
     "EventName",
     "ExecutionRecord",
-    "execution_record_to_row",
     "get_record_table_name",
     "PipelineRunRecord",
     "ProcessRunRecord",

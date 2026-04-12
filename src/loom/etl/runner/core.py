@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -14,7 +15,6 @@ if TYPE_CHECKING:
 from loom.etl.checkpoint import CheckpointStore, TempCleaner
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
-from loom.etl.executor._executor import _new_run_id
 from loom.etl.observability import (
     CompositeObserver,
     ETLRunObserver,
@@ -146,7 +146,7 @@ class ETLRunner:
             _log.debug("filter plan include=%s", sorted(include))
             plan = _filter_plan(plan, frozenset(include))
         ctx = RunContext(
-            run_id=_new_run_id(),
+            run_id=str(uuid.uuid4()),
             correlation_id=correlation_id,
             attempt=attempt,
             last_attempt=last_attempt,

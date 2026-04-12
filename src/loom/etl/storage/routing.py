@@ -57,7 +57,7 @@ class CatalogRouteResolver:
     def resolve(self, logical_ref: TableRef) -> CatalogTarget:
         return CatalogTarget(
             logical_ref=logical_ref,
-            catalog_ref=_qualify_catalog_ref(logical_ref, self._default_catalog),
+            catalog_ref=logical_ref.qualify(self._default_catalog),
         )
 
 
@@ -212,13 +212,6 @@ def _qualify_route_ref(ref: str, catalog_key: str) -> str:
     parts = ref.split(".")
     if len(parts) == 2:
         return f"{catalog_key}.{ref}"
-    return ref
-
-
-def _qualify_catalog_ref(ref: TableRef, default_catalog: str) -> TableRef:
-    parts = ref.ref.split(".")
-    if len(parts) == 2 and default_catalog:
-        return TableRef(f"{default_catalog}.{ref.ref}")
     return ref
 
 
