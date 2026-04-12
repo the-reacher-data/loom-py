@@ -38,8 +38,8 @@ class TestIntoTableModes:
                 False,
             ),
             (
-                lambda t: t.replace_partitions(
-                    values={"year": params.run_date.year, "month": params.run_date.month}
+                lambda t: t.replace_partition(
+                    year=params.run_date.year, month=params.run_date.month
                 ),
                 ReplaceWhereSpec,
                 (),  # columns encoded in predicate, not in partition_cols
@@ -73,18 +73,13 @@ class TestIntoTableModes:
         if isinstance(spec, UpsertSpec):
             assert spec.upsert_keys == ("order_id",)
 
-    @pytest.mark.parametrize(
-        "call",
-        [
-            lambda t: t.replace_partitions("year", values={"year": params.run_date.year}),
-            lambda t: t.replace_partitions(),
-        ],
-    )
-    def test_replace_partitions_raises_on_invalid_args(
-        self, call: Callable[[IntoTable], Any]
-    ) -> None:
-        with pytest.raises(ValueError):
-            call(IntoTable("staging.orders"))
+    def test_replace_partitions_raises_when_no_cols(self) -> None:
+        with pytest.raises(ValueError, match="at least one partition column"):
+            IntoTable("staging.orders").replace_partitions()
+
+    def test_replace_partition_raises_when_no_pairs(self) -> None:
+        with pytest.raises(ValueError, match="at least one column=value pair"):
+            IntoTable("staging.orders").replace_partition()
 
     def test_write_methods_return_new_instance(self) -> None:
         base = IntoTable("staging.orders")

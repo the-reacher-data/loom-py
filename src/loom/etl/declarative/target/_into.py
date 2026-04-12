@@ -112,61 +112,79 @@ class IntoTable:
     def replace_partitions(
         self,
         *cols: str,
-        values: dict[str, ParamExpr] | None = None,
         schema: SchemaMode = SchemaMode.STRICT,
     ) -> IntoTable:
-        """Write mode: replace only the relevant partitions.
+        """Write mode: replace the partitions present in the batch frame.
 
-        Two calling styles — pass one or the other, never both:
+        Collects the distinct partition values from the frame at write time and
+        builds the replace predicate dynamically — no params required.
 
-        * **Dynamic** — positional column names.  The writer collects the
-          distinct partition values from the batch and builds the predicate
-          at write time::
-
-              target = IntoTable("staging.orders").replace_partitions("year", "month")
-
-        * **From params** — ``values`` dict maps column name to a
-          :class:`~loom.etl._proxy.ParamExpr`.  The predicate is resolved from
-          the run params; no collect required::
-
-              target = IntoTable("staging.orders").replace_partitions(
-                  values={"year": params.run_date.year, "month": params.run_date.month}
-              )
+        For replacing a specific partition whose values come from run params,
+        use :meth:`replace_partition`.
 
         Args:
-            *cols:   Partition column names (dynamic style).
-            values:  Mapping of column name → :class:`~loom.etl._proxy.ParamExpr`
-                     (params style).  Keys become the partition column names.
+            *cols:   Partition column names to collect from the frame.
             schema:  Schema evolution strategy.
 
         Returns:
-            New ``IntoTable`` instance.
+            New ``IntoTable`` with REPLACE_PARTITIONS mode.
 
         Raises:
-            ValueError: If both *cols* and *values* are supplied, or neither is.
+            ValueError: If no column names are provided.
+
+        Example::
+
+            target = IntoTable("staging.orders").replace_partitions("year", "month")
         """
-        if cols and values is not None:
-            raise ValueError(
-                "replace_partitions: pass either positional column names or values=, not both"
-            )
-        if not cols and values is None:
-            raise ValueError("replace_partitions: pass column names or values=")
-
-        if values is not None:
-            predicate = _build_eq_predicate(values)
-            return self._with(
-                ReplaceWhereSpec(
-                    table_ref=self._ref,
-                    replace_predicate=predicate,
-                    schema_mode=schema,
-                )
-            )
-
+        if not cols:
+            raise ValueError("replace_partitions: at least one partition column name is required.")
         return self._with(
             ReplacePartitionsSpec(
                 table_ref=self._ref,
                 partition_cols=cols,
                 schema_mode=schema,
+            )
+        )
+
+    def replace_partition(self, **partition: ParamExpr) -> IntoTable:
+        """Write mode: replace a specific partition identified by exact column values from params.
+
+        Use when the partition to replace is known at pipeline design time and
+        its values come from run params.  The writer resolves each value against
+        the concrete params at runtime and issues a Delta ``replaceWhere`` on the
+        resulting equality predicate — no collect required.
+
+        For dynamic replacement (values inferred from the batch), use
+        :meth:`replace_partitions`.  For arbitrary predicates, use
+        :meth:`replace_where`.
+
+        Args:
+            **partition:
+                Partition column name →
+                :class:`~loom.etl.declarative.expr._params.ParamExpr` pairs
+                (e.g. ``year=params.run_date.year``).
+
+        Returns:
+            New ``IntoTable`` with REPLACE_WHERE mode.
+
+        Raises:
+            ValueError: If no column=value pairs are provided.
+
+        Example::
+
+            target = IntoTable("staging.orders").replace_partition(
+                year=params.run_date.year,
+                month=params.run_date.month,
+            )
+        """
+        if not partition:
+            raise ValueError("replace_partition: at least one column=value pair is required.")
+        predicate = _build_eq_predicate(partition)
+        return self._with(
+            ReplaceWhereSpec(
+                table_ref=self._ref,
+                replace_predicate=predicate,
+                schema_mode=SchemaMode.STRICT,
             )
         )
 

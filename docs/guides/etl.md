@@ -129,6 +129,92 @@ from loom.etl import ETLRunner
 runner = ETLRunner.from_yaml("config/etl.yaml")
 ```
 
+## Write modes
+
+Every `IntoTable` target declares exactly one write mode by chaining a method.
+
+### append
+
+Adds rows to the table. Creates the table on first write.
+
+```python
+target = IntoTable("staging.orders").append()
+```
+
+### replace
+
+Full overwrite. Replaces all data in the table.
+
+```python
+target = IntoTable("staging.orders").replace()
+# Overwrite schema too:
+target = IntoTable("staging.orders").replace(schema=SchemaMode.OVERWRITE)
+```
+
+### replace\_partitions
+
+Replaces only the partitions **present in the batch**. The writer collects
+the distinct partition values from the frame at write time — no params required.
+
+```python
+target = IntoTable("staging.orders").replace_partitions("year", "month")
+```
+
+Use this for incremental loads where the batch carries its own partition identity
+(e.g. daily runs writing the day's data).
+
+### replace\_partition
+
+Replaces a **specific partition** whose values come from run params. Resolves
+the equality predicate at runtime without collecting from the frame.
+
+```python
+from loom.etl import params
+
+target = IntoTable("staging.orders").replace_partition(
+    year=params.run_date.year,
+    month=params.run_date.month,
+)
+```
+
+Use this when the partition to replace is known at pipeline design time (e.g.
+reprocessing a single day).
+
+**Difference from `replace_partitions`:**
+
+| | `replace_partitions` | `replace_partition` |
+|---|---|---|
+| Partition values | Collected from frame | Resolved from params |
+| Collect step | Yes (distinct) | No |
+| Use case | Batch carries its partition | Reprocessing a known partition |
+
+### replace\_where
+
+Replaces rows matching an arbitrary predicate. Accepts the full predicate DSL.
+
+```python
+target = IntoTable("staging.orders").replace_where(
+    col("date").between(params.start_date, params.end_date)
+)
+```
+
+### upsert
+
+MERGE on key columns. Inserts new rows and updates existing ones.
+
+```python
+target = IntoTable("events.orders").upsert(
+    keys=("order_id",),
+    partition_cols=("year", "month"),  # strongly recommended for large tables
+    exclude=("created_at",),           # columns excluded from UPDATE SET
+)
+```
+
+`partition_cols` is optional but strongly recommended — without it every MERGE
+forces a full table scan.
+
+---
+
 ## Running only selected stages
 
 Use `include` with process or step class names:
