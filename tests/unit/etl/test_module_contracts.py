@@ -195,9 +195,7 @@ def test_reload_source_and_target_modules_with_real_builder_calls() -> None:
     assert file_spec.columns == ("id",)
     assert file_spec.json_columns[0].column == "body"
 
-    target = target_mod.IntoTable("staging.orders").replace_partitions(
-        values={"year": params.run_date.year}
-    )
+    target = target_mod.IntoTable("staging.orders").replace_partition(year=params.run_date.year)
     compiled_target = target._to_spec()
     assert compiled_target.table_ref.ref == "staging.orders"
     assert compiled_target.replace_predicate is not None
