@@ -94,8 +94,12 @@ class FileSourceSpec:
 
     Args:
         alias:        Name matching the ``execute()`` parameter.
-        path:         File path template resolved from params at runtime.
+        path:         Literal file path/template, or logical alias when
+                      ``is_alias=True``.
         format:       I/O format (CSV, JSON, XLSX, Parquet).
+        is_alias:     When ``True``, *path* is a logical alias resolved via
+                      :class:`~loom.etl.storage.FileLocator` at runtime.
+                      Set automatically by :meth:`~loom.etl.FromFile.alias`.
         read_options: Format-specific read options set via ``.with_options()``.
         columns:      Column names to project at scan time.  When non-empty,
                       only these columns are loaded from the file.
@@ -107,6 +111,7 @@ class FileSourceSpec:
     alias: str
     path: str
     format: Format
+    is_alias: bool = False
     read_options: ReadOptions | None = None
     columns: tuple[str, ...] = field(default_factory=tuple)
     schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)

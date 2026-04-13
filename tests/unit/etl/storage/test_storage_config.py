@@ -19,6 +19,7 @@ from loom.etl.storage._config import (
     TableRoute,
     convert_storage_config,
 )
+from loom.etl.storage._file_locator import FileLocation, MappingFileLocator
 from loom.etl.storage._locator import MappingLocator, PrefixLocator
 
 
@@ -256,3 +257,85 @@ class TestConvertStorageConfig:
     def test_convert_invalid_field_type_raises(self) -> None:
         with pytest.raises(msgspec.ValidationError):
             convert_storage_config({"tmp_storage_options": ["bad"]})
+
+
+class TestToFileLocator:
+    def test_returns_none_when_no_files(self) -> None:
+        config = StorageConfig()
+        assert config.to_file_locator() is None
+
+    def test_returns_mapping_locator_with_files(self) -> None:
+        config = StorageConfig(
+            files=(
+                FileRoute(
+                    name="events_raw",
+                    path=FilePathConfig(uri="s3://raw/events/"),
+                ),
+            )
+        )
+        locator = config.to_file_locator()
+        assert isinstance(locator, MappingFileLocator)
+
+    def test_locator_resolves_registered_alias(self) -> None:
+        config = StorageConfig(
+            files=(
+                FileRoute(
+                    name="events_raw",
+                    path=FilePathConfig(
+                        uri="s3://raw/events/",
+                        storage_options={"AWS_REGION": "eu-west-1"},
+                    ),
+                ),
+            )
+        )
+        locator = config.to_file_locator()
+        assert locator is not None
+        location = locator.locate("events_raw")
+        assert location.uri_template == "s3://raw/events/"
+        assert location.storage_options == {"AWS_REGION": "eu-west-1"}
+
+    def test_locator_raises_on_unknown_alias(self) -> None:
+        config = StorageConfig(
+            files=(FileRoute(name="events_raw", path=FilePathConfig(uri="s3://raw/events/")),)
+        )
+        locator = config.to_file_locator()
+        assert locator is not None
+        with pytest.raises(KeyError, match="events_daily"):
+            locator.locate("events_daily")
+
+
+class TestMappingFileLocator:
+    def test_locate_returns_correct_location(self) -> None:
+        locator = MappingFileLocator(
+            mapping={"events": FileLocation(uri_template="s3://raw/events/")}
+        )
+        loc = locator.locate("events")
+        assert loc.uri_template == "s3://raw/events/"
+
+    def test_locate_missing_alias_raises_key_error(self) -> None:
+        locator = MappingFileLocator(
+            mapping={"events": FileLocation(uri_template="s3://raw/events/")}
+        )
+        with pytest.raises(KeyError, match="reports"):
+            locator.locate("reports")
+
+    def test_error_message_lists_available_aliases(self) -> None:
+        locator = MappingFileLocator(
+            mapping={
+                "events": FileLocation(uri_template="s3://raw/events/"),
+                "exports": FileLocation(uri_template="s3://out/exports/"),
+            }
+        )
+        with pytest.raises(KeyError, match="events"):
+            locator.locate("missing")
+
+    def test_storage_options_empty_by_default(self) -> None:
+        loc = FileLocation(uri_template="s3://bucket/path/")
+        assert loc.storage_options == {}
+
+    def test_storage_options_preserved(self) -> None:
+        loc = FileLocation(
+            uri_template="s3://bucket/path/",
+            storage_options={"AWS_REGION": "us-east-1"},
+        )
+        assert loc.storage_options == {"AWS_REGION": "us-east-1"}

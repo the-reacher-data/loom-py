@@ -24,9 +24,14 @@ class PolarsProvider(BackendProvider):
     ) -> tuple[SourceReader, TargetWriter]:
         _ = spark
         locator = _build_polars_locator(config)
+        file_locator = config.to_file_locator()
         return (
-            PolarsSourceReader(locator),
-            PolarsTargetWriter(locator, missing_table_policy=config.missing_table_policy),
+            PolarsSourceReader(locator, file_locator=file_locator),
+            PolarsTargetWriter(
+                locator,
+                missing_table_policy=config.missing_table_policy,
+                file_locator=file_locator,
+            ),
         )
 
     def create_execution_record_writer(

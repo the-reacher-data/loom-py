@@ -29,13 +29,15 @@ class SparkProvider(BackendProvider):
                 "Pass spark=<session> to ETLRunner.from_yaml() or ETLRunner.from_config()."
             )
         route_resolver = build_table_resolver(config)
+        file_locator = config.to_file_locator()
         return (
-            SparkSourceReader(spark, route_resolver=route_resolver),
+            SparkSourceReader(spark, route_resolver=route_resolver, file_locator=file_locator),
             SparkTargetWriter(
                 spark,
                 None,
                 route_resolver=route_resolver,
                 missing_table_policy=config.missing_table_policy,
+                file_locator=file_locator,
             ),
         )
 

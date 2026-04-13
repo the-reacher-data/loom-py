@@ -36,6 +36,7 @@ from loom.etl.storage import (
     TableLocation,
     TableRouteResolver,
 )
+from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
 
 from ._dtype import loom_type_to_polars
@@ -53,6 +54,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+        file_locator: FileLocator | None = None,
     ) -> None:
         self._locator = _as_locator(locator)
         super().__init__(
@@ -60,6 +62,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             missing_table_policy=missing_table_policy,
         )
         self._file_writer = PolarsFileWriter()
+        self._file_locator = file_locator
 
     def append(
         self,
@@ -269,8 +272,26 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         *,
         streaming: bool,
     ) -> None:
-        """Write to file (CSV, JSON, Parquet)."""
-        self._file_writer.write(frame, spec, streaming=streaming)
+        """Write to file (CSV, JSON, Parquet), resolving alias if needed."""
+        resolved = self._resolve_file_spec(spec)
+        self._file_writer.write(frame, resolved, streaming=streaming)
+
+    def _resolve_file_spec(self, spec: FileSpec) -> FileSpec:
+        """Return a FileSpec with a physical URI, resolving alias when required."""
+        if not spec.is_alias:
+            return spec
+        if self._file_locator is None:
+            raise ValueError(
+                f"IntoFile.alias({spec.path!r}) requires storage.files to be configured. "
+                "Set storage.files in your config YAML."
+            )
+        location = self._file_locator.locate(spec.path)
+        return FileSpec(
+            path=location.uri_template,
+            format=spec.format,
+            is_alias=False,
+            write_options=spec.write_options,
+        )
 
     # ====================================================================
     # Helpers

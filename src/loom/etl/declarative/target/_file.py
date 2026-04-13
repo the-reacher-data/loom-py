@@ -18,13 +18,17 @@ class FileSpec:
     The write mode is always full-replace (overwrite).
 
     Args:
-        path:          File path or template, e.g.
-                       ``"s3://exports/orders_{run_date}.csv"``.
+        path:          Literal file path/template, or logical alias when
+                       ``is_alias=True``.
         format:        Output format.
+        is_alias:      When ``True``, *path* is a logical alias resolved via
+                       :class:`~loom.etl.storage.FileLocator` at runtime.
+                       Set automatically by :meth:`~loom.etl.IntoFile.alias`.
         write_options: Format-specific options (e.g.
                        :class:`~loom.etl.CsvWriteOptions`).
     """
 
     path: str
     format: Format
+    is_alias: bool = False
     write_options: WriteOptions | None = None

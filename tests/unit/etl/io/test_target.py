@@ -104,6 +104,19 @@ class TestIntoTableModes:
         assert isinstance(spec, ReplaceSpec)
         assert spec.schema_mode is schema
 
+    @pytest.mark.parametrize("schema", [SchemaMode.STRICT, SchemaMode.EVOLVE, SchemaMode.OVERWRITE])
+    def test_replace_partition_propagates_schema_mode(self, schema: SchemaMode) -> None:
+        spec = (
+            IntoTable("staging.orders")
+            .replace_partition(
+                schema=schema,
+                year=params.run_date.year,
+            )
+            ._to_spec()
+        )
+        assert isinstance(spec, ReplaceWhereSpec)
+        assert spec.schema_mode is schema
+
     def test_upsert_propagates_include_exclude_and_partitions(self) -> None:
         spec = (
             IntoTable("staging.orders")
@@ -154,10 +167,36 @@ class TestIntoFile:
         assert spec.path == expected_path
         assert spec.format is expected_format
 
+    def test_is_alias_false_by_default(self) -> None:
+        spec = IntoFile("s3://out/report.csv", format=Format.CSV)._to_spec()
+        assert spec.is_alias is False
+
     def test_repr_includes_path_and_format(self) -> None:
         repr_value = repr(IntoFile("s3://out/report.xlsx", format=Format.XLSX))
         assert "s3://out/report.xlsx" in repr_value
         assert "xlsx" in repr_value
+
+
+class TestIntoFileAlias:
+    def test_alias_sets_is_alias_true(self) -> None:
+        spec = IntoFile.alias("exports_daily", format=Format.PARQUET)._to_spec()
+        assert spec.is_alias is True
+
+    def test_alias_stores_name_as_path(self) -> None:
+        spec = IntoFile.alias("exports_daily", format=Format.CSV)._to_spec()
+        assert spec.path == "exports_daily"
+
+    def test_alias_stores_format(self) -> None:
+        spec = IntoFile.alias("reports", format=Format.CSV)._to_spec()
+        assert spec.format is Format.CSV
+
+    def test_alias_is_file_spec(self) -> None:
+        spec = IntoFile.alias("exports_daily", format=Format.PARQUET)._to_spec()
+        assert isinstance(spec, FileSpec)
+
+    def test_direct_path_is_not_alias(self) -> None:
+        spec = IntoFile("s3://bucket/out.parquet", format=Format.PARQUET)._to_spec()
+        assert spec.is_alias is False
 
 
 class TestIntoTemp:

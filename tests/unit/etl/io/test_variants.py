@@ -95,6 +95,14 @@ class TestFileSpec:
         assert spec.format is Format.CSV
         assert spec.write_options is None
 
+    def test_is_alias_defaults_false(self) -> None:
+        spec = FileSpec(path="s3://bucket/out.csv", format=Format.CSV)
+        assert spec.is_alias is False
+
+    def test_is_alias_true_when_set(self) -> None:
+        spec = FileSpec(path="exports_daily", format=Format.PARQUET, is_alias=True)
+        assert spec.is_alias is True
+
     def test_frozen(self) -> None:
         spec = FileSpec(path="out.csv", format=Format.CSV)
         with pytest.raises((AttributeError, TypeError)):

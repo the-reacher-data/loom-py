@@ -35,6 +35,7 @@ from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage._config import MissingTablePolicy
+from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
@@ -57,6 +58,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         *,
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+        file_locator: FileLocator | None = None,
     ) -> None:
         self._spark = spark
 
@@ -72,6 +74,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             resolver=resolver,
             missing_table_policy=missing_table_policy,
         )
+        self._file_locator = file_locator
 
     def append(
         self,
@@ -272,8 +275,9 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         *,
         streaming: bool,
     ) -> None:
-        """Write to file (CSV, JSON, Parquet)."""
+        """Write to file (CSV, JSON, Parquet), resolving alias if needed."""
         _ = streaming
+        resolved = self._resolve_file_spec(spec)
         writers: dict[Format, Callable[[DataFrame, FileSpec], None]] = {
             Format.DELTA: self._write_delta_file,
             Format.CSV: self._write_csv_file,
@@ -281,8 +285,8 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             Format.PARQUET: self._write_parquet_file,
             Format.XLSX: self._write_xlsx_file,
         }
-        writer = resolve_format_handler(spec.format, writers)
-        writer(frame, spec)
+        writer = resolve_format_handler(resolved.format, writers)
+        writer(frame, resolved)
 
     def _write_delta_file(self, frame: DataFrame, spec: FileSpec) -> None:
         frame.write.format("delta").mode("overwrite").save(spec.path)
@@ -327,6 +331,23 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
     @staticmethod
     def _write_xlsx_file(_frame: DataFrame, _spec: FileSpec) -> None:
         raise TypeError("Spark backend does not support XLSX format.")
+
+    def _resolve_file_spec(self, spec: FileSpec) -> FileSpec:
+        """Return a FileSpec with a physical URI, resolving alias when required."""
+        if not spec.is_alias:
+            return spec
+        if self._file_locator is None:
+            raise ValueError(
+                f"IntoFile.alias({spec.path!r}) requires storage.files to be configured. "
+                "Set storage.files in your config YAML."
+            )
+        location = self._file_locator.locate(spec.path)
+        return FileSpec(
+            path=location.uri_template,
+            format=spec.format,
+            is_alias=False,
+            write_options=spec.write_options,
+        )
 
     # ====================================================================
     # Helpers

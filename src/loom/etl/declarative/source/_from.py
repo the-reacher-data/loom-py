@@ -240,7 +240,15 @@ class FromFile:
         report = FromFile("s3://raw/report_{run_date}.xlsx", format=Format.XLSX)
     """
 
-    __slots__ = ("_path", "_format", "_schema", "_read_options", "_columns", "_json_columns")
+    __slots__ = (
+        "_path",
+        "_format",
+        "_schema",
+        "_read_options",
+        "_columns",
+        "_json_columns",
+        "_is_alias",
+    )
 
     def __init__(self, path: str, *, format: Format) -> None:
         self._path = path
@@ -249,6 +257,38 @@ class FromFile:
         self._read_options: ReadOptions | None = None
         self._columns: tuple[str, ...] = ()
         self._json_columns: tuple[JsonColumnSpec, ...] = ()
+        self._is_alias = False
+
+    @classmethod
+    def alias(cls, name: str, *, format: Format) -> FromFile:
+        """Declare a file source by logical alias resolved from storage config.
+
+        The physical URI is looked up in ``storage.files`` at runtime via the
+        injected :class:`~loom.etl.storage.FileLocator`.  Use this form when
+        the path is environment-specific and should not be hard-coded in the
+        pipeline.
+
+        Args:
+            name:   Logical file alias matching a ``storage.files[].name``
+                    entry in the config YAML.
+            format: :class:`~loom.etl.Format` of the file.
+
+        Returns:
+            New ``FromFile`` backed by a logical alias.
+
+        Example::
+
+            events = FromFile.alias("events_raw", format=Format.CSV)
+        """
+        instance = cls.__new__(cls)
+        instance._path = name
+        instance._format = format
+        instance._schema = ()
+        instance._read_options = None
+        instance._columns = ()
+        instance._json_columns = ()
+        instance._is_alias = True
+        return instance
 
     @property
     def path(self) -> str:
@@ -369,6 +409,7 @@ class FromFile:
             alias=alias,
             path=self._path,
             format=self._format,
+            is_alias=self._is_alias,
             schema=self._schema,
             read_options=self._read_options,
             columns=self._columns,

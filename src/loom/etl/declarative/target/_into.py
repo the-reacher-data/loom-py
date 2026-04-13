@@ -146,7 +146,12 @@ class IntoTable:
             )
         )
 
-    def replace_partition(self, **partition: ParamExpr) -> IntoTable:
+    def replace_partition(
+        self,
+        *,
+        schema: SchemaMode = SchemaMode.STRICT,
+        **partition: ParamExpr,
+    ) -> IntoTable:
         """Write mode: replace a specific partition identified by exact column values from params.
 
         Use when the partition to replace is known at pipeline design time and
@@ -159,6 +164,7 @@ class IntoTable:
         :meth:`replace_where`.
 
         Args:
+            schema: Schema evolution strategy.
             **partition:
                 Partition column name →
                 :class:`~loom.etl.declarative.expr._params.ParamExpr` pairs
@@ -184,7 +190,7 @@ class IntoTable:
             ReplaceWhereSpec(
                 table_ref=self._ref,
                 replace_predicate=predicate,
-                schema_mode=SchemaMode.STRICT,
+                schema_mode=schema,
             )
         )
 
@@ -308,12 +314,41 @@ class IntoFile:
         target = IntoFile("s3://exports/summary_{run_date}.xlsx", format=Format.XLSX)
     """
 
-    __slots__ = ("_path", "_format", "_write_options")
+    __slots__ = ("_path", "_format", "_is_alias", "_write_options")
 
     def __init__(self, path: str, *, format: Format) -> None:
         self._path = path
         self._format = format
+        self._is_alias = False
         self._write_options: WriteOptions | None = None
+
+    @classmethod
+    def alias(cls, name: str, *, format: Format) -> IntoFile:
+        """Declare a file target by logical alias resolved from storage config.
+
+        The physical URI is looked up in ``storage.files`` at runtime via the
+        injected :class:`~loom.etl.storage.FileLocator`.  Use this form when
+        the path is environment-specific and should not be hard-coded in the
+        pipeline.
+
+        Args:
+            name:   Logical file alias matching a ``storage.files[].name``
+                    entry in the config YAML.
+            format: :class:`~loom.etl.Format` of the output file.
+
+        Returns:
+            New ``IntoFile`` backed by a logical alias.
+
+        Example::
+
+            target = IntoFile.alias("exports_daily", format=Format.PARQUET)
+        """
+        instance = cls.__new__(cls)
+        instance._path = name
+        instance._format = format
+        instance._is_alias = True
+        instance._write_options = None
+        return instance
 
     def with_options(self, options: WriteOptions) -> IntoFile:
         """Return a new ``IntoFile`` with format-specific write options.
@@ -336,7 +371,12 @@ class IntoFile:
         return new
 
     def _to_spec(self) -> Any:
-        return FileSpec(path=self._path, format=self._format, write_options=self._write_options)
+        return FileSpec(
+            path=self._path,
+            format=self._format,
+            is_alias=self._is_alias,
+            write_options=self._write_options,
+        )
 
     def __repr__(self) -> str:
         return f"IntoFile({self._path!r}, format={self._format!r})"

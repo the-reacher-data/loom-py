@@ -130,6 +130,10 @@ class TestFromFile:
         assert spec.format is Format.CSV
         assert spec.path == "s3://raw/data.csv"
 
+    def test_to_spec_is_alias_false_by_default(self) -> None:
+        spec = FromFile("s3://raw/data.csv", format=Format.CSV)._to_spec("data")
+        assert spec.is_alias is False
+
     @pytest.mark.parametrize(
         "builder,expected_columns",
         [
@@ -161,6 +165,34 @@ class TestFromFile:
     def test_columns_empty_raises(self) -> None:
         with pytest.raises(ValueError, match="at least one"):
             FromFile("s3://raw/data.csv", format=Format.CSV).columns()
+
+
+class TestFromFileAlias:
+    def test_alias_sets_is_alias_true(self) -> None:
+        spec = FromFile.alias("events_raw", format=Format.CSV)._to_spec("events_raw")
+        assert spec.is_alias is True
+
+    def test_alias_stores_name_as_path(self) -> None:
+        spec = FromFile.alias("events_raw", format=Format.CSV)._to_spec("events_raw")
+        assert spec.path == "events_raw"
+
+    def test_alias_stores_format(self) -> None:
+        spec = FromFile.alias("reports", format=Format.PARQUET)._to_spec("reports")
+        assert spec.format is Format.PARQUET
+
+    def test_alias_kind_is_file(self) -> None:
+        spec = FromFile.alias("events_raw", format=Format.CSV)._to_spec("events_raw")
+        assert spec.kind is SourceKind.FILE
+
+    def test_direct_path_is_not_alias(self) -> None:
+        spec = FromFile("s3://bucket/data.csv", format=Format.CSV)._to_spec("data")
+        assert spec.is_alias is False
+
+    def test_alias_columns_preserved(self) -> None:
+        src = FromFile.alias("events_raw", format=Format.CSV).columns("id", "ts")
+        spec = src._to_spec("events_raw")
+        assert spec.is_alias is True
+        assert spec.columns == ("id", "ts")
 
 
 class TestFromTemp:

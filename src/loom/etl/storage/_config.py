@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from loom.etl.storage._file_locator import MappingFileLocator
 
 import msgspec
 from deltalake import CommitProperties, WriterProperties
@@ -223,6 +226,29 @@ class StorageConfig(msgspec.Struct, frozen=True):
     def has_catalog_routes(self) -> bool:
         """Return ``True`` when at least one table route uses ``ref``."""
         return any(bool(route.ref.strip()) for route in self.tables)
+
+    def to_file_locator(self) -> MappingFileLocator | None:
+        """Build a :class:`~loom.etl.storage._file_locator.MappingFileLocator`
+        from the declared ``storage.files`` routes, or ``None`` when no file
+        routes are configured.
+
+        Returns:
+            Locator mapping each ``files[].name`` to its physical
+            :class:`~loom.etl.storage._file_locator.FileLocation`, or
+            ``None`` when ``storage.files`` is empty.
+        """
+        from loom.etl.storage._file_locator import FileLocation, MappingFileLocator
+
+        if not self.files:
+            return None
+        mapping = {
+            route.name: FileLocation(
+                uri_template=route.path.uri,
+                storage_options=route.path.storage_options,
+            )
+            for route in self.files
+        }
+        return MappingFileLocator(mapping)
 
     def has_path_routes(self) -> bool:
         """Return ``True`` when defaults or per-table routes use path mode."""

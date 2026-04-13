@@ -13,6 +13,7 @@ from loom.etl.storage._config import (
     TablePathConfig,
     TableRoute,
 )
+from loom.etl.storage._file_locator import FileLocation, FileLocator, MappingFileLocator
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 from loom.etl.storage.routing import (
     CatalogRouteResolver,
@@ -29,6 +30,9 @@ from loom.etl.storage.routing import (
 )
 
 __all__ = [
+    "FileLocation",
+    "FileLocator",
+    "MappingFileLocator",
     "StorageEngine",
     "StorageConfig",
     "StorageDefaults",

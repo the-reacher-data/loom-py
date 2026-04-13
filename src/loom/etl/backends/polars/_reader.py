@@ -13,6 +13,7 @@ from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions,
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
+from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import PathRouteResolver, PathTarget, TableRouteResolver
 
@@ -28,9 +29,11 @@ class PolarsSourceReader(SourceReader):
         locator: str | TableLocator,
         *,
         route_resolver: TableRouteResolver | None = None,
+        file_locator: FileLocator | None = None,
     ) -> None:
         self._locator = _as_locator(locator)
         self._resolver = route_resolver or PathRouteResolver(self._locator)
+        self._file_locator = file_locator
 
     def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
         """Read source spec and return lazy frame."""
@@ -69,9 +72,21 @@ class PolarsSourceReader(SourceReader):
         return self._finalize_source_frame(frame, spec)
 
     def _read_file(self, spec: FileSourceSpec) -> pl.LazyFrame:
-        """Read file (CSV, JSON, XLSX, Parquet)."""
-        frame = self._read_file_by_format(spec.path, spec.format, spec.read_options)
+        """Read file (CSV, JSON, XLSX, Parquet), resolving alias if needed."""
+        path = self._resolve_file_path(spec)
+        frame = self._read_file_by_format(path, spec.format, spec.read_options)
         return self._finalize_source_frame(frame, spec)
+
+    def _resolve_file_path(self, spec: FileSourceSpec) -> str:
+        """Return the physical URI for *spec*, resolving alias when required."""
+        if not spec.is_alias:
+            return spec.path
+        if self._file_locator is None:
+            raise ValueError(
+                f"FromFile.alias({spec.path!r}) requires storage.files to be configured. "
+                "Set storage.files in your config YAML."
+            )
+        return self._file_locator.locate(spec.path).uri_template
 
     def _finalize_source_frame(
         self,

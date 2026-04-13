@@ -340,3 +340,51 @@ def test_writer_persists_schema_after_write(tmp_path: Path) -> None:
     writer.write(frame, _spec("staging.out", schema_mode=SchemaMode.STRICT), None)
     result = _read_table(tmp_path, "staging.out")
     assert result.schema["id"] == pl.Int64
+
+
+class TestFileLocatorAliasResolution:
+    """Alias resolution for FromFile.alias() / IntoFile.alias() via FileLocator."""
+
+    def test_reader_resolves_alias_to_physical_path(self, tmp_path: Path) -> None:
+        from loom.etl.storage._file_locator import FileLocation, MappingFileLocator
+
+        csv_path = tmp_path / "data.csv"
+        csv_path.write_text("id,v\n1,10\n2,20\n")
+
+        locator = MappingFileLocator(
+            mapping={"events_raw": FileLocation(uri_template=str(csv_path))}
+        )
+        reader = PolarsSourceReader(tmp_path, file_locator=locator)
+        spec = FileSourceSpec(
+            alias="events_raw", path="events_raw", format=Format.CSV, is_alias=True
+        )
+        df = reader.read(spec, None).collect()
+        assert df.shape == (2, 2)
+
+    def test_reader_raises_when_alias_missing_locator(self, tmp_path: Path) -> None:
+        reader = PolarsSourceReader(tmp_path)
+        spec = FileSourceSpec(
+            alias="events_raw", path="events_raw", format=Format.CSV, is_alias=True
+        )
+        with pytest.raises(ValueError, match="storage.files"):
+            reader.read(spec, None)
+
+    def test_writer_resolves_alias_to_physical_path(self, tmp_path: Path) -> None:
+        from loom.etl.storage._file_locator import FileLocation, MappingFileLocator
+
+        out_path = tmp_path / "out.csv"
+        locator = MappingFileLocator(
+            mapping={"exports_daily": FileLocation(uri_template=str(out_path))}
+        )
+        writer = PolarsTargetWriter(tmp_path, file_locator=locator)
+        frame = pl.DataFrame({"id": [1, 2]}).lazy()
+        spec = FileSpec(path="exports_daily", format=Format.CSV, is_alias=True)
+        writer.write(frame, spec, None)
+        assert out_path.exists()
+
+    def test_writer_raises_when_alias_missing_locator(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(tmp_path)
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        spec = FileSpec(path="exports_daily", format=Format.CSV, is_alias=True)
+        with pytest.raises(ValueError, match="storage.files"):
+            writer.write(frame, spec, None)
