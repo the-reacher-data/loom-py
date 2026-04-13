@@ -55,7 +55,10 @@ class PolarsProvider(BackendProvider):
             delta_config=record_store.delta_config or None,
             commit=record_store.commit or None,
         )
-        target_writer = PolarsTargetWriter(locator)
+        target_writer = PolarsTargetWriter(
+            locator,
+            missing_table_policy=config.missing_table_policy,
+        )
         return TargetExecutionRecordWriter(target_writer)
 
 

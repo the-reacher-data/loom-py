@@ -54,7 +54,11 @@ class SparkProvider(BackendProvider):
                 "with storage.engine='spark'."
             )
         if record_store.database:
-            target_writer = SparkTargetWriter(spark, None)
+            target_writer = SparkTargetWriter(
+                spark,
+                None,
+                missing_table_policy=config.missing_table_policy,
+            )
             return TargetExecutionRecordWriter(target_writer)
 
         locator = PrefixLocator(
@@ -64,7 +68,11 @@ class SparkProvider(BackendProvider):
             delta_config=record_store.delta_config or None,
             commit=record_store.commit or None,
         )
-        target_writer = SparkTargetWriter(spark, locator)
+        target_writer = SparkTargetWriter(
+            spark,
+            locator,
+            missing_table_policy=config.missing_table_policy,
+        )
         return TargetExecutionRecordWriter(target_writer)
 
 

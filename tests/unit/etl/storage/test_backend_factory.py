@@ -25,6 +25,7 @@ from loom.etl.runner._wiring import (
 )
 from loom.etl.storage._config import (
     CatalogConnection,
+    MissingTablePolicy,
     StorageConfig,
     StorageDefaults,
     TablePathConfig,
@@ -288,6 +289,75 @@ def test_spark_provider_record_writer_root_returns_target_writer_wrapper() -> No
         spark=spark,
     )
     assert type(writer).__name__ == "TargetExecutionRecordWriter"
+
+
+def test_spark_provider_record_writer_honors_missing_table_policy() -> None:
+    from unittest.mock import MagicMock
+
+    captured: dict[str, MissingTablePolicy] = {}
+
+    class _FakeSparkTargetWriter:
+        def __init__(
+            self,
+            spark: object,
+            locator: object | None,
+            *,
+            route_resolver: object | None = None,
+            missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+            file_locator: object | None = None,
+        ) -> None:
+            _ = (spark, locator, route_resolver, file_locator)
+            captured["policy"] = missing_table_policy
+
+    spark = MagicMock()
+    provider = SparkProvider()
+    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+    config = StorageConfig(engine="spark", missing_table_policy=MissingTablePolicy.CREATE)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "loom.etl.backends.spark.provider.SparkTargetWriter", _FakeSparkTargetWriter
+    )
+    try:
+        writer = provider.create_execution_record_writer(config, store, spark=spark)
+    finally:
+        monkeypatch.undo()
+
+    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert captured["policy"] is MissingTablePolicy.CREATE
+
+
+def test_polars_provider_record_writer_honors_missing_table_policy() -> None:
+    from loom.etl.backends.polars.provider import PolarsProvider
+
+    captured: dict[str, MissingTablePolicy] = {}
+
+    class _FakePolarsTargetWriter:
+        def __init__(
+            self,
+            locator: object,
+            *,
+            missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
+            file_locator: object | None = None,
+        ) -> None:
+            _ = (locator, file_locator)
+            captured["policy"] = missing_table_policy
+
+    provider = PolarsProvider()
+    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+    config = StorageConfig(engine="polars", missing_table_policy=MissingTablePolicy.CREATE)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "loom.etl.backends.polars.provider.PolarsTargetWriter", _FakePolarsTargetWriter
+    )
+    try:
+        writer = provider.create_execution_record_writer(config, store)
+    finally:
+        monkeypatch.undo()
+
+    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert captured["policy"] is MissingTablePolicy.CREATE
 
 
 def test_target_execution_record_writer_direct_module_import_executes_frame_and_append() -> None:
