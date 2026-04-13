@@ -173,7 +173,7 @@ class ETLExecutor:
         start = time.monotonic()
         for obs in self._observers:
             obs.on_process_start(plan, ctx, process_run_id)
-        process_ctx = replace(ctx, process_run_id=process_run_id)
+        process_ctx: RunContext = replace(ctx, process_run_id=process_run_id)
         status = RunStatus.SUCCESS
         try:
             for node in plan.nodes:

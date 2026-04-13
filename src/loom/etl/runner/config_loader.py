@@ -5,50 +5,41 @@ from __future__ import annotations
 from typing import Any
 
 import msgspec
-from omegaconf import DictConfig, OmegaConf
 
+from loom.core.config.loader import load_config
 from loom.etl.observability.config import ObservabilityConfig
 from loom.etl.storage._config import StorageConfig, convert_storage_config
 
 
-def _read_yaml_file(path: str) -> str:
-    """Read raw YAML text from a local filesystem path."""
-    with open(path, encoding="utf-8") as fh:
-        return fh.read()
+def _load_yaml(path: str) -> tuple[StorageConfig, ObservabilityConfig]:
+    """Load and parse an ETL config YAML.
 
-
-def _parse_yaml_content(content: str) -> tuple[StorageConfig, ObservabilityConfig]:
-    """Parse and resolve a YAML string into typed config objects.
+    Accepts local filesystem paths and cloud storage URIs
+    (``s3://``, ``gs://``, ``abfss://``, ``r2://`` …).
 
     Args:
-        content: Raw YAML text (``storage:`` key required).
+        path: Local path or cloud URI pointing to a YAML file with a
+            top-level ``storage:`` key and an optional ``observability:`` key.
 
     Returns:
         Tuple of validated :data:`~loom.etl.StorageConfig` and
         :class:`~loom.etl.ObservabilityConfig`.
 
     Raises:
-        KeyError: When ``storage:`` key is absent.
-        msgspec.ValidationError: When config shape is invalid.
+        KeyError: When the ``storage:`` key is absent.
+        msgspec.ValidationError: When the config shape is invalid.
+        loom.core.config.ConfigError: When the file cannot be read or parsed.
     """
-    created = OmegaConf.create(content)
-    if not isinstance(created, DictConfig):
-        raise TypeError(
-            f"Expected a mapping from OmegaConf.create, got {type(created).__name__}. "
-            "Pass a dict or YAML string with a top-level mapping."
-        )
-    raw: DictConfig = created
-    storage_raw: Any = OmegaConf.to_container(raw["storage"], resolve=True)
+    from omegaconf import OmegaConf
+
+    cfg = load_config(path)
+
+    storage_raw: Any = OmegaConf.to_container(cfg["storage"], resolve=True)
     storage_config = convert_storage_config(storage_raw)
 
     obs_config = ObservabilityConfig()
-    if "observability" in raw:
-        obs_raw: Any = OmegaConf.to_container(raw["observability"], resolve=True)
+    if "observability" in cfg:
+        obs_raw: Any = OmegaConf.to_container(cfg["observability"], resolve=True)
         obs_config = msgspec.convert(obs_raw, ObservabilityConfig)
 
     return storage_config, obs_config
-
-
-def _load_yaml(path: str) -> tuple[StorageConfig, ObservabilityConfig]:
-    """Read a YAML file from the filesystem and parse it."""
-    return _parse_yaml_content(_read_yaml_file(path))

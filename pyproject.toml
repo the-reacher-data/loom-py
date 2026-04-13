@@ -22,7 +22,7 @@ rest = [
     "prometheus-client>=0.20",
 ]
 sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
-config = ["omegaconf>=2.3,<3.0"]
+config = ["omegaconf>=2.3,<3.0", "fsspec>=2024.2.0"]
 cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
 etl-polars = [
     "polars>=1.0,<2.0",

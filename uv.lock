@@ -938,6 +938,7 @@ celery = [
     { name = "redis" },
 ]
 config = [
+    { name = "fsspec" },
     { name = "omegaconf" },
 ]
 etl-otel = [
@@ -1029,6 +1030,7 @@ requires-dist = [
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=1.5,<2.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
     { name = "findspark", marker = "extra == 'etl-spark'", specifier = ">=2.0,<3.0" },
+    { name = "fsspec", marker = "extra == 'config'", specifier = ">=2024.2.0" },
     { name = "fsspec", marker = "extra == 'etl-polars'", specifier = ">=2024.2.0" },
     { name = "fsspec", marker = "extra == 'etl-spark'", specifier = ">=2024.2.0" },
     { name = "httptools", marker = "extra == 'rest'", specifier = ">=0.6,<1.0" },

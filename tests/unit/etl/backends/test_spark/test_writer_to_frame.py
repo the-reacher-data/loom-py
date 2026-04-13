@@ -21,7 +21,7 @@ from loom.etl.observability.records import (
 class _FakeSpark:
     def __init__(self) -> None:
         self.calls: list[tuple[list[dict[str, Any]], T.StructType]] = []
-        self.createDataFrame = self.create_data_frame  # Spark-compatible alias (runtime API)
+        self.createDataFrame = self.create_data_frame  # NOSONAR
 
     def create_data_frame(self, rows: list[dict[str, Any]], schema: T.StructType) -> object:
         self.calls.append((rows, schema))
