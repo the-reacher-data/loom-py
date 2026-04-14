@@ -9,12 +9,33 @@ For sections that benefit from strict typing, use :func:`section` to
 extract and validate a subtree into a user-defined struct or dataclass via
 ``msgspec.convert``.
 
+Cloud URIs
+----------
+:func:`load_config` accepts cloud storage URIs (``s3://``, ``gs://``,
+``abfss://``, ``r2://`` …) in addition to local filesystem paths.  Cloud
+files are fetched via ``fsspec`` at parse time, which means the config is
+always resolved against the current state of object storage — no baking
+into images or wheels.
+
+The ``includes`` directive is **not** supported for cloud URIs.  Use
+explicit multi-file composition via :func:`load_config` instead::
+
+    cfg = load_config("s3://bucket/config/base.yaml", "s3://bucket/config/prod.yaml")
+
+Custom resolvers
+----------------
+Pass :class:`~loom.core.config.resolver.ConfigResolver` implementations to
+resolve ``${prefix:key}`` placeholders at parse time::
+
+    cfg = load_config("s3://bucket/prod.yaml", resolvers=[SsmResolver("eu-west-1")])
+
 YAML ``includes`` directive
 ---------------------------
-A config file may declare a top-level ``includes`` list to merge other files
-before its own values.  Paths are resolved relative to the declaring file.
-The declaring file always takes precedence over its includes.  Includes are
-resolved recursively; circular references raise :class:`ConfigError`.
+A local config file may declare a top-level ``includes`` list to merge other
+files before its own values.  Paths are resolved relative to the declaring
+file.  The declaring file always takes precedence over its includes.
+Includes are resolved recursively; circular references raise
+:class:`ConfigError`.
 
 Example::
 
@@ -39,8 +60,11 @@ Function-level composition is still available::
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
+from urllib.parse import urlparse
 
 import msgspec
 
@@ -49,7 +73,11 @@ from loom.core.config.errors import ConfigError
 if TYPE_CHECKING:
     from omegaconf import DictConfig
 
+    from loom.core.config.resolver import ConfigResolver
+
 T = TypeVar("T")
+
+_CLOUD_SCHEMES = frozenset({"s3", "gs", "gcs", "abfss", "abfs", "az", "r2"})
 
 
 def _ensure_omegaconf() -> Any:
@@ -64,11 +92,65 @@ def _ensure_omegaconf() -> Any:
         ) from exc
 
 
-def _load_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
-    """Load a single YAML file, resolving its ``includes`` recursively.
+def _is_cloud_uri(path: str) -> bool:
+    """Return ``True`` when *path* is a cloud storage URI."""
+    return urlparse(str(path).strip()).scheme.lower() in _CLOUD_SCHEMES
+
+
+def _fetch_cloud_content(uri: str) -> str:
+    """Fetch raw YAML text from a cloud URI via fsspec.
 
     Args:
-        path: Absolute or relative path to the YAML file.
+        uri: Cloud storage URI (``s3://``, ``gs://``, ``abfss://``, …).
+
+    Returns:
+        Raw YAML string.
+
+    Raises:
+        ConfigError: When the fetch fails.
+    """
+    import fsspec
+
+    try:
+        with fsspec.open(uri, mode="r", encoding="utf-8") as fh:
+            return str(fh.read())  # pyright: ignore[reportAttributeAccessIssue]
+    except Exception as exc:
+        raise ConfigError(f"Failed to fetch config from {uri!r}: {exc}") from exc
+
+
+def _load_cloud_file(uri: str, omega_conf: Any) -> Any:
+    """Parse a YAML fetched from a cloud URI.
+
+    The ``includes`` directive is not supported for cloud paths.
+
+    Args:
+        uri: Cloud storage URI.
+        omega_conf: OmegaConf module.
+
+    Returns:
+        Parsed :class:`omegaconf.DictConfig`.
+
+    Raises:
+        ConfigError: On fetch failure, parse error, or ``includes`` usage.
+    """
+    content = _fetch_cloud_content(uri)
+    try:
+        cfg = omega_conf.create(content)
+    except Exception as exc:
+        raise ConfigError(f"Failed to parse config from {uri!r}: {exc}") from exc
+    if omega_conf.select(cfg, "includes", default=None) is not None:
+        raise ConfigError(
+            f"'includes' directive is not supported for cloud URIs ({uri!r}). "
+            "Use explicit multi-file composition via load_config() instead."
+        )
+    return cfg
+
+
+def _load_local_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
+    """Load a single local YAML file, resolving its ``includes`` recursively.
+
+    Args:
+        path: Absolute or relative local path to the YAML file.
         omega_conf: OmegaConf module.
         seen: Set of resolved absolute paths already in the call stack,
             used to detect circular references.
@@ -83,7 +165,7 @@ def _load_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
     resolved = str(Path(path).resolve())
     if resolved in seen:
         raise ConfigError(f"Circular include detected: {path!r} is already being loaded.")
-    seen = seen | {resolved}  # immutable copy per branch — no shared mutation
+    seen = seen | {resolved}
 
     try:
         cfg = omega_conf.load(path)
@@ -103,56 +185,97 @@ def _load_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
     layers: list[Any] = []
     for inc in include_paths:
         inc_path = str((base_dir / inc).resolve())
-        layers.append(_load_file(inc_path, omega_conf, seen))
+        layers.append(_load_local_file(inc_path, omega_conf, seen))
 
-    layers.append(cfg)  # declaring file wins — appended last
+    layers.append(cfg)
     return omega_conf.merge(*layers) if len(layers) > 1 else layers[0]
 
 
-def load_config(*config_files: str) -> DictConfig:
+def _load_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
+    """Dispatch to cloud or local loader based on URI scheme."""
+    if _is_cloud_uri(path):
+        return _load_cloud_file(path, omega_conf)
+    return _load_local_file(path, omega_conf, seen)
+
+
+def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
+    """Register custom resolvers with OmegaConf before parsing.
+
+    Registration is idempotent: a resolver already registered under the same
+    name is silently skipped, so multiple :func:`load_config` calls with the
+    same resolvers are safe.
+
+    Args:
+        resolvers: Sequence of :class:`~loom.core.config.resolver.ConfigResolver`
+            implementations.
+        omega_conf: OmegaConf module.
+    """
+    for resolver in resolvers:
+        with contextlib.suppress(Exception):
+            omega_conf.register_new_resolver(resolver.name, resolver.resolve)
+
+
+def load_config(
+    *config_files: str,
+    resolvers: Sequence[ConfigResolver] = (),
+) -> DictConfig:
     """Load and merge one or more YAML config files into a DictConfig.
+
+    Accepts local filesystem paths and cloud storage URIs
+    (``s3://``, ``gs://``, ``abfss://``, ``r2://`` …).  Cloud files are
+    fetched via ``fsspec`` at call time.
 
     Files are merged **left-to-right**: values in later files override those
     in earlier ones.  ``${oc.env:VAR}`` interpolations are resolved by
-    OmegaConf.
+    OmegaConf.  Custom ``resolvers`` are registered before parsing so their
+    ``${name:key}`` placeholders resolve during the same pass.
 
-    Each file may declare a top-level ``includes`` list to pull in additional
-    files before its own values.  Included paths are relative to the file that
-    declares them.  The declaring file always overrides its includes.
-    Circular includes raise :class:`ConfigError`.
+    Local files may declare a top-level ``includes`` list to pull in
+    additional files before their own values.  Included paths are relative
+    to the declaring file.  Circular includes raise :class:`ConfigError`.
+    The ``includes`` directive is not supported for cloud URIs.
 
-    The framework does not impose any shape on the resulting config — the user
-    owns the structure entirely.  Use :func:`section` to extract typed
+    The framework does not impose any shape on the resulting config — the
+    user owns the structure entirely.  Use :func:`section` to extract typed
     sub-objects where desired.
 
     Args:
-        *config_files: One or more paths to YAML configuration files.
+        *config_files: One or more local paths or cloud URIs.
+        resolvers: Optional sequence of
+            :class:`~loom.core.config.resolver.ConfigResolver` instances.
+            Each resolver registers a ``${name:key}`` placeholder resolved
+            at parse time (e.g. from AWS SSM or Azure Key Vault).
 
     Returns:
         Merged :class:`omegaconf.DictConfig` with interpolation support.
 
     Raises:
         ConfigError: If no files are provided, a file is not found, parsing
-            fails, a circular include is detected, or omegaconf is not
-            installed.
+            fails, a circular include is detected, omegaconf is not installed,
+            or a cloud URI fetch fails.
 
-    Example — single file with inline includes::
+    Example — single local file with inline includes::
 
-        # config.yaml
-        # includes:
-        #   - base.yaml
-        #   - secrets.yaml
         cfg = load_config("config.yaml")
 
     Example — explicit multi-file composition::
 
         cfg = load_config("config/base.yaml", "config/production.yaml")
         db_url = cfg.database.url
+
+    Example — cloud URI::
+
+        cfg = load_config("s3://my-bucket/config/prod.yaml")
+
+    Example — with custom resolver::
+
+        cfg = load_config("config/prod.yaml", resolvers=[SsmResolver("eu-west-1")])
     """
     if not config_files:
         raise ConfigError("load_config requires at least one config file.")
 
     omega_conf = _ensure_omegaconf()
+    _register_resolvers(resolvers, omega_conf)
 
     layers = [_load_file(path, omega_conf, set()) for path in config_files]
     merged = omega_conf.merge(*layers) if len(layers) > 1 else layers[0]

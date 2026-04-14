@@ -30,3 +30,11 @@ Engine and Errors
 
    loom.core.engine
    loom.core.errors
+
+Config
+------
+
+.. autosummary::
+   :toctree: generated
+
+   loom.core.config

@@ -1,0 +1,300 @@
+"""Tests for ETLRunner plan filtering and constructors."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import msgspec
+import pytest
+
+from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
+from loom.etl.compiler import ETLCompiler
+from loom.etl.compiler._plan import (
+    ParallelProcessGroup,
+    ParallelStepGroup,
+    PipelinePlan,
+    ProcessPlan,
+    StepPlan,
+)
+from loom.etl.runner import ETLRunner, InvalidStageError
+from loom.etl.runner.filtering import _filter_plan
+from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig
+from loom.etl.testing import StubSourceReader, StubTargetWriter
+
+RunnerFactory = Callable[..., ETLRunner]
+
+
+class P(ETLParams):  # type: ignore[misc]
+    run_date: date
+
+
+class StepA(ETLStep[P]):
+    orders = FromTable("raw.orders")
+    target = IntoTable("staging.a").replace()
+
+    def execute(self, params: P, *, orders: Any) -> Any:  # type: ignore[override]
+        return orders
+
+
+class StepB(ETLStep[P]):
+    orders = FromTable("raw.orders")
+    target = IntoTable("staging.b").replace()
+
+    def execute(self, params: P, *, orders: Any) -> Any:  # type: ignore[override]
+        return orders
+
+
+class StepC(ETLStep[P]):
+    orders = FromTable("raw.orders")
+    target = IntoTable("staging.c").replace()
+
+    def execute(self, params: P, *, orders: Any) -> Any:  # type: ignore[override]
+        return orders
+
+
+class ProcAB(ETLProcess[P]):
+    steps = [StepA, StepB]
+
+
+class ProcC(ETLProcess[P]):
+    steps = [StepC]
+
+
+class ProcParallel(ETLProcess[P]):
+    steps = [[StepA, StepB]]
+
+
+class PipelineAll(ETLPipeline[P]):
+    processes = [ProcAB, ProcC]
+
+
+class PipelineParallelProcs(ETLPipeline[P]):
+    processes = [[ProcAB, ProcC]]
+
+
+class PipelineParallelSteps(ETLPipeline[P]):
+    processes = [ProcParallel]
+
+
+@pytest.fixture
+def params() -> P:
+    return P(run_date=date(2024, 1, 1))
+
+
+@pytest.fixture
+def runner_factory() -> RunnerFactory:
+    def _make(observers: Sequence[Any] | None = None) -> ETLRunner:
+        reader = StubSourceReader({"raw.orders": object()})
+        return ETLRunner(
+            reader,
+            StubTargetWriter(),
+            observers=list(observers or ()),
+        )
+
+    return _make
+
+
+def _compile(pipeline_type: type[ETLPipeline[P]]) -> PipelinePlan:
+    return ETLCompiler().compile(pipeline_type)
+
+
+class TestFilterPlan:
+    @pytest.mark.parametrize(
+        "include,expected_process,expected_steps",
+        [
+            (frozenset({"StepA"}), ProcAB, ("StepA",)),
+            (frozenset({"StepA", "StepB"}), ProcAB, ("StepA", "StepB")),
+            (frozenset({"ProcAB"}), ProcAB, ("StepA", "StepB")),
+            (frozenset({"ProcC"}), ProcC, ("StepC",)),
+        ],
+    )
+    def test_filter_regular_pipeline(
+        self,
+        include: frozenset[str],
+        expected_process: type[ETLProcess[P]],
+        expected_steps: tuple[str, ...],
+    ) -> None:
+        filtered = _filter_plan(_compile(PipelineAll), include)
+        assert len(filtered.nodes) == 1
+        proc = filtered.nodes[0]
+        assert isinstance(proc, ProcessPlan)
+        assert proc.process_type is expected_process
+        step_names = tuple(
+            node.step_type.__name__ for node in proc.nodes if isinstance(node, StepPlan)
+        )
+        assert step_names == expected_steps
+
+    @pytest.mark.parametrize(
+        "pipeline_type,include,expect_parallel,expected_len,first_step",
+        [
+            (PipelineParallelSteps, frozenset({"StepA"}), False, 1, "StepA"),
+            (PipelineParallelSteps, frozenset({"StepA", "StepB"}), True, 2, None),
+            (PipelineParallelProcs, frozenset({"ProcC"}), False, 1, None),
+            (PipelineParallelProcs, frozenset({"ProcAB", "ProcC"}), True, 2, None),
+        ],
+    )
+    def test_filter_parallel_shapes(
+        self,
+        pipeline_type: type[ETLPipeline[P]],
+        include: frozenset[str],
+        expect_parallel: bool,
+        expected_len: int,
+        first_step: str | None,
+    ) -> None:
+        filtered = _filter_plan(_compile(pipeline_type), include)
+        top_node = filtered.nodes[0]
+
+        if pipeline_type is PipelineParallelSteps:
+            assert isinstance(top_node, ProcessPlan)
+            node = top_node.nodes[0]
+            if expect_parallel:
+                assert isinstance(node, ParallelStepGroup)
+                assert len(node.plans) == expected_len
+            else:
+                assert isinstance(node, StepPlan)
+                assert node.step_type.__name__ == first_step
+            return
+
+        if expect_parallel:
+            assert isinstance(top_node, ParallelProcessGroup)
+            assert len(top_node.plans) == expected_len
+            return
+
+        assert isinstance(top_node, ProcessPlan)
+        assert top_node.process_type is ProcC
+
+    def test_filter_no_match_raises(self) -> None:
+        with pytest.raises(InvalidStageError):
+            _filter_plan(_compile(PipelineAll), frozenset({"NonExistent"}))
+
+
+class TestRunnerRun:
+    @pytest.mark.parametrize(
+        "include,expected_steps",
+        [
+            (None, 3),
+            (["StepA"], 1),
+        ],
+    )
+    def test_runner_run_counts_steps(
+        self,
+        params: P,
+        runner_factory: RunnerFactory,
+        include: list[str] | None,
+        expected_steps: int,
+    ) -> None:
+        from loom.etl.testing import StubRunObserver
+
+        observer = StubRunObserver()
+        runner_factory([observer]).run(PipelineAll, params, include=include)
+        assert len(observer.step_statuses) == expected_steps
+
+    def test_runner_run_invalid_include_raises(
+        self,
+        params: P,
+        runner_factory: RunnerFactory,
+    ) -> None:
+        with pytest.raises(InvalidStageError):
+            runner_factory().run(PipelineAll, params, include=["DoesNotExist"])
+
+
+class TestRunnerFromConfig:
+    def test_from_config_spark_engine_without_spark_raises(self) -> None:
+        with pytest.raises(ValueError, match="SparkSession"):
+            ETLRunner.from_config(StorageConfig(engine="spark"))
+
+    def test_from_config_spark_engine_with_spark_builds_spark_backends(self) -> None:
+        pytest.importorskip("pyspark")
+
+        from unittest.mock import MagicMock
+
+        from loom.etl.backends.spark import SparkSourceReader
+
+        spark = MagicMock()
+        runner = ETLRunner.from_config(StorageConfig(engine="spark"), spark=spark)
+
+        assert isinstance(runner._executor._reader, SparkSourceReader)
+        assert runner._compiler._catalog is None
+
+    @pytest.mark.parametrize(
+        "checkpoint_enabled,has_checkpoint_store",
+        [
+            (False, False),
+            (True, True),
+        ],
+    )
+    def test_from_config_polars_path_builds_polars_backends(
+        self,
+        tmp_path: Path,
+        checkpoint_enabled: bool,
+        has_checkpoint_store: bool,
+    ) -> None:
+        from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            tmp_root="s3://bucket/checkpoints" if checkpoint_enabled else "",
+        )
+        runner = ETLRunner.from_config(config)
+
+        assert isinstance(runner._executor._reader, PolarsSourceReader)
+        assert isinstance(runner._executor._writer, PolarsTargetWriter)
+        assert (runner._checkpoint_store is not None) is has_checkpoint_store
+
+
+class TestRunnerFromDict:
+    def test_from_dict_polars_path_builds_polars_backends(self, tmp_path: Path) -> None:
+        from loom.etl.backends.polars import PolarsSourceReader
+
+        runner = ETLRunner.from_dict({"defaults": {"table_path": {"uri": str(tmp_path)}}})
+        assert isinstance(runner._executor._reader, PolarsSourceReader)
+
+    @pytest.mark.parametrize(
+        "storage,error,match",
+        [
+            ({"engine": "spark"}, ValueError, "SparkSession"),
+            ({"engine": "unknown"}, msgspec.ValidationError, ""),
+        ],
+    )
+    def test_from_dict_errors(
+        self, storage: dict[str, Any], error: type[Exception], match: str
+    ) -> None:
+        if match:
+            with pytest.raises(error, match=match):
+                ETLRunner.from_dict(storage)
+            return
+        with pytest.raises(error):
+            ETLRunner.from_dict(storage)
+
+    def test_from_dict_invalid_storage_shape_raises(self) -> None:
+        with pytest.raises(msgspec.ValidationError):
+            ETLRunner.from_dict({"defaults": {"table_path": {"uri": 123}}})
+
+    def test_from_dict_with_observability_dict(self, tmp_path: Path) -> None:
+        runner = ETLRunner.from_dict(
+            {"defaults": {"table_path": {"uri": str(tmp_path)}}},
+            observability={"log": False},
+        )
+        assert runner is not None
+
+
+class TestRunnerCleaner:
+    def test_from_config_with_injected_cleaner(self, tmp_path: Path) -> None:
+        deleted: list[str] = []
+
+        class SpyCleaner:
+            def delete_tree(self, path: str) -> None:
+                deleted.append(path)
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            tmp_root="s3://bucket/checkpoints",
+        )
+        runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
+
+        assert runner._checkpoint_store is not None
+        runner._checkpoint_store.cleanup_run("run-xyz")
+        assert any("run-xyz" in path for path in deleted)

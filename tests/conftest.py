@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,39 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Regenerate golden snapshot files instead of comparing them.",
     )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Run reload-based contract tests last to avoid module identity drift.
+
+    Some ETL contract tests intentionally call ``importlib.reload`` on modules.
+    Running those tests early can invalidate class/enum identity assumptions
+    in already-imported tests from other folders.
+
+    Keep collection deterministic by pushing any test file containing reload
+    helpers to the end of the global test run.
+    """
+
+    items.sort(key=_is_reload_contract_item)
+
+
+def _is_reload_contract_item(item: pytest.Item) -> bool:
+    path_obj = getattr(item, "path", None)
+    if isinstance(path_obj, Path):
+        return _file_has_reload_calls(path_obj)
+    fspath = getattr(item, "fspath", None)
+    if fspath is None:
+        return False
+    return _file_has_reload_calls(Path(str(fspath)))
+
+
+@lru_cache(maxsize=512)
+def _file_has_reload_calls(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "importlib.reload(" in text or "_reload_module(" in text or "_reload_modules(" in text
 
 
 @pytest.fixture

@@ -311,3 +311,101 @@ def test_includes_missing_file_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigError, match="not found"):
         load_config(str(main))
+
+
+# ---------------------------------------------------------------------------
+# load_config — cloud URIs
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_from_cloud_uri() -> None:
+    from io import StringIO
+    from unittest.mock import MagicMock, patch
+
+    yaml_content = "database:\n  url: postgresql://cloud-host/prod\n  pool_size: 10\n"
+
+    mock_open = MagicMock()
+    mock_open.return_value.__enter__ = MagicMock(return_value=StringIO(yaml_content))
+    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+
+    with patch("fsspec.open", mock_open):
+        cfg = load_config("s3://my-bucket/config/prod.yaml")
+
+    assert cfg.database.url == "postgresql://cloud-host/prod"
+    assert cfg.database.pool_size == 10
+    mock_open.assert_called_once_with("s3://my-bucket/config/prod.yaml", mode="r", encoding="utf-8")
+
+
+def test_load_config_cloud_uri_raises_on_includes() -> None:
+    from io import StringIO
+    from unittest.mock import MagicMock, patch
+
+    yaml_content = "includes:\n  - base.yaml\ndatabase:\n  url: sqlite:///dev.db\n"
+
+    mock_open = MagicMock()
+    mock_open.return_value.__enter__ = MagicMock(return_value=StringIO(yaml_content))
+    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+
+    with (
+        patch("fsspec.open", mock_open),
+        pytest.raises(ConfigError, match="includes.*not supported"),
+    ):
+        load_config("s3://my-bucket/config/prod.yaml")
+
+
+def test_load_config_cloud_uri_merged_with_local(tmp_path: Path) -> None:
+    from io import StringIO
+    from unittest.mock import MagicMock, patch
+
+    local = tmp_path / "base.yaml"
+    local.write_text("database:\n  url: sqlite:///base.db\n  pool_size: 5\n")
+
+    cloud_content = "database:\n  url: postgresql://prod/mydb\n"
+    mock_open = MagicMock()
+    mock_open.return_value.__enter__ = MagicMock(return_value=StringIO(cloud_content))
+    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+
+    with patch("fsspec.open", mock_open):
+        cfg = load_config(str(local), "s3://bucket/prod.yaml")
+
+    assert cfg.database.url == "postgresql://prod/mydb"
+    assert cfg.database.pool_size == 5  # from local base
+
+
+# ---------------------------------------------------------------------------
+# load_config — custom resolvers
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_custom_resolver(tmp_path: Path) -> None:
+    from loom.core.config import ConfigResolver
+
+    class FakeResolver:
+        name = "fake"
+
+        def resolve(self, key: str) -> str:
+            return f"resolved:{key}"
+
+    assert isinstance(FakeResolver(), ConfigResolver)
+
+    f = tmp_path / "cfg.yaml"
+    f.write_text("database:\n  url: ${fake:my/secret/url}\n")
+
+    cfg = load_config(str(f), resolvers=[FakeResolver()])
+
+    assert cfg.database.url == "resolved:my/secret/url"
+
+
+def test_load_config_resolver_registration_is_idempotent(tmp_path: Path) -> None:
+    class FakeResolver2:
+        name = "fake2"
+
+        def resolve(self, key: str) -> str:
+            return f"v:{key}"
+
+    f = tmp_path / "cfg.yaml"
+    f.write_text("x: ${fake2:key}\n")
+
+    # Registering the same resolver twice must not raise
+    load_config(str(f), resolvers=[FakeResolver2()])
+    load_config(str(f), resolvers=[FakeResolver2()])
