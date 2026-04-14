@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "0.2.1"
+version = "0.3.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,9 +21,17 @@ rest = [
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
 ]
-sqlalchemy = ["sqlalchemy>=2.0,<3.0"]
-config = ["omegaconf>=2.3,<3.0", "fsspec>=2024.2.0"]
-cache = ["aiocache>=0.12,<1.0", "omegaconf>=2.3,<3.0"]
+sqlalchemy = [
+    "sqlalchemy>=2.0,<3.0",
+]
+config = [
+    "omegaconf>=2.3,<3.0",
+    "fsspec>=2024.2.0",
+]
+cache = [
+    "aiocache>=0.12,<1.0",
+    "omegaconf>=2.3,<3.0",
+]
 etl-polars = [
     "polars>=1.0,<2.0",
     "deltalake>=1.5,<2.0",
@@ -49,11 +57,19 @@ etl-otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
 ]
-pyspark = ["pyspark>=3.5,<4.0"]
-prometheus = ["prometheus-client>=0.20"]
-celery = ["celery>=5.3,<6.0", "kombu>=5.3,<6.0", "redis>=5.0,<6.0"]
+pyspark = [
+    "pyspark>=3.5,<4.0",
+]
+prometheus = [
+    "prometheus-client>=0.20",
+]
+celery = [
+    "celery>=5.3,<6.0",
+    "kombu>=5.3,<6.0",
+    "redis>=5.0,<6.0",
+]
 
-[project.entry-points."pytest11"]
+[project.entry-points.pytest11]
 loom-spark = "loom.etl.testing.spark"
 
 [project.entry-points."loom.etl.backends"]
@@ -61,7 +77,9 @@ polars = "loom.etl.backends.polars.provider:PolarsProvider"
 spark = "loom.etl.backends.spark.provider:SparkProvider"
 
 [build-system]
-requires = ["hatchling>=1.24.0"]
+requires = [
+    "hatchling>=1.24.0",
+]
 build-backend = "hatchling.build"
 
 [dependency-groups]
@@ -102,14 +120,24 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/loom"]
+packages = [
+    "src/loom",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
@@ -129,26 +157,46 @@ extend-immutable-calls = [
 
 [tool.pyright]
 pythonVersion = "3.11"
-include = ["src"]
+include = [
+    "src",
+]
 typeCheckingMode = "standard"
 reportMissingModuleSource = "none"
 reportMissingImports = "none"
-ignore = ["src/loom/etl/testing/spark.py"]
+ignore = [
+    "src/loom/etl/testing/spark.py",
+]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
-mypy_path = ["src"]
-exclude = ["^tests/"]
+mypy_path = [
+    "src",
+]
+exclude = [
+    "^tests/",
+]
 
 [[tool.mypy.overrides]]
-module = ["pyspark.*", "delta.*", "findspark", "fsspec.*", "chispa.*", "pyarrow.*"]
+module = [
+    "pyspark.*",
+    "delta.*",
+    "findspark",
+    "fsspec.*",
+    "chispa.*",
+    "pyarrow.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-testpaths = ["tests/unit", "tests/integration"]
-pythonpath = ["src"]
+testpaths = [
+    "tests/unit",
+    "tests/integration",
+]
+pythonpath = [
+    "src",
+]
 addopts = "-ra --log-disable=aiosqlite"
 asyncio_mode = "auto"
 log_cli = true
@@ -157,9 +205,11 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.1"
+version = "0.3.0"
 tag_format = "v$version"
-version_files = ["pyproject.toml:project.version"]
+version_files = [
+    "pyproject.toml:project.version",
+]
 update_changelog_on_bump = true
 
 [tool.semantic_branch]
@@ -171,8 +221,23 @@ prerelease = [
     "breaking/.*",
     "fix/.*",
 ]
-patch = ["hotfix/.*", "fix/.*"]
-minor = ["feature/.*", "feat/.*", "multifeature/.*"]
-major = ["breaking/.*"]
-prerelease_ignore = ["docs/.*"]
-release_ignore = ["wip/.*", "docs/.*", "chore/.*"]
+patch = [
+    "hotfix/.*",
+    "fix/.*",
+]
+minor = [
+    "feature/.*",
+    "feat/.*",
+    "multifeature/.*",
+]
+major = [
+    "breaking/.*",
+]
+prerelease_ignore = [
+    "docs/.*",
+]
+release_ignore = [
+    "wip/.*",
+    "docs/.*",
+    "chore/.*",
+]
