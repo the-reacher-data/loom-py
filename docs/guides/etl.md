@@ -98,6 +98,56 @@ class ReportPipeline(ETLPipeline[DailyParams]):
     processes = [ReportProcess]
 ```
 
+## File aliases (FileLocator)
+
+Hard-coding file paths in pipelines couples the logic to the infrastructure.
+Use `FromFile.alias()` / `IntoFile.alias()` to declare a **logical name** and
+resolve it at runtime through the storage config.
+
+Declare aliases in the `storage.files` block:
+
+```yaml
+storage:
+  engine: polars
+  files:
+    - name: events_raw
+      path:
+        uri: s3://raw-bucket/events/
+        storage_options:
+          AWS_REGION: eu-west-1
+    - name: exports_daily
+      path:
+        uri: s3://exports-bucket/daily/
+```
+
+Reference them in pipelines using the alias API:
+
+```python
+from loom.etl import ETLStep, FromFile, IntoFile, Format
+
+class LoadEvents(ETLStep[DailyParams]):
+    events = FromFile.alias("events_raw", format=Format.CSV)
+    target = IntoFile.alias("exports_daily", format=Format.PARQUET)
+
+    def execute(self, params: DailyParams, *, events: pl.LazyFrame) -> pl.LazyFrame:
+        return events
+```
+
+The runner resolves aliases to physical URIs at job startup —
+pipelines never hard-code storage paths or credentials.
+
+You can also implement `FileLocator` directly for custom routing strategies:
+
+```python
+from loom.etl.storage import FileLocator, FileLocation
+
+class MyFileLocator:
+    def locate(self, name: str) -> FileLocation:
+        return FileLocation(uri_template=f"s3://my-bucket/{name}/")
+```
+
+---
+
 ## YAML config (Polars path)
 
 ```yaml
@@ -251,6 +301,123 @@ Use the built-in test harnesses:
 
 These let you seed source tables, run one step in isolation, and assert output
 without wiring full storage infrastructure.
+
+## File aliases (FileLocator)
+
+Hard-coding file paths in pipelines couples the logic to the infrastructure.
+Use `FromFile.alias()` / `IntoFile.alias()` to declare a **logical name** and
+resolve it at runtime through the storage config.
+
+Declare aliases in the `storage.files` block:
+
+```yaml
+storage:
+  engine: polars
+  files:
+    - name: events_raw
+      path:
+        uri: s3://raw-bucket/events/
+        storage_options:
+          AWS_REGION: eu-west-1
+    - name: exports_daily
+      path:
+        uri: s3://exports-bucket/daily/
+```
+
+Reference them in pipelines:
+
+```python
+from loom.etl import ETLStep, FromFile, IntoFile, Format
+
+class LoadEvents(ETLStep[DailyParams]):
+    events = FromFile.alias("events_raw", format=Format.CSV)
+    target = IntoFile.alias("exports_daily", format=Format.PARQUET)
+
+    def execute(self, params: DailyParams, *, events: pl.LazyFrame) -> pl.LazyFrame:
+        return events
+```
+
+The runner resolves aliases to physical URIs at job startup — pipelines never
+hard-code storage paths or credentials.
+
+You can also implement the `FileLocator` protocol directly for custom routing:
+
+```python
+from loom.etl.storage import FileLocator, FileLocation
+
+class MyFileLocator:
+    def locate(self, name: str) -> FileLocation:
+        return FileLocation(uri_template=f"s3://my-bucket/{name}/")
+```
+
+---
+
+## Loading config from cloud storage
+
+`ETLRunner.from_yaml()` accepts cloud URIs (`s3://`, `gs://`, `abfss://`, `r2://`, …)
+in addition to local paths. Files are fetched via `fsspec` at startup:
+
+```python
+runner = ETLRunner.from_yaml("s3://my-bucket/config/etl.yaml")
+```
+
+Multi-file composition:
+
+```python
+runner = ETLRunner.from_yaml(
+    "s3://my-bucket/config/base.yaml",
+    "s3://my-bucket/config/prod.yaml",
+)
+```
+
+> The `includes` directive is not supported for cloud URIs. Use explicit multi-file
+> composition instead.
+
+---
+
+## Pluggable config resolvers
+
+Extend the YAML loader with custom `${prefix:key}` placeholders to fetch secrets
+from external stores (AWS SSM, Azure Key Vault, …) at parse time:
+
+```python
+from loom.core.config import load_config
+
+class SsmResolver:
+    name = "ssm"
+
+    def __init__(self, region: str) -> None:
+        self._region = region
+
+    def resolve(self, key: str) -> str:
+        import boto3
+        client = boto3.client("ssm", region_name=self._region)
+        return client.get_parameter(Name=key, WithDecryption=True)["Parameter"]["Value"]
+
+cfg = load_config("config/etl.yaml", resolvers=[SsmResolver("eu-west-1")])
+```
+
+In YAML, reference secrets via `${ssm:/path/to/secret}`:
+
+```yaml
+storage:
+  catalogs:
+    main:
+      token: ${ssm:/prod/databricks/token}
+```
+
+Resolvers run at job startup — secret rotation takes effect on the next run
+without redeployment.
+
+---
+
+## End-to-end example
+
+A full working example with Polars and Spark pipelines, Delta Lake, and observability is
+available in the companion repository:
+[`dummy-loom-etl`](https://github.com/the-reacher-data/dummy-loom-etl).
+
+---
 
 ## API reference
 

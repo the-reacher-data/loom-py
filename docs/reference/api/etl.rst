@@ -30,6 +30,15 @@ Execution Infrastructure
    loom.etl.checkpoint
    loom.etl.observability
 
+Backends
+--------
+
+.. autosummary::
+   :toctree: generated
+
+   loom.etl.backends.polars
+   loom.etl.backends.spark
+
 Testing
 -------
 
