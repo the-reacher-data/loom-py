@@ -58,66 +58,6 @@
 
 
 
-# 🚀 Release 0.3.0 ([#14](https://github.com/the-reacher-data/loom-py/pull/14)) ([`ef414c5`](https://github.com/the-reacher-data/loom-py/commit/ef414c5bfd303296af450840318dfbe9d301e5d1))
-
-
-## ✨ Features
-### config
-- **config:** add cloud URI support and pluggable resolver extension point<br>
-  > Add fsspec as a hard dependency of loom[config]
-  > load_config() now accepts s3://, gs://, abfss://, r2:// URIs via fsspec
-  > Add ConfigResolver protocol for pluggable ${prefix:key} resolution at
-  > parse time (enables SSM, Key Vault, etc. without baking secrets into images)
-  > Resolver registration is idempotent; resolvers are evaluated at job startup
-  > so secret rotation takes effect on the next run
-  > Migrate loom.etl.runner.config_loader to use core load_config, removing
-  > the parallel OmegaConf implementation
-  > ETL _load_yaml inherits cloud URI and resolver support transparently
-
-
-### etl
-- **etl:** add FileLocator with explicit alias API for file routes<br>
-  > Introduces `FileLocator` protocol and `MappingFileLocator` so that
-  > `FromFile.alias("name")` / `IntoFile.alias("name")` specs resolve at
-  > runtime through `storage.files` config rather than hard-coded URIs.
-  > `FileLocation` / `FileLocator` / `MappingFileLocator` in `storage/_file_locator.py`
-  > `StorageConfig.to_file_locator()` returns `MappingFileLocator | None`
-  > (None when `files` is empty — no conditional needed at call sites)
-  > `FromFile.alias()` / `IntoFile.alias()` classmethods set `is_alias=True`
-  > on the emitted spec
-  > `is_alias: bool` added to `FileSourceSpec` and `FileSpec`
-  > Polars and Spark backends resolve aliases via injected `file_locator`
-  > Both providers wired: `file_locator = config.to_file_locator()`
-  > Full test coverage across io, storage, and backend layers
-
-
-
-## 🐛 Fixes
-### observability
-- **observability:** honor missing table policy for record store writers
-
-
-## 📖 Documentation
-### etl
-- **etl:** keep only user guide and drop refactor docs
-- **etl:** expand ETL documentation and update directory table<br>
-  > Add dummy-loom-etl companion repo link in README and etl guide
-  > Expand README subpaths table with loom.etl and loom.core.config entries
-  > Add FileLocator/alias API, cloud config URI, and ConfigResolver sections to etl guide
-  > Add loom.etl.backends (polars + spark) to etl.rst API reference
-  > Add loom.core.config to core.rst API reference
-
-
-
-
-## ♻️ Refactor
-### stepsql
-- **stepsql:** delegate SQL execution to backend readers
-
-
-
-
-
 
 
 # 🚀 Release 0.2.1 ([#12](https://github.com/the-reacher-data/loom-py/pull/12)) ([`87f7d1f`](https://github.com/the-reacher-data/loom-py/commit/87f7d1f1eb1ccde71d0aca1c5584b83317e30707))
