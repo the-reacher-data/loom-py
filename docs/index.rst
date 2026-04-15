@@ -44,23 +44,28 @@ Companion demo application:
 
 .. toctree::
    :maxdepth: 2
-   :caption: Guides
+   :caption: Getting Started
 
-   guides/etl
-   guides/autocrud
-   guides/quickstart
-   examples-repo/index
-   guides/use-case-dsl
-   guides/celery
-   guides/fake-repo-examples
+   getting-started/rest
+   getting-started/etl
 
 .. toctree::
    :maxdepth: 2
-   :caption: Architecture
+   :caption: REST
 
-   architecture/overview
-   architecture/clean-architecture
-   architecture/adr/README
+   rest/autocrud
+   rest/use-case-dsl
+   rest/celery
+   rest/examples
+   rest/testing
+
+.. toctree::
+   :maxdepth: 2
+   :caption: ETL
+
+   etl/pipelines
+   etl/testing
+   etl/examples
 
 .. toctree::
    :maxdepth: 2

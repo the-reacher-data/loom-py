@@ -13,3 +13,9 @@ python:
     - requirements: docs/requirements.txt
     - method: pip
       path: .
+      extra_requirements:
+        - rest
+        - sqlalchemy
+        - cache
+        - config
+        - prometheus
