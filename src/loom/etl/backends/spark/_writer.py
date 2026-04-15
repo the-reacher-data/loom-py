@@ -32,6 +32,7 @@ from loom.etl.declarative._write_options import (
 )
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage._config import MissingTablePolicy
@@ -266,6 +267,20 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             .whenMatchedUpdate(set=cast(dict[str, str | Column], merge_plan.update_set))
             .whenNotMatchedInsert(values=cast(dict[str, str | Column], merge_plan.insert_values))
             .execute()
+        )
+
+    def _historify(
+        self,
+        frame: DataFrame,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """SCD Type 2 engine for Spark — implemented in Sprint 4."""
+        raise NotImplementedError(
+            "SparkHistorifyEngine is not yet implemented. "
+            "SCD Type 2 writes will be available in Sprint 4."
         )
 
     def _write_file(

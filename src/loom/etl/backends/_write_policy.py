@@ -22,6 +22,7 @@ from loom.etl.declarative.target import (
     TempSpec,
     UpsertSpec,
 )
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.runtime.contracts import TargetWriter
 from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
@@ -129,6 +130,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 self._do_replace_where(frame, target, spec, params_instance, streaming)
             case UpsertSpec():
                 self._do_upsert(frame, target, spec, streaming)
+            case HistorifySpec():
+                self._do_historify(frame, target, spec, params_instance)
             case _:
                 raise TypeError(f"Unsupported target spec: {type(spec)!r}")
 
@@ -273,6 +276,42 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             existing_schema=existing,
         )
 
+    def _do_historify(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """SCD Type 2 historify policy: validate creation rights then delegate.
+
+        Checks that the target may be created when absent (honours
+        ``missing_table_policy``), then unconditionally delegates to
+        :meth:`_historify` — the backend engine handles both the first-run
+        bootstrap (creating the table with ``valid_from``/``valid_to`` columns)
+        and the incremental SCD2 MERGE.
+
+        Args:
+            frame:           Incoming input frame.
+            target:          Resolved Delta target.
+            spec:            Compiled historify spec.
+            params_instance: Runtime params; forwarded to the engine for
+                             ``effective_date`` resolution.
+
+        Returns:
+            A :class:`~loom.etl.HistorifyRepairReport` when a re-weave was
+            performed, or ``None`` for a normal forward-only run.
+        """
+        existing = self._physical_schema(target)
+        if existing is None:
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
+        materialized = self._materialize_for_write(frame, streaming=False)
+        return self._historify(materialized, target, spec=spec, params_instance=params_instance)
+
     # ========================================================================
     # Abstract Hooks (backend-specific implementations)
     # ========================================================================
@@ -361,6 +400,44 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         existing_schema: PhysicalSchemaT,
     ) -> None:
         """Upsert/merge into existing table."""
+
+    @abstractmethod
+    def _historify(
+        self,
+        frame: WriteFrameT,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """Apply SCD Type 2 merge into an existing (or new) Delta table.
+
+        Called for every ``IntoHistory`` write — including the first run when
+        the target does not yet exist.  The engine is responsible for:
+
+        * Adding ``valid_from`` / ``valid_to`` boundary columns.
+        * Comparing incoming data against current open vectors.
+        * Closing changed vectors and inserting new rows.
+        * Handling ``delete_policy`` for absent keys (SNAPSHOT mode).
+        * Enforcing idempotency for same-day re-runs.
+
+        Args:
+            frame:           Materialised write-ready frame.
+            target:          Resolved Delta target.
+            spec:            Compiled historify spec.
+            params_instance: Runtime params; used to resolve
+                             ``spec.effective_date`` when it is a
+                             :class:`~loom.etl.ParamExpr`.
+
+        Returns:
+            A :class:`~loom.etl.HistorifyRepairReport` when re-weave was
+            triggered, or ``None`` for a normal forward-only run.
+
+        Raises:
+            HistorifyKeyConflictError:     Duplicate entity state vectors.
+            HistorifyDateCollisionError:   Same-date ties in LOG mode.
+            HistorifyTemporalConflictError: Future-open records detected.
+        """
 
     @abstractmethod
     def _write_file(

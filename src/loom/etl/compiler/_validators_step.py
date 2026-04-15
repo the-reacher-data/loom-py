@@ -9,7 +9,7 @@ from typing import Any, Protocol, cast
 
 import msgspec
 
-from loom.etl.compiler._errors import ETLCompilationError
+from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
@@ -39,6 +39,11 @@ class _UpsertSpecLike(Protocol):
     upsert_keys: tuple[str, ...]
     upsert_exclude: tuple[str, ...]
     upsert_include: tuple[str, ...]
+
+
+class _HistorifySpecLike(Protocol):
+    keys: tuple[str, ...]
+    effective_date: Any
 
 
 class _PredicateShape(Enum):
@@ -174,6 +179,11 @@ def validate_param_exprs(
         target_spec = cast(_ReplaceWhereSpecLike, target_binding.spec)
         _collect_exprs(target_spec.replace_predicate, exprs)
 
+    if _is_historify_like(target_binding.spec):
+        historify_spec = cast(_HistorifySpecLike, target_binding.spec)
+        if _is_param_expr(historify_spec.effective_date):
+            exprs.append(cast(ParamExpr, historify_spec.effective_date))
+
     for expr in exprs:
         field_name = expr.path[0]
         if field_name not in known:
@@ -251,6 +261,14 @@ def _is_replace_where_like(spec: object) -> bool:
     return hasattr(spec, "replace_predicate") and hasattr(spec, "table_ref")
 
 
+def _is_historify_like(spec: object) -> bool:
+    return (
+        isinstance(getattr(spec, "keys", None), tuple)
+        and hasattr(spec, "effective_date")
+        and hasattr(spec, "table_ref")
+    )
+
+
 def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
     """Validate UPSERT-specific constraints at compile time."""
     if not _is_upsert_like(spec):
@@ -259,6 +277,53 @@ def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
     _check_upsert_keys_non_empty(step_type, upsert_spec)
     _check_upsert_exclude_include_exclusive(step_type, upsert_spec)
     _check_upsert_exclude_keys_disjoint(step_type, upsert_spec)
+
+
+def validate_historify_spec(step_type: type[Any], spec: TargetSpec) -> None:
+    """Validate IntoHistory-specific constraints at compile time.
+
+    Belt-and-suspenders check: :class:`~loom.etl.IntoHistory` already
+    validates these constraints at construction time, but this validator
+    runs again at compile time to catch any directly-constructed
+    :class:`~loom.etl.HistorifySpec` instances that bypassed the builder.
+
+    Currently validates:
+    * ``keys`` is non-empty.
+    * ``track`` does not overlap with ``keys``.
+
+    ``effective_date`` :class:`~loom.etl.ParamExpr` references are validated
+    separately by :func:`validate_param_exprs`.
+
+    Args:
+        step_type: The step class being compiled (used in error messages).
+        spec:      Compiled target spec to inspect.
+    """
+    if not _is_historify_like(spec):
+        return
+    historify = cast(_HistorifySpecLike, spec)
+    if not historify.keys:
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="keys",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory 'keys' must contain "
+                "at least one column name."
+            ),
+        )
+    track = getattr(historify, "track", None)
+    if track is not None and isinstance(track, tuple):
+        overlap = frozenset(historify.keys) & frozenset(track)
+        if overlap:
+            raise ETLCompilationError(
+                code=ETLErrorCode.INVALID_TARGET_TYPE,
+                component=step_type.__qualname__,
+                field="track",
+                message=(
+                    f"{step_type.__qualname__}: IntoHistory 'keys' and 'track' "
+                    f"must not overlap. Conflicting columns: {sorted(overlap)}"
+                ),
+            )
 
 
 def _check_upsert_keys_non_empty(step_type: type[Any], spec: _UpsertSpecLike) -> None:
@@ -287,6 +352,7 @@ def _is_upsert_like(spec: object) -> bool:
 __all__ = [
     "StepCompilationContext",
     "validate_execute_signature",
+    "validate_historify_spec",
     "validate_param_exprs",
     "validate_params_compat",
     "validate_step",

@@ -26,6 +26,7 @@ from loom.etl.backends.polars._schema import (
 )
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage import (
@@ -263,6 +264,20 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             .when_matched_update(updates=merge_plan.update_set)
             .when_not_matched_insert(updates=merge_plan.insert_values)
             .execute()
+        )
+
+    def _historify(
+        self,
+        frame: pl.DataFrame,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """SCD Type 2 engine for Polars — implemented in Sprint 3."""
+        raise NotImplementedError(
+            "PolarsHistorifyEngine is not yet implemented. "
+            "SCD Type 2 writes will be available in Sprint 3."
         )
 
     def _write_file(
