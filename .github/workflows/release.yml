@@ -99,23 +99,28 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           BRANCH="docs/release-v${VERSION}"
-          git checkout -b "${BRANCH}"
+          git checkout -B "${BRANCH}"
 
           if [ -f CHANGELOG_RELEASE.md ]; then
-            cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
-            mv CHANGELOG_MERGED.md CHANGELOG.md
+            HEADER=$(head -1 CHANGELOG_RELEASE.md)
+            if ! grep -qF "${HEADER}" CHANGELOG.md; then
+              cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
+              mv CHANGELOG_MERGED.md CHANGELOG.md
+            fi
           fi
 
           git add pyproject.toml CHANGELOG.md
           git diff --staged --quiet && exit 0
           git commit -m "chore(release): bump version to ${VERSION}"
-          git push origin "${BRANCH}"
+          git push origin "${BRANCH}" --force
 
-          gh pr create \
-            --title "chore(release): bump version to ${VERSION}" \
-            --body "Automated version bump and changelog update after release v${VERSION}." \
-            --base master \
-            --head "${BRANCH}"
+          if ! gh pr list --head "${BRANCH}" --state open --json number --jq '.[0].number' | grep -qE '^[0-9]+$'; then
+            gh pr create \
+              --title "chore(release): bump version to ${VERSION}" \
+              --body "Automated version bump and changelog update after release v${VERSION}." \
+              --base master \
+              --head "${BRANCH}"
+          fi
 
           gh pr merge "${BRANCH}" --squash --auto --delete-branch
 
