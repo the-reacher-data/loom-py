@@ -20,7 +20,8 @@ Framework-agnostic Python toolkit to build backend applications with:
 - repositories decoupled from infrastructure
 - REST/FastAPI adapters with OpenAPI generation
 - background jobs and Celery workers, first-class
-- testing utilities for business workflows
+- **declarative ETL** — compile-time-validated pipelines for Polars and Spark
+- testing utilities for business workflows and ETL steps
 
 ## Purpose
 
@@ -393,6 +394,66 @@ For deeper references, review the integration examples under
 `tests/integration/fake_repo`.
 For a runnable full-stack sample with all patterns combined, check the companion repository
 [`dummy-loom`](https://github.com/the-reacher-data/dummy-loom).
+
+## ETL quick start
+
+Install a backend:
+
+```bash
+pip install "loom-kernel[etl-polars]"
+# or
+pip install "loom-kernel[etl-spark]"
+```
+
+Declare a pipeline — sources, targets, and transformation logic are explicit and compile-time validated:
+
+```python
+from datetime import date
+import polars as pl
+from loom.etl import ETLParams, ETLStep, ETLProcess, ETLPipeline, ETLRunner, FromTable, IntoTable
+
+class DailyParams(ETLParams):
+    run_date: date
+
+class CleanOrders(ETLStep[DailyParams]):
+    orders = FromTable("raw.orders").columns("id", "amount", "run_date")
+    target = IntoTable("staging.orders").replace()
+
+    def execute(self, params: DailyParams, *, orders: pl.LazyFrame) -> pl.LazyFrame:
+        return orders.filter(pl.col("amount") > 0)
+
+class DailyProcess(ETLProcess[DailyParams]):
+    steps = [CleanOrders]
+
+class DailyPipeline(ETLPipeline[DailyParams]):
+    processes = [DailyProcess]
+
+runner = ETLRunner.from_yaml("config/etl.yaml")
+runner.run(DailyPipeline, DailyParams(run_date=date.today()))
+```
+
+Write modes — `replace`, `append`, `replace_partition`, `replace_partitions`, `replace_where`, `upsert` — are declared on the target, validated at compile time. Partition predicates use the `params` proxy so no values are hard-coded:
+
+```python
+from loom.etl import params
+
+target = IntoTable("staging.orders").replace_partition(
+    year=params.run_date.year,
+    month=params.run_date.month,
+)
+```
+
+File aliases decouple paths from pipelines — declare once in YAML, reference by name:
+
+```python
+events = FromFile.alias("events_raw", format=Format.CSV)
+target = IntoFile.alias("exports_daily", format=Format.PARQUET)
+```
+
+For a full Polars + Spark + Delta Lake example see [`dummy-loom-etl`](https://github.com/the-reacher-data/dummy-loom-etl).
+For the complete API reference and write-mode guide see the [ETL docs](https://loom-py.readthedocs.io/en/latest/guides/etl.html).
+
+---
 
 ## Performance
 
