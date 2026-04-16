@@ -36,6 +36,7 @@ Backends
 .. autosummary::
    :toctree: generated
 
+   loom.etl.backends._historify
    loom.etl.backends.polars
    loom.etl.backends.spark
 
