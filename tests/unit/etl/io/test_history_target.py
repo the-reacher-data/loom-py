@@ -457,7 +457,7 @@ class TestIntoHistoryValidation:
             )
 
     def test_valid_from_equals_valid_to_raises(self) -> None:
-        with pytest.raises(ValueError, match="different column names"):
+        with pytest.raises(ValueError, match="must be distinct"):
             IntoHistory(
                 "t",
                 keys=("id",),
