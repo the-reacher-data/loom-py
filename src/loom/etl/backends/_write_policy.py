@@ -446,7 +446,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         Called after :meth:`_read_existing_data` has already fetched the current
         target state.  The implementation must:
 
-        * Run the SCD2 algorithm (via :class:`~loom.etl.backends._historify.HistorifyEngine`).
+        * Run the SCD2 algorithm (via :class:`~loom.etl.backends._historify.SCD2Transform`).
         * Write the result using the existing write hooks (``_create``,
           ``_replace``, or ``_replace_partitions``).
 

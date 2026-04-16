@@ -31,12 +31,13 @@ def apply_snapshot(
     open_existing = ops.filter_null(existing, spec.valid_to)
     closed_existing = ops.filter_not_null(existing, spec.valid_to)
 
+    dtype = ops.history_dtype(spec)
     new_raw = ops.anti_join(incoming, open_existing, join_key)
     new_rows = ops.stamp_col(
-        ops.stamp_col(new_raw, spec.valid_from, eff_date, None),
+        ops.stamp_col(new_raw, spec.valid_from, eff_date, dtype),
         spec.valid_to,
         None,
-        None,
+        dtype,
     )
 
     deleted = ops.anti_join(open_existing, incoming, join_key)

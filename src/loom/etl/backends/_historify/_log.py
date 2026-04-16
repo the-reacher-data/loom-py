@@ -30,7 +30,10 @@ def apply_log(
     untouched = ops.anti_join(existing, frame, entity_keys)
 
     existing_events = ops.rename(affected_keys, {spec.valid_from: eff_col})
-    existing_events = ops.drop(existing_events, [spec.valid_to])
+    boundary_cols = [
+        c for c in [spec.valid_to, spec.deleted_at] if c in ops.columns(existing_events)
+    ]
+    existing_events = ops.drop(existing_events, boundary_cols)
 
     all_events = ops.union([existing_events, frame])
     deduped = ops.dedup_last(all_events, join_key + [eff_col])

@@ -1,4 +1,4 @@
-"""Backend-agnostic HistorifyEngine."""
+"""Backend-agnostic SCD2Transform — internal engine delegating to HistorifyBackend."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from loom.etl.declarative.target._history import (
 F = TypeVar("F")
 
 
-class HistorifyEngine(Generic[F]):
-    """SCD Type 2 engine that delegates frame operations to a HistorifyBackend implementation."""
+class SCD2Transform(Generic[F]):
+    """SCD Type 2 transform that delegates frame operations to a HistorifyBackend implementation."""
 
     def __init__(self, ops: HistorifyBackend[F]) -> None:
         self._ops = ops

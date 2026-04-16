@@ -1,4 +1,4 @@
-"""Backend-agnostic SCD Type 2 historify engine and HistorifyBackend Protocol."""
+"""Backend-agnostic SCD Type 2 transform and HistorifyBackend Protocol."""
 
 from loom.etl.backends._historify._common import (
     eval_param_expr,
@@ -6,13 +6,13 @@ from loom.etl.backends._historify._common import (
     resolve_effective_date,
     resolve_track_cols,
 )
-from loom.etl.backends._historify._engine import HistorifyEngine
+from loom.etl.backends._historify._engine import SCD2Transform
 from loom.etl.backends._historify._ops import HistorifyBackend
 
 __all__ = [
     "eval_param_expr",
     "HistorifyBackend",
-    "HistorifyEngine",
+    "SCD2Transform",
     "prev_period_value",
     "resolve_effective_date",
     "resolve_track_cols",

@@ -466,6 +466,28 @@ class TestIntoHistoryValidation:
                 valid_to="period",
             )
 
+    def test_log_eff_date_equals_valid_from_raises(self) -> None:
+        with pytest.raises(ValueError, match="must not match"):
+            IntoHistory(
+                "t",
+                keys=("id",),
+                effective_date="valid_from",
+                mode="log",
+                valid_from="valid_from",
+                valid_to="valid_to",
+            )
+
+    def test_log_eff_date_equals_valid_to_raises(self) -> None:
+        with pytest.raises(ValueError, match="must not match"):
+            IntoHistory(
+                "t",
+                keys=("id",),
+                effective_date="valid_to",
+                mode="log",
+                valid_from="valid_from",
+                valid_to="valid_to",
+            )
+
     def test_non_overlapping_keys_and_track_accepted(self) -> None:
         """Ensure valid config does not raise."""
         spec = IntoHistory(

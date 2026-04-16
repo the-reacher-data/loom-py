@@ -10,7 +10,7 @@ F = TypeVar("F")
 
 
 class HistorifyBackend(Protocol[F]):
-    """Backend-specific frame operations used by HistorifyEngine."""
+    """Backend-specific frame operations used by SCD2Transform."""
 
     def columns(self, frame: F) -> list[str]: ...
 

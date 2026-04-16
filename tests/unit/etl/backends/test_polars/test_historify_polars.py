@@ -22,10 +22,13 @@ import polars as pl  # noqa: E402
 
 from loom.etl.backends.polars._historify import PolarsHistorifyBackend  # noqa: E402
 from loom.etl.backends.polars._writer import PolarsTargetWriter  # noqa: E402
+from loom.etl.declarative.expr._refs import TableRef  # noqa: E402
 from loom.etl.declarative.target._history import (  # noqa: E402
     HistorifyDateCollisionError,
+    HistorifyInputMode,
     HistorifyKeyConflictError,
     HistorifySpec,
+    HistoryDateType,
 )
 from loom.etl.storage._config import MissingTablePolicy  # noqa: E402
 from tests.unit.etl.backends._historify_contract import (  # noqa: E402
@@ -113,6 +116,44 @@ class TestAssertNoDateCollisions:
             PolarsHistorifyBackend().assert_no_date_collisions(
                 frame, ["subscription_id", "plan"], "event_date", _log_spec()
             )
+
+    def test_skipped_for_timestamp(self) -> None:
+        frame = pl.DataFrame(
+            {
+                "subscription_id": [1, 1],
+                "plan": ["pro", "pro"],
+                "event_date": [date(2024, 1, 1), date(2024, 1, 1)],
+            }
+        )
+        spec = HistorifySpec(
+            table_ref=TableRef("dim_subs"),
+            keys=("subscription_id",),
+            effective_date="event_date",
+            mode=HistorifyInputMode.LOG,
+            track=("plan",),
+            date_type=HistoryDateType.TIMESTAMP,
+        )
+        PolarsHistorifyBackend().assert_no_date_collisions(
+            frame, ["subscription_id", "plan"], "event_date", spec
+        )
+
+
+class TestBackendHelpers:
+    def test_filter_eq_with_dtype(self) -> None:
+        frame = pl.DataFrame({"d": [date(2024, 1, 1), date(2024, 1, 2)]})
+        result = PolarsHistorifyBackend().filter_eq(frame, "d", "2024-01-01", pl.Date)
+        assert result["d"].to_list() == [date(2024, 1, 1)]
+
+    def test_filter_ne_with_dtype(self) -> None:
+        frame = pl.DataFrame({"d": [date(2024, 1, 1), date(2024, 1, 2)]})
+        result = PolarsHistorifyBackend().filter_ne(frame, "d", "2024-01-01", pl.Date)
+        assert result["d"].to_list() == [date(2024, 1, 2)]
+
+    def test_null_col(self) -> None:
+        frame = pl.DataFrame({"a": [1]})
+        result = PolarsHistorifyBackend().null_col(frame, "n", pl.Date)
+        assert result["n"].is_null().all()
+        assert result["n"].dtype == pl.Date
 
 
 class TestStampNewRows:

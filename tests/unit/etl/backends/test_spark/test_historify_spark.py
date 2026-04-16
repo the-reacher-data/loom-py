@@ -22,10 +22,13 @@ from pyspark.sql import types as T  # noqa: E402
 
 from loom.etl.backends.spark._historify import SparkHistorifyBackend  # noqa: E402
 from loom.etl.backends.spark._writer import SparkTargetWriter  # noqa: E402
+from loom.etl.declarative.expr._refs import TableRef  # noqa: E402
 from loom.etl.declarative.target._history import (  # noqa: E402
     HistorifyDateCollisionError,
+    HistorifyInputMode,
     HistorifyKeyConflictError,
     HistorifySpec,
+    HistoryDateType,
 )
 from loom.etl.storage._config import MissingTablePolicy  # noqa: E402
 from tests.unit.etl.backends._historify_contract import (  # noqa: E402
@@ -113,6 +116,68 @@ class TestAssertNoDateCollisions:
             SparkHistorifyBackend().assert_no_date_collisions(
                 frame, ["subscription_id", "plan"], "event_date", _log_spec()
             )
+
+    def test_skipped_for_timestamp(self, spark: SparkSession) -> None:
+        frame = spark.createDataFrame(
+            [
+                {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 1, 1)},
+            ]
+        )
+        spec = HistorifySpec(
+            table_ref=TableRef("dim_subs"),
+            keys=("subscription_id",),
+            effective_date="event_date",
+            mode=HistorifyInputMode.LOG,
+            track=("plan",),
+            date_type=HistoryDateType.TIMESTAMP,
+        )
+        SparkHistorifyBackend().assert_no_date_collisions(
+            frame, ["subscription_id", "plan"], "event_date", spec
+        )
+
+
+class TestBackendHelpers:
+    def test_filter_eq_with_dtype(self, spark: SparkSession) -> None:
+        frame = spark.createDataFrame([{"d": date(2024, 1, 1)}, {"d": date(2024, 1, 2)}])
+        result = SparkHistorifyBackend().filter_eq(frame, "d", "2024-01-01", "date")
+        assert result.count() == 1
+        assert result.collect()[0]["d"] == date(2024, 1, 1)
+
+    def test_filter_ne_with_dtype(self, spark: SparkSession) -> None:
+        frame = spark.createDataFrame([{"d": date(2024, 1, 1)}, {"d": date(2024, 1, 2)}])
+        result = SparkHistorifyBackend().filter_ne(frame, "d", "2024-01-01", "date")
+        assert result.count() == 1
+        assert result.collect()[0]["d"] == date(2024, 1, 2)
+
+    def test_null_col(self, spark: SparkSession) -> None:
+        frame = spark.createDataFrame([{"a": 1}])
+        result = SparkHistorifyBackend().null_col(frame, "n", "date")
+        row = result.collect()[0]
+        assert row["n"] is None
+        assert "n" in result.columns
+
+    def test_build_log_boundaries_timestamp(self, spark: SparkSession) -> None:
+        from datetime import datetime
+
+        spec = HistorifySpec(
+            table_ref=TableRef("dim_subs"),
+            keys=("subscription_id",),
+            effective_date="event_date",
+            mode=HistorifyInputMode.LOG,
+            track=("plan",),
+            date_type=HistoryDateType.TIMESTAMP,
+        )
+        frame = spark.createDataFrame(
+            [
+                {"subscription_id": 1, "plan": "a", "event_date": datetime(2024, 1, 1, 10, 0, 0)},
+                {"subscription_id": 1, "plan": "b", "event_date": datetime(2024, 1, 1, 12, 0, 0)},
+            ]
+        )
+        result = SparkHistorifyBackend().build_log_boundaries(frame, spec)
+        rows = result.collect()
+        assert rows[0]["valid_from"] == datetime(2024, 1, 1, 10, 0, 0)
+        assert rows[0]["valid_to"] == datetime(2024, 1, 1, 11, 59, 59, 999999)
 
 
 class TestStampNewRows:
