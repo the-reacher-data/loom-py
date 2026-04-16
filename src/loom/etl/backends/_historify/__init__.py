@@ -6,8 +6,8 @@ from loom.etl.backends._historify._common import (
     resolve_effective_date,
     resolve_track_cols,
 )
-from loom.etl.backends._historify._engine import scd2_transform
 from loom.etl.backends._historify._ops import HistorifyBackend
+from loom.etl.backends._historify._transform import scd2_transform
 
 __all__ = [
     "eval_param_expr",

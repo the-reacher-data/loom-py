@@ -498,6 +498,50 @@ class TestIntoHistoryValidation:
         assert spec.keys == ("player_id",)
         assert spec.track == ("team_id", "salary")
 
+    def test_overwrite_overlaps_keys_raises(self) -> None:
+        with pytest.raises(ValueError, match="'overwrite' cannot overlap with 'keys'"):
+            IntoHistory(
+                "t",
+                keys=("player_id",),
+                track=("team_id",),
+                overwrite=("player_id", "email"),
+                effective_date=params.run_date,
+            )
+
+    def test_overwrite_overlaps_track_raises(self) -> None:
+        with pytest.raises(ValueError, match="'overwrite' cannot overlap with 'track'"):
+            IntoHistory(
+                "t",
+                keys=("player_id",),
+                track=("team_id",),
+                overwrite=("team_id", "email"),
+                effective_date=params.run_date,
+            )
+
+    def test_overwrite_contains_boundary_col_raises(self) -> None:
+        with pytest.raises(ValueError, match="cannot contain boundary columns"):
+            IntoHistory(
+                "t",
+                keys=("player_id",),
+                track=("team_id",),
+                overwrite=("valid_from", "email"),
+                effective_date=params.run_date,
+            )
+
+    def test_overwrite_valid_config_accepted(self) -> None:
+        spec = IntoHistory(
+            "t",
+            keys=("player_id",),
+            track=("team_id",),
+            overwrite=("email", "phone"),
+            effective_date=params.run_date,
+        )._to_spec()
+        assert spec.overwrite == ("email", "phone")
+
+    def test_overwrite_none_by_default(self) -> None:
+        spec = IntoHistory("t", keys=("id",), effective_date=params.run_date)._to_spec()
+        assert spec.overwrite is None
+
 
 # ---------------------------------------------------------------------------
 # IntoHistory — identity and repr

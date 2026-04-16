@@ -52,6 +52,17 @@ class HistorifyBackend(Protocol[F]):
         """Deduplicate keeping last occurrence."""
         ...
 
+    def apply_overwrite_cols(
+        self, unchanged: F, incoming: F, join_key: list[str], overwrite: tuple[str, ...]
+    ) -> F:
+        """Replace overwrite columns in unchanged rows with values from incoming.
+
+        Drops the overwrite columns from ``unchanged`` then joins the fresh values
+        from ``incoming`` on ``join_key``.  The open row is refreshed in-place;
+        no new history row is created.
+        """
+        ...
+
     def rollback_same_day_run(
         self, frame: F, spec: HistorifySpec, eff_date: Any, join_key: list[str]
     ) -> F:

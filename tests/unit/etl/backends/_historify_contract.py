@@ -47,6 +47,7 @@ def _snapshot_spec(
     *,
     keys: tuple[str, ...] = ("player_id",),
     track: tuple[str, ...] | None = ("team_id",),
+    overwrite: tuple[str, ...] | None = None,
     delete_policy: DeletePolicy = DeletePolicy.CLOSE,
     partition_scope: tuple[str, ...] | None = None,
     allow_temporal_rerun: bool = False,
@@ -57,6 +58,7 @@ def _snapshot_spec(
         effective_date=p.run_date,
         mode=HistorifyInputMode.SNAPSHOT,
         track=track,
+        overwrite=overwrite,
         delete_policy=delete_policy,
         partition_scope=partition_scope,
         schema_mode=SchemaMode.STRICT,
@@ -744,3 +746,77 @@ class HistorifyContractTests:
         sub2 = [r for r in rows if r["subscription_id"] == 2]
         assert len(sub2) == 1
         assert sub2[0]["valid_to"] is None
+
+    # ------------------------------------------------------------------
+    # Overwrite columns
+    # ------------------------------------------------------------------
+
+    def test_overwrite_col_updated_on_unchanged_entity(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Overwrite columns are refreshed on the open row; no new history row created."""
+        spec = _snapshot_spec(track=("team_id",), overwrite=("email",))
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM", "email": "old@rm.com"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM", "email": "new@rm.com"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        assert len(rows) == 1
+        assert rows[0]["email"] == "new@rm.com"
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+
+    def test_overwrite_does_not_trigger_new_history_row(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A change in an overwrite column alone must not produce a new history row."""
+        spec = _snapshot_spec(track=("team_id",), overwrite=("email",))
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM", "email": "v1@rm.com"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        for i in range(3):
+            writer.write(
+                make_frame([{"player_id": 1, "team_id": "RM", "email": f"v{i + 2}@rm.com"}]),
+                spec,
+                _Params(run_date=date(2024, 1, i + 2)),
+            )
+        rows = read_table(self._uri(root))
+        assert len(rows) == 1
+
+    def test_overwrite_none_leaves_passive_col_frozen(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Without overwrite, passive columns carry the value from the first write."""
+        spec = _snapshot_spec(track=("team_id",), overwrite=None)
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM", "email": "original@rm.com"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM", "email": "changed@rm.com"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        assert len(rows) == 1
+        assert rows[0]["email"] == "original@rm.com"

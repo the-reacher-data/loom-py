@@ -86,6 +86,16 @@ class SparkHistorifyBackend:
             .drop("__rn__")
         )
 
+    def apply_overwrite_cols(
+        self,
+        unchanged: DataFrame,
+        incoming: DataFrame,
+        join_key: list[str],
+        overwrite: tuple[str, ...],
+    ) -> DataFrame:
+        overwrite_vals = incoming.select(join_key + list(overwrite))
+        return unchanged.drop(*overwrite).join(overwrite_vals, on=join_key, how="left")
+
     def rollback_same_day_run(
         self,
         frame: DataFrame,

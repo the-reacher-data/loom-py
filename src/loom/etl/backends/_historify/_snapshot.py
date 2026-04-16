@@ -44,6 +44,8 @@ def apply_snapshot(
     closed_deleted = ops.apply_delete_policy(deleted, spec, eff_date)
 
     unchanged = ops.semi_join(open_existing, incoming, join_key)
+    if spec.overwrite:
+        unchanged = ops.apply_overwrite_cols(unchanged, incoming, join_key, spec.overwrite)
 
     result = ops.union([closed_existing, unchanged, closed_deleted, new_rows])
     return ops.ensure_soft_delete_col(result, spec)

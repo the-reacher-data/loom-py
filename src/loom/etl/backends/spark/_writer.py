@@ -14,7 +14,7 @@ from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
 from loom.etl.backends._format_registry import resolve_format_handler
-from loom.etl.backends._historify._engine import scd2_transform
+from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,

@@ -218,6 +218,10 @@ class HistorifySpec:
         mode:                 Input semantics — ``SNAPSHOT`` or ``LOG``.
         track:                Columns whose value change triggers a new history
                               row.  ``None`` means every non-key column is tracked.
+        overwrite:            Columns updated in-place on the current open row when
+                              the entity is UNCHANGED (no new history row created).
+                              Ignored in LOG mode.  Must not overlap with ``keys``
+                              or ``track``.
         delete_policy:        Action for absent keys in SNAPSHOT mode.
                               Ignored in LOG mode.
         partition_scope:      Partition columns used to limit Delta reads/writes.
@@ -237,6 +241,7 @@ class HistorifySpec:
     effective_date: str | ParamExpr
     mode: HistorifyInputMode
     track: tuple[str, ...] | None = None
+    overwrite: tuple[str, ...] | None = None
     delete_policy: DeletePolicy = DeletePolicy.CLOSE
     partition_scope: tuple[str, ...] | None = None
     valid_from: str = "valid_from"
@@ -261,12 +266,16 @@ class IntoHistory:
 
     **Column roles:**
 
-    * ``keys``  — entity identity.  Never change; they are the MERGE join key.
-    * ``track`` — change-triggering columns.  A value change inserts a new row
-                  and closes the previous open vector.  ``None`` means every
-                  non-key column is tracked.
-    * *Remaining* — "passive" columns: carried forward into each new row but
-                    never trigger history generation on their own.
+    * ``keys``     — entity identity.  Never change; they are the MERGE join key.
+    * ``track``    — change-triggering columns.  A value change inserts a new row
+                     and closes the previous open vector.  ``None`` means every
+                     non-key column is tracked.
+    * ``overwrite``— columns updated in-place on the open row when the entity is
+                     UNCHANGED.  No new history row is created; the current open
+                     row is silently refreshed.  Useful for mutable metadata that
+                     should not drive history (e.g. display name, email).
+    * *Remaining*  — "passive" columns: carried forward into each new row but
+                     never updated nor tracked.
 
     **Multiple simultaneous open vectors** are natively supported.  Include the
     distinguishing dimension in ``track``.  For example, a player on loan to two
@@ -287,6 +296,8 @@ class IntoHistory:
         mode:                 ``"snapshot"`` (default) or ``"log"``.
         track:                Columns whose changes trigger a new history row.
                               ``None`` means all non-key columns are tracked.
+        overwrite:            Columns to update in-place on the open row when
+                              unchanged.  Must not overlap with ``keys`` or ``track``.
         delete_policy:        Action for absent keys in SNAPSHOT mode.
                               Defaults to ``"close"``.
         partition_scope:      Partition columns to constrain Delta reads/writes.
@@ -304,6 +315,7 @@ class IntoHistory:
     Raises:
         ValueError: If ``keys`` is empty.
         ValueError: If ``track`` overlaps with ``keys``.
+        ValueError: If ``overwrite`` overlaps with ``keys``, ``track``, or boundary columns.
         ValueError: If ``valid_from`` and ``valid_to`` share the same name.
 
     Example::
@@ -349,6 +361,7 @@ class IntoHistory:
         effective_date: str | ParamExpr,
         mode: Literal["snapshot", "log"] = "snapshot",
         track: tuple[str, ...] | list[str] | None = None,
+        overwrite: tuple[str, ...] | list[str] | None = None,
         delete_policy: Literal["ignore", "close", "soft_delete"] = "close",
         partition_scope: tuple[str, ...] | list[str] | None = None,
         valid_from: str = "valid_from",
@@ -360,8 +373,9 @@ class IntoHistory:
     ) -> None:
         keys_t = tuple(keys)
         track_t: tuple[str, ...] | None = tuple(track) if track is not None else None
+        overwrite_t: tuple[str, ...] | None = tuple(overwrite) if overwrite is not None else None
 
-        _validate_history_args(keys_t, track_t, valid_from, valid_to, deleted_at)
+        _validate_history_args(keys_t, track_t, overwrite_t, valid_from, valid_to, deleted_at)
         _validate_log_effective_date(effective_date, valid_from, valid_to, mode)
 
         table_ref = TableRef(ref) if isinstance(ref, str) else ref
@@ -371,6 +385,7 @@ class IntoHistory:
             effective_date=effective_date,
             mode=HistorifyInputMode(mode),
             track=track_t,
+            overwrite=overwrite_t,
             delete_policy=DeletePolicy(delete_policy),
             partition_scope=tuple(partition_scope) if partition_scope is not None else None,
             valid_from=valid_from,
@@ -402,6 +417,7 @@ class IntoHistory:
 def _validate_history_args(
     keys: tuple[str, ...],
     track: tuple[str, ...] | None,
+    overwrite: tuple[str, ...] | None,
     valid_from: str,
     valid_to: str,
     deleted_at: str,
@@ -411,6 +427,7 @@ def _validate_history_args(
     Args:
         keys:       Entity identity columns.
         track:      Change-triggering columns, or ``None``.
+        overwrite:  In-place overwrite columns, or ``None``.
         valid_from: Period-start column name.
         valid_to:   Period-end column name.
         deleted_at: Soft-delete audit column name.
@@ -427,6 +444,27 @@ def _validate_history_args(
             raise ValueError(
                 f"IntoHistory: columns cannot appear in both 'keys' and 'track'. "
                 f"Overlap: {sorted(overlap)}"
+            )
+
+    if overwrite is not None:
+        overlap_keys = set(keys) & set(overwrite)
+        if overlap_keys:
+            raise ValueError(
+                f"IntoHistory: 'overwrite' cannot overlap with 'keys'. "
+                f"Overlap: {sorted(overlap_keys)}"
+            )
+        if track is not None:
+            overlap_track = set(track) & set(overwrite)
+            if overlap_track:
+                raise ValueError(
+                    f"IntoHistory: 'overwrite' cannot overlap with 'track'. "
+                    f"Overlap: {sorted(overlap_track)}"
+                )
+        boundary_overlap = {valid_from, valid_to, deleted_at} & set(overwrite)
+        if boundary_overlap:
+            raise ValueError(
+                f"IntoHistory: 'overwrite' cannot contain boundary columns. "
+                f"Overlap: {sorted(boundary_overlap)}"
             )
 
     boundary_names = {valid_from, valid_to, deleted_at}

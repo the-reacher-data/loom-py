@@ -69,6 +69,16 @@ class PolarsHistorifyBackend:
     def dedup_last(self, frame: pl.DataFrame, subset: list[str]) -> pl.DataFrame:
         return frame.unique(subset=subset, keep="last")
 
+    def apply_overwrite_cols(
+        self,
+        unchanged: pl.DataFrame,
+        incoming: pl.DataFrame,
+        join_key: list[str],
+        overwrite: tuple[str, ...],
+    ) -> pl.DataFrame:
+        overwrite_vals = incoming.select(join_key + list(overwrite))
+        return unchanged.drop(list(overwrite)).join(overwrite_vals, on=join_key, how="left")
+
     def rollback_same_day_run(
         self,
         frame: pl.DataFrame,

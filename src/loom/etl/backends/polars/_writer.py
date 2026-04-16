@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
-from loom.etl.backends._historify._engine import scd2_transform
+from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
