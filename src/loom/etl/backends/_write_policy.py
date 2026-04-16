@@ -300,7 +300,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             A :class:`~loom.etl.HistorifyRepairReport` when a re-weave was
             performed, or ``None`` for a normal forward-only run.
         """
-        existing = self._read_existing_data(target)
+        existing = self._read_existing_data(target, frame, spec)
         if existing is None:
             _ensure_can_create_missing_table(
                 target=target,
@@ -321,12 +321,33 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         """Read physical schema for target, or None if not exists."""
 
     @abstractmethod
-    def _read_existing_data(self, target: ResolvedTarget) -> WriteFrameT | None:
-        """Read all existing data from target for SCD Type 2 merge.
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: InputFrameT,
+        spec: HistorifySpec,
+    ) -> WriteFrameT | None:
+        """Read existing target data for SCD Type 2, pruned to relevant partitions.
+
+        Called before the incoming frame is fully materialized so that backends
+        can extract partition-column values cheaply (e.g. from a LazyFrame) and
+        use them to push down a partition filter — reading only the files that
+        could be affected by the incoming delta, not the entire history table.
+
+        When ``spec.partition_scope`` is set the implementation SHOULD restrict
+        the read to the partitions present in ``frame``.  When it is ``None``
+        the full table must be returned.
+
+        Args:
+            target: Resolved Delta target.
+            frame:  Incoming input frame, not yet fully materialized.  Use it
+                    only to extract distinct partition-column values.
+            spec:   Compiled historify spec; ``spec.partition_scope`` carries
+                    the partition column names.
 
         Returns:
-            Backend frame with the full current state, or ``None`` when the
-            target table does not yet exist.
+            Backend frame with the (optionally pruned) current state, or
+            ``None`` when the target table does not yet exist.
         """
 
     @abstractmethod

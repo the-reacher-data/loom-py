@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -269,13 +268,43 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             .execute()
         )
 
-    def _read_existing_data(self, target: ResolvedTarget) -> pl.DataFrame | None:
-        """Read full Delta table into a DataFrame, or None if not found."""
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: pl.LazyFrame,
+        spec: HistorifySpec,
+    ) -> pl.DataFrame | None:
+        """Read existing Delta data pruned to the partitions present in ``frame``.
+
+        When ``spec.partition_scope`` is set, distinct partition-column values
+        are extracted from ``frame`` (still lazy, one cheap ``collect``) and
+        pushed down as a filter before the Delta scan — so only the affected
+        Parquet files are opened.  Without a partition scope the full table is
+        returned.
+
+        Args:
+            target: Resolved path target.
+            frame:  Incoming LazyFrame; only partition columns are touched here.
+            spec:   Historify spec; ``partition_scope`` carries column names.
+
+        Returns:
+            Collected DataFrame of existing rows, or ``None`` if the table has
+            not been created yet.
+        """
+        from deltalake.exceptions import TableNotFoundError
+
         path_target = self._as_path_target(target)
         location = path_target.location
-        with contextlib.suppress(Exception):
-            return pl.read_delta(location.uri, storage_options=location.storage_options or None)
-        return None
+        storage_options = location.storage_options or {}
+        try:
+            if not spec.partition_scope:
+                return pl.read_delta(location.uri, storage_options=storage_options or None)
+            partition_vals = frame.select(list(spec.partition_scope)).unique().collect()
+            scan = pl.scan_delta(location.uri, storage_options=storage_options or None)
+            filter_expr = _partition_filter(partition_vals, spec.partition_scope)
+            return scan.filter(filter_expr).collect()
+        except (TableNotFoundError, FileNotFoundError):
+            return None
 
     def _historify(
         self,
@@ -385,6 +414,31 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
 
 __all__ = ["PolarsTargetWriter"]
+
+
+def _partition_filter(
+    partition_vals: pl.DataFrame,
+    partition_scope: tuple[str, ...],
+) -> pl.Expr:
+    """Build a Polars filter expression that matches rows in any of the given partitions.
+
+    Each column is constrained to the set of distinct values present in
+    ``partition_vals``.  Delta-rs pushes column ``is_in`` predicates to the
+    file-scan level, so only the matching Parquet files are opened.
+
+    Args:
+        partition_vals: DataFrame with one column per partition key and one row
+                        per distinct combination present in the incoming frame.
+        partition_scope: Ordered column names that form the partition key.
+
+    Returns:
+        A Polars expression suitable for use in ``.filter()``.
+    """
+    exprs = [pl.col(col).is_in(partition_vals[col].to_list()) for col in partition_scope]
+    result = exprs[0]
+    for expr in exprs[1:]:
+        result = result & expr
+    return result
 
 
 def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:

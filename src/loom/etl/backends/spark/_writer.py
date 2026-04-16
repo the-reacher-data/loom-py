@@ -272,8 +272,40 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             .execute()
         )
 
-    def _read_existing_data(self, target: ResolvedTarget) -> DataFrame | None:
-        """Read full Delta table or catalog table, or None if not found."""
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: DataFrame,
+        spec: HistorifySpec,
+    ) -> DataFrame | None:
+        """Read existing Delta data pruned to the partitions present in ``frame``.
+
+        For ``CatalogTarget`` tables the catalog existence check is used as a
+        guard.  For path targets an ``AnalysisException`` on load signals the
+        table does not yet exist.
+
+        When ``spec.partition_scope`` is set the returned DataFrame carries a
+        filter on the partition columns.  Spark's Delta scan optimizer pushes
+        column-level ``isin`` predicates to file-selection at execution time —
+        only the matching Parquet partition directories are opened.
+
+        Args:
+            target: Resolved Delta target (catalog or path).
+            frame:  Incoming Spark DataFrame; partition-column values are
+                    collected with a small distinct action.
+            spec:   Historify spec; ``partition_scope`` carries column names.
+
+        Returns:
+            DataFrame of existing rows (possibly filtered), or ``None`` if the
+            table does not yet exist.
+        """
+        existing = self._load_existing_df(target)
+        if existing is None or not spec.partition_scope:
+            return existing
+        return _filter_to_partitions(existing, frame, spec.partition_scope)
+
+    def _load_existing_df(self, target: ResolvedTarget) -> DataFrame | None:
+        """Load the full existing DataFrame from a catalog or path target."""
         if isinstance(target, CatalogTarget):
             if not self._spark.catalog.tableExists(target.catalog_ref.ref):
                 return None
@@ -402,6 +434,36 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
 
 
 __all__ = ["SparkTargetWriter", "_collect_partition_combos"]
+
+
+def _filter_to_partitions(
+    existing: DataFrame,
+    incoming: DataFrame,
+    partition_scope: tuple[str, ...],
+) -> DataFrame:
+    """Return ``existing`` filtered to the partitions present in ``incoming``.
+
+    Collects the distinct partition-column values from ``incoming`` (a small
+    action on just those columns) and adds a column-level ``isin`` filter to
+    the ``existing`` logical plan.  Spark's Delta scan optimizer pushes these
+    predicates to the file-selection step at execution time, so only the
+    matching partition directories are actually opened — no full table scan.
+
+    Args:
+        existing:        Full logical plan for the existing Delta table.
+        incoming:        Incoming Spark DataFrame; only partition cols are used.
+        partition_scope: Partition column names.
+
+    Returns:
+        ``existing`` with a partition filter applied (still a lazy logical plan).
+    """
+    from pyspark.sql import functions as F
+
+    partition_rows = incoming.select(*partition_scope).distinct().collect()
+    for col in partition_scope:
+        values = [row[col] for row in partition_rows]
+        existing = existing.filter(F.col(col).isin(values))
+    return existing
 
 
 def _collect_partition_combos(
