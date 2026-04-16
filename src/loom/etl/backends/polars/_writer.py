@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
+from loom.etl.backends._historify._engine import HistorifyEngine
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -19,7 +21,7 @@ from loom.etl.backends._merge import (
 )
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
-from loom.etl.backends.polars._historify import PolarsHistorifyEngine
+from loom.etl.backends.polars._ops import PolarsFrameOps
 from loom.etl.backends.polars._schema import (
     PolarsPhysicalSchema,
     apply_schema_polars,
@@ -65,6 +67,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         )
         self._file_writer = PolarsFileWriter()
         self._file_locator = file_locator
+        self._historify_engine = HistorifyEngine(PolarsFrameOps())
 
     def append(
         self,
@@ -275,17 +278,20 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """Apply SCD Type 2 via :class:`PolarsHistorifyEngine`."""
+        """Apply SCD Type 2 via :class:`HistorifyEngine`."""
         path_target = self._as_path_target(target)
-        loc = path_target.location
-        engine = PolarsHistorifyEngine()
-        return engine.apply(
-            frame,
-            loc.uri,
-            loc.storage_options or None,
-            spec,
-            params_instance,
-        )
+        location = path_target.location
+        existing = None
+        with contextlib.suppress(Exception):
+            existing = pl.read_delta(location.uri, storage_options=location.storage_options or {})
+        result = self._historify_engine.transform(frame, existing, spec, params_instance)
+        if spec.partition_scope:
+            self._replace_partitions(
+                result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
+            )
+        else:
+            self._replace(result, target, schema_mode=spec.schema_mode)
+        return None
 
     def _write_file(
         self,

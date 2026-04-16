@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -13,6 +14,7 @@ from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
 from loom.etl.backends._format_registry import resolve_format_handler
+from loom.etl.backends._historify._engine import HistorifyEngine
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -23,7 +25,7 @@ from loom.etl.backends._merge import (
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.spark._dtype import loom_type_to_spark
-from loom.etl.backends.spark._historify import SparkHistorifyEngine
+from loom.etl.backends.spark._ops import SparkFrameOps
 from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
@@ -77,6 +79,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             missing_table_policy=missing_table_policy,
         )
         self._file_locator = file_locator
+        self._historify_engine = HistorifyEngine(SparkFrameOps())
 
     def append(
         self,
@@ -253,7 +256,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         else:
             dt = DeltaTable.forPath(self._spark, target.location.uri)
 
-        combos = self._collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
+        combos = _collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
         merge_plan = _build_merge_plan(
             combos=combos,
             spec=spec,
@@ -278,9 +281,22 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """Apply SCD Type 2 via SparkHistorifyEngine."""
-        engine = SparkHistorifyEngine()
-        return engine.apply(self._spark, frame, target, spec, params_instance)
+        """Apply SCD Type 2 via :class:`HistorifyEngine`."""
+        existing = None
+        if isinstance(target, CatalogTarget):
+            if self._spark.catalog.tableExists(target.catalog_ref.ref):
+                existing = self._spark.table(target.catalog_ref.ref)
+        else:
+            with contextlib.suppress(Exception):
+                existing = self._spark.read.format("delta").load(target.location.uri)
+        result = self._historify_engine.transform(frame, existing, spec, params_instance)
+        if spec.partition_scope:
+            self._replace_partitions(
+                result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
+            )
+        else:
+            self._replace(result, target, schema_mode=spec.schema_mode)
+        return None
 
     def _write_file(
         self,
@@ -374,23 +390,23 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         else:
             writer.save(target.location.uri)
 
-    def _collect_partition_combos(
-        self,
-        frame: DataFrame,
-        partition_cols: tuple[str, ...],
-        table_ref: str,
-    ) -> list[dict[str, Any]]:
-        """Collect unique partition value combinations."""
-        if not partition_cols:
-            _warn_no_partition_cols(table_ref)
-            return []
-        combos = frame.select(*partition_cols).distinct().collect()
-        result = [{c: row[c] for c in partition_cols} for row in combos]
-        _log_partition_combos(result, table_ref)
-        return result
+
+__all__ = ["SparkTargetWriter", "_collect_partition_combos"]
 
 
-__all__ = ["SparkTargetWriter"]
+def _collect_partition_combos(
+    frame: DataFrame,
+    partition_cols: tuple[str, ...],
+    table_ref: str,
+) -> list[dict[str, Any]]:
+    """Collect unique partition value combinations."""
+    if not partition_cols:
+        _warn_no_partition_cols(table_ref)
+        return []
+    combos = frame.select(*partition_cols).distinct().collect()
+    result = [{c: row[c] for c in partition_cols} for row in combos]
+    _log_partition_combos(result, table_ref)
+    return result
 
 
 def _sql_literal(value: Any) -> str:

@@ -416,6 +416,7 @@ class IntoHistory:
         track_t: tuple[str, ...] | None = tuple(track) if track is not None else None
 
         _validate_history_args(keys_t, track_t, valid_from, valid_to)
+        _validate_log_effective_date(effective_date, valid_from, valid_to, mode)
 
         table_ref = TableRef(ref) if isinstance(ref, str) else ref
         self._spec = HistorifySpec(
@@ -483,6 +484,39 @@ def _validate_history_args(
         raise ValueError(
             f"IntoHistory: 'valid_from' and 'valid_to' must be different column names, "
             f"got {valid_from!r} for both."
+        )
+
+
+def _validate_log_effective_date(
+    effective_date: str | object,
+    valid_from: str,
+    valid_to: str,
+    mode: str,
+) -> None:
+    """Raise if LOG mode effective_date clashes with boundary column names.
+
+    In LOG mode the engine drops the effective_date column after computing
+    valid_from / valid_to.  If effective_date equals valid_from the drop
+    would silently erase the just-created column.
+
+    Args:
+        effective_date: Column name or ParamExpr declared as the event date.
+        valid_from:     Period-start column name.
+        valid_to:       Period-end column name.
+        mode:           ``"log"`` or ``"snapshot"``.
+
+    Raises:
+        ValueError: When LOG mode effective_date conflicts with a boundary col.
+    """
+    if mode != "log":
+        return
+    eff_col = str(effective_date)
+    if eff_col in (valid_from, valid_to):
+        raise ValueError(
+            f"IntoHistory (LOG mode): effective_date={eff_col!r} must not match "
+            f"valid_from={valid_from!r} or valid_to={valid_to!r}. "
+            "The engine drops the effective_date column after building history boundaries; "
+            "using the same name would silently erase the computed column."
         )
 
 
