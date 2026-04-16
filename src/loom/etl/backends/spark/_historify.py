@@ -93,10 +93,10 @@ class SparkHistorifyBackend:
         eff_date: Any,
         join_key: list[str],
     ) -> DataFrame:
-        vf_dtype = _history_boundary_dtype_sql(spec)
+        boundary_dtype = _history_boundary_dtype_sql(spec)
         prev = prev_period_value(eff_date, spec)
 
-        stripped = frame.filter(F.col(spec.valid_from) != F.lit(eff_date).cast(vf_dtype))
+        stripped = frame.filter(F.col(spec.valid_from) != F.lit(eff_date).cast(boundary_dtype))
 
         window = (
             Window.partitionBy(join_key)
@@ -106,11 +106,11 @@ class SparkHistorifyBackend:
         with_rank = stripped.withColumn("__rank__", F.rank().over(window))
 
         is_last_closed_by_run = (F.col("__rank__") == 1) & (
-            F.col(spec.valid_to) == F.lit(prev).cast(vf_dtype)
+            F.col(spec.valid_to) == F.lit(prev).cast(boundary_dtype)
         )
         return with_rank.withColumn(
             spec.valid_to,
-            F.when(is_last_closed_by_run, F.lit(None).cast(vf_dtype)).otherwise(
+            F.when(is_last_closed_by_run, F.lit(None).cast(boundary_dtype)).otherwise(
                 F.col(spec.valid_to)
             ),
         ).drop("__rank__")
@@ -122,20 +122,20 @@ class SparkHistorifyBackend:
     ) -> DataFrame:
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
-        vf_dtype = _history_boundary_dtype_sql(spec)
+        boundary_dtype = _history_boundary_dtype_sql(spec)
 
         # Lead/Lag in Spark do not accept any explicit window frame.
         window = Window.partitionBy(entity_key).orderBy(eff_col)
         next_date = F.lead(eff_col).over(window)
 
         if spec.date_type is HistoryDateType.DATE:
-            vto_expr = F.date_sub(next_date, 1)
+            valid_to_expr = F.date_sub(next_date, 1)
         else:
-            vto_expr = next_date - F.expr("INTERVAL 1 MICROSECOND")
+            valid_to_expr = next_date - F.expr("INTERVAL 1 MICROSECOND")
 
         return (
-            frame.withColumn(spec.valid_from, F.col(eff_col).cast(vf_dtype))
-            .withColumn(spec.valid_to, vto_expr.cast(vf_dtype))
+            frame.withColumn(spec.valid_from, F.col(eff_col).cast(boundary_dtype))
+            .withColumn(spec.valid_to, valid_to_expr.cast(boundary_dtype))
             .drop(eff_col)
         )
 
@@ -148,12 +148,12 @@ class SparkHistorifyBackend:
         if spec.delete_policy is DeletePolicy.IGNORE:
             return deleted
 
-        vf_dtype = _history_boundary_dtype_sql(spec)
+        boundary_dtype = _history_boundary_dtype_sql(spec)
         prev = prev_period_value(eff_date, spec)
-        result = deleted.withColumn(spec.valid_to, F.lit(prev).cast(vf_dtype))
+        result = deleted.withColumn(spec.valid_to, F.lit(prev).cast(boundary_dtype))
 
         if spec.delete_policy is DeletePolicy.SOFT_DELETE:
-            result = result.withColumn("deleted_at", F.lit(eff_date).cast(vf_dtype))
+            result = result.withColumn("deleted_at", F.lit(eff_date).cast(boundary_dtype))
 
         return result
 
@@ -162,8 +162,8 @@ class SparkHistorifyBackend:
             return result
         if "deleted_at" in result.columns:
             return result
-        vf_dtype = _history_boundary_dtype_sql(spec)
-        return result.withColumn("deleted_at", F.lit(None).cast(vf_dtype))
+        boundary_dtype = _history_boundary_dtype_sql(spec)
+        return result.withColumn("deleted_at", F.lit(None).cast(boundary_dtype))
 
     def assert_unique_keys(self, frame: DataFrame, keys: list[str]) -> None:
         n_rows = frame.count()
@@ -205,13 +205,13 @@ class SparkHistorifyBackend:
         spec: HistorifySpec,
         eff_date: Any,
     ) -> Any | None:
-        vf_dtype = _history_boundary_dtype_sql(spec)
+        boundary_dtype = _history_boundary_dtype_sql(spec)
         conflict_agg = (
-            existing.filter(F.col(spec.valid_from) > F.lit(eff_date).cast(vf_dtype))
-            .agg(F.min(spec.valid_from).alias("min_vf"))
+            existing.filter(F.col(spec.valid_from) > F.lit(eff_date).cast(boundary_dtype))
+            .agg(F.min(spec.valid_from).alias("min_valid_from"))
             .collect()
         )
-        min_conflict = conflict_agg[0]["min_vf"]
+        min_conflict = conflict_agg[0]["min_valid_from"]
         if min_conflict is None:
             return None
         return min_conflict

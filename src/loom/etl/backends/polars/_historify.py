@@ -76,25 +76,27 @@ class PolarsHistorifyBackend:
         eff_date: Any,
         join_key: list[str],
     ) -> pl.DataFrame:
-        vf_dtype = _history_boundary_dtype(spec)
+        boundary_dtype = _history_boundary_dtype(spec)
         prev = prev_period_value(eff_date, spec)
 
-        stripped = frame.filter(pl.col(spec.valid_from) != pl.lit(eff_date).cast(vf_dtype))
+        stripped = frame.filter(pl.col(spec.valid_from) != pl.lit(eff_date).cast(boundary_dtype))
         if stripped.is_empty():
             return stripped
 
-        max_vf = stripped.group_by(join_key).agg(pl.col(spec.valid_from).max().alias("__max_vf__"))
-        with_max = stripped.join(max_vf, on=join_key, how="left")
+        max_valid_from = stripped.group_by(join_key).agg(
+            pl.col(spec.valid_from).max().alias("__max_valid_from__")
+        )
+        with_max = stripped.join(max_valid_from, on=join_key, how="left")
 
-        is_last_closed_by_run = (pl.col(spec.valid_from) == pl.col("__max_vf__")) & (
-            pl.col(spec.valid_to) == pl.lit(prev).cast(vf_dtype)
+        is_last_closed_by_run = (pl.col(spec.valid_from) == pl.col("__max_valid_from__")) & (
+            pl.col(spec.valid_to) == pl.lit(prev).cast(boundary_dtype)
         )
         return with_max.with_columns(
             pl.when(is_last_closed_by_run)
-            .then(pl.lit(None, dtype=vf_dtype))
+            .then(pl.lit(None, dtype=boundary_dtype))
             .otherwise(pl.col(spec.valid_to))
             .alias(spec.valid_to)
-        ).drop("__max_vf__")
+        ).drop("__max_valid_from__")
 
     def build_log_boundaries(
         self,
@@ -103,7 +105,7 @@ class PolarsHistorifyBackend:
     ) -> pl.DataFrame:
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
-        vf_dtype = _history_boundary_dtype(spec)
+        boundary_dtype = _history_boundary_dtype(spec)
         offset = (
             pl.duration(days=1)
             if spec.date_type is HistoryDateType.DATE
@@ -114,8 +116,8 @@ class PolarsHistorifyBackend:
         next_date = pl.col(eff_col).shift(-1).over(entity_key)
 
         return sorted_events.with_columns(
-            pl.col(eff_col).cast(vf_dtype).alias(spec.valid_from),
-            (next_date - offset).cast(vf_dtype).alias(spec.valid_to),
+            pl.col(eff_col).cast(boundary_dtype).alias(spec.valid_from),
+            (next_date - offset).cast(boundary_dtype).alias(spec.valid_to),
         ).drop(eff_col)
 
     def apply_delete_policy(
@@ -127,12 +129,12 @@ class PolarsHistorifyBackend:
         if spec.delete_policy is DeletePolicy.IGNORE:
             return deleted
 
-        vf_dtype = _history_boundary_dtype(spec)
+        boundary_dtype = _history_boundary_dtype(spec)
         prev = prev_period_value(eff_date, spec)
-        result = deleted.with_columns(pl.lit(prev).cast(vf_dtype).alias(spec.valid_to))
+        result = deleted.with_columns(pl.lit(prev).cast(boundary_dtype).alias(spec.valid_to))
 
         if spec.delete_policy is DeletePolicy.SOFT_DELETE:
-            result = result.with_columns(pl.lit(eff_date).cast(vf_dtype).alias("deleted_at"))
+            result = result.with_columns(pl.lit(eff_date).cast(boundary_dtype).alias("deleted_at"))
 
         return result
 
@@ -141,8 +143,8 @@ class PolarsHistorifyBackend:
             return result
         if "deleted_at" in result.columns:
             return result
-        vf_dtype = _history_boundary_dtype(spec)
-        return result.with_columns(pl.lit(None, dtype=vf_dtype).alias("deleted_at"))
+        boundary_dtype = _history_boundary_dtype(spec)
+        return result.with_columns(pl.lit(None, dtype=boundary_dtype).alias("deleted_at"))
 
     def assert_unique_keys(self, frame: pl.DataFrame, keys: list[str]) -> None:
         if len(frame) == frame.select(keys).n_unique():
@@ -171,8 +173,8 @@ class PolarsHistorifyBackend:
         spec: HistorifySpec,
         eff_date: Any,
     ) -> Any | None:
-        vf_dtype = _history_boundary_dtype(spec)
-        conflict = existing.filter(pl.col(spec.valid_from) > pl.lit(eff_date).cast(vf_dtype))
+        boundary_dtype = _history_boundary_dtype(spec)
+        conflict = existing.filter(pl.col(spec.valid_from) > pl.lit(eff_date).cast(boundary_dtype))
         if conflict.is_empty():
             return None
         return conflict[spec.valid_from].min()
