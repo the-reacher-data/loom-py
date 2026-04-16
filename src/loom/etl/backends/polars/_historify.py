@@ -134,17 +134,19 @@ class PolarsHistorifyBackend:
         result = deleted.with_columns(pl.lit(prev).cast(boundary_dtype).alias(spec.valid_to))
 
         if spec.delete_policy is DeletePolicy.SOFT_DELETE:
-            result = result.with_columns(pl.lit(eff_date).cast(boundary_dtype).alias("deleted_at"))
+            result = result.with_columns(
+                pl.lit(eff_date).cast(boundary_dtype).alias(spec.deleted_at)
+            )
 
         return result
 
     def ensure_soft_delete_col(self, result: pl.DataFrame, spec: HistorifySpec) -> pl.DataFrame:
         if spec.delete_policy is not DeletePolicy.SOFT_DELETE:
             return result
-        if "deleted_at" in result.columns:
+        if spec.deleted_at in result.columns:
             return result
         boundary_dtype = _history_boundary_dtype(spec)
-        return result.with_columns(pl.lit(None, dtype=boundary_dtype).alias("deleted_at"))
+        return result.with_columns(pl.lit(None, dtype=boundary_dtype).alias(spec.deleted_at))
 
     def assert_unique_keys(self, frame: pl.DataFrame, keys: list[str]) -> None:
         if len(frame) == frame.select(keys).n_unique():

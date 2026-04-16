@@ -153,17 +153,17 @@ class SparkHistorifyBackend:
         result = deleted.withColumn(spec.valid_to, F.lit(prev).cast(boundary_dtype))
 
         if spec.delete_policy is DeletePolicy.SOFT_DELETE:
-            result = result.withColumn("deleted_at", F.lit(eff_date).cast(boundary_dtype))
+            result = result.withColumn(spec.deleted_at, F.lit(eff_date).cast(boundary_dtype))
 
         return result
 
     def ensure_soft_delete_col(self, result: DataFrame, spec: HistorifySpec) -> DataFrame:
         if spec.delete_policy is not DeletePolicy.SOFT_DELETE:
             return result
-        if "deleted_at" in result.columns:
+        if spec.deleted_at in result.columns:
             return result
         boundary_dtype = _history_boundary_dtype_sql(spec)
-        return result.withColumn("deleted_at", F.lit(None).cast(boundary_dtype))
+        return result.withColumn(spec.deleted_at, F.lit(None).cast(boundary_dtype))
 
     def assert_unique_keys(self, frame: DataFrame, keys: list[str]) -> None:
         n_rows = frame.count()

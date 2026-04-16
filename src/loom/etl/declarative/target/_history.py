@@ -283,6 +283,8 @@ class HistorifySpec:
         valid_from:           Name of the period-start boundary column.
         valid_to:             Name of the period-end boundary column.
                               ``NULL`` in the table means the vector is currently open.
+        deleted_at:           Name of the soft-delete audit column.  Only written when
+                              ``delete_policy=SOFT_DELETE``.
         date_type:            Precision of the ``valid_from`` / ``valid_to`` columns.
         schema_mode:          Schema evolution strategy.
         allow_temporal_rerun: Allow re-weave when past-date data is loaded.
@@ -297,6 +299,7 @@ class HistorifySpec:
     partition_scope: tuple[str, ...] | None = None
     valid_from: str = "valid_from"
     valid_to: str = "valid_to"
+    deleted_at: str = "deleted_at"
     date_type: HistoryDateType = HistoryDateType.DATE
     schema_mode: SchemaMode = SchemaMode.STRICT
     allow_temporal_rerun: bool = False
@@ -408,6 +411,7 @@ class IntoHistory:
         partition_scope: tuple[str, ...] | list[str] | None = None,
         valid_from: str = "valid_from",
         valid_to: str = "valid_to",
+        deleted_at: str = "deleted_at",
         date_type: Literal["date", "timestamp"] = "date",
         schema: SchemaMode = SchemaMode.STRICT,
         allow_temporal_rerun: bool = False,
@@ -415,7 +419,7 @@ class IntoHistory:
         keys_t = tuple(keys)
         track_t: tuple[str, ...] | None = tuple(track) if track is not None else None
 
-        _validate_history_args(keys_t, track_t, valid_from, valid_to)
+        _validate_history_args(keys_t, track_t, valid_from, valid_to, deleted_at)
         _validate_log_effective_date(effective_date, valid_from, valid_to, mode)
 
         table_ref = TableRef(ref) if isinstance(ref, str) else ref
@@ -429,6 +433,7 @@ class IntoHistory:
             partition_scope=tuple(partition_scope) if partition_scope is not None else None,
             valid_from=valid_from,
             valid_to=valid_to,
+            deleted_at=deleted_at,
             date_type=HistoryDateType(date_type),
             schema_mode=schema,
             allow_temporal_rerun=allow_temporal_rerun,
@@ -457,6 +462,7 @@ def _validate_history_args(
     track: tuple[str, ...] | None,
     valid_from: str,
     valid_to: str,
+    deleted_at: str,
 ) -> None:
     """Validate ``IntoHistory`` constructor arguments.
 
@@ -465,6 +471,7 @@ def _validate_history_args(
         track:      Change-triggering columns, or ``None``.
         valid_from: Period-start column name.
         valid_to:   Period-end column name.
+        deleted_at: Soft-delete audit column name.
 
     Raises:
         ValueError: On any violated constraint.
@@ -480,10 +487,11 @@ def _validate_history_args(
                 f"Overlap: {sorted(overlap)}"
             )
 
-    if valid_from == valid_to:
+    boundary_names = {valid_from, valid_to, deleted_at}
+    if len(boundary_names) < 3:
         raise ValueError(
-            f"IntoHistory: 'valid_from' and 'valid_to' must be different column names, "
-            f"got {valid_from!r} for both."
+            f"IntoHistory: 'valid_from', 'valid_to' and 'deleted_at' must be distinct. "
+            f"Got valid_from={valid_from!r}, valid_to={valid_to!r}, deleted_at={deleted_at!r}."
         )
 
 
