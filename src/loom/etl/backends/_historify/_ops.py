@@ -58,7 +58,7 @@ class FrameOps(Protocol[F]):
         """Undo a previous run on the same eff_date (SNAPSHOT idempotency)."""
         ...
 
-    def build_log_boundaries(self, frame: F, spec: HistorifySpec, join_key: list[str]) -> F:
+    def build_log_boundaries(self, frame: F, spec: HistorifySpec) -> F:
         """Compute valid_from / valid_to from sorted event frame (LOG mode)."""
         ...
 

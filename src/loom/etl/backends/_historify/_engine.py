@@ -85,7 +85,7 @@ def _first_run(
             dtype,
         )
         return ops.ensure_soft_delete_col(result, spec)
-    return ops.build_log_boundaries(frame, spec, join_key)
+    return ops.build_log_boundaries(frame, spec)
 
 
 def _temporal_guard(

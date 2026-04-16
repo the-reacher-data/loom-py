@@ -75,7 +75,11 @@ class SparkFrameOps:
         return frame.drop(*cols)
 
     def dedup_last(self, frame: DataFrame, subset: list[str]) -> DataFrame:
-        window = Window.partitionBy(subset).orderBy(F.lit(1).desc())
+        window = (
+            Window.partitionBy(subset)
+            .orderBy(F.lit(1).desc())
+            .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+        )
         return (
             frame.withColumn("__rn__", F.row_number().over(window))
             .filter(F.col("__rn__") == 1)
@@ -94,7 +98,11 @@ class SparkFrameOps:
 
         stripped = frame.filter(F.col(spec.valid_from) != F.lit(eff_date).cast(vf_dtype))
 
-        window = Window.partitionBy(join_key).orderBy(F.col(spec.valid_from).desc())
+        window = (
+            Window.partitionBy(join_key)
+            .orderBy(F.col(spec.valid_from).desc())
+            .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+        )
         with_rank = stripped.withColumn("__rank__", F.rank().over(window))
 
         is_last_closed_by_run = (F.col("__rank__") == 1) & (
@@ -111,13 +119,12 @@ class SparkFrameOps:
         self,
         frame: DataFrame,
         spec: HistorifySpec,
-        join_key: list[str],
     ) -> DataFrame:
-        _ = join_key
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
         vf_dtype = _vf_dtype_sql(spec)
 
+        # Lead/Lag in Spark do not accept any explicit window frame.
         window = Window.partitionBy(entity_key).orderBy(eff_col)
         next_date = F.lead(eff_col).over(window)
 

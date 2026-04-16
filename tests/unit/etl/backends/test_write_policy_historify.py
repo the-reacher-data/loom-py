@@ -77,12 +77,12 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
         self.create_calls.append((frame, schema_mode, partition_cols))
 
     def _append(self, frame: list[int], target: ResolvedTarget, *, schema_mode: SchemaMode) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
     def _replace(
         self, frame: list[int], target: ResolvedTarget, *, schema_mode: SchemaMode
     ) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
     def _replace_partitions(
         self,
@@ -92,7 +92,7 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
         partition_cols: tuple[str, ...],
         schema_mode: SchemaMode,
     ) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
     def _replace_where(
         self,
@@ -102,7 +102,7 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
         predicate: str,
         schema_mode: SchemaMode,
     ) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
     def _upsert(
         self,
@@ -112,7 +112,7 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
         spec: Any,
         existing_schema: dict[str, Any],
     ) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
     def _read_existing_data(
         self,
@@ -135,7 +135,7 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
         return None
 
     def _write_file(self, frame: list[int], spec: Any, *, streaming: bool) -> None:
-        pass
+        pass  # Stub — not used in historify dispatch tests.
 
 
 # ---------------------------------------------------------------------------

@@ -35,5 +35,5 @@ def apply_log(
     all_events = ops.union([existing_events, frame])
     deduped = ops.dedup_last(all_events, join_key + [eff_col])
 
-    rebuilt = ops.build_log_boundaries(deduped, spec, join_key)
+    rebuilt = ops.build_log_boundaries(deduped, spec)
     return ops.union([untouched, rebuilt])

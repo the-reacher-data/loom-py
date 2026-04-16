@@ -100,7 +100,6 @@ class PolarsFrameOps:
         self,
         frame: pl.DataFrame,
         spec: HistorifySpec,
-        join_key: list[str],
     ) -> pl.DataFrame:
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
