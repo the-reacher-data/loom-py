@@ -20,7 +20,7 @@ from loom.etl.backends._merge import (
 )
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
-from loom.etl.backends.polars._ops import PolarsFrameOps
+from loom.etl.backends.polars._historify import PolarsHistorifyBackend
 from loom.etl.backends.polars._schema import (
     PolarsPhysicalSchema,
     apply_schema_polars,
@@ -316,7 +316,9 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = HistorifyEngine(PolarsFrameOps()).transform(frame, existing, spec, params_instance)
+        result = HistorifyEngine(PolarsHistorifyBackend()).transform(
+            frame, existing, spec, params_instance
+        )
         if existing is None:
             self._create(
                 result,

@@ -20,7 +20,7 @@ pytest.importorskip("delta")
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
 from pyspark.sql import types as T  # noqa: E402
 
-from loom.etl.backends.spark._ops import SparkFrameOps  # noqa: E402
+from loom.etl.backends.spark._historify import SparkHistorifyBackend  # noqa: E402
 from loom.etl.backends.spark._writer import SparkTargetWriter  # noqa: E402
 from loom.etl.declarative.target._history import (  # noqa: E402
     HistorifyDateCollisionError,
@@ -69,7 +69,7 @@ class TestHistorifySparkTarget(HistorifyContractTests):
 
 
 def _stamp_new_rows(frame: DataFrame, spec: HistorifySpec, eff_date: Any) -> DataFrame:
-    ops = SparkFrameOps()
+    ops = SparkHistorifyBackend()
     dtype = ops.history_dtype(spec)
     frame = ops.stamp_col(frame, spec.valid_from, eff_date, dtype)
     return ops.stamp_col(frame, spec.valid_to, None, dtype)
@@ -80,14 +80,14 @@ class TestAssertUniqueEntityState:
         frame = spark.createDataFrame(
             [{"player_id": 1, "team_id": "RM"}, {"player_id": 2, "team_id": "BCA"}]
         )
-        SparkFrameOps().assert_unique_keys(frame, ["player_id", "team_id"])
+        SparkHistorifyBackend().assert_unique_keys(frame, ["player_id", "team_id"])
 
     def test_duplicate_raises(self, spark: SparkSession) -> None:
         frame = spark.createDataFrame(
             [{"player_id": 1, "team_id": "RM"}, {"player_id": 1, "team_id": "RM"}]
         )
         with pytest.raises(HistorifyKeyConflictError):
-            SparkFrameOps().assert_unique_keys(frame, ["player_id", "team_id"])
+            SparkHistorifyBackend().assert_unique_keys(frame, ["player_id", "team_id"])
 
 
 class TestAssertNoDateCollisions:
@@ -98,7 +98,7 @@ class TestAssertNoDateCollisions:
                 {"subscription_id": 1, "plan": "b", "event_date": date(2024, 6, 1)},
             ]
         )
-        SparkFrameOps().assert_no_date_collisions(
+        SparkHistorifyBackend().assert_no_date_collisions(
             frame, ["subscription_id", "plan"], "event_date", _log_spec()
         )
 
@@ -110,7 +110,7 @@ class TestAssertNoDateCollisions:
             ]
         )
         with pytest.raises(HistorifyDateCollisionError):
-            SparkFrameOps().assert_no_date_collisions(
+            SparkHistorifyBackend().assert_no_date_collisions(
                 frame, ["subscription_id", "plan"], "event_date", _log_spec()
             )
 
@@ -140,7 +140,7 @@ class TestIdempotencyStrip:
             [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}],
             schema=schema,
         )
-        result = SparkFrameOps().rollback_same_day_run(
+        result = SparkHistorifyBackend().rollback_same_day_run(
             existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
         )
         assert result.count() == 0
@@ -166,7 +166,7 @@ class TestIdempotencyStrip:
             ],
             schema=schema,
         )
-        result = SparkFrameOps().rollback_same_day_run(
+        result = SparkHistorifyBackend().rollback_same_day_run(
             existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
         )
         rows = result.collect()

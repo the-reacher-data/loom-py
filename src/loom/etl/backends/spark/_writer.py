@@ -25,7 +25,7 @@ from loom.etl.backends._merge import (
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.spark._dtype import loom_type_to_spark
-from loom.etl.backends.spark._ops import SparkFrameOps
+from loom.etl.backends.spark._historify import SparkHistorifyBackend
 from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
@@ -324,7 +324,9 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = HistorifyEngine(SparkFrameOps()).transform(frame, existing, spec, params_instance)
+        result = HistorifyEngine(SparkHistorifyBackend()).transform(
+            frame, existing, spec, params_instance
+        )
         if existing is None:
             self._create(
                 result,

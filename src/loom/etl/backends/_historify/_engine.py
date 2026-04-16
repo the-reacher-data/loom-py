@@ -9,7 +9,7 @@ from loom.etl.backends._historify._common import (
     resolve_track_cols,
 )
 from loom.etl.backends._historify._log import apply_log
-from loom.etl.backends._historify._ops import FrameOps
+from loom.etl.backends._historify._ops import HistorifyBackend
 from loom.etl.backends._historify._snapshot import apply_snapshot
 from loom.etl.declarative.target._history import (
     HistorifyInputMode,
@@ -21,9 +21,9 @@ F = TypeVar("F")
 
 
 class HistorifyEngine(Generic[F]):
-    """SCD Type 2 engine that delegates frame operations to a FrameOps implementation."""
+    """SCD Type 2 engine that delegates frame operations to a HistorifyBackend implementation."""
 
-    def __init__(self, ops: FrameOps[F]) -> None:
+    def __init__(self, ops: HistorifyBackend[F]) -> None:
         self._ops = ops
 
     def transform(
@@ -69,7 +69,7 @@ class HistorifyEngine(Generic[F]):
 
 
 def _first_run(
-    ops: FrameOps[F],
+    ops: HistorifyBackend[F],
     frame: F,
     spec: HistorifySpec,
     join_key: list[str],
@@ -89,7 +89,7 @@ def _first_run(
 
 
 def _temporal_guard(
-    ops: FrameOps[F],
+    ops: HistorifyBackend[F],
     existing: F,
     spec: HistorifySpec,
     eff_date: Any,

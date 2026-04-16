@@ -1,4 +1,4 @@
-"""Spark FrameOps implementation."""
+"""Spark HistorifyBackend implementation."""
 
 from __future__ import annotations
 
@@ -18,18 +18,18 @@ from loom.etl.declarative.target._history import (
 )
 
 
-def _vf_dtype_sql(spec: HistorifySpec) -> str:
+def _history_boundary_dtype_sql(spec: HistorifySpec) -> str:
     return "date" if spec.date_type is HistoryDateType.DATE else "timestamp"
 
 
-class SparkFrameOps:
-    """Spark implementation of FrameOps."""
+class SparkHistorifyBackend:
+    """Spark implementation of HistorifyBackend."""
 
     def columns(self, frame: DataFrame) -> list[str]:
         return list(frame.columns)
 
     def history_dtype(self, spec: HistorifySpec) -> str:
-        return _vf_dtype_sql(spec)
+        return _history_boundary_dtype_sql(spec)
 
     def filter_null(self, frame: DataFrame, col: str) -> DataFrame:
         return frame.filter(F.col(col).isNull())
@@ -93,7 +93,7 @@ class SparkFrameOps:
         eff_date: Any,
         join_key: list[str],
     ) -> DataFrame:
-        vf_dtype = _vf_dtype_sql(spec)
+        vf_dtype = _history_boundary_dtype_sql(spec)
         prev = prev_period_value(eff_date, spec)
 
         stripped = frame.filter(F.col(spec.valid_from) != F.lit(eff_date).cast(vf_dtype))
@@ -122,7 +122,7 @@ class SparkFrameOps:
     ) -> DataFrame:
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
-        vf_dtype = _vf_dtype_sql(spec)
+        vf_dtype = _history_boundary_dtype_sql(spec)
 
         # Lead/Lag in Spark do not accept any explicit window frame.
         window = Window.partitionBy(entity_key).orderBy(eff_col)
@@ -148,7 +148,7 @@ class SparkFrameOps:
         if spec.delete_policy is DeletePolicy.IGNORE:
             return deleted
 
-        vf_dtype = _vf_dtype_sql(spec)
+        vf_dtype = _history_boundary_dtype_sql(spec)
         prev = prev_period_value(eff_date, spec)
         result = deleted.withColumn(spec.valid_to, F.lit(prev).cast(vf_dtype))
 
@@ -162,7 +162,7 @@ class SparkFrameOps:
             return result
         if "deleted_at" in result.columns:
             return result
-        vf_dtype = _vf_dtype_sql(spec)
+        vf_dtype = _history_boundary_dtype_sql(spec)
         return result.withColumn("deleted_at", F.lit(None).cast(vf_dtype))
 
     def assert_unique_keys(self, frame: DataFrame, keys: list[str]) -> None:
@@ -205,7 +205,7 @@ class SparkFrameOps:
         spec: HistorifySpec,
         eff_date: Any,
     ) -> Any | None:
-        vf_dtype = _vf_dtype_sql(spec)
+        vf_dtype = _history_boundary_dtype_sql(spec)
         conflict_agg = (
             existing.filter(F.col(spec.valid_from) > F.lit(eff_date).cast(vf_dtype))
             .agg(F.min(spec.valid_from).alias("min_vf"))

@@ -1,4 +1,4 @@
-"""Polars FrameOps implementation."""
+"""Polars HistorifyBackend implementation."""
 
 from __future__ import annotations
 
@@ -16,18 +16,18 @@ from loom.etl.declarative.target._history import (
 )
 
 
-def _vf_dtype(spec: HistorifySpec) -> type[pl.Date] | type[pl.Datetime]:
+def _history_boundary_dtype(spec: HistorifySpec) -> type[pl.Date] | type[pl.Datetime]:
     return pl.Date if spec.date_type is HistoryDateType.DATE else pl.Datetime
 
 
-class PolarsFrameOps:
-    """Polars implementation of FrameOps."""
+class PolarsHistorifyBackend:
+    """Polars implementation of HistorifyBackend."""
 
     def columns(self, frame: pl.DataFrame) -> list[str]:
         return list(frame.columns)
 
     def history_dtype(self, spec: HistorifySpec) -> type[pl.Date] | type[pl.Datetime]:
-        return _vf_dtype(spec)
+        return _history_boundary_dtype(spec)
 
     def filter_null(self, frame: pl.DataFrame, col: str) -> pl.DataFrame:
         return frame.filter(pl.col(col).is_null())
@@ -76,7 +76,7 @@ class PolarsFrameOps:
         eff_date: Any,
         join_key: list[str],
     ) -> pl.DataFrame:
-        vf_dtype = _vf_dtype(spec)
+        vf_dtype = _history_boundary_dtype(spec)
         prev = prev_period_value(eff_date, spec)
 
         stripped = frame.filter(pl.col(spec.valid_from) != pl.lit(eff_date).cast(vf_dtype))
@@ -103,7 +103,7 @@ class PolarsFrameOps:
     ) -> pl.DataFrame:
         eff_col = str(spec.effective_date)
         entity_key = list(spec.keys)
-        vf_dtype = _vf_dtype(spec)
+        vf_dtype = _history_boundary_dtype(spec)
         offset = (
             pl.duration(days=1)
             if spec.date_type is HistoryDateType.DATE
@@ -127,7 +127,7 @@ class PolarsFrameOps:
         if spec.delete_policy is DeletePolicy.IGNORE:
             return deleted
 
-        vf_dtype = _vf_dtype(spec)
+        vf_dtype = _history_boundary_dtype(spec)
         prev = prev_period_value(eff_date, spec)
         result = deleted.with_columns(pl.lit(prev).cast(vf_dtype).alias(spec.valid_to))
 
@@ -141,7 +141,7 @@ class PolarsFrameOps:
             return result
         if "deleted_at" in result.columns:
             return result
-        vf_dtype = _vf_dtype(spec)
+        vf_dtype = _history_boundary_dtype(spec)
         return result.with_columns(pl.lit(None, dtype=vf_dtype).alias("deleted_at"))
 
     def assert_unique_keys(self, frame: pl.DataFrame, keys: list[str]) -> None:
@@ -171,7 +171,7 @@ class PolarsFrameOps:
         spec: HistorifySpec,
         eff_date: Any,
     ) -> Any | None:
-        vf_dtype = _vf_dtype(spec)
+        vf_dtype = _history_boundary_dtype(spec)
         conflict = existing.filter(pl.col(spec.valid_from) > pl.lit(eff_date).cast(vf_dtype))
         if conflict.is_empty():
             return None

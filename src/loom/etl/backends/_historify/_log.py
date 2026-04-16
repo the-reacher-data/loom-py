@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import TypeVar
 
-from loom.etl.backends._historify._ops import FrameOps
+from loom.etl.backends._historify._ops import HistorifyBackend
 from loom.etl.declarative.target._history import HistorifySpec
 
 F = TypeVar("F")
 
 
 def apply_log(
-    ops: FrameOps[F],
+    ops: HistorifyBackend[F],
     frame: F,
     existing: F,
     spec: HistorifySpec,

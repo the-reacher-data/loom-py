@@ -20,7 +20,7 @@ pytest.importorskip("deltalake")
 
 import polars as pl  # noqa: E402
 
-from loom.etl.backends.polars._ops import PolarsFrameOps  # noqa: E402
+from loom.etl.backends.polars._historify import PolarsHistorifyBackend  # noqa: E402
 from loom.etl.backends.polars._writer import PolarsTargetWriter  # noqa: E402
 from loom.etl.declarative.target._history import (  # noqa: E402
     HistorifyDateCollisionError,
@@ -71,7 +71,7 @@ class TestHistorifyPolars(HistorifyContractTests):
 
 
 def _stamp_new_rows(frame: pl.DataFrame, spec: HistorifySpec, eff_date: Any) -> pl.DataFrame:
-    ops = PolarsFrameOps()
+    ops = PolarsHistorifyBackend()
     dtype = ops.history_dtype(spec)
     frame = ops.stamp_col(frame, spec.valid_from, eff_date, dtype)
     return ops.stamp_col(frame, spec.valid_to, None, dtype)
@@ -80,12 +80,12 @@ def _stamp_new_rows(frame: pl.DataFrame, spec: HistorifySpec, eff_date: Any) -> 
 class TestAssertUniqueEntityState:
     def test_unique_frame_passes(self) -> None:
         frame = pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]})
-        PolarsFrameOps().assert_unique_keys(frame, ["player_id", "team_id"])
+        PolarsHistorifyBackend().assert_unique_keys(frame, ["player_id", "team_id"])
 
     def test_duplicate_raises(self) -> None:
         frame = pl.DataFrame({"player_id": [1, 1], "team_id": ["RM", "RM"]})
         with pytest.raises(HistorifyKeyConflictError):
-            PolarsFrameOps().assert_unique_keys(frame, ["player_id", "team_id"])
+            PolarsHistorifyBackend().assert_unique_keys(frame, ["player_id", "team_id"])
 
 
 class TestAssertNoDateCollisions:
@@ -97,7 +97,7 @@ class TestAssertNoDateCollisions:
                 "event_date": [date(2024, 1, 1), date(2024, 6, 1)],
             }
         )
-        PolarsFrameOps().assert_no_date_collisions(
+        PolarsHistorifyBackend().assert_no_date_collisions(
             frame, ["subscription_id", "plan"], "event_date", _log_spec()
         )
 
@@ -110,7 +110,7 @@ class TestAssertNoDateCollisions:
             }
         )
         with pytest.raises(HistorifyDateCollisionError):
-            PolarsFrameOps().assert_no_date_collisions(
+            PolarsHistorifyBackend().assert_no_date_collisions(
                 frame, ["subscription_id", "plan"], "event_date", _log_spec()
             )
 
@@ -134,7 +134,7 @@ class TestIdempotencyStrip:
                 "valid_to": [None],
             }
         ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsFrameOps().rollback_same_day_run(
+        result = PolarsHistorifyBackend().rollback_same_day_run(
             existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
         )
         assert len(result) == 0
@@ -149,7 +149,7 @@ class TestIdempotencyStrip:
                 "valid_to": [date(2024, 5, 31)],
             }
         ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsFrameOps().rollback_same_day_run(
+        result = PolarsHistorifyBackend().rollback_same_day_run(
             existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
         )
         assert result["valid_to"].is_null().all()
@@ -164,7 +164,7 @@ class TestIdempotencyStrip:
                 "valid_to": [date(2024, 3, 31), None],
             }
         ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsFrameOps().rollback_same_day_run(
+        result = PolarsHistorifyBackend().rollback_same_day_run(
             existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
         )
         old = result.filter(pl.col("team_id") == "OLD")
