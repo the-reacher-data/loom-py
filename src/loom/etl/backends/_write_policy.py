@@ -283,13 +283,11 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """SCD Type 2 historify policy: validate creation rights then delegate.
+        """SCD Type 2 historify policy: read existing, validate, transform, write.
 
-        Checks that the target may be created when absent (honours
-        ``missing_table_policy``), then unconditionally delegates to
-        :meth:`_historify` — the backend engine handles both the first-run
-        bootstrap (creating the table with ``valid_from``/``valid_to`` columns)
-        and the incremental SCD2 MERGE.
+        Reads existing target data, validates creation rights when absent, then
+        delegates to :meth:`_historify` with the existing frame so the backend
+        only handles the transform + write — not the read.
 
         Args:
             frame:           Incoming input frame.
@@ -302,7 +300,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             A :class:`~loom.etl.HistorifyRepairReport` when a re-weave was
             performed, or ``None`` for a normal forward-only run.
         """
-        existing = self._physical_schema(target)
+        existing = self._read_existing_data(target)
         if existing is None:
             _ensure_can_create_missing_table(
                 target=target,
@@ -310,7 +308,9 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 missing_table_policy=self._missing_table_policy,
             )
         materialized = self._materialize_for_write(frame, streaming=False)
-        return self._historify(materialized, target, spec=spec, params_instance=params_instance)
+        return self._historify(
+            materialized, existing, target, spec=spec, params_instance=params_instance
+        )
 
     # ========================================================================
     # Abstract Hooks (backend-specific implementations)
@@ -319,6 +319,15 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
     @abstractmethod
     def _physical_schema(self, target: ResolvedTarget) -> PhysicalSchemaT | None:
         """Read physical schema for target, or None if not exists."""
+
+    @abstractmethod
+    def _read_existing_data(self, target: ResolvedTarget) -> WriteFrameT | None:
+        """Read all existing data from target for SCD Type 2 merge.
+
+        Returns:
+            Backend frame with the full current state, or ``None`` when the
+            target table does not yet exist.
+        """
 
     @abstractmethod
     def _align(
@@ -405,24 +414,24 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
     def _historify(
         self,
         frame: WriteFrameT,
+        existing: WriteFrameT | None,
         target: ResolvedTarget,
         *,
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """Apply SCD Type 2 merge into an existing (or new) Delta table.
+        """Apply SCD Type 2 transform and write result to target.
 
-        Called for every ``IntoHistory`` write — including the first run when
-        the target does not yet exist.  The engine is responsible for:
+        Called after :meth:`_read_existing_data` has already fetched the current
+        target state.  The implementation must:
 
-        * Adding ``valid_from`` / ``valid_to`` boundary columns.
-        * Comparing incoming data against current open vectors.
-        * Closing changed vectors and inserting new rows.
-        * Handling ``delete_policy`` for absent keys (SNAPSHOT mode).
-        * Enforcing idempotency for same-day re-runs.
+        * Run the SCD2 algorithm (via :class:`~loom.etl.backends._historify.HistorifyEngine`).
+        * Write the result using the existing write hooks (``_create``,
+          ``_replace``, or ``_replace_partitions``).
 
         Args:
-            frame:           Materialised write-ready frame.
+            frame:           Materialised incoming frame (write-ready).
+            existing:        Current target frame, or ``None`` for first run.
             target:          Resolved Delta target.
             spec:            Compiled historify spec.
             params_instance: Runtime params; used to resolve

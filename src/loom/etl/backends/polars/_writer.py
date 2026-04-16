@@ -67,7 +67,6 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         )
         self._file_writer = PolarsFileWriter()
         self._file_locator = file_locator
-        self._historify_engine = HistorifyEngine(PolarsFrameOps())
 
     def append(
         self,
@@ -270,22 +269,33 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             .execute()
         )
 
+    def _read_existing_data(self, target: ResolvedTarget) -> pl.DataFrame | None:
+        """Read full Delta table into a DataFrame, or None if not found."""
+        path_target = self._as_path_target(target)
+        location = path_target.location
+        with contextlib.suppress(Exception):
+            return pl.read_delta(location.uri, storage_options=location.storage_options or None)
+        return None
+
     def _historify(
         self,
         frame: pl.DataFrame,
+        existing: pl.DataFrame | None,
         target: ResolvedTarget,
         *,
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """Apply SCD Type 2 via :class:`HistorifyEngine`."""
-        path_target = self._as_path_target(target)
-        location = path_target.location
-        existing = None
-        with contextlib.suppress(Exception):
-            existing = pl.read_delta(location.uri, storage_options=location.storage_options or {})
-        result = self._historify_engine.transform(frame, existing, spec, params_instance)
-        if spec.partition_scope:
+        """Run SCD Type 2 transform and write result via existing write hooks."""
+        result = HistorifyEngine(PolarsFrameOps()).transform(frame, existing, spec, params_instance)
+        if existing is None:
+            self._create(
+                result,
+                target,
+                schema_mode=spec.schema_mode,
+                partition_cols=spec.partition_scope or (),
+            )
+        elif spec.partition_scope:
             self._replace_partitions(
                 result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
             )

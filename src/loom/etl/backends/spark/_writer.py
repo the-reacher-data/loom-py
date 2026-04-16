@@ -79,7 +79,6 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             missing_table_policy=missing_table_policy,
         )
         self._file_locator = file_locator
-        self._historify_engine = HistorifyEngine(SparkFrameOps())
 
     def append(
         self,
@@ -273,24 +272,35 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             .execute()
         )
 
+    def _read_existing_data(self, target: ResolvedTarget) -> DataFrame | None:
+        """Read full Delta table or catalog table, or None if not found."""
+        if isinstance(target, CatalogTarget):
+            if not self._spark.catalog.tableExists(target.catalog_ref.ref):
+                return None
+            return self._spark.table(target.catalog_ref.ref)
+        with contextlib.suppress(AnalysisException):
+            return self._spark.read.format("delta").load(target.location.uri)
+        return None
+
     def _historify(
         self,
         frame: DataFrame,
+        existing: DataFrame | None,
         target: ResolvedTarget,
         *,
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """Apply SCD Type 2 via :class:`HistorifyEngine`."""
-        existing = None
-        if isinstance(target, CatalogTarget):
-            if self._spark.catalog.tableExists(target.catalog_ref.ref):
-                existing = self._spark.table(target.catalog_ref.ref)
-        else:
-            with contextlib.suppress(Exception):
-                existing = self._spark.read.format("delta").load(target.location.uri)
-        result = self._historify_engine.transform(frame, existing, spec, params_instance)
-        if spec.partition_scope:
+        """Run SCD Type 2 transform and write result via existing write hooks."""
+        result = HistorifyEngine(SparkFrameOps()).transform(frame, existing, spec, params_instance)
+        if existing is None:
+            self._create(
+                result,
+                target,
+                schema_mode=spec.schema_mode,
+                partition_cols=spec.partition_scope or (),
+            )
+        elif spec.partition_scope:
             self._replace_partitions(
                 result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
             )

@@ -114,9 +114,13 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
     ) -> None:
         pass
 
+    def _read_existing_data(self, target: ResolvedTarget) -> list[int] | None:
+        return [0] if self._schema_exists else None
+
     def _historify(
         self,
         frame: list[int],
+        existing: list[int] | None,
         target: ResolvedTarget,
         *,
         spec: HistorifySpec,
@@ -265,7 +269,7 @@ class TestHistorifyRepairReportPassthrough:
 
         class _ReportingWriter(_StubWritePolicy):
             def _historify(
-                self, frame: Any, target: Any, *, spec: Any, params_instance: Any
+                self, frame: Any, existing: Any, target: Any, *, spec: Any, params_instance: Any
             ) -> HistorifyRepairReport | None:
                 return report
 
