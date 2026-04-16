@@ -420,11 +420,13 @@ def _partition_filter(
     partition_vals: pl.DataFrame,
     partition_scope: tuple[str, ...],
 ) -> pl.Expr:
-    """Build a Polars filter expression that matches rows in any of the given partitions.
+    """Build a Polars filter expression that matches exact partition combinations.
 
-    Each column is constrained to the set of distinct values present in
-    ``partition_vals``.  Delta-rs pushes column ``is_in`` predicates to the
-    file-scan level, so only the matching Parquet files are opened.
+    Instead of a loose column-wise ``is_in`` (which forms a bounding hyper-
+    rectangle and may read unwanted partition combinations), this builds an
+    ``OR`` of ``AND`` equalities — one per distinct partition combo present in
+    ``partition_vals``.  Delta-rs pushes these predicates to the file-scan level,
+    opening only the Parquet files that belong to the exact combinations needed.
 
     Args:
         partition_vals: DataFrame with one column per partition key and one row
@@ -434,10 +436,18 @@ def _partition_filter(
     Returns:
         A Polars expression suitable for use in ``.filter()``.
     """
-    exprs = [pl.col(col).is_in(partition_vals[col].to_list()) for col in partition_scope]
+    combos = partition_vals.select(list(partition_scope)).unique().iter_rows(named=True)
+    exprs: list[pl.Expr] = []
+    for combo in combos:
+        and_expr: pl.Expr = pl.col(partition_scope[0]) == combo[partition_scope[0]]
+        for col in partition_scope[1:]:
+            and_expr = and_expr & (pl.col(col) == combo[col])
+        exprs.append(and_expr)
+    if not exprs:
+        return pl.lit(False)
     result = exprs[0]
     for expr in exprs[1:]:
-        result = result & expr
+        result = result | expr
     return result
 
 

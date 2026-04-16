@@ -441,13 +441,13 @@ def _filter_to_partitions(
     incoming: DataFrame,
     partition_scope: tuple[str, ...],
 ) -> DataFrame:
-    """Return ``existing`` filtered to the partitions present in ``incoming``.
+    """Return ``existing`` filtered to the exact partition combos in ``incoming``.
 
-    Collects the distinct partition-column values from ``incoming`` (a small
-    action on just those columns) and adds a column-level ``isin`` filter to
-    the ``existing`` logical plan.  Spark's Delta scan optimizer pushes these
-    predicates to the file-selection step at execution time, so only the
-    matching partition directories are actually opened — no full table scan.
+    Collects the distinct partition-column combinations from ``incoming`` and
+    builds an ``OR`` of ``AND`` equalities on ``existing``.  Spark's Delta scan
+    optimizer pushes these predicates to file-selection, so only the partition
+    directories that match the *exact* combinations are opened — no bounding
+    hyper-rectangle over-read.
 
     Args:
         existing:        Full logical plan for the existing Delta table.
@@ -455,15 +455,22 @@ def _filter_to_partitions(
         partition_scope: Partition column names.
 
     Returns:
-        ``existing`` with a partition filter applied (still a lazy logical plan).
+        ``existing`` with an exact-partition filter applied (still lazy).
     """
+    import operator
+    from functools import reduce
+
     from pyspark.sql import functions as F
 
     partition_rows = incoming.select(*partition_scope).distinct().collect()
-    for col in partition_scope:
-        values = [row[col] for row in partition_rows]
-        existing = existing.filter(F.col(col).isin(values))
-    return existing
+    if not partition_rows:
+        return existing.limit(0)
+
+    predicates: list[Any] = []
+    for row in partition_rows:
+        ands = [F.col(col) == row[col] for col in partition_scope]
+        predicates.append(reduce(operator.and_, ands))
+    return existing.filter(reduce(operator.or_, predicates))
 
 
 def _collect_partition_combos(
