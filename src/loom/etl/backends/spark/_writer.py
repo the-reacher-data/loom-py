@@ -23,6 +23,7 @@ from loom.etl.backends._merge import (
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.spark._dtype import loom_type_to_spark
+from loom.etl.backends.spark._historify import SparkHistorifyEngine
 from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
@@ -277,11 +278,9 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """SCD Type 2 engine for Spark — implemented in Sprint 4."""
-        raise NotImplementedError(
-            "SparkHistorifyEngine is not yet implemented. "
-            "SCD Type 2 writes will be available in Sprint 4."
-        )
+        """Apply SCD Type 2 via SparkHistorifyEngine."""
+        engine = SparkHistorifyEngine()
+        return engine.apply(self._spark, frame, target, spec, params_instance)
 
     def _write_file(
         self,
