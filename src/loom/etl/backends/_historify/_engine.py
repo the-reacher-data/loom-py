@@ -1,8 +1,8 @@
-"""Backend-agnostic SCD2Transform — internal engine delegating to HistorifyBackend."""
+"""Backend-agnostic SCD2 transform delegating frame operations to a HistorifyBackend."""
 
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 from loom.etl.backends._historify._common import (
     resolve_effective_date,
@@ -20,52 +20,46 @@ from loom.etl.declarative.target._history import (
 F = TypeVar("F")
 
 
-class SCD2Transform(Generic[F]):
-    """SCD Type 2 transform that delegates frame operations to a HistorifyBackend implementation."""
+def scd2_transform(
+    ops: HistorifyBackend[F],
+    frame: F,
+    existing: F | None,
+    spec: HistorifySpec,
+    params_instance: object,
+) -> F:
+    """Apply SCD Type 2 logic and return the transformed frame.
 
-    def __init__(self, ops: HistorifyBackend[F]) -> None:
-        self._ops = ops
+    Args:
+        ops:             Backend-specific frame operations.
+        frame:           Incoming data frame.
+        existing:        Current target frame, or ``None`` for first run.
+        spec:            Compiled HistorifySpec.
+        params_instance: Runtime params for ParamExpr resolution.
 
-    def transform(
-        self,
-        frame: F,
-        existing: F | None,
-        spec: HistorifySpec,
-        params_instance: object,
-    ) -> F:
-        """Apply SCD2 logic to ``frame`` and return the transformed frame.
+    Returns:
+        Transformed frame ready to be written to Delta.
 
-        Args:
-            frame:           Incoming data frame.
-            existing:        Current target frame, or ``None`` for first run.
-            spec:            Compiled HistorifySpec.
-            params_instance: Runtime params for ParamExpr resolution.
+    Raises:
+        HistorifyKeyConflictError:      Duplicate entity state vectors.
+        HistorifyDateCollisionError:    Same-date collisions in LOG mode.
+        HistorifyTemporalConflictError: Future-open records, re-weave off.
+    """
+    track_cols = resolve_track_cols(spec, ops.columns(frame))
+    join_key = list(spec.keys) + list(track_cols)
+    eff_date = resolve_effective_date(spec, params_instance)
 
-        Returns:
-            Transformed frame ready to be written to Delta.
+    ops.assert_unique_keys(frame, join_key)
+    if spec.mode is HistorifyInputMode.LOG:
+        ops.assert_no_date_collisions(frame, join_key, str(spec.effective_date), spec)
 
-        Raises:
-            HistorifyKeyConflictError:      Duplicate entity state vectors.
-            HistorifyDateCollisionError:    Same-date collisions in LOG mode.
-            HistorifyTemporalConflictError: Future-open records, re-weave off.
-        """
-        ops = self._ops
-        track_cols = resolve_track_cols(spec, ops.columns(frame))
-        join_key = list(spec.keys) + list(track_cols)
-        eff_date = resolve_effective_date(spec, params_instance)
+    if existing is None:
+        return _first_run(ops, frame, spec, join_key, eff_date)
 
-        ops.assert_unique_keys(frame, join_key)
-        if spec.mode is HistorifyInputMode.LOG:
-            ops.assert_no_date_collisions(frame, join_key, str(spec.effective_date), spec)
+    _temporal_guard(ops, existing, spec, eff_date)
 
-        if existing is None:
-            return _first_run(ops, frame, spec, join_key, eff_date)
-
-        _temporal_guard(ops, existing, spec, eff_date)
-
-        if spec.mode is HistorifyInputMode.SNAPSHOT:
-            return apply_snapshot(ops, frame, existing, spec, join_key, eff_date)
-        return apply_log(ops, frame, existing, spec, join_key)
+    if spec.mode is HistorifyInputMode.SNAPSHOT:
+        return apply_snapshot(ops, frame, existing, spec, join_key, eff_date)
+    return apply_log(ops, frame, existing, spec, join_key)
 
 
 def _first_run(

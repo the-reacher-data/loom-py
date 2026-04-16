@@ -21,7 +21,6 @@ from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.target import (
     DeletePolicy,
     HistorifyDateCollisionError,
-    HistorifyEngine,
     HistorifyInputMode,
     HistorifyKeyConflictError,
     HistorifyRepairReport,
@@ -663,31 +662,6 @@ class TestHistorifyRepairReport:
         )
         assert len(report.affected_keys) == 0
         assert len(report.dates_requiring_rerun) == 0
-
-
-# ---------------------------------------------------------------------------
-# HistorifyEngine protocol
-# ---------------------------------------------------------------------------
-
-
-class TestHistorifyEngineProtocol:
-    def test_conforming_class_passes_isinstance(self) -> None:
-        class FakeEngine:
-            def apply(
-                self,
-                frame: object,
-                spec: HistorifySpec,
-                params: object,
-            ) -> HistorifyRepairReport | None:
-                return None
-
-        assert isinstance(FakeEngine(), HistorifyEngine)
-
-    def test_missing_apply_method_fails_isinstance(self) -> None:
-        class NotAnEngine:
-            pass
-
-        assert not isinstance(NotAnEngine(), HistorifyEngine)
 
 
 # ---------------------------------------------------------------------------

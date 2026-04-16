@@ -14,7 +14,7 @@ from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
 from loom.etl.backends._format_registry import resolve_format_handler
-from loom.etl.backends._historify._engine import SCD2Transform
+from loom.etl.backends._historify._engine import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -324,9 +324,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = SCD2Transform(SparkHistorifyBackend()).transform(
-            frame, existing, spec, params_instance
-        )
+        result = scd2_transform(SparkHistorifyBackend(), frame, existing, spec, params_instance)
         if existing is None:
             self._create(
                 result,

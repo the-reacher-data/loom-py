@@ -30,7 +30,6 @@ SCD2 support types:
 * :class:`HistorifyInputMode`          — snapshot vs log input semantics
 * :class:`DeletePolicy`                — action for absent keys in snapshot mode
 * :class:`HistoryDateType`             — date vs timestamp boundary columns
-* :class:`HistorifyEngine`             — protocol for backend SCD2 engines
 * :class:`HistorifyRepairReport`       — re-weave operation report
 * :class:`HistorifyKeyConflictError`   — duplicate entity state vectors
 * :class:`HistorifyDateCollisionError` — same-date LOG mode collisions
@@ -41,7 +40,6 @@ from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import (
     DeletePolicy,
     HistorifyDateCollisionError,
-    HistorifyEngine,
     HistorifyInputMode,
     HistorifyKeyConflictError,
     HistorifyRepairReport,
@@ -104,8 +102,7 @@ __all__ = [
     "HistorifyInputMode",
     "DeletePolicy",
     "HistoryDateType",
-    # SCD2 protocol and report
-    "HistorifyEngine",
+    # SCD2 report
     "HistorifyRepairReport",
     # SCD2 errors
     "HistorifyKeyConflictError",

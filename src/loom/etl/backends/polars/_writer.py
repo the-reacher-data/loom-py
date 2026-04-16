@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
-from loom.etl.backends._historify._engine import SCD2Transform
+from loom.etl.backends._historify._engine import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -316,9 +316,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = SCD2Transform(PolarsHistorifyBackend()).transform(
-            frame, existing, spec, params_instance
-        )
+        result = scd2_transform(PolarsHistorifyBackend(), frame, existing, spec, params_instance)
         if existing is None:
             self._create(
                 result,

@@ -35,14 +35,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import Literal
 
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.target._schema_mode import SchemaMode
-
-_FrameT = TypeVar("_FrameT")
-
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -195,61 +192,6 @@ class HistorifyRepairReport:
     affected_keys: frozenset[tuple[object, ...]]
     dates_requiring_rerun: tuple[object, ...]
     warnings: tuple[str, ...]
-
-
-# ---------------------------------------------------------------------------
-# Engine protocol
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class HistorifyEngine(Protocol[_FrameT]):  # type: ignore[misc]
-    """Protocol implemented by backend-specific SCD2 engines.
-
-    Backend implementations (Polars, Spark) inject this protocol and are resolved
-    at runtime by the target writer.  The domain layer depends only on this
-    protocol — never on concrete backend types.
-
-    Type parameter ``_FrameT`` is bound to the backend's frame type
-    (``pl.LazyFrame`` for Polars, ``pyspark.sql.DataFrame`` for Spark).
-
-    Example::
-
-        class PolarsHistorifyEngine:
-            def apply(
-                self,
-                frame: pl.LazyFrame,
-                spec: HistorifySpec,
-                params: object,
-            ) -> HistorifyRepairReport | None:
-                ...
-    """
-
-    def apply(
-        self,
-        frame: _FrameT,
-        spec: HistorifySpec,
-        params: object,
-    ) -> HistorifyRepairReport | None:
-        """Apply SCD2 logic to ``frame`` and commit to the Delta target.
-
-        Args:
-            frame:  Incoming data frame — Polars ``LazyFrame`` or Spark ``DataFrame``.
-            spec:   Compiled :class:`HistorifySpec` carrying all configuration.
-            params: Runtime params object; used to resolve :class:`~loom.etl.ParamExpr`
-                    values (e.g. ``effective_date``).
-
-        Returns:
-            A :class:`HistorifyRepairReport` when re-weave was performed, or
-            ``None`` for a normal forward-only run.
-
-        Raises:
-            HistorifyKeyConflictError:     Duplicate entity state vectors in snapshot.
-            HistorifyDateCollisionError:   Same-date collisions in LOG mode.
-            HistorifyTemporalConflictError: Future-open records detected and re-weave
-                                           is disabled.
-        """
-        ...
 
 
 # ---------------------------------------------------------------------------
@@ -535,8 +477,6 @@ __all__ = [
     "HistoryDateType",
     # spec
     "HistorifySpec",
-    # protocol
-    "HistorifyEngine",
     # report
     "HistorifyRepairReport",
     # errors
