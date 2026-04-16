@@ -19,6 +19,7 @@ from loom.etl.backends._merge import (
 )
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
+from loom.etl.backends.polars._historify import PolarsHistorifyEngine
 from loom.etl.backends.polars._schema import (
     PolarsPhysicalSchema,
     apply_schema_polars,
@@ -274,10 +275,16 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         spec: HistorifySpec,
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
-        """SCD Type 2 engine for Polars — implemented in Sprint 3."""
-        raise NotImplementedError(
-            "PolarsHistorifyEngine is not yet implemented. "
-            "SCD Type 2 writes will be available in Sprint 3."
+        """Apply SCD Type 2 via :class:`PolarsHistorifyEngine`."""
+        path_target = self._as_path_target(target)
+        loc = path_target.location
+        engine = PolarsHistorifyEngine()
+        return engine.apply(
+            frame,
+            loc.uri,
+            loc.storage_options or None,
+            spec,
+            params_instance,
         )
 
     def _write_file(
