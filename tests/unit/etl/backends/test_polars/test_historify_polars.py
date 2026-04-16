@@ -1,7 +1,13 @@
-"""Unit tests for Polars SCD Type 2 historify via PolarsTargetWriter."""
+"""Polars SCD Type 2 historify — backend-specific tests.
+
+Behavioral scenarios live in
+:class:`~tests.unit.etl.backends._historify_contract.HistorifyContractTests`.
+This module provides the Polars fixtures and backend-specific helper tests.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -14,21 +20,19 @@ pytest.importorskip("deltalake")
 
 import polars as pl  # noqa: E402
 
-from loom.etl.backends._historify._common import resolve_track_cols  # noqa: E402
 from loom.etl.backends.polars._ops import PolarsFrameOps  # noqa: E402
 from loom.etl.backends.polars._writer import PolarsTargetWriter  # noqa: E402
-from loom.etl.declarative.expr._params import params as p  # noqa: E402
-from loom.etl.declarative.expr._refs import TableRef  # noqa: E402
 from loom.etl.declarative.target._history import (  # noqa: E402
-    DeletePolicy,
     HistorifyDateCollisionError,
-    HistorifyInputMode,
     HistorifyKeyConflictError,
     HistorifySpec,
-    HistorifyTemporalConflictError,
 )
-from loom.etl.declarative.target._schema_mode import SchemaMode  # noqa: E402
 from loom.etl.storage._config import MissingTablePolicy  # noqa: E402
+from tests.unit.etl.backends._historify_contract import (  # noqa: E402
+    HistorifyContractTests,
+    _log_spec,
+    _snapshot_spec,
+)
 
 
 @dataclass
@@ -36,494 +40,41 @@ class _Params:
     run_date: date
 
 
-def _snapshot_spec(
-    *,
-    keys: tuple[str, ...] = ("player_id",),
-    track: tuple[str, ...] | None = ("team_id",),
-    delete_policy: DeletePolicy = DeletePolicy.CLOSE,
-    partition_scope: tuple[str, ...] | None = None,
-    allow_temporal_rerun: bool = False,
-) -> HistorifySpec:
-    return HistorifySpec(
-        table_ref=TableRef("dim_players"),
-        keys=keys,
-        effective_date=p.run_date,
-        mode=HistorifyInputMode.SNAPSHOT,
-        track=track,
-        delete_policy=delete_policy,
-        partition_scope=partition_scope,
-        schema_mode=SchemaMode.STRICT,
-        allow_temporal_rerun=allow_temporal_rerun,
-    )
-
-
-def _log_spec(
-    *,
-    keys: tuple[str, ...] = ("subscription_id",),
-    track: tuple[str, ...] | None = ("plan",),
-) -> HistorifySpec:
-    return HistorifySpec(
-        table_ref=TableRef("dim_subs"),
-        keys=keys,
-        effective_date="event_date",
-        mode=HistorifyInputMode.LOG,
-        track=track,
-        schema_mode=SchemaMode.STRICT,
-    )
-
-
-def _writer(tmp_path: Path) -> PolarsTargetWriter:
-    return PolarsTargetWriter(
-        str(tmp_path),
-        missing_table_policy=MissingTablePolicy.CREATE,
-    )
-
-
-def _uri(tmp_path: Path, name: str = "dim_players") -> str:
-    return str(tmp_path / name)
-
-
-def _read(uri: str) -> pl.DataFrame:
-    return pl.scan_delta(uri).collect()
-
-
 # ---------------------------------------------------------------------------
-# Bootstrap
+# Concrete contract implementation — Polars backend
 # ---------------------------------------------------------------------------
 
 
-class TestBootstrap:
-    def test_creates_table(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]})
-        _writer(tmp_path).write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
-        assert len(_read(_uri(tmp_path))) == 2
+class TestHistorifyPolars(HistorifyContractTests):
+    """Run all shared behavioral scenarios against PolarsTargetWriter."""
 
-    def test_valid_from_equals_eff_date(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})
-        _writer(tmp_path).write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
-        assert _read(_uri(tmp_path))["valid_from"].to_list() == [date(2024, 1, 1)]
+    @pytest.fixture
+    def root(self, tmp_path: Path) -> Path:
+        return tmp_path
 
-    def test_valid_to_is_null(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]})
-        _writer(tmp_path).write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
-        assert _read(_uri(tmp_path))["valid_to"].is_null().all()
+    @pytest.fixture
+    def writer(self, tmp_path: Path) -> PolarsTargetWriter:
+        return PolarsTargetWriter(str(tmp_path), missing_table_policy=MissingTablePolicy.CREATE)
 
+    @pytest.fixture
+    def make_frame(self) -> Callable[[list[dict]], pl.LazyFrame]:
+        return lambda rows: pl.from_dicts(rows).lazy()
 
-# ---------------------------------------------------------------------------
-# No-op (no changes)
-# ---------------------------------------------------------------------------
-
-
-class TestNoOp:
-    def test_no_new_rows_when_unchanged(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})
-        w = _writer(tmp_path)
-        w.write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
-        w.write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 2)))
-        result = _read(_uri(tmp_path))
-        assert len(result) == 1
-        assert result["valid_to"].is_null().all()
-
-    def test_valid_from_preserved_on_no_change(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})
-        w = _writer(tmp_path)
-        w.write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 1)))
-        w.write(frame.lazy(), _snapshot_spec(), _Params(run_date=date(2024, 1, 2)))
-        assert _read(_uri(tmp_path))["valid_from"].to_list() == [date(2024, 1, 1)]
+    @pytest.fixture
+    def read_table(self) -> Callable[[str], list[dict[str, Any]]]:
+        return lambda uri: pl.scan_delta(uri).collect().to_dicts()
 
 
 # ---------------------------------------------------------------------------
-# New entity
-# ---------------------------------------------------------------------------
-
-
-class TestNewEntity:
-    def test_new_player_inserted(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 5)),
-        )
-        assert len(_read(_uri(tmp_path))) == 2
-
-    def test_new_player_valid_from_is_eff_date(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 5)),
-        )
-        p2 = _read(_uri(tmp_path)).filter(pl.col("player_id") == 2)
-        assert p2["valid_from"].to_list() == [date(2024, 1, 5)]
-        assert p2["valid_to"].is_null().all()
-
-
-# ---------------------------------------------------------------------------
-# Tracked column change
-# ---------------------------------------------------------------------------
-
-
-class TestTrackedChange:
-    def test_two_rows_after_team_change(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["BCA"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        assert len(_read(_uri(tmp_path))) == 2
-
-    def test_old_row_valid_to_is_prev_day(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["BCA"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        old = _read(_uri(tmp_path)).filter(pl.col("team_id") == "RM")
-        assert old["valid_to"].to_list() == [date(2024, 5, 31)]
-
-    def test_new_row_is_open(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["BCA"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        new = _read(_uri(tmp_path)).filter(pl.col("team_id") == "BCA")
-        assert new["valid_from"].to_list() == [date(2024, 6, 1)]
-        assert new["valid_to"].is_null().all()
-
-
-# ---------------------------------------------------------------------------
-# Delete policies
-# ---------------------------------------------------------------------------
-
-
-class TestDeletePolicies:
-    def test_close_sets_valid_to(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.CLOSE),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.CLOSE),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        p2 = _read(_uri(tmp_path)).filter(pl.col("player_id") == 2)
-        assert p2["valid_to"].to_list() == [date(2024, 5, 31)]
-
-    def test_ignore_leaves_vector_open(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.IGNORE),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.IGNORE),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        p2 = _read(_uri(tmp_path)).filter(pl.col("player_id") == 2)
-        assert p2["valid_to"].is_null().all()
-
-    def test_soft_delete_sets_deleted_at(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1, 2], "team_id": ["RM", "BCA"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.SOFT_DELETE),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(delete_policy=DeletePolicy.SOFT_DELETE),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        p2 = _read(_uri(tmp_path)).filter(pl.col("player_id") == 2)
-        assert p2["deleted_at"].to_list() == [date(2024, 6, 1)]
-        assert p2["valid_to"].to_list() == [date(2024, 5, 31)]
-
-
-# ---------------------------------------------------------------------------
-# Loan case — multiple simultaneous open vectors
-# ---------------------------------------------------------------------------
-
-
-class TestLoanCase:
-    def test_two_vectors_open_simultaneously(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame(
-            {"player_id": [1, 1], "team_id": ["RM", "GET"], "role": ["owner", "loan"]}
-        )
-        spec = _snapshot_spec(keys=("player_id",), track=("team_id", "role"))
-        _writer(tmp_path).write(frame.lazy(), spec, _Params(run_date=date(2024, 1, 1)))
-        result = _read(_uri(tmp_path))
-        assert len(result) == 2
-        assert result["valid_to"].is_null().all()
-
-    def test_loan_end_closes_only_loan_vector(self, tmp_path: Path) -> None:
-        spec = _snapshot_spec(keys=("player_id",), track=("team_id", "role"))
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame(
-                {"player_id": [1, 1], "team_id": ["RM", "GET"], "role": ["owner", "loan"]}
-            ).lazy(),
-            spec,
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"], "role": ["owner"]}).lazy(),
-            spec,
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        result = _read(_uri(tmp_path))
-        assert len(result) == 2
-        loan = result.filter(pl.col("role") == "loan")
-        assert loan["valid_to"].to_list() == [date(2024, 5, 31)]
-        owner = result.filter(pl.col("role") == "owner")
-        assert owner["valid_to"].is_null().all()
-
-
-# ---------------------------------------------------------------------------
-# Passive columns
-# ---------------------------------------------------------------------------
-
-
-class TestPassiveColumns:
-    def test_passive_change_does_not_trigger_new_row(self, tmp_path: Path) -> None:
-        spec = _snapshot_spec(keys=("player_id",), track=("team_id",))
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"], "salary": [100]}).lazy(),
-            spec,
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"], "salary": [150]}).lazy(),
-            spec,
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        result = _read(_uri(tmp_path))
-        assert len(result) == 1
-        assert result["salary"].to_list() == [100]
-
-
-# ---------------------------------------------------------------------------
-# Idempotency
-# ---------------------------------------------------------------------------
-
-
-class TestIdempotency:
-    def test_same_day_rerun_stable_row_count(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        frame2 = pl.DataFrame({"player_id": [1], "team_id": ["BCA"]}).lazy()
-        w.write(frame2, _snapshot_spec(), _Params(run_date=date(2024, 6, 1)))
-        w.write(frame2, _snapshot_spec(), _Params(run_date=date(2024, 6, 1)))
-        assert len(_read(_uri(tmp_path))) == 2
-
-    def test_same_day_rerun_stable_valid_to(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-        frame2 = pl.DataFrame({"player_id": [1], "team_id": ["BCA"]}).lazy()
-        for _ in range(3):
-            w.write(frame2, _snapshot_spec(), _Params(run_date=date(2024, 6, 1)))
-        old = _read(_uri(tmp_path)).filter(pl.col("team_id") == "RM")
-        assert old["valid_to"].to_list() == [date(2024, 5, 31)]
-
-
-# ---------------------------------------------------------------------------
-# Temporal conflict guard
-# ---------------------------------------------------------------------------
-
-
-class TestTemporalGuard:
-    def test_backfill_raises_when_disabled(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        with pytest.raises(HistorifyTemporalConflictError):
-            w.write(
-                pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-                _snapshot_spec(allow_temporal_rerun=False),
-                _Params(run_date=date(2024, 1, 1)),
-            )
-
-    def test_backfill_allowed_when_flag_set(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(),
-            _Params(run_date=date(2024, 6, 1)),
-        )
-        w.write(
-            pl.DataFrame({"player_id": [1], "team_id": ["RM"]}).lazy(),
-            _snapshot_spec(allow_temporal_rerun=True),
-            _Params(run_date=date(2024, 1, 1)),
-        )
-
-
-# ---------------------------------------------------------------------------
-# LOG mode
-# ---------------------------------------------------------------------------
-
-
-class TestLogBootstrap:
-    def test_events_get_valid_from(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame(
-            {
-                "subscription_id": [1, 1],
-                "plan": ["basic", "pro"],
-                "event_date": [date(2024, 1, 1), date(2024, 6, 1)],
-            }
-        )
-        _writer(tmp_path).write(frame.lazy(), _log_spec(), None)
-        result = pl.scan_delta(_uri(tmp_path, "dim_subs")).collect().sort("valid_from")
-        assert result["valid_from"].to_list() == [date(2024, 1, 1), date(2024, 6, 1)]
-
-    def test_first_event_closed_by_second(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame(
-            {
-                "subscription_id": [1, 1],
-                "plan": ["basic", "pro"],
-                "event_date": [date(2024, 1, 1), date(2024, 6, 1)],
-            }
-        )
-        _writer(tmp_path).write(frame.lazy(), _log_spec(), None)
-        basic = (
-            pl.scan_delta(_uri(tmp_path, "dim_subs")).collect().filter(pl.col("plan") == "basic")
-        )
-        assert basic["valid_to"].to_list() == [date(2024, 5, 31)]
-
-    def test_last_event_is_open(self, tmp_path: Path) -> None:
-        frame = pl.DataFrame(
-            {
-                "subscription_id": [1, 1],
-                "plan": ["basic", "pro"],
-                "event_date": [date(2024, 1, 1), date(2024, 6, 1)],
-            }
-        )
-        _writer(tmp_path).write(frame.lazy(), _log_spec(), None)
-        pro = pl.scan_delta(_uri(tmp_path, "dim_subs")).collect().filter(pl.col("plan") == "pro")
-        assert pro["valid_to"].is_null().all()
-
-
-class TestLogIncremental:
-    def test_new_event_closes_previous(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame(
-                {"subscription_id": [1], "plan": ["basic"], "event_date": [date(2024, 1, 1)]}
-            ).lazy(),
-            _log_spec(),
-            None,
-        )
-        w.write(
-            pl.DataFrame(
-                {"subscription_id": [1], "plan": ["pro"], "event_date": [date(2024, 6, 1)]}
-            ).lazy(),
-            _log_spec(),
-            None,
-        )
-        uri = _uri(tmp_path, "dim_subs")
-        result = pl.scan_delta(uri).collect()
-        assert len(result) == 2
-        basic = result.filter(pl.col("plan") == "basic")
-        assert basic["valid_to"].to_list() == [date(2024, 5, 31)]
-
-    def test_unaffected_entities_preserved(self, tmp_path: Path) -> None:
-        w = _writer(tmp_path)
-        w.write(
-            pl.DataFrame(
-                {
-                    "subscription_id": [1, 2],
-                    "plan": ["basic", "pro"],
-                    "event_date": [date(2024, 1, 1), date(2024, 1, 1)],
-                }
-            ).lazy(),
-            _log_spec(),
-            None,
-        )
-        w.write(
-            pl.DataFrame(
-                {
-                    "subscription_id": [1],
-                    "plan": ["enterprise"],
-                    "event_date": [date(2024, 9, 1)],
-                }
-            ).lazy(),
-            _log_spec(),
-            None,
-        )
-        uri = _uri(tmp_path, "dim_subs")
-        sub2 = pl.scan_delta(uri).collect().filter(pl.col("subscription_id") == 2)
-        assert len(sub2) == 1
-        assert sub2["valid_to"].is_null().all()
-
-
-# ---------------------------------------------------------------------------
-# Pure helper unit tests
+# Polars-specific helper tests (backend-specific operations)
 # ---------------------------------------------------------------------------
 
 
 def _stamp_new_rows(frame: pl.DataFrame, spec: HistorifySpec, eff_date: Any) -> pl.DataFrame:
-    """Stamp valid_from / valid_to onto a frame (mirrors first-run bootstrap logic)."""
     ops = PolarsFrameOps()
     dtype = ops.history_dtype(spec)
     frame = ops.stamp_col(frame, spec.valid_from, eff_date, dtype)
     return ops.stamp_col(frame, spec.valid_to, None, dtype)
-
-
-class TestResolveTrackCols:
-    def test_explicit_track_returned(self) -> None:
-        spec = _snapshot_spec(track=("team_id", "salary"))
-        result = resolve_track_cols(spec, ["player_id", "team_id", "salary", "note"])
-        assert result == ("team_id", "salary")
-
-    def test_none_track_excludes_keys_and_history(self) -> None:
-        spec = _snapshot_spec(keys=("player_id",), track=None)
-        result = resolve_track_cols(spec, ["player_id", "team_id", "salary"])
-        assert set(result) == {"team_id", "salary"}
 
 
 class TestAssertUniqueEntityState:
@@ -567,8 +118,7 @@ class TestAssertNoDateCollisions:
 class TestStampNewRows:
     def test_adds_history_columns(self) -> None:
         frame = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})
-        spec = _snapshot_spec()
-        result = _stamp_new_rows(frame, spec, date(2024, 1, 1))
+        result = _stamp_new_rows(frame, _snapshot_spec(), date(2024, 1, 1))
         assert result["valid_from"].to_list() == [date(2024, 1, 1)]
         assert result["valid_to"].is_null().all()
 
