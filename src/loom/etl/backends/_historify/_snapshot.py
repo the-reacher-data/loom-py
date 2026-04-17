@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, TypeVar
 
+from loom.etl.backends._historify._common import prev_period_value
 from loom.etl.backends._historify._ops import HistorifyBackend
 from loom.etl.declarative.target._history import HistorifySpec
 
@@ -20,18 +21,30 @@ def apply_snapshot(
 ) -> F:
     """Apply SNAPSHOT SCD2 classification.
 
-    * New       — in incoming, not in open existing -> stamp + insert.
-    * Unchanged — in both -> keep open existing row as-is.
-    * Deleted   — in open existing, not in incoming -> apply delete policy.
+    Partitions open existing rows into four disjoint sets:
+
+    * Unchanged — exact match in incoming by full ``join_key`` → keep open.
+    * Changed   — entity key in incoming, tracked values differ → always close.
+    * Absent    — entity key not in incoming at all → apply delete policy.
+    * New       — in incoming, not in open existing by ``join_key`` → insert open.
+
+    The delete policy governs only the **absent** set.  Changed rows are always
+    closed regardless of policy: the new snapshot provides explicit replacement
+    state for the entity, so the old version is definitively superseded — it
+    should not remain open alongside the new one regardless of IGNORE semantics.
 
     Closed historical rows are always preserved unchanged.
     """
     existing = ops.rollback_same_day_run(existing, spec, eff_date, join_key)
 
+    entity_key = list(spec.keys)
     open_existing = ops.filter_null(existing, spec.valid_to)
     closed_existing = ops.filter_not_null(existing, spec.valid_to)
 
     dtype = ops.history_dtype(spec)
+    prev = prev_period_value(eff_date, spec)
+
+    # NEW: rows in incoming with no matching open row by full join_key.
     new_raw = ops.anti_join(incoming, open_existing, join_key)
     new_rows = ops.stamp_col(
         ops.stamp_col(new_raw, spec.valid_from, eff_date, dtype),
@@ -40,12 +53,20 @@ def apply_snapshot(
         dtype,
     )
 
-    deleted = ops.anti_join(open_existing, incoming, join_key)
-    closed_deleted = ops.apply_delete_policy(deleted, spec, eff_date)
-
+    # UNCHANGED: open rows that exactly match incoming by full join_key.
     unchanged = ops.semi_join(open_existing, incoming, join_key)
     if spec.overwrite:
         unchanged = ops.apply_overwrite_cols(unchanged, incoming, join_key, spec.overwrite)
 
-    result = ops.union([closed_existing, unchanged, closed_deleted, new_rows])
+    # CHANGED (old version): entity key IS in incoming but tracked values differ.
+    # Always closed — new snapshot explicitly replaces this version of the entity.
+    present_open = ops.semi_join(open_existing, incoming, entity_key)
+    changed_old = ops.anti_join(present_open, incoming, join_key)
+    changed_old_closed = ops.stamp_col(changed_old, spec.valid_to, prev, dtype)
+
+    # ABSENT: entity key not in incoming at all → apply delete policy.
+    absent = ops.anti_join(open_existing, incoming, entity_key)
+    closed_absent = ops.apply_delete_policy(absent, spec, eff_date)
+
+    result = ops.union([closed_existing, unchanged, changed_old_closed, closed_absent, new_rows])
     return ops.ensure_soft_delete_col(result, spec)

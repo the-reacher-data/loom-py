@@ -364,6 +364,69 @@ class HistorifyContractTests:
         assert p2[0]["deleted_at"] == date(2024, 6, 1)
         assert p2[0]["valid_to"] == date(2024, 5, 31)
 
+    def test_ignore_closes_changed_entity_old_version(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """IGNORE closes the old version of an entity that changed in the snapshot.
+
+        IGNORE policy means "don't close rows for entities absent from the snapshot."
+        When an entity IS present but with different tracked values, the old version
+        is definitively superseded — it must be closed regardless of delete policy.
+        """
+        spec = _snapshot_spec(delete_policy=DeletePolicy.IGNORE)
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "BCA"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        assert len(rows) == 2
+        old = [r for r in rows if r["team_id"] == "RM"]
+        assert old[0]["valid_to"] == date(2024, 5, 31)
+        new = [r for r in rows if r["team_id"] == "BCA"]
+        assert new[0]["valid_to"] is None
+
+    def test_soft_delete_does_not_stamp_deleted_at_on_changed_entity(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """SOFT_DELETE does not stamp deleted_at when an entity changes tracked values.
+
+        deleted_at marks an entity as absent from the snapshot (truly gone).
+        When a new snapshot version replaces an old one, the old row is closed
+        with valid_to only — no deleted_at, because the entity was not deleted.
+        """
+        spec = _snapshot_spec(delete_policy=DeletePolicy.SOFT_DELETE)
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "BCA"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        rows = read_table(self._uri(root))
+        old = [r for r in rows if r["team_id"] == "RM"]
+        assert old[0]["valid_to"] == date(2024, 5, 31)
+        assert old[0]["deleted_at"] is None
+        new = [r for r in rows if r["team_id"] == "BCA"]
+        assert new[0]["valid_to"] is None
+        assert new[0]["deleted_at"] is None
+
     # ------------------------------------------------------------------
     # Loan case — multiple simultaneous open vectors
     # ------------------------------------------------------------------

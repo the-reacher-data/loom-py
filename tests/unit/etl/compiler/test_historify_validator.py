@@ -1,13 +1,15 @@
 """Unit tests for compile-time IntoHistory validators.
 
 Covers:
-* validate_historify_spec — keys non-empty, track/keys overlap
+* validate_historify_spec — keys non-empty, track/keys overlap, effective_date
+  not in track, boundary cols disjoint, LOG mode not ParamExpr, warnings
 * validate_param_exprs — effective_date ParamExpr resolves to known field
 * Non-historify specs are silently skipped
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
@@ -52,15 +54,20 @@ def _history_spec(
     keys: tuple[str, ...] = ("player_id",),
     track: tuple[str, ...] | None = ("team_id",),
     effective_date: Any = p.run_date,
+    mode: HistorifyInputMode = HistorifyInputMode.SNAPSHOT,
+    partition_scope: tuple[str, ...] | None = None,
+    allow_temporal_rerun: bool = False,
 ) -> HistorifySpec:
     return HistorifySpec(
         table_ref=TableRef(ref),
         keys=keys,
         effective_date=effective_date,
-        mode=HistorifyInputMode.SNAPSHOT,
+        mode=mode,
         track=track,
         delete_policy=DeletePolicy.CLOSE,
         schema_mode=SchemaMode.STRICT,
+        partition_scope=partition_scope,
+        allow_temporal_rerun=allow_temporal_rerun,
     )
 
 
@@ -94,20 +101,17 @@ class TestValidateHistorifySpecSkipsOtherSpecs:
 
 class TestValidateHistorifySpecValid:
     def test_valid_spec_passes(self) -> None:
-        spec = _history_spec()
-        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        validate_historify_spec(object, _history_spec())  # type: ignore[arg-type]
 
     def test_multiple_keys_pass(self) -> None:
         spec = _history_spec(keys=("player_id", "league_id"), track=("team_id",))
         validate_historify_spec(object, spec)  # type: ignore[arg-type]
 
     def test_track_none_passes(self) -> None:
-        spec = _history_spec(track=None)
-        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        validate_historify_spec(object, _history_spec(track=None))  # type: ignore[arg-type]
 
     def test_string_effective_date_passes(self) -> None:
-        spec = _history_spec(effective_date="event_date")
-        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        validate_historify_spec(object, _history_spec(effective_date="event_date"))  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -116,17 +120,7 @@ class TestValidateHistorifySpecValid:
 
 
 class TestValidateHistorifySpecEmptyKeys:
-    def test_empty_keys_raises(self) -> None:
-        spec = HistorifySpec(
-            table_ref=TableRef("wh.dim"),
-            keys=(),
-            effective_date=p.run_date,
-            mode=HistorifyInputMode.SNAPSHOT,
-        )
-        with pytest.raises(ETLCompilationError, match="at least one column"):
-            validate_historify_spec(object, spec)  # type: ignore[arg-type]
-
-    def test_error_code_is_invalid_target_type(self) -> None:
+    def test_empty_keys_raises_with_expected_error(self) -> None:
         spec = HistorifySpec(
             table_ref=TableRef("wh.dim"),
             keys=(),
@@ -136,17 +130,8 @@ class TestValidateHistorifySpecEmptyKeys:
         with pytest.raises(ETLCompilationError) as exc_info:
             validate_historify_spec(object, spec)  # type: ignore[arg-type]
         assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
-
-    def test_error_field_is_keys(self) -> None:
-        spec = HistorifySpec(
-            table_ref=TableRef("wh.dim"),
-            keys=(),
-            effective_date=p.run_date,
-            mode=HistorifyInputMode.SNAPSHOT,
-        )
-        with pytest.raises(ETLCompilationError) as exc_info:
-            validate_historify_spec(object, spec)  # type: ignore[arg-type]
         assert exc_info.value.field == "keys"
+        assert "at least one column" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +140,7 @@ class TestValidateHistorifySpecEmptyKeys:
 
 
 class TestValidateHistorifySpecTrackOverlap:
-    def test_overlap_raises(self) -> None:
+    def test_overlap_raises_with_expected_error(self) -> None:
         spec = HistorifySpec(
             table_ref=TableRef("wh.dim"),
             keys=("player_id", "team_id"),
@@ -163,20 +148,168 @@ class TestValidateHistorifySpecTrackOverlap:
             effective_date=p.run_date,
             mode=HistorifyInputMode.SNAPSHOT,
         )
-        with pytest.raises(ETLCompilationError, match="team_id"):
+        with pytest.raises(ETLCompilationError) as exc_info:
             validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
+        assert exc_info.value.field == "track"
+        assert "team_id" in str(exc_info.value)
 
-    def test_overlap_error_field_is_track(self) -> None:
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — error: effective_date in track
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecEffectiveDateInTrack:
+    def test_raises_when_effective_date_col_in_track(self) -> None:
+        spec = _history_spec(effective_date="event_date", track=("event_date", "plan"))
+        with pytest.raises(ETLCompilationError) as exc_info:
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
+        assert exc_info.value.field == "effective_date"
+
+    def test_param_expr_effective_date_not_checked(self) -> None:
+        """ParamExpr is not a str — the check is skipped; no error raised."""
+        spec = _history_spec(effective_date=p.run_date, track=("run_date",))
+        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+
+    def test_track_none_not_checked(self) -> None:
+        """track=None means no tracking columns — check is skipped."""
+        spec = _history_spec(effective_date="event_date", track=None)
+        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — error: boundary cols overlap keys or track
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecBoundaryColsDisjoint:
+    def test_valid_from_in_keys_raises(self) -> None:
         spec = HistorifySpec(
             table_ref=TableRef("wh.dim"),
-            keys=("player_id", "team_id"),
-            track=("team_id",),
+            keys=("player_id", "valid_from"),
             effective_date=p.run_date,
             mode=HistorifyInputMode.SNAPSHOT,
         )
         with pytest.raises(ETLCompilationError) as exc_info:
             validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
+        assert exc_info.value.field == "valid_from"
+
+    def test_valid_to_in_track_raises(self) -> None:
+        spec = HistorifySpec(
+            table_ref=TableRef("wh.dim"),
+            keys=("player_id",),
+            track=("valid_to", "salary"),
+            effective_date=p.run_date,
+            mode=HistorifyInputMode.SNAPSHOT,
+        )
+        with pytest.raises(ETLCompilationError) as exc_info:
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
         assert exc_info.value.field == "track"
+
+    def test_custom_boundary_name_in_keys_raises(self) -> None:
+        spec = HistorifySpec(
+            table_ref=TableRef("wh.dim"),
+            keys=("player_id", "period_start"),
+            effective_date=p.run_date,
+            mode=HistorifyInputMode.SNAPSHOT,
+            valid_from="period_start",
+        )
+        with pytest.raises(ETLCompilationError) as exc_info:
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.field == "valid_from"
+
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — error: LOG mode with ParamExpr effective_date
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecLogModeParamExpr:
+    def test_log_mode_param_expr_raises(self) -> None:
+        spec = _history_spec(
+            effective_date=p.run_date,
+            mode=HistorifyInputMode.LOG,
+            track=("plan",),
+        )
+        with pytest.raises(ETLCompilationError) as exc_info:
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert exc_info.value.code == ETLErrorCode.INVALID_TARGET_TYPE
+        assert exc_info.value.field == "effective_date"
+        assert "LOG mode" in str(exc_info.value)
+
+    def test_log_mode_string_effective_date_passes(self) -> None:
+        spec = _history_spec(effective_date="event_date", mode=HistorifyInputMode.LOG)
+        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+
+    def test_snapshot_mode_param_expr_passes(self) -> None:
+        spec = _history_spec(effective_date=p.run_date, mode=HistorifyInputMode.SNAPSHOT)
+        validate_historify_spec(object, spec)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — warning: no partition_scope
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecWarnNoPartitionScope:
+    def test_emits_warning_when_partition_scope_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        spec = _history_spec(partition_scope=None)
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert any("partition_scope" in msg for msg in caplog.messages)
+
+    def test_no_warning_when_partition_scope_set(self, caplog: pytest.LogCaptureFixture) -> None:
+        spec = _history_spec(partition_scope=("season",))
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        partition_warnings = [m for m in caplog.messages if "partition_scope" in m]
+        assert not partition_warnings
+
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — warning: allow_temporal_rerun without scope
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecWarnRerunWithoutScope:
+    def test_emits_warning_when_rerun_without_scope(self, caplog: pytest.LogCaptureFixture) -> None:
+        spec = _history_spec(allow_temporal_rerun=True, partition_scope=None)
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert any("re-weave" in msg for msg in caplog.messages)
+
+    def test_no_rerun_warning_when_scope_is_set(self, caplog: pytest.LogCaptureFixture) -> None:
+        spec = _history_spec(allow_temporal_rerun=True, partition_scope=("season",))
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        rerun_warnings = [m for m in caplog.messages if "re-weave" in m]
+        assert not rerun_warnings
+
+
+# ---------------------------------------------------------------------------
+# validate_historify_spec — warning: track=None
+# ---------------------------------------------------------------------------
+
+
+class TestValidateHistorifySpecWarnTrackNone:
+    def test_emits_warning_when_track_none(self, caplog: pytest.LogCaptureFixture) -> None:
+        spec = _history_spec(track=None)
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        assert any("track=None" in msg or "inferred" in msg for msg in caplog.messages)
+
+    def test_no_track_warning_when_track_is_set(self, caplog: pytest.LogCaptureFixture) -> None:
+        spec = _history_spec(track=("team_id",), partition_scope=("season",))
+        with caplog.at_level(logging.WARNING, logger="loom.etl.compiler._validators_step"):
+            validate_historify_spec(object, spec)  # type: ignore[arg-type]
+        track_warnings = [m for m in caplog.messages if "track=None" in m or "inferred" in m]
+        assert not track_warnings
 
 
 # ---------------------------------------------------------------------------
