@@ -19,6 +19,7 @@ htmlcov/
 docs/__pycache__/
 .claude/
 .claude.md
+CLAUDE.md
 AGENTS.md
 
 # Internal discussion docs (not part of distributable source)

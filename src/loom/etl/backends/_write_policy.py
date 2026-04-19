@@ -8,7 +8,8 @@ while delegating backend-specific operations to abstract hooks.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Generic, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from loom.etl.declarative.target import (
     AppendSpec,
@@ -31,6 +32,8 @@ from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
 InputFrameT = TypeVar("InputFrameT")
 WriteFrameT = TypeVar("WriteFrameT")
 PhysicalSchemaT = TypeVar("PhysicalSchemaT")
+
+TableWriteHandler: TypeAlias = Callable[[InputFrameT, ResolvedTarget, TargetSpec, Any, bool], None]
 
 
 def _ensure_can_create_missing_table(
@@ -113,27 +116,84 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         params_instance: Any,
         streaming: bool,
     ) -> None:
-        """Dispatch table write to specific handler.
+        """Dispatch table write to the registered handler for ``spec``."""
+        handler = self._table_write_handlers().get(type(spec))
+        if handler is None:
+            raise TypeError(f"Unsupported target spec: {type(spec)!r}")
+        handler(frame, target, spec, params_instance, streaming)
 
-        This method centralizes the dispatch logic for all table write operations.
-        When adding a new write mode (e.g., MergeSpec, DeleteWhereSpec), add a
-        new case here and implement the corresponding ``_do_*`` method.
-        """
-        match spec:
-            case AppendSpec():
-                self._do_append(frame, target, spec, streaming)
-            case ReplaceSpec():
-                self._do_replace(frame, target, spec, streaming)
-            case ReplacePartitionsSpec():
-                self._do_replace_partitions(frame, target, spec, streaming)
-            case ReplaceWhereSpec():
-                self._do_replace_where(frame, target, spec, params_instance, streaming)
-            case UpsertSpec():
-                self._do_upsert(frame, target, spec, streaming)
-            case HistorifySpec():
-                self._do_historify(frame, target, spec, params_instance)
-            case _:
-                raise TypeError(f"Unsupported target spec: {type(spec)!r}")
+    def _table_write_handlers(self) -> dict[type[object], TableWriteHandler[InputFrameT]]:
+        """Return handlers for concrete table-target spec types."""
+        return {
+            AppendSpec: self._dispatch_append,
+            ReplaceSpec: self._dispatch_replace,
+            ReplacePartitionsSpec: self._dispatch_replace_partitions,
+            ReplaceWhereSpec: self._dispatch_replace_where,
+            UpsertSpec: self._dispatch_upsert,
+            HistorifySpec: self._dispatch_historify,
+        }
+
+    def _dispatch_append(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_append(frame, target, cast(AppendSpec, spec), streaming)
+
+    def _dispatch_replace(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace(frame, target, cast(ReplaceSpec, spec), streaming)
+
+    def _dispatch_replace_partitions(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace_partitions(frame, target, cast(ReplacePartitionsSpec, spec), streaming)
+
+    def _dispatch_replace_where(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace_where(
+            frame, target, cast(ReplaceWhereSpec, spec), params_instance, streaming
+        )
+
+    def _dispatch_upsert(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_upsert(frame, target, cast(UpsertSpec, spec), streaming)
+
+    def _dispatch_historify(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        params_instance: Any,
+        _streaming: bool,
+    ) -> None:
+        self._do_historify(frame, target, cast(HistorifySpec, spec), params_instance)
 
     # ========================================================================
     # Template Methods (shared policy)
