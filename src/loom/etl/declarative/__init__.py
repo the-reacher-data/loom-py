@@ -23,7 +23,21 @@ from .source import (
     TableSourceSpec,
     TempSourceSpec,
 )
-from .target import IntoFile, IntoTable, IntoTemp, SchemaMode
+from .target import (
+    DeletePolicy,
+    HistorifyDateCollisionError,
+    HistorifyInputMode,
+    HistorifyKeyConflictError,
+    HistorifyRepairReport,
+    HistorifySpec,
+    HistorifyTemporalConflictError,
+    HistoryDateType,
+    IntoFile,
+    IntoHistory,
+    IntoTable,
+    IntoTemp,
+    SchemaMode,
+)
 
 __all__ = [
     "Format",
@@ -49,5 +63,18 @@ __all__ = [
     "IntoTable",
     "IntoFile",
     "IntoTemp",
+    "IntoHistory",
     "SchemaMode",
+    # SCD2 enums
+    "HistorifyInputMode",
+    "DeletePolicy",
+    "HistoryDateType",
+    # SCD2 spec
+    "HistorifySpec",
+    # SCD2 report
+    "HistorifyRepairReport",
+    # SCD2 errors
+    "HistorifyKeyConflictError",
+    "HistorifyDateCollisionError",
+    "HistorifyTemporalConflictError",
 ]

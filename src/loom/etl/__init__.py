@@ -50,12 +50,21 @@ from loom.etl.checkpoint import (
 from loom.etl.declarative import (
     CsvReadOptions,
     CsvWriteOptions,
+    DeletePolicy,
     ExcelReadOptions,
     Format,
     FromFile,
     FromTable,
     FromTemp,
+    HistorifyDateCollisionError,
+    HistorifyInputMode,
+    HistorifyKeyConflictError,
+    HistorifyRepairReport,
+    HistorifySpec,
+    HistorifyTemporalConflictError,
+    HistoryDateType,
     IntoFile,
+    IntoHistory,
     IntoTable,
     IntoTemp,
     JsonReadOptions,
@@ -134,6 +143,19 @@ __all__ = [
     "IntoTable",
     "IntoFile",
     "IntoTemp",
+    "IntoHistory",
+    # SCD2 enums
+    "HistorifyInputMode",
+    "DeletePolicy",
+    "HistoryDateType",
+    # SCD2 spec
+    "HistorifySpec",
+    # SCD2 report
+    "HistorifyRepairReport",
+    # SCD2 errors
+    "HistorifyKeyConflictError",
+    "HistorifyDateCollisionError",
+    "HistorifyTemporalConflictError",
     # intermediates
     "CheckpointCleaner",
     "CheckpointScope",

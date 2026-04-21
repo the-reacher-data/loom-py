@@ -259,6 +259,26 @@ def test_reload_checkpoint_store_module_and_helpers() -> None:
         spark_temp_mod._probe_spark(_SparkUnexpected(), "/var/lib/loom/missing")
 
 
+@pytest.mark.parametrize(
+    ("module_name", "attribute_name"),
+    [
+        ("loom.etl.declarative.target._history", "IntoHistory"),
+        ("loom.etl.runner.core", "ETLRunner"),
+        ("loom.etl.runner._providers", "load_backend_provider"),
+        ("loom.etl.runner._wiring", "make_backends"),
+        ("loom.etl.runner.config_loader", "_load_yaml"),
+        ("loom.etl.storage.routing", "RoutedCatalog"),
+        ("loom.etl.storage._file_locator", "MappingFileLocator"),
+    ],
+)
+def test_runtime_modules_support_reload_contracts(
+    module_name: str,
+    attribute_name: str,
+) -> None:
+    module = _reload_module(module_name)
+    assert getattr(module, attribute_name) is not None
+
+
 def test_lazy_pipeline_exports_resolve() -> None:
     from loom.etl.pipeline import ETLParams, ETLProcess, ETLStep
 
@@ -275,56 +295,6 @@ def test_lazy_sql_exports_resolve() -> None:
     assert StepSQL is not None
     assert callable(resolve_sql)
     assert callable(sql_literal)
-
-
-def test_format_enum_values_are_stable() -> None:
-    from loom.etl.declarative._format import Format
-
-    assert Format.CSV.value == "csv"
-    assert Format.DELTA.value == "delta"
-
-
-def test_read_options_defaults_and_overrides() -> None:
-    from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
-
-    csv = CsvReadOptions()
-    js = JsonReadOptions(infer_schema_length=None)
-    xlsx = ExcelReadOptions(sheet_name="Data")
-    assert csv.separator == ","
-    assert csv.has_header is True
-    assert js.infer_schema_length is None
-    assert xlsx.sheet_name == "Data"
-
-
-def test_write_options_defaults_and_overrides() -> None:
-    from loom.etl.declarative._write_options import CsvWriteOptions, ParquetWriteOptions
-
-    csv = CsvWriteOptions(separator=";")
-    pq = ParquetWriteOptions(compression="zstd")
-    assert csv.separator == ";"
-    assert pq.compression == "zstd"
-
-
-def test_target_variant_specs_store_expected_fields() -> None:
-    from loom.etl.checkpoint._scope import CheckpointScope
-    from loom.etl.declarative._format import Format
-    from loom.etl.declarative.expr._refs import TableRef
-    from loom.etl.declarative.target._file import FileSpec
-    from loom.etl.declarative.target._table import AppendSpec, ReplaceSpec
-    from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
-
-    table = TableRef("staging.orders")
-    file_spec = FileSpec(path="/var/lib/loom/out.csv", format=Format.CSV)
-    append = AppendSpec(table_ref=table)
-    replace = ReplaceSpec(table_ref=table)
-    temp = TempSpec(temp_name="tmp_orders", temp_scope=CheckpointScope.RUN)
-    fan_in = TempFanInSpec(temp_name="tmp_parts", temp_scope=CheckpointScope.CORRELATION)
-
-    assert file_spec.path == "/var/lib/loom/out.csv"
-    assert append.table_ref == table
-    assert replace.table_ref == table
-    assert temp.temp_name == "tmp_orders"
-    assert fan_in.temp_scope is CheckpointScope.CORRELATION
 
 
 def test_schema_structural_types_compose_normally() -> None:

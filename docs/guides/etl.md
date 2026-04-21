@@ -263,6 +263,139 @@ target = IntoTable("events.orders").upsert(
 `partition_cols` is optional but strongly recommended — without it every MERGE
 forces a full table scan.
 
+### historify
+
+For SCD Type 2 history tracking use `IntoHistory` instead of `IntoTable`.
+See the dedicated [Historify](#historify) section below for full examples,
+SNAPSHOT vs LOG mode, and configuration of boundary columns.
+
+| Target | Use case | Details |
+|---|---|---|
+| `IntoTable(...).append()` | Add rows | Above |
+| `IntoTable(...).replace()` | Full overwrite | Above |
+| `IntoTable(...).replace_partitions(...)` | Replace batch partitions | Above |
+| `IntoTable(...).replace_partition(...)` | Replace known partition | Above |
+| `IntoTable(...).replace_where(...)` | Predicate-based overwrite | Above |
+| `IntoTable(...).upsert(...)` | Merge by key | Above |
+| `IntoHistory(...)` | SCD Type 2 historification | [Below](#historify) |
+
+---
+
+## Historify
+
+SCD Type 2 historification tracks how entity states change over time by creating
+a new row for every meaningful change and closing the previous open row.
+
+```python
+from loom.etl import IntoHistory, params
+
+target = IntoHistory(
+    "wh.dim_players",
+    keys=("player_id",),
+    track=("team_id",),
+    effective_date=params.run_date,
+)
+```
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ref` | — | Logical Delta table reference |
+| `keys` | — | Entity identity columns (e.g. `("player_id",)`) |
+| `track` | `None` | Columns whose change triggers a new history row. `None` means all non-key columns |
+| `effective_date` | — | `ParamExpr` for SNAPSHOT mode, or column name for LOG mode |
+| `mode` | `"snapshot"` | `"snapshot"` (full state) or `"log"` (event stream) |
+| `valid_from` | `"valid_from"` | Period-start boundary column |
+| `valid_to` | `"valid_to"` | Period-end boundary column (`NULL` = open) |
+| `deleted_at` | `"deleted_at"` | Soft-delete audit column (only written when `delete_policy="soft_delete"`) |
+| `delete_policy` | `"close"` | `"ignore"` / `"close"` / `"soft_delete"` |
+| `partition_scope` | `None` | Partition columns for read/write pruning |
+| `allow_temporal_rerun` | `False` | Allow backfills with past `effective_date` |
+
+### SNAPSHOT mode example
+
+In SNAPSHOT mode the incoming frame represents the full current state of the
+dimension. The engine compares it against the existing open vectors and inserts
+new rows only for changed states.
+
+**Day 1 incoming snapshot**
+
+| player_id | team_id |
+|---|---|
+| 1 | RM |
+
+**Result after historify**
+
+| player_id | team_id | valid_from | valid_to |
+|---|---|---|---|
+| 1 | RM | 2024-01-01 | `NULL` |
+
+**Day 2 incoming snapshot (player changed team)**
+
+| player_id | team_id |
+|---|---|
+| 1 | BCA |
+
+**Result after historify**
+
+| player_id | team_id | valid_from | valid_to |
+|---|---|---|---|
+| 1 | RM | 2024-01-01 | 2024-01-01 |
+| 1 | BCA | 2024-01-02 | `NULL` |
+
+The old row was closed (`valid_to = effective_date - 1`) and the new row was
+opened.
+
+### LOG mode example
+
+In LOG mode the incoming frame is an event stream. Each event carries its own
+`effective_date` column.
+
+```python
+target = IntoHistory(
+    "wh.dim_subscriptions",
+    keys=("subscription_id",),
+    track=("plan",),
+    effective_date="event_date",
+    mode="log",
+)
+```
+
+**Incoming event log**
+
+| subscription_id | plan | event_date |
+|---|---|---|
+| 1 | basic | 2024-01-01 |
+| 1 | pro | 2024-06-01 |
+
+**Result after historify**
+
+| subscription_id | plan | valid_from | valid_to |
+|---|---|---|---|
+| 1 | basic | 2024-01-01 | 2024-05-31 |
+| 1 | pro | 2024-06-01 | `NULL` |
+
+The first event is automatically closed by the second one. The last event
+remains open.
+
+### Custom boundary column names
+
+If your data warehouse uses different naming conventions, the three generated
+columns are fully configurable:
+
+```python
+target = IntoHistory(
+    "wh.dim_players",
+    keys=("player_id",),
+    track=("team_id",),
+    effective_date=params.run_date,
+    valid_from="vf",
+    valid_to="vt",
+    deleted_at="removed_at",
+)
+```
+
 ---
 
 ## Running only selected stages

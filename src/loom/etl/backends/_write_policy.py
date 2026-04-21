@@ -8,7 +8,8 @@ while delegating backend-specific operations to abstract hooks.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any, Generic, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from loom.etl.declarative.target import (
     AppendSpec,
@@ -22,6 +23,7 @@ from loom.etl.declarative.target import (
     TempSpec,
     UpsertSpec,
 )
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.runtime.contracts import TargetWriter
 from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
@@ -30,6 +32,8 @@ from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
 InputFrameT = TypeVar("InputFrameT")
 WriteFrameT = TypeVar("WriteFrameT")
 PhysicalSchemaT = TypeVar("PhysicalSchemaT")
+
+TableWriteHandler: TypeAlias = Callable[[InputFrameT, ResolvedTarget, TargetSpec, Any, bool], None]
 
 
 def _ensure_can_create_missing_table(
@@ -112,25 +116,84 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         params_instance: Any,
         streaming: bool,
     ) -> None:
-        """Dispatch table write to specific handler.
+        """Dispatch table write to the registered handler for ``spec``."""
+        handler = self._table_write_handlers().get(type(spec))
+        if handler is None:
+            raise TypeError(f"Unsupported target spec: {type(spec)!r}")
+        handler(frame, target, spec, params_instance, streaming)
 
-        This method centralizes the dispatch logic for all table write operations.
-        When adding a new write mode (e.g., MergeSpec, DeleteWhereSpec), add a
-        new case here and implement the corresponding ``_do_*`` method.
-        """
-        match spec:
-            case AppendSpec():
-                self._do_append(frame, target, spec, streaming)
-            case ReplaceSpec():
-                self._do_replace(frame, target, spec, streaming)
-            case ReplacePartitionsSpec():
-                self._do_replace_partitions(frame, target, spec, streaming)
-            case ReplaceWhereSpec():
-                self._do_replace_where(frame, target, spec, params_instance, streaming)
-            case UpsertSpec():
-                self._do_upsert(frame, target, spec, streaming)
-            case _:
-                raise TypeError(f"Unsupported target spec: {type(spec)!r}")
+    def _table_write_handlers(self) -> dict[type[object], TableWriteHandler[InputFrameT]]:
+        """Return handlers for concrete table-target spec types."""
+        return {
+            AppendSpec: self._dispatch_append,
+            ReplaceSpec: self._dispatch_replace,
+            ReplacePartitionsSpec: self._dispatch_replace_partitions,
+            ReplaceWhereSpec: self._dispatch_replace_where,
+            UpsertSpec: self._dispatch_upsert,
+            HistorifySpec: self._dispatch_historify,
+        }
+
+    def _dispatch_append(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_append(frame, target, cast(AppendSpec, spec), streaming)
+
+    def _dispatch_replace(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace(frame, target, cast(ReplaceSpec, spec), streaming)
+
+    def _dispatch_replace_partitions(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace_partitions(frame, target, cast(ReplacePartitionsSpec, spec), streaming)
+
+    def _dispatch_replace_where(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_replace_where(
+            frame, target, cast(ReplaceWhereSpec, spec), params_instance, streaming
+        )
+
+    def _dispatch_upsert(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_upsert(frame, target, cast(UpsertSpec, spec), streaming)
+
+    def _dispatch_historify(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        params_instance: Any,
+        _streaming: bool,
+    ) -> None:
+        self._do_historify(frame, target, cast(HistorifySpec, spec), params_instance)
 
     # ========================================================================
     # Template Methods (shared policy)
@@ -273,6 +336,42 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             existing_schema=existing,
         )
 
+    def _do_historify(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """SCD Type 2 historify policy: read existing, validate, transform, write.
+
+        Reads existing target data, validates creation rights when absent, then
+        delegates to :meth:`_historify` with the existing frame so the backend
+        only handles the transform + write — not the read.
+
+        Args:
+            frame:           Incoming input frame.
+            target:          Resolved Delta target.
+            spec:            Compiled historify spec.
+            params_instance: Runtime params; forwarded to the engine for
+                             ``effective_date`` resolution.
+
+        Returns:
+            A :class:`~loom.etl.HistorifyRepairReport` when a re-weave was
+            performed, or ``None`` for a normal forward-only run.
+        """
+        existing = self._read_existing_data(target, frame, spec)
+        if existing is None:
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=spec.schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
+        materialized = self._materialize_for_write(frame, streaming=False)
+        return self._historify(
+            materialized, existing, target, spec=spec, params_instance=params_instance
+        )
+
     # ========================================================================
     # Abstract Hooks (backend-specific implementations)
     # ========================================================================
@@ -280,6 +379,36 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
     @abstractmethod
     def _physical_schema(self, target: ResolvedTarget) -> PhysicalSchemaT | None:
         """Read physical schema for target, or None if not exists."""
+
+    @abstractmethod
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: InputFrameT,
+        spec: HistorifySpec,
+    ) -> WriteFrameT | None:
+        """Read existing target data for SCD Type 2, pruned to relevant partitions.
+
+        Called before the incoming frame is fully materialized so that backends
+        can extract partition-column values cheaply (e.g. from a LazyFrame) and
+        use them to push down a partition filter — reading only the files that
+        could be affected by the incoming delta, not the entire history table.
+
+        When ``spec.partition_scope`` is set the implementation SHOULD restrict
+        the read to the partitions present in ``frame``.  When it is ``None``
+        the full table must be returned.
+
+        Args:
+            target: Resolved Delta target.
+            frame:  Incoming input frame, not yet fully materialized.  Use it
+                    only to extract distinct partition-column values.
+            spec:   Compiled historify spec; ``spec.partition_scope`` carries
+                    the partition column names.
+
+        Returns:
+            Backend frame with the (optionally pruned) current state, or
+            ``None`` when the target table does not yet exist.
+        """
 
     @abstractmethod
     def _align(
@@ -361,6 +490,44 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         existing_schema: PhysicalSchemaT,
     ) -> None:
         """Upsert/merge into existing table."""
+
+    @abstractmethod
+    def _historify(
+        self,
+        frame: WriteFrameT,
+        existing: WriteFrameT | None,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """Apply SCD Type 2 transform and write result to target.
+
+        Called after :meth:`_read_existing_data` has already fetched the current
+        target state.  The implementation must:
+
+        * Run the SCD2 algorithm (via :func:`~loom.etl.backends._historify.scd2_transform`).
+        * Write the result using the existing write hooks (``_create``,
+          ``_replace``, or ``_replace_partitions``).
+
+        Args:
+            frame:           Materialised incoming frame (write-ready).
+            existing:        Current target frame, or ``None`` for first run.
+            target:          Resolved Delta target.
+            spec:            Compiled historify spec.
+            params_instance: Runtime params; used to resolve
+                             ``spec.effective_date`` when it is a
+                             :class:`~loom.etl.ParamExpr`.
+
+        Returns:
+            A :class:`~loom.etl.HistorifyRepairReport` when re-weave was
+            triggered, or ``None`` for a normal forward-only run.
+
+        Raises:
+            HistorifyKeyConflictError:     Duplicate entity state vectors.
+            HistorifyDateCollisionError:   Same-date ties in LOG mode.
+            HistorifyTemporalConflictError: Future-open records detected.
+        """
 
     @abstractmethod
     def _write_file(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -13,6 +14,7 @@ from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
 from loom.etl.backends._format_registry import resolve_format_handler
+from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -23,6 +25,7 @@ from loom.etl.backends._merge import (
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.spark._dtype import loom_type_to_spark
+from loom.etl.backends.spark._historify import SparkHistorifyBackend
 from loom.etl.backends.spark._schema import SparkPhysicalSchema, apply_schema_spark
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
@@ -32,6 +35,7 @@ from loom.etl.declarative._write_options import (
 )
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage._config import MissingTablePolicy
@@ -251,7 +255,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         else:
             dt = DeltaTable.forPath(self._spark, target.location.uri)
 
-        combos = self._collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
+        combos = _collect_partition_combos(frame, spec.partition_cols, target.logical_ref.ref)
         merge_plan = _build_merge_plan(
             combos=combos,
             spec=spec,
@@ -267,6 +271,74 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             .whenNotMatchedInsert(values=cast(dict[str, str | Column], merge_plan.insert_values))
             .execute()
         )
+
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: DataFrame,
+        spec: HistorifySpec,
+    ) -> DataFrame | None:
+        """Read existing Delta data pruned to the partitions present in ``frame``.
+
+        For ``CatalogTarget`` tables the catalog existence check is used as a
+        guard.  For path targets an ``AnalysisException`` on load signals the
+        table does not yet exist.
+
+        When ``spec.partition_scope`` is set the returned DataFrame carries a
+        filter on the partition columns.  Spark's Delta scan optimizer pushes
+        column-level ``isin`` predicates to file-selection at execution time —
+        only the matching Parquet partition directories are opened.
+
+        Args:
+            target: Resolved Delta target (catalog or path).
+            frame:  Incoming Spark DataFrame; partition-column values are
+                    collected with a small distinct action.
+            spec:   Historify spec; ``partition_scope`` carries column names.
+
+        Returns:
+            DataFrame of existing rows (possibly filtered), or ``None`` if the
+            table does not yet exist.
+        """
+        existing = self._load_existing_df(target)
+        if existing is None or not spec.partition_scope:
+            return existing
+        return _filter_to_partitions(existing, frame, spec.partition_scope)
+
+    def _load_existing_df(self, target: ResolvedTarget) -> DataFrame | None:
+        """Load the full existing DataFrame from a catalog or path target."""
+        if isinstance(target, CatalogTarget):
+            if not self._spark.catalog.tableExists(target.catalog_ref.ref):
+                return None
+            return self._spark.table(target.catalog_ref.ref)
+        with contextlib.suppress(AnalysisException):
+            return self._spark.read.format("delta").load(target.location.uri)
+        return None
+
+    def _historify(
+        self,
+        frame: DataFrame,
+        existing: DataFrame | None,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """Run SCD Type 2 transform and write result via existing write hooks."""
+        result = scd2_transform(SparkHistorifyBackend(), frame, existing, spec, params_instance)
+        if existing is None:
+            self._create(
+                result,
+                target,
+                schema_mode=spec.schema_mode,
+                partition_cols=spec.partition_scope or (),
+            )
+        elif spec.partition_scope:
+            self._replace_partitions(
+                result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
+            )
+        else:
+            self._replace(result, target, schema_mode=spec.schema_mode)
+        return None
 
     def _write_file(
         self,
@@ -360,23 +432,60 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         else:
             writer.save(target.location.uri)
 
-    def _collect_partition_combos(
-        self,
-        frame: DataFrame,
-        partition_cols: tuple[str, ...],
-        table_ref: str,
-    ) -> list[dict[str, Any]]:
-        """Collect unique partition value combinations."""
-        if not partition_cols:
-            _warn_no_partition_cols(table_ref)
-            return []
-        combos = frame.select(*partition_cols).distinct().collect()
-        result = [{c: row[c] for c in partition_cols} for row in combos]
-        _log_partition_combos(result, table_ref)
-        return result
+
+__all__ = ["SparkTargetWriter", "_collect_partition_combos"]
 
 
-__all__ = ["SparkTargetWriter"]
+def _filter_to_partitions(
+    existing: DataFrame,
+    incoming: DataFrame,
+    partition_scope: tuple[str, ...],
+) -> DataFrame:
+    """Return ``existing`` filtered to the exact partition combos in ``incoming``.
+
+    Collects the distinct partition-column combinations from ``incoming`` and
+    builds an ``OR`` of ``AND`` equalities on ``existing``.  Spark's Delta scan
+    optimizer pushes these predicates to file-selection, so only the partition
+    directories that match the *exact* combinations are opened — no bounding
+    hyper-rectangle over-read.
+
+    Args:
+        existing:        Full logical plan for the existing Delta table.
+        incoming:        Incoming Spark DataFrame; only partition cols are used.
+        partition_scope: Partition column names.
+
+    Returns:
+        ``existing`` with an exact-partition filter applied (still lazy).
+    """
+    import operator
+    from functools import reduce
+
+    from pyspark.sql import functions as F
+
+    partition_rows = incoming.select(*partition_scope).distinct().collect()
+    if not partition_rows:
+        return existing.limit(0)
+
+    predicates: list[Any] = []
+    for row in partition_rows:
+        ands = [F.col(col) == row[col] for col in partition_scope]
+        predicates.append(reduce(operator.and_, ands))
+    return existing.filter(reduce(operator.or_, predicates))
+
+
+def _collect_partition_combos(
+    frame: DataFrame,
+    partition_cols: tuple[str, ...],
+    table_ref: str,
+) -> list[dict[str, Any]]:
+    """Collect unique partition value combinations."""
+    if not partition_cols:
+        _warn_no_partition_cols(table_ref)
+        return []
+    combos = frame.select(*partition_cols).distinct().collect()
+    result = [{c: row[c] for c in partition_cols} for row in combos]
+    _log_partition_combos(result, table_ref)
+    return result
 
 
 def _sql_literal(value: Any) -> str:

@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, cast
 
 import msgspec
 
-from loom.etl.compiler._errors import ETLCompilationError
+from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.pipeline._step_sql import StepSQL
+
+_log = logging.getLogger(__name__)
 
 
 class _BinaryPredicateLike(Protocol):
@@ -39,6 +42,18 @@ class _UpsertSpecLike(Protocol):
     upsert_keys: tuple[str, ...]
     upsert_exclude: tuple[str, ...]
     upsert_include: tuple[str, ...]
+
+
+class _HistorifySpecLike(Protocol):
+    keys: tuple[str, ...]
+    effective_date: Any
+    mode: Any
+    track: tuple[str, ...] | None
+    valid_from: str
+    valid_to: str
+    deleted_at: str
+    partition_scope: tuple[str, ...] | None
+    allow_temporal_rerun: bool
 
 
 class _PredicateShape(Enum):
@@ -174,6 +189,11 @@ def validate_param_exprs(
         target_spec = cast(_ReplaceWhereSpecLike, target_binding.spec)
         _collect_exprs(target_spec.replace_predicate, exprs)
 
+    if _is_historify_like(target_binding.spec):
+        historify_spec = cast(_HistorifySpecLike, target_binding.spec)
+        if _is_param_expr(historify_spec.effective_date):
+            exprs.append(cast(ParamExpr, historify_spec.effective_date))
+
     for expr in exprs:
         field_name = expr.path[0]
         if field_name not in known:
@@ -251,6 +271,14 @@ def _is_replace_where_like(spec: object) -> bool:
     return hasattr(spec, "replace_predicate") and hasattr(spec, "table_ref")
 
 
+def _is_historify_like(spec: object) -> bool:
+    return (
+        isinstance(getattr(spec, "keys", None), tuple)
+        and hasattr(spec, "effective_date")
+        and hasattr(spec, "table_ref")
+    )
+
+
 def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
     """Validate UPSERT-specific constraints at compile time."""
     if not _is_upsert_like(spec):
@@ -259,6 +287,156 @@ def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
     _check_upsert_keys_non_empty(step_type, upsert_spec)
     _check_upsert_exclude_include_exclusive(step_type, upsert_spec)
     _check_upsert_exclude_keys_disjoint(step_type, upsert_spec)
+
+
+def validate_historify_spec(step_type: type[Any], spec: TargetSpec) -> None:
+    """Validate IntoHistory-specific constraints at compile time.
+
+    Belt-and-suspenders check: :class:`~loom.etl.IntoHistory` already
+    validates these constraints at construction time, but this validator
+    runs again at compile time to catch any directly-constructed
+    :class:`~loom.etl.HistorifySpec` instances that bypassed the builder.
+
+    Args:
+        step_type: The step class being compiled (used in error messages).
+        spec:      Compiled target spec to inspect.
+    """
+    if not _is_historify_like(spec):
+        return
+    historify = cast(_HistorifySpecLike, spec)
+    _check_historify_keys_non_empty(step_type, historify)
+    _check_historify_keys_track_disjoint(step_type, historify)
+    _check_historify_effective_date_not_in_track(step_type, historify)
+    _check_historify_boundary_cols_disjoint(step_type, historify)
+    _check_historify_log_mode_not_param_expr(step_type, historify)
+    _warn_historify_no_partition_scope(step_type, historify)
+    _warn_historify_rerun_without_scope(step_type, historify)
+    _warn_historify_track_none(step_type, historify)
+
+
+def _check_historify_keys_non_empty(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    if not spec.keys:
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="keys",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory 'keys' must contain "
+                "at least one column name."
+            ),
+        )
+
+
+def _check_historify_keys_track_disjoint(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    if spec.track is None:
+        return
+    overlap = frozenset(spec.keys) & frozenset(spec.track)
+    if overlap:
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="track",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory 'keys' and 'track' "
+                f"must not overlap. Conflicting columns: {sorted(overlap)}"
+            ),
+        )
+
+
+def _check_historify_effective_date_not_in_track(
+    step_type: type[Any], spec: _HistorifySpecLike
+) -> None:
+    """Raise if effective_date column name appears in track."""
+    if spec.track is None or not isinstance(spec.effective_date, str):
+        return
+    if spec.effective_date in spec.track:
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="effective_date",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory 'effective_date' column "
+                f"{spec.effective_date!r} cannot appear in 'track'. "
+                "The effective_date is a temporal axis, not a dimension being tracked."
+            ),
+        )
+
+
+def _check_historify_boundary_cols_disjoint(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    """Raise if valid_from / valid_to / deleted_at clash with keys or track."""
+    boundary = {spec.valid_from, spec.valid_to, spec.deleted_at}
+    overlap_keys = boundary & frozenset(spec.keys)
+    if overlap_keys:
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="valid_from",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory boundary columns "
+                f"{sorted(overlap_keys)} cannot appear in 'keys'."
+            ),
+        )
+    if spec.track is not None:
+        overlap_track = boundary & frozenset(spec.track)
+        if overlap_track:
+            raise ETLCompilationError(
+                code=ETLErrorCode.INVALID_TARGET_TYPE,
+                component=step_type.__qualname__,
+                field="track",
+                message=(
+                    f"{step_type.__qualname__}: IntoHistory boundary columns "
+                    f"{sorted(overlap_track)} cannot appear in 'track'."
+                ),
+            )
+
+
+def _check_historify_log_mode_not_param_expr(
+    step_type: type[Any], spec: _HistorifySpecLike
+) -> None:
+    """Raise if LOG mode uses a ParamExpr as effective_date (must be a column name)."""
+    if str(spec.mode) != "log":
+        return
+    if _is_param_expr(spec.effective_date):
+        raise ETLCompilationError(
+            code=ETLErrorCode.INVALID_TARGET_TYPE,
+            component=step_type.__qualname__,
+            field="effective_date",
+            message=(
+                f"{step_type.__qualname__}: IntoHistory LOG mode requires "
+                "'effective_date' to be a column name (str), not a ParamExpr. "
+                "In LOG mode each row carries its own timestamp."
+            ),
+        )
+
+
+def _warn_historify_no_partition_scope(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    if spec.partition_scope is None:
+        _log.warning(
+            "%s: IntoHistory declared without 'partition_scope' — "
+            "each run will read and write the entire history table. "
+            "Declare partition_scope to constrain Delta reads/writes to relevant partitions.",
+            step_type.__qualname__,
+        )
+
+
+def _warn_historify_rerun_without_scope(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    if spec.allow_temporal_rerun and spec.partition_scope is None:
+        _log.warning(
+            "%s: IntoHistory has allow_temporal_rerun=True but no 'partition_scope' — "
+            "a re-weave will affect the entire history table. "
+            "Declare partition_scope to limit re-weave scope.",
+            step_type.__qualname__,
+        )
+
+
+def _warn_historify_track_none(step_type: type[Any], spec: _HistorifySpecLike) -> None:
+    if spec.track is None:
+        _log.warning(
+            "%s: IntoHistory 'track=None' — tracked columns will be inferred "
+            "at runtime from the incoming frame. "
+            "Declare 'track' explicitly to fix the tracked columns at compile time.",
+            step_type.__qualname__,
+        )
 
 
 def _check_upsert_keys_non_empty(step_type: type[Any], spec: _UpsertSpecLike) -> None:
@@ -287,6 +465,7 @@ def _is_upsert_like(spec: object) -> bool:
 __all__ = [
     "StepCompilationContext",
     "validate_execute_signature",
+    "validate_historify_spec",
     "validate_param_exprs",
     "validate_params_compat",
     "validate_step",

@@ -9,6 +9,7 @@ from typing import Any
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
+from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
     TARGET_ALIAS,
@@ -19,6 +20,7 @@ from loom.etl.backends._merge import (
 )
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
+from loom.etl.backends.polars._historify import PolarsHistorifyBackend
 from loom.etl.backends.polars._schema import (
     PolarsPhysicalSchema,
     apply_schema_polars,
@@ -26,6 +28,7 @@ from loom.etl.backends.polars._schema import (
 )
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.observability.records import ExecutionRecord, get_record_schema
 from loom.etl.storage import (
@@ -265,6 +268,70 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             .execute()
         )
 
+    def _read_existing_data(
+        self,
+        target: ResolvedTarget,
+        frame: pl.LazyFrame,
+        spec: HistorifySpec,
+    ) -> pl.DataFrame | None:
+        """Read existing Delta data pruned to the partitions present in ``frame``.
+
+        When ``spec.partition_scope`` is set, distinct partition-column values
+        are extracted from ``frame`` (still lazy, one cheap ``collect``) and
+        pushed down as a filter before the Delta scan — so only the affected
+        Parquet files are opened.  Without a partition scope the full table is
+        returned.
+
+        Args:
+            target: Resolved path target.
+            frame:  Incoming LazyFrame; only partition columns are touched here.
+            spec:   Historify spec; ``partition_scope`` carries column names.
+
+        Returns:
+            Collected DataFrame of existing rows, or ``None`` if the table has
+            not been created yet.
+        """
+        from deltalake.exceptions import TableNotFoundError
+
+        path_target = self._as_path_target(target)
+        location = path_target.location
+        storage_options = location.storage_options or {}
+        try:
+            if not spec.partition_scope:
+                return pl.read_delta(location.uri, storage_options=storage_options or None)
+            partition_vals = frame.select(list(spec.partition_scope)).unique().collect()
+            scan = pl.scan_delta(location.uri, storage_options=storage_options or None)
+            filter_expr = _partition_filter(partition_vals, spec.partition_scope)
+            return scan.filter(filter_expr).collect()
+        except (TableNotFoundError, FileNotFoundError):
+            return None
+
+    def _historify(
+        self,
+        frame: pl.DataFrame,
+        existing: pl.DataFrame | None,
+        target: ResolvedTarget,
+        *,
+        spec: HistorifySpec,
+        params_instance: Any,
+    ) -> HistorifyRepairReport | None:
+        """Run SCD Type 2 transform and write result via existing write hooks."""
+        result = scd2_transform(PolarsHistorifyBackend(), frame, existing, spec, params_instance)
+        if existing is None:
+            self._create(
+                result,
+                target,
+                schema_mode=spec.schema_mode,
+                partition_cols=spec.partition_scope or (),
+            )
+        elif spec.partition_scope:
+            self._replace_partitions(
+                result, target, partition_cols=spec.partition_scope, schema_mode=spec.schema_mode
+            )
+        else:
+            self._replace(result, target, schema_mode=spec.schema_mode)
+        return None
+
     def _write_file(
         self,
         frame: pl.LazyFrame,
@@ -347,6 +414,41 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
 
 __all__ = ["PolarsTargetWriter"]
+
+
+def _partition_filter(
+    partition_vals: pl.DataFrame,
+    partition_scope: tuple[str, ...],
+) -> pl.Expr:
+    """Build a Polars filter expression that matches exact partition combinations.
+
+    Instead of a loose column-wise ``is_in`` (which forms a bounding hyper-
+    rectangle and may read unwanted partition combinations), this builds an
+    ``OR`` of ``AND`` equalities — one per distinct partition combo present in
+    ``partition_vals``.  Delta-rs pushes these predicates to the file-scan level,
+    opening only the Parquet files that belong to the exact combinations needed.
+
+    Args:
+        partition_vals: DataFrame with one column per partition key and one row
+                        per distinct combination present in the incoming frame.
+        partition_scope: Ordered column names that form the partition key.
+
+    Returns:
+        A Polars expression suitable for use in ``.filter()``.
+    """
+    combos = partition_vals.select(list(partition_scope)).unique().iter_rows(named=True)
+    exprs: list[pl.Expr] = []
+    for combo in combos:
+        and_expr: pl.Expr = pl.col(partition_scope[0]) == combo[partition_scope[0]]
+        for col in partition_scope[1:]:
+            and_expr = and_expr & (pl.col(col) == combo[col])
+        exprs.append(and_expr)
+    if not exprs:
+        return pl.lit(False)
+    result = exprs[0]
+    for expr in exprs[1:]:
+        result = result | expr
+    return result
 
 
 def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:
