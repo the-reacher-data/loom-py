@@ -1,3 +1,20 @@
+# 🚀 Release 0.4.0 ([#18](https://github.com/the-reacher-data/loom-py/pull/18)) ([`09e5aa3`](https://github.com/the-reacher-data/loom-py/commit/09e5aa340f88e0488daca2bf10320aad7aebbe1d))
+
+
+## ✨ Features
+### etl
+- **etl:** add IntoHistory builder and SCD Type 2 domain contracts
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.3.0 ([#14](https://github.com/the-reacher-data/loom-py/pull/14)) ([`ef414c5`](https://github.com/the-reacher-data/loom-py/commit/ef414c5bfd303296af450840318dfbe9d301e5d1))
 
 
