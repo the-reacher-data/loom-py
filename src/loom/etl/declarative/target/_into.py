@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.core.routing import LogicalRef
 from loom.etl.checkpoint import CheckpointScope
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._utils import _clone_slots
@@ -75,8 +76,8 @@ class IntoTable:
 
     __slots__ = ("_ref", "_spec")
 
-    def __init__(self, ref: str | TableRef) -> None:
-        table_ref = TableRef(ref) if isinstance(ref, str) else ref
+    def __init__(self, ref: str | LogicalRef | TableRef) -> None:
+        table_ref = ref if isinstance(ref, TableRef) else TableRef(ref)
         self._ref = table_ref
         # Default write mode is REPLACE.  Call a write-mode method to change it.
         self._spec: Any = ReplaceSpec(table_ref=table_ref)

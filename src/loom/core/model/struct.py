@@ -12,3 +12,11 @@ class LoomStruct(msgspec.Struct):
     as responses or persistence models define their own serialisation
     behaviour.
     """
+
+
+class LoomFrozenStruct(msgspec.Struct, frozen=True):
+    """Base immutable struct for Loom value contracts.
+
+    Use this for configuration, DSL declarations, wire envelopes, and other
+    value objects that should not expose mutable assignment after creation.
+    """
