@@ -34,9 +34,11 @@ Example::
 """
 
 from loom.prometheus.adapter import PrometheusMetricsAdapter
+from loom.prometheus.kafka import KafkaPrometheusMetrics
 from loom.prometheus.middleware import PrometheusMiddleware
 
 __all__ = [
+    "KafkaPrometheusMetrics",
     "PrometheusMetricsAdapter",
     "PrometheusMiddleware",
 ]

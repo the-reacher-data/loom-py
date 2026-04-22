@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import pytest
+
+from loom.core.routing import LogicalRef
+from loom.streaming.kafka import (
+    ConsumerSettings,
+    KafkaSecuritySettings,
+    KafkaSettings,
+    ProducerSettings,
+    resolve_consumer_topics,
+    resolve_producer_topic,
+)
+
+
+def test_producer_settings_compile_to_confluent_config() -> None:
+    settings = ProducerSettings(
+        brokers=("k1:9092", "k2:9092"),
+        client_id="producer-a",
+        security=KafkaSecuritySettings(
+            protocol="SASL_SSL",
+            sasl_mechanism="PLAIN",
+            sasl_username="user",
+            sasl_password="pass",
+            ssl_ca_location="/tmp/ca.pem",
+        ),
+        extra={"compression.type": "zstd", "linger.ms": 10, "enable.idempotence": True},
+    )
+
+    config = settings.to_confluent_config()
+
+    assert config["bootstrap.servers"] == "k1:9092,k2:9092"
+    assert config["client.id"] == "producer-a"
+    assert config["security.protocol"] == "SASL_SSL"
+    assert config["sasl.mechanism"] == "PLAIN"
+    assert config["sasl.username"] == "user"
+    assert config["sasl.password"] == "pass"
+    assert config["ssl.ca.location"] == "/tmp/ca.pem"
+    assert config["compression.type"] == "zstd"
+    assert config["linger.ms"] == 10
+    assert config["enable.idempotence"] is True
+
+
+def test_consumer_settings_compile_to_confluent_config() -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+        auto_offset_reset="latest",
+        extra={"enable.auto.commit": False, "fetch.min.bytes": 1024},
+    )
+
+    config = settings.to_confluent_config()
+
+    assert config["bootstrap.servers"] == "k1:9092"
+    assert config["group.id"] == "g-1"
+    assert config["auto.offset.reset"] == "latest"
+    assert config["enable.auto.commit"] is False
+    assert config["fetch.min.bytes"] == 1024
+
+
+def test_security_settings_omit_unset_optional_values() -> None:
+    settings = ProducerSettings(
+        brokers=("k1:9092",),
+        security=KafkaSecuritySettings(protocol="SSL"),
+    )
+
+    config = settings.to_confluent_config()
+
+    assert config["security.protocol"] == "SSL"
+    assert "sasl.mechanism" not in config
+    assert "sasl.username" not in config
+    assert "sasl.password" not in config
+    assert "ssl.ca.location" not in config
+
+
+def test_producer_settings_reject_extra_override_of_typed_keys() -> None:
+    settings = ProducerSettings(
+        brokers=("k1:9092",),
+        extra={"bootstrap.servers": "other:9092"},
+    )
+
+    with pytest.raises(ValueError, match="bootstrap.servers"):
+        settings.to_confluent_config()
+
+
+def test_producer_settings_reject_extra_override_of_security_keys() -> None:
+    settings = ProducerSettings(
+        brokers=("k1:9092",),
+        security=KafkaSecuritySettings(protocol="SSL"),
+        extra={"security.protocol": "PLAINTEXT"},
+    )
+
+    with pytest.raises(ValueError, match="security.protocol"):
+        settings.to_confluent_config()
+
+
+def test_consumer_settings_reject_extra_override_of_typed_keys() -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+        extra={"group.id": "other-group"},
+    )
+
+    with pytest.raises(ValueError, match="group.id"):
+        settings.to_confluent_config()
+
+
+def test_kafka_settings_resolve_specific_config_before_default() -> None:
+    default_producer = ProducerSettings(brokers=("default:9092",))
+    specific_producer = ProducerSettings(
+        brokers=("writer:9092",),
+        topic="orders.validated.v1",
+    )
+    default_consumer = ConsumerSettings(
+        brokers=("default:9092",),
+        group_id="default",
+        topics=("default.topic",),
+    )
+    specific_consumer = ConsumerSettings(
+        brokers=("reader:9092",),
+        group_id="orders",
+        topics=("orders.raw.v1",),
+    )
+    settings = KafkaSettings(
+        producer=default_producer,
+        consumer=default_consumer,
+        producers={"validated-orders": specific_producer},
+        consumers={"orders-input": specific_consumer},
+    )
+
+    assert settings.producer_for(LogicalRef("validated-orders")) is specific_producer
+    assert settings.producer_for("unknown-output") is default_producer
+    assert settings.consumer_for(LogicalRef("orders-input")) is specific_consumer
+    assert settings.consumer_for("unknown-input") is default_consumer
+
+
+def test_kafka_settings_raise_when_no_specific_or_default_config_exists() -> None:
+    settings = KafkaSettings()
+
+    with pytest.raises(KeyError, match="missing-output"):
+        settings.producer_for("missing-output")
+
+    with pytest.raises(KeyError, match="missing-input"):
+        settings.consumer_for("missing-input")
+
+
+def test_topic_resolution_uses_configured_physical_topic_before_boundary_fallback() -> None:
+    producer = ProducerSettings(brokers=("k1:9092",), topic="physical.out")
+    consumer = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("physical.in",),
+    )
+
+    assert resolve_producer_topic(LogicalRef("logical-output"), producer) == "physical.out"
+    assert resolve_consumer_topics(LogicalRef("logical-input"), consumer) == ("physical.in",)
+    assert (
+        resolve_producer_topic(
+            LogicalRef("logical-output"),
+            ProducerSettings(brokers=("k1:9092",)),
+        )
+        == "logical-output"
+    )
