@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from loom.core.config import ConfigBinding
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.routing import LogicalRef
 from loom.streaming import (
@@ -272,3 +273,26 @@ def test_task_ignores_unused_resources() -> None:
     result = task.execute(message, client="mock-client", db="mock-db")
 
     assert result == _ValidatedOrder(order_id="o-1")
+
+
+def test_task_from_config_returns_config_binding() -> None:
+    binding = _ValidateOrder.from_config("streaming.tasks.validate")
+
+    assert isinstance(binding, ConfigBinding)
+    assert binding.target is _ValidateOrder
+    assert binding.config_path == "streaming.tasks.validate"
+    assert binding.overrides == {}
+
+
+def test_task_from_config_with_overrides() -> None:
+    binding = _ValidateOrder.from_config("streaming.tasks.validate", timeout_ms=20_000)
+
+    assert binding.overrides == {"timeout_ms": 20_000}
+
+
+def test_batch_task_from_config_returns_config_binding() -> None:
+    binding = _BulkValidateOrder.from_config("streaming.tasks.bulk")
+
+    assert isinstance(binding, ConfigBinding)
+    assert binding.target is _BulkValidateOrder
+    assert binding.config_path == "streaming.tasks.bulk"
