@@ -7,6 +7,8 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
     expected = {
         "BatchTask",
         "CollectBatch",
+        "CompilationError",
+        "Compiler",
         "Drain",
         "ErrorEnvelope",
         "ErrorKind",

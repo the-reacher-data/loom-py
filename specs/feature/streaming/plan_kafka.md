@@ -317,3 +317,63 @@ StreamFlow(
 - ✅ One `msgspec.msgpack.decode` per batch faster than N calls
 - ✅ Wire errors handled at batch boundary before Task
 - ❌ Wire errors discovered later in pipeline. Acceptable — still before any Task.
+
+
+---
+
+## 11. Open Discussion: Task Shape — One vs Batch
+
+**Status:** Deferred to post-C7. Not blocking implementation.
+
+**Context:** The current design has `Task` (1→1) and `BatchTask` (N→N) as separate classes. The alternative is a single `Task` class with two methods (`execute` and `execute_batch`), where the `Process` shape determines which method is called.
+
+**Options:**
+
+1. **Keep `Task` + `BatchTask`** (current)
+   - `Task.execute(message) → OutT`
+   - `BatchTask.execute(messages) → list[OutT]`
+   - Pros: Clear separation, strong typing, compiler validates early.
+   - Cons: Two classes for conceptually similar things.
+
+2. **Single `Task` with `execute` + `execute_batch`**
+   - `Task.execute(message) → OutT` for 1:1
+   - `Task.execute_batch(messages) → list[OutT]` for N:N, default calls `execute` in loop
+   - Pros: One class, user chooses level.
+   - Cons: Method-level ambiguity, harder to type-check statically.
+
+3. **Protocol-based dispatch**
+   - `Task` is a protocol, `execute` can be `Message → OutT` or `list[Message] → list[OutT]`
+   - Pros: Maximum flexibility.
+   - Cons: Loses static typing guarantees, requires runtime introspection.
+
+**Decision needed after:** C7 (when we have real usage patterns from integration tests).
+
+
+---
+
+## 11. Open Discussion: Task Shape — One vs Batch
+
+**Status:** Deferred to post-C7. Not blocking implementation.
+
+**Context:** The current design has `Task` (1→1) and `BatchTask` (N→N) as separate classes. The alternative is a single `Task` class with two methods (`execute` and `execute_batch`), where the `Process` shape determines which method is called.
+
+**Options:**
+
+1. **Keep `Task` + `BatchTask`** (current)
+   - `Task.execute(message) → OutT`
+   - `BatchTask.execute(messages) → list[OutT]`
+   - Pros: Clear separation, strong typing, compiler validates early.
+   - Cons: Two classes for conceptually similar things.
+
+2. **Single `Task` with `execute` + `execute_batch`**
+   - `Task.execute(message) → OutT` for 1:1
+   - `Task.execute_batch(messages) → list[OutT]` for N:N, default calls `execute` in loop
+   - Pros: One class, user chooses level.
+   - Cons: Method-level ambiguity, harder to type-check statically.
+
+3. **Protocol-based dispatch**
+   - `Task` is a protocol, `execute` can be `Message → OutT` or `list[Message] → list[OutT]`
+   - Pros: Maximum flexibility.
+   - Cons: Loses static typing guarantees, requires runtime introspection.
+
+**Decision needed after:** C7 (when we have real usage patterns from integration tests).

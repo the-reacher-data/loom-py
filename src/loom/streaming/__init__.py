@@ -19,6 +19,7 @@ Kafka-specific codecs, clients, and transport settings live under
 """
 
 from loom.streaming._boundary import FromTopic, IntoTopic
+from loom.streaming._compiler import CompilationError, Compiler
 from loom.streaming._errors import ErrorEnvelope, ErrorKind
 from loom.streaming._message import Message, MessageMeta
 from loom.streaming._partitioning import PartitionGuarantee, PartitionPolicy, PartitionStrategy
@@ -56,5 +57,7 @@ __all__ = [
     "With",
     "WithAsync",
     "OneEmit",
+    "Compiler",
+    "CompilationError",
     "msg",
 ]
