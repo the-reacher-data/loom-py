@@ -8,18 +8,10 @@ import pytest
 from omegaconf import OmegaConf
 
 from loom.core.model import LoomStruct
-from loom.streaming import (
-    CompilationError,
-    Compiler,
-    FromTopic,
-    IntoTopic,
-    Process,
-    StreamFlow,
-    StreamShape,
-    Task,
-)
-from loom.streaming._compiler import _uses_kafka
+from loom.streaming import FromTopic, IntoTopic, Process, StreamFlow, StreamShape, Task
 from loom.streaming._message import Message
+from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
+from loom.streaming.compiler._compiler import _uses_kafka
 
 
 class _Order(LoomStruct):
@@ -50,10 +42,13 @@ def test_compile_success_with_minimal_flow() -> None:
         }
     )
 
-    plan = Compiler().compile(flow, runtime_config=cfg)
+    plan = compile_flow(flow, runtime_config=cfg)
 
     assert plan.name == "test"
-    assert plan.source is flow.source
+    assert isinstance(plan.source, CompiledSource)
+    assert plan.source.payload_type is _Order
+    assert plan.source.shape is StreamShape.RECORD
+    assert plan.source.decode_strategy == "record"
     assert plan.output is None
 
 
@@ -67,7 +62,7 @@ def test_compile_fails_when_binding_path_missing() -> None:
     cfg = OmegaConf.create({})
 
     with pytest.raises(CompilationError) as exc_info:
-        Compiler().compile(flow, runtime_config=cfg)
+        compile_flow(flow, runtime_config=cfg)
 
     assert "tasks.missing" in str(exc_info.value)
 
@@ -81,7 +76,7 @@ def test_compile_fails_when_kafka_missing_for_topic_flow() -> None:
     cfg = OmegaConf.create({})  # no kafka section
 
     with pytest.raises(CompilationError) as exc_info:
-        Compiler().compile(flow, runtime_config=cfg)
+        compile_flow(flow, runtime_config=cfg)
 
     assert "kafka" in str(exc_info.value)
 
@@ -101,7 +96,7 @@ def test_compile_succeeds_when_kafka_present() -> None:
         }
     )
 
-    plan = Compiler().compile(flow, runtime_config=cfg)
+    plan = compile_flow(flow, runtime_config=cfg)
 
     assert plan.name == "test"
 
@@ -123,7 +118,7 @@ def test_compile_fails_on_shape_mismatch() -> None:
     )
 
     with pytest.raises(CompilationError) as exc_info:
-        Compiler().compile(flow, runtime_config=cfg)
+        compile_flow(flow, runtime_config=cfg)
 
     assert "shape mismatch" in str(exc_info.value)
 
@@ -144,7 +139,7 @@ def test_compile_fails_without_output() -> None:
     )
 
     with pytest.raises(CompilationError) as exc_info:
-        Compiler().compile(flow, runtime_config=cfg)
+        compile_flow(flow, runtime_config=cfg)
 
     assert "no terminal output" in str(exc_info.value)
 

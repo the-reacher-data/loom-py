@@ -19,7 +19,6 @@ Kafka-specific codecs, clients, and transport settings live under
 """
 
 from loom.streaming._boundary import FromTopic, IntoTopic
-from loom.streaming._compiler import CompilationError, Compiler
 from loom.streaming._errors import ErrorEnvelope, ErrorKind
 from loom.streaming._message import Message, MessageMeta
 from loom.streaming._partitioning import PartitionGuarantee, PartitionPolicy, PartitionStrategy
@@ -28,6 +27,7 @@ from loom.streaming._resources import ResourceFactory, TaskContext
 from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming._task import BatchTask, Task
 from loom.streaming._with import OneEmit, With, WithAsync
+from loom.streaming.compiler import CompilationError, compile_flow
 from loom.streaming.routing import Predicate, Route, Router, Selector, msg
 
 __all__ = [
@@ -57,7 +57,7 @@ __all__ = [
     "With",
     "WithAsync",
     "OneEmit",
-    "Compiler",
     "CompilationError",
+    "compile_flow",
     "msg",
 ]

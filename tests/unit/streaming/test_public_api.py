@@ -8,7 +8,7 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "BatchTask",
         "CollectBatch",
         "CompilationError",
-        "Compiler",
+        "compile_flow",
         "Drain",
         "ErrorEnvelope",
         "ErrorKind",
