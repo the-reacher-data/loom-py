@@ -12,8 +12,16 @@ Example::
     db = section(cfg, "database", DatabaseConfig)
 """
 
+from loom.core.config.configurable import ConfigBinding, Configurable
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.config.resolver import ConfigResolver
 
-__all__ = ["ConfigError", "ConfigResolver", "load_config", "section"]
+__all__ = [
+    "ConfigBinding",
+    "ConfigError",
+    "ConfigResolver",
+    "Configurable",
+    "load_config",
+    "section",
+]
