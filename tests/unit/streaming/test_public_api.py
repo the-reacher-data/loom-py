@@ -15,6 +15,7 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "IntoTopic",
         "Message",
         "MessageMeta",
+        "OneEmit",
         "PartitionGuarantee",
         "PartitionPolicy",
         "PartitionStrategy",
@@ -28,6 +29,8 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "StreamFlow",
         "Task",
         "TaskContext",
+        "With",
+        "WithAsync",
         "msg",
     }
 

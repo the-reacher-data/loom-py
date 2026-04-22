@@ -26,6 +26,7 @@ from loom.streaming._process import Process, StreamFlow
 from loom.streaming._resources import ResourceFactory, TaskContext
 from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming._task import BatchTask, Task
+from loom.streaming._with import OneEmit, With, WithAsync
 from loom.streaming.routing import Predicate, Route, Router, Selector, msg
 
 __all__ = [
@@ -52,5 +53,8 @@ __all__ = [
     "StreamFlow",
     "Task",
     "TaskContext",
+    "With",
+    "WithAsync",
+    "OneEmit",
     "msg",
 ]
