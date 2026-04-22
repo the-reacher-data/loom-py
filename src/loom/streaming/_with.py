@@ -1,112 +1,79 @@
-"""Scoped dependency declarations for streaming tasks."""
+"""Context-manager batch processing adapters for the streaming DSL."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from types import MappingProxyType
-from typing import Generic, TypeVar
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+from typing import Any as TypingAny
 
-from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming._boundary import IntoTopic
 from loom.streaming._task import Task
 
-InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
-OutT = TypeVar("OutT", bound=LoomStruct | LoomFrozenStruct)
+
+class ResourceScope(StrEnum):
+    """Controls when context managers are opened/closed."""
+
+    WORKER = "worker"  # once at worker start, exit at shutdown
+    BATCH = "batch"  # enter before each batch, exit after each batch
 
 
-class _WithBase(Generic[InT, OutT]):
-    """Shared dependency scope declaration for streaming tasks.
-
-    Args:
-        task: Task declaration executed inside the dependency scope.
-        **dependencies: Named dependencies injected into task execution.
-    """
-
-    __slots__ = ("_contexts", "_plain_deps", "task")
-
-    def __init__(self, task: Task[InT, OutT], **dependencies: object) -> None:
-        self.task = task
-        contexts: dict[str, object] = {}
-        plain_deps: dict[str, object] = {}
-        for name, dependency in dependencies.items():
-            if _is_context_manager(dependency):
-                contexts[name] = dependency
-            else:
-                plain_deps[name] = dependency
-        self._contexts = contexts
-        self._plain_deps = plain_deps
-
-    @property
-    def contexts(self) -> Mapping[str, object]:
-        """Context-manager dependencies keyed by injection name."""
-        return MappingProxyType(self._contexts)
-
-    @property
-    def plain_deps(self) -> Mapping[str, object]:
-        """Plain dependencies keyed by injection name."""
-        return MappingProxyType(self._plain_deps)
-
-    def one(self, into: IntoTopic[OutT]) -> OneEmit[InT, OutT]:
-        """Declare individual result emission to a topic.
-
-        Args:
-            into: Output topic used for each produced item.
-
-        Returns:
-            Individual emission declaration for the scoped task.
-        """
-        return OneEmit(source=self, into=into)
-
-
-class WithAsync(_WithBase[InT, OutT]):
-    """Declare an async dependency scope around a streaming task.
-
-    Args:
-        task: Task declaration executed with injected dependencies.
-        max_concurrency: Maximum concurrent executions requested by the
-            compiler/runtime adapter.
-        **dependencies: Named dependencies injected into task execution.
-    """
-
-    __slots__ = ("max_concurrency",)
+class _WithBase:
+    """Base for With / WithAsync: detects context managers among kwargs."""
 
     def __init__(
         self,
-        task: Task[InT, OutT],
-        max_concurrency: int = 10,
-        **dependencies: object,
+        task: Task[Any, Any],
+        scope: ResourceScope = ResourceScope.WORKER,
+        **dependencies: Any,
     ) -> None:
-        if max_concurrency <= 0:
-            raise ValueError("max_concurrency must be greater than zero")
-        super().__init__(task, **dependencies)
+        self.task = task
+        self.scope = scope
+        self.contexts: dict[str, Any] = {}
+        self.plain_deps: dict[str, Any] = {}
+        for name, obj in dependencies.items():
+            if hasattr(obj, "__aenter__") or hasattr(obj, "__enter__"):
+                self.contexts[name] = obj
+            else:
+                self.plain_deps[name] = obj
+
+    def one(self, into: IntoTopic[TypingAny]) -> OneEmit:
+        """Fire-and-forget: emit each result individually to the given topic."""
+        return OneEmit(self, into)
+
+
+class WithAsync(_WithBase):
+    """Async context-manager batch processor.
+
+    Opens async context managers, executes the task concurrently over a batch
+    via ``asyncio.gather``, and returns the full list of results.
+
+    Use :meth:`one` to emit results individually instead.
+    """
+
+    def __init__(
+        self,
+        task: Task[Any, Any],
+        scope: ResourceScope = ResourceScope.WORKER,
+        max_concurrency: int = 10,
+        **dependencies: Any,
+    ) -> None:
+        super().__init__(task, scope=scope, **dependencies)
         self.max_concurrency = max_concurrency
 
 
-class With(_WithBase[InT, OutT]):
-    """Declare a sync dependency scope around a streaming task.
+class With(_WithBase):
+    """Sync context-manager batch processor.
 
-    Args:
-        task: Task declaration executed with injected dependencies.
-        **dependencies: Named dependencies injected into task execution.
+    Opens sync context managers and executes the task over a batch.
+
+    Use :meth:`one` to emit results individually instead.
     """
 
-    __slots__ = ()
 
+@dataclass(frozen=True)
+class OneEmit:
+    """Marker returned by ``.one(into)``: indicates individual emission mode."""
 
-class OneEmit(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
-    """Declaration returned by ``With.one`` and ``WithAsync.one``.
-
-    Args:
-        source: Scoped task declaration.
-        into: Topic used to emit each result individually.
-    """
-
-    source: _WithBase[InT, OutT]
-    into: IntoTopic[OutT]
-
-
-def _is_context_manager(value: object) -> bool:
-    return hasattr(value, "__aenter__") or hasattr(value, "__enter__")
-
-
-__all__ = ["OneEmit", "With", "WithAsync"]
+    source: _WithBase
+    into: IntoTopic[TypingAny]

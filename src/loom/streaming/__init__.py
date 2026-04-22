@@ -26,7 +26,7 @@ from loom.streaming._process import Process, StreamFlow
 from loom.streaming._resources import ResourceFactory, TaskContext
 from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming._task import BatchTask, Task
-from loom.streaming._with import OneEmit, With, WithAsync
+from loom.streaming._with import OneEmit, ResourceScope, With, WithAsync
 from loom.streaming.compiler import CompilationError, compile_flow
 from loom.streaming.routing import Predicate, Route, Router, Selector, msg
 
@@ -57,6 +57,7 @@ __all__ = [
     "With",
     "WithAsync",
     "OneEmit",
+    "ResourceScope",
     "CompilationError",
     "compile_flow",
     "msg",

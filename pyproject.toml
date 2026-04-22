@@ -65,6 +65,7 @@ prometheus = [
 ]
 streaming = [
     "confluent-kafka>=2.6,<3.0",
+    "bytewax>=0.21",
 ]
 celery = [
     "celery>=5.3,<6.0",

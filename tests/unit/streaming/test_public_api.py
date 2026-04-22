@@ -24,6 +24,7 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "Process",
         "Predicate",
         "ResourceFactory",
+        "ResourceScope",
         "Route",
         "Router",
         "Selector",

@@ -164,6 +164,29 @@ wheels = [
 ]
 
 [[package]]
+name = "bytewax"
+version = "0.21.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "prometheus-client" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/7a/a102ec999fb53634589e186b03fc25904ed64d632840714f8085ba2a007f/bytewax-0.21.1-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:c53a7fd5b2c4dc30f7574c85f9e7dd017c2365c05f714cf5215871dea190199c", size = 6141867, upload-time = "2024-11-25T20:09:46.138Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/cf/3d2e7a19dda70a0399f690b87419ce57d5f04d0693941f157edc4feb9cef/bytewax-0.21.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:87f01bd8e92a873e84fb98959bd53c0ef955fcd9f8b9d0f6c0945014bc7f59d0", size = 6049823, upload-time = "2024-11-25T20:09:48.376Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/aa/00658c797fcc28a1bba208b8bf92fc6892059b75ece180894a4cd17ed4b3/bytewax-0.21.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e809e15308262679c3366b262a56675f699bd53cc0ff41b0e124768c59232e94", size = 7960629, upload-time = "2024-11-25T20:09:50.771Z" },
+    { url = "https://files.pythonhosted.org/packages/31/e5/7f7775dd2a2f64e454a215cfab3bd5955241a261dd4c1f055c7cf6497f49/bytewax-0.21.1-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:9495b4a677f6675a70790c66176646a4994ca5af82624703292e54b0e45d5682", size = 7688534, upload-time = "2024-11-25T20:09:52.468Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/dd/6c2d93f9c699f36462e37611b9e370d099953b6ab9f7171bd504db0c3567/bytewax-0.21.1-cp311-cp311-manylinux_2_31_x86_64.whl", hash = "sha256:877f63068c963b62d2171302d1fc1b7aa221c40087c7b2478e4ba4e50e26eb1e", size = 7978417, upload-time = "2024-11-25T20:09:53.95Z" },
+    { url = "https://files.pythonhosted.org/packages/90/a9/e06af46d9d0122c235abd9604e1fd286adf464450f18d726e9b36cba7e94/bytewax-0.21.1-cp311-none-win_amd64.whl", hash = "sha256:7ede7d3b1626fb65a584a0d8944244da329a64a6f974ab386b12243dc934b52d", size = 5177076, upload-time = "2024-11-25T20:09:55.353Z" },
+    { url = "https://files.pythonhosted.org/packages/41/eb/ee253e60ab676e2a70aa306cffee67d6a6a40993c8467d3b83ea8bb91e99/bytewax-0.21.1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:62f5edef91908e555b70f3794271cd29ff29132a63b0b5cd367c5f53695a3c14", size = 6140409, upload-time = "2024-11-25T20:09:56.772Z" },
+    { url = "https://files.pythonhosted.org/packages/38/ef/4dd07083f32f9b019101837a10dc97806fbe3455c70f8cd976eb987dedab/bytewax-0.21.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e3ab20069f323ffe508249d72c8c708cac05fddea11b74943103c623676785b6", size = 6041464, upload-time = "2024-11-25T20:09:58.244Z" },
+    { url = "https://files.pythonhosted.org/packages/20/1c/41b84d0de3949d75dd52b4b04341bed1c72250c4c1e017b527d7f7570f0b/bytewax-0.21.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ed8da9bfceb3299df8cf4e8e7efbbda924dbbfea990dff50c8602a059dc8b9cf", size = 7953966, upload-time = "2024-11-25T20:09:59.709Z" },
+    { url = "https://files.pythonhosted.org/packages/87/f2/57829eea0d188bd1d54e2555a11ecfd3589ec66d710c8163fb7010a0c82e/bytewax-0.21.1-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:ba078e8bc7c6f1e7d7c99c4c07433977717b949112fc53377a0b0f3289398072", size = 7681915, upload-time = "2024-11-25T20:10:01.819Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/66/47d1dbdd2a035074b2be3eac983d15742cc2749fee24aa3cc0c505277622/bytewax-0.21.1-cp312-cp312-manylinux_2_31_x86_64.whl", hash = "sha256:a118a61a5fc5a1849605e062f80e897922dbdadd37790cf8379e8f1e000d463c", size = 7983932, upload-time = "2024-11-25T20:10:03.284Z" },
+    { url = "https://files.pythonhosted.org/packages/de/bc/82686047e63fa709dc084399230c430c4fd2f2f2de3cf8be8d339ebd3f21/bytewax-0.21.1-cp312-none-win_amd64.whl", hash = "sha256:9b3c44984fe76da1fbac941392103610f884523a733a43fcd74543927c179854", size = 5183365, upload-time = "2024-11-25T20:10:04.676Z" },
+]
+
+[[package]]
 name = "celery"
 version = "5.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1012,6 +1035,7 @@ sqlalchemy = [
     { name = "sqlalchemy" },
 ]
 streaming = [
+    { name = "bytewax" },
     { name = "confluent-kafka" },
 ]
 
@@ -1056,6 +1080,7 @@ dev = [
 requires-dist = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
+    { name = "bytewax", marker = "extra == 'streaming'", specifier = ">=0.21" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.6,<3.0" },
     { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
