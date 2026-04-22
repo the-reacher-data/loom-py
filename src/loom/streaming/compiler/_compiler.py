@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Iterable
+from typing import Any, Literal
 
 from omegaconf import DictConfig
 
 from loom.core.config import ConfigError, section
 from loom.core.config.configurable import ConfigBinding
-from loom.streaming._boundary import IntoTopic
+from loom.streaming._boundary import FromTopic, IntoTopic
 from loom.streaming._process import StreamFlow
-from loom.streaming._shape import CollectBatch, ForEach, StreamShape
+from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming._task import BatchTask, Task
 from loom.streaming._with import OneEmit, With, WithAsync
 from loom.streaming.compiler._plan import (
@@ -19,9 +20,8 @@ from loom.streaming.compiler._plan import (
     CompiledSink,
     CompiledSource,
 )
-
-if TYPE_CHECKING:
-    from loom.streaming._boundary import IntoTopic
+from loom.streaming.kafka._config import KafkaSettings
+from loom.streaming.routing import Router
 
 
 class CompilationError(Exception):
@@ -84,33 +84,14 @@ class _Compiler:
         if not _uses_kafka(flow):
             return []
         try:
-            from loom.streaming.kafka._config import KafkaSettings
-
             section(cfg, "kafka", KafkaSettings)
             return []
         except ConfigError as exc:
             return [f"kafka: {exc}"]
-        except ImportError:
-            return ["kafka: KafkaSettings not available"]
 
     @staticmethod
     def _validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
-        errors: list[str] = []
-        nodes = list(flow.process.nodes)
-
-        if not nodes:
-            return errors
-
-        current_shape = flow.source.shape
-        for node in nodes:
-            expected = _node_input_shape(node)
-            if expected is not None and current_shape != expected:
-                errors.append(
-                    f"shape mismatch: expected {expected.value} but got {current_shape.value} "
-                    f"before {type(node).__name__}"
-                )
-            current_shape = _node_output_shape(node, current_shape)
-
+        errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
         return errors
 
     @staticmethod
@@ -118,9 +99,8 @@ class _Compiler:
         errors: list[str] = []
         has_terminal = flow.output is not None
 
-        for node in flow.process.nodes:
-            if isinstance(node, (IntoTopic, OneEmit)):
-                has_terminal = True
+        if _has_terminal_output(flow.process.nodes):
+            has_terminal = True
 
         if not has_terminal:
             errors.append("no terminal output found: add IntoTopic or flow.output")
@@ -157,8 +137,6 @@ class _Compiler:
     def _build_source(
         self, flow: StreamFlow[Any, Any], runtime_config: DictConfig
     ) -> CompiledSource:
-        from loom.streaming.kafka._config import KafkaSettings
-
         kafka = section(runtime_config, "kafka", KafkaSettings)
         consumer = kafka.consumer_for(flow.source.logical_ref)
 
@@ -190,8 +168,6 @@ class _Compiler:
         return nodes
 
     def _build_sink(self, topic: IntoTopic[Any], runtime_config: DictConfig) -> CompiledSink:
-        from loom.streaming.kafka._config import KafkaSettings
-
         kafka = section(runtime_config, "kafka", KafkaSettings)
         producer = kafka.producer_for(topic.logical_ref)
 
@@ -204,13 +180,78 @@ class _Compiler:
 
 def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     """Return True if the flow uses Kafka topics."""
-    from loom.streaming._boundary import FromTopic
-
     if isinstance(flow.source, FromTopic):
         return True
     if flow.output is not None:
         return True
-    return any(isinstance(node, (IntoTopic, OneEmit)) for node in flow.process.nodes)
+    return _has_terminal_output(flow.process.nodes)
+
+
+def _validate_shape_sequence(
+    nodes: Iterable[object],
+    initial_shape: StreamShape,
+) -> tuple[list[str], StreamShape]:
+    errors: list[str] = []
+    current_shape = initial_shape
+
+    for node in nodes:
+        expected = _node_input_shape(node)
+        if expected is not None and current_shape != expected:
+            errors.append(
+                f"shape mismatch: expected {expected.value} but got {current_shape.value} "
+                f"before {type(node).__name__}"
+            )
+
+        if isinstance(node, Router):
+            router_errors, current_shape = _validate_router_shapes(node, current_shape)
+            errors.extend(router_errors)
+            continue
+
+        current_shape = _node_output_shape(node, current_shape)
+
+    return errors, current_shape
+
+
+def _validate_router_shapes(
+    router: Router[Any, Any],
+    initial_shape: StreamShape,
+) -> tuple[list[str], StreamShape]:
+    errors: list[str] = []
+    outputs: list[StreamShape] = []
+
+    for label, nodes in _router_branch_nodes(router):
+        branch_errors, branch_output = _validate_shape_sequence(nodes, initial_shape)
+        errors.extend(f"router branch {label}: {error}" for error in branch_errors)
+        outputs.append(branch_output)
+
+    unique_outputs = set(outputs)
+    if len(unique_outputs) > 1:
+        ordered = ", ".join(sorted(shape.value for shape in unique_outputs))
+        errors.append(f"router branches produce different shapes: {ordered}")
+
+    return errors, outputs[0] if outputs else initial_shape
+
+
+def _router_branch_nodes(router: Router[Any, Any]) -> Iterable[tuple[str, tuple[object, ...]]]:
+    for key, process in router.routes.items():
+        yield repr(key), process.nodes
+    for index, route in enumerate(router.predicate_routes):
+        yield f"predicate[{index}]", route.process.nodes
+    if router.default is not None:
+        yield "default", router.default.nodes
+
+
+def _has_terminal_output(nodes: Iterable[object]) -> bool:
+    for node in nodes:
+        if isinstance(node, (IntoTopic, OneEmit, Drain)):
+            return True
+        if isinstance(node, Router) and _router_has_terminal_output(node):
+            return True
+    return False
+
+
+def _router_has_terminal_output(router: Router[Any, Any]) -> bool:
+    return any(_has_terminal_output(nodes) for _, nodes in _router_branch_nodes(router))
 
 
 def _node_input_shape(node: object) -> StreamShape | None:
@@ -221,6 +262,8 @@ def _node_input_shape(node: object) -> StreamShape | None:
         return StreamShape.BATCH
     if isinstance(node, ForEach):
         return StreamShape.MANY
+    if isinstance(node, Drain):
+        return None
     return None
 
 
@@ -236,4 +279,6 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
         return StreamShape.RECORD
     if isinstance(node, IntoTopic):
         return node.shape
+    if isinstance(node, Drain):
+        return StreamShape.NONE
     return current

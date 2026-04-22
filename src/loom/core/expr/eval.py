@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from loom.core.expr.nodes import (
@@ -20,6 +20,8 @@ from loom.core.expr.nodes import (
     PathSegment,
 )
 from loom.core.expr.refs import PathRef
+
+Evaluator = Callable[[Any, Mapping[str, Any]], Any]
 
 
 def resolve_path(root: Any, path: tuple[PathSegment, ...]) -> Any:
@@ -53,32 +55,73 @@ def evaluate_expr(expr: Any, roots: Mapping[str, Any]) -> Any:
         Evaluated value.
     """
 
-    if isinstance(expr, PathRef):
-        return resolve_path(roots[expr.root], expr.path)
-    if isinstance(expr, EqExpr):
-        return evaluate_expr(expr.left, roots) == evaluate_expr(expr.right, roots)
-    if isinstance(expr, NeExpr):
-        return evaluate_expr(expr.left, roots) != evaluate_expr(expr.right, roots)
-    if isinstance(expr, GtExpr):
-        return evaluate_expr(expr.left, roots) > evaluate_expr(expr.right, roots)
-    if isinstance(expr, GeExpr):
-        return evaluate_expr(expr.left, roots) >= evaluate_expr(expr.right, roots)
-    if isinstance(expr, LtExpr):
-        return evaluate_expr(expr.left, roots) < evaluate_expr(expr.right, roots)
-    if isinstance(expr, LeExpr):
-        return evaluate_expr(expr.left, roots) <= evaluate_expr(expr.right, roots)
-    if isinstance(expr, InExpr):
-        return evaluate_expr(expr.ref, roots) in evaluate_expr(expr.values, roots)
-    if isinstance(expr, BetweenExpr):
-        value = evaluate_expr(expr.ref, roots)
-        return evaluate_expr(expr.low, roots) <= value <= evaluate_expr(expr.high, roots)
-    if isinstance(expr, AndExpr):
-        return bool(evaluate_expr(expr.left, roots)) and bool(evaluate_expr(expr.right, roots))
-    if isinstance(expr, OrExpr):
-        return bool(evaluate_expr(expr.left, roots)) or bool(evaluate_expr(expr.right, roots))
-    if isinstance(expr, NotExpr):
-        return not bool(evaluate_expr(expr.operand, roots))
-    return expr
+    evaluator = _EVALUATORS.get(type(expr))
+    return expr if evaluator is None else evaluator(expr, roots)
+
+
+def _eval_path(expr: PathRef, roots: Mapping[str, Any]) -> Any:
+    return resolve_path(roots[expr.root], expr.path)
+
+
+def _eval_eq(expr: EqExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) == evaluate_expr(expr.right, roots))
+
+
+def _eval_ne(expr: NeExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) != evaluate_expr(expr.right, roots))
+
+
+def _eval_gt(expr: GtExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) > evaluate_expr(expr.right, roots))
+
+
+def _eval_ge(expr: GeExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) >= evaluate_expr(expr.right, roots))
+
+
+def _eval_lt(expr: LtExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) < evaluate_expr(expr.right, roots))
+
+
+def _eval_le(expr: LeExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots) <= evaluate_expr(expr.right, roots))
+
+
+def _eval_in(expr: InExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.ref, roots) in evaluate_expr(expr.values, roots))
+
+
+def _eval_between(expr: BetweenExpr, roots: Mapping[str, Any]) -> bool:
+    value = evaluate_expr(expr.ref, roots)
+    return bool(evaluate_expr(expr.low, roots) <= value <= evaluate_expr(expr.high, roots))
+
+
+def _eval_and(expr: AndExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots)) and bool(evaluate_expr(expr.right, roots))
+
+
+def _eval_or(expr: OrExpr, roots: Mapping[str, Any]) -> bool:
+    return bool(evaluate_expr(expr.left, roots)) or bool(evaluate_expr(expr.right, roots))
+
+
+def _eval_not(expr: NotExpr, roots: Mapping[str, Any]) -> bool:
+    return not bool(evaluate_expr(expr.operand, roots))
+
+
+_EVALUATORS: dict[type[Any], Evaluator] = {
+    PathRef: _eval_path,
+    EqExpr: _eval_eq,
+    NeExpr: _eval_ne,
+    GtExpr: _eval_gt,
+    GeExpr: _eval_ge,
+    LtExpr: _eval_lt,
+    LeExpr: _eval_le,
+    InExpr: _eval_in,
+    BetweenExpr: _eval_between,
+    AndExpr: _eval_and,
+    OrExpr: _eval_or,
+    NotExpr: _eval_not,
+}
 
 
 __all__ = ["evaluate_expr", "resolve_path"]

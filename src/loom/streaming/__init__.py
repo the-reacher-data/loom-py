@@ -22,7 +22,7 @@ from loom.streaming._boundary import FromTopic, IntoTopic
 from loom.streaming._errors import ErrorEnvelope, ErrorKind
 from loom.streaming._message import Message, MessageMeta
 from loom.streaming._partitioning import PartitionGuarantee, PartitionPolicy, PartitionStrategy
-from loom.streaming._process import Process, StreamFlow
+from loom.streaming._process import Process, ProcessNode, StreamFlow
 from loom.streaming._resources import ResourceFactory, TaskContext
 from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming._task import BatchTask, Task
@@ -45,6 +45,7 @@ __all__ = [
     "PartitionPolicy",
     "PartitionStrategy",
     "Process",
+    "ProcessNode",
     "Predicate",
     "ResourceFactory",
     "Route",

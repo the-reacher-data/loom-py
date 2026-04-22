@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from omegaconf import OmegaConf
 
 from loom.core.model import LoomStruct
-from loom.streaming import FromTopic, IntoTopic, Process, StreamFlow, StreamShape, Task
+from loom.streaming import (
+    CollectBatch,
+    Drain,
+    FromTopic,
+    IntoTopic,
+    Process,
+    Route,
+    Router,
+    StreamFlow,
+    StreamShape,
+    Task,
+    msg,
+)
 from loom.streaming._message import Message
 from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
 from loom.streaming.compiler._compiler import _uses_kafka
@@ -23,8 +33,17 @@ class _Result(LoomStruct):
 
 
 class _FakeTask(Task[_Order, _Result]):
-    def execute(self, message: Message[_Order], **kwargs: Any) -> _Result:
+    def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
         return _Result(value=message.payload.order_id)
+
+
+def _kafka_config() -> object:
+    return {
+        "kafka": {
+            "consumer": {"brokers": ["localhost:9092"], "group_id": "test", "topics": ["in"]},
+            "producer": {"brokers": ["localhost:9092"], "topic": "out"},
+        }
+    }
 
 
 def test_compile_success_with_minimal_flow() -> None:
@@ -33,14 +52,7 @@ def test_compile_success_with_minimal_flow() -> None:
         source=FromTopic("in", payload=_Order),
         process=Process(IntoTopic("out", payload=_Result)),
     )
-    cfg = OmegaConf.create(
-        {
-            "kafka": {
-                "consumer": {"brokers": ["localhost:9092"], "group_id": "test", "topics": ["in"]},
-                "producer": {"brokers": ["localhost:9092"], "topic": "out"},
-            }
-        }
-    )
+    cfg = OmegaConf.create(_kafka_config())
 
     plan = compile_flow(flow, runtime_config=cfg)
 
@@ -87,14 +99,7 @@ def test_compile_succeeds_when_kafka_present() -> None:
         source=FromTopic("in", payload=_Order),
         process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
     )
-    cfg = OmegaConf.create(
-        {
-            "kafka": {
-                "consumer": {"brokers": ["localhost:9092"], "group_id": "test", "topics": ["in"]},
-                "producer": {"brokers": ["localhost:9092"], "topic": "out"},
-            }
-        }
-    )
+    cfg = OmegaConf.create(_kafka_config())
 
     plan = compile_flow(flow, runtime_config=cfg)
 
@@ -108,14 +113,7 @@ def test_compile_fails_on_shape_mismatch() -> None:
         source=FromTopic("in", payload=_Order, shape=StreamShape.BATCH),
         process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
     )
-    cfg = OmegaConf.create(
-        {
-            "kafka": {
-                "consumer": {"brokers": ["localhost:9092"], "group_id": "test", "topics": ["in"]},
-                "producer": {"brokers": ["localhost:9092"], "topic": "out"},
-            }
-        }
-    )
+    cfg = OmegaConf.create(_kafka_config())
 
     with pytest.raises(CompilationError) as exc_info:
         compile_flow(flow, runtime_config=cfg)
@@ -142,6 +140,65 @@ def test_compile_fails_without_output() -> None:
         compile_flow(flow, runtime_config=cfg)
 
     assert "no terminal output" in str(exc_info.value)
+
+
+def test_compile_drain_outputs_none_shape() -> None:
+    flow = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(Drain()),
+    )
+    cfg = OmegaConf.create(_kafka_config())
+
+    plan = compile_flow(flow, runtime_config=cfg)
+
+    assert plan.nodes[-1].output_shape is StreamShape.NONE
+    assert plan.output is None
+
+
+def test_compile_validates_router_branch_shapes() -> None:
+    flow = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(
+            Router.when(
+                (
+                    Route(
+                        when=msg.payload.order_id == "batch",
+                        process=Process(CollectBatch(max_records=10, timeout_ms=1000)),
+                    ),
+                ),
+                default=Process(_FakeTask()),
+            ),
+            IntoTopic("out", payload=_Result),
+        ),
+    )
+    cfg = OmegaConf.create(_kafka_config())
+
+    with pytest.raises(CompilationError) as exc_info:
+        compile_flow(flow, runtime_config=cfg)
+
+    assert "router branches produce different shapes" in str(exc_info.value)
+
+
+def test_compile_accepts_router_with_terminal_branch_output() -> None:
+    flow = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(
+            Router.by(
+                msg.payload.order_id,
+                routes={"vip": Process(_FakeTask(), IntoTopic("out", payload=_Result))},
+            )
+        ),
+        output=None,
+    )
+    cfg = OmegaConf.create(_kafka_config())
+
+    plan = compile_flow(flow, runtime_config=cfg)
+
+    assert plan.nodes[0].output_shape is StreamShape.RECORD
+    assert plan.output is None
 
 
 def test_uses_kafka_detects_kafka_usage() -> None:

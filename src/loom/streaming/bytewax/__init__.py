@@ -1,22 +1,34 @@
 """Bytewax runtime adapter for Loom streaming flows.
 
-The adapter is loaded lazily so that importing the package does not require
-``bytewax`` to be installed.
+This package requires ``bytewax`` to be installed.  The public API is
+loaded lazily via ``__getattr__`` so that importing
+``loom.streaming.bytewax`` does not fail when bytewax is absent - the
+error is deferred until the caller actually accesses :func:`build_dataflow`.
+
+Usage::
+
+    from loom.streaming.bytewax import build_dataflow
+
+    flow = build_dataflow(compiled_plan)
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from loom.streaming.bytewax._adapter import build_dataflow as build_dataflow
 
 __all__ = ["build_dataflow"]
 
-build_dataflow: Any = None
+_LOADED: dict[str, Any] = {}
 
 
 def __getattr__(name: str) -> Any:
     if name == "build_dataflow":
-        from loom.streaming.bytewax._adapter import build_dataflow as _bf
+        if name not in _LOADED:
+            from loom.streaming.bytewax._adapter import build_dataflow as _fn
 
-        globals()["build_dataflow"] = _bf
-        return _bf
+            _LOADED[name] = _fn
+        return _LOADED[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

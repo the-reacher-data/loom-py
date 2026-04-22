@@ -143,3 +143,10 @@ def test_with_async_detects_mixed_dependencies() -> None:
     assert isinstance(emit, OneEmit)
     assert emit.source is adapter
     assert emit.into is into
+
+
+def test_with_async_rejects_non_positive_max_concurrency() -> None:
+    task = _AsyncTask()
+
+    with pytest.raises(ValueError, match="max_concurrency"):
+        WithAsync(task=task, max_concurrency=0)

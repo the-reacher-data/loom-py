@@ -4,14 +4,38 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from types import MappingProxyType
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar
 
+from loom.core.config import ConfigBinding
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming._boundary import FromTopic, IntoTopic
 from loom.streaming._errors import ErrorKind
 
+if TYPE_CHECKING:
+    from loom.streaming._shape import CollectBatch, Drain, ForEach
+    from loom.streaming._task import BatchTask, Task
+    from loom.streaming._with import OneEmit, With, WithAsync
+    from loom.streaming.routing import Router
+
 InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
 OutT = TypeVar("OutT", bound=LoomStruct | LoomFrozenStruct)
+
+if TYPE_CHECKING:
+    ProcessNode: TypeAlias = (
+        ConfigBinding
+        | Task[Any, Any]
+        | BatchTask[Any, Any]
+        | With[Any, Any]
+        | WithAsync[Any, Any]
+        | OneEmit[Any, Any]
+        | CollectBatch
+        | ForEach
+        | Drain
+        | IntoTopic[Any]
+        | Router[Any, Any]
+    )
+else:
+    ProcessNode: TypeAlias = object
 
 
 class Process(Generic[InT, OutT]):
@@ -27,17 +51,17 @@ class Process(Generic[InT, OutT]):
 
     __slots__ = ("_nodes",)
 
-    def __init__(self, *nodes: object) -> None:
+    def __init__(self, *nodes: ProcessNode) -> None:
         if not nodes:
             raise ValueError("Process requires at least one node.")
         self._nodes = tuple(nodes)
 
     @property
-    def nodes(self) -> tuple[object, ...]:
+    def nodes(self) -> tuple[ProcessNode, ...]:
         """Ordered process nodes."""
         return self._nodes
 
-    def __iter__(self) -> Iterator[object]:
+    def __iter__(self) -> Iterator[ProcessNode]:
         """Iterate over ordered process nodes."""
         return iter(self._nodes)
 
@@ -82,4 +106,4 @@ class StreamFlow(Generic[InT, OutT]):
         return MappingProxyType(self._errors)
 
 
-__all__ = ["Process", "StreamFlow"]
+__all__ = ["Process", "ProcessNode", "StreamFlow"]

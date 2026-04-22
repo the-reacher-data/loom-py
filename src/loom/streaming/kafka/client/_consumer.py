@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
@@ -14,6 +14,10 @@ from loom.streaming.kafka._record import KafkaRecord
 
 if TYPE_CHECKING:
     from loom.streaming.observability.observers import KafkaStreamingObserver
+
+
+class _CommitWithBool(Protocol):
+    def __call__(self, *, asynchronous: bool) -> object: ...
 
 
 class KafkaConsumerClient:
@@ -72,10 +76,8 @@ class KafkaConsumerClient:
             KafkaCommitError: If the backend commit fails.
         """
         try:
-            if asynchronous:
-                self._consumer.commit(asynchronous=True)
-            else:
-                self._consumer.commit(asynchronous=False)
+            commit = cast(_CommitWithBool, self._consumer.commit)
+            commit(asynchronous=asynchronous)
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
