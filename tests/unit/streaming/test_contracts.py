@@ -62,21 +62,21 @@ class _OrderPartitionStrategy:
 
 
 class _ValidateOrder(Task[_Order, _ValidatedOrder]):
-    def execute(self, message: Message[_Order]) -> _ValidatedOrder:
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=message.payload.order_id)
 
 
 class _NamedValidateOrder(Task[_Order, _ValidatedOrder]):
     name = "custom"
 
-    def execute(self, message: Message[_Order]) -> _ValidatedOrder:
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=message.payload.order_id)
 
 
 class _BulkValidateOrder(BatchTask[_Order, _ValidatedOrder]):
     resource = _ClientFactory
 
-    def execute(self, messages: list[Message[_Order]]) -> list[_ValidatedOrder]:
+    def execute(self, messages: list[Message[_Order]], **kwargs: object) -> list[_ValidatedOrder]:
         return [_ValidatedOrder(order_id=message.payload.order_id) for message in messages]
 
 
@@ -248,3 +248,27 @@ def test_stream_flow_rejects_empty_name() -> None:
 
     with pytest.raises(ValueError, match="name"):
         StreamFlow(name="", source=source, process=process)
+
+
+class _ResourceInjectedTask(Task[_Order, _ValidatedOrder]):
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
+        client = kwargs.get("client")
+        return _ValidatedOrder(order_id=f"{message.payload.order_id}:{client}")
+
+
+def test_task_receives_injected_resources() -> None:
+    task = _ResourceInjectedTask()
+    message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
+
+    result = task.execute(message, client="mock-client")
+
+    assert result == _ValidatedOrder(order_id="o-1:mock-client")
+
+
+def test_task_ignores_unused_resources() -> None:
+    task = _ValidateOrder()
+    message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
+
+    result = task.execute(message, client="mock-client", db="mock-db")
+
+    assert result == _ValidatedOrder(order_id="o-1")

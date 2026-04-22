@@ -28,8 +28,13 @@ class Task(ABC, Generic[InT, OutT]):
         return cls.name or cls.__qualname__
 
     @abstractmethod
-    def execute(self, message: Message[InT]) -> OutT:
-        """Execute the task for one logical message."""
+    def execute(self, message: Message[InT], **kwargs: object) -> OutT:
+        """Execute the task for one logical message.
+
+        Extra keyword arguments are injected by the framework (e.g. opened
+        context managers). The task declares what it needs via keyword-only
+        parameters in concrete subclasses.
+        """
 
 
 class BatchTask(ABC, Generic[InT, OutT]):
@@ -47,8 +52,13 @@ class BatchTask(ABC, Generic[InT, OutT]):
         return cls.name or cls.__qualname__
 
     @abstractmethod
-    def execute(self, messages: list[Message[InT]]) -> list[OutT]:
-        """Execute the task for one logical message batch."""
+    def execute(self, messages: list[Message[InT]], **kwargs: object) -> list[OutT]:
+        """Execute the task for one logical message batch.
+
+        Extra keyword arguments are injected by the framework (e.g. opened
+        context managers). The task declares what it needs via keyword-only
+        parameters in concrete subclasses.
+        """
 
 
 __all__ = ["BatchTask", "Task"]
