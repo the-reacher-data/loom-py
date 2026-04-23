@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from loom.core.model import LoomFrozenStruct
-from loom.streaming import Message, MessageMeta, Process, Route, Router, msg
+from loom.streaming import Message, MessageMeta, Process, Route, Router, Task, msg
 from loom.streaming.nodes._router import evaluate_predicate, select_value
 
 
@@ -18,8 +18,19 @@ class _ValidatedOrder(LoomFrozenStruct, frozen=True):
     order_id: str = "ok"
 
 
-class _ManualReview:
-    pass
+class _CreatedRouteTask(Task[_Order, _ValidatedOrder]):
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
+        return _ValidatedOrder(order_id=f"created:{message.payload.event_type}")
+
+
+class _ManualReviewTask(Task[_Order, _ValidatedOrder]):
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
+        return _ValidatedOrder(order_id=f"manual:{message.payload.event_type}")
+
+
+class _DefaultRouteTask(Task[_Order, _ValidatedOrder]):
+    def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
+        return _ValidatedOrder(order_id=f"default:{message.payload.event_type}")
 
 
 class _CountrySelector:
@@ -89,9 +100,9 @@ def test_custom_predicate_can_match_message() -> None:
 
 
 def test_router_by_declares_keyed_routes() -> None:
-    created = Process[_Order, _ValidatedOrder](_ValidatedOrder)
-    cancelled = Process[_Order, _ValidatedOrder](_ManualReview)
-    default = Process[_Order, _ValidatedOrder](object())
+    created = Process[_Order, _ValidatedOrder](_CreatedRouteTask())
+    cancelled = Process[_Order, _ValidatedOrder](_ManualReviewTask())
+    default = Process[_Order, _ValidatedOrder](_DefaultRouteTask())
 
     router = Router.by(
         msg.payload.event_type,
@@ -105,15 +116,15 @@ def test_router_by_declares_keyed_routes() -> None:
 
 
 def test_router_when_declares_ordered_predicate_routes() -> None:
-    manual = Process[_Order, _ValidatedOrder](_ManualReview)
-    normal = Process[_Order, _ValidatedOrder](_ValidatedOrder)
+    manual = Process[_Order, _ValidatedOrder](_ManualReviewTask())
+    normal = Process[_Order, _ValidatedOrder](_CreatedRouteTask())
     route = Route(when=msg.payload.amount > 1000, process=manual)
 
     router = Router.when((route,), default=normal)
 
     assert router.predicate_routes == (route,)
     assert router.default is normal
-    assert evaluate_predicate(router.predicate_routes[0].when, _message()) is True
+    assert evaluate_predicate(route.when, _message()) is True
 
 
 def test_router_rejects_empty_declarations() -> None:

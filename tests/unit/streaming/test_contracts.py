@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from loom.core.config import ConfigBinding
@@ -37,7 +39,7 @@ class _ValidatedOrder(LoomStruct):
 
 
 class _Client:
-    pass
+    """Test-only resource implementation for protocol checks."""
 
 
 class _ClientFactory:
@@ -101,7 +103,7 @@ def test_topic_boundaries_use_logical_refs_only() -> None:
 
 
 def test_into_topic_can_be_used_without_payload_for_error_routes() -> None:
-    target = IntoTopic("orders.dlq")
+    target: IntoTopic[Any] = IntoTopic("orders.dlq")
 
     assert target.payload is None
     assert target.shape is StreamShape.RECORD
@@ -153,7 +155,7 @@ def test_value_contracts_are_immutable() -> None:
     batch = CollectBatch(max_records=500, timeout_ms=250)
 
     with pytest.raises(AttributeError):
-        batch.max_records = 100
+        cast(Any, batch).max_records = 100
 
 
 def test_shape_adapters_are_explicit_contracts() -> None:
@@ -219,10 +221,11 @@ def test_batch_task_declaration_holds_resource_and_executes_batch() -> None:
 
 def test_process_requires_nodes_and_preserves_order() -> None:
     target = IntoTopic("orders.out", payload=_ValidatedOrder)
-    process = Process[_Order, _ValidatedOrder](_ValidateOrder, target)
+    task = _ValidateOrder()
+    process = Process[_Order, _ValidatedOrder](task, target)
 
-    assert process.nodes == (_ValidateOrder, target)
-    assert list(process) == [_ValidateOrder, target]
+    assert process.nodes == (task, target)
+    assert list(process) == [task, target]
     assert len(process) == 2
 
 
@@ -234,8 +237,8 @@ def test_process_rejects_empty_graph() -> None:
 def test_stream_flow_captures_source_process_output_and_error_routes() -> None:
     source = FromTopic("orders.in", payload=_Order)
     output = IntoTopic("orders.out", payload=_ValidatedOrder)
-    dlq = IntoTopic("orders.dlq")
-    process = Process[_Order, _ValidatedOrder](_ValidateOrder)
+    dlq: IntoTopic[Any] = IntoTopic("orders.dlq")
+    process = Process[_Order, _ValidatedOrder](_ValidateOrder())
     flow = StreamFlow(
         name="orders",
         source=source,
@@ -253,7 +256,7 @@ def test_stream_flow_captures_source_process_output_and_error_routes() -> None:
 
 def test_stream_flow_rejects_empty_name() -> None:
     source = FromTopic("orders.in", payload=_Order)
-    process = Process[_Order, _ValidatedOrder](_ValidateOrder)
+    process = Process[_Order, _ValidatedOrder](_ValidateOrder())
 
     with pytest.raises(ValueError, match="name"):
         StreamFlow(name="", source=source, process=process)

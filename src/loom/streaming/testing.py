@@ -36,7 +36,8 @@ try:
 
     import loom.streaming.bytewax._adapter as _loaded_bytewax_adapter
 except ModuleNotFoundError:  # pragma: no cover - exercised only without streaming extra
-    pass
+    _bytewax_testing = None
+    _bytewax_adapter = None
 else:
     _bytewax_testing = _loaded_bytewax_testing
     _bytewax_adapter = _loaded_bytewax_adapter
@@ -198,6 +199,7 @@ def _require_bytewax_testing() -> None:
 
 def _first_source_topic(plan: CompiledPlan) -> str:
     """Return the first declared source topic or fail with a clear error."""
-    if not plan.source.topics:
+    topic = next(iter(plan.source.topics), None)
+    if topic is None:
         raise RuntimeError("StreamingTestRunner requires at least one configured source topic.")
-    return plan.source.topics[0]
+    return topic
