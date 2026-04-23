@@ -42,4 +42,87 @@ class KafkaStreamingObserver(Protocol):
         """
 
 
-__all__ = ["KafkaStreamingObserver"]
+@runtime_checkable
+class StreamingFlowObserver(Protocol):
+    """Observability contract for streaming flow execution lifecycle.
+
+    Mirrors the ETL :class:`ETLRunObserver` hierarchy at the granularity
+    that makes sense for streaming: one flow, many compiled nodes.
+    """
+
+    def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
+        """Called when a flow begins execution.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            node_count: Number of compiled nodes in the plan.
+        """
+
+    def on_flow_end(
+        self,
+        flow_name: str,
+        *,
+        status: str,
+        duration_ms: int,
+    ) -> None:
+        """Called when a flow completes or fails.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            status: Terminal status (``success`` or ``failed``).
+            duration_ms: Wall-clock duration in milliseconds.
+        """
+
+    def on_node_start(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+    ) -> None:
+        """Called before a compiled node executes.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            node_idx: Zero-based index of the node in the plan.
+            node_type: Class name of the DSL node.
+        """
+
+    def on_node_end(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        status: str,
+        duration_ms: int,
+    ) -> None:
+        """Called after a compiled node completes.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            node_idx: Zero-based index of the node in the plan.
+            node_type: Class name of the DSL node.
+            status: Outcome label (``success`` or ``failed``).
+            duration_ms: Wall-clock duration in milliseconds.
+        """
+
+    def on_node_error(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        exc: Exception,
+    ) -> None:
+        """Called when a node raises an exception.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            node_idx: Zero-based index of the node in the plan.
+            node_type: Class name of the DSL node.
+            exc: The exception raised by the node.
+        """
+
+
+__all__ = ["KafkaStreamingObserver", "StreamingFlowObserver"]

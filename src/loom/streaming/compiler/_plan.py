@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming._errors import ErrorKind
-from loom.streaming._partitioning import PartitionPolicy
-from loom.streaming._shape import StreamShape
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
+from loom.streaming.nodes._boundary import PartitionPolicy
+from loom.streaming.nodes._shape import StreamShape
 
 
 @dataclass(frozen=True)

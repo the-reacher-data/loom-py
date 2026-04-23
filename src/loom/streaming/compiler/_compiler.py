@@ -9,19 +9,20 @@ from omegaconf import DictConfig
 
 from loom.core.config import ConfigError, section
 from loom.core.config.configurable import ConfigBinding
-from loom.streaming._boundary import FromTopic, IntoTopic
-from loom.streaming._process import StreamFlow
-from loom.streaming._shape import CollectBatch, Drain, ForEach, StreamShape
-from loom.streaming._task import BatchTask, Task
-from loom.streaming._with import OneEmit, With, WithAsync
 from loom.streaming.compiler._plan import (
     CompiledNode,
     CompiledPlan,
     CompiledSink,
     CompiledSource,
 )
+from loom.streaming.core._typing import StreamPayload
+from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
-from loom.streaming.routing import Router
+from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._router import Router
+from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
+from loom.streaming.nodes._task import BatchTask, Task
+from loom.streaming.nodes._with import OneEmit, ResourceScope, With, WithAsync
 
 
 class CompilationError(Exception):
@@ -53,6 +54,7 @@ class _Compiler:
 
         errors.extend(self._validate_bindings(flow, runtime_config))
         errors.extend(self._validate_kafka(flow, runtime_config))
+        errors.extend(self._validate_resources(flow))
         errors.extend(self._validate_shapes(flow))
         errors.extend(self._validate_outputs(flow))
 
@@ -71,7 +73,13 @@ class _Compiler:
                 except ConfigError as exc:
                     errors.append(f"binding {node.config_path}: {exc}")
             elif isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
-                for dep in {**node.source.contexts, **node.source.plain_deps}.values():
+                all_deps: dict[str, object] = {
+                    **node.source.sync_contexts,
+                    **node.source.async_contexts,
+                    **node.source.context_factories,
+                    **node.source.plain_deps,
+                }
+                for dep in all_deps.values():
                     if isinstance(dep, ConfigBinding):
                         try:
                             section(cfg, dep.config_path, dict)
@@ -88,6 +96,20 @@ class _Compiler:
             return []
         except ConfigError as exc:
             return [f"kafka: {exc}"]
+
+    @staticmethod
+    def _validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
+        errors: list[str] = []
+        for node in flow.process.nodes:
+            if isinstance(node, (With, WithAsync)) and node.scope == ResourceScope.BATCH:
+                direct_cms = list(node.sync_contexts.keys()) + list(node.async_contexts.keys())
+                if direct_cms:
+                    errors.append(
+                        f"{type(node).__name__} with scope=BATCH cannot use direct context "
+                        f"manager instances: {', '.join(direct_cms)}. "
+                        f"Use ContextFactory for batch-scoped resources."
+                    )
+        return errors
 
     @staticmethod
     def _validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
@@ -213,7 +235,7 @@ def _validate_shape_sequence(
 
 
 def _validate_router_shapes(
-    router: Router[Any, Any],
+    router: Router[StreamPayload, StreamPayload],
     initial_shape: StreamShape,
 ) -> tuple[list[str], StreamShape]:
     errors: list[str] = []
@@ -232,7 +254,9 @@ def _validate_router_shapes(
     return errors, outputs[0] if outputs else initial_shape
 
 
-def _router_branch_nodes(router: Router[Any, Any]) -> Iterable[tuple[str, tuple[object, ...]]]:
+def _router_branch_nodes(
+    router: Router[StreamPayload, StreamPayload],
+) -> Iterable[tuple[str, tuple[object, ...]]]:
     for key, process in router.routes.items():
         yield repr(key), process.nodes
     for index, route in enumerate(router.predicate_routes):
@@ -250,7 +274,7 @@ def _has_terminal_output(nodes: Iterable[object]) -> bool:
     return False
 
 
-def _router_has_terminal_output(router: Router[Any, Any]) -> bool:
+def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) -> bool:
     return any(_has_terminal_output(nodes) for _, nodes in _router_branch_nodes(router))
 
 
@@ -259,7 +283,7 @@ def _node_input_shape(node: object) -> StreamShape | None:
     if isinstance(node, (Task, BatchTask)):
         return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
-        return StreamShape.BATCH
+        return None
     if isinstance(node, ForEach):
         return StreamShape.MANY
     if isinstance(node, Drain):

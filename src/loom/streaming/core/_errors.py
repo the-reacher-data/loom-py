@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Generic, TypeVar
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming._message import Message
+from loom.streaming.core._message import Message
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 

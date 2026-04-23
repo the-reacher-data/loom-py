@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from typing import Generic, TypeVar
+from typing_extensions import TypeAliasType
 
 import msgspec
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 
-PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+StreamPayload = TypeAliasType("StreamPayload", LoomStruct | LoomFrozenStruct)
+"""Union of all valid streaming payload types."""
+
+PayloadT = TypeVar("PayloadT", bound=StreamPayload)
 
 
 class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -47,4 +51,4 @@ class Message(LoomFrozenStruct, Generic[PayloadT], frozen=True, kw_only=True):
     meta: MessageMeta
 
 
-__all__ = ["Message", "MessageMeta"]
+__all__ = ["Message", "MessageMeta", "StreamPayload"]

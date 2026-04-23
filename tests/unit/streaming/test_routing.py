@@ -4,7 +4,7 @@ import pytest
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import Message, MessageMeta, Process, Route, Router, msg
-from loom.streaming.routing import evaluate_predicate, select_value
+from loom.streaming.nodes._router import evaluate_predicate, select_value
 
 
 class _Order(LoomFrozenStruct, frozen=True):

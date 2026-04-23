@@ -1,27 +1,8 @@
-"""Loom Streaming — topic-oriented declarations and transport adapters.
+"""Streaming DSL node primitives.
 
-Public authoring API
---------------------
-
-Use :mod:`loom.streaming` for user-facing flow declarations::
-
-    from loom.streaming import (
-        CollectBatch,
-        ErrorKind,
-        FromTopic,
-        IntoTopic,
-        Message,
-        StreamShape,
-    )
-
-Kafka-specific codecs, clients, and transport settings live under
-:mod:`loom.streaming.kafka`.
+These are the building blocks used to declare a :class:`Process`.
 """
 
-from loom.streaming.compiler import CompilationError, compile_flow
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
-from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import (
     FromTopic,
     IntoTopic,
@@ -46,38 +27,32 @@ from loom.streaming.nodes._with import (
 )
 
 __all__ = [
-    "AsyncContextDependency",
     "BatchTask",
     "CollectBatch",
-    "CompilationError",
+    "AsyncContextDependency",
+    "ContextDependency",
     "ContextFactory",
     "Drain",
-    "ErrorEnvelope",
-    "ErrorKind",
     "ForEach",
     "FromTopic",
     "IntoTopic",
-    "Message",
-    "MessageMeta",
     "OneEmit",
     "PartitionGuarantee",
     "PartitionPolicy",
     "PartitionStrategy",
-    "Process",
-    "ProcessNode",
     "Predicate",
     "ResourceFactory",
     "ResourceScope",
     "Route",
     "Router",
     "Selector",
-    "StreamFlow",
     "StreamShape",
     "SyncContextDependency",
     "Task",
     "TaskContext",
     "With",
     "WithAsync",
-    "compile_flow",
+    "evaluate_predicate",
     "msg",
+    "select_value",
 ]

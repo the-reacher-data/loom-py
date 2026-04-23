@@ -19,4 +19,27 @@ class NoopKafkaObserver:
         """No-op."""
 
 
-__all__ = ["NoopKafkaObserver"]
+class NoopFlowObserver:
+    """Observer that does nothing for flow execution lifecycle events."""
+
+    def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
+        """No-op."""
+
+    def on_flow_end(self, flow_name: str, *, status: str, duration_ms: int) -> None:
+        """No-op."""
+
+    def on_node_start(self, flow_name: str, node_idx: int, *, node_type: str) -> None:
+        """No-op."""
+
+    def on_node_end(
+        self, flow_name: str, node_idx: int, *, node_type: str, status: str, duration_ms: int
+    ) -> None:
+        """No-op."""
+
+    def on_node_error(
+        self, flow_name: str, node_idx: int, *, node_type: str, exc: Exception
+    ) -> None:
+        """No-op."""
+
+
+__all__ = ["NoopFlowObserver", "NoopKafkaObserver"]

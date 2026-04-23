@@ -19,9 +19,9 @@ from loom.streaming import (
     Task,
     msg,
 )
-from loom.streaming._message import Message
 from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
 from loom.streaming.compiler._compiler import _uses_kafka
+from loom.streaming.core._message import Message
 
 
 class _Order(LoomStruct):
@@ -216,3 +216,53 @@ def test_uses_kafka_detects_kafka_usage() -> None:
     # Any flow with FromTopic source uses Kafka
     assert _uses_kafka(flow_with_output) is True
     assert _uses_kafka(flow_without_output) is True
+
+
+def test_compile_fails_on_batch_scope_with_direct_context_manager() -> None:
+    """BATCH scope with a direct CM instance must be rejected at compile time."""
+    from loom.streaming import ResourceScope, With
+
+    class _FakeSyncCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    flow = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(With(task=_FakeTask(), scope=ResourceScope.BATCH, db=_FakeSyncCM())),
+        output=IntoTopic("out", payload=_Result),
+    )
+
+    with pytest.raises(CompilationError, match="ContextFactory"):
+        compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
+
+
+def test_compile_succeeds_on_batch_scope_with_context_factory() -> None:
+    """BATCH scope with a ContextFactory is valid."""
+    from loom.streaming import ContextFactory, ResourceScope, With
+
+    class _FakeSyncCM:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    flow = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(
+            With(
+                task=_FakeTask(),
+                scope=ResourceScope.BATCH,
+                db=ContextFactory(lambda: _FakeSyncCM()),
+            )
+        ),
+        output=IntoTopic("out", payload=_Result),
+    )
+
+    plan = compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
+    assert plan.name == "test"

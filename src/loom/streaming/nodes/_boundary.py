@@ -1,13 +1,14 @@
-"""Topic-oriented streaming boundaries."""
+"""Topic-oriented streaming boundaries and partitioning contracts."""
 
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from enum import StrEnum
+from typing import Generic, Protocol, TypeVar
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.routing import LogicalRef, as_logical_ref
-from loom.streaming._partitioning import PartitionPolicy
-from loom.streaming._shape import StreamShape
+from loom.streaming.core._message import Message
+from loom.streaming.nodes._shape import StreamShape
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
@@ -54,4 +55,39 @@ class IntoTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
         return as_logical_ref(self.name)
 
 
-__all__ = ["FromTopic", "IntoTopic"]
+class PartitionStrategy(Protocol[PayloadT]):
+    """Compute the outgoing transport partition key for a message."""
+
+    def partition_key(self, message: Message[PayloadT]) -> bytes | str | None:
+        """Return the outgoing transport partition key."""
+
+
+class PartitionGuarantee(StrEnum):
+    """Declared affinity guarantee of a partitioning strategy."""
+
+    NONE = "none"
+    BEST_EFFORT = "best_effort"
+    ENTITY_STABLE = "entity_stable"
+
+
+class PartitionPolicy(LoomFrozenStruct, Generic[PayloadT], frozen=True):
+    """Declarative partitioning policy for topic output.
+
+    Args:
+        strategy: Partition-key strategy used for output records.
+        guarantee: Declared affinity guarantee offered by the strategy.
+        allow_repartition: Whether the flow may override the incoming key.
+    """
+
+    strategy: PartitionStrategy[PayloadT]
+    guarantee: PartitionGuarantee
+    allow_repartition: bool = False
+
+
+__all__ = [
+    "FromTopic",
+    "IntoTopic",
+    "PartitionGuarantee",
+    "PartitionPolicy",
+    "PartitionStrategy",
+]

@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 from loom.core.expr import ExprNode, PathRef, evaluate_expr
-from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming._message import Message
-from loom.streaming._process import Process
-from loom.streaming.routing._protocols import Predicate, Selector
+from loom.core.model import LoomFrozenStruct
+from loom.streaming.core._message import Message, StreamPayload
+from loom.streaming.nodes._protocols import Predicate, Selector
 
-InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
-OutT = TypeVar("OutT", bound=LoomStruct | LoomFrozenStruct)
+if TYPE_CHECKING:
+    from loom.streaming.graph._flow import Process
+
+InT = TypeVar("InT", bound=StreamPayload)
+OutT = TypeVar("OutT", bound=StreamPayload)
 
 PredicateSpec = ExprNode | Predicate[InT]
 SelectorSpec = PathRef | Selector[InT]

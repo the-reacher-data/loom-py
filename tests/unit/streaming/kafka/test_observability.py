@@ -96,7 +96,7 @@ def test_noop_kafka_observer_matches_protocol() -> None:
 def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default() -> None:
     observer = StructlogKafkaObserver()
 
-    with patch("loom.streaming.observability.observers.structlog._log") as log:
+    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
         observer.on_produced("tenant-a.orders")
 
     log.debug.assert_called_once_with(
@@ -110,7 +110,7 @@ def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default
 def test_structlog_kafka_observer_can_include_topic_explicitly() -> None:
     observer = StructlogKafkaObserver(include_topic=True)
 
-    with patch("loom.streaming.observability.observers.structlog._log") as log:
+    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
         observer.on_consumed("tenant-a.orders", status="decode_error")
 
     log.warning.assert_called_once_with(
@@ -125,7 +125,7 @@ def test_structlog_kafka_observer_can_include_topic_explicitly() -> None:
 def test_structlog_kafka_observer_logs_codec_durations_at_debug() -> None:
     observer = StructlogKafkaObserver()
 
-    with patch("loom.streaming.observability.observers.structlog._log") as log:
+    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
         observer.observe_encode("application/x-loom-msgpack", 0.0012345)
         observer.observe_decode("application/x-loom-msgpack", 0.002)
 
