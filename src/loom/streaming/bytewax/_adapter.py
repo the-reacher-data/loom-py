@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from bytewax.dataflow import Dataflow
 from bytewax.inputs import Source
-from bytewax.operators import collect, filter_map, flat_map, key_on, key_rm
+from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
 from bytewax.operators import output as bw_output
@@ -27,6 +27,7 @@ from bytewax.outputs import Sink
 
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
 from loom.streaming.compiler import CompiledNode, CompiledPlan
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
@@ -53,6 +54,7 @@ def build_dataflow(
     flow_observer: StreamingFlowObserver | None = None,
     source: Source[Any] | None = None,
     sink: Sink[Any] | None = None,
+    error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
 ) -> Dataflow:
     """Build a Bytewax Dataflow from a compiled plan.
 
@@ -61,6 +63,7 @@ def build_dataflow(
         flow_observer: Optional observer for flow execution lifecycle events.
         source: Optional Bytewax source. Tests can pass ``TestingSource`` here.
         sink: Optional Bytewax sink. Tests can pass ``TestingSink`` here.
+        error_sinks: Optional sinks for explicit error branches in tests.
 
     Returns:
         Configured Bytewax Dataflow ready for execution.
@@ -72,6 +75,7 @@ def build_dataflow(
         flow_observer=flow_observer,
         source=source,
         sink=sink,
+        error_sinks=error_sinks,
     )
     return _assemble_dataflow(plan, ctx)
 
@@ -102,6 +106,7 @@ class _BuildContext:
         "flow_observer",
         "source",
         "sink",
+        "error_sinks",
         "terminal_output_wired",
         "_managers",
     )
@@ -113,12 +118,14 @@ class _BuildContext:
         flow_observer: StreamingFlowObserver | None = None,
         source: Source[Any] | None = None,
         sink: Sink[Any] | None = None,
+        error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
     ) -> None:
         self.plan = plan
         self.bridge = bridge
         self.flow_observer = flow_observer
         self.source = source
         self.sink = sink
+        self.error_sinks = error_sinks or {}
         self.terminal_output_wired = False
         self._managers: dict[int, ResourceLifecycle] = {}
 
@@ -152,7 +159,9 @@ def _wire_source(flow: Dataflow, ctx: _BuildContext) -> Stream:
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
     decoded = bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx))
-    return filter_map(f"{step_id}_ok", decoded, _decode_ok_message)
+    decoded_branch = branch(f"{step_id}_is_ok", decoded, _is_decode_ok)
+    _wire_decode_error_routes(decoded_branch.falses, ctx)
+    return bw_map(f"{step_id}_message", decoded_branch.trues, _decode_ok_message)
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +409,17 @@ def _wire_output(stream: Any, ctx: _BuildContext) -> None:
         # TODO: wire error branch → kop.output per ErrorKind
 
 
+def _wire_decode_error_routes(stream: Stream, ctx: _BuildContext) -> None:
+    """Wire source decode errors to the WIRE testing sink when configured."""
+    sink = ctx.error_sinks.get(ErrorKind.WIRE)
+    if sink is not None:
+        bw_output("decode_wire_errors", stream, sink)
+        return
+
+    if ErrorKind.WIRE in ctx.plan.error_routes:
+        bw_map("decode_wire_errors_encode", stream, _placeholder_encode)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -526,11 +546,16 @@ def _decode_source_record(payload: Any, ctx: _BuildContext) -> DecodeResult[Stre
     raise TypeError(f"Expected Message or KafkaRecord, got {type(payload).__name__}.")
 
 
-def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPayload] | None:
-    """Keep successful source decodes and drop wire errors until routes are wired."""
+def _is_decode_ok(result: DecodeResult[StreamPayload]) -> bool:
+    """Return whether a source decode result can continue through the flow."""
+    return isinstance(result, DecodeOk)
+
+
+def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPayload]:
+    """Unwrap a successful source decode result."""
     if isinstance(result, DecodeOk):
         return result.message
-    return None
+    raise TypeError(f"Expected DecodeOk, got {type(result).__name__}.")
 
 
 def _placeholder_encode(record: Any) -> Any:

@@ -6,6 +6,7 @@ Mirrors the pattern used by :class:`~loom.etl.runner.core.ETLRunner`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from loom.streaming.bytewax._adapter import (
     _maybe_create_bridge,
 )
 from loom.streaming.compiler import CompiledPlan, compile_flow
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.observability.factory import make_flow_observers
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
@@ -109,6 +111,7 @@ class StreamingRunner:
         self,
         source: Source[Any] | None = None,
         sink: Sink[Any] | None = None,
+        error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
     ) -> Dataflow:
         """Assemble the Bytewax Dataflow, keeping the build context for shutdown."""
         self._bridge = _maybe_create_bridge(self._plan)
@@ -118,6 +121,7 @@ class StreamingRunner:
             flow_observer=self._observer,
             source=source,
             sink=sink,
+            error_sinks=error_sinks,
         )
         return _assemble_dataflow(self._plan, self._ctx)
 
@@ -125,13 +129,14 @@ class StreamingRunner:
         self,
         source: Source[Any] | None = None,
         sink: Sink[Any] | None = None,
+        error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
     ) -> None:
         """Compile, build, and execute the streaming dataflow.
 
         Blocks until the dataflow reaches EOF (e.g. ``TestingSource`` is
         exhausted) or the process is interrupted.
         """
-        dataflow = self.build_dataflow(source=source, sink=sink)
+        dataflow = self.build_dataflow(source=source, sink=sink, error_sinks=error_sinks)
         try:
             run_main(dataflow)  # type: ignore[no-untyped-call]
         finally:

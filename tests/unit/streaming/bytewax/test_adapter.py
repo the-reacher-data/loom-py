@@ -18,9 +18,11 @@ from loom.streaming.compiler._plan import (
     CompiledSink,
     CompiledSource,
 )
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, build_message
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
+from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain, StreamShape
 from loom.streaming.nodes._task import Task
@@ -56,7 +58,11 @@ def _message(payload: LoomStruct) -> Message[LoomStruct]:
     return Message(payload=payload, meta=MessageMeta(message_id="msg-1"))
 
 
-def _build_plan(*nodes: object, output: IntoTopic[Any] | None = None) -> CompiledPlan:
+def _build_plan(
+    *nodes: object,
+    output: IntoTopic[Any] | None = None,
+    error_routes: dict[ErrorKind, CompiledSink] | None = None,
+) -> CompiledPlan:
     """Build a minimal CompiledPlan for testing."""
     compiled_nodes = [
         CompiledNode(node=node, input_shape=StreamShape.RECORD, output_shape=StreamShape.RECORD)
@@ -84,7 +90,7 @@ def _build_plan(*nodes: object, output: IntoTopic[Any] | None = None) -> Compile
         ),
         nodes=tuple(compiled_nodes),
         output=compiled_output,
-        error_routes={},
+        error_routes=error_routes or {},
         needs_async_bridge=False,
     )
 
@@ -167,6 +173,49 @@ class TestSourceDecode:
         assert results[0].meta.produced_at_ms == 10
         assert results[0].meta.key == b"tenant-a"
         assert results[0].meta.headers == {"h": b"1"}
+
+    def test_wire_decode_error_routes_to_testing_error_sink(self) -> None:
+        error_sink = CompiledSink(
+            settings=ProducerSettings(
+                brokers=("localhost:9092",),
+                client_id="test-producer",
+                topic="orders.dlq",
+            ),
+            topic="orders.dlq",
+            partition_policy=None,
+        )
+        plan = _build_plan(_DoubleTask(), error_routes={ErrorKind.WIRE: error_sink})
+        source_record = KafkaRecord(
+            topic="orders.in",
+            key=b"tenant-a",
+            value=b"not-msgpack",
+            headers={"h": b"1"},
+            partition=0,
+            offset=4,
+            timestamp_ms=12,
+        )
+        results: list[Message[_Result]] = []
+        errors: list[DecodeError] = []
+
+        flow = build_dataflow(
+            plan,
+            source=TestingSource([source_record]),
+            sink=TestingSink(results),
+            error_sinks={ErrorKind.WIRE: TestingSink(errors)},
+        )
+
+        run_main(flow)  # type: ignore[no-untyped-call]
+
+        assert results == []
+        assert len(errors) == 1
+        assert errors[0].error.kind is ErrorKind.WIRE
+        assert errors[0].error.original_message is None
+        assert errors[0].raw == b"not-msgpack"
+        assert errors[0].topic == "orders.in"
+        assert errors[0].partition == 0
+        assert errors[0].offset == 4
+        assert errors[0].key == b"tenant-a"
+        assert errors[0].headers == {"h": b"1"}
 
 
 class TestTerminalNodes:
