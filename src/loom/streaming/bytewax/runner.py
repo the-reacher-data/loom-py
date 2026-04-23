@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,19 @@ from loom.streaming.observability.factory import make_flow_observers
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedStreamingRun:
+    """Prepared Bytewax execution bundle.
+
+    Args:
+        dataflow: Built Bytewax dataflow ready for execution.
+        shutdown: Callback that releases adapter-owned resources.
+    """
+
+    dataflow: Dataflow
+    shutdown: Callable[[], None]
 
 
 class BytewaxRecoverySettings(msgspec.Struct, frozen=True, kw_only=True):
@@ -114,12 +128,14 @@ class StreamingRunner:
 
     def build_dataflow(self) -> Dataflow:
         """Assemble the Bytewax Dataflow and keep shutdown state."""
-        built = build_dataflow_with_shutdown(
-            plan=self._plan,
-            flow_observer=self._observer,
-        )
-        self._shutdown = built.shutdown
-        return built.dataflow
+        prepared = self.prepare_run()
+        return prepared.dataflow
+
+    def prepare_run(self) -> PreparedStreamingRun:
+        """Prepare one executable dataflow and its shutdown callback."""
+        prepared = _prepare_run(self._plan, observer=self._observer)
+        self._shutdown = prepared.shutdown
+        return prepared
 
     def run(self, *, runtime: BytewaxRuntimeConfig | None = None) -> None:
         """Execute the compiled dataflow with the real Bytewax runtime.
@@ -130,9 +146,9 @@ class StreamingRunner:
         """
 
         resolved_runtime = runtime or self._runtime
-        dataflow = self.build_dataflow()
+        prepared = self.prepare_run()
         try:
-            cli_main(dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
+            cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
         finally:
             self.shutdown()
 
@@ -193,9 +209,28 @@ def _to_timedelta(value_ms: int | None) -> timedelta | None:
     return timedelta(milliseconds=value_ms)
 
 
+def _prepare_run(
+    plan: CompiledPlan,
+    *,
+    observer: StreamingFlowObserver | None = None,
+    source: Any | None = None,
+    sink: Any | None = None,
+    error_sinks: Any | None = None,
+) -> PreparedStreamingRun:
+    built = build_dataflow_with_shutdown(
+        plan=plan,
+        flow_observer=observer,
+        source=source,
+        sink=sink,
+        error_sinks=error_sinks,
+    )
+    return PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
+
+
 __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
+    "PreparedStreamingRun",
     "StreamingRunner",
     "make_flow_observers",
 ]

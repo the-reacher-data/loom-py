@@ -4,6 +4,14 @@ Public API
 ----------
 * :class:`StreamingTestRunner` — test-oriented runner with injectable input,
   captured output, and explicit error branch capture.
+
+Typical usage::
+
+    runner = StreamingTestRunner.from_flow(flow, runtime_config=cfg)
+    runner.with_payloads([OrderPlaced(order_id="o-1")])
+    runner.capture_errors(ErrorKind.WIRE)
+    runner.run()
+    assert len(runner.output) == 1
 """
 
 from __future__ import annotations
@@ -14,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import load_config
+from loom.streaming.bytewax.runner import _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
@@ -43,10 +52,10 @@ logger = logging.getLogger(__name__)
 class StreamingTestRunner:
     """Run a streaming flow with test doubles for input and output.
 
-    The runner mirrors the production runner's dataflow assembly, but swaps
-    the source and sinks for Bytewax testing primitives. Tests can provide
-    payloads or fully formed messages, opt into capturing explicit error
-    branches, and inspect captured outputs after execution.
+    The runner mirrors the production runner's dataflow preparation and swaps
+    only the source and sinks for Bytewax testing primitives. Use
+    :meth:`with_payloads` for ergonomic flow-author tests and
+    :meth:`with_messages` when metadata must be controlled explicitly.
 
     Args:
         plan: Compiled plan produced by the compiler.
@@ -102,13 +111,20 @@ class StreamingTestRunner:
         return cls.from_flow(flow, runtime_config=runtime_config, observer=observer)
 
     def with_payloads(self, items: list[Any]) -> StreamingTestRunner:
-        """Replace the current input buffer with payload-derived messages."""
+        """Replace input with payload-derived test messages.
+
+        Payloads are wrapped into :class:`loom.streaming.Message` values using
+        deterministic test metadata:
+
+        - ``message_id``: ``test-<index>``
+        - ``topic``: first source topic declared by the flow
+        """
         topic = self._plan.source.topics[0]
         self._input = [_test_message(topic, idx, item) for idx, item in enumerate(items)]
         return self
 
     def with_messages(self, items: list[Any]) -> StreamingTestRunner:
-        """Replace the current input buffer with fully formed runtime messages."""
+        """Replace input with fully formed runtime messages or raw test records."""
         self._input = list(items)
         return self
 
@@ -144,18 +160,18 @@ class StreamingTestRunner:
         error_sinks: dict[ErrorKind, Sink[Any]] = {
             kind: _bytewax_testing.TestingSink(items) for kind, items in self._errors.items()
         }
-        built = _bytewax_adapter.build_dataflow_with_shutdown(
+        prepared = _prepare_run(
             plan=self._plan,
-            flow_observer=self._observer,
+            observer=self._observer,
             source=_bytewax_testing.TestingSource(list(self._input)),
             sink=_bytewax_testing.TestingSink(self._output),
             error_sinks=error_sinks,
         )
         try:
-            _bytewax_testing.run_main(built.dataflow)
+            _bytewax_testing.run_main(prepared.dataflow)
         finally:
             logger.debug("shutting_down_test_runner")
-            built.shutdown()
+            prepared.shutdown()
 
 
 __all__ = ["StreamingTestRunner"]
