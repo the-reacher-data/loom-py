@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from bytewax.dataflow import Dataflow
 from bytewax.inputs import Source
-from bytewax.operators import collect, flat_map, key_on, key_rm
+from bytewax.operators import collect, filter_map, flat_map, key_on, key_rm
 from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
 from bytewax.operators import output as bw_output
@@ -29,6 +29,9 @@ from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
 from loom.streaming.compiler import CompiledNode, CompiledPlan
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
+from loom.streaming.kafka._codec import MsgspecCodec
+from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka._wire import DecodeOk, DecodeResult, try_decode_record
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
@@ -148,7 +151,8 @@ def _wire_source(flow: Dataflow, ctx: _BuildContext) -> Stream:
 
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
-    return bw_map(step_id, stream, _placeholder_decode)
+    decoded = bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx))
+    return filter_map(f"{step_id}_ok", decoded, _decode_ok_message)
 
 
 # ---------------------------------------------------------------------------
@@ -508,9 +512,25 @@ def _replace_payloads(
     ]
 
 
-def _placeholder_decode(payload: Any) -> Any:
-    """Placeholder decoder - replaced when Kafka connector is wired."""
-    return payload
+def _decode_source_record(payload: Any, ctx: _BuildContext) -> DecodeResult[StreamPayload]:
+    """Decode source records into DSL messages without raising decode errors."""
+    if isinstance(payload, Message):
+        return DecodeOk(message=cast(Message[StreamPayload], payload))
+    if isinstance(payload, KafkaRecord):
+        codec: MsgspecCodec[Any] = MsgspecCodec()
+        return try_decode_record(
+            cast(KafkaRecord[bytes], payload),
+            cast(Any, ctx.plan.source.payload_type),
+            codec,
+        )
+    raise TypeError(f"Expected Message or KafkaRecord, got {type(payload).__name__}.")
+
+
+def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPayload] | None:
+    """Keep successful source decodes and drop wire errors until routes are wired."""
+    if isinstance(result, DecodeOk):
+        return result.message
+    return None
 
 
 def _placeholder_encode(record: Any) -> Any:

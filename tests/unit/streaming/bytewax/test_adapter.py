@@ -6,6 +6,8 @@ into an executable Bytewax :class:`Dataflow`.
 
 from __future__ import annotations
 
+from typing import Any
+
 from bytewax.testing import TestingSink, TestingSource, run_main
 
 from loom.core.model import LoomStruct
@@ -17,6 +19,7 @@ from loom.streaming.compiler._plan import (
     CompiledSource,
 )
 from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, build_message
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain, StreamShape
@@ -53,7 +56,7 @@ def _message(payload: LoomStruct) -> Message[LoomStruct]:
     return Message(payload=payload, meta=MessageMeta(message_id="msg-1"))
 
 
-def _build_plan(*nodes: object, output: IntoTopic | None = None) -> CompiledPlan:
+def _build_plan(*nodes: object, output: IntoTopic[Any] | None = None) -> CompiledPlan:
     """Build a minimal CompiledPlan for testing."""
     compiled_nodes = [
         CompiledNode(node=node, input_shape=StreamShape.RECORD, output_shape=StreamShape.RECORD)
@@ -100,7 +103,7 @@ class TestTaskNodeExecution:
             sink=TestingSink(results),
         )
 
-        run_main(flow)
+        run_main(flow)  # type: ignore[no-untyped-call]
 
         assert len(results) == 1
         assert isinstance(results[0], Message)
@@ -117,9 +120,53 @@ class TestTaskNodeExecution:
             sink=TestingSink(results),
         )
 
-        run_main(flow)
+        run_main(flow)  # type: ignore[no-untyped-call]
 
         assert [message.payload.value for message in results] == ["AA:ok"]
+
+
+class TestSourceDecode:
+    """Raw Kafka records must be decoded before reaching DSL nodes."""
+
+    def test_kafka_record_source_decodes_envelope_before_task_execution(self) -> None:
+        plan = _build_plan(_DoubleTask())
+        codec = MsgspecCodec[_Order]()
+        envelope = build_message(
+            _Order(order_id="A"),
+            MessageDescriptor(message_type="order.created", message_version=1),
+            correlation_id="corr-1",
+            trace_id="trace-1",
+            produced_at_ms=10,
+        )
+        source_record = KafkaRecord(
+            topic="orders.in",
+            key=b"tenant-a",
+            value=codec.encode(envelope),
+            headers={"h": b"1"},
+            partition=0,
+            offset=3,
+            timestamp_ms=11,
+        )
+        results: list[Message[_Result]] = []
+
+        flow = build_dataflow(
+            plan,
+            source=TestingSource([source_record]),
+            sink=TestingSink(results),
+        )
+
+        run_main(flow)  # type: ignore[no-untyped-call]
+
+        assert len(results) == 1
+        assert results[0].payload == _Result(value="AA")
+        assert results[0].meta.message_id == "orders.in:0:3"
+        assert results[0].meta.message_type == "order.created"
+        assert results[0].meta.message_version == 1
+        assert results[0].meta.correlation_id == "corr-1"
+        assert results[0].meta.trace_id == "trace-1"
+        assert results[0].meta.produced_at_ms == 10
+        assert results[0].meta.key == b"tenant-a"
+        assert results[0].meta.headers == {"h": b"1"}
 
 
 class TestTerminalNodes:
@@ -136,7 +183,7 @@ class TestTerminalNodes:
             sink=TestingSink(results),
         )
 
-        run_main(flow)
+        run_main(flow)  # type: ignore[no-untyped-call]
 
         assert [message.payload.value for message in results] == ["AA"]
 
@@ -150,6 +197,6 @@ class TestTerminalNodes:
             sink=TestingSink(results),
         )
 
-        run_main(flow)
+        run_main(flow)  # type: ignore[no-untyped-call]
 
         assert results == []
