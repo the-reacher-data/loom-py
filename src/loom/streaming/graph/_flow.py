@@ -4,34 +4,30 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar
+from typing import Any, Generic, TypeAlias, TypeVar
 
 from loom.core.config import ConfigBinding
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import StreamPayload
+from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._router import Router
+from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
+from loom.streaming.nodes._task import BatchTask, Task
+from loom.streaming.nodes._with import OneEmit, With, WithAsync
 
-if TYPE_CHECKING:
-    from loom.streaming.nodes._boundary import FromTopic, IntoTopic
-    from loom.streaming.nodes._router import Router
-    from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
-    from loom.streaming.nodes._task import BatchTask, Task
-    from loom.streaming.nodes._with import OneEmit, With, WithAsync
-
-    ProcessNode: TypeAlias = (
-        ConfigBinding
-        | Task[StreamPayload, StreamPayload]
-        | BatchTask[StreamPayload, StreamPayload]
-        | With[StreamPayload, StreamPayload]
-        | WithAsync[StreamPayload, StreamPayload]
-        | OneEmit[StreamPayload, StreamPayload]
-        | CollectBatch
-        | ForEach
-        | Drain
-        | IntoTopic[StreamPayload]
-        | Router[StreamPayload, StreamPayload]
-    )
-else:
-    ProcessNode: TypeAlias = object
+ProcessNode: TypeAlias = (
+    ConfigBinding
+    | Task[Any, Any]
+    | BatchTask[Any, Any]
+    | With[Any, Any]
+    | WithAsync[Any, Any]
+    | OneEmit[Any, Any]
+    | CollectBatch
+    | ForEach
+    | Drain
+    | IntoTopic[Any]
+    | Router[Any, Any]
+)
 
 InT = TypeVar("InT", bound=StreamPayload, contravariant=True)
 OutT = TypeVar("OutT", bound=StreamPayload, covariant=True)

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from typing import Generic, TypeVar
-from typing_extensions import TypeAliasType
 
 import msgspec
+from typing_extensions import TypeAliasType
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 
@@ -22,6 +22,11 @@ class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         message_id: Stable event identifier.
         correlation_id: Optional correlation identifier.
         trace_id: Optional trace identifier.
+        causation_id: Optional upstream event identifier.
+        produced_at_ms: Optional original producer timestamp in epoch
+            milliseconds.
+        message_type: Optional logical message contract name.
+        message_version: Optional logical message contract version.
         topic: Source topic name when available.
         partition: Source partition when available.
         offset: Source offset when available.
@@ -32,6 +37,10 @@ class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     message_id: str
     correlation_id: str | None = None
     trace_id: str | None = None
+    causation_id: str | None = None
+    produced_at_ms: int | None = None
+    message_type: str | None = None
+    message_version: int | None = None
     topic: str | None = None
     partition: int | None = None
     offset: int | None = None

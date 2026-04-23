@@ -72,8 +72,21 @@ class _Compiler:
                     section(cfg, node.config_path, dict)
                 except ConfigError as exc:
                     errors.append(f"binding {node.config_path}: {exc}")
-            elif isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
+            elif isinstance(node, (With, WithAsync)):
                 all_deps: dict[str, object] = {
+                    **node.sync_contexts,
+                    **node.async_contexts,
+                    **node.context_factories,
+                    **node.plain_deps,
+                }
+                for dep in all_deps.values():
+                    if isinstance(dep, ConfigBinding):
+                        try:
+                            section(cfg, dep.config_path, dict)
+                        except ConfigError as exc:
+                            errors.append(f"binding {dep.config_path}: {exc}")
+            elif isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
+                all_deps = {
                     **node.source.sync_contexts,
                     **node.source.async_contexts,
                     **node.source.context_factories,
@@ -145,7 +158,7 @@ class _Compiler:
         }
 
         # Detect async need
-        needs_async = any(isinstance(n.node, (WithAsync,)) for n in nodes)
+        needs_async = any(_node_needs_async_bridge(n.node) for n in nodes)
 
         return CompiledPlan(
             name=flow.name,
@@ -209,6 +222,13 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     return _has_terminal_output(flow.process.nodes)
 
 
+def _node_needs_async_bridge(node: object) -> bool:
+    """Return whether a compiled node requires an AsyncBridge."""
+    if isinstance(node, WithAsync):
+        return True
+    return isinstance(node, OneEmit) and isinstance(node.source, WithAsync)
+
+
 def _validate_shape_sequence(
     nodes: Iterable[object],
     initial_shape: StreamShape,
@@ -244,6 +264,12 @@ def _validate_router_shapes(
     for label, nodes in _router_branch_nodes(router):
         branch_errors, branch_output = _validate_shape_sequence(nodes, initial_shape)
         errors.extend(f"router branch {label}: {error}" for error in branch_errors)
+        for node in nodes:
+            if not isinstance(node, (Task, IntoTopic, Drain)):
+                errors.append(
+                    f"router branch {label}: node {type(node).__name__} is not supported "
+                    f"in router branches (only Task, IntoTopic, Drain are allowed)"
+                )
         outputs.append(branch_output)
 
     unique_outputs = set(outputs)

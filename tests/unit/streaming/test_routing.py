@@ -37,11 +37,16 @@ def _message(
     country: str = "ES",
     amount: int = 1500,
     event_type: str = "created",
+    message_type: str | None = None,
     headers: dict[str, bytes] | None = None,
 ) -> Message[_Order]:
     return Message(
         payload=_Order(country=country, amount=amount, event_type=event_type),
-        meta=MessageMeta(message_id="msg-1", headers=headers or {}),
+        meta=MessageMeta(
+            message_id="msg-1",
+            message_type=message_type,
+            headers=headers or {},
+        ),
     )
 
 
@@ -50,6 +55,12 @@ def test_msg_expression_can_select_message_payload_fields() -> None:
 
     assert select_value(msg.payload.country, message) == "FR"
     assert select_value(_CountrySelector(), message) == "FR"
+
+
+def test_msg_expression_can_select_message_contract_metadata() -> None:
+    message = _message(message_type="order.created")
+
+    assert select_value(msg.meta.message_type, message) == "order.created"
 
 
 def test_msg_expression_can_evaluate_composed_predicates() -> None:

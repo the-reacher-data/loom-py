@@ -126,6 +126,10 @@ def test_message_and_metadata_are_loom_structs() -> None:
         message_id="msg-1",
         correlation_id="corr-1",
         trace_id="trace-1",
+        causation_id="cause-1",
+        produced_at_ms=42,
+        message_type="order.created",
+        message_version=2,
         topic="orders.in",
         partition=2,
         offset=9,
@@ -137,6 +141,10 @@ def test_message_and_metadata_are_loom_structs() -> None:
     assert isinstance(meta, LoomFrozenStruct)
     assert isinstance(message, LoomFrozenStruct)
     assert message.payload.order_id == "o-1"
+    assert message.meta.causation_id == "cause-1"
+    assert message.meta.produced_at_ms == 42
+    assert message.meta.message_type == "order.created"
+    assert message.meta.message_version == 2
     assert message.meta.topic == "orders.in"
     assert message.meta.headers == {"x": b"1"}
 
