@@ -383,15 +383,11 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> St
     node_type = type(node).__name__
 
     def step(batch: list[Any]) -> list[Any]:
-        messages = [_require_message(item) for item in batch]
         with _observe_node(observer, flow_name, idx, node_type):
-            batch_resources = manager.open_batch()
-            deps = {**worker_resources, **batch_resources}
-            try:
+            messages = _messages_from_batch(batch)
+            with _batch_dependencies(manager, worker_resources) as deps:
                 result = [node.task.execute(msg, **deps) for msg in messages]
                 return _replace_payloads(messages, result)
-            finally:
-                manager.close_batch()
 
     return bw_map(f"with_{idx}", stream, step)
 
@@ -407,25 +403,16 @@ def _apply_with_async(stream: Stream, raw: object, idx: int, ctx: _BuildContext)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
+    sem = asyncio.Semaphore(node.max_concurrency)
 
     async def _execute_batch(batch: list[Any]) -> list[Any]:
-        messages = [_require_message(item) for item in batch]
-        batch_resources = manager.open_batch()
-        deps = {**worker_resources, **batch_resources}
-        sem = asyncio.Semaphore(node.max_concurrency)
+        messages = _messages_from_batch(batch)
 
-        async def _bounded(msg: Message[StreamPayload]) -> Any:
-            async with sem:
-                result = node.task.execute(msg, **deps)
-                if not inspect.isawaitable(result):
-                    raise TypeError("WithAsync task.execute must return an awaitable.")
-                return await cast(Awaitable[object], result)
-
-        try:
-            result = await asyncio.gather(*[_bounded(msg) for msg in messages])
+        with _batch_dependencies(manager, worker_resources) as deps:
+            result = await asyncio.gather(
+                *[_execute_async_message(node, sem, msg, deps) for msg in messages]
+            )
             return _replace_payloads(messages, result)
-        finally:
-            manager.close_batch()
 
     def step(batch: list[Any]) -> list[Any]:
         with _observe_node(observer, flow_name, idx, node_type):
@@ -533,6 +520,38 @@ def _identity(items: Any) -> Any:
 def _empty(_item: Any) -> tuple[()]:
     """Drop one item from a stream."""
     return ()
+
+
+def _messages_from_batch(batch: list[Any]) -> list[Message[StreamPayload]]:
+    """Coerce one batch of runtime values into DSL messages."""
+    return [_require_message(item) for item in batch]
+
+
+@contextmanager
+def _batch_dependencies(
+    manager: ResourceLifecycle,
+    worker_resources: Mapping[str, object],
+) -> Iterator[dict[str, object]]:
+    """Open and close one batch-scoped dependency set."""
+    batch_resources = manager.open_batch()
+    try:
+        yield {**worker_resources, **batch_resources}
+    finally:
+        manager.close_batch()
+
+
+async def _execute_async_message(
+    node: WithAsync[StreamPayload, StreamPayload],
+    sem: asyncio.Semaphore,
+    message: Message[StreamPayload],
+    deps: Mapping[str, object],
+) -> object:
+    """Execute one async WithAsync message under bounded concurrency."""
+    async with sem:
+        result = node.task.execute(message, **deps)
+        if not inspect.isawaitable(result):
+            raise TypeError("WithAsync task.execute must return an awaitable.")
+        return await cast(Awaitable[object], result)
 
 
 def _batch_key(_item: Any) -> str:

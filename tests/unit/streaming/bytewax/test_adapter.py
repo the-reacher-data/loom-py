@@ -225,3 +225,66 @@ class TestTerminalNodes:
         assert len(results) == 1
         assert results[0].meta.message_id == "test-0"
         assert results[0].meta.topic == "in"
+
+    def test_into_topic_node_does_not_duplicate_flow_output(self) -> None:
+        target = IntoTopic("out", payload=_Result)
+        plan = _build_plan(_DoubleTask(), target, output=target)
+        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+
+        runner.run()
+
+        results = runner.output
+        assert [message.payload.value for message in results] == ["AA"]
+
+
+class TestOutputAndErrorWiring:
+    """Output and error routes must coexist without interfering."""
+
+    def test_valid_output_and_wire_error_can_be_captured_together(self) -> None:
+        error_sink = CompiledSink(
+            settings=ProducerSettings(
+                brokers=("localhost:9092",),
+                client_id="test-producer",
+                topic="orders.dlq",
+            ),
+            topic="orders.dlq",
+            partition_policy=None,
+        )
+        target = IntoTopic("out", payload=_Result)
+        codec = MsgspecCodec[_Order]()
+        envelope = build_message(
+            _Order(order_id="A"),
+            MessageDescriptor(message_type="order.created", message_version=1),
+        )
+        valid_record = KafkaRecord(
+            topic="orders.in",
+            key=b"tenant-a",
+            value=codec.encode(envelope),
+            headers={},
+            partition=0,
+            offset=1,
+            timestamp_ms=10,
+        )
+        invalid_record = KafkaRecord(
+            topic="orders.in",
+            key=b"tenant-a",
+            value=b"bad-wire",
+            headers={},
+            partition=0,
+            offset=2,
+            timestamp_ms=11,
+        )
+        plan = _build_plan(_DoubleTask(), output=target, error_routes={ErrorKind.WIRE: error_sink})
+        runner = (
+            StreamingTestRunner(plan)
+            .with_messages([valid_record, invalid_record])
+            .capture_errors(ErrorKind.WIRE)
+        )
+
+        runner.run()
+
+        assert [message.payload.value for message in runner.output] == ["AA"]
+        errors = runner.errors[ErrorKind.WIRE]
+        assert len(errors) == 1
+        assert errors[0].raw == b"bad-wire"
+        assert errors[0].offset == 2
