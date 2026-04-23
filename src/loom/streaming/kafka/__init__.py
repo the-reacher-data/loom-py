@@ -32,6 +32,13 @@ from loom.streaming.kafka._message import (
     build_message,
 )
 from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka._wire import (
+    DecodeError,
+    DecodeOk,
+    DecodeResult,
+    envelope_to_message,
+    try_decode_record,
+)
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
 from loom.streaming.kafka.client._producer import KafkaProducerClient
 from loom.streaming.kafka.client._protocol import KafkaConsumer, KafkaProducer
@@ -49,6 +56,9 @@ __all__ = [
     "ContentType",
     "ConsumerSettings",
     "CompositeKafkaObserver",
+    "DecodeError",
+    "DecodeOk",
+    "DecodeResult",
     "FixedKey",
     "KafkaClientError",
     "KafkaCodec",
@@ -86,5 +96,7 @@ __all__ = [
     "SchemaRef",
     "StructlogKafkaObserver",
     "build_message",
+    "envelope_to_message",
     "load_kafka_settings",
+    "try_decode_record",
 ]

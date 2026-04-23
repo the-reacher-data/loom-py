@@ -88,7 +88,7 @@ class StreamingRunner:
             raise FileNotFoundError(f"Config file not found: {path}")
         with raw_path.open("r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
-        return cls.from_config(flow, runtime_config=OmegaConf.create(raw), observer=observer)
+        return cls.from_config(flow, runtime_config=_dict_config(raw), observer=observer)
 
     @classmethod
     def from_dict(
@@ -99,7 +99,7 @@ class StreamingRunner:
         observer: StreamingFlowObserver | None = None,
     ) -> StreamingRunner:
         """Build a runner from a plain Python dict."""
-        return cls.from_config(flow, runtime_config=OmegaConf.create(config), observer=observer)
+        return cls.from_config(flow, runtime_config=_dict_config(config), observer=observer)
 
     # ------------------------------------------------------------------
     # Build & run
@@ -146,6 +146,13 @@ class StreamingRunner:
             logger.debug("closing_async_bridge")
             self._bridge.close()
             self._bridge = None
+
+
+def _dict_config(raw: Any) -> DictConfig:
+    config = OmegaConf.create(raw)
+    if not isinstance(config, DictConfig):
+        raise TypeError("Streaming runner config must resolve to a mapping")
+    return config
 
 
 __all__ = ["StreamingRunner", "make_flow_observers"]

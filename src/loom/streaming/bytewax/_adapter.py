@@ -172,8 +172,9 @@ def _wire_node(stream: Stream, node: CompiledNode, idx: int, ctx: _BuildContext)
 
 def _resolve_node_name(raw: object) -> str:
     """Resolve a human-readable name for a DSL node."""
-    if hasattr(raw, "task_name"):
-        return cast(str, raw.task_name())
+    task_name = getattr(raw, "task_name", None)
+    if callable(task_name):
+        return cast(str, task_name())
     return type(raw).__name__
 
 
