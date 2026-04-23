@@ -14,6 +14,9 @@ from loom.core.model import LoomFrozenStruct
 from loom.streaming import FromTopic, IntoTopic, Message, Process, StreamFlow, Task
 from loom.streaming.bytewax.runner import StreamingRunner
 
+_RECOVERY_DB_DIR = "/var/lib/loom/tests/bytewax-recovery"
+_RUNTIME_DB_DIR = "/var/lib/loom/tests/bytewax-runtime"
+
 
 class _Order(LoomFrozenStruct, frozen=True):
     order_id: str
@@ -58,7 +61,7 @@ def _config_dict() -> dict[str, object]:
                 "addresses": ["127.0.0.1:2101", "127.0.0.1:2102"],
                 "process_id": 1,
                 "recovery": {
-                    "db_dir": "/tmp/loom-bytewax-recovery",
+                    "db_dir": _RECOVERY_DB_DIR,
                     "backup_interval_ms": 30000,
                 },
             }
@@ -111,7 +114,7 @@ class TestStreamingRunner:
         assert runner._runtime.addresses == ("127.0.0.1:2101", "127.0.0.1:2102")
         assert runner._runtime.epoch_interval_ms == 5000
         assert runner._runtime.recovery is not None
-        assert runner._runtime.recovery.db_dir == "/tmp/loom-bytewax-recovery"
+        assert runner._runtime.recovery.db_dir == _RECOVERY_DB_DIR
         assert runner._runtime.recovery.backup_interval_ms == 30000
 
     def test_from_yaml_loads_runtime_section(self, tmp_path: Path) -> None:
@@ -134,7 +137,7 @@ streaming:
     process_id: 2
     addresses: ["127.0.0.1:2201", "127.0.0.1:2202"]
     recovery:
-      db_dir: "/tmp/loom-bytewax-runtime"
+      db_dir: "/var/lib/loom/tests/bytewax-runtime"
       backup_interval_ms: 45000
 """.strip()
         )
@@ -146,5 +149,5 @@ streaming:
         assert runner._runtime.addresses == ("127.0.0.1:2201", "127.0.0.1:2202")
         assert runner._runtime.epoch_interval_ms == 7000
         assert runner._runtime.recovery is not None
-        assert runner._runtime.recovery.db_dir == "/tmp/loom-bytewax-runtime"
+        assert runner._runtime.recovery.db_dir == _RUNTIME_DB_DIR
         assert runner._runtime.recovery.backup_interval_ms == 45000
