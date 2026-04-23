@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+pytest.importorskip("bytewax")
+
 from loom.streaming import Message
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.support.flow_cases import StreamFlowCase
@@ -71,6 +75,6 @@ def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
     runner = StreamingTestRunner.from_flow(
         flow_case.flow,
         runtime_config=flow_case.config,
-    ).given_input(*flow_case.input_messages)
+    ).with_messages(list(flow_case.input_messages))
     runner.run()
     return runner.output

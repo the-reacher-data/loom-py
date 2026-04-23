@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from bytewax.dataflow import Dataflow
+import pytest
 from pytest import MonkeyPatch
+
+pytest.importorskip("bytewax")
+
+from bytewax.dataflow import Dataflow
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import FromTopic, IntoTopic, Message, Process, StreamFlow, Task

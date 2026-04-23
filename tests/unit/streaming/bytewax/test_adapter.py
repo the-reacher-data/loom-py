@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
+pytest.importorskip("bytewax")
+
 from loom.core.model import LoomStruct
 from loom.streaming.compiler._plan import (
     CompiledNode,
@@ -97,7 +101,7 @@ class TestTaskNodeExecution:
 
     def test_single_task_produces_transformed_output(self) -> None:
         plan = _build_plan(_DoubleTask())
-        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
 
@@ -108,7 +112,7 @@ class TestTaskNodeExecution:
 
     def test_task_chain_passes_message_to_next_task(self) -> None:
         plan = _build_plan(_DoubleTask(), _SuffixTask())
-        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
 
@@ -137,7 +141,7 @@ class TestSourceDecode:
             offset=3,
             timestamp_ms=11,
         )
-        runner = StreamingTestRunner(plan).given_input(source_record)
+        runner = StreamingTestRunner(plan).with_messages([source_record])
         runner.run()
         results = runner.output
 
@@ -172,7 +176,9 @@ class TestSourceDecode:
             offset=4,
             timestamp_ms=12,
         )
-        runner = StreamingTestRunner(plan).given_input(source_record).capture_errors(ErrorKind.WIRE)
+        runner = (
+            StreamingTestRunner(plan).with_messages([source_record]).capture_errors(ErrorKind.WIRE)
+        )
         runner.run()
         results = runner.output
         errors = runner.errors[ErrorKind.WIRE]
@@ -195,7 +201,7 @@ class TestTerminalNodes:
     def test_into_topic_node_wires_terminal_sink(self) -> None:
         target = IntoTopic("out", payload=_Result)
         plan = _build_plan(_DoubleTask(), target)
-        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
 
@@ -203,8 +209,19 @@ class TestTerminalNodes:
 
     def test_drain_node_swallows_stream(self) -> None:
         plan = _build_plan(_DoubleTask(), Drain())
-        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
 
         assert results == []
+
+    def test_payload_helper_builds_default_test_metadata(self) -> None:
+        plan = _build_plan(_DoubleTask())
+        runner = StreamingTestRunner(plan).with_payloads([_Order(order_id="A")])
+
+        runner.run()
+
+        results = runner.output
+        assert len(results) == 1
+        assert results[0].meta.message_id == "test-0"
+        assert results[0].meta.topic == "in"

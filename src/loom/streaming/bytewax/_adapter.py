@@ -20,7 +20,13 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from bytewax.dataflow import Dataflow
 from bytewax.inputs import Source
-from bytewax.operators import branch, collect, flat_map, key_on, key_rm
+from bytewax.operators import (
+    branch,
+    collect,
+    flat_map,
+    key_on,
+    key_rm,
+)
 from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
 from bytewax.operators import output as bw_output
