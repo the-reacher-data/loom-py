@@ -8,6 +8,7 @@ Requires ``bytewax`` to be installed.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import time
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import Any, TypeAlias, cast
 
 from bytewax.dataflow import Dataflow
 from bytewax.inputs import Source
@@ -31,7 +32,9 @@ from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
 from bytewax.operators import output as bw_output
 from bytewax.outputs import Sink
+from bytewax.testing import TestingSource
 
+from loom.core.async_bridge import AsyncBridge
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
 from loom.streaming.compiler import CompiledNode, CompiledPlan
 from loom.streaming.core._errors import ErrorKind
@@ -46,9 +49,6 @@ from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._task import BatchTask, Task
 from loom.streaming.nodes._with import OneEmit, With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
-
-if TYPE_CHECKING:
-    from loom.core.async_bridge import AsyncBridge
 
 logger = logging.getLogger(__name__)
 Stream: TypeAlias = Any
@@ -117,10 +117,9 @@ def build_dataflow_with_shutdown(
     Returns:
         Built dataflow and a callback for releasing adapter-owned resources.
     """
-    bridge = _maybe_create_bridge(plan)
     ctx = _BuildContext(
         plan=plan,
-        bridge=bridge,
+        bridge=_maybe_create_bridge(plan),
         flow_observer=flow_observer,
         source=source,
         sink=sink,
@@ -132,7 +131,7 @@ def build_dataflow_with_shutdown(
 def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Dataflow:
     """Assemble a Bytewax Dataflow from a pre-built context."""
     flow = Dataflow(plan.name)
-    stream = _wire_source(flow, ctx)
+    stream = _build_source_pipeline(flow, ctx)
 
     for idx, node in enumerate(plan.nodes):
         stream = _wire_node(stream, node, idx, ctx)
@@ -191,6 +190,14 @@ class _BuildContext:
             self._managers[idx] = lifecycle_for(node, bridge=self.bridge)
         return self._managers[idx]
 
+    def should_wire_flow_output(self) -> bool:
+        """Return whether the flow-level output still needs wiring."""
+        return not self.terminal_output_wired
+
+    def mark_terminal_output_wired(self) -> None:
+        """Record that a terminal output path has already been wired."""
+        self.terminal_output_wired = True
+
     def shutdown_all(self) -> None:
         """Shutdown all resource managers."""
         for manager in self._managers.values():
@@ -205,19 +212,33 @@ class _BuildContext:
 # ---------------------------------------------------------------------------
 
 
-def _wire_source(flow: Dataflow, ctx: _BuildContext) -> Stream:
-    """Wire the Kafka source and decode operator."""
+def _build_source_pipeline(flow: Dataflow, ctx: _BuildContext) -> Stream:
+    """Build the source-side pipeline up to the first decoded Message stream."""
     source = ctx.source if ctx.source is not None else _empty_testing_source()
-
-    stream: Stream = bw_input("source", flow, source)
-
+    codec: MsgspecCodec[Any] = MsgspecCodec()
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
-    codec: MsgspecCodec[Any] = MsgspecCodec()
-    decoded = bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx, codec))
-    decoded_branch = branch(f"{step_id}_is_ok", decoded, _is_decode_ok)
+
+    stream: Stream = bw_input("source", flow, source)
+    decoded = _decode_source_stream(stream, ctx, codec, step_id)
+    decoded_branch = _split_decode_results(decoded, step_id)
     _wire_decode_error_routes(decoded_branch.falses, ctx)
     return bw_map(f"{step_id}_message", decoded_branch.trues, _decode_ok_message)
+
+
+def _decode_source_stream(
+    stream: Stream,
+    ctx: _BuildContext,
+    codec: MsgspecCodec[Any],
+    step_id: str,
+) -> Stream:
+    """Map raw source items into decode results without raising wire errors."""
+    return bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx, codec))
+
+
+def _split_decode_results(stream: Stream, step_id: str) -> Any:
+    """Split decode results into successful messages and wire errors."""
+    return branch(f"{step_id}_is_ok", stream, _is_decode_ok)
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +353,6 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> St
 
 
 def _apply_with_async(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
-    import asyncio
-
     node = cast(WithAsync[StreamPayload, StreamPayload], raw)
     if ctx.bridge is None:
         raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
@@ -446,7 +465,7 @@ _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
 
 def _wire_output(stream: Any, ctx: _BuildContext) -> None:
     """Wire the output sink and error routes."""
-    if ctx.terminal_output_wired:
+    if not ctx.should_wire_flow_output():
         return
 
     if ctx.sink is not None:
@@ -485,7 +504,6 @@ def _maybe_create_bridge(plan: CompiledPlan) -> AsyncBridge | None:
     """Create an AsyncBridge if the plan requires async task execution."""
     if not plan.needs_async_bridge:
         return None
-    from loom.core.async_bridge import AsyncBridge
 
     return AsyncBridge(thread_name=f"loom-{plan.name}-async")
 
@@ -554,8 +572,6 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
 
 def _empty_testing_source() -> Source[Any]:
     """Return an inert Bytewax testing source until Kafka input is wired."""
-    from bytewax.testing import TestingSource
-
     return TestingSource([])
 
 
@@ -569,7 +585,7 @@ def _wire_terminal_sink(step_id: str, stream: Stream, ctx: _BuildContext) -> Non
         bw_output(step_id, stream, ctx.sink)
     else:
         bw_map(f"{step_id}_encode", stream, _placeholder_encode)
-    ctx.terminal_output_wired = True
+    ctx.mark_terminal_output_wired()
 
 
 def _require_message(value: Any) -> Message[StreamPayload]:
