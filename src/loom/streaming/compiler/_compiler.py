@@ -43,6 +43,16 @@ def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> C
     return compiler.compile(flow, runtime_config=runtime_config)
 
 
+def _collect_deps(node: With[Any, Any] | WithAsync[Any, Any]) -> dict[str, object]:
+    """Return all dependency kinds of a With/WithAsync node merged into one mapping."""
+    return {
+        **node.sync_contexts,
+        **node.async_contexts,
+        **node.context_factories,
+        **node.plain_deps,
+    }
+
+
 class _Compiler:
     """Validates a StreamFlow and produces a CompiledPlan.
 
@@ -73,26 +83,14 @@ class _Compiler:
                 except ConfigError as exc:
                     errors.append(f"binding {node.config_path}: {exc}")
             elif isinstance(node, (With, WithAsync)):
-                all_deps: dict[str, object] = {
-                    **node.sync_contexts,
-                    **node.async_contexts,
-                    **node.context_factories,
-                    **node.plain_deps,
-                }
-                for dep in all_deps.values():
+                for dep in _collect_deps(node).values():
                     if isinstance(dep, ConfigBinding):
                         try:
                             section(cfg, dep.config_path, dict)
                         except ConfigError as exc:
                             errors.append(f"binding {dep.config_path}: {exc}")
             elif isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
-                all_deps = {
-                    **node.source.sync_contexts,
-                    **node.source.async_contexts,
-                    **node.source.context_factories,
-                    **node.source.plain_deps,
-                }
-                for dep in all_deps.values():
+                for dep in _collect_deps(node.source).values():
                     if isinstance(dep, ConfigBinding):
                         try:
                             section(cfg, dep.config_path, dict)

@@ -6,22 +6,17 @@ Mirrors the pattern used by :class:`~loom.etl.runner.core.ETLRunner`.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
-from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
 from bytewax.dataflow import Dataflow
 from bytewax.inputs import Source
 from bytewax.outputs import Sink
 from bytewax.testing import run_main
 from omegaconf import DictConfig, OmegaConf
 
-from loom.streaming.bytewax._adapter import (
-    _assemble_dataflow,
-    _BuildContext,
-    _maybe_create_bridge,
-)
+from loom.core.config import load_config
+from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
@@ -57,8 +52,7 @@ class StreamingRunner:
         self._flow = flow
         self._plan = plan
         self._observer = observer
-        self._bridge: Any | None = None
-        self._ctx: _BuildContext | None = None
+        self._shutdown: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -85,12 +79,7 @@ class StreamingRunner:
         observer: StreamingFlowObserver | None = None,
     ) -> StreamingRunner:
         """Load runtime config from a YAML file and build a runner."""
-        raw_path = Path(path)
-        if not raw_path.exists():
-            raise FileNotFoundError(f"Config file not found: {path}")
-        with raw_path.open("r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh)
-        return cls.from_config(flow, runtime_config=_dict_config(raw), observer=observer)
+        return cls.from_config(flow, runtime_config=load_config(path), observer=observer)
 
     @classmethod
     def from_dict(
@@ -113,17 +102,16 @@ class StreamingRunner:
         sink: Sink[Any] | None = None,
         error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
     ) -> Dataflow:
-        """Assemble the Bytewax Dataflow, keeping the build context for shutdown."""
-        self._bridge = _maybe_create_bridge(self._plan)
-        self._ctx = _BuildContext(
+        """Assemble the Bytewax Dataflow, keeping shutdown state."""
+        built = build_dataflow_with_shutdown(
             plan=self._plan,
-            bridge=self._bridge,
             flow_observer=self._observer,
             source=source,
             sink=sink,
             error_sinks=error_sinks,
         )
-        return _assemble_dataflow(self._plan, self._ctx)
+        self._shutdown = built.shutdown
+        return built.dataflow
 
     def run(
         self,
@@ -135,6 +123,12 @@ class StreamingRunner:
 
         Blocks until the dataflow reaches EOF (e.g. ``TestingSource`` is
         exhausted) or the process is interrupted.
+
+        .. note::
+
+            This method is intended for **local development and tests**.
+            For production use the Bytewax CLI (``python -m bytewax.run``
+            or ``waxctl``) directly.
         """
         dataflow = self.build_dataflow(source=source, sink=sink, error_sinks=error_sinks)
         try:
@@ -144,16 +138,13 @@ class StreamingRunner:
 
     def shutdown(self) -> None:
         """Close all resource managers and the async bridge."""
-        if self._ctx is not None:
-            logger.debug("shutting_down_resource_managers")
-            self._ctx.shutdown_all()
-        if self._bridge is not None:
-            logger.debug("closing_async_bridge")
-            self._bridge.close()
-            self._bridge = None
+        if self._shutdown is not None:
+            logger.debug("shutting_down")
+            self._shutdown()
+            self._shutdown = None
 
 
-def _dict_config(raw: Any) -> DictConfig:
+def _dict_config(raw: dict[str, Any]) -> DictConfig:
     config = OmegaConf.create(raw)
     if not isinstance(config, DictConfig):
         raise TypeError("Streaming runner config must resolve to a mapping")

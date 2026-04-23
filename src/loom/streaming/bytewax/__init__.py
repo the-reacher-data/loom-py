@@ -17,18 +17,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from loom.streaming.bytewax._adapter import build_dataflow as build_dataflow
+    from loom.streaming.bytewax._adapter import (
+        build_dataflow as build_dataflow,
+    )
+    from loom.streaming.bytewax._adapter import (
+        build_dataflow_with_shutdown as build_dataflow_with_shutdown,
+    )
 
-__all__ = ["build_dataflow"]
+__all__ = ["build_dataflow", "build_dataflow_with_shutdown"]
 
 _LOADED: dict[str, Any] = {}
 
 
 def __getattr__(name: str) -> Any:
-    if name == "build_dataflow":
+    if name in ("build_dataflow", "build_dataflow_with_shutdown"):
         if name not in _LOADED:
-            from loom.streaming.bytewax._adapter import build_dataflow as _fn
+            from loom.streaming.bytewax._adapter import (
+                build_dataflow as _build_fn,
+            )
+            from loom.streaming.bytewax._adapter import (
+                build_dataflow_with_shutdown as _build_shutdown_fn,
+            )
 
-            _LOADED[name] = _fn
+            _LOADED["build_dataflow"] = _build_fn
+            _LOADED["build_dataflow_with_shutdown"] = _build_shutdown_fn
         return _LOADED[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

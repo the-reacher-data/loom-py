@@ -13,6 +13,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
@@ -48,6 +49,19 @@ Stream: TypeAlias = Any
 NodeHandler: TypeAlias = Callable[[Stream, object, int, "_BuildContext"], Stream]
 
 
+@dataclass(frozen=True)
+class BuiltDataflow:
+    """Bytewax dataflow plus adapter-owned shutdown callback.
+
+    Args:
+        dataflow: Configured Bytewax dataflow ready for execution.
+        shutdown: Callback that releases adapter resources after execution.
+    """
+
+    dataflow: Dataflow
+    shutdown: Callable[[], None]
+
+
 def build_dataflow(
     plan: CompiledPlan,
     *,
@@ -68,6 +82,35 @@ def build_dataflow(
     Returns:
         Configured Bytewax Dataflow ready for execution.
     """
+    return build_dataflow_with_shutdown(
+        plan,
+        flow_observer=flow_observer,
+        source=source,
+        sink=sink,
+        error_sinks=error_sinks,
+    ).dataflow
+
+
+def build_dataflow_with_shutdown(
+    plan: CompiledPlan,
+    *,
+    flow_observer: StreamingFlowObserver | None = None,
+    source: Source[Any] | None = None,
+    sink: Sink[Any] | None = None,
+    error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
+) -> BuiltDataflow:
+    """Build a Bytewax Dataflow and expose its shutdown callback.
+
+    Args:
+        plan: Immutable compiled plan produced by the streaming compiler.
+        flow_observer: Optional observer for flow execution lifecycle events.
+        source: Optional Bytewax source. Tests can pass ``TestingSource`` here.
+        sink: Optional Bytewax sink. Tests can pass ``TestingSink`` here.
+        error_sinks: Optional sinks for explicit error branches in tests.
+
+    Returns:
+        Built dataflow and a callback for releasing adapter-owned resources.
+    """
     bridge = _maybe_create_bridge(plan)
     ctx = _BuildContext(
         plan=plan,
@@ -77,7 +120,7 @@ def build_dataflow(
         sink=sink,
         error_sinks=error_sinks,
     )
-    return _assemble_dataflow(plan, ctx)
+    return BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
 
 
 def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Dataflow:
@@ -126,6 +169,9 @@ class _BuildContext:
         self.source = source
         self.sink = sink
         self.error_sinks = error_sinks or {}
+        # Coordinates output wiring when multiple nodes (e.g. IntoTopic inside a
+        # router branch + flow.output) could both try to wire to the same sink.
+        # Bytewax rejects multiple outputs to the same sink, so we wire once.
         self.terminal_output_wired = False
         self._managers: dict[int, ResourceLifecycle] = {}
 
@@ -143,6 +189,9 @@ class _BuildContext:
         """Shutdown all resource managers."""
         for manager in self._managers.values():
             manager.shutdown()
+        if self.bridge is not None:
+            self.bridge.shutdown()
+            self.bridge = None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +207,8 @@ def _wire_source(flow: Dataflow, ctx: _BuildContext) -> Stream:
 
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
-    decoded = bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx))
+    codec: MsgspecCodec[Any] = MsgspecCodec()
+    decoded = bw_map(step_id, stream, lambda item: _decode_source_record(item, ctx, codec))
     decoded_branch = branch(f"{step_id}_is_ok", decoded, _is_decode_ok)
     _wire_decode_error_routes(decoded_branch.falses, ctx)
     return bw_map(f"{step_id}_message", decoded_branch.trues, _decode_ok_message)
@@ -445,7 +495,12 @@ def _empty(_item: Any) -> tuple[()]:
 
 
 def _batch_key(_item: Any) -> str:
-    """Group test batches into one logical Bytewax key."""
+    """Return a fixed grouping key for Bytewax ``collect``.
+
+    This is sufficient for testing with ``TestingSource``.  When Kafka
+    sources are wired directly, the key should derive from the record's
+    partition or message key to preserve parallelism.
+    """
     return "loom"
 
 
@@ -499,7 +554,11 @@ def _empty_testing_source() -> Source[Any]:
 
 
 def _wire_terminal_sink(step_id: str, stream: Stream, ctx: _BuildContext) -> None:
-    """Wire the configured test/runtime sink once."""
+    """Wire the configured test/runtime sink once.
+
+    The ``terminal_output_wired`` guard prevents duplicate output wiring
+    when both an ``IntoTopic`` node and ``flow.output`` are present.
+    """
     if ctx.sink is not None:
         bw_output(step_id, stream, ctx.sink)
     else:
@@ -532,15 +591,18 @@ def _replace_payloads(
     ]
 
 
-def _decode_source_record(payload: Any, ctx: _BuildContext) -> DecodeResult[StreamPayload]:
+def _decode_source_record(
+    payload: Any,
+    ctx: _BuildContext,
+    codec: MsgspecCodec[Any],
+) -> DecodeResult[StreamPayload]:
     """Decode source records into DSL messages without raising decode errors."""
     if isinstance(payload, Message):
         return DecodeOk(message=cast(Message[StreamPayload], payload))
     if isinstance(payload, KafkaRecord):
-        codec: MsgspecCodec[Any] = MsgspecCodec()
         return try_decode_record(
             cast(KafkaRecord[bytes], payload),
-            cast(Any, ctx.plan.source.payload_type),
+            ctx.plan.source.payload_type,
             codec,
         )
     raise TypeError(f"Expected Message or KafkaRecord, got {type(payload).__name__}.")
