@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from bytewax.testing import TestingSink, TestingSource, run_main
-
-from loom.streaming import Message, compile_flow
-from loom.streaming.bytewax import build_dataflow
+from loom.streaming import Message
+from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.support.flow_cases import StreamFlowCase
 
 
@@ -39,8 +37,7 @@ class TestBytewaxFlowExamples:
         results = _run_flow_case(with_batch_flow_case)
 
         assert (
-            tuple(message.payload for message in results)
-            == with_batch_flow_case.expected_payloads
+            tuple(message.payload for message in results) == with_batch_flow_case.expected_payloads
         )
         assert with_batch_flow_case.resource_events is not None
         assert with_batch_flow_case.resource_events.opened == [1]
@@ -66,19 +63,14 @@ class TestBytewaxFlowExamples:
         results = _run_flow_case(async_one_flow_case)
 
         assert (
-            tuple(message.payload for message in results)
-            == async_one_flow_case.expected_payloads
+            tuple(message.payload for message in results) == async_one_flow_case.expected_payloads
         )
 
 
 def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
-    plan = compile_flow(flow_case.flow, runtime_config=flow_case.config)
-    results: list[Message[Any]] = []
-    dataflow = build_dataflow(
-        plan,
-        source=TestingSource(flow_case.input_messages),
-        sink=TestingSink(results),
-    )
-
-    run_main(dataflow)  # type: ignore[no-untyped-call]
-    return results
+    runner = StreamingTestRunner.from_flow(
+        flow_case.flow,
+        runtime_config=flow_case.config,
+    ).given_input(*flow_case.input_messages)
+    runner.run()
+    return runner.output

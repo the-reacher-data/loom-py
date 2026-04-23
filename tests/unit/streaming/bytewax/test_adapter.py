@@ -8,10 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bytewax.testing import TestingSink, TestingSource, run_main
-
 from loom.core.model import LoomStruct
-from loom.streaming.bytewax._adapter import build_dataflow
 from loom.streaming.compiler._plan import (
     CompiledNode,
     CompiledPlan,
@@ -22,10 +19,10 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, build_message
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
-from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain, StreamShape
 from loom.streaming.nodes._task import Task
+from loom.streaming.testing import StreamingTestRunner
 
 
 class _Order(LoomStruct):
@@ -100,16 +97,9 @@ class TestTaskNodeExecution:
 
     def test_single_task_produces_transformed_output(self) -> None:
         plan = _build_plan(_DoubleTask())
-        source_data = [_message(_Order(order_id="A"))]
-        results: list[Message[_Result]] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource(source_data),
-            sink=TestingSink(results),
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner.run()
+        results = runner.output
 
         assert len(results) == 1
         assert isinstance(results[0], Message)
@@ -118,15 +108,9 @@ class TestTaskNodeExecution:
 
     def test_task_chain_passes_message_to_next_task(self) -> None:
         plan = _build_plan(_DoubleTask(), _SuffixTask())
-        results: list[Message[_Result]] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource([_message(_Order(order_id="A"))]),
-            sink=TestingSink(results),
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner.run()
+        results = runner.output
 
         assert [message.payload.value for message in results] == ["AA:ok"]
 
@@ -153,15 +137,9 @@ class TestSourceDecode:
             offset=3,
             timestamp_ms=11,
         )
-        results: list[Message[_Result]] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource([source_record]),
-            sink=TestingSink(results),
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(source_record)
+        runner.run()
+        results = runner.output
 
         assert len(results) == 1
         assert results[0].payload == _Result(value="AA")
@@ -194,17 +172,10 @@ class TestSourceDecode:
             offset=4,
             timestamp_ms=12,
         )
-        results: list[Message[_Result]] = []
-        errors: list[DecodeError] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource([source_record]),
-            sink=TestingSink(results),
-            error_sinks={ErrorKind.WIRE: TestingSink(errors)},
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(source_record).capture_errors(ErrorKind.WIRE)
+        runner.run()
+        results = runner.output
+        errors = runner.errors[ErrorKind.WIRE]
 
         assert results == []
         assert len(errors) == 1
@@ -224,28 +195,16 @@ class TestTerminalNodes:
     def test_into_topic_node_wires_terminal_sink(self) -> None:
         target = IntoTopic("out", payload=_Result)
         plan = _build_plan(_DoubleTask(), target)
-        results: list[Message[_Result]] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource([_message(_Order(order_id="A"))]),
-            sink=TestingSink(results),
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner.run()
+        results = runner.output
 
         assert [message.payload.value for message in results] == ["AA"]
 
     def test_drain_node_swallows_stream(self) -> None:
         plan = _build_plan(_DoubleTask(), Drain())
-        results: list[Message[_Result]] = []
-
-        flow = build_dataflow(
-            plan,
-            source=TestingSource([_message(_Order(order_id="A"))]),
-            sink=TestingSink(results),
-        )
-
-        run_main(flow)  # type: ignore[no-untyped-call]
+        runner = StreamingTestRunner(plan).given_input(_message(_Order(order_id="A")))
+        runner.run()
+        results = runner.output
 
         assert results == []
