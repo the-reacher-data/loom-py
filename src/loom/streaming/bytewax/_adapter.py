@@ -231,14 +231,16 @@ class _OutputWiring:
             self.wire_terminal("output", stream)
         elif plan.output is not None:
             bw_map("encode_output", stream, _placeholder_encode)
-            # TODO: wire kop.output with resolved ProducerSettings + topic
+            # Runtime Kafka output wiring stays deferred until the connector-backed
+            # producer path is implemented for the Bytewax adapter.
 
         for kind, sink in plan.error_routes.items():
             logger.info(
                 "error_route_registered",
                 extra={"error_kind": kind.value, "topic": sink.topic},
             )
-            # TODO: wire error branch -> kop.output per ErrorKind
+            # Runtime error-route publishing stays deferred until explicit
+            # connector-backed sinks are available for error branches.
 
     def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
         """Wire source decode errors to an explicit test sink or runtime route."""

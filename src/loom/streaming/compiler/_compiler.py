@@ -76,26 +76,11 @@ class _Compiler:
     @staticmethod
     def _validate_bindings(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
         errors: list[str] = []
-        for node in flow.process.nodes:
-            if isinstance(node, ConfigBinding):
-                try:
-                    section(cfg, node.config_path, dict)
-                except ConfigError as exc:
-                    errors.append(f"binding {node.config_path}: {exc}")
-            elif isinstance(node, (With, WithAsync)):
-                for dep in _collect_deps(node).values():
-                    if isinstance(dep, ConfigBinding):
-                        try:
-                            section(cfg, dep.config_path, dict)
-                        except ConfigError as exc:
-                            errors.append(f"binding {dep.config_path}: {exc}")
-            elif isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
-                for dep in _collect_deps(node.source).values():
-                    if isinstance(dep, ConfigBinding):
-                        try:
-                            section(cfg, dep.config_path, dict)
-                        except ConfigError as exc:
-                            errors.append(f"binding {dep.config_path}: {exc}")
+        for binding in _iter_config_bindings(flow):
+            try:
+                section(cfg, binding.config_path, dict)
+            except ConfigError as exc:
+                errors.append(f"binding {binding.config_path}: {exc}")
         return errors
 
     @staticmethod
@@ -218,6 +203,36 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     if flow.output is not None:
         return True
     return _has_terminal_output(flow.process.nodes)
+
+
+def _iter_config_bindings(flow: StreamFlow[Any, Any]) -> Iterable[ConfigBinding]:
+    """Yield all config bindings used directly or through With/WithAsync nodes."""
+    for node in flow.process.nodes:
+        yield from _node_config_bindings(node)
+
+
+def _node_config_bindings(node: object) -> Iterable[ConfigBinding]:
+    """Yield config bindings referenced by one process node."""
+    if isinstance(node, ConfigBinding):
+        yield node
+        return
+
+    scoped = _scoped_node(node)
+    if scoped is None:
+        return
+
+    for dep in _collect_deps(scoped).values():
+        if isinstance(dep, ConfigBinding):
+            yield dep
+
+
+def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
+    """Return the scoped node carried by a With-like declaration, if any."""
+    if isinstance(node, (With, WithAsync)):
+        return node
+    if isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
+        return node.source
+    return None
 
 
 def _node_needs_async_bridge(node: object) -> bool:

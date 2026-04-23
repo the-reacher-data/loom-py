@@ -119,7 +119,7 @@ class StreamingTestRunner:
         - ``message_id``: ``test-<index>``
         - ``topic``: first source topic declared by the flow
         """
-        topic = self._plan.source.topics[0]
+        topic = _first_source_topic(self._plan)
         self._input = [_test_message(topic, idx, item) for idx, item in enumerate(items)]
         return self
 
@@ -194,3 +194,10 @@ def _require_bytewax_testing() -> None:
         raise RuntimeError(
             "StreamingTestRunner requires the optional streaming extra with Bytewax installed."
         )
+
+
+def _first_source_topic(plan: CompiledPlan) -> str:
+    """Return the first declared source topic or fail with a clear error."""
+    if not plan.source.topics:
+        raise RuntimeError("StreamingTestRunner requires at least one configured source topic.")
+    return plan.source.topics[0]

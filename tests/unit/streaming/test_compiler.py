@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from omegaconf import OmegaConf
 
@@ -37,7 +39,7 @@ class _FakeTask(Task[_Order, _Result]):
         return _Result(value=message.payload.order_id)
 
 
-def _kafka_config() -> object:
+def _kafka_config() -> dict[str, Any]:
     return {
         "kafka": {
             "consumer": {"brokers": ["localhost:9092"], "group_id": "test", "topics": ["in"]},
@@ -47,7 +49,7 @@ def _kafka_config() -> object:
 
 
 def test_compile_success_with_minimal_flow() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(IntoTopic("out", payload=_Result)),
@@ -66,7 +68,7 @@ def test_compile_success_with_minimal_flow() -> None:
 
 def test_compile_fails_when_binding_path_missing() -> None:
     binding = _FakeTask.from_config("tasks.missing")
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(binding, IntoTopic("out", payload=_Result)),
@@ -80,7 +82,7 @@ def test_compile_fails_when_binding_path_missing() -> None:
 
 
 def test_compile_fails_when_kafka_missing_for_topic_flow() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
@@ -94,7 +96,7 @@ def test_compile_fails_when_kafka_missing_for_topic_flow() -> None:
 
 
 def test_compile_succeeds_when_kafka_present() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
@@ -108,7 +110,7 @@ def test_compile_succeeds_when_kafka_present() -> None:
 
 def test_compile_fails_on_shape_mismatch() -> None:
     """Task expects RECORD but source is BATCH without CollectBatch."""
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order, shape=StreamShape.BATCH),
         process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
@@ -122,7 +124,7 @@ def test_compile_fails_on_shape_mismatch() -> None:
 
 
 def test_compile_fails_without_output() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(_FakeTask()),
@@ -143,7 +145,7 @@ def test_compile_fails_without_output() -> None:
 
 
 def test_compile_drain_outputs_none_shape() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(Drain()),
@@ -157,7 +159,7 @@ def test_compile_drain_outputs_none_shape() -> None:
 
 
 def test_compile_validates_router_branch_shapes() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(
@@ -182,7 +184,7 @@ def test_compile_validates_router_branch_shapes() -> None:
 
 
 def test_compile_accepts_router_with_terminal_branch_output() -> None:
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(
@@ -202,12 +204,12 @@ def test_compile_accepts_router_with_terminal_branch_output() -> None:
 
 
 def test_uses_kafka_detects_kafka_usage() -> None:
-    flow_with_output = StreamFlow(
+    flow_with_output: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(IntoTopic("out", payload=_Result)),
     )
-    flow_without_output = StreamFlow(
+    flow_without_output: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(_FakeTask()),
@@ -223,13 +225,13 @@ def test_compile_fails_on_batch_scope_with_direct_context_manager() -> None:
     from loom.streaming import ResourceScope, With
 
     class _FakeSyncCM:
-        def __enter__(self):
+        def __enter__(self) -> _FakeSyncCM:
             return self
 
-        def __exit__(self, *args):
-            pass
+        def __exit__(self, *args: object) -> None:
+            return None
 
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(With(task=_FakeTask(), scope=ResourceScope.BATCH, db=_FakeSyncCM())),
@@ -245,13 +247,13 @@ def test_compile_succeeds_on_batch_scope_with_context_factory() -> None:
     from loom.streaming import ContextFactory, ResourceScope, With
 
     class _FakeSyncCM:
-        def __enter__(self):
+        def __enter__(self) -> _FakeSyncCM:
             return self
 
-        def __exit__(self, *args):
-            pass
+        def __exit__(self, *args: object) -> None:
+            return None
 
-    flow = StreamFlow(
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
         process=Process(

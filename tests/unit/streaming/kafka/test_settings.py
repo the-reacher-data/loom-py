@@ -12,6 +12,10 @@ from loom.streaming.kafka import (
     resolve_producer_topic,
 )
 
+_TEST_SASL_USERNAME = "test-user"
+_TEST_SASL_SECRET = "test-secret"
+_TEST_CA_LOCATION = "/etc/ssl/certs/test-ca.pem"
+
 
 def test_producer_settings_compile_to_confluent_config() -> None:
     settings = ProducerSettings(
@@ -20,9 +24,9 @@ def test_producer_settings_compile_to_confluent_config() -> None:
         security=KafkaSecuritySettings(
             protocol="SASL_SSL",
             sasl_mechanism="PLAIN",
-            sasl_username="user",
-            sasl_password="pass",
-            ssl_ca_location="/tmp/ca.pem",
+            sasl_username=_TEST_SASL_USERNAME,
+            sasl_password=_TEST_SASL_SECRET,
+            ssl_ca_location=_TEST_CA_LOCATION,
         ),
         extra={"compression.type": "zstd", "linger.ms": 10, "enable.idempotence": True},
     )
@@ -33,9 +37,9 @@ def test_producer_settings_compile_to_confluent_config() -> None:
     assert config["client.id"] == "producer-a"
     assert config["security.protocol"] == "SASL_SSL"
     assert config["sasl.mechanism"] == "PLAIN"
-    assert config["sasl.username"] == "user"
-    assert config["sasl.password"] == "pass"
-    assert config["ssl.ca.location"] == "/tmp/ca.pem"
+    assert config["sasl.username"] == _TEST_SASL_USERNAME
+    assert config["sasl.password"] == _TEST_SASL_SECRET
+    assert config["ssl.ca.location"] == _TEST_CA_LOCATION
     assert config["compression.type"] == "zstd"
     assert config["linger.ms"] == 10
     assert config["enable.idempotence"] is True

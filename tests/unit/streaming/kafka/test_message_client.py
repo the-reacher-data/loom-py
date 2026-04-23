@@ -18,7 +18,7 @@ from loom.streaming.kafka import (
 )
 
 
-class _OrderCreated(LoomFrozenStruct):
+class _OrderCreated(LoomFrozenStruct, frozen=True):
     order_id: str
     amount: int
 
@@ -120,7 +120,9 @@ def test_message_producer_resolves_key_when_explicit_key_is_absent() -> None:
         descriptor=MessageDescriptor(message_type="order.created", message_version=1),
     )
 
-    assert raw.sent[0].key == b"o-1"
+    assert len(raw.sent) == 1
+    record = raw.sent[0]
+    assert record.key == b"o-1"
 
 
 def test_message_producer_keeps_explicit_key_over_resolved_key() -> None:
@@ -135,7 +137,9 @@ def test_message_producer_keeps_explicit_key_over_resolved_key() -> None:
         descriptor=MessageDescriptor(message_type="order.created", message_version=1),
     )
 
-    assert raw.sent[0].key == "tenant-a"
+    assert len(raw.sent) == 1
+    record = raw.sent[0]
+    assert record.key == "tenant-a"
 
 
 def test_message_producer_can_disable_record_timestamp() -> None:
@@ -150,7 +154,9 @@ def test_message_producer_can_disable_record_timestamp() -> None:
         produced_at_ms=99,
     )
 
-    assert raw.sent[0].timestamp_ms is None
+    assert len(raw.sent) == 1
+    record = raw.sent[0]
+    assert record.timestamp_ms is None
 
 
 def test_message_producer_flush_and_close_delegate() -> None:

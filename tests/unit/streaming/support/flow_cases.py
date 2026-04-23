@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any
@@ -26,6 +27,14 @@ from loom.streaming import (
     WithAsync,
     msg,
 )
+
+_KAFKA_BROKER = "localhost:9092"
+_ORDERS_RAW_TOPIC = "orders.raw"
+_ORDERS_VALIDATED_TOPIC = "orders.validated"
+_ORDERS_ROUTED_TOPIC = "orders.routed"
+_ORDERS_PRICED_TOPIC = "orders.priced"
+_ORDERS_PRICED_BATCH_SCOPE_TOPIC = "orders.priced.batch_scope"
+_ORDERS_SCORED_TOPIC = "orders.scored"
 
 
 class OrderPlaced(LoomStruct):
@@ -132,6 +141,7 @@ class FakeRiskClient:
         return self
 
     async def __aexit__(self, *args: object) -> None:
+        await asyncio.sleep(0)
         return None
 
     async def risk_band(self, amount: int) -> str:
@@ -167,9 +177,9 @@ def build_simple_validation_flow_case() -> StreamFlowCase:
     """Build the smallest topic-in, task, topic-out StreamFlow case."""
     flow = StreamFlow(
         name="orders_validate",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(ValidateOrder()),
-        output=IntoTopic("orders.validated", payload=ValidatedOrder),
+        output=IntoTopic(_ORDERS_VALIDATED_TOPIC, payload=ValidatedOrder),
     )
     message = Message(
         payload=OrderPlaced(order_id="o-1", amount=100),
@@ -187,7 +197,7 @@ def build_router_flow_case() -> StreamFlowCase:
     """Build a topic flow with a Router that has multiple branches."""
     flow = StreamFlow(
         name="orders_route",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             Router.by(
                 msg.payload.segment,
@@ -198,7 +208,7 @@ def build_router_flow_case() -> StreamFlowCase:
                 default=Process(MarkManualOrder()),
             )
         ),
-        output=IntoTopic("orders.routed", payload=RoutedOrder),
+        output=IntoTopic(_ORDERS_ROUTED_TOPIC, payload=RoutedOrder),
     )
     return StreamFlowCase(
         flow=flow,
@@ -221,7 +231,7 @@ def build_with_batch_flow_case() -> StreamFlowCase:
     events = ResourceEvents()
     flow = StreamFlow(
         name="orders_price_batch",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
@@ -231,7 +241,7 @@ def build_with_batch_flow_case() -> StreamFlowCase:
             ),
             ForEach(),
         ),
-        output=IntoTopic("orders.priced", payload=PricedOrder),
+        output=IntoTopic(_ORDERS_PRICED_TOPIC, payload=PricedOrder),
     )
     return StreamFlowCase(
         flow=flow,
@@ -257,7 +267,7 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
     events = ResourceEvents()
     flow = StreamFlow(
         name="orders_price_batch_scope",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
@@ -267,7 +277,7 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
             ),
             ForEach(),
         ),
-        output=IntoTopic("orders.priced.batch_scope", payload=PricedOrder),
+        output=IntoTopic(_ORDERS_PRICED_BATCH_SCOPE_TOPIC, payload=PricedOrder),
     )
     return StreamFlowCase(
         flow=flow,
@@ -292,7 +302,7 @@ def build_async_one_flow_case() -> StreamFlowCase:
     """Build a batch flow using WithAsync.one() to emit individual async results."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_score_async_each",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             WithAsync(
@@ -300,7 +310,7 @@ def build_async_one_flow_case() -> StreamFlowCase:
                 client=FakeRiskClient(),
                 max_concurrency=2,
                 scope=ResourceScope.WORKER,
-            ).one(IntoTopic("orders.scored", payload=RiskScoredOrder)),
+            ).one(IntoTopic(_ORDERS_SCORED_TOPIC, payload=RiskScoredOrder)),
         ),
     )
     return StreamFlowCase(
@@ -328,31 +338,31 @@ def _streaming_kafka_config() -> dict[str, Any]:
     return {
         "kafka": {
             "consumer": {
-                "brokers": ["localhost:9092"],
+                "brokers": [_KAFKA_BROKER],
                 "group_id": "test",
-                "topics": ["orders.raw"],
+                "topics": [_ORDERS_RAW_TOPIC],
             },
-            "producer": {"brokers": ["localhost:9092"], "topic": "orders.validated"},
+            "producer": {"brokers": [_KAFKA_BROKER], "topic": _ORDERS_VALIDATED_TOPIC},
             "producers": {
-                "orders.validated": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.validated",
+                _ORDERS_VALIDATED_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_VALIDATED_TOPIC,
                 },
-                "orders.routed": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.routed",
+                _ORDERS_ROUTED_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_ROUTED_TOPIC,
                 },
-                "orders.priced": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.priced",
+                _ORDERS_PRICED_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_PRICED_TOPIC,
                 },
-                "orders.priced.batch_scope": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.priced.batch_scope",
+                _ORDERS_PRICED_BATCH_SCOPE_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_PRICED_BATCH_SCOPE_TOPIC,
                 },
-                "orders.scored": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.scored",
+                _ORDERS_SCORED_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_SCORED_TOPIC,
                 },
             },
         }
