@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pytest import MonkeyPatch
@@ -11,7 +12,7 @@ from bytewax.dataflow import Dataflow
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import FromTopic, IntoTopic, Message, Process, StreamFlow, Task
-from loom.streaming.bytewax.runner import PreparedStreamingRun, StreamingRunner
+from loom.streaming.bytewax.runner import StreamingRunner
 
 
 class _Order(LoomFrozenStruct, frozen=True):
@@ -75,12 +76,12 @@ class TestStreamingRunner:
         shutdown_calls: list[str] = []
         cli_calls: dict[str, object] = {}
 
-        def _fake_prepare() -> PreparedStreamingRun:
+        def _fake_prepare() -> object:
             def shutdown() -> None:
                 shutdown_calls.append("done")
 
             runner._shutdown = shutdown
-            return PreparedStreamingRun(
+            return SimpleNamespace(
                 dataflow=dataflow,
                 shutdown=shutdown,
             )

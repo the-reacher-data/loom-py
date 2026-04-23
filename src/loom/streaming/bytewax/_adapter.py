@@ -56,7 +56,7 @@ NodeHandler: TypeAlias = Callable[[Stream, object, int, "_BuildContext"], Stream
 
 
 @dataclass(frozen=True)
-class BuiltDataflow:
+class _BuiltDataflow:
     """Bytewax dataflow plus adapter-owned shutdown callback.
 
     Args:
@@ -104,7 +104,7 @@ def build_dataflow_with_shutdown(
     source: Source[Any] | None = None,
     sink: Sink[Any] | None = None,
     error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
-) -> BuiltDataflow:
+) -> _BuiltDataflow:
     """Build a Bytewax Dataflow and expose its shutdown callback.
 
     Args:
@@ -125,7 +125,7 @@ def build_dataflow_with_shutdown(
         sink=sink,
         error_sinks=error_sinks,
     )
-    return BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
+    return _BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
 
 
 def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Dataflow:
@@ -153,9 +153,7 @@ class _BuildContext:
         "bridge",
         "flow_observer",
         "source",
-        "sink",
-        "error_sinks",
-        "terminal_output_wired",
+        "outputs",
         "_managers",
     )
 
@@ -172,12 +170,10 @@ class _BuildContext:
         self.bridge = bridge
         self.flow_observer = flow_observer
         self.source = source
-        self.sink = sink
-        self.error_sinks = error_sinks or {}
-        # Coordinates output wiring when multiple nodes (e.g. IntoTopic inside a
-        # router branch + flow.output) could both try to wire to the same sink.
-        # Bytewax rejects multiple outputs to the same sink, so we wire once.
-        self.terminal_output_wired = False
+        self.outputs = _OutputWiring(
+            sink=sink,
+            error_sinks=error_sinks or {},
+        )
         self._managers: dict[int, ResourceLifecycle] = {}
 
     def manager_for(
@@ -190,14 +186,6 @@ class _BuildContext:
             self._managers[idx] = lifecycle_for(node, bridge=self.bridge)
         return self._managers[idx]
 
-    def should_wire_flow_output(self) -> bool:
-        """Return whether the flow-level output still needs wiring."""
-        return not self.terminal_output_wired
-
-    def mark_terminal_output_wired(self) -> None:
-        """Record that a terminal output path has already been wired."""
-        self.terminal_output_wired = True
-
     def shutdown_all(self) -> None:
         """Shutdown all resource managers."""
         for manager in self._managers.values():
@@ -205,6 +193,62 @@ class _BuildContext:
         if self.bridge is not None:
             self.bridge.shutdown()
             self.bridge = None
+
+
+class _OutputWiring:
+    """Coordinate terminal output and explicit error routes for one build."""
+
+    __slots__ = ("sink", "error_sinks", "_terminal_output_wired")
+
+    def __init__(
+        self,
+        *,
+        sink: Sink[Any] | None,
+        error_sinks: Mapping[ErrorKind, Sink[Any]],
+    ) -> None:
+        self.sink = sink
+        self.error_sinks = error_sinks
+        self._terminal_output_wired = False
+
+    def needs_flow_output(self) -> bool:
+        """Return whether the flow-level output still needs wiring."""
+        return not self._terminal_output_wired
+
+    def wire_terminal(self, step_id: str, stream: Stream) -> None:
+        """Wire the configured terminal sink exactly once."""
+        if self.sink is not None:
+            bw_output(step_id, stream, self.sink)
+        else:
+            bw_map(f"{step_id}_encode", stream, _placeholder_encode)
+        self._terminal_output_wired = True
+
+    def wire_flow_output(self, stream: Stream, plan: CompiledPlan) -> None:
+        """Wire the flow-level output and declared error routes."""
+        if not self.needs_flow_output():
+            return
+
+        if self.sink is not None:
+            self.wire_terminal("output", stream)
+        elif plan.output is not None:
+            bw_map("encode_output", stream, _placeholder_encode)
+            # TODO: wire kop.output with resolved ProducerSettings + topic
+
+        for kind, sink in plan.error_routes.items():
+            logger.info(
+                "error_route_registered",
+                extra={"error_kind": kind.value, "topic": sink.topic},
+            )
+            # TODO: wire error branch -> kop.output per ErrorKind
+
+    def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
+        """Wire source decode errors to an explicit test sink or runtime route."""
+        sink = self.error_sinks.get(ErrorKind.WIRE)
+        if sink is not None:
+            bw_output("decode_wire_errors", stream, sink)
+            return
+
+        if ErrorKind.WIRE in plan.error_routes:
+            bw_map("decode_wire_errors_encode", stream, _placeholder_encode)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +266,7 @@ def _build_source_pipeline(flow: Dataflow, ctx: _BuildContext) -> Stream:
     stream: Stream = bw_input("source", flow, source)
     decoded = _decode_source_stream(stream, ctx, codec, step_id)
     decoded_branch = _split_decode_results(decoded, step_id)
-    _wire_decode_error_routes(decoded_branch.falses, ctx)
+    ctx.outputs.wire_decode_error(decoded_branch.falses, ctx.plan)
     return bw_map(f"{step_id}_message", decoded_branch.trues, _decode_ok_message)
 
 
@@ -420,7 +464,7 @@ def _apply_drain(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> S
 
 
 def _apply_into_topic(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
-    _wire_terminal_sink(f"into_topic_{idx}", stream, ctx)
+    ctx.outputs.wire_terminal(f"into_topic_{idx}", stream)
     return stream
 
 
@@ -465,34 +509,7 @@ _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
 
 def _wire_output(stream: Any, ctx: _BuildContext) -> None:
     """Wire the output sink and error routes."""
-    if not ctx.should_wire_flow_output():
-        return
-
-    if ctx.sink is not None:
-        _wire_terminal_sink("output", stream, ctx)
-        return
-
-    if ctx.plan.output is not None:
-        bw_map("encode_output", stream, _placeholder_encode)
-        # TODO: wire kop.output with resolved ProducerSettings + topic
-
-    for kind, sink in ctx.plan.error_routes.items():
-        logger.info(
-            "error_route_registered",
-            extra={"error_kind": kind.value, "topic": sink.topic},
-        )
-        # TODO: wire error branch → kop.output per ErrorKind
-
-
-def _wire_decode_error_routes(stream: Stream, ctx: _BuildContext) -> None:
-    """Wire source decode errors to the WIRE testing sink when configured."""
-    sink = ctx.error_sinks.get(ErrorKind.WIRE)
-    if sink is not None:
-        bw_output("decode_wire_errors", stream, sink)
-        return
-
-    if ErrorKind.WIRE in ctx.plan.error_routes:
-        bw_map("decode_wire_errors_encode", stream, _placeholder_encode)
+    ctx.outputs.wire_flow_output(stream, ctx.plan)
 
 
 # ---------------------------------------------------------------------------
@@ -573,19 +590,6 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
 def _empty_testing_source() -> Source[Any]:
     """Return an inert Bytewax testing source until Kafka input is wired."""
     return TestingSource([])
-
-
-def _wire_terminal_sink(step_id: str, stream: Stream, ctx: _BuildContext) -> None:
-    """Wire the configured test/runtime sink once.
-
-    The ``terminal_output_wired`` guard prevents duplicate output wiring
-    when both an ``IntoTopic`` node and ``flow.output`` are present.
-    """
-    if ctx.sink is not None:
-        bw_output(step_id, stream, ctx.sink)
-    else:
-        bw_map(f"{step_id}_encode", stream, _placeholder_encode)
-    ctx.mark_terminal_output_wired()
 
 
 def _require_message(value: Any) -> Message[StreamPayload]:

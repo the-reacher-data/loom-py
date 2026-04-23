@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class PreparedStreamingRun:
+class _PreparedStreamingRun:
     """Prepared Bytewax execution bundle.
 
     Args:
@@ -131,7 +131,7 @@ class StreamingRunner:
         prepared = self.prepare_run()
         return prepared.dataflow
 
-    def prepare_run(self) -> PreparedStreamingRun:
+    def prepare_run(self) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback."""
         prepared = _prepare_run(self._plan, observer=self._observer)
         self._shutdown = prepared.shutdown
@@ -216,7 +216,7 @@ def _prepare_run(
     source: Any | None = None,
     sink: Any | None = None,
     error_sinks: Any | None = None,
-) -> PreparedStreamingRun:
+) -> _PreparedStreamingRun:
     built = build_dataflow_with_shutdown(
         plan=plan,
         flow_observer=observer,
@@ -224,13 +224,12 @@ def _prepare_run(
         sink=sink,
         error_sinks=error_sinks,
     )
-    return PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
+    return _PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
 
 
 __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
-    "PreparedStreamingRun",
     "StreamingRunner",
     "make_flow_observers",
 ]
