@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from loom.core.expr import ExprNode, PathRef, evaluate_expr
 from loom.core.model import LoomFrozenStruct
@@ -41,6 +41,7 @@ class Router(Generic[InT, OutT]):
     """
 
     __slots__ = ("_selector", "_routes", "_predicate_routes", "_default")
+    router_branch_safe: ClassVar[bool] = True
 
     def __init__(
         self,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Generic, Protocol, TypeVar
+from typing import ClassVar, Generic, Protocol, TypeVar
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.routing import LogicalRef, as_logical_ref
@@ -48,6 +48,7 @@ class IntoTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
     payload: type[PayloadT] | None = None
     shape: StreamShape = StreamShape.RECORD
     partitioning: PartitionPolicy[PayloadT] | None = None
+    router_branch_safe: ClassVar[bool] = True
 
     @property
     def logical_ref(self) -> LogicalRef:

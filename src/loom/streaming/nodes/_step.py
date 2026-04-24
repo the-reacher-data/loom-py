@@ -56,6 +56,7 @@ class Step(Configurable, ABC, Generic[InT, OutT]):
 class RecordStep(Step[InT, OutT], ABC):
     """Streaming step that consumes and produces one record at a time."""
 
+    router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.RECORD
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
 
@@ -67,6 +68,7 @@ class RecordStep(Step[InT, OutT], ABC):
 class BatchStep(Step[InT, OutT], ABC):
     """Streaming step that consumes and produces one batch at a time."""
 
+    router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.BATCH
     output_shape: ClassVar[StreamShape] = StreamShape.BATCH
 
@@ -78,6 +80,7 @@ class BatchStep(Step[InT, OutT], ABC):
 class ExpandStep(Step[InT, OutT], ABC):
     """Streaming step that expands one record into many output messages."""
 
+    router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.RECORD
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
 
@@ -89,6 +92,7 @@ class ExpandStep(Step[InT, OutT], ABC):
 class BatchExpandStep(Step[InT, OutT], ABC):
     """Streaming step that expands one batch into many output messages."""
 
+    router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.BATCH
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
 

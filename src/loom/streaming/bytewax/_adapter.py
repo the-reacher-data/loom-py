@@ -42,6 +42,7 @@ from loom.streaming.kafka._codec import MsgspecCodec
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeOk, DecodeResult, try_decode_record
 from loom.streaming.nodes._boundary import IntoTopic
+from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -612,10 +613,10 @@ def _select_router_branch(
 
 
 def _execute_router_node(node: object, message: Message[StreamPayload]) -> Message[StreamPayload]:
-    if isinstance(node, RecordStep):
+    if isinstance(node, RouterBranchSafe) and isinstance(node, RecordStep):
         step = cast(RecordStep[StreamPayload, StreamPayload], node)
         return _replace_payload(message, step.execute(message))
-    if isinstance(node, (IntoTopic, Drain)):
+    if isinstance(node, RouterBranchSafe) and isinstance(node, (IntoTopic, Drain)):
         return message
     raise TypeError(
         f"Router branch node {type(node).__name__} is not supported by Bytewax adapter."

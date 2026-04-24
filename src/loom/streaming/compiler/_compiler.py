@@ -19,6 +19,7 @@ from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -274,26 +275,9 @@ def _validate_router_shapes(
         branch_errors, branch_output = _validate_shape_sequence(nodes, initial_shape)
         errors.extend(f"router branch {label}: {error}" for error in branch_errors)
         for node in nodes:
-            if not isinstance(
-                node,
-                (
-                    RecordStep,
-                    BatchStep,
-                    ExpandStep,
-                    BatchExpandStep,
-                    With,
-                    WithAsync,
-                    IntoTopic,
-                    Drain,
-                    CollectBatch,
-                    ForEach,
-                    Router,
-                ),
-            ):
+            if not isinstance(node, RouterBranchSafe):
                 errors.append(
-                    f"router branch {label}: node {type(node).__name__} is not supported "
-                    f"in router branches (only step, with, collect, router, IntoTopic, "
-                    f"and Drain nodes are allowed)"
+                    f"router branch {label}: node {type(node).__name__} is not router-branch safe"
                 )
         outputs.append(branch_output)
 

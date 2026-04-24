@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import ClassVar
 
 from loom.core.model import LoomFrozenStruct
 
@@ -19,6 +20,8 @@ class StreamShape(StrEnum):
 class ForEach(LoomFrozenStruct, frozen=True):
     """Explicit shape adapter from ``batch`` to ``record``."""
 
+    router_branch_safe: ClassVar[bool] = True
+
 
 class CollectBatch(LoomFrozenStruct, frozen=True):
     """Explicit shape adapter from ``record`` to ``batch``.
@@ -30,6 +33,7 @@ class CollectBatch(LoomFrozenStruct, frozen=True):
 
     max_records: int
     timeout_ms: int
+    router_branch_safe: ClassVar[bool] = True
 
     def __post_init__(self) -> None:
         """Validate batch collection limits."""
@@ -41,6 +45,8 @@ class CollectBatch(LoomFrozenStruct, frozen=True):
 
 class Drain(LoomFrozenStruct, frozen=True):
     """Explicit terminal adapter from any shape to ``none``."""
+
+    router_branch_safe: ClassVar[bool] = True
 
 
 __all__ = ["CollectBatch", "Drain", "ForEach", "StreamShape"]
