@@ -19,6 +19,7 @@ from loom.streaming import (
     Router,
     StreamFlow,
     StreamShape,
+    WindowStrategy,
     msg,
 )
 from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
@@ -156,6 +157,67 @@ def test_compile_drain_outputs_none_shape() -> None:
 
     assert plan.nodes[-1].output_shape is StreamShape.NONE
     assert plan.output is None
+
+
+class TestWindowStrategyValidation:
+    """Compiler must reject unimplemented WindowStrategy values at compile time."""
+
+    def test_collect_strategy_compiles_successfully(self) -> None:
+        flow: StreamFlow[_Order, _Result] = StreamFlow(
+            name="test",
+            source=FromTopic("in", payload=_Order),
+            process=Process(
+                CollectBatch(max_records=10, timeout_ms=500),
+                Drain(),
+            ),
+        )
+        cfg = OmegaConf.create(_kafka_config())
+
+        plan = compile_flow(flow, runtime_config=cfg)
+
+        batch_node = plan.nodes[0].node
+        assert isinstance(batch_node, CollectBatch)
+        assert batch_node.window is WindowStrategy.COLLECT
+
+    def test_tumbling_strategy_raises_compilation_error(self) -> None:
+        flow: StreamFlow[_Order, _Result] = StreamFlow(
+            name="test",
+            source=FromTopic("in", payload=_Order),
+            process=Process(
+                CollectBatch(
+                    max_records=10,
+                    timeout_ms=500,
+                    window=WindowStrategy.TUMBLING,
+                ),
+                Drain(),
+            ),
+        )
+        cfg = OmegaConf.create(_kafka_config())
+
+        with pytest.raises(CompilationError) as exc_info:
+            compile_flow(flow, runtime_config=cfg)
+
+        assert "tumbling" in str(exc_info.value)
+
+    def test_session_strategy_raises_compilation_error(self) -> None:
+        flow: StreamFlow[_Order, _Result] = StreamFlow(
+            name="test",
+            source=FromTopic("in", payload=_Order),
+            process=Process(
+                CollectBatch(
+                    max_records=10,
+                    timeout_ms=500,
+                    window=WindowStrategy.SESSION,
+                ),
+                Drain(),
+            ),
+        )
+        cfg = OmegaConf.create(_kafka_config())
+
+        with pytest.raises(CompilationError) as exc_info:
+            compile_flow(flow, runtime_config=cfg)
+
+        assert "session" in str(exc_info.value)
 
 
 def test_compile_validates_router_branch_shapes() -> None:

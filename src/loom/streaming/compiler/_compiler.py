@@ -21,7 +21,7 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._router import Router
-from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
+from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
@@ -111,6 +111,7 @@ class _Compiler:
     @staticmethod
     def _validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
         errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
+        errors.extend(_validate_window_strategies(flow.process.nodes))
         return errors
 
     @staticmethod
@@ -330,6 +331,18 @@ def _node_input_shape(node: object) -> StreamShape | None:
     if isinstance(node, Drain):
         return None
     return None
+
+
+def _validate_window_strategies(nodes: Iterable[object]) -> list[str]:
+    """Return errors for any CollectBatch node using an unimplemented strategy."""
+    errors: list[str] = []
+    for node in nodes:
+        if isinstance(node, CollectBatch) and node.window is not WindowStrategy.COLLECT:
+            errors.append(
+                f"CollectBatch.window={node.window} is not yet supported by the Bytewax adapter. "
+                f"Only WindowStrategy.COLLECT is available in this adapter version."
+            )
+    return errors
 
 
 def _node_output_shape(node: object, current: StreamShape) -> StreamShape:

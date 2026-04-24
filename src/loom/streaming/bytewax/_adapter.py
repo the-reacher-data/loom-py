@@ -20,7 +20,6 @@ from types import MappingProxyType
 from typing import Any, TypeAlias, cast
 
 import bytewax.dataflow as _bytewax_dataflow
-import bytewax.testing as _bytewax_testing
 from bytewax.operators import (
     branch,
     collect,
@@ -44,7 +43,7 @@ from loom.streaming.kafka._wire import DecodeOk, DecodeResult, try_decode_record
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
-from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
+from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
@@ -80,9 +79,9 @@ def build_dataflow(
     Args:
         plan: Immutable compiled plan produced by the streaming compiler.
         flow_observer: Optional observer for flow execution lifecycle events.
-        source: Optional Bytewax source. Tests can pass ``TestingSource`` here.
-        sink: Optional Bytewax sink. Tests can pass ``TestingSink`` here.
-        error_sinks: Optional sinks for explicit error branches in tests.
+        source: Bytewax source for the compiled input stream.
+        sink: Bytewax sink for the terminal output stream.
+        error_sinks: Optional sinks for explicit error branches.
 
     Returns:
         Configured Bytewax Dataflow ready for execution.
@@ -109,9 +108,9 @@ def build_dataflow_with_shutdown(
     Args:
         plan: Immutable compiled plan produced by the streaming compiler.
         flow_observer: Optional observer for flow execution lifecycle events.
-        source: Optional Bytewax source. Tests can pass ``TestingSource`` here.
-        sink: Optional Bytewax sink. Tests can pass ``TestingSink`` here.
-        error_sinks: Optional sinks for explicit error branches in tests.
+        source: Bytewax source for the compiled input stream.
+        sink: Bytewax sink for the terminal output stream.
+        error_sinks: Optional sinks for explicit error branches.
 
     Returns:
         Built dataflow and a callback for releasing adapter-owned resources.
@@ -215,10 +214,9 @@ class _OutputWiring:
 
     def wire_terminal(self, step_id: str, stream: Stream) -> None:
         """Wire the configured terminal sink exactly once."""
-        if self.sink is not None:
-            bw_output(step_id, stream, self.sink)
-        else:
-            bw_map(f"{step_id}_encode", stream, _placeholder_encode)
+        if self.sink is None:
+            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
+        bw_output(step_id, stream, self.sink)
         self._terminal_output_wired = True
 
     def wire_flow_output(self, stream: Stream, plan: CompiledPlan) -> None:
@@ -226,20 +224,18 @@ class _OutputWiring:
         if not self.needs_flow_output():
             return
 
+        if self.sink is None and plan.output is not None:
+            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
         if self.sink is not None:
             self.wire_terminal("output", stream)
-        elif plan.output is not None:
-            bw_map("encode_output", stream, _placeholder_encode)
-            # Runtime Kafka output wiring stays deferred until the connector-backed
-            # producer path is implemented for the Bytewax adapter.
 
         for kind, sink in plan.error_routes.items():
             logger.info(
                 "error_route_registered",
                 extra={"error_kind": kind.value, "topic": sink.topic},
             )
-            # Runtime error-route publishing stays deferred until explicit
-            # connector-backed sinks are available for error branches.
+            if kind not in self.error_sinks:
+                raise RuntimeError(f"Bytewax sink is required for error route {kind.value}.")
 
     def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
         """Wire source decode errors to an explicit test sink or runtime route."""
@@ -249,7 +245,7 @@ class _OutputWiring:
             return
 
         if ErrorKind.WIRE in plan.error_routes:
-            bw_map("decode_wire_errors_encode", stream, _placeholder_encode)
+            raise RuntimeError("Bytewax sink is required for WIRE error routing.")
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +255,9 @@ class _OutputWiring:
 
 def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     """Build the source-side pipeline up to the first decoded Message stream."""
-    source = ctx.source if ctx.source is not None else _empty_testing_source()
+    if ctx.source is None:
+        raise RuntimeError("Bytewax source is required to build a runtime dataflow.")
+    source = ctx.source
     codec: MsgspecCodec[Any] = MsgspecCodec()
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
@@ -453,6 +451,16 @@ def _apply_with_async(stream: Stream, raw: object, idx: int, ctx: _BuildContext)
 
 def _apply_collect_batch(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
     node = cast(CollectBatch, raw)
+    if node.window is WindowStrategy.COLLECT:
+        return _apply_collect_batch_default(stream, node, idx)
+    raise TypeError(
+        f"WindowStrategy.{node.window} reached the adapter — "
+        "this should have been rejected at compile time."
+    )
+
+
+def _apply_collect_batch_default(stream: Stream, node: CollectBatch, idx: int) -> Stream:
+    """Apply processing-time count-and-timeout collect (``WindowStrategy.COLLECT``)."""
     keyed = key_on(f"collect_key_{idx}", stream, _batch_key)
     collected = collect(
         f"collect_{idx}",
@@ -571,13 +579,26 @@ async def _execute_async_message(
         return await cast(Awaitable[object], result)
 
 
-def _batch_key(_item: Any) -> str:
-    """Return a fixed grouping key for Bytewax ``collect``.
+def _batch_key(item: Any) -> str:
+    """Return a grouping key for Bytewax ``collect``.
 
-    This is sufficient for testing with ``TestingSource``.  When Kafka
-    sources are wired directly, the key should derive from the record's
-    partition or message key to preserve parallelism.
+    Derives the key from ``MessageMeta`` when available so that Kafka-sourced
+    flows preserve partition-level parallelism — each Bytewax worker handles
+    its own partition independently.
+
+    Priority:
+        1. ``topic:partition`` when both are present in ``MessageMeta``.
+        2. ``meta.key`` decoded to ``str`` when partition is absent.
+        3. ``"loom"`` fallback for sources without transport metadata.
     """
+    if not isinstance(item, Message):
+        return "loom"
+    meta = item.meta
+    if meta.partition is not None:
+        return f"{meta.topic or 'default'}:{meta.partition}"
+    if meta.key is not None:
+        raw_key = meta.key
+        return raw_key if isinstance(raw_key, str) else raw_key.decode("utf-8", errors="replace")
     return "loom"
 
 
@@ -621,11 +642,6 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
     raise TypeError(
         f"Router branch node {type(node).__name__} is not supported by Bytewax adapter."
     )
-
-
-def _empty_testing_source() -> Any:
-    """Return an inert Bytewax testing source until Kafka input is wired."""
-    return _bytewax_testing.TestingSource([])
 
 
 def _require_message(value: Any) -> Message[StreamPayload]:
@@ -680,8 +696,3 @@ def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPay
     if isinstance(result, DecodeOk):
         return result.message
     raise TypeError(f"Expected DecodeOk, got {type(result).__name__}.")
-
-
-def _placeholder_encode(record: Any) -> Any:
-    """Placeholder encoder - replaced when Kafka connector is wired."""
-    return record

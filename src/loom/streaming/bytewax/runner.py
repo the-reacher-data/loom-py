@@ -17,6 +17,11 @@ from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import load_config, section
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
+from loom.streaming.bytewax._runtime_io import (
+    build_runtime_error_sinks,
+    build_runtime_sink,
+    build_runtime_source,
+)
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.observability.factory import make_flow_observers
@@ -217,6 +222,12 @@ def _prepare_run(
     sink: Any | None = None,
     error_sinks: Any | None = None,
 ) -> _PreparedStreamingRun:
+    if source is None:
+        source = build_runtime_source(plan.source)
+    if sink is None and plan.output is not None:
+        sink = build_runtime_sink(plan.output)
+    if error_sinks is None:
+        error_sinks = build_runtime_error_sinks(plan.error_routes)
     built = build_dataflow_with_shutdown(
         plan=plan,
         flow_observer=observer,

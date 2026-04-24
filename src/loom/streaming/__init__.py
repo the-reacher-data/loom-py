@@ -32,7 +32,7 @@ from loom.streaming.nodes._boundary import (
 from loom.streaming.nodes._helpers import msg
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router
-from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
+from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._step import (
     BatchExpandStep,
     BatchStep,
@@ -81,7 +81,9 @@ __all__ = [
     "Selector",
     "StreamFlow",
     "StreamShape",
+    "WindowStrategy",
     "Step",
+    "WindowStrategy",
     "StepContext",
     "SyncContextDependency",
     "With",
