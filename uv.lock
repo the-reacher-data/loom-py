@@ -1043,6 +1043,7 @@ streaming = [
 dev = [
     { name = "aiocache" },
     { name = "aiosqlite" },
+    { name = "bytewax" },
     { name = "celery" },
     { name = "chispa" },
     { name = "commitizen" },
@@ -1128,6 +1129,7 @@ provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "etl-s
 dev = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "bytewax", specifier = ">=0.21" },
     { name = "celery", specifier = ">=5.3,<6.0" },
     { name = "chispa", specifier = ">=0.10,<1.0" },
     { name = "commitizen", specifier = ">=3.30.0" },
