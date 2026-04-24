@@ -11,7 +11,8 @@ from loom.streaming.nodes._boundary import (
     PartitionStrategy,
 )
 from loom.streaming.nodes._fork import Fork, ForkRoute
-from loom.streaming.nodes._helpers import msg
+from loom.streaming.nodes._helpers import msg as msg
+from loom.streaming.nodes._helpers import payload as payload
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
@@ -67,5 +68,6 @@ __all__ = [
     "WithAsync",
     "evaluate_predicate",
     "msg",
+    "payload",
     "select_value",
 ]

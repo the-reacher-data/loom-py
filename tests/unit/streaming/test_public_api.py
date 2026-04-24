@@ -44,6 +44,7 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "WithAsync",
         "compile_flow",
         "msg",
+        "payload",
     }
 
     assert set(streaming.__all__) == expected
