@@ -8,6 +8,8 @@ from tests.unit.streaming.support.flow_cases import (
     StreamFlowCase,
     build_async_flow_case,
     build_fork_flow_case,
+    build_fork_when_flow_case,
+    build_fork_with_flow_case,
     build_router_flow_case,
     build_simple_validation_flow_case,
     build_with_batch_flow_case,
@@ -49,3 +51,15 @@ def async_flow_case() -> StreamFlowCase:
 def fork_flow_case() -> StreamFlowCase:
     """Return a public DSL flow case with Fork terminal branches."""
     return build_fork_flow_case()
+
+
+@pytest.fixture
+def fork_with_flow_case() -> StreamFlowCase:
+    """Return a public DSL flow case with Fork branches that open resources."""
+    return build_fork_with_flow_case()
+
+
+@pytest.fixture
+def fork_when_flow_case() -> StreamFlowCase:
+    """Return a public DSL flow case with ordered Fork.when branches."""
+    return build_fork_when_flow_case()

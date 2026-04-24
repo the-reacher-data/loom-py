@@ -16,6 +16,7 @@ from loom.streaming import (
     Drain,
     ForEach,
     Fork,
+    ForkRoute,
     FromTopic,
     IntoTopic,
     Message,
@@ -335,7 +336,7 @@ def build_async_flow_case() -> StreamFlowCase:
 
 def build_fork_flow_case() -> StreamFlowCase:
     """Build a terminal Fork flow with independent branch outputs."""
-    flow = StreamFlow(
+    flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_fork",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=RoutedOrder),
         process=Process(
@@ -362,6 +363,83 @@ def build_fork_flow_case() -> StreamFlowCase:
         expected_payloads=(
             RoutedOrder(order_id="o-1", lane="vip"),
             RoutedOrder(order_id="o-2", lane="standard"),
+        ),
+    )
+
+
+def build_fork_with_flow_case() -> StreamFlowCase:
+    """Build a Fork flow whose matched branch opens a scoped resource."""
+    events = ResourceEvents()
+    flow: StreamFlow[Any, Any] = StreamFlow(
+        name="orders_fork_with",
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
+        process=Process(
+            Fork.when(
+                routes=[
+                    ForkRoute(
+                        when=msg.payload.amount >= 100,
+                        process=Process(
+                            CollectBatch(max_records=1, timeout_ms=1000),
+                            With(
+                                step=PriceOrder(),
+                                client=ContextFactory(events.create_pricing_client),
+                                scope=ResourceScope.BATCH,
+                            ),
+                            ForEach(),
+                            IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=PricedOrder),
+                        ),
+                    )
+                ],
+                default=Process(Drain()),
+            )
+        ),
+    )
+    return StreamFlowCase(
+        flow=flow,
+        config=OmegaConf.create(_streaming_kafka_config()),
+        input_messages=(
+            _order_message("o-1", 100, "vip"),
+            _order_message("o-2", 50, "standard"),
+        ),
+        expected_payloads=(PricedOrder(order_id="o-1", price_band="high", client_id=1),),
+        resource_events=events,
+    )
+
+
+def build_fork_when_flow_case() -> StreamFlowCase:
+    """Build a Fork.when flow with ordered predicate dispatch."""
+    flow: StreamFlow[Any, Any] = StreamFlow(
+        name="orders_fork_when",
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
+        process=Process(
+            Fork.when(
+                routes=[
+                    ForkRoute(
+                        when=msg.payload.segment == "vip",
+                        process=Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=OrderPlaced)),
+                    ),
+                    ForkRoute(
+                        when=msg.payload.amount >= 100,
+                        process=Process(
+                            IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=OrderPlaced)
+                        ),
+                    ),
+                ],
+                default=Process(Drain()),
+            )
+        ),
+    )
+    return StreamFlowCase(
+        flow=flow,
+        config=OmegaConf.create(_streaming_kafka_config()),
+        input_messages=(
+            _order_message("o-1", 100, "vip"),
+            _order_message("o-2", 50, "standard"),
+            _order_message("o-3", 500, "manual"),
+        ),
+        expected_payloads=(
+            OrderPlaced(order_id="o-1", amount=100, segment="vip"),
+            OrderPlaced(order_id="o-3", amount=500, segment="manual"),
         ),
     )
 

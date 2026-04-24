@@ -75,3 +75,8 @@ def test_router_branch_safe_nodes_are_marked_on_public_api() -> None:
 def test_fork_is_handled_by_adapter() -> None:
     """Fork must be executable by the Bytewax adapter."""
     assert Fork in _NODE_HANDLERS
+
+
+def test_fork_when_with_is_handled_by_adapter() -> None:
+    """Fork branches with scoped resources must be executable by the adapter."""
+    assert With in _NODE_HANDLERS

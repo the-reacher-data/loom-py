@@ -119,3 +119,32 @@ class TestCompilerFlowExamples:
             "orders.fork.vip",
             "orders.fork.standard",
         }
+
+    def test_compile_fork_flow_with_resources_creates_branch_terminal_sinks(
+        self,
+        fork_with_flow_case: StreamFlowCase,
+    ) -> None:
+        plan = compile_flow(
+            fork_with_flow_case.flow,
+            runtime_config=fork_with_flow_case.config,
+        )
+
+        assert plan.name == "orders_fork_with"
+        assert plan.output is None
+        assert {sink.topic for sink in plan.terminal_sinks.values()} == {"orders.fork.vip"}
+
+    def test_compile_fork_when_flow_creates_branch_terminal_sinks(
+        self,
+        fork_when_flow_case: StreamFlowCase,
+    ) -> None:
+        plan = compile_flow(
+            fork_when_flow_case.flow,
+            runtime_config=fork_when_flow_case.config,
+        )
+
+        assert plan.name == "orders_fork_when"
+        assert plan.output is None
+        assert {sink.topic for sink in plan.terminal_sinks.values()} == {
+            "orders.fork.vip",
+            "orders.fork.standard",
+        }
