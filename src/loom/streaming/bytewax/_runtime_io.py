@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
@@ -18,6 +18,7 @@ from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
 from loom.streaming.kafka.client._producer import KafkaProducerClient
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
+from loom.streaming.nodes._boundary import PartitionPolicy
 
 
 class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
@@ -51,7 +52,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
                 message_type=message.meta.message_type or self._sink.topic,
                 message_version=message.meta.message_version or 1,
             )
-            key = message.meta.key
+            key = _resolve_partition_key(message, self._sink.partition_policy)
             self._message_producer.send(
                 topic=self._sink.topic,
                 payload=message.payload,
@@ -98,3 +99,33 @@ def build_runtime_error_sinks(
 ) -> dict[ErrorKind, _KafkaMessageSink]:
     """Build runtime sinks for explicit error routes."""
     return {kind: build_runtime_sink(sink) for kind, sink in error_routes.items()}
+
+
+def _resolve_partition_key(
+    message: Message[StreamPayload],
+    partition_policy: PartitionPolicy[Any] | None,
+) -> bytes | str | None:
+    """Resolve the outgoing Kafka key for one message.
+
+    The transport key is preserved when the incoming message already carries
+    one and the policy does not explicitly allow repartitioning. When no
+    transport key is present, the declared policy strategy may derive one.
+
+    Args:
+        message: Transport-neutral message to publish.
+        partition_policy: Optional output partitioning policy.
+
+    Returns:
+        Kafka key to use for the outgoing record, or ``None``.
+    """
+    if partition_policy is None:
+        return message.meta.key
+
+    incoming_key = message.meta.key
+    policy_key = partition_policy.strategy.partition_key(message)
+
+    if incoming_key is None:
+        return policy_key
+    if partition_policy.allow_repartition:
+        return policy_key if policy_key is not None else incoming_key
+    return incoming_key

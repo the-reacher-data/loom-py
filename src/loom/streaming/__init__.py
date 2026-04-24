@@ -83,7 +83,6 @@ __all__ = [
     "StreamShape",
     "WindowStrategy",
     "Step",
-    "WindowStrategy",
     "StepContext",
     "SyncContextDependency",
     "With",
