@@ -298,8 +298,8 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
     )
 
 
-def build_async_one_flow_case() -> StreamFlowCase:
-    """Build a batch flow using WithAsync.one() to emit individual async results."""
+def build_async_flow_case() -> StreamFlowCase:
+    """Build a batch flow using WithAsync and ForEach to emit async results."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_score_async_each",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
@@ -310,7 +310,9 @@ def build_async_one_flow_case() -> StreamFlowCase:
                 client=FakeRiskClient(),
                 max_concurrency=2,
                 scope=ResourceScope.WORKER,
-            ).one(IntoTopic(_ORDERS_SCORED_TOPIC, payload=RiskScoredOrder)),
+            ),
+            ForEach(),
+            IntoTopic(_ORDERS_SCORED_TOPIC, payload=RiskScoredOrder),
         ),
     )
     return StreamFlowCase(

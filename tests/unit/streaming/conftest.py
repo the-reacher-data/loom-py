@@ -6,7 +6,7 @@ import pytest
 
 from tests.unit.streaming.support.flow_cases import (
     StreamFlowCase,
-    build_async_one_flow_case,
+    build_async_flow_case,
     build_router_flow_case,
     build_simple_validation_flow_case,
     build_with_batch_flow_case,
@@ -39,6 +39,6 @@ def with_batch_scope_flow_case() -> StreamFlowCase:
 
 
 @pytest.fixture
-def async_one_flow_case() -> StreamFlowCase:
-    """Return a public DSL flow case with WithAsync.one()."""
-    return build_async_one_flow_case()
+def async_flow_case() -> StreamFlowCase:
+    """Return a public DSL flow case with WithAsync and ForEach."""
+    return build_async_flow_case()

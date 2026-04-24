@@ -9,14 +9,12 @@ import pytest
 from loom.core.model import LoomStruct
 from loom.streaming import (
     ContextFactory,
-    IntoTopic,
     Message,
     MessageMeta,
     RecordStep,
     With,
     WithAsync,
 )
-from loom.streaming.nodes._with import OneEmit
 
 
 class _Payload(LoomStruct):
@@ -130,7 +128,7 @@ def test_with_executes_batch_under_open_context_manager() -> None:
 
 
 def test_with_async_detects_mixed_dependencies() -> None:
-    """WithAsync separates async CMs from plain deps, and .one() binds the sink."""
+    """WithAsync separates async CMs from plain deps."""
     async_cm = _FakeAsyncClient()
     adapter = WithAsync(
         step=_AsyncStep(),
@@ -142,12 +140,6 @@ def test_with_async_detects_mixed_dependencies() -> None:
     assert adapter.async_contexts == {"client": async_cm}
     assert adapter.plain_deps == {"validator": "plain"}
     assert adapter.max_concurrency == 3
-
-    into = IntoTopic("out", payload=_Result)
-    emit = adapter.one(into)
-    assert isinstance(emit, OneEmit)
-    assert emit.source is adapter
-    assert emit.into is into
 
 
 def test_with_async_rejects_non_positive_max_concurrency() -> None:

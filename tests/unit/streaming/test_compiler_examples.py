@@ -83,13 +83,13 @@ class TestCompilerFlowExamples:
             StreamShape.RECORD,
         ]
 
-    def test_compile_async_one_flow_creates_async_bridge(
+    def test_compile_async_flow_creates_async_bridge(
         self,
-        async_one_flow_case: StreamFlowCase,
+        async_flow_case: StreamFlowCase,
     ) -> None:
         plan = compile_flow(
-            async_one_flow_case.flow,
-            runtime_config=async_one_flow_case.config,
+            async_flow_case.flow,
+            runtime_config=async_flow_case.config,
         )
 
         assert plan.name == "orders_score_async_each"
@@ -98,5 +98,7 @@ class TestCompilerFlowExamples:
         assert plan.needs_async_bridge is True
         assert [node.output_shape for node in plan.nodes] == [
             StreamShape.BATCH,
+            StreamShape.MANY,
+            StreamShape.RECORD,
             StreamShape.RECORD,
         ]

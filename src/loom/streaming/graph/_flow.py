@@ -13,7 +13,7 @@ from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from loom.streaming.nodes._with import OneEmit, With, WithAsync
+from loom.streaming.nodes._with import With, WithAsync
 
 ProcessNode: TypeAlias = (
     ConfigBinding
@@ -23,7 +23,6 @@ ProcessNode: TypeAlias = (
     | BatchExpandStep[Any, Any]
     | With[Any, Any]
     | WithAsync[Any, Any]
-    | OneEmit[Any, Any]
     | CollectBatch
     | ForEach
     | Drain

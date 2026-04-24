@@ -22,7 +22,7 @@ from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from loom.streaming.nodes._with import OneEmit, ResourceScope, With, WithAsync
+from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
 class CompilationError(Exception):
@@ -230,16 +230,12 @@ def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
     """Return the scoped node carried by a With-like declaration, if any."""
     if isinstance(node, (With, WithAsync)):
         return node
-    if isinstance(node, OneEmit) and isinstance(node.source, (With, WithAsync)):
-        return node.source
     return None
 
 
 def _node_needs_async_bridge(node: object) -> bool:
     """Return whether a compiled node requires an AsyncBridge."""
-    if isinstance(node, WithAsync):
-        return True
-    return isinstance(node, OneEmit) and isinstance(node.source, WithAsync)
+    return isinstance(node, WithAsync)
 
 
 def _validate_shape_sequence(
@@ -287,7 +283,6 @@ def _validate_router_shapes(
                     BatchExpandStep,
                     With,
                     WithAsync,
-                    OneEmit,
                     IntoTopic,
                     Drain,
                     CollectBatch,
@@ -323,7 +318,7 @@ def _router_branch_nodes(
 
 def _has_terminal_output(nodes: Iterable[object]) -> bool:
     for node in nodes:
-        if isinstance(node, (IntoTopic, OneEmit, Drain)):
+        if isinstance(node, (IntoTopic, Drain)):
             return True
         if isinstance(node, Router) and _router_has_terminal_output(node):
             return True
@@ -369,8 +364,6 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
         return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
         return StreamShape.MANY
-    if isinstance(node, OneEmit):
-        return StreamShape.RECORD
     if isinstance(node, IntoTopic):
         return node.shape
     if isinstance(node, Drain):

@@ -10,7 +10,6 @@ from typing import Generic, TypeGuard, TypeVar
 
 from loom.core.config import Configurable
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._step import RecordStep
 
 InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
@@ -117,17 +116,6 @@ class _WithBase(Generic[InT, OutT]):
         """Plain dependencies keyed by injection name."""
         return MappingProxyType(self._plain_deps)
 
-    def one(self, into: IntoTopic[OutT]) -> OneEmit[InT, OutT]:
-        """Declare individual result emission to a topic.
-
-        Args:
-            into: Output topic used for each produced item.
-
-        Returns:
-            Individual emission declaration for the scoped task.
-        """
-        return OneEmit(source=self, into=into)
-
 
 class With(_WithBase[InT, OutT]):
     """Declare a sync dependency scope around a streaming step.
@@ -195,18 +183,6 @@ class WithAsync(_WithBase[InT, OutT]):
         self.max_concurrency = max_concurrency
 
 
-class OneEmit(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
-    """Declaration returned by ``With.one`` and ``WithAsync.one``.
-
-    Args:
-        source: Scoped step declaration.
-        into: Topic used to emit each result individually.
-    """
-
-    source: _WithBase[InT, OutT]
-    into: IntoTopic[OutT]
-
-
 def _is_sync_context_manager(value: object) -> TypeGuard[SyncContextDependency]:
     return isinstance(value, AbstractContextManager)
 
@@ -219,7 +195,6 @@ __all__ = [
     "AsyncContextDependency",
     "ContextDependency",
     "ContextFactory",
-    "OneEmit",
     "ResourceScope",
     "SyncContextDependency",
     "With",

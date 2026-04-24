@@ -60,15 +60,13 @@ class TestBytewaxFlowExamples:
         assert with_batch_scope_flow_case.resource_events.opened == [1, 2]
         assert with_batch_scope_flow_case.resource_events.closed == [1, 2]
 
-    def test_runs_async_one_flow(
+    def test_runs_async_flow(
         self,
-        async_one_flow_case: StreamFlowCase,
+        async_flow_case: StreamFlowCase,
     ) -> None:
-        results = _run_flow_case(async_one_flow_case)
+        results = _run_flow_case(async_flow_case)
 
-        assert (
-            tuple(message.payload for message in results) == async_one_flow_case.expected_payloads
-        )
+        assert tuple(message.payload for message in results) == async_flow_case.expected_payloads
 
 
 def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:

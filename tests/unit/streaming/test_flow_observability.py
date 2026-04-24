@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from loom.streaming.nodes._step import RecordStep
 from loom.streaming.observability import (
     CompositeFlowObserver,
     NoopFlowObserver,
@@ -234,8 +235,7 @@ def test_node_handlers_is_immutable() -> None:
         _NODE_HANDLERS[object] = lambda *a: None  # type: ignore[index]
 
 
-def test_node_handlers_covers_one_emit() -> None:
+def test_node_handlers_cover_step_handlers() -> None:
     from loom.streaming.bytewax._adapter import _NODE_HANDLERS
-    from loom.streaming.nodes._with import OneEmit
 
-    assert OneEmit in _NODE_HANDLERS
+    assert RecordStep in _NODE_HANDLERS

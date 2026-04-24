@@ -45,7 +45,7 @@ from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from loom.streaming.nodes._with import OneEmit, With, WithAsync
+from loom.streaming.nodes._with import With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 logger = logging.getLogger(__name__)
@@ -484,20 +484,6 @@ def _apply_into_topic(stream: Stream, raw: object, idx: int, ctx: _BuildContext)
     return stream
 
 
-def _apply_one_emit(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
-    node = cast(OneEmit[StreamPayload, StreamPayload], raw)
-    source = node.source
-
-    if isinstance(source, WithAsync):
-        inner_stream = _apply_with_async(stream, source, idx, ctx)
-    elif isinstance(source, With):
-        inner_stream = _apply_with(stream, source, idx, ctx)
-    else:
-        raise TypeError(f"OneEmit.source must be With or WithAsync, got {type(source).__name__}")
-
-    return flat_map(f"one_emit_flatten_{idx}", inner_stream, _identity)
-
-
 # ---------------------------------------------------------------------------
 # Frozen handler registry — immutable after module load
 # ---------------------------------------------------------------------------
@@ -515,7 +501,6 @@ _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
         Router: _apply_router,
         Drain: _apply_drain,
         IntoTopic: _apply_into_topic,
-        OneEmit: _apply_one_emit,
     }
 )
 
