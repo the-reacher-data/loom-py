@@ -11,7 +11,7 @@ from typing import Generic, TypeGuard, TypeVar
 from loom.core.config import Configurable
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.nodes._boundary import IntoTopic
-from loom.streaming.nodes._task import Task
+from loom.streaming.nodes._step import RecordStep
 
 InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
 OutT = TypeVar("OutT", bound=LoomStruct | LoomFrozenStruct)
@@ -40,7 +40,7 @@ class ContextFactory(Configurable):
     Example::
 
         db = ContextFactory(lambda: SessionLocal())
-        With(task=ValidateOrder(), scope=BATCH, db=db)
+        With(step=ValidateOrder(), scope=BATCH, db=db)
     """
 
     __slots__ = ("_factory",)
@@ -57,7 +57,7 @@ class _WithBase(Generic[InT, OutT]):
     """Shared dependency scope declaration for streaming tasks.
 
     Args:
-        task: Task declaration executed inside the dependency scope.
+        step: Step declaration executed inside the dependency scope.
         scope: Lifecycle used when opening context-manager dependencies.
         **dependencies: Named dependencies injected into task execution.
     """
@@ -68,16 +68,16 @@ class _WithBase(Generic[InT, OutT]):
         "_plain_deps",
         "_sync_contexts",
         "scope",
-        "task",
+        "step",
     )
 
     def __init__(
         self,
-        task: Task[InT, OutT],
+        step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
         **dependencies: object,
     ) -> None:
-        self.task = task
+        self.step = step
         self.scope = scope
         sync_contexts: dict[str, SyncContextDependency] = {}
         async_contexts: dict[str, AsyncContextDependency] = {}
@@ -130,12 +130,12 @@ class _WithBase(Generic[InT, OutT]):
 
 
 class With(_WithBase[InT, OutT]):
-    """Declare a sync dependency scope around a streaming task.
+    """Declare a sync dependency scope around a streaming step.
 
     Args:
-        task: Task declaration executed with injected dependencies.
+        step: Step declaration executed with injected dependencies.
         scope: Lifecycle used when opening context-manager dependencies.
-        **dependencies: Named dependencies injected into task execution.
+        **dependencies: Named dependencies injected into step execution.
 
     Raises:
         TypeError: If an async context manager is passed directly.
@@ -145,11 +145,11 @@ class With(_WithBase[InT, OutT]):
 
     def __init__(
         self,
-        task: Task[InT, OutT],
+        step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
         **dependencies: object,
     ) -> None:
-        super().__init__(task, scope=scope, **dependencies)
+        super().__init__(step, scope=scope, **dependencies)
         if self._async_contexts:
             names = ", ".join(self._async_contexts.keys())
             raise TypeError(
@@ -160,14 +160,14 @@ class With(_WithBase[InT, OutT]):
 
 
 class WithAsync(_WithBase[InT, OutT]):
-    """Declare an async dependency scope around a streaming task.
+    """Declare an async dependency scope around a streaming step.
 
     Args:
-        task: Task declaration executed with injected dependencies.
+        step: Step declaration executed with injected dependencies.
         scope: Lifecycle used when opening context-manager dependencies.
         max_concurrency: Maximum concurrent executions requested by the
             compiler/runtime adapter.
-        **dependencies: Named dependencies injected into task execution.
+        **dependencies: Named dependencies injected into step execution.
 
     Raises:
         TypeError: If a sync context manager is passed directly.
@@ -177,14 +177,14 @@ class WithAsync(_WithBase[InT, OutT]):
 
     def __init__(
         self,
-        task: Task[InT, OutT],
+        step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
         max_concurrency: int = 10,
         **dependencies: object,
     ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be greater than zero")
-        super().__init__(task, scope=scope, **dependencies)
+        super().__init__(step, scope=scope, **dependencies)
         if self._sync_contexts:
             names = ", ".join(self._sync_contexts.keys())
             raise TypeError(
@@ -199,7 +199,7 @@ class OneEmit(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
     """Declaration returned by ``With.one`` and ``WithAsync.one``.
 
     Args:
-        source: Scoped task declaration.
+        source: Scoped step declaration.
         into: Topic used to emit each result individually.
     """
 

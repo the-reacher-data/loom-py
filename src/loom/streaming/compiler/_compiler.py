@@ -21,7 +21,7 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
-from loom.streaming.nodes._task import BatchTask, Task
+from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import OneEmit, ResourceScope, With, WithAsync
 
 
@@ -278,10 +278,27 @@ def _validate_router_shapes(
         branch_errors, branch_output = _validate_shape_sequence(nodes, initial_shape)
         errors.extend(f"router branch {label}: {error}" for error in branch_errors)
         for node in nodes:
-            if not isinstance(node, (Task, IntoTopic, Drain)):
+            if not isinstance(
+                node,
+                (
+                    RecordStep,
+                    BatchStep,
+                    ExpandStep,
+                    BatchExpandStep,
+                    With,
+                    WithAsync,
+                    OneEmit,
+                    IntoTopic,
+                    Drain,
+                    CollectBatch,
+                    ForEach,
+                    Router,
+                ),
+            ):
                 errors.append(
                     f"router branch {label}: node {type(node).__name__} is not supported "
-                    f"in router branches (only Task, IntoTopic, Drain are allowed)"
+                    f"in router branches (only step, with, collect, router, IntoTopic, "
+                    f"and Drain nodes are allowed)"
                 )
         outputs.append(branch_output)
 
@@ -319,8 +336,14 @@ def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) ->
 
 def _node_input_shape(node: object) -> StreamShape | None:
     """Expected input shape for a node, or None if any shape is accepted."""
-    if isinstance(node, (Task, BatchTask)):
+    if isinstance(node, RecordStep):
         return StreamShape.RECORD
+    if isinstance(node, BatchStep):
+        return StreamShape.BATCH
+    if isinstance(node, ExpandStep):
+        return StreamShape.RECORD
+    if isinstance(node, BatchExpandStep):
+        return StreamShape.BATCH
     if isinstance(node, (With, WithAsync)):
         return None
     if isinstance(node, ForEach):
@@ -335,6 +358,14 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
     if isinstance(node, CollectBatch):
         return StreamShape.BATCH
     if isinstance(node, ForEach):
+        return StreamShape.RECORD
+    if isinstance(node, RecordStep):
+        return StreamShape.RECORD
+    if isinstance(node, BatchStep):
+        return StreamShape.BATCH
+    if isinstance(node, ExpandStep):
+        return StreamShape.RECORD
+    if isinstance(node, BatchExpandStep):
         return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
         return StreamShape.MANY

@@ -11,7 +11,7 @@ pytest.importorskip("bytewax")
 from bytewax.dataflow import Dataflow
 
 from loom.core.model import LoomFrozenStruct
-from loom.streaming import FromTopic, IntoTopic, Message, Process, StreamFlow, Task
+from loom.streaming import FromTopic, IntoTopic, Message, Process, RecordStep, StreamFlow
 from loom.streaming.bytewax.runner import StreamingRunner
 
 _RECOVERY_DB_DIR = "/var/lib/loom/tests/bytewax-recovery"
@@ -26,7 +26,7 @@ class _Result(LoomFrozenStruct, frozen=True):
     value: str
 
 
-class _DoubleTask(Task[_Order, _Result]):
+class _DoubleStep(RecordStep[_Order, _Result]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
         return _Result(value=message.payload.order_id * 2)
 
@@ -35,7 +35,7 @@ def _flow() -> StreamFlow[_Order, _Result]:
     return StreamFlow(
         name="runner_flow",
         source=FromTopic("orders.in", payload=_Order),
-        process=Process(_DoubleTask()),
+        process=Process(_DoubleStep()),
         output=IntoTopic("orders.out", payload=_Result),
     )
 

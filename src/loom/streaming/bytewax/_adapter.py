@@ -12,7 +12,7 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -44,7 +44,7 @@ from loom.streaming.kafka._wire import DecodeOk, DecodeResult, try_decode_record
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
-from loom.streaming.nodes._task import BatchTask, Task
+from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import OneEmit, With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
@@ -306,9 +306,9 @@ def _wire_node(stream: Stream, node: CompiledNode, idx: int, ctx: _BuildContext)
 
 def _resolve_node_name(raw: object) -> str:
     """Resolve a human-readable name for a DSL node."""
-    task_name = getattr(raw, "task_name", None)
-    if callable(task_name):
-        return cast(str, task_name())
+    step_name = getattr(raw, "step_name", None)
+    if callable(step_name):
+        return cast(str, step_name())
     return type(raw).__name__
 
 
@@ -343,35 +343,64 @@ def _observe_node(
             )
 
 
-def _apply_task(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
-    task = cast(Task[StreamPayload, StreamPayload], raw)
-    name = _resolve_node_name(task)
+def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
+    record_step = cast(RecordStep[StreamPayload, StreamPayload], raw)
+    name = _resolve_node_name(record_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
 
-    def step(msg: Any) -> Any:
+    def step_fn(msg: Any) -> Any:
         message = _require_message(msg)
         with _observe_node(observer, flow_name, idx, name):
-            result = task.execute(message)
+            result = record_step.execute(message)
             return _replace_payload(message, result)
 
-    return bw_map(f"task_{idx}_{name}", stream, step)
+    return bw_map(f"record_{idx}_{name}", stream, step_fn)
 
 
-def _apply_batch_task(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
-    task = cast(BatchTask[StreamPayload, StreamPayload], raw)
-    name = _resolve_node_name(task)
+def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
+    batch_step = cast(BatchStep[StreamPayload, StreamPayload], raw)
+    name = _resolve_node_name(batch_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
 
-    def step(batch: list[Any]) -> list[Any]:
+    def step_fn(batch: list[Any]) -> list[Any]:
         messages = [_require_message(item) for item in batch]
         with _observe_node(observer, flow_name, idx, name):
-            result = task.execute(messages)
+            result = batch_step.execute(messages)
             return _replace_payloads(messages, result)
 
-    mapped = bw_map(f"batch_{idx}_{name}", stream, step)
+    mapped = bw_map(f"batch_{idx}_{name}", stream, step_fn)
     return flat_map(f"flatten_{idx}", mapped, _identity)
+
+
+def _apply_expand_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
+    expand_step = cast(ExpandStep[StreamPayload, StreamPayload], raw)
+    name = _resolve_node_name(expand_step)
+    observer = ctx.flow_observer
+    flow_name = ctx.plan.name
+
+    def step_fn(msg: Any) -> Iterable[Message[StreamPayload]]:
+        message = _require_message(msg)
+        with _observe_node(observer, flow_name, idx, name):
+            return expand_step.execute(message)
+
+    return flat_map(f"expand_{idx}_{name}", stream, step_fn)
+
+
+def _apply_batch_expand_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
+    batch_expand_step = cast(BatchExpandStep[StreamPayload, StreamPayload], raw)
+    name = _resolve_node_name(batch_expand_step)
+    observer = ctx.flow_observer
+    flow_name = ctx.plan.name
+
+    def step_fn(batch: list[Any]) -> Iterable[Message[StreamPayload]]:
+        messages = [_require_message(item) for item in batch]
+        with _observe_node(observer, flow_name, idx, name):
+            return batch_expand_step.execute(messages)
+
+    mapped = bw_map(f"batch_expand_{idx}_{name}", stream, step_fn)
+    return flat_map(f"flatten_expand_{idx}", mapped, _identity)
 
 
 def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> Stream:
@@ -386,7 +415,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -> St
         with _observe_node(observer, flow_name, idx, node_type):
             messages = _messages_from_batch(batch)
             with _batch_dependencies(manager, worker_resources) as deps:
-                result = [node.task.execute(msg, **deps) for msg in messages]
+                result = [node.step.execute(msg, **deps) for msg in messages]
                 return _replace_payloads(messages, result)
 
     return bw_map(f"with_{idx}", stream, step)
@@ -475,8 +504,10 @@ def _apply_one_emit(stream: Stream, raw: object, idx: int, ctx: _BuildContext) -
 
 _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
     {
-        Task: _apply_task,
-        BatchTask: _apply_batch_task,
+        RecordStep: _apply_record_step,
+        BatchStep: _apply_batch_step,
+        ExpandStep: _apply_expand_step,
+        BatchExpandStep: _apply_batch_expand_step,
         With: _apply_with,
         WithAsync: _apply_with_async,
         CollectBatch: _apply_collect_batch,
@@ -548,7 +579,7 @@ async def _execute_async_message(
 ) -> object:
     """Execute one async WithAsync message under bounded concurrency."""
     async with sem:
-        result = node.task.execute(message, **deps)
+        result = node.step.execute(message, **deps)
         if not inspect.isawaitable(result):
             raise TypeError("WithAsync task.execute must return an awaitable.")
         return await cast(Awaitable[object], result)
@@ -596,9 +627,9 @@ def _select_router_branch(
 
 
 def _execute_router_node(node: object, message: Message[StreamPayload]) -> Message[StreamPayload]:
-    if isinstance(node, Task):
-        task = cast(Task[StreamPayload, StreamPayload], node)
-        return _replace_payload(message, task.execute(message))
+    if isinstance(node, RecordStep):
+        step = cast(RecordStep[StreamPayload, StreamPayload], node)
+        return _replace_payload(message, step.execute(message))
     if isinstance(node, (IntoTopic, Drain)):
         return message
     raise TypeError(

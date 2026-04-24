@@ -8,7 +8,7 @@ from loom.core.config import ConfigBinding
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.routing import LogicalRef
 from loom.streaming import (
-    BatchTask,
+    BatchStep,
     CollectBatch,
     Drain,
     ErrorEnvelope,
@@ -22,11 +22,11 @@ from loom.streaming import (
     PartitionPolicy,
     PartitionStrategy,
     Process,
+    RecordStep,
     ResourceFactory,
+    StepContext,
     StreamFlow,
     StreamShape,
-    Task,
-    TaskContext,
 )
 
 
@@ -64,19 +64,19 @@ class _OrderPartitionStrategy:
         return message.payload.order_id
 
 
-class _ValidateOrder(Task[_Order, _ValidatedOrder]):
+class _ValidateOrder(RecordStep[_Order, _ValidatedOrder]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=message.payload.order_id)
 
 
-class _NamedValidateOrder(Task[_Order, _ValidatedOrder]):
+class _NamedValidateOrder(RecordStep[_Order, _ValidatedOrder]):
     name = "custom"
 
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=message.payload.order_id)
 
 
-class _BulkValidateOrder(BatchTask[_Order, _ValidatedOrder]):
+class _BulkValidateOrder(BatchStep[_Order, _ValidatedOrder]):
     resource = _ClientFactory
 
     def execute(self, messages: list[Message[_Order]], **kwargs: object) -> list[_ValidatedOrder]:
@@ -195,23 +195,23 @@ def test_resource_contracts_are_protocols() -> None:
     context = _Context(client)
 
     assert isinstance(factory, ResourceFactory)
-    assert isinstance(context, TaskContext)
+    assert isinstance(context, StepContext)
     assert context.resource is client
 
 
-def test_task_names_resolve_from_class_or_explicit_name() -> None:
-    assert _ValidateOrder.task_name() == "_ValidateOrder"
-    assert _NamedValidateOrder.task_name() == "custom"
+def test_step_names_resolve_from_class_or_explicit_name() -> None:
+    assert _ValidateOrder.step_name() == "_ValidateOrder"
+    assert _NamedValidateOrder.step_name() == "custom"
 
 
-def test_task_subclasses_execute_with_messages() -> None:
+def test_step_subclasses_execute_with_messages() -> None:
     task = _ValidateOrder()
     message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
 
     assert task.execute(message) == _ValidatedOrder(order_id="o-1")
 
 
-def test_batch_task_declaration_holds_resource_and_executes_batch() -> None:
+def test_batch_step_declaration_holds_resource_and_executes_batch() -> None:
     batch = _BulkValidateOrder()
     message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
 
@@ -262,14 +262,14 @@ def test_stream_flow_rejects_empty_name() -> None:
         StreamFlow(name="", source=source, process=process)
 
 
-class _ResourceInjectedTask(Task[_Order, _ValidatedOrder]):
+class _ResourceInjectedStep(RecordStep[_Order, _ValidatedOrder]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         client = kwargs.get("client")
         return _ValidatedOrder(order_id=f"{message.payload.order_id}:{client}")
 
 
-def test_task_receives_injected_resources() -> None:
-    task = _ResourceInjectedTask()
+def test_step_receives_injected_resources() -> None:
+    task = _ResourceInjectedStep()
     message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
 
     result = task.execute(message, client="mock-client")
@@ -277,7 +277,7 @@ def test_task_receives_injected_resources() -> None:
     assert result == _ValidatedOrder(order_id="o-1:mock-client")
 
 
-def test_task_ignores_unused_resources() -> None:
+def test_step_ignores_unused_resources() -> None:
     task = _ValidateOrder()
     message = Message(payload=_Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
 
@@ -286,7 +286,7 @@ def test_task_ignores_unused_resources() -> None:
     assert result == _ValidatedOrder(order_id="o-1")
 
 
-def test_task_from_config_returns_config_binding() -> None:
+def test_step_from_config_returns_config_binding() -> None:
     binding = _ValidateOrder.from_config("streaming.tasks.validate")
 
     assert isinstance(binding, ConfigBinding)
@@ -295,13 +295,13 @@ def test_task_from_config_returns_config_binding() -> None:
     assert binding.overrides == {}
 
 
-def test_task_from_config_with_overrides() -> None:
+def test_step_from_config_with_overrides() -> None:
     binding = _ValidateOrder.from_config("streaming.tasks.validate", timeout_ms=20_000)
 
     assert binding.overrides == {"timeout_ms": 20_000}
 
 
-def test_batch_task_from_config_returns_config_binding() -> None:
+def test_batch_step_from_config_returns_config_binding() -> None:
     binding = _BulkValidateOrder.from_config("streaming.tasks.bulk")
 
     assert isinstance(binding, ConfigBinding)

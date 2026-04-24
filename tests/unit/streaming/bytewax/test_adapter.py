@@ -25,7 +25,7 @@ from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, b
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain, StreamShape
-from loom.streaming.nodes._task import Task
+from loom.streaming.nodes._step import RecordStep
 from loom.streaming.testing import StreamingTestRunner
 
 
@@ -37,12 +37,12 @@ class _Result(LoomStruct):
     value: str
 
 
-class _DoubleTask(Task[_Order, _Result]):
+class _DoubleStep(RecordStep[_Order, _Result]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
         return _Result(value=message.payload.order_id * 2)
 
 
-class _SuffixTask(Task[_Result, _Result]):
+class _SuffixStep(RecordStep[_Result, _Result]):
     def execute(self, message: Message[_Result], **kwargs: object) -> _Result:
         return _Result(value=f"{message.payload.value}:ok")
 
@@ -96,11 +96,11 @@ def _build_plan(
     )
 
 
-class TestTaskNodeExecution:
-    """A simple Task node must transform records end-to-end."""
+class TestStepNodeExecution:
+    """A simple Step node must transform records end-to-end."""
 
     def test_single_task_produces_transformed_output(self) -> None:
-        plan = _build_plan(_DoubleTask())
+        plan = _build_plan(_DoubleStep())
         runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
@@ -111,7 +111,7 @@ class TestTaskNodeExecution:
         assert results[0].meta.message_id == "msg-1"
 
     def test_task_chain_passes_message_to_next_task(self) -> None:
-        plan = _build_plan(_DoubleTask(), _SuffixTask())
+        plan = _build_plan(_DoubleStep(), _SuffixStep())
         runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
@@ -123,7 +123,7 @@ class TestSourceDecode:
     """Raw Kafka records must be decoded before reaching DSL nodes."""
 
     def test_kafka_record_source_decodes_envelope_before_task_execution(self) -> None:
-        plan = _build_plan(_DoubleTask())
+        plan = _build_plan(_DoubleStep())
         codec = MsgspecCodec[_Order]()
         envelope = build_message(
             _Order(order_id="A"),
@@ -166,7 +166,7 @@ class TestSourceDecode:
             topic="orders.dlq",
             partition_policy=None,
         )
-        plan = _build_plan(_DoubleTask(), error_routes={ErrorKind.WIRE: error_sink})
+        plan = _build_plan(_DoubleStep(), error_routes={ErrorKind.WIRE: error_sink})
         source_record = KafkaRecord(
             topic="orders.in",
             key=b"tenant-a",
@@ -200,7 +200,7 @@ class TestTerminalNodes:
 
     def test_into_topic_node_wires_terminal_sink(self) -> None:
         target = IntoTopic("out", payload=_Result)
-        plan = _build_plan(_DoubleTask(), target)
+        plan = _build_plan(_DoubleStep(), target)
         runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
@@ -208,7 +208,7 @@ class TestTerminalNodes:
         assert [message.payload.value for message in results] == ["AA"]
 
     def test_drain_node_swallows_stream(self) -> None:
-        plan = _build_plan(_DoubleTask(), Drain())
+        plan = _build_plan(_DoubleStep(), Drain())
         runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
         runner.run()
         results = runner.output
@@ -216,7 +216,7 @@ class TestTerminalNodes:
         assert results == []
 
     def test_payload_helper_builds_default_test_metadata(self) -> None:
-        plan = _build_plan(_DoubleTask())
+        plan = _build_plan(_DoubleStep())
         runner = StreamingTestRunner(plan).with_payloads([_Order(order_id="A")])
 
         runner.run()
@@ -228,7 +228,7 @@ class TestTerminalNodes:
 
     def test_into_topic_node_does_not_duplicate_flow_output(self) -> None:
         target = IntoTopic("out", payload=_Result)
-        plan = _build_plan(_DoubleTask(), target, output=target)
+        plan = _build_plan(_DoubleStep(), target, output=target)
         runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
 
         runner.run()
@@ -274,7 +274,7 @@ class TestOutputAndErrorWiring:
             offset=2,
             timestamp_ms=11,
         )
-        plan = _build_plan(_DoubleTask(), output=target, error_routes={ErrorKind.WIRE: error_sink})
+        plan = _build_plan(_DoubleStep(), output=target, error_routes={ErrorKind.WIRE: error_sink})
         runner = (
             StreamingTestRunner(plan)
             .with_messages([valid_record, invalid_record])

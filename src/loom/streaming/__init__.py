@@ -33,11 +33,18 @@ from loom.streaming.nodes._helpers import msg
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
-from loom.streaming.nodes._task import BatchTask, ResourceFactory, Task, TaskContext
+from loom.streaming.nodes._step import (
+    BatchExpandStep,
+    BatchStep,
+    ExpandStep,
+    RecordStep,
+    ResourceFactory,
+    Step,
+    StepContext,
+)
 from loom.streaming.nodes._with import (
     AsyncContextDependency,
     ContextFactory,
-    OneEmit,
     ResourceScope,
     SyncContextDependency,
     With,
@@ -46,7 +53,8 @@ from loom.streaming.nodes._with import (
 
 __all__ = [
     "AsyncContextDependency",
-    "BatchTask",
+    "BatchExpandStep",
+    "BatchStep",
     "CollectBatch",
     "CompilationError",
     "ContextFactory",
@@ -55,16 +63,17 @@ __all__ = [
     "ErrorKind",
     "ForEach",
     "FromTopic",
+    "ExpandStep",
     "IntoTopic",
     "Message",
     "MessageMeta",
-    "OneEmit",
     "PartitionGuarantee",
     "PartitionPolicy",
     "PartitionStrategy",
     "Process",
     "ProcessNode",
     "Predicate",
+    "RecordStep",
     "ResourceFactory",
     "ResourceScope",
     "Route",
@@ -72,9 +81,9 @@ __all__ = [
     "Selector",
     "StreamFlow",
     "StreamShape",
+    "Step",
+    "StepContext",
     "SyncContextDependency",
-    "Task",
-    "TaskContext",
     "With",
     "WithAsync",
     "compile_flow",

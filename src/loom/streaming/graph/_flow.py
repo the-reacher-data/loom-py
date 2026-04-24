@@ -12,13 +12,15 @@ from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
-from loom.streaming.nodes._task import BatchTask, Task
+from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import OneEmit, With, WithAsync
 
 ProcessNode: TypeAlias = (
     ConfigBinding
-    | Task[Any, Any]
-    | BatchTask[Any, Any]
+    | RecordStep[Any, Any]
+    | BatchStep[Any, Any]
+    | ExpandStep[Any, Any]
+    | BatchExpandStep[Any, Any]
     | With[Any, Any]
     | WithAsync[Any, Any]
     | OneEmit[Any, Any]

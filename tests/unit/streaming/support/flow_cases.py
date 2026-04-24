@@ -19,10 +19,10 @@ from loom.streaming import (
     Message,
     MessageMeta,
     Process,
+    RecordStep,
     ResourceScope,
     Router,
     StreamFlow,
-    Task,
     With,
     WithAsync,
     msg,
@@ -64,7 +64,7 @@ class ValidatedOrder(LoomStruct):
     accepted: bool
 
 
-class ValidateOrder(Task[OrderPlaced, ValidatedOrder]):
+class ValidateOrder(RecordStep[OrderPlaced, ValidatedOrder]):
     def execute(self, message: Message[OrderPlaced], **kwargs: object) -> ValidatedOrder:
         return ValidatedOrder(
             order_id=message.payload.order_id,
@@ -72,22 +72,22 @@ class ValidateOrder(Task[OrderPlaced, ValidatedOrder]):
         )
 
 
-class MarkVipOrder(Task[OrderPlaced, RoutedOrder]):
+class MarkVipOrder(RecordStep[OrderPlaced, RoutedOrder]):
     def execute(self, message: Message[OrderPlaced], **kwargs: object) -> RoutedOrder:
         return RoutedOrder(order_id=message.payload.order_id, lane="vip")
 
 
-class MarkStandardOrder(Task[OrderPlaced, RoutedOrder]):
+class MarkStandardOrder(RecordStep[OrderPlaced, RoutedOrder]):
     def execute(self, message: Message[OrderPlaced], **kwargs: object) -> RoutedOrder:
         return RoutedOrder(order_id=message.payload.order_id, lane="standard")
 
 
-class MarkManualOrder(Task[OrderPlaced, RoutedOrder]):
+class MarkManualOrder(RecordStep[OrderPlaced, RoutedOrder]):
     def execute(self, message: Message[OrderPlaced], **kwargs: object) -> RoutedOrder:
         return RoutedOrder(order_id=message.payload.order_id, lane="manual")
 
 
-class PriceOrder(Task[OrderPlaced, PricedOrder]):
+class PriceOrder(RecordStep[OrderPlaced, PricedOrder]):
     def execute(self, message: Message[OrderPlaced], **kwargs: object) -> PricedOrder:
         client = kwargs["client"]
         if not isinstance(client, FakePricingClient):
@@ -99,7 +99,7 @@ class PriceOrder(Task[OrderPlaced, PricedOrder]):
         )
 
 
-class ScoreRiskAsync(Task[OrderPlaced, RiskScoredOrder]):
+class ScoreRiskAsync(RecordStep[OrderPlaced, RiskScoredOrder]):
     def execute(  # type: ignore[override]
         self,
         message: Message[OrderPlaced],
@@ -235,7 +235,7 @@ def build_with_batch_flow_case() -> StreamFlowCase:
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
-                task=PriceOrder(),
+                step=PriceOrder(),
                 client=events.create_pricing_client(),
                 scope=ResourceScope.WORKER,
             ),
@@ -271,7 +271,7 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
-                task=PriceOrder(),
+                step=PriceOrder(),
                 client=ContextFactory(events.create_pricing_client),
                 scope=ResourceScope.BATCH,
             ),
@@ -306,7 +306,7 @@ def build_async_one_flow_case() -> StreamFlowCase:
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             WithAsync(
-                task=ScoreRiskAsync(),
+                step=ScoreRiskAsync(),
                 client=FakeRiskClient(),
                 max_concurrency=2,
                 scope=ResourceScope.WORKER,

@@ -14,11 +14,11 @@ from loom.streaming import (
     FromTopic,
     IntoTopic,
     Process,
+    RecordStep,
     Route,
     Router,
     StreamFlow,
     StreamShape,
-    Task,
     msg,
 )
 from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
@@ -34,7 +34,7 @@ class _Result(LoomStruct):
     value: str
 
 
-class _FakeTask(Task[_Order, _Result]):
+class _FakeStep(RecordStep[_Order, _Result]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
         return _Result(value=message.payload.order_id)
 
@@ -67,7 +67,7 @@ def test_compile_success_with_minimal_flow() -> None:
 
 
 def test_compile_fails_when_binding_path_missing() -> None:
-    binding = _FakeTask.from_config("tasks.missing")
+    binding = _FakeStep.from_config("tasks.missing")
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
@@ -85,7 +85,7 @@ def test_compile_fails_when_kafka_missing_for_topic_flow() -> None:
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
-        process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
+        process=Process(_FakeStep(), IntoTopic("out", payload=_Result)),
     )
     cfg = OmegaConf.create({})  # no kafka section
 
@@ -99,7 +99,7 @@ def test_compile_succeeds_when_kafka_present() -> None:
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
-        process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
+        process=Process(_FakeStep(), IntoTopic("out", payload=_Result)),
     )
     cfg = OmegaConf.create(_kafka_config())
 
@@ -109,11 +109,11 @@ def test_compile_succeeds_when_kafka_present() -> None:
 
 
 def test_compile_fails_on_shape_mismatch() -> None:
-    """Task expects RECORD but source is BATCH without CollectBatch."""
+    """Step expects RECORD but source is BATCH without CollectBatch."""
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order, shape=StreamShape.BATCH),
-        process=Process(_FakeTask(), IntoTopic("out", payload=_Result)),
+        process=Process(_FakeStep(), IntoTopic("out", payload=_Result)),
     )
     cfg = OmegaConf.create(_kafka_config())
 
@@ -127,7 +127,7 @@ def test_compile_fails_without_output() -> None:
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
-        process=Process(_FakeTask()),
+        process=Process(_FakeStep()),
         output=None,
     )
     cfg = OmegaConf.create(
@@ -170,7 +170,7 @@ def test_compile_validates_router_branch_shapes() -> None:
                         process=Process(CollectBatch(max_records=10, timeout_ms=1000)),
                     ),
                 ),
-                default=Process(_FakeTask()),
+                default=Process(_FakeStep()),
             ),
             IntoTopic("out", payload=_Result),
         ),
@@ -190,7 +190,7 @@ def test_compile_accepts_router_with_terminal_branch_output() -> None:
         process=Process(
             Router.by(
                 msg.payload.order_id,
-                routes={"vip": Process(_FakeTask(), IntoTopic("out", payload=_Result))},
+                routes={"vip": Process(_FakeStep(), IntoTopic("out", payload=_Result))},
             )
         ),
         output=None,
@@ -212,7 +212,7 @@ def test_uses_kafka_detects_kafka_usage() -> None:
     flow_without_output: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
-        process=Process(_FakeTask()),
+        process=Process(_FakeStep()),
         output=None,
     )
     # Any flow with FromTopic source uses Kafka
@@ -234,7 +234,7 @@ def test_compile_fails_on_batch_scope_with_direct_context_manager() -> None:
     flow: StreamFlow[_Order, _Result] = StreamFlow(
         name="test",
         source=FromTopic("in", payload=_Order),
-        process=Process(With(task=_FakeTask(), scope=ResourceScope.BATCH, db=_FakeSyncCM())),
+        process=Process(With(step=_FakeStep(), scope=ResourceScope.BATCH, db=_FakeSyncCM())),
         output=IntoTopic("out", payload=_Result),
     )
 
@@ -258,7 +258,7 @@ def test_compile_succeeds_on_batch_scope_with_context_factory() -> None:
         source=FromTopic("in", payload=_Order),
         process=Process(
             With(
-                task=_FakeTask(),
+                step=_FakeStep(),
                 scope=ResourceScope.BATCH,
                 db=ContextFactory(lambda: _FakeSyncCM()),
             )

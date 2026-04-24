@@ -14,12 +14,19 @@ from loom.streaming.nodes._helpers import msg
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape
-from loom.streaming.nodes._task import BatchTask, ResourceFactory, Task, TaskContext
+from loom.streaming.nodes._step import (
+    BatchExpandStep,
+    BatchStep,
+    ExpandStep,
+    RecordStep,
+    ResourceFactory,
+    Step,
+    StepContext,
+)
 from loom.streaming.nodes._with import (
     AsyncContextDependency,
     ContextDependency,
     ContextFactory,
-    OneEmit,
     ResourceScope,
     SyncContextDependency,
     With,
@@ -27,20 +34,22 @@ from loom.streaming.nodes._with import (
 )
 
 __all__ = [
-    "BatchTask",
+    "BatchExpandStep",
+    "BatchStep",
     "CollectBatch",
     "AsyncContextDependency",
     "ContextDependency",
     "ContextFactory",
     "Drain",
+    "ExpandStep",
     "ForEach",
     "FromTopic",
     "IntoTopic",
-    "OneEmit",
     "PartitionGuarantee",
     "PartitionPolicy",
     "PartitionStrategy",
     "Predicate",
+    "RecordStep",
     "ResourceFactory",
     "ResourceScope",
     "Route",
@@ -48,8 +57,8 @@ __all__ = [
     "Selector",
     "StreamShape",
     "SyncContextDependency",
-    "Task",
-    "TaskContext",
+    "Step",
+    "StepContext",
     "With",
     "WithAsync",
     "evaluate_predicate",

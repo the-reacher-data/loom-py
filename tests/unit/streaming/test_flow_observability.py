@@ -78,9 +78,9 @@ def test_noop_flow_observer_matches_protocol() -> None:
 
     observer.on_flow_start("test", node_count=3)
     observer.on_flow_end("test", status="success", duration_ms=100)
-    observer.on_node_start("test", 0, node_type="Task")
-    observer.on_node_end("test", 0, node_type="Task", status="success", duration_ms=10)
-    observer.on_node_error("test", 0, node_type="Task", exc=RuntimeError("err"))
+    observer.on_node_start("test", 0, node_type="Step")
+    observer.on_node_end("test", 0, node_type="Step", status="success", duration_ms=10)
+    observer.on_node_error("test", 0, node_type="Step", exc=RuntimeError("err"))
 
 
 def test_structlog_flow_observer_matches_protocol() -> None:
@@ -104,14 +104,14 @@ def test_composite_flow_observer_fans_out_events() -> None:
     composite = CompositeFlowObserver([first, second])
 
     composite.on_flow_start("my_flow", node_count=2)
-    composite.on_node_start("my_flow", 0, node_type="Task")
-    composite.on_node_end("my_flow", 0, node_type="Task", status="success", duration_ms=5)
+    composite.on_node_start("my_flow", 0, node_type="Step")
+    composite.on_node_end("my_flow", 0, node_type="Step", status="success", duration_ms=5)
     composite.on_flow_end("my_flow", status="success", duration_ms=100)
 
     assert first.events == second.events
     assert len(first.events) == 4
     assert first.events[0] == ("flow_start", "my_flow", "2")
-    assert first.events[1] == ("node_start", "my_flow", "0", "Task")
+    assert first.events[1] == ("node_start", "my_flow", "0", "Step")
 
 
 def test_composite_flow_observer_isolates_errors() -> None:
@@ -119,8 +119,8 @@ def test_composite_flow_observer_isolates_errors() -> None:
     composite = CompositeFlowObserver([_FailingFlowObserver(), good])
 
     composite.on_flow_start("test", node_count=1)
-    composite.on_node_start("test", 0, node_type="Task")
-    composite.on_node_error("test", 0, node_type="Task", exc=ValueError("bad"))
+    composite.on_node_start("test", 0, node_type="Step")
+    composite.on_node_error("test", 0, node_type="Step", exc=ValueError("bad"))
     composite.on_flow_end("test", status="failed", duration_ms=50)
 
     assert len(good.events) == 4
@@ -159,22 +159,22 @@ def test_structlog_flow_observer_logs_node_start_at_debug() -> None:
     observer = StructlogFlowObserver()
 
     with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_start("orders", 0, node_type="FakeTask")
+        observer.on_node_start("orders", 0, node_type="FakeStep")
 
-    log.debug.assert_called_once_with("node_start", flow="orders", node_idx=0, node_type="FakeTask")
+    log.debug.assert_called_once_with("node_start", flow="orders", node_idx=0, node_type="FakeStep")
 
 
 def test_structlog_flow_observer_logs_node_end_at_debug() -> None:
     observer = StructlogFlowObserver()
 
     with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="FakeTask", status="success", duration_ms=5)
+        observer.on_node_end("orders", 0, node_type="FakeStep", status="success", duration_ms=5)
 
     log.debug.assert_called_once_with(
         "node_end",
         flow="orders",
         node_idx=0,
-        node_type="FakeTask",
+        node_type="FakeStep",
         status="success",
         duration_ms=5,
     )
@@ -184,13 +184,13 @@ def test_structlog_flow_observer_warns_on_slow_node() -> None:
     observer = StructlogFlowObserver(slow_node_threshold_ms=100)
 
     with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="SlowTask", status="success", duration_ms=200)
+        observer.on_node_end("orders", 0, node_type="SlowStep", status="success", duration_ms=200)
 
     log.warning.assert_called_once_with(
         "slow_node",
         flow="orders",
         node_idx=0,
-        node_type="SlowTask",
+        node_type="SlowStep",
         duration_ms=200,
         threshold_ms=100,
     )
@@ -200,7 +200,7 @@ def test_structlog_flow_observer_no_slow_warning_below_threshold() -> None:
     observer = StructlogFlowObserver(slow_node_threshold_ms=100)
 
     with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="FastTask", status="success", duration_ms=50)
+        observer.on_node_end("orders", 0, node_type="FastStep", status="success", duration_ms=50)
 
     assert log.warning.call_count == 0
 
@@ -209,13 +209,13 @@ def test_structlog_flow_observer_logs_node_error() -> None:
     observer = StructlogFlowObserver()
 
     with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_error("orders", 0, node_type="FakeTask", exc=ValueError("bad input"))
+        observer.on_node_error("orders", 0, node_type="FakeStep", exc=ValueError("bad input"))
 
     log.error.assert_called_once_with(
         "node_error",
         flow="orders",
         node_idx=0,
-        node_type="FakeTask",
+        node_type="FakeStep",
         error="ValueError('bad input')",
     )
 

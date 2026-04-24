@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from loom.core.model import LoomFrozenStruct
-from loom.streaming import Message, MessageMeta, Process, Route, Router, Task, msg
+from loom.streaming import Message, MessageMeta, Process, RecordStep, Route, Router, msg
 from loom.streaming.nodes._router import evaluate_predicate, select_value
 
 
@@ -18,17 +18,17 @@ class _ValidatedOrder(LoomFrozenStruct, frozen=True):
     order_id: str = "ok"
 
 
-class _CreatedRouteTask(Task[_Order, _ValidatedOrder]):
+class _CreatedRouteStep(RecordStep[_Order, _ValidatedOrder]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=f"created:{message.payload.event_type}")
 
 
-class _ManualReviewTask(Task[_Order, _ValidatedOrder]):
+class _ManualReviewStep(RecordStep[_Order, _ValidatedOrder]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=f"manual:{message.payload.event_type}")
 
 
-class _DefaultRouteTask(Task[_Order, _ValidatedOrder]):
+class _DefaultRouteStep(RecordStep[_Order, _ValidatedOrder]):
     def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         return _ValidatedOrder(order_id=f"default:{message.payload.event_type}")
 
@@ -100,9 +100,9 @@ def test_custom_predicate_can_match_message() -> None:
 
 
 def test_router_by_declares_keyed_routes() -> None:
-    created = Process[_Order, _ValidatedOrder](_CreatedRouteTask())
-    cancelled = Process[_Order, _ValidatedOrder](_ManualReviewTask())
-    default = Process[_Order, _ValidatedOrder](_DefaultRouteTask())
+    created = Process[_Order, _ValidatedOrder](_CreatedRouteStep())
+    cancelled = Process[_Order, _ValidatedOrder](_ManualReviewStep())
+    default = Process[_Order, _ValidatedOrder](_DefaultRouteStep())
 
     router = Router.by(
         msg.payload.event_type,
@@ -116,8 +116,8 @@ def test_router_by_declares_keyed_routes() -> None:
 
 
 def test_router_when_declares_ordered_predicate_routes() -> None:
-    manual = Process[_Order, _ValidatedOrder](_ManualReviewTask())
-    normal = Process[_Order, _ValidatedOrder](_CreatedRouteTask())
+    manual = Process[_Order, _ValidatedOrder](_ManualReviewStep())
+    normal = Process[_Order, _ValidatedOrder](_CreatedRouteStep())
     route = Route(when=msg.payload.amount > 1000, process=manual)
 
     router = Router.when((route,), default=normal)

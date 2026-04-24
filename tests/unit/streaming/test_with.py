@@ -12,11 +12,11 @@ from loom.streaming import (
     IntoTopic,
     Message,
     MessageMeta,
-    OneEmit,
-    Task,
+    RecordStep,
     With,
     WithAsync,
 )
+from loom.streaming.nodes._with import OneEmit
 
 
 class _Payload(LoomStruct):
@@ -64,13 +64,13 @@ class _FakeSyncClient:
         return f"sync:{value}"
 
 
-class _AsyncTask(Task[_Payload, _Result]):
+class _AsyncStep(RecordStep[_Payload, _Result]):
     async def execute(self, message: Message[_Payload], *, client: _FakeAsyncClient) -> _Result:
         processed = await client.process(message.payload.value)
         return _Result(value=processed)
 
 
-class _SyncTask(Task[_Payload, _Result]):
+class _SyncStep(RecordStep[_Payload, _Result]):
     def execute(self, message: Message[_Payload], *, client: _FakeSyncClient) -> _Result:
         return _Result(value=client.process(message.payload.value))
 
@@ -79,8 +79,8 @@ class _SyncTask(Task[_Payload, _Result]):
 async def test_with_async_executes_batch_under_open_context_manager() -> None:
     """WithAsync detects the CM, opens it, and the task receives the injected client."""
     client = _FakeAsyncClient()
-    task = _AsyncTask()
-    adapter = WithAsync(task=task, client=client, max_concurrency=5)
+    step = _AsyncStep()
+    adapter = WithAsync(step=step, client=client, max_concurrency=5)
 
     # Verify detection
     assert adapter.async_contexts == {"client": client}
@@ -91,7 +91,7 @@ async def test_with_async_executes_batch_under_open_context_manager() -> None:
     async with client:
         results = await asyncio.gather(
             *[
-                task.execute(msg, client=client)
+                step.execute(msg, client=client)
                 for msg in [
                     Message(payload=_Payload(value="a"), meta=MessageMeta(message_id="m1")),
                     Message(payload=_Payload(value="b"), meta=MessageMeta(message_id="m2")),
@@ -107,8 +107,8 @@ async def test_with_async_executes_batch_under_open_context_manager() -> None:
 def test_with_executes_batch_under_open_context_manager() -> None:
     """With detects the sync CM, opens it, and the task receives the injected client."""
     client = _FakeSyncClient()
-    task = _SyncTask()
-    adapter = With(task=task, client=client)
+    step = _SyncStep()
+    adapter = With(step=step, client=client)
 
     # Verify detection
     assert adapter.sync_contexts == {"client": client}
@@ -117,7 +117,7 @@ def test_with_executes_batch_under_open_context_manager() -> None:
     # Simulate what the runtime adapter does: open CM + sequential execution
     with client:
         results = [
-            task.execute(msg, client=client)
+            step.execute(msg, client=client)
             for msg in [
                 Message(payload=_Payload(value="a"), meta=MessageMeta(message_id="m1")),
                 Message(payload=_Payload(value="b"), meta=MessageMeta(message_id="m2")),
@@ -133,7 +133,7 @@ def test_with_async_detects_mixed_dependencies() -> None:
     """WithAsync separates async CMs from plain deps, and .one() binds the sink."""
     async_cm = _FakeAsyncClient()
     adapter = WithAsync(
-        task=_AsyncTask(),
+        step=_AsyncStep(),
         client=async_cm,
         validator="plain",
         max_concurrency=3,
@@ -151,29 +151,29 @@ def test_with_async_detects_mixed_dependencies() -> None:
 
 
 def test_with_async_rejects_non_positive_max_concurrency() -> None:
-    task = _AsyncTask()
+    step = _AsyncStep()
 
     with pytest.raises(ValueError, match="max_concurrency"):
-        WithAsync(task=task, max_concurrency=0)
+        WithAsync(step=step, max_concurrency=0)
 
 
 def test_with_rejects_async_context_manager() -> None:
-    task = _SyncTask()
+    step = _SyncStep()
 
     with pytest.raises(TypeError, match="sync context managers"):
-        With(task=task, client=_FakeAsyncClient())
+        With(step=step, client=_FakeAsyncClient())
 
 
 def test_with_async_rejects_sync_context_manager() -> None:
-    task = _AsyncTask()
+    step = _AsyncStep()
 
     with pytest.raises(TypeError, match="async context managers"):
-        WithAsync(task=task, client=_FakeSyncClient())
+        WithAsync(step=step, client=_FakeSyncClient())
 
 
 def test_with_keeps_plain_dependencies() -> None:
-    task = _SyncTask()
-    adapter = With(task=task, validator="plain", retries=3)
+    step = _SyncStep()
+    adapter = With(step=step, validator="plain", retries=3)
 
     assert adapter.sync_contexts == {}
     assert adapter.plain_deps == {"validator": "plain", "retries": 3}
@@ -182,7 +182,7 @@ def test_with_keeps_plain_dependencies() -> None:
 def test_context_factory_detected_as_factory() -> None:
     """ContextFactory is stored in context_factories, not contexts or plain_deps."""
     factory = ContextFactory(lambda: _FakeSyncClient())
-    adapter = With(task=_SyncTask(), db=factory)
+    adapter = With(step=_SyncStep(), db=factory)
 
     assert adapter.context_factories == {"db": factory}
     assert adapter.sync_contexts == {}
