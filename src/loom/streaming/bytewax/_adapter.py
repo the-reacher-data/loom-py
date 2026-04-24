@@ -9,7 +9,8 @@ Requires ``bytewax`` to be installed.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
@@ -20,10 +21,17 @@ from bytewax.operators import map as bw_map
 from bytewax.operators import output as bw_output
 
 from loom.core.async_bridge import AsyncBridge
-from loom.streaming.bytewax._node_handlers import _NODE_HANDLERS
-from loom.streaming.bytewax._node_handlers import _batch_key as _node_batch_key
+from loom.streaming.bytewax._node_handlers import (
+    _NODE_HANDLERS,
+    _OutputWiringProtocol,
+    _wire_process,
+)
+from loom.streaming.bytewax._node_handlers import (
+    _batch_key as _node_batch_key,
+)
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
-from loom.streaming.compiler import CompiledNode, CompiledPlan
+from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks
+from loom.streaming.compiler import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -35,6 +43,8 @@ from loom.streaming.observability.observers.protocol import StreamingFlowObserve
 
 logger = logging.getLogger(__name__)
 Stream: TypeAlias = Any
+
+__all__ = ["build_dataflow", "build_dataflow_with_shutdown", "_NODE_HANDLERS"]
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,7 @@ def build_dataflow(
     flow_observer: StreamingFlowObserver | None = None,
     source: Any | None = None,
     sink: Any | None = None,
+    terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
     error_sinks: Mapping[ErrorKind, Any] | None = None,
 ) -> Any:
     """Build a Bytewax Dataflow from a compiled plan."""
@@ -59,6 +70,7 @@ def build_dataflow(
         flow_observer=flow_observer,
         source=source,
         sink=sink,
+        terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
     ).dataflow
 
@@ -69,15 +81,19 @@ def build_dataflow_with_shutdown(
     flow_observer: StreamingFlowObserver | None = None,
     source: Any | None = None,
     sink: Any | None = None,
+    terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
     error_sinks: Mapping[ErrorKind, Any] | None = None,
 ) -> _BuiltDataflow:
     """Build a Bytewax Dataflow and expose its shutdown callback."""
+    if terminal_sinks is None:
+        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks)
     ctx = _BuildContext(
         plan=plan,
         bridge=_maybe_create_bridge(plan),
         flow_observer=flow_observer,
         source=source,
         sink=sink,
+        terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
     )
     return _BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
@@ -87,9 +103,7 @@ def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Any:
     """Assemble a Bytewax Dataflow from a pre-built context."""
     flow = _bytewax_dataflow.Dataflow(plan.name)
     stream = _build_source_pipeline(flow, ctx)
-
-    for idx, node in enumerate(plan.nodes):
-        stream = _wire_node(stream, node, idx, ctx)
+    stream = _wire_process(stream, tuple(node.node for node in plan.nodes), ctx)
 
     _wire_output(stream, ctx)
     return flow
@@ -98,7 +112,7 @@ def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Any:
 class _BuildContext:
     """Wiring-phase state shared across operator builders."""
 
-    __slots__ = ("plan", "bridge", "flow_observer", "source", "outputs", "_managers")
+    __slots__ = ("plan", "bridge", "flow_observer", "source", "outputs", "_managers", "_path")
 
     def __init__(
         self,
@@ -107,17 +121,20 @@ class _BuildContext:
         flow_observer: StreamingFlowObserver | None = None,
         source: Any | None = None,
         sink: Any | None = None,
+        terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
         error_sinks: Mapping[ErrorKind, Any] | None = None,
     ) -> None:
         self.plan = plan
         self.bridge = bridge
         self.flow_observer = flow_observer
         self.source = source
-        self.outputs = _OutputWiring(
+        self.outputs: _OutputWiringProtocol = _OutputWiring(
             sink=sink,
+            terminal_sinks=terminal_sinks or {},
             error_sinks=error_sinks or {},
         )
         self._managers: dict[int, ResourceLifecycle] = {}
+        self._path: tuple[int, ...] = ()
 
     def manager_for(
         self,
@@ -128,6 +145,21 @@ class _BuildContext:
         if idx not in self._managers:
             self._managers[idx] = lifecycle_for(node, bridge=self.bridge)
         return self._managers[idx]
+
+    @property
+    def current_path(self) -> tuple[int, ...]:
+        """Return the current wiring path inside the process tree."""
+        return self._path
+
+    @contextmanager
+    def enter_path(self, path: tuple[int, ...]) -> Iterator[None]:
+        """Temporarily set the current wiring path."""
+        previous = self._path
+        self._path = path
+        try:
+            yield
+        finally:
+            self._path = previous
 
     def shutdown_all(self) -> None:
         """Shutdown all resource managers."""
@@ -141,16 +173,18 @@ class _BuildContext:
 class _OutputWiring:
     """Coordinate terminal output and explicit error routes for one build."""
 
-    __slots__ = ("sink", "error_sinks", "_terminal_output_wired")
+    __slots__ = ("sink", "error_sinks", "terminal_sinks", "_terminal_output_wired")
 
     def __init__(
         self,
         *,
         sink: Any | None,
         error_sinks: Mapping[ErrorKind, Any],
+        terminal_sinks: Mapping[tuple[int, ...], Any],
     ) -> None:
         self.sink = sink
         self.error_sinks = error_sinks
+        self.terminal_sinks = terminal_sinks
         self._terminal_output_wired = False
 
     def needs_flow_output(self) -> bool:
@@ -163,6 +197,16 @@ class _OutputWiring:
             raise RuntimeError("Bytewax sink is required for terminal output wiring.")
         bw_output(step_id, stream, self.sink)
         self._terminal_output_wired = True
+
+    def wire_branch_terminal(self, step_id: str, stream: Stream, path: tuple[int, ...]) -> None:
+        """Wire one branch terminal sink by its compiled path."""
+        sink = self.terminal_sinks.get(path)
+        if sink is None and self.sink is not None and not self.terminal_sinks:
+            sink = self.sink
+            self._terminal_output_wired = True
+        if sink is None:
+            raise RuntimeError(f"Bytewax sink is required for branch terminal path {path}.")
+        bw_output(_qualified_step_id(step_id, path), stream, sink)
 
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
         """Wire one node-error branch to the configured sink, when present."""
@@ -196,15 +240,6 @@ class _OutputWiring:
 
         if ErrorKind.WIRE in plan.error_routes:
             raise RuntimeError("Bytewax sink is required for WIRE error routing.")
-
-
-def _wire_node(stream: Stream, node: CompiledNode, idx: int, ctx: _BuildContext) -> Stream:
-    """Dispatch one compiled node to its handler."""
-    raw = node.node
-    for handler_type, handler in _NODE_HANDLERS.items():
-        if isinstance(raw, handler_type):
-            return handler(stream, raw, idx, ctx)
-    raise TypeError(f"No adapter handler for {type(raw).__name__}")
 
 
 def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
@@ -278,6 +313,14 @@ def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPay
     if isinstance(result, DecodeOk):
         return result.message
     raise TypeError(f"Expected DecodeOk, got {type(result).__name__}.")
+
+
+def _qualified_step_id(step_id: str, path: tuple[int, ...]) -> str:
+    """Return a branch-stable Bytewax step id."""
+    if not path:
+        return step_id
+    suffix = "_".join(str(part) for part in path)
+    return f"{step_id}_{suffix}"
 
 
 def _batch_key(item: Any) -> str:

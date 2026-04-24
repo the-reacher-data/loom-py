@@ -20,6 +20,7 @@ from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._capabilities import RouterBranchSafe
+from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -122,6 +123,9 @@ class _Compiler:
         if _has_terminal_output(flow.process.nodes):
             has_terminal = True
 
+        if flow.output is not None and _contains_fork(flow.process.nodes):
+            errors.append("flow.output cannot be combined with Fork: branches must be terminal")
+
         if not has_terminal:
             errors.append("no terminal output found: add IntoTopic or flow.output")
 
@@ -137,6 +141,8 @@ class _Compiler:
         # Resolve output
         output = self._build_sink(flow.output, runtime_config) if flow.output else None
 
+        terminal_sinks = self._build_terminal_sinks(flow.process.nodes, runtime_config)
+
         # Resolve error routes
         error_routes = {
             kind: self._build_sink(topic, runtime_config) for kind, topic in flow.errors.items()
@@ -150,6 +156,7 @@ class _Compiler:
             source=source,
             nodes=tuple(nodes),
             output=output,
+            terminal_sinks=terminal_sinks,
             error_routes=error_routes,
             needs_async_bridge=needs_async,
         )
@@ -181,11 +188,107 @@ class _Compiler:
             input_shape = current_shape
             output_shape = _node_output_shape(node, current_shape)
             nodes.append(
-                CompiledNode(node=node, input_shape=input_shape, output_shape=output_shape)
+                CompiledNode(
+                    node=node,
+                    input_shape=input_shape,
+                    output_shape=output_shape,
+                    path=(len(nodes),),
+                )
             )
             current_shape = output_shape
 
         return nodes
+
+    def _build_terminal_sinks(
+        self,
+        nodes: Iterable[object],
+        runtime_config: DictConfig,
+        *,
+        path_prefix: tuple[int, ...] = (),
+    ) -> dict[tuple[int, ...], CompiledSink]:
+        sinks: dict[tuple[int, ...], CompiledSink] = {}
+        node_list = tuple(nodes)
+        for idx, node in enumerate(node_list):
+            path = path_prefix + (idx,)
+            if isinstance(node, IntoTopic):
+                sinks[path] = self._build_sink(node, runtime_config)
+            elif isinstance(node, Fork):
+                sinks.update(
+                    self._build_fork_terminal_sinks(node, runtime_config, path_prefix=path)
+                )
+            elif isinstance(node, Router):
+                sinks.update(
+                    self._build_router_terminal_sinks(node, runtime_config, path_prefix=path)
+                )
+        return sinks
+
+    def _build_fork_terminal_sinks(
+        self,
+        fork: Fork[Any],
+        runtime_config: DictConfig,
+        *,
+        path_prefix: tuple[int, ...],
+    ) -> dict[tuple[int, ...], CompiledSink]:
+        sinks: dict[tuple[int, ...], CompiledSink] = {}
+        for branch_idx, route in enumerate(fork.predicate_routes):
+            sinks.update(
+                self._build_terminal_sinks(
+                    route.process.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (branch_idx,),
+                )
+            )
+        for branch_idx, process in enumerate(fork.routes.values()):
+            sinks.update(
+                self._build_terminal_sinks(
+                    process.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (branch_idx,),
+                )
+            )
+        if fork.default is not None:
+            sinks.update(
+                self._build_terminal_sinks(
+                    fork.default.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (len(fork.routes),),
+                )
+            )
+        return sinks
+
+    def _build_router_terminal_sinks(
+        self,
+        router: Router[Any, Any],
+        runtime_config: DictConfig,
+        *,
+        path_prefix: tuple[int, ...],
+    ) -> dict[tuple[int, ...], CompiledSink]:
+        sinks: dict[tuple[int, ...], CompiledSink] = {}
+        for branch_idx, process in enumerate(router.routes.values()):
+            sinks.update(
+                self._build_terminal_sinks(
+                    process.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (branch_idx,),
+                )
+            )
+        for branch_idx, route in enumerate(router.predicate_routes):
+            sinks.update(
+                self._build_terminal_sinks(
+                    route.process.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (branch_idx,),
+                )
+            )
+        if router.default is not None:
+            sinks.update(
+                self._build_terminal_sinks(
+                    router.default.nodes,
+                    runtime_config,
+                    path_prefix=path_prefix + (len(router.routes),),
+                )
+            )
+        return sinks
 
     def _build_sink(self, topic: IntoTopic[Any], runtime_config: DictConfig) -> CompiledSink:
         kafka = section(runtime_config, "kafka", KafkaSettings)
@@ -246,14 +349,26 @@ def _validate_shape_sequence(
 ) -> tuple[list[str], StreamShape]:
     errors: list[str] = []
     current_shape = initial_shape
+    node_list = tuple(nodes)
 
-    for node in nodes:
+    for idx, node in enumerate(node_list):
         expected = _node_input_shape(node)
         if expected is not None and current_shape != expected:
             errors.append(
                 f"shape mismatch: expected {expected.value} but got {current_shape.value} "
                 f"before {type(node).__name__}"
             )
+
+        if isinstance(node, (IntoTopic, Drain)) and idx != len(node_list) - 1:
+            errors.append(f"{type(node).__name__} must be the last node in a process")
+            break
+
+        if isinstance(node, Fork):
+            fork_errors, current_shape = _validate_fork_shapes(node, current_shape)
+            errors.extend(fork_errors)
+            if idx != len(node_list) - 1:
+                errors.append("fork must be the last node in a process")
+            break
 
         if isinstance(node, Router):
             router_errors, current_shape = _validate_router_shapes(node, current_shape)
@@ -263,6 +378,21 @@ def _validate_shape_sequence(
         current_shape = _node_output_shape(node, current_shape)
 
     return errors, current_shape
+
+
+def _validate_fork_shapes(
+    fork: Fork[StreamPayload],
+    initial_shape: StreamShape,
+) -> tuple[list[str], StreamShape]:
+    errors: list[str] = []
+
+    for label, nodes in _fork_branch_nodes(fork):
+        branch_errors, _ = _validate_shape_sequence(nodes, initial_shape)
+        errors.extend(f"fork branch {label}: {error}" for error in branch_errors)
+        if not _has_terminal_output(nodes):
+            errors.append(f"fork branch {label}: no terminal output found")
+
+    return errors, StreamShape.NONE
 
 
 def _validate_router_shapes(
@@ -301,17 +431,38 @@ def _router_branch_nodes(
         yield "default", router.default.nodes
 
 
+def _fork_branch_nodes(
+    fork: Fork[StreamPayload],
+) -> Iterable[tuple[str, tuple[object, ...]]]:
+    for index, route in enumerate(fork.predicate_routes):
+        yield f"predicate[{index}]", route.process.nodes
+    for key, process in fork.routes.items():
+        yield repr(key), process.nodes
+    if fork.default is not None:
+        yield "default", fork.default.nodes
+
+
 def _has_terminal_output(nodes: Iterable[object]) -> bool:
     for node in nodes:
         if isinstance(node, (IntoTopic, Drain)):
             return True
         if isinstance(node, Router) and _router_has_terminal_output(node):
             return True
+        if isinstance(node, Fork) and _fork_has_terminal_output(node):
+            return True
     return False
 
 
 def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) -> bool:
     return any(_has_terminal_output(nodes) for _, nodes in _router_branch_nodes(router))
+
+
+def _fork_has_terminal_output(fork: Fork[StreamPayload]) -> bool:
+    return any(_has_terminal_output(nodes) for _, nodes in _fork_branch_nodes(fork))
+
+
+def _contains_fork(nodes: Iterable[object]) -> bool:
+    return any(isinstance(node, Fork) for node in nodes)
 
 
 def _node_input_shape(node: object) -> StreamShape | None:
@@ -329,6 +480,8 @@ def _node_input_shape(node: object) -> StreamShape | None:
     if isinstance(node, ForEach):
         return StreamShape.MANY
     if isinstance(node, Drain):
+        return None
+    if isinstance(node, Fork):
         return None
     return None
 
@@ -364,5 +517,7 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
     if isinstance(node, IntoTopic):
         return node.shape
     if isinstance(node, Drain):
+        return StreamShape.NONE
+    if isinstance(node, Fork):
         return StreamShape.NONE
     return current

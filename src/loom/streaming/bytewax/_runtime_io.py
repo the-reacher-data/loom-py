@@ -101,6 +101,13 @@ def build_runtime_error_sinks(
     return {kind: build_runtime_sink(sink) for kind, sink in error_routes.items()}
 
 
+def build_runtime_terminal_sinks(
+    terminal_sinks: dict[tuple[int, ...], CompiledSink],
+) -> dict[tuple[int, ...], _KafkaMessageSink]:
+    """Build runtime sinks for terminal branch outputs."""
+    return {path: build_runtime_sink(sink) for path, sink in terminal_sinks.items()}
+
+
 def _resolve_partition_key(
     message: Message[StreamPayload],
     partition_policy: PartitionPolicy[Any] | None,

@@ -13,7 +13,9 @@ from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming import (
     CollectBatch,
     ContextFactory,
+    Drain,
     ForEach,
+    Fork,
     FromTopic,
     IntoTopic,
     Message,
@@ -35,6 +37,8 @@ _ORDERS_ROUTED_TOPIC = "orders.routed"
 _ORDERS_PRICED_TOPIC = "orders.priced"
 _ORDERS_PRICED_BATCH_SCOPE_TOPIC = "orders.priced.batch_scope"
 _ORDERS_SCORED_TOPIC = "orders.scored"
+_ORDERS_FORK_VIP_TOPIC = "orders.fork.vip"
+_ORDERS_FORK_STANDARD_TOPIC = "orders.fork.standard"
 
 
 class OrderPlaced(LoomStruct):
@@ -329,6 +333,39 @@ def build_async_flow_case() -> StreamFlowCase:
     )
 
 
+def build_fork_flow_case() -> StreamFlowCase:
+    """Build a terminal Fork flow with independent branch outputs."""
+    flow = StreamFlow(
+        name="orders_fork",
+        source=FromTopic(_ORDERS_RAW_TOPIC, payload=RoutedOrder),
+        process=Process(
+            Fork.by(
+                msg.payload.lane,
+                branches={
+                    "vip": Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=RoutedOrder)),
+                    "standard": Process(
+                        IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=RoutedOrder)
+                    ),
+                },
+                default=Process(Drain()),
+            )
+        ),
+    )
+    return StreamFlowCase(
+        flow=flow,
+        config=OmegaConf.create(_streaming_kafka_config()),
+        input_messages=(
+            _routed_order_message("o-1", "vip"),
+            _routed_order_message("o-2", "standard"),
+            _routed_order_message("o-3", "manual"),
+        ),
+        expected_payloads=(
+            RoutedOrder(order_id="o-1", lane="vip"),
+            RoutedOrder(order_id="o-2", lane="standard"),
+        ),
+    )
+
+
 def _order_message(order_id: str, amount: int, segment: str) -> Message[OrderPlaced]:
     return Message(
         payload=OrderPlaced(order_id=order_id, amount=amount, segment=segment),
@@ -366,6 +403,21 @@ def _streaming_kafka_config() -> dict[str, Any]:
                     "brokers": [_KAFKA_BROKER],
                     "topic": _ORDERS_SCORED_TOPIC,
                 },
+                _ORDERS_FORK_VIP_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_FORK_VIP_TOPIC,
+                },
+                _ORDERS_FORK_STANDARD_TOPIC: {
+                    "brokers": [_KAFKA_BROKER],
+                    "topic": _ORDERS_FORK_STANDARD_TOPIC,
+                },
             },
         }
     }
+
+
+def _routed_order_message(order_id: str, lane: str) -> Message[RoutedOrder]:
+    return Message(
+        payload=RoutedOrder(order_id=order_id, lane=lane),
+        meta=MessageMeta(message_id=order_id),
+    )

@@ -80,6 +80,14 @@ class TestBytewaxFlowExamples:
 
         assert tuple(message.payload for message in results) == async_flow_case.expected_payloads
 
+    def test_runs_fork_flow(
+        self,
+        fork_flow_case: StreamFlowCase,
+    ) -> None:
+        results = _run_flow_case(fork_flow_case)
+
+        assert tuple(message.payload for message in results) == fork_flow_case.expected_payloads
+
     def test_routes_record_step_errors_to_task_error_sink(self) -> None:
         flow = StreamFlow(
             name="orders_fail",

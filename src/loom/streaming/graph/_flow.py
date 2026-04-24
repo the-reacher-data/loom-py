@@ -10,6 +10,7 @@ from loom.core.config import ConfigBinding
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -27,6 +28,7 @@ ProcessNode: TypeAlias = (
     | ForEach
     | Drain
     | IntoTopic[Any]
+    | Fork[Any]
     | Router[Any, Any]
 )
 

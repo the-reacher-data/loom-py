@@ -29,6 +29,7 @@ from loom.streaming.nodes._boundary import (
     PartitionPolicy,
     PartitionStrategy,
 )
+from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._helpers import msg
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router
@@ -63,6 +64,8 @@ __all__ = [
     "ErrorKind",
     "ForEach",
     "FromTopic",
+    "Fork",
+    "ForkRoute",
     "ExpandStep",
     "IntoTopic",
     "Message",

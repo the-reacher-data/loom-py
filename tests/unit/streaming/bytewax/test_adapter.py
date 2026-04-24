@@ -62,6 +62,7 @@ def _message(payload: LoomStruct) -> Message[LoomStruct]:
 def _build_plan(
     *nodes: object,
     output: IntoTopic[Any] | None = None,
+    terminal_sinks: dict[tuple[int, ...], CompiledSink] | None = None,
     error_routes: dict[ErrorKind, CompiledSink] | None = None,
 ) -> CompiledPlan:
     """Build a minimal CompiledPlan for testing."""
@@ -91,6 +92,7 @@ def _build_plan(
         ),
         nodes=tuple(compiled_nodes),
         output=compiled_output,
+        terminal_sinks=terminal_sinks or {},
         error_routes=error_routes or {},
         needs_async_bridge=False,
     )

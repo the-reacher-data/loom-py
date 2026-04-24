@@ -140,11 +140,19 @@ class StreamingTestRunner:
         error_sinks: dict[ErrorKind, Sink[Any]] = {
             kind: bytewax_testing.TestingSink(items) for kind, items in self._errors.items()
         }
+        terminal_sinks: dict[tuple[int, ...], Sink[Any]] = {
+            path: bytewax_testing.TestingSink(self._output) for path in self._plan.terminal_sinks
+        }
         prepared = _prepare_run(
             plan=self._plan,
             observer=self._observer,
             source=bytewax_testing.TestingSource(list(self._input)),
-            sink=bytewax_testing.TestingSink(self._output),
+            sink=(
+                bytewax_testing.TestingSink(self._output)
+                if self._plan.output is not None or not self._plan.terminal_sinks
+                else None
+            ),
+            terminal_sinks=terminal_sinks,
             error_sinks=error_sinks,
         )
         try:

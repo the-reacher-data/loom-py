@@ -102,3 +102,20 @@ class TestCompilerFlowExamples:
             StreamShape.RECORD,
             StreamShape.RECORD,
         ]
+
+    def test_compile_fork_flow_creates_branch_terminal_sinks(
+        self,
+        fork_flow_case: StreamFlowCase,
+    ) -> None:
+        plan = compile_flow(
+            fork_flow_case.flow,
+            runtime_config=fork_flow_case.config,
+        )
+
+        assert plan.name == "orders_fork"
+        assert plan.output is None
+        assert plan.nodes[0].output_shape is StreamShape.NONE
+        assert {sink.topic for sink in plan.terminal_sinks.values()} == {
+            "orders.fork.vip",
+            "orders.fork.standard",
+        }

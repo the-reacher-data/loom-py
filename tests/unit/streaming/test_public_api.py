@@ -17,6 +17,8 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "ExpandStep",
         "ForEach",
         "FromTopic",
+        "Fork",
+        "ForkRoute",
         "IntoTopic",
         "Message",
         "MessageMeta",

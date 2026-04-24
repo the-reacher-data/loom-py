@@ -133,7 +133,7 @@ def select_value(selector: SelectorSpec[InT], message: Message[InT]) -> object:
     """
 
     if isinstance(selector, PathRef):
-        return evaluate_expr(selector, {"message": message})
+        return evaluate_expr(selector, {"message": message, "payload": message.payload})
     return selector.select(message)
 
 
@@ -150,7 +150,7 @@ def evaluate_predicate(predicate: PredicateSpec[InT], message: Message[InT]) -> 
 
     if isinstance(predicate, Predicate):
         return predicate.matches(message)
-    return bool(evaluate_expr(predicate, {"message": message}))
+    return bool(evaluate_expr(predicate, {"message": message, "payload": message.payload}))
 
 
 __all__ = ["Route", "Router", "evaluate_predicate", "select_value"]

@@ -6,12 +6,12 @@ import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias, cast
 
-from bytewax.operators import collect, flat_map, key_on, key_rm
+from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import map as bw_map
 
 from loom.core.async_bridge import AsyncBridge
@@ -32,6 +32,7 @@ from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._capabilities import RouterBranchSafe
+from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -47,8 +48,17 @@ class _OutputWiringProtocol(_ErrorWireOutputs, Protocol):
     def wire_terminal(self, step_id: str, stream: Stream) -> None:
         """Wire one terminal output branch."""
 
+    def wire_branch_terminal(self, step_id: str, stream: Stream, path: tuple[int, ...]) -> None:
+        """Wire one branch terminal output branch."""
+
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
         """Wire one node error branch."""
+
+    def wire_flow_output(self, stream: Stream, plan: CompiledPlan) -> None:
+        """Wire flow-level outputs after the process completes."""
+
+    def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
+        """Wire source decode errors."""
 
 
 class _BuildContextProtocol(Protocol):
@@ -57,7 +67,12 @@ class _BuildContextProtocol(Protocol):
     plan: CompiledPlan
     bridge: AsyncBridge | None
     flow_observer: StreamingFlowObserver | None
-    outputs: Any
+    outputs: _OutputWiringProtocol
+
+    @property
+    def current_path(self) -> tuple[int, ...]:
+        """Return the current wiring path inside the process tree."""
+        ...
 
     def manager_for(
         self,
@@ -67,8 +82,26 @@ class _BuildContextProtocol(Protocol):
         """Return the resource manager for one scoped node."""
         ...
 
+    def enter_path(self, path: tuple[int, ...]) -> AbstractContextManager[None]:
+        """Temporarily set the current compilation path."""
+        ...
+
 
 NodeHandler: TypeAlias = Callable[[Stream, object, int, _BuildContextProtocol], Stream]
+
+
+def _wire_process(
+    stream: Stream,
+    nodes: tuple[object, ...],
+    ctx: _BuildContextProtocol,
+    *,
+    path_prefix: tuple[int, ...] = (),
+) -> Stream:
+    """Wire one process subtree under a path prefix."""
+    for idx, node in enumerate(nodes):
+        with ctx.enter_path(path_prefix + (idx,)):
+            stream = _wire_node(stream, node, idx, ctx)
+    return stream
 
 
 def _wire_node(stream: Stream, node: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -354,7 +387,7 @@ def _apply_drain(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoc
 
 def _apply_into_topic(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     del raw
-    ctx.outputs.wire_terminal(f"into_topic_{idx}", stream)
+    ctx.outputs.wire_branch_terminal(f"into_topic_{idx}", stream, ctx.current_path)
     return stream
 
 
@@ -452,6 +485,87 @@ def _execute_router_step(
 ) -> Message[StreamPayload]:
     with _observe_node(observer, flow_name, idx, "Router"):
         return _execute_router(router, message)
+
+
+def _apply_fork(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
+    fork = cast(Fork[StreamPayload], raw)
+    if fork.selector is not None:
+        return _apply_fork_by(stream, fork, idx, ctx)
+    return _apply_fork_when(stream, fork, idx, ctx)
+
+
+def _apply_fork_by(
+    stream: Stream,
+    fork: Fork[StreamPayload],
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    selector = fork.selector
+    if selector is None:
+        raise RuntimeError("Fork.by requires a selector.")
+    remaining = stream
+    fork_path = ctx.current_path
+
+    for branch_idx, (key, process) in enumerate(fork.routes.items()):
+        branch_name = f"fork_{idx}_by_{branch_idx}"
+
+        def predicate(message: Any, *, expected: object = key) -> bool:
+            runtime_message = _require_message(message)
+            return select_value(selector, runtime_message) == expected
+
+        split = branch(branch_name, remaining, predicate)
+        _wire_process(
+            split.trues,
+            process.nodes,
+            ctx,
+            path_prefix=fork_path + (branch_idx,),
+        )
+        remaining = split.falses
+
+    if fork.default is not None:
+        _wire_process(
+            remaining,
+            fork.default.nodes,
+            ctx,
+            path_prefix=fork_path + (len(fork.routes),),
+        )
+    return remaining
+
+
+def _apply_fork_when(
+    stream: Stream,
+    fork: Fork[StreamPayload],
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    remaining = stream
+    fork_path = ctx.current_path
+
+    for branch_idx, route in enumerate(fork.predicate_routes):
+        branch_name = f"fork_{idx}_when_{branch_idx}"
+        route_when = route.when
+
+        def predicate(message: Any, *, when: Any = route_when) -> bool:
+            runtime_message = _require_message(message)
+            return evaluate_predicate(when, runtime_message)
+
+        split = branch(branch_name, remaining, predicate)
+        _wire_process(
+            split.trues,
+            route.process.nodes,
+            ctx,
+            path_prefix=fork_path + (branch_idx,),
+        )
+        remaining = split.falses
+
+    if fork.default is not None:
+        _wire_process(
+            remaining,
+            fork.default.nodes,
+            ctx,
+            path_prefix=fork_path + (len(fork.predicate_routes),),
+        )
+    return remaining
 
 
 @contextmanager
@@ -591,6 +705,7 @@ _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
         WithAsync: _apply_with_async,
         CollectBatch: _apply_collect_batch,
         ForEach: _apply_for_each,
+        Fork: _apply_fork,
         Router: _apply_router,
         Drain: _apply_drain,
         IntoTopic: _apply_into_topic,

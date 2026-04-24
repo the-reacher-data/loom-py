@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -21,8 +21,10 @@ from loom.streaming.bytewax._runtime_io import (
     build_runtime_error_sinks,
     build_runtime_sink,
     build_runtime_source,
+    build_runtime_terminal_sinks,
 )
 from loom.streaming.compiler import CompiledPlan, compile_flow
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.observability.factory import make_flow_observers
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
@@ -220,12 +222,15 @@ def _prepare_run(
     observer: StreamingFlowObserver | None = None,
     source: Any | None = None,
     sink: Any | None = None,
-    error_sinks: Any | None = None,
+    terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
+    error_sinks: Mapping[ErrorKind, Any] | None = None,
 ) -> _PreparedStreamingRun:
     if source is None:
         source = build_runtime_source(plan.source)
     if sink is None and plan.output is not None:
         sink = build_runtime_sink(plan.output)
+    if terminal_sinks is None:
+        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks)
     if error_sinks is None:
         error_sinks = build_runtime_error_sinks(plan.error_routes)
     built = build_dataflow_with_shutdown(
@@ -233,6 +238,7 @@ def _prepare_run(
         flow_observer=observer,
         source=source,
         sink=sink,
+        terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
     )
     return _PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)

@@ -12,6 +12,7 @@ from loom.streaming.nodes import (
     Drain,
     ExpandStep,
     ForEach,
+    Fork,
     IntoTopic,
     RecordStep,
     Router,
@@ -69,3 +70,8 @@ def test_router_branch_safe_nodes_are_marked_on_public_api() -> None:
         "IntoTopic",
         "Drain",
     } <= marked
+
+
+def test_fork_is_handled_by_adapter() -> None:
+    """Fork must be executable by the Bytewax adapter."""
+    assert Fork in _NODE_HANDLERS

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
@@ -39,6 +39,7 @@ class CompiledNode:
     node: object
     input_shape: StreamShape
     output_shape: StreamShape
+    path: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,3 +52,4 @@ class CompiledPlan:
     output: CompiledSink | None
     error_routes: dict[ErrorKind, CompiledSink]
     needs_async_bridge: bool
+    terminal_sinks: dict[tuple[int, ...], CompiledSink] = field(default_factory=dict)
