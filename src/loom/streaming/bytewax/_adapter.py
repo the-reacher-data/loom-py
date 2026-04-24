@@ -19,20 +19,34 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, TypeAlias, cast
 
-from bytewax.dataflow import Dataflow
-from bytewax.inputs import Source
-from bytewax.operators import (
-    branch,
-    collect,
-    flat_map,
-    key_on,
-    key_rm,
-)
-from bytewax.operators import input as bw_input
-from bytewax.operators import map as bw_map
-from bytewax.operators import output as bw_output
-from bytewax.outputs import Sink
-from bytewax.testing import TestingSource
+try:
+    import bytewax.dataflow as _bytewax_dataflow
+    import bytewax.testing as _bytewax_testing
+    from bytewax.operators import (
+        branch,
+        collect,
+        flat_map,
+        key_on,
+        key_rm,
+    )
+    from bytewax.operators import input as bw_input
+    from bytewax.operators import map as bw_map
+    from bytewax.operators import output as bw_output
+except ModuleNotFoundError:  # pragma: no cover - exercised when streaming extra is absent
+
+    class _MissingBytewaxModule:
+        """Placeholder used when the optional Bytewax extra is not installed."""
+
+        def __getattr__(self, _name: str) -> Any:
+            raise RuntimeError("Bytewax is required to build or execute streaming dataflows.")
+
+    _bytewax_dataflow = _MissingBytewaxModule()  # type: ignore[assignment]
+    _bytewax_testing = _MissingBytewaxModule()  # type: ignore[assignment]
+
+    def _missing_bytewax(*_args: object, **_kwargs: object) -> Any:
+        raise RuntimeError("Bytewax is required to build or execute streaming dataflows.")
+
+    branch = collect = flat_map = key_on = key_rm = bw_input = bw_map = bw_output = _missing_bytewax
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
@@ -64,7 +78,7 @@ class _BuiltDataflow:
         shutdown: Callback that releases adapter resources after execution.
     """
 
-    dataflow: Dataflow
+    dataflow: Any
     shutdown: Callable[[], None]
 
 
@@ -72,10 +86,10 @@ def build_dataflow(
     plan: CompiledPlan,
     *,
     flow_observer: StreamingFlowObserver | None = None,
-    source: Source[Any] | None = None,
-    sink: Sink[Any] | None = None,
-    error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
-) -> Dataflow:
+    source: Any | None = None,
+    sink: Any | None = None,
+    error_sinks: Mapping[ErrorKind, Any] | None = None,
+) -> Any:
     """Build a Bytewax Dataflow from a compiled plan.
 
     Args:
@@ -101,9 +115,9 @@ def build_dataflow_with_shutdown(
     plan: CompiledPlan,
     *,
     flow_observer: StreamingFlowObserver | None = None,
-    source: Source[Any] | None = None,
-    sink: Sink[Any] | None = None,
-    error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
+    source: Any | None = None,
+    sink: Any | None = None,
+    error_sinks: Mapping[ErrorKind, Any] | None = None,
 ) -> _BuiltDataflow:
     """Build a Bytewax Dataflow and expose its shutdown callback.
 
@@ -128,9 +142,9 @@ def build_dataflow_with_shutdown(
     return _BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
 
 
-def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Dataflow:
+def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Any:
     """Assemble a Bytewax Dataflow from a pre-built context."""
-    flow = Dataflow(plan.name)
+    flow = _bytewax_dataflow.Dataflow(plan.name)
     stream = _build_source_pipeline(flow, ctx)
 
     for idx, node in enumerate(plan.nodes):
@@ -162,9 +176,9 @@ class _BuildContext:
         plan: CompiledPlan,
         bridge: AsyncBridge | None,
         flow_observer: StreamingFlowObserver | None = None,
-        source: Source[Any] | None = None,
-        sink: Sink[Any] | None = None,
-        error_sinks: Mapping[ErrorKind, Sink[Any]] | None = None,
+        source: Any | None = None,
+        sink: Any | None = None,
+        error_sinks: Mapping[ErrorKind, Any] | None = None,
     ) -> None:
         self.plan = plan
         self.bridge = bridge
@@ -203,8 +217,8 @@ class _OutputWiring:
     def __init__(
         self,
         *,
-        sink: Sink[Any] | None,
-        error_sinks: Mapping[ErrorKind, Sink[Any]],
+        sink: Any | None,
+        error_sinks: Mapping[ErrorKind, Any],
     ) -> None:
         self.sink = sink
         self.error_sinks = error_sinks
@@ -258,7 +272,7 @@ class _OutputWiring:
 # ---------------------------------------------------------------------------
 
 
-def _build_source_pipeline(flow: Dataflow, ctx: _BuildContext) -> Stream:
+def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     """Build the source-side pipeline up to the first decoded Message stream."""
     source = ctx.source if ctx.source is not None else _empty_testing_source()
     codec: MsgspecCodec[Any] = MsgspecCodec()
@@ -608,9 +622,9 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
     )
 
 
-def _empty_testing_source() -> Source[Any]:
+def _empty_testing_source() -> Any:
     """Return an inert Bytewax testing source until Kafka input is wired."""
-    return TestingSource([])
+    return _bytewax_testing.TestingSource([])
 
 
 def _require_message(value: Any) -> Message[StreamPayload]:
