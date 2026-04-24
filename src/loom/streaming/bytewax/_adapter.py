@@ -19,34 +19,18 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, TypeAlias, cast
 
-try:
-    import bytewax.dataflow as _bytewax_dataflow
-    import bytewax.testing as _bytewax_testing
-    from bytewax.operators import (
-        branch,
-        collect,
-        flat_map,
-        key_on,
-        key_rm,
-    )
-    from bytewax.operators import input as bw_input
-    from bytewax.operators import map as bw_map
-    from bytewax.operators import output as bw_output
-except ModuleNotFoundError:  # pragma: no cover - exercised when streaming extra is absent
-
-    class _MissingBytewaxModule:
-        """Placeholder used when the optional Bytewax extra is not installed."""
-
-        def __getattr__(self, _name: str) -> Any:
-            raise RuntimeError("Bytewax is required to build or execute streaming dataflows.")
-
-    _bytewax_dataflow = _MissingBytewaxModule()  # type: ignore[assignment]
-    _bytewax_testing = _MissingBytewaxModule()  # type: ignore[assignment]
-
-    def _missing_bytewax(*_args: object, **_kwargs: object) -> Any:
-        raise RuntimeError("Bytewax is required to build or execute streaming dataflows.")
-
-    branch = collect = flat_map = key_on = key_rm = bw_input = bw_map = bw_output = _missing_bytewax
+import bytewax.dataflow as _bytewax_dataflow
+import bytewax.testing as _bytewax_testing
+from bytewax.operators import (
+    branch,
+    collect,
+    flat_map,
+    key_on,
+    key_rm,
+)
+from bytewax.operators import input as bw_input
+from bytewax.operators import map as bw_map
+from bytewax.operators import output as bw_output
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
