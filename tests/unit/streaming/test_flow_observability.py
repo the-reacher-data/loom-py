@@ -14,6 +14,8 @@ from loom.streaming.observability import (
     StreamingFlowObserver,
     StructlogFlowObserver,
 )
+from loom.streaming.testing import StreamingTestRunner
+from tests.unit.streaming.support.flow_cases import StreamFlowCase
 
 # ---------------------------------------------------------------------------
 # Recording observer for assertions
@@ -239,3 +241,25 @@ def test_node_handlers_cover_step_handlers() -> None:
     from loom.streaming.bytewax._adapter import _NODE_HANDLERS
 
     assert RecordStep in _NODE_HANDLERS
+
+
+def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
+    async_flow_case: StreamFlowCase,
+) -> None:
+    observer = _RecordingFlowObserver()
+    runner = StreamingTestRunner.from_flow(
+        async_flow_case.flow,
+        runtime_config=async_flow_case.config,
+        observer=observer,
+    ).with_messages(list(async_flow_case.input_messages))
+
+    runner.run()
+
+    assert observer.events[0] == (
+        "flow_start",
+        async_flow_case.flow.name,
+        str(len(async_flow_case.flow.process.nodes)),
+    )
+    assert observer.events[-1][0] == "flow_end"
+    assert any(event[0] == "node_start" and event[-1] == "WithAsync" for event in observer.events)
+    assert any(event[0] == "node_end" and event[3] == "WithAsync" for event in observer.events)

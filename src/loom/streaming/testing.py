@@ -17,6 +17,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import Any
 
 import bytewax.testing as bytewax_testing
@@ -155,9 +156,24 @@ class StreamingTestRunner:
             terminal_sinks=terminal_sinks,
             error_sinks=error_sinks,
         )
+        if self._observer is not None:
+            self._observer.on_flow_start(self._plan.name, node_count=len(self._plan.nodes))
+        started_at = perf_counter()
+        status = "failed"
         try:
             bytewax_testing.run_main(prepared.dataflow)  # type: ignore[no-untyped-call]
+            status = "success"
+        except Exception:
+            status = "failed"
+            raise
         finally:
+            if self._observer is not None:
+                duration_ms = int((perf_counter() - started_at) * 1000)
+                self._observer.on_flow_end(
+                    self._plan.name,
+                    status=status,
+                    duration_ms=duration_ms,
+                )
             logger.debug("shutting_down_test_runner")
             prepared.shutdown()
 

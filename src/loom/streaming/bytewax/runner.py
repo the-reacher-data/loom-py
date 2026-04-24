@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import msgspec
@@ -153,10 +154,22 @@ class StreamingRunner:
         """
 
         resolved_runtime = runtime or self._runtime
+        observer = self._observer
+        if observer is not None:
+            observer.on_flow_start(self._plan.name, node_count=len(self._plan.nodes))
+        started_at = perf_counter()
+        status = "failed"
         prepared = self.prepare_run()
         try:
             cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
+            status = "success"
+        except Exception:
+            status = "failed"
+            raise
         finally:
+            if observer is not None:
+                duration_ms = int((perf_counter() - started_at) * 1000)
+                observer.on_flow_end(self._plan.name, status=status, duration_ms=duration_ms)
             self.shutdown()
 
     def shutdown(self) -> None:
