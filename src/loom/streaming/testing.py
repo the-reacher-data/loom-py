@@ -17,8 +17,10 @@ Typical usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import bytewax.testing as bytewax_testing
+from bytewax.outputs import Sink
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import load_config
@@ -27,25 +29,6 @@ from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
-
-_bytewax_testing: Any | None = None
-_bytewax_adapter: Any | None = None
-
-try:
-    import bytewax.testing as _loaded_bytewax_testing
-
-    import loom.streaming.bytewax._adapter as _loaded_bytewax_adapter
-except ModuleNotFoundError:  # pragma: no cover - exercised only without streaming extra
-    _bytewax_testing = None
-    _bytewax_adapter = None
-else:
-    _bytewax_testing = _loaded_bytewax_testing
-    _bytewax_adapter = _loaded_bytewax_adapter
-
-if TYPE_CHECKING:
-    from bytewax.outputs import Sink
-else:
-    Sink = Any
 
 logger = logging.getLogger(__name__)
 
@@ -154,22 +137,18 @@ class StreamingTestRunner:
 
     def run(self) -> None:
         """Execute the compiled dataflow with testing source and sinks."""
-        _require_bytewax_testing()
-        assert _bytewax_testing is not None
-        assert _bytewax_adapter is not None
-
         error_sinks: dict[ErrorKind, Sink[Any]] = {
-            kind: _bytewax_testing.TestingSink(items) for kind, items in self._errors.items()
+            kind: bytewax_testing.TestingSink(items) for kind, items in self._errors.items()
         }
         prepared = _prepare_run(
             plan=self._plan,
             observer=self._observer,
-            source=_bytewax_testing.TestingSource(list(self._input)),
-            sink=_bytewax_testing.TestingSink(self._output),
+            source=bytewax_testing.TestingSource(list(self._input)),
+            sink=bytewax_testing.TestingSink(self._output),
             error_sinks=error_sinks,
         )
         try:
-            _bytewax_testing.run_main(prepared.dataflow)
+            bytewax_testing.run_main(prepared.dataflow)  # type: ignore[no-untyped-call]
         finally:
             logger.debug("shutting_down_test_runner")
             prepared.shutdown()
@@ -188,13 +167,6 @@ def _test_message(topic: str, idx: int, payload: Any) -> Any:
             topic=topic,
         ),
     )
-
-
-def _require_bytewax_testing() -> None:
-    if _bytewax_testing is None or _bytewax_adapter is None:
-        raise RuntimeError(
-            "StreamingTestRunner requires the optional streaming extra with Bytewax installed."
-        )
 
 
 def _first_source_topic(plan: CompiledPlan) -> str:
