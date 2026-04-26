@@ -17,6 +17,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from time import perf_counter
 from typing import Any
 
@@ -161,7 +162,10 @@ class StreamingTestRunner:
         started_at = perf_counter()
         status = "failed"
         try:
-            bytewax_testing.run_main(prepared.dataflow)  # type: ignore[no-untyped-call]
+            bytewax_testing.run_main(
+                prepared.dataflow,
+                epoch_interval=timedelta(milliseconds=1),
+            )  # type: ignore[no-untyped-call]
             status = "success"
         except Exception:
             status = "failed"
