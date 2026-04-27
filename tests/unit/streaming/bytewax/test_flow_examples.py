@@ -13,6 +13,7 @@ import asyncio
 
 from loom.core.model import LoomStruct
 from loom.streaming import (
+    BatchStep,
     CollectBatch,
     ErrorEnvelope,
     ErrorKind,
@@ -23,8 +24,11 @@ from loom.streaming import (
     MessageMeta,
     Process,
     RecordStep,
+    Route,
+    Router,
     StreamFlow,
     WithAsync,
+    msg,
 )
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.support.flow_cases import StreamFlowCase
@@ -210,3 +214,40 @@ def test_with_async_task_timeout_captures_timed_out_messages_as_errors() -> None
     envelope = runner.errors[ErrorKind.TASK][0]
     assert isinstance(envelope, ErrorEnvelope)
     assert envelope.kind == ErrorKind.TASK
+
+
+# ---------------------------------------------------------------------------
+# Router + BatchStep — Router must execute BatchStep as singleton batch
+# ---------------------------------------------------------------------------
+
+
+class _UpperBatchStep(BatchStep[_Order, _ValidatedOrder]):
+    def execute(  # type: ignore[override]
+        self, messages: list[Message[_Order]], **kwargs: object
+    ) -> list[_ValidatedOrder]:
+        return [_ValidatedOrder(order_id=m.payload.order_id.upper()) for m in messages]
+
+
+def test_router_executes_batch_step_branch_as_singleton_batch() -> None:
+    """BatchStep inside a Router branch must execute as a singleton batch and return one result."""
+    flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
+        name="router_batch_flow",
+        source=FromTopic("orders.raw", payload=_Order),
+        process=Process(
+            Router.when(
+                routes=[
+                    Route(
+                        when=msg.payload.order_id != "",
+                        process=Process(_UpperBatchStep()),
+                    )
+                ],
+            )
+        ),
+        output=IntoTopic("orders.out", payload=_ValidatedOrder),
+    )
+    config = OmegaConf.create(_kafka_config())
+    runner = StreamingTestRunner.from_flow(flow, runtime_config=config)
+    runner.with_messages([_message(_Order(order_id="ord-1", amount=10))]).run()
+
+    assert len(runner.output) == 1
+    assert runner.output[0].payload == _ValidatedOrder(order_id="ORD-1")

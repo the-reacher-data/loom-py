@@ -819,6 +819,10 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
     if isinstance(node, RouterBranchSafe) and isinstance(node, RecordStep):
         step = cast(RecordStep[StreamPayload, StreamPayload], node)
         return _replace_payload(message, step.execute(message))
+    if isinstance(node, RouterBranchSafe) and isinstance(node, BatchStep):
+        batch_step = cast(BatchStep[StreamPayload, StreamPayload], node)
+        results = batch_step.execute([message])
+        return _replace_payload(message, results[0])
     if isinstance(node, RouterBranchSafe) and isinstance(node, (IntoTopic, Drain)):
         return message
     raise TypeError(

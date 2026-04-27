@@ -8,12 +8,13 @@ pytest.importorskip("bytewax")
 
 from loom.core.model import LoomStruct
 from loom.streaming.bytewax import _runtime_io
-from loom.streaming.compiler._plan import CompiledSink
+from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.kafka._config import ProducerSettings
+from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.nodes._boundary import PartitionGuarantee, PartitionPolicy
+from loom.streaming.nodes._shape import StreamShape
 
 
 class _Order(LoomStruct):
@@ -194,3 +195,58 @@ def test_no_dlq_reraises_delivery_error(
 
     with pytest.raises(KafkaDeliveryError):
         sink.write_batch([_message()])
+
+
+# ---------------------------------------------------------------------------
+# KafkaPollingSource poll_timeout_ms
+# ---------------------------------------------------------------------------
+
+
+def _compiled_source(poll_timeout_ms: int = 100) -> CompiledSource:
+    return CompiledSource(
+        settings=ConsumerSettings(
+            brokers=("localhost:9092",),
+            group_id="test",
+            topics=("orders.in",),
+            poll_timeout_ms=poll_timeout_ms,
+        ),
+        topics=("orders.in",),
+        payload_type=_Order,
+        shape=StreamShape.RECORD,
+        decode_strategy="record",
+    )
+
+
+def test_polling_source_uses_configured_poll_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_KafkaPollingSource must forward poll_timeout_ms to the consumer."""
+    polled_with: list[int] = []
+
+    class _FakeConsumer:
+        def __init__(self, settings: ConsumerSettings) -> None:
+            pass
+
+        def poll(self, timeout_ms: int) -> None:
+            polled_with.append(timeout_ms)
+            return None
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _FakeConsumer)
+
+    source = _runtime_io._KafkaPollingSource(_compiled_source(poll_timeout_ms=250))
+
+    with pytest.raises(_runtime_io._KafkaPollingSource.Retry):
+        source.next_item()
+
+    assert polled_with == [250]
+
+
+def test_consumer_settings_poll_timeout_ms_defaults_to_100() -> None:
+    settings = ConsumerSettings(
+        brokers=("localhost:9092",),
+        group_id="test",
+        topics=("orders.in",),
+    )
+
+    assert settings.poll_timeout_ms == 100

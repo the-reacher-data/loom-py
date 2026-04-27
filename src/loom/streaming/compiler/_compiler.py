@@ -461,6 +461,39 @@ def _validate_broadcast_shapes(
     return errors, StreamShape.NONE
 
 
+def _validate_router_branch_shape_sequence(
+    nodes: Iterable[object],
+    initial_shape: StreamShape,
+) -> tuple[list[str], StreamShape]:
+    """Validate shape sequence inside a Router branch.
+
+    Identical to :func:`_validate_shape_sequence` but treats ``BatchStep`` as
+    accepting any input shape and producing RECORD output.  The Bytewax adapter
+    wraps the incoming record into a singleton batch and unwraps the result, so
+    the effective cardinality remains 1-to-1.
+    """
+    errors: list[str] = []
+    current_shape = initial_shape
+    node_list = tuple(nodes)
+
+    for idx, node in enumerate(node_list):
+        if isinstance(node, BatchStep):
+            current_shape = StreamShape.RECORD
+            continue
+        expected = _node_input_shape(node)
+        if expected is not None and current_shape != expected:
+            errors.append(
+                f"shape mismatch: expected {expected.value} but got {current_shape.value} "
+                f"before {type(node).__name__}"
+            )
+        if isinstance(node, (IntoTopic, Drain)) and idx != len(node_list) - 1:
+            errors.append(f"{type(node).__name__} must be the last node in a process")
+            break
+        current_shape = _node_output_shape(node, current_shape)
+
+    return errors, current_shape
+
+
 def _validate_router_shapes(
     router: Router[StreamPayload, StreamPayload],
     initial_shape: StreamShape,
@@ -469,12 +502,17 @@ def _validate_router_shapes(
     outputs: list[StreamShape] = []
 
     for label, nodes in _router_branch_nodes(router):
-        branch_errors, branch_output = _validate_shape_sequence(nodes, initial_shape)
+        branch_errors, branch_output = _validate_router_branch_shape_sequence(nodes, initial_shape)
         errors.extend(f"router branch {label}: {error}" for error in branch_errors)
         for node in nodes:
             if not isinstance(node, RouterBranchSafe):
                 errors.append(
                     f"router branch {label}: node {type(node).__name__} is not router-branch safe"
+                )
+            elif isinstance(node, (ExpandStep, BatchExpandStep)):
+                errors.append(
+                    f"router branch {label}: {type(node).__name__} is not supported in Router "
+                    f"branches — Router is 1-to-1; use Fork for fan-out."
                 )
         outputs.append(branch_output)
 

@@ -29,13 +29,14 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
     """Poll Kafka records from one worker using the project Kafka client."""
 
     def __init__(self, source: CompiledSource) -> None:
-        super().__init__(interval=timedelta(milliseconds=1))
+        self._poll_timeout_ms = source.settings.poll_timeout_ms
+        super().__init__(interval=timedelta(milliseconds=self._poll_timeout_ms))
         self._consumer = KafkaConsumerClient(source.settings)
 
     def next_item(self) -> KafkaRecord[bytes]:
-        record = self._consumer.poll(0)
+        record = self._consumer.poll(self._poll_timeout_ms)
         if record is None:
-            raise SimplePollingSource.Retry(timedelta(milliseconds=1))
+            raise SimplePollingSource.Retry(timedelta(milliseconds=0))
         return record
 
     def close(self) -> None:

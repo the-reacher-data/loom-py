@@ -92,6 +92,9 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
         group_id: Consumer group identifier.
         topics: Topics to subscribe to.
         auto_offset_reset: Offset reset policy.
+        poll_timeout_ms: Maximum milliseconds to block waiting for a message on
+            each poll call.  Higher values reduce CPU usage when the topic is
+            idle; lower values decrease end-to-end latency.  Defaults to 100.
         security: Optional security configuration.
         extra: Optional extra Confluent settings.
     """
@@ -100,6 +103,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
     group_id: str
     topics: tuple[str, ...]
     auto_offset_reset: Literal["earliest", "latest"] = "earliest"
+    poll_timeout_ms: int = 100
     security: KafkaSecuritySettings | None = None
     extra: dict[str, KafkaConfigValue] = msgspec.field(default_factory=dict)
 

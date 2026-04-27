@@ -11,6 +11,7 @@ from loom.core.model import LoomStruct
 from loom.streaming import (
     CollectBatch,
     Drain,
+    ExpandStep,
     Fork,
     ForkRoute,
     FromTopic,
@@ -413,3 +414,39 @@ def test_walk_all_process_nodes_yields_nodes_inside_fork_branch() -> None:
 
     assert fork in all_nodes
     assert async_node in all_nodes
+
+
+# ---------------------------------------------------------------------------
+# Router branch — unsupported node types rejected at compile time
+# ---------------------------------------------------------------------------
+
+
+class _ExpandFakeStep(ExpandStep[_Order, _Result]):
+    def execute(  # type: ignore[override]
+        self, message: Message[_Order], **kwargs: object
+    ) -> list[Message[_Result]]:
+        return []
+
+
+def test_compiler_rejects_expand_step_inside_router_branch() -> None:
+    """ExpandStep in a Router branch must fail compilation — Router is 1-to-1."""
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(
+            Router.when(
+                routes=[
+                    Route(
+                        when=msg.payload.order_id != "",
+                        process=Process(
+                            _ExpandFakeStep(),
+                            IntoTopic("out", payload=_Result),
+                        ),
+                    )
+                ],
+            )
+        ),
+    )
+
+    with pytest.raises(CompilationError, match="not supported in Router branches"):
+        compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
