@@ -57,7 +57,7 @@ def test_otel_config_round_trips_through_msgspec() -> None:
         service_name="loom-streaming",
         tracer_name="loom.streaming",
         protocol="http/protobuf",
-        endpoint="http://collector:4318/v1/traces",
+        endpoint="https://collector:4318/v1/traces",
         headers={"x-api-key": "token"},
         resource_attributes={"env": "test"},
         span_attributes={"team": "data"},
