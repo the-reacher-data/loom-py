@@ -136,9 +136,8 @@ class _RequirePresentSpec:
         self,
         command: Command,
         fields_set: frozenset[str],
-        context: dict[str, object] | None = None,
+        context: dict[str, object] | None = None,  # noqa: ARG002
     ) -> None:
-        del context
         if self.predicate is not None and not _predicate_is_present(
             command, fields_set, self.predicate
         ):

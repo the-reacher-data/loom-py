@@ -549,12 +549,11 @@ class RuntimeExecutor:
         self,
         step: LoadStep,
         plan: ExecutionPlan,
-        compilable: Compilable,
+        _compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
         load_overrides: dict[type[Any], Any] | None,
     ) -> Any:
-        del compilable
         if load_overrides and step.entity_type in load_overrides:
             return load_overrides[step.entity_type]
 
@@ -589,11 +588,10 @@ class RuntimeExecutor:
         self,
         step: ExistsStep,
         plan: ExecutionPlan,
-        compilable: Compilable,
+        _compilable: Compilable,
         bound: dict[str, Any],
         dependencies: dict[type[Any], Any] | None,
     ) -> bool:
-        del compilable
         if dependencies is None:
             repo = self._resolve_repo(step.entity_type)
             if repo is None and self._repo_resolver is None:

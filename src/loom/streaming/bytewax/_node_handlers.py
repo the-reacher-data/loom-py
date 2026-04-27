@@ -359,8 +359,7 @@ def _apply_collect_batch_default(stream: Stream, node: CollectBatch, step_prefix
     return key_rm(f"collect_unkey_{step_prefix}", collected)
 
 
-def _apply_for_each(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    del raw
+def _apply_for_each(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     return flat_map(_step_id(f"foreach_{idx}", ctx), stream, _identity)
 
 
@@ -408,13 +407,11 @@ def _apply_broadcast(
     return stream
 
 
-def _apply_drain(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    del raw
+def _apply_drain(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     return flat_map(_step_id(f"drain_{idx}", ctx), stream, _empty)
 
 
-def _apply_into_topic(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    del raw
+def _apply_into_topic(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     ctx.outputs.wire_branch_terminal(f"into_topic_{idx}", stream, ctx.current_path)
     return stream
 
