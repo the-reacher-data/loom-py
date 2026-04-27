@@ -197,6 +197,13 @@ def test_with_async_rejects_sync_context_manager() -> None:
         WithAsync(step=step, client=_FakeSyncClient())
 
 
+def test_with_async_rejects_sync_execute() -> None:
+    step = _SyncStep()
+
+    with pytest.raises(TypeError, match="WithAsync requires an async step"):
+        WithAsync(step=step)  # type: ignore[arg-type]
+
+
 def test_with_keeps_plain_dependencies() -> None:
     step = _SyncStep()
     adapter = With(step=step, validator="plain", retries=3)

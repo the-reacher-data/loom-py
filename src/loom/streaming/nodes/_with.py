@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from enum import StrEnum
@@ -190,6 +191,12 @@ class WithAsync(_WithBase[InT, OutT]):
             raise ValueError("max_concurrency must be greater than zero")
         if task_timeout_ms is not None and task_timeout_ms <= 0:
             raise ValueError("task_timeout_ms must be greater than zero when provided")
+        if not inspect.iscoroutinefunction(step.execute):
+            raise TypeError(
+                f"WithAsync requires an async step. "
+                f"{type(step).__name__}.execute is a sync function. "
+                f"Use With instead."
+            )
         super().__init__(step, scope=scope, **dependencies)
         if self._sync_contexts:
             names = ", ".join(self._sync_contexts.keys())
