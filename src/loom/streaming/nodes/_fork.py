@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from loom.core.expr import ExprNode, PathRef, evaluate_expr
@@ -17,6 +18,13 @@ InT = TypeVar("InT", bound=StreamPayload)
 
 ForkPredicateSpec = ExprNode | Predicate[InT]
 ForkSelectorSpec = PathRef | Selector[InT]
+
+
+class ForkKind(StrEnum):
+    """Routing family for a terminal fork declaration."""
+
+    KEYED = "keyed"
+    PREDICATE = "predicate"
 
 
 class ForkRoute(LoomFrozenStruct, Generic[InT], frozen=True):
@@ -40,20 +48,18 @@ class Fork(Generic[InT]):
     parent process: no nodes may follow it.
     """
 
-    __slots__ = ("_default", "_predicate_routes", "_routes", "_selector")
+    __slots__ = ("_default", "_kind", "_predicate_routes", "_routes", "_selector")
 
     def __init__(
         self,
         *,
+        kind: ForkKind,
         selector: ForkSelectorSpec[InT] | None = None,
         routes: Mapping[object, Process[InT, Any]] | None = None,
         predicate_routes: Sequence[ForkRoute[InT]] = (),
         default: Process[InT, Any] | None = None,
     ) -> None:
-        if selector is None and not predicate_routes:
-            raise ValueError("Fork requires a selector or at least one predicate route.")
-        if selector is not None and not routes:
-            raise ValueError("Fork.by requires at least one keyed route.")
+        self._kind = kind
         self._selector = selector
         self._routes = dict(routes or {})
         self._predicate_routes = tuple(predicate_routes)
@@ -77,7 +83,9 @@ class Fork(Generic[InT]):
         Returns:
             Fork declaration.
         """
-        return cls(selector=selector, routes=branches, default=default)
+        if not branches:
+            raise ValueError("Fork.by requires at least one keyed route.")
+        return cls(kind=ForkKind.KEYED, selector=selector, routes=branches, default=default)
 
     @classmethod
     def when(
@@ -95,7 +103,18 @@ class Fork(Generic[InT]):
         Returns:
             Fork declaration.
         """
-        return cls(predicate_routes=routes, default=default)
+        if not routes:
+            raise ValueError("Fork.when requires at least one predicate route.")
+        return cls(
+            kind=ForkKind.PREDICATE,
+            predicate_routes=routes,
+            default=default,
+        )
+
+    @property
+    def kind(self) -> ForkKind:
+        """Routing family for this fork."""
+        return self._kind
 
     @property
     def selector(self) -> ForkSelectorSpec[InT] | None:
@@ -132,4 +151,4 @@ def evaluate_predicate(predicate: ForkPredicateSpec[InT], message: Message[InT])
     return bool(evaluate_expr(predicate, {"message": message, "payload": message.payload}))
 
 
-__all__ = ["Fork", "ForkRoute", "evaluate_predicate", "select_value"]
+__all__ = ["Fork", "ForkKind", "ForkRoute", "evaluate_predicate", "select_value"]

@@ -33,7 +33,7 @@ from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
-from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -518,7 +518,7 @@ def _execute_router_step(
 
 def _apply_fork(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     fork = cast(Fork[StreamPayload], raw)
-    if fork.selector is not None:
+    if fork.kind is ForkKind.KEYED:
         return _apply_fork_by(stream, fork, idx, ctx)
     return _apply_fork_when(stream, fork, idx, ctx)
 
@@ -664,8 +664,9 @@ def _build_fail_fast_step(
     partial success is worse than total failure.
     """
 
-    async def _execute_batch(batch: list[Any]) -> list[Message[StreamPayload]]:
-        messages = _messages_from_batch(batch)
+    async def _execute_batch(
+        messages: list[Message[StreamPayload]],
+    ) -> list[Message[StreamPayload]]:
         slot: list[object] = [None] * len(messages)
         with _batch_dependencies(manager, worker_resources) as deps:
             async with anyio.create_task_group() as tg:
@@ -679,7 +680,7 @@ def _build_fail_fast_step(
             _classify_task,
             messages,
             lambda: _execute_with_async_step(
-                bridge, observer, flow_name, idx, node_type, _execute_batch(batch)
+                bridge, observer, flow_name, idx, node_type, _execute_batch(messages)
             ),
         )
 

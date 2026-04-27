@@ -21,7 +21,7 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
-from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
@@ -243,18 +243,11 @@ class _Compiler:
         path_prefix: tuple[int, ...],
     ) -> dict[tuple[int, ...], CompiledSink]:
         sinks: dict[tuple[int, ...], CompiledSink] = {}
-        for branch_idx, route in enumerate(fork.predicate_routes):
+        branch_count = _fork_branch_count(fork)
+        for branch_idx, (_, nodes) in enumerate(_fork_branch_nodes(fork)):
             sinks.update(
                 self._build_terminal_sinks(
-                    route.process.nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (branch_idx,),
-                )
-            )
-        for branch_idx, process in enumerate(fork.routes.values()):
-            sinks.update(
-                self._build_terminal_sinks(
-                    process.nodes,
+                    nodes,
                     runtime_config,
                     path_prefix=path_prefix + (branch_idx,),
                 )
@@ -264,7 +257,7 @@ class _Compiler:
                 self._build_terminal_sinks(
                     fork.default.nodes,
                     runtime_config,
-                    path_prefix=path_prefix + (len(fork.routes),),
+                    path_prefix=path_prefix + (branch_count,),
                 )
             )
         return sinks
@@ -507,12 +500,18 @@ def _router_branch_nodes(
 def _fork_branch_nodes(
     fork: Fork[StreamPayload],
 ) -> Iterable[tuple[str, tuple[object, ...]]]:
+    if fork.kind is ForkKind.KEYED:
+        for key, process in fork.routes.items():
+            yield repr(key), process.nodes
+        return
     for index, route in enumerate(fork.predicate_routes):
         yield f"predicate[{index}]", route.process.nodes
-    for key, process in fork.routes.items():
-        yield repr(key), process.nodes
-    if fork.default is not None:
-        yield "default", fork.default.nodes
+
+
+def _fork_branch_count(fork: Fork[StreamPayload]) -> int:
+    if fork.kind is ForkKind.KEYED:
+        return len(fork.routes)
+    return len(fork.predicate_routes)
 
 
 def _has_terminal_output(nodes: Iterable[object]) -> bool:
