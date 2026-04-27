@@ -15,7 +15,6 @@ from opentelemetry.trace import StatusCode, set_span_in_context
 
 from loom.core.config.observability import OtelConfig
 
-_tracer = trace.get_tracer("loom.streaming")
 _ATTR_FLOW = "loom.flow"
 _ATTR_NODE_IDX = "loom.node_idx"
 _ATTR_NODE_TYPE = "loom.node_type"
@@ -49,7 +48,7 @@ class OtelFlowObserver:
         static_attributes: Mapping[str, str] | None = None,
         tracer_provider: Any | None = None,
     ) -> None:
-        self._tracer = tracer if tracer is not None else _tracer
+        self._tracer = tracer or trace.get_tracer("loom.streaming")
         self._static_attributes = dict(static_attributes or {})
         self._tracer_provider = tracer_provider
         self._flow_spans = _SpanRegistry()
