@@ -139,7 +139,7 @@ async def _await_coro(coro: Coroutine[Any, Any, T]) -> T:
     return await coro
 
 
-async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:
+async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:  # noqa: S7483
     with anyio.fail_after(timeout):
         return await coro
 
