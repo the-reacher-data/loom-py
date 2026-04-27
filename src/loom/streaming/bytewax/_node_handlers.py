@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias, cast
 
 import anyio
+from anyio.to_thread import run_sync as _run_in_thread
 from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import map as bw_map
 
@@ -628,6 +629,7 @@ def _build_best_effort_step(
     cancelled.  The TaskGroup itself only cancels on external signals (e.g.
     runtime shutdown).
     """
+    is_coroutine = inspect.iscoroutinefunction(node.step.execute)
 
     async def _execute_batch(batch: list[Any]) -> list[NodeResult]:
         messages = _messages_from_batch(batch)
@@ -635,7 +637,9 @@ def _build_best_effort_step(
         with _batch_dependencies(manager, worker_resources) as deps:
             async with anyio.create_task_group() as tg:
                 for i, msg in enumerate(messages):
-                    tg.start_soon(_run_message_best_effort, node, sem, msg, deps, slot, i)
+                    tg.start_soon(
+                        _run_message_best_effort, node, sem, msg, deps, slot, i, is_coroutine
+                    )
         return _build_best_effort_results(messages, slot)
 
     def step(batch: list[Any]) -> list[NodeResult]:
@@ -663,6 +667,7 @@ def _build_fail_fast_step(
     as a single error envelope.  Use this for transactional steps where
     partial success is worse than total failure.
     """
+    is_coroutine = inspect.iscoroutinefunction(node.step.execute)
 
     async def _execute_batch(
         messages: list[Message[StreamPayload]],
@@ -671,7 +676,7 @@ def _build_fail_fast_step(
         with _batch_dependencies(manager, worker_resources) as deps:
             async with anyio.create_task_group() as tg:
                 for i, msg in enumerate(messages):
-                    tg.start_soon(_run_message_strict, node, sem, msg, deps, slot, i)
+                    tg.start_soon(_run_message_strict, node, sem, msg, deps, slot, i, is_coroutine)
         return _replace_payloads(messages, slot)
 
     def step(batch: list[Any]) -> list[NodeResult]:
@@ -698,6 +703,29 @@ async def _await_with_optional_timeout(
         return await awaitable
 
 
+async def _invoke_execute(
+    step: RecordStep[StreamPayload, StreamPayload],
+    message: Message[StreamPayload],
+    deps: Mapping[str, object],
+    is_coroutine: bool,
+    timeout_ms: int | None,
+) -> object:
+    """Invoke *step.execute* and await the result, sync or async transparently.
+
+    When *is_coroutine* is ``True`` the return value is awaited directly.
+    When ``False`` the call is dispatched to a thread via
+    ``anyio.to_thread.run_sync`` so the event loop is not blocked.
+    *timeout_ms* applies to both execution paths.
+    """
+    if is_coroutine:
+        awaitable: Awaitable[object] = cast(
+            Coroutine[Any, Any, object], step.execute(message, **deps)
+        )
+    else:
+        awaitable = _run_in_thread(lambda: step.execute(message, **deps))
+    return await _await_with_optional_timeout(awaitable, timeout_ms)
+
+
 async def _run_message_best_effort(
     node: WithAsync[StreamPayload, StreamPayload],
     sem: anyio.Semaphore,
@@ -705,15 +733,13 @@ async def _run_message_best_effort(
     deps: Mapping[str, object],
     slot: list[object | BaseException],
     idx: int,
+    is_coroutine: bool,
 ) -> None:
     """Execute one message and capture any failure in *slot* without propagating."""
     try:
         async with sem:
-            result = node.step.execute(message, **deps)
-            if not inspect.isawaitable(result):
-                raise TypeError("WithAsync task.execute must return an awaitable.")
-            slot[idx] = await _await_with_optional_timeout(
-                cast(Awaitable[object], result), node.task_timeout_ms
+            slot[idx] = await _invoke_execute(
+                node.step, message, deps, is_coroutine, node.task_timeout_ms
             )
     except Exception as exc:
         slot[idx] = exc
@@ -726,14 +752,12 @@ async def _run_message_strict(
     deps: Mapping[str, object],
     slot: list[object],
     idx: int,
+    is_coroutine: bool,
 ) -> None:
     """Execute one message and let failures propagate to the TaskGroup."""
     async with sem:
-        result = node.step.execute(message, **deps)
-        if not inspect.isawaitable(result):
-            raise TypeError("WithAsync task.execute must return an awaitable.")
-        slot[idx] = await _await_with_optional_timeout(
-            cast(Awaitable[object], result), node.task_timeout_ms
+        slot[idx] = await _invoke_execute(
+            node.step, message, deps, is_coroutine, node.task_timeout_ms
         )
 
 

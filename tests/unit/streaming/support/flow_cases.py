@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,14 +104,7 @@ class PriceOrder(RecordStep[OrderPlaced, PricedOrder]):
 
 
 class ScoreRiskAsync(RecordStep[OrderPlaced, RiskScoredOrder]):
-    def execute(  # type: ignore[override]
-        self,
-        message: Message[OrderPlaced],
-        **kwargs: object,
-    ) -> Awaitable[RiskScoredOrder]:
-        return self._execute(message, **kwargs)
-
-    async def _execute(
+    async def execute(  # type: ignore[override]
         self,
         message: Message[OrderPlaced],
         **kwargs: object,
