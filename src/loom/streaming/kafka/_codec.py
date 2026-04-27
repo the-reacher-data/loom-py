@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 import msgspec
 
@@ -10,6 +10,8 @@ from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.kafka._message import MessageEnvelope
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+
+_ENVELOPE_TYPE_CACHE: dict[type[Any], object] = {}
 
 
 class KafkaCodec(Protocol[PayloadT]):
@@ -39,12 +41,6 @@ class KafkaCodec(Protocol[PayloadT]):
         ...
 
 
-def _envelope_type(payload_type: type[PayloadT]) -> object:
-    """Return the concrete msgspec envelope type for *payload_type*."""
-
-    return MessageEnvelope[payload_type]  # type: ignore[valid-type]
-
-
 class MsgspecCodec(Generic[PayloadT]):
     """Direct MessagePack codec for Kafka message envelopes."""
 
@@ -57,7 +53,6 @@ class MsgspecCodec(Generic[PayloadT]):
         Returns:
             MessagePack bytes.
         """
-
         return msgspec.msgpack.encode(message)
 
     def decode(self, raw: bytes, payload_type: type[PayloadT]) -> MessageEnvelope[PayloadT]:
@@ -70,7 +65,15 @@ class MsgspecCodec(Generic[PayloadT]):
         Returns:
             Decoded typed message envelope.
         """
-
         envelope_type = _envelope_type(payload_type)
         decoded: MessageEnvelope[PayloadT] = msgspec.msgpack.decode(raw, type=envelope_type)
         return decoded
+
+
+def _envelope_type(payload_type: type[Any]) -> object:
+    """Return the parametrised msgspec envelope type, cached per payload class."""
+    cached = _ENVELOPE_TYPE_CACHE.get(payload_type)
+    if cached is None:
+        cached = MessageEnvelope[payload_type]  # type: ignore[valid-type]
+        _ENVELOPE_TYPE_CACHE[payload_type] = cached
+    return cached

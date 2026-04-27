@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
@@ -11,6 +10,7 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, Protocol, TypeAlias, cast
 
+import anyio
 from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import map as bw_map
 
@@ -27,10 +27,11 @@ from loom.streaming.bytewax._error_boundary import (
 )
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
-from loom.streaming.core._errors import ErrorKind
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._boundary import IntoTopic
+from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
@@ -40,6 +41,14 @@ from loom.streaming.nodes._with import With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 Stream: TypeAlias = Any
+
+
+def _step_id(base: str, ctx: _BuildContextProtocol) -> str:
+    """Build a Bytewax step ID qualified with the current wiring path."""
+    path = ctx.current_path
+    if not path:
+        return base
+    return "_".join(map(str, path)) + "_" + base
 
 
 class _OutputWiringProtocol(_ErrorWireOutputs, Protocol):
@@ -165,8 +174,9 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
             lambda: _execute_record_step(observer, flow_name, idx, name, record_step, message),
         )
 
-    mapped = bw_map(f"record_{idx}_{name}", stream, step_fn)
-    return _split_node_result(mapped, f"record_{idx}_{name}", ctx, ErrorKind.TASK)
+    sid = _step_id(f"record_{idx}_{name}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    return _split_node_result(mapped, sid, ctx, ErrorKind.TASK)
 
 
 def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -190,8 +200,9 @@ def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextP
             ),
         )
 
-    mapped = bw_map(f"batch_{idx}_{name}", stream, step_fn)
-    return _split_batch_node_result(mapped, f"batch_{idx}_{name}", ctx, ErrorKind.TASK)
+    sid = _step_id(f"batch_{idx}_{name}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    return _split_batch_node_result(mapped, sid, ctx, ErrorKind.TASK)
 
 
 def _apply_expand_step(
@@ -220,9 +231,10 @@ def _apply_expand_step(
             ),
         )
 
-    mapped = bw_map(f"expand_{idx}_{name}", stream, step_fn)
-    flattened = flat_map(f"flatten_expand_{idx}", mapped, _identity)
-    return _split_node_result(flattened, f"expand_{idx}_{name}", ctx, ErrorKind.TASK)
+    sid = _step_id(f"expand_{idx}_{name}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    flattened = flat_map(_step_id(f"flatten_expand_{idx}", ctx), mapped, _identity)
+    return _split_node_result(flattened, sid, ctx, ErrorKind.TASK)
 
 
 def _apply_batch_expand_step(
@@ -251,9 +263,10 @@ def _apply_batch_expand_step(
             ),
         )
 
-    mapped = bw_map(f"batch_expand_{idx}_{name}", stream, step_fn)
-    flattened = flat_map(f"flatten_expand_{idx}", mapped, _identity)
-    return _split_node_result(flattened, f"batch_expand_{idx}_{name}", ctx, ErrorKind.TASK)
+    sid = _step_id(f"batch_expand_{idx}_{name}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    flattened = flat_map(_step_id(f"flatten_batch_expand_{idx}", ctx), mapped, _identity)
+    return _split_node_result(flattened, sid, ctx, ErrorKind.TASK)
 
 
 def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -281,8 +294,10 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
             ),
         )
 
-    mapped = bw_map(f"with_{idx}", stream, step)
-    return _split_batch_node_result(mapped, f"with_{idx}_{node_type}", ctx, ErrorKind.TASK)
+    mapped = bw_map(_step_id(f"with_{idx}", ctx), stream, step)
+    return _split_batch_node_result(
+        mapped, _step_id(f"with_{idx}_{node_type}", ctx), ctx, ErrorKind.TASK
+    )
 
 
 def _apply_with_async(
@@ -301,34 +316,21 @@ def _apply_with_async(
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
-    sem = asyncio.Semaphore(node.max_concurrency)
+    sem = anyio.Semaphore(node.max_concurrency)
 
-    async def _execute_batch(batch: list[Any]) -> list[Message[StreamPayload]]:
-        messages = _messages_from_batch(batch)
-
-        with _batch_dependencies(manager, worker_resources) as deps:
-            result = await asyncio.gather(
-                *[_execute_async_message(node, sem, msg, deps) for msg in messages]
-            )
-            return _replace_payloads(messages, result)
-
-    def step(batch: list[Any]) -> list[NodeResult]:
-        messages = _messages_from_batch(batch)
-        return _execute_batch_in_boundary(
-            _classify_task,
-            messages,
-            lambda: _execute_with_async_step(
-                bridge,
-                observer,
-                flow_name,
-                idx,
-                node_type,
-                _execute_batch(batch),
-            ),
+    if node.error_mode == "best_effort":
+        step = _build_best_effort_step(
+            node, manager, worker_resources, bridge, observer, flow_name, idx, node_type, sem
+        )
+    else:
+        step = _build_fail_fast_step(
+            node, manager, worker_resources, bridge, observer, flow_name, idx, node_type, sem
         )
 
-    mapped = bw_map(f"with_async_{idx}", stream, step)
-    return _split_batch_node_result(mapped, f"with_async_{idx}_{node_type}", ctx, ErrorKind.TASK)
+    mapped = bw_map(_step_id(f"with_async_{idx}", ctx), stream, step)
+    return _split_batch_node_result(
+        mapped, _step_id(f"with_async_{idx}_{node_type}", ctx), ctx, ErrorKind.TASK
+    )
 
 
 def _apply_collect_batch(
@@ -339,28 +341,28 @@ def _apply_collect_batch(
 ) -> Stream:
     node = cast(CollectBatch, raw)
     if node.window is WindowStrategy.COLLECT:
-        return _apply_collect_batch_default(stream, node, idx)
+        return _apply_collect_batch_default(stream, node, _step_id(str(idx), ctx))
     raise TypeError(
         f"WindowStrategy.{node.window} reached the adapter — "
         "this should have been rejected at compile time."
     )
 
 
-def _apply_collect_batch_default(stream: Stream, node: CollectBatch, idx: int) -> Stream:
+def _apply_collect_batch_default(stream: Stream, node: CollectBatch, step_prefix: str) -> Stream:
     """Apply processing-time count-and-timeout collect (``WindowStrategy.COLLECT``)."""
-    keyed = key_on(f"collect_key_{idx}", stream, _batch_key)
+    keyed = key_on(f"collect_key_{step_prefix}", stream, _batch_key)
     collected = collect(
-        f"collect_{idx}",
+        f"collect_{step_prefix}",
         keyed,
         timeout=timedelta(milliseconds=node.timeout_ms),
         max_size=node.max_records,
     )
-    return key_rm(f"collect_unkey_{idx}", collected)
+    return key_rm(f"collect_unkey_{step_prefix}", collected)
 
 
 def _apply_for_each(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    del raw, ctx
-    return flat_map(f"foreach_{idx}", stream, _identity)
+    del raw
+    return flat_map(_step_id(f"foreach_{idx}", ctx), stream, _identity)
 
 
 def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -376,13 +378,40 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
             lambda: _execute_router_step(observer, flow_name, idx, router, message),
         )
 
-    mapped = bw_map(f"router_{idx}", stream, step)
-    return _split_node_result(mapped, f"router_{idx}", ctx, ErrorKind.ROUTING)
+    sid = _step_id(f"router_{idx}", ctx)
+    mapped = bw_map(sid, stream, step)
+    return _split_node_result(mapped, sid, ctx, ErrorKind.ROUTING)
+
+
+def _apply_broadcast(
+    stream: Stream,
+    raw: object,
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    """Wire a Broadcast node: fan-out the same stream to every branch independently."""
+    node = cast(Broadcast[StreamPayload], raw)
+    broadcast_path = ctx.current_path
+
+    for branch_idx, route in enumerate(node.routes):
+        branch_stream = _wire_process(
+            stream,
+            route.process.nodes,
+            ctx,
+            path_prefix=broadcast_path + (branch_idx,),
+        )
+        ctx.outputs.wire_branch_terminal(
+            f"broadcast_{idx}_out_{branch_idx}",
+            branch_stream,
+            broadcast_path + (branch_idx,),
+        )
+
+    return stream
 
 
 def _apply_drain(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    del raw, ctx
-    return flat_map(f"drain_{idx}", stream, _empty)
+    del raw
+    return flat_map(_step_id(f"drain_{idx}", ctx), stream, _empty)
 
 
 def _apply_into_topic(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -507,7 +536,7 @@ def _apply_fork_by(
     fork_path = ctx.current_path
 
     for branch_idx, (key, process) in enumerate(fork.routes.items()):
-        branch_name = f"fork_{idx}_by_{branch_idx}"
+        branch_name = _step_id(f"fork_{idx}_by_{branch_idx}", ctx)
 
         def predicate(message: Any, *, expected: object = key) -> bool:
             runtime_message = _require_message(message)
@@ -542,7 +571,7 @@ def _apply_fork_when(
     fork_path = ctx.current_path
 
     for branch_idx, route in enumerate(fork.predicate_routes):
-        branch_name = f"fork_{idx}_when_{branch_idx}"
+        branch_name = _step_id(f"fork_{idx}_when_{branch_idx}", ctx)
         route_when = route.when
 
         def predicate(message: Any, *, when: Any = route_when) -> bool:
@@ -581,18 +610,150 @@ def _batch_dependencies(
         manager.close_batch()
 
 
-async def _execute_async_message(
+def _build_best_effort_step(
     node: WithAsync[StreamPayload, StreamPayload],
-    sem: asyncio.Semaphore,
+    manager: ResourceLifecycle,
+    worker_resources: Mapping[str, object],
+    bridge: AsyncBridge,
+    observer: StreamingFlowObserver | None,
+    flow_name: str,
+    idx: int,
+    node_type: str,
+    sem: anyio.Semaphore,
+) -> Callable[[list[Any]], list[NodeResult]]:
+    """Build a step closure that captures per-message failures individually.
+
+    Each message runs inside the TaskGroup as an independent task.  If a task
+    raises, its slot is filled with the exception; sibling tasks are not
+    cancelled.  The TaskGroup itself only cancels on external signals (e.g.
+    runtime shutdown).
+    """
+
+    async def _execute_batch(batch: list[Any]) -> list[NodeResult]:
+        messages = _messages_from_batch(batch)
+        slot: list[object | BaseException] = [None] * len(messages)
+        with _batch_dependencies(manager, worker_resources) as deps:
+            async with anyio.create_task_group() as tg:
+                for i, msg in enumerate(messages):
+                    tg.start_soon(_run_message_best_effort, node, sem, msg, deps, slot, i)
+        return _build_best_effort_results(messages, slot)
+
+    def step(batch: list[Any]) -> list[NodeResult]:
+        with _observe_node(observer, flow_name, idx, node_type):
+            return bridge.run(_execute_batch(batch))
+
+    return step
+
+
+def _build_fail_fast_step(
+    node: WithAsync[StreamPayload, StreamPayload],
+    manager: ResourceLifecycle,
+    worker_resources: Mapping[str, object],
+    bridge: AsyncBridge,
+    observer: StreamingFlowObserver | None,
+    flow_name: str,
+    idx: int,
+    node_type: str,
+    sem: anyio.Semaphore,
+) -> Callable[[list[Any]], list[NodeResult]]:
+    """Build a step closure that cancels all sibling tasks on first failure.
+
+    If any message task raises, the TaskGroup propagates the exception
+    immediately.  The outer boundary then wraps every message in the batch
+    as a single error envelope.  Use this for transactional steps where
+    partial success is worse than total failure.
+    """
+
+    async def _execute_batch(batch: list[Any]) -> list[Message[StreamPayload]]:
+        messages = _messages_from_batch(batch)
+        slot: list[object] = [None] * len(messages)
+        with _batch_dependencies(manager, worker_resources) as deps:
+            async with anyio.create_task_group() as tg:
+                for i, msg in enumerate(messages):
+                    tg.start_soon(_run_message_strict, node, sem, msg, deps, slot, i)
+        return _replace_payloads(messages, slot)
+
+    def step(batch: list[Any]) -> list[NodeResult]:
+        messages = _messages_from_batch(batch)
+        return _execute_batch_in_boundary(
+            _classify_task,
+            messages,
+            lambda: _execute_with_async_step(
+                bridge, observer, flow_name, idx, node_type, _execute_batch(batch)
+            ),
+        )
+
+    return step
+
+
+async def _await_with_optional_timeout(
+    awaitable: Awaitable[object],
+    timeout_ms: int | None,
+) -> object:
+    """Await *awaitable*, optionally bounded by *timeout_ms* milliseconds."""
+    if timeout_ms is None:
+        return await awaitable
+    with anyio.fail_after(timeout_ms / 1000):
+        return await awaitable
+
+
+async def _run_message_best_effort(
+    node: WithAsync[StreamPayload, StreamPayload],
+    sem: anyio.Semaphore,
     message: Message[StreamPayload],
     deps: Mapping[str, object],
-) -> object:
-    """Execute one async WithAsync message under bounded concurrency."""
+    slot: list[object | BaseException],
+    idx: int,
+) -> None:
+    """Execute one message and capture any failure in *slot* without propagating."""
+    try:
+        async with sem:
+            result = node.step.execute(message, **deps)
+            if not inspect.isawaitable(result):
+                raise TypeError("WithAsync task.execute must return an awaitable.")
+            slot[idx] = await _await_with_optional_timeout(
+                cast(Awaitable[object], result), node.task_timeout_ms
+            )
+    except Exception as exc:
+        slot[idx] = exc
+
+
+async def _run_message_strict(
+    node: WithAsync[StreamPayload, StreamPayload],
+    sem: anyio.Semaphore,
+    message: Message[StreamPayload],
+    deps: Mapping[str, object],
+    slot: list[object],
+    idx: int,
+) -> None:
+    """Execute one message and let failures propagate to the TaskGroup."""
     async with sem:
         result = node.step.execute(message, **deps)
         if not inspect.isawaitable(result):
             raise TypeError("WithAsync task.execute must return an awaitable.")
-        return await cast(Awaitable[object], result)
+        slot[idx] = await _await_with_optional_timeout(
+            cast(Awaitable[object], result), node.task_timeout_ms
+        )
+
+
+def _build_best_effort_results(
+    messages: list[Message[StreamPayload]],
+    slot: list[object | BaseException],
+) -> list[NodeResult]:
+    """Convert per-message outcomes into NodeResult — errors become ErrorEnvelope."""
+    out: list[NodeResult] = []
+    for msg, outcome in zip(messages, slot, strict=True):
+        if isinstance(outcome, BaseException):
+            out.append(
+                ErrorEnvelope(
+                    kind=ErrorKind.TASK,
+                    reason=str(outcome),
+                    original_message=msg,
+                )
+            )
+        else:
+            out.append(_replace_payload(msg, outcome))
+    return out
 
 
 def _batch_key(item: Any) -> str:
@@ -707,6 +868,7 @@ _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(
         ForEach: _apply_for_each,
         Fork: _apply_fork,
         Router: _apply_router,
+        Broadcast: _apply_broadcast,
         Drain: _apply_drain,
         IntoTopic: _apply_into_topic,
     }

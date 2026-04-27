@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
-from typing import Any, cast
+from typing import Any
 
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
@@ -13,12 +14,15 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
+from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import MessageDescriptor
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
 from loom.streaming.kafka.client._producer import KafkaProducerClient
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
 from loom.streaming.nodes._boundary import PartitionPolicy
+
+logger = logging.getLogger(__name__)
 
 
 class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
@@ -29,7 +33,10 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
         self._consumer = KafkaConsumerClient(source.settings)
 
     def next_item(self) -> KafkaRecord[bytes]:
-        return cast(KafkaRecord[bytes], self._consumer.poll(0))
+        record = self._consumer.poll(0)
+        if record is None:
+            raise SimplePollingSource.Retry(timedelta(milliseconds=1))
+        return record
 
     def close(self) -> None:
         self._consumer.close()
@@ -40,6 +47,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
 
     def __init__(self, sink: CompiledSink) -> None:
         self._sink = sink
+        self._dlq_topic = sink.dlq_topic
         self._producer = KafkaProducerClient(sink.settings)
         self._message_producer: KafkaMessageProducer[StreamPayload] = KafkaMessageProducer(
             self._producer,
@@ -47,23 +55,30 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
         )
 
     def write_batch(self, items: list[Message[StreamPayload]]) -> None:
-        for message in items:
-            descriptor = MessageDescriptor(
-                message_type=message.meta.message_type or self._sink.topic,
-                message_version=message.meta.message_version or 1,
-            )
-            key = _resolve_partition_key(message, self._sink.partition_policy)
-            self._message_producer.send(
-                topic=self._sink.topic,
-                payload=message.payload,
-                descriptor=descriptor,
-                key=key,
-                headers=message.meta.headers,
-                correlation_id=message.meta.correlation_id,
-                causation_id=message.meta.causation_id,
-                trace_id=message.meta.trace_id,
-                produced_at_ms=message.meta.produced_at_ms,
-            )
+        try:
+            for message in items:
+                descriptor = MessageDescriptor(
+                    message_type=message.meta.message_type or self._sink.topic,
+                    message_version=message.meta.message_version or 1,
+                )
+                key = _resolve_partition_key(message, self._sink.partition_policy)
+                self._message_producer.send(
+                    topic=self._sink.topic,
+                    payload=message.payload,
+                    descriptor=descriptor,
+                    key=key,
+                    headers=message.meta.headers,
+                    correlation_id=message.meta.correlation_id,
+                    causation_id=message.meta.causation_id,
+                    trace_id=message.meta.trace_id,
+                    produced_at_ms=message.meta.produced_at_ms,
+                )
+            self._producer.flush()
+        except KafkaDeliveryError as exc:
+            if self._dlq_topic is not None:
+                _send_batch_to_dlq(self._message_producer, self._dlq_topic, items, exc)
+            else:
+                raise
 
     def close(self) -> None:
         self._message_producer.close()
@@ -136,3 +151,38 @@ def _resolve_partition_key(
     if partition_policy.allow_repartition:
         return policy_key if policy_key is not None else incoming_key
     return incoming_key
+
+
+def _send_batch_to_dlq(
+    producer: KafkaMessageProducer[StreamPayload],
+    dlq_topic: str,
+    messages: list[Message[StreamPayload]],
+    exc: KafkaDeliveryError,
+) -> None:
+    """Best-effort: send all messages in *messages* to the DLQ topic.
+
+    Called when a batch delivery fails and a DLQ is configured. Each message
+    is re-sent to *dlq_topic* with an ``x-dlq-error`` header. Failures during
+    DLQ delivery are logged and suppressed — a crashing DLQ is worse than a
+    missing one.
+    """
+    error_bytes = str(exc).encode("utf-8")
+    for message in messages:
+        try:
+            descriptor = MessageDescriptor(
+                message_type=message.meta.message_type or dlq_topic,
+                message_version=message.meta.message_version or 1,
+            )
+            headers = {**message.meta.headers, "x-dlq-error": error_bytes}
+            producer.send(
+                topic=dlq_topic,
+                payload=message.payload,
+                descriptor=descriptor,
+                headers=headers,
+                correlation_id=message.meta.correlation_id,
+                causation_id=message.meta.causation_id,
+                trace_id=message.meta.trace_id,
+                produced_at_ms=message.meta.produced_at_ms,
+            )
+        except Exception:
+            logger.warning("dlq_send_failed", extra={"dlq_topic": dlq_topic})

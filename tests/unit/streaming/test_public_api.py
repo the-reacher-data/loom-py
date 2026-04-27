@@ -8,6 +8,8 @@ def test_streaming_public_api_exports_authoring_contracts() -> None:
         "AsyncContextDependency",
         "BatchExpandStep",
         "BatchStep",
+        "Broadcast",
+        "BroadcastRoute",
         "CollectBatch",
         "CompilationError",
         "ContextFactory",

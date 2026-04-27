@@ -7,6 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
+pytest.importorskip("bytewax")
+
+from loom.core.model import LoomStruct
+from loom.streaming import FromTopic, IntoTopic, Message, MessageMeta, Process, StreamFlow
 from loom.streaming.nodes._step import RecordStep
 from loom.streaming.observability import (
     CompositeFlowObserver,
@@ -16,6 +20,16 @@ from loom.streaming.observability import (
 )
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.support.flow_cases import StreamFlowCase
+
+
+class _DropItem(LoomStruct):
+    value: str
+
+
+class _DropBoomStep(RecordStep[_DropItem, _DropItem]):
+    def execute(self, message: Message[_DropItem], **kwargs: object) -> _DropItem:
+        raise ValueError("kaboom")
+
 
 # ---------------------------------------------------------------------------
 # Recording observer for assertions
@@ -241,6 +255,32 @@ def test_node_handlers_cover_step_handlers() -> None:
     from loom.streaming.bytewax._adapter import _NODE_HANDLERS
 
     assert RecordStep in _NODE_HANDLERS
+
+
+def test_unrouted_error_notifies_observer() -> None:
+    """Observer receives on_node_error for every message dropped on an unrouted error kind."""
+    flow: StreamFlow[_DropItem, _DropItem] = StreamFlow(
+        name="boom_flow",
+        source=FromTopic("items", payload=_DropItem),
+        process=Process(_DropBoomStep()),
+        output=IntoTopic("items.out", payload=_DropItem),
+    )
+    config = {
+        "kafka": {
+            "consumer": {"brokers": ["localhost:9092"], "group_id": "g", "topics": ["items"]},
+            "producer": {"brokers": ["localhost:9092"], "topic": "items.out"},
+        }
+    }
+    observer = _RecordingFlowObserver()
+    runner = StreamingTestRunner.from_dict(flow, config=config, observer=observer)
+    msg = Message(payload=_DropItem(value="x"), meta=MessageMeta(message_id="m1"))
+
+    runner.with_messages([msg]).run()
+
+    node_errors = [e for e in observer.events if e[0] == "node_error"]
+    assert any("unrouted_task_error" in e[3] for e in node_errors), (
+        f"Expected unrouted_task_error in observer events, got: {observer.events}"
+    )
 
 
 def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(

@@ -11,6 +11,7 @@ from loom.streaming.bytewax import _runtime_io
 from loom.streaming.compiler._plan import CompiledSink
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka._config import ProducerSettings
+from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.nodes._boundary import PartitionGuarantee, PartitionPolicy
 
@@ -133,3 +134,63 @@ def test_runtime_sink_can_override_existing_key_when_repartition_allowed(
     record = fake_raw.sent[0]
     assert isinstance(record, KafkaRecord)
     assert record.key == b"order-123"
+
+
+class _FlushErrorProducer:
+    """Raw producer that always raises KafkaDeliveryError on flush."""
+
+    def __init__(self) -> None:
+        self.sent: list[KafkaRecord[bytes]] = []
+
+    def send(self, record: KafkaRecord[bytes]) -> None:
+        self.sent.append(record)
+
+    def flush(self, timeout_ms: int | None = None) -> None:
+        raise KafkaDeliveryError("broker unavailable")
+
+    def close(self) -> None:
+        return None
+
+
+def _compiled_sink_with_dlq(dlq_topic: str | None) -> CompiledSink:
+    return CompiledSink(
+        settings=ProducerSettings(
+            brokers=("localhost:9092",),
+            client_id="test-producer",
+            topic="orders.out",
+        ),
+        topic="orders.out",
+        partition_policy=None,
+        dlq_topic=dlq_topic,
+    )
+
+
+def test_dlq_routes_failed_batch_to_dlq_topic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_raw = _FlushErrorProducer()
+
+    monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+
+    sink = _runtime_io._KafkaMessageSinkPartition(_compiled_sink_with_dlq(dlq_topic="orders.dlq"))
+
+    sink.write_batch([_message()])
+
+    topics = [r.topic for r in fake_raw.sent]
+    assert "orders.out" in topics
+    assert "orders.dlq" in topics
+    dlq_record = next(r for r in fake_raw.sent if r.topic == "orders.dlq")
+    assert b"broker unavailable" in dlq_record.headers.get("x-dlq-error", b"")
+
+
+def test_no_dlq_reraises_delivery_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_raw = _FlushErrorProducer()
+
+    monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+
+    sink = _runtime_io._KafkaMessageSinkPartition(_compiled_sink_with_dlq(dlq_topic=None))
+
+    with pytest.raises(KafkaDeliveryError):
+        sink.write_batch([_message()])

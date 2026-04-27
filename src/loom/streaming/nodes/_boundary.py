@@ -42,12 +42,17 @@ class IntoTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
         payload: Optional logical payload type descriptor.
         shape: Declared output shape.
         partitioning: Optional partitioning policy.
+        dlq: Optional dead-letter topic name.  When set, messages that fail
+            delivery are routed to this topic instead of crashing the worker.
+            The DLQ producer reuses the same broker settings as the main
+            output and adds an ``x-dlq-error`` header with the failure reason.
     """
 
     name: str
     payload: type[PayloadT] | None = None
     shape: StreamShape = StreamShape.RECORD
     partitioning: PartitionPolicy[PayloadT] | None = None
+    dlq: str | None = None
     router_branch_safe: ClassVar[bool] = True
 
     @property

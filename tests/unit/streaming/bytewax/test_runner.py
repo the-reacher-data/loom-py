@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pytest import MonkeyPatch
@@ -13,6 +14,7 @@ from bytewax.dataflow import Dataflow
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import FromTopic, IntoTopic, Message, Process, RecordStep, StreamFlow
 from loom.streaming.bytewax.runner import StreamingRunner
+from loom.streaming.observability import OtelFlowObserver
 
 _RECOVERY_DB_DIR = "/var/lib/loom/tests/bytewax-recovery"
 _RUNTIME_DB_DIR = "/var/lib/loom/tests/bytewax-runtime"
@@ -116,6 +118,27 @@ class TestStreamingRunner:
         assert runner._runtime.recovery is not None
         assert runner._runtime.recovery.db_dir == _RECOVERY_DB_DIR
         assert runner._runtime.recovery.backup_interval_ms == 30000
+
+    def test_from_dict_loads_streaming_observability_section(self) -> None:
+        config = _config_dict()
+        streaming = cast(dict[str, object], config["streaming"])
+        runtime = streaming["runtime"]
+        config["streaming"] = {
+            "runtime": runtime,
+            "observability": {
+                "log": False,
+                "otel": True,
+                "otel_config": {
+                    "service_name": "loom-streaming",
+                    "tracer_name": "loom.streaming",
+                    "endpoint": "",
+                },
+            },
+        }
+
+        runner = StreamingRunner.from_dict(_flow(), config)
+
+        assert isinstance(runner._observer, OtelFlowObserver)
 
     def test_from_yaml_loads_runtime_section(self, tmp_path: Path) -> None:
         config_path = tmp_path / "streaming.yaml"

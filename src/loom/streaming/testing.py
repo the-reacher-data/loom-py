@@ -26,7 +26,7 @@ from bytewax.outputs import Sink
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import load_config
-from loom.streaming.bytewax.runner import _prepare_run
+from loom.streaming.bytewax.runner import _load_observability_observer, _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
@@ -69,7 +69,8 @@ class StreamingTestRunner:
     ) -> StreamingTestRunner:
         """Compile a flow and build a test runner from resolved config."""
         plan = compile_flow(flow, runtime_config=runtime_config)
-        return cls(plan, observer=observer)
+        resolved_observer = observer or _load_observability_observer(runtime_config)
+        return cls(plan, observer=resolved_observer)
 
     @classmethod
     def from_yaml(

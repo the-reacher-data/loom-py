@@ -9,10 +9,14 @@ from omegaconf import OmegaConf
 
 pytest.importorskip("bytewax")
 
+import asyncio
+
 from loom.core.model import LoomStruct
 from loom.streaming import (
+    CollectBatch,
     ErrorEnvelope,
     ErrorKind,
+    ForEach,
     FromTopic,
     IntoTopic,
     Message,
@@ -20,6 +24,7 @@ from loom.streaming import (
     Process,
     RecordStep,
     StreamFlow,
+    WithAsync,
 )
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.support.flow_cases import StreamFlowCase
@@ -155,6 +160,12 @@ def _message(payload: _Order) -> Message[_Order]:
     return Message(payload=payload, meta=MessageMeta(message_id=payload.order_id))
 
 
+class _SlowAsyncStep(RecordStep[_Order, _ValidatedOrder]):
+    async def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:  # type: ignore[override]
+        await asyncio.sleep(10)
+        return _ValidatedOrder(order_id=message.payload.order_id)
+
+
 def _kafka_config() -> dict[str, object]:
     return {
         "kafka": {
@@ -169,3 +180,33 @@ def _kafka_config() -> dict[str, object]:
             },
         }
     }
+
+
+def test_with_async_task_timeout_captures_timed_out_messages_as_errors() -> None:
+    """task_timeout_ms cancels slow tasks and routes them to error envelopes."""
+    flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
+        name="timeout_flow",
+        source=FromTopic("orders.raw", payload=_Order),
+        process=Process(
+            CollectBatch(max_records=1, timeout_ms=100),
+            WithAsync(
+                step=_SlowAsyncStep(),
+                task_timeout_ms=50,
+                error_mode="best_effort",
+            ),
+            ForEach(),
+        ),
+        output=IntoTopic("orders.validated", payload=_ValidatedOrder),
+    )
+    config = OmegaConf.create(_kafka_config())
+    runner = StreamingTestRunner.from_flow(flow, runtime_config=config)
+    runner.capture_errors(ErrorKind.TASK)
+    msg = _message(_Order(order_id="ORD-1", amount=1))
+
+    runner.with_messages([msg]).run()
+
+    assert len(runner.output) == 0
+    assert len(runner.errors[ErrorKind.TASK]) == 1
+    envelope = runner.errors[ErrorKind.TASK][0]
+    assert isinstance(envelope, ErrorEnvelope)
+    assert envelope.kind == ErrorKind.TASK

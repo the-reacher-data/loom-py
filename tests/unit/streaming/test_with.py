@@ -149,6 +149,40 @@ def test_with_async_rejects_non_positive_max_concurrency() -> None:
         WithAsync(step=step, max_concurrency=0)
 
 
+def test_with_async_defaults_to_best_effort_error_mode() -> None:
+    adapter = WithAsync(step=_AsyncStep())
+
+    assert adapter.error_mode == "best_effort"
+
+
+def test_with_async_accepts_fail_fast_error_mode() -> None:
+    adapter = WithAsync(step=_AsyncStep(), error_mode="fail_fast")
+
+    assert adapter.error_mode == "fail_fast"
+
+
+def test_with_async_defaults_task_timeout_to_none() -> None:
+    adapter = WithAsync(step=_AsyncStep())
+
+    assert adapter.task_timeout_ms is None
+
+
+def test_with_async_accepts_positive_task_timeout() -> None:
+    adapter = WithAsync(step=_AsyncStep(), task_timeout_ms=500)
+
+    assert adapter.task_timeout_ms == 500
+
+
+def test_with_async_rejects_zero_task_timeout() -> None:
+    with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
+        WithAsync(step=_AsyncStep(), task_timeout_ms=0)
+
+
+def test_with_async_rejects_negative_task_timeout() -> None:
+    with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
+        WithAsync(step=_AsyncStep(), task_timeout_ms=-100)
+
+
 def test_with_rejects_async_context_manager() -> None:
     step = _SyncStep()
 

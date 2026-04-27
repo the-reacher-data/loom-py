@@ -19,6 +19,7 @@ from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
@@ -98,7 +99,7 @@ class _Compiler:
     @staticmethod
     def _validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
         errors: list[str] = []
-        for node in flow.process.nodes:
+        for node in _walk_all_process_nodes(flow.process.nodes):
             if isinstance(node, (With, WithAsync)) and node.scope == ResourceScope.BATCH:
                 direct_cms = list(node.sync_contexts.keys()) + list(node.async_contexts.keys())
                 if direct_cms:
@@ -126,6 +127,11 @@ class _Compiler:
         if flow.output is not None and _contains_fork(flow.process.nodes):
             errors.append("flow.output cannot be combined with Fork: branches must be terminal")
 
+        if flow.output is not None and _contains_broadcast(flow.process.nodes):
+            errors.append(
+                "flow.output cannot be combined with Broadcast: branches must be terminal"
+            )
+
         if not has_terminal:
             errors.append("no terminal output found: add IntoTopic or flow.output")
 
@@ -148,8 +154,11 @@ class _Compiler:
             kind: self._build_sink(topic, runtime_config) for kind, topic in flow.errors.items()
         }
 
-        # Detect async need
-        needs_async = any(_node_needs_async_bridge(n.node) for n in nodes)
+        # Detect async need — must walk the full tree; WithAsync may live inside
+        # Router or Fork branches which are opaque at the top-level node list.
+        needs_async = any(
+            _node_needs_async_bridge(node) for node in _walk_all_process_nodes(flow.process.nodes)
+        )
 
         return CompiledPlan(
             name=flow.name,
@@ -219,6 +228,10 @@ class _Compiler:
             elif isinstance(node, Router):
                 sinks.update(
                     self._build_router_terminal_sinks(node, runtime_config, path_prefix=path)
+                )
+            elif isinstance(node, Broadcast):
+                sinks.update(
+                    self._build_broadcast_terminal_sinks(node, runtime_config, path_prefix=path)
                 )
         return sinks
 
@@ -290,6 +303,27 @@ class _Compiler:
             )
         return sinks
 
+    def _build_broadcast_terminal_sinks(
+        self,
+        broadcast: Broadcast[Any],
+        runtime_config: DictConfig,
+        *,
+        path_prefix: tuple[int, ...],
+    ) -> dict[tuple[int, ...], CompiledSink]:
+        sinks: dict[tuple[int, ...], CompiledSink] = {}
+        for branch_idx, route in enumerate(broadcast.routes):
+            branch_path = path_prefix + (branch_idx,)
+            sinks[branch_path] = self._build_sink(route.output, runtime_config)
+            # Traverse the branch process for any nested terminal nodes
+            sinks.update(
+                self._build_terminal_sinks(
+                    route.process.nodes,
+                    runtime_config,
+                    path_prefix=branch_path,
+                )
+            )
+        return sinks
+
     def _build_sink(self, topic: IntoTopic[Any], runtime_config: DictConfig) -> CompiledSink:
         kafka = section(runtime_config, "kafka", KafkaSettings)
         producer = kafka.producer_for(topic.logical_ref)
@@ -298,6 +332,7 @@ class _Compiler:
             settings=producer,
             topic=producer.topic or str(topic.logical_ref),
             partition_policy=topic.partitioning,
+            dlq_topic=topic.dlq,
         )
 
 
@@ -312,7 +347,7 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
 
 def _iter_config_bindings(flow: StreamFlow[Any, Any]) -> Iterable[ConfigBinding]:
     """Yield all config bindings used directly or through With/WithAsync nodes."""
-    for node in flow.process.nodes:
+    for node in _walk_all_process_nodes(flow.process.nodes):
         yield from _node_config_bindings(node)
 
 
@@ -338,8 +373,28 @@ def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
     return None
 
 
+def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
+    """Yield every process node recursively, including inside Router, Fork, and Broadcast branches.
+
+    Top-level iteration misses nodes nested inside branch sub-processes.  Use
+    this walker whenever a property (async bridge, resource scope, config
+    binding) must be checked across the full node tree.
+    """
+    for node in nodes:
+        yield node
+        if isinstance(node, Router):
+            for _, branch_nodes in _router_branch_nodes(node):
+                yield from _walk_all_process_nodes(branch_nodes)
+        elif isinstance(node, Fork):
+            for _, branch_nodes in _fork_branch_nodes(node):
+                yield from _walk_all_process_nodes(branch_nodes)
+        elif isinstance(node, Broadcast):
+            for route in node.routes:
+                yield from _walk_all_process_nodes(route.process.nodes)
+
+
 def _node_needs_async_bridge(node: object) -> bool:
-    """Return whether a compiled node requires an AsyncBridge."""
+    """Return whether a single node requires an AsyncBridge."""
     return isinstance(node, WithAsync)
 
 
@@ -370,6 +425,13 @@ def _validate_shape_sequence(
                 errors.append("fork must be the last node in a process")
             break
 
+        if isinstance(node, Broadcast):
+            broadcast_errors, current_shape = _validate_broadcast_shapes(node, current_shape)
+            errors.extend(broadcast_errors)
+            if idx != len(node_list) - 1:
+                errors.append("broadcast must be the last node in a process")
+            break
+
         if isinstance(node, Router):
             router_errors, current_shape = _validate_router_shapes(node, current_shape)
             errors.extend(router_errors)
@@ -392,6 +454,17 @@ def _validate_fork_shapes(
         if not _has_terminal_output(nodes):
             errors.append(f"fork branch {label}: no terminal output found")
 
+    return errors, StreamShape.NONE
+
+
+def _validate_broadcast_shapes(
+    broadcast: Broadcast[Any],
+    initial_shape: StreamShape,
+) -> tuple[list[str], StreamShape]:
+    errors: list[str] = []
+    for branch_idx, route in enumerate(broadcast.routes):
+        branch_errors, _ = _validate_shape_sequence(route.process.nodes, initial_shape)
+        errors.extend(f"broadcast branch {branch_idx}: {e}" for e in branch_errors)
     return errors, StreamShape.NONE
 
 
@@ -450,6 +523,8 @@ def _has_terminal_output(nodes: Iterable[object]) -> bool:
             return True
         if isinstance(node, Fork) and _fork_has_terminal_output(node):
             return True
+        if isinstance(node, Broadcast):
+            return True  # Broadcast always declares explicit outputs per route
     return False
 
 
@@ -463,6 +538,10 @@ def _fork_has_terminal_output(fork: Fork[StreamPayload]) -> bool:
 
 def _contains_fork(nodes: Iterable[object]) -> bool:
     return any(isinstance(node, Fork) for node in nodes)
+
+
+def _contains_broadcast(nodes: Iterable[object]) -> bool:
+    return any(isinstance(node, Broadcast) for node in nodes)
 
 
 def _node_input_shape(node: object) -> StreamShape | None:
@@ -519,5 +598,7 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
     if isinstance(node, Drain):
         return StreamShape.NONE
     if isinstance(node, Fork):
+        return StreamShape.NONE
+    if isinstance(node, Broadcast):
         return StreamShape.NONE
     return current

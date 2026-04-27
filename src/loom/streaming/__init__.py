@@ -29,6 +29,7 @@ from loom.streaming.nodes._boundary import (
     PartitionPolicy,
     PartitionStrategy,
 )
+from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
 from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._helpers import msg as msg
 from loom.streaming.nodes._helpers import payload as payload
@@ -57,6 +58,8 @@ __all__ = [
     "AsyncContextDependency",
     "BatchExpandStep",
     "BatchStep",
+    "Broadcast",
+    "BroadcastRoute",
     "CollectBatch",
     "CompilationError",
     "ContextFactory",

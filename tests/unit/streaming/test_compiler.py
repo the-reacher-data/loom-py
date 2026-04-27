@@ -11,6 +11,8 @@ from loom.core.model import LoomStruct
 from loom.streaming import (
     CollectBatch,
     Drain,
+    Fork,
+    ForkRoute,
     FromTopic,
     IntoTopic,
     Process,
@@ -20,10 +22,11 @@ from loom.streaming import (
     StreamFlow,
     StreamShape,
     WindowStrategy,
+    WithAsync,
     msg,
 )
 from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
-from loom.streaming.compiler._compiler import _uses_kafka
+from loom.streaming.compiler._compiler import _uses_kafka, _walk_all_process_nodes
 from loom.streaming.core._message import Message
 
 
@@ -330,3 +333,83 @@ def test_compile_succeeds_on_batch_scope_with_context_factory() -> None:
 
     plan = compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
     assert plan.name == "test"
+
+
+# ---------------------------------------------------------------------------
+# WithAsync inside Router — async bridge detection must traverse branches
+# ---------------------------------------------------------------------------
+
+
+class _AsyncStep(RecordStep[_Order, _Result]):
+    async def execute(self, message: Message[_Order], **kwargs: object) -> _Result:  # type: ignore[override]
+        return _Result(value=message.payload.order_id)
+
+
+def _flow_with_async_inside_router() -> StreamFlow[_Order, _Result]:
+    return StreamFlow(
+        name="test_async_in_router",
+        source=FromTopic("in", payload=_Order),
+        process=Process(
+            Router.when(
+                routes=[
+                    Route(
+                        when=msg.payload.order_id != "",
+                        process=Process(
+                            WithAsync(step=_AsyncStep()),
+                            IntoTopic("out", payload=_Result),
+                        ),
+                    )
+                ],
+            )
+        ),
+    )
+
+
+def test_needs_async_bridge_is_true_when_with_async_is_inside_router() -> None:
+    """Regression: compiler must detect WithAsync nested inside Router branches."""
+    flow = _flow_with_async_inside_router()
+    plan = compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
+
+    assert plan.needs_async_bridge is True
+
+
+def test_needs_async_bridge_is_false_when_no_with_async_present() -> None:
+    flow: StreamFlow[_Order, _Result] = StreamFlow(
+        name="test",
+        source=FromTopic("in", payload=_Order),
+        process=Process(IntoTopic("out", payload=_Result)),
+    )
+    plan = compile_flow(flow, runtime_config=OmegaConf.create(_kafka_config()))
+
+    assert plan.needs_async_bridge is False
+
+
+def test_walk_all_process_nodes_yields_nodes_inside_router_branch() -> None:
+    """_walk_all_process_nodes must recurse into Router sub-processes."""
+    async_node = WithAsync(step=_AsyncStep())
+    router = Router.when(
+        routes=[Route(when=msg.payload.order_id != "", process=Process(async_node))]
+    )
+
+    all_nodes = list(_walk_all_process_nodes([router]))
+
+    assert router in all_nodes
+    assert async_node in all_nodes
+
+
+def test_walk_all_process_nodes_yields_nodes_inside_fork_branch() -> None:
+    """_walk_all_process_nodes must recurse into Fork sub-processes."""
+    async_node = WithAsync(step=_AsyncStep())
+    fork = Fork.when(
+        routes=[
+            ForkRoute(
+                when=msg.payload.order_id != "",
+                process=Process(async_node, IntoTopic("out", payload=_Result)),
+            )
+        ]
+    )
+
+    all_nodes = list(_walk_all_process_nodes([fork]))
+
+    assert fork in all_nodes
+    assert async_node in all_nodes

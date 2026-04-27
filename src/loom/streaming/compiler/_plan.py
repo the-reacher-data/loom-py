@@ -30,6 +30,7 @@ class CompiledSink:
     settings: ProducerSettings
     topic: str
     partition_policy: PartitionPolicy[LoomStruct | LoomFrozenStruct] | None
+    dlq_topic: str | None = None
 
 
 @dataclass(frozen=True)

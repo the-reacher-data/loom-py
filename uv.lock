@@ -1035,8 +1035,10 @@ sqlalchemy = [
     { name = "sqlalchemy" },
 ]
 streaming = [
+    { name = "anyio" },
     { name = "bytewax" },
     { name = "confluent-kafka" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 
 [package.dev-dependencies]
@@ -1082,6 +1084,7 @@ dev = [
 requires-dist = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
+    { name = "anyio", marker = "extra == 'streaming'", specifier = ">=4.0,<5.0" },
     { name = "bytewax", marker = "extra == 'streaming'", specifier = ">=0.21" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.6,<3.0" },
@@ -1122,6 +1125,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.4,<26.0" },
     { name = "uvicorn", marker = "extra == 'rest'", specifier = ">=0.30,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
+    { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },
 ]
 provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "etl-spark", "etl-otel", "pyspark", "prometheus", "streaming", "celery"]
 

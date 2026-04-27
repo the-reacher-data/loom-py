@@ -27,6 +27,7 @@ from loom.streaming.bytewax._runtime_io import (
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
+from loom.streaming.observability.config import StreamingObservabilityConfig
 from loom.streaming.observability.factory import make_flow_observers
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
@@ -61,12 +62,30 @@ class BytewaxRecoverySettings(msgspec.Struct, frozen=True, kw_only=True):
 class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
     """Runtime settings for executing a Bytewax dataflow.
 
+    **Delivery guarantee:** The runtime currently provides **at-most-once**
+    delivery. Kafka offsets are committed by the consumer's auto-commit policy
+    and are not tied to successful downstream processing. To achieve
+    at-least-once delivery, configure Bytewax recovery (see
+    :class:`BytewaxRecoverySettings`) and disable ``enable.auto.commit`` in
+    the consumer settings; offset commits must then be wired to epoch
+    snapshots via the Bytewax recovery mechanism.
+
     Args:
         workers_per_process: Number of worker threads in this process.
         process_id: Optional cluster process id.
         addresses: Optional cluster address list, including this process.
         epoch_interval_ms: Optional epoch duration in milliseconds.
         recovery: Optional recovery settings.
+        async_backend: Anyio backend used for :class:`AsyncBridge` when the
+            flow contains :class:`~loom.streaming.WithAsync` nodes.
+            Accepted values: ``"asyncio"`` (default) or ``"trio"``.
+        use_uvloop: Replace the asyncio event loop with uvloop for lower
+            latency async I/O.  Only effective when *async_backend* is
+            ``"asyncio"`` and the platform is not Windows.
+        force_shutdown_timeout_ms: Maximum milliseconds to wait for in-flight
+            async tasks to finish during shutdown.  When exceeded, the portal
+            thread is abandoned and a warning is logged.  ``None`` waits
+            indefinitely (default).
     """
 
     workers_per_process: int = 1
@@ -74,6 +93,9 @@ class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
     addresses: tuple[str, ...] | None = None
     epoch_interval_ms: int | None = None
     recovery: BytewaxRecoverySettings | None = None
+    async_backend: str = "asyncio"
+    use_uvloop: bool = False
+    force_shutdown_timeout_ms: int | None = None
 
 
 class StreamingRunner:
@@ -110,7 +132,8 @@ class StreamingRunner:
         """Build a runner from a resolved OmegaConf config."""
         plan = compile_flow(flow, runtime_config=runtime_config)
         runtime = _load_runtime_config(runtime_config)
-        return cls(flow, plan, runtime, observer=observer)
+        resolved_observer = observer or _load_observability_observer(runtime_config)
+        return cls(flow, plan, runtime, observer=resolved_observer)
 
     @classmethod
     def from_yaml(
@@ -191,6 +214,13 @@ def _load_runtime_config(cfg: DictConfig) -> BytewaxRuntimeConfig:
     if not _has_section(cfg, "streaming.runtime"):
         return BytewaxRuntimeConfig()
     return section(cfg, "streaming.runtime", BytewaxRuntimeConfig)
+
+
+def _load_observability_observer(cfg: DictConfig) -> StreamingFlowObserver | None:
+    if not _has_section(cfg, "streaming.observability"):
+        return make_flow_observers()
+    observability = section(cfg, "streaming.observability", StreamingObservabilityConfig)
+    return make_flow_observers(observability)
 
 
 def _has_section(cfg: DictConfig, path: str) -> bool:

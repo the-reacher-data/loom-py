@@ -64,8 +64,10 @@ prometheus = [
     "prometheus-client>=0.20",
 ]
 streaming = [
+    "anyio>=4.0,<5.0",
     "confluent-kafka>=2.6,<3.0",
     "bytewax>=0.21",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
 ]
 celery = [
     "celery>=5.3,<6.0",

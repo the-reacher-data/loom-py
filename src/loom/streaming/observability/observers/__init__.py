@@ -5,6 +5,7 @@ from loom.streaming.observability.observers.composite import (
     CompositeKafkaObserver,
 )
 from loom.streaming.observability.observers.noop import NoopFlowObserver, NoopKafkaObserver
+from loom.streaming.observability.observers.otel import OtelFlowObserver, build_otel_observer
 from loom.streaming.observability.observers.protocol import (
     KafkaStreamingObserver,
     StreamingFlowObserver,
@@ -20,7 +21,9 @@ __all__ = [
     "KafkaStreamingObserver",
     "NoopFlowObserver",
     "NoopKafkaObserver",
+    "OtelFlowObserver",
     "StreamingFlowObserver",
+    "build_otel_observer",
     "StructlogFlowObserver",
     "StructlogKafkaObserver",
 ]

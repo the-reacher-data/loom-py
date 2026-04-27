@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from enum import StrEnum
 from types import MappingProxyType
-from typing import ClassVar, Generic, TypeGuard, TypeVar
+from typing import ClassVar, Generic, Literal, TypeGuard, TypeVar
 
 from loom.core.config import Configurable
 from loom.core.model import LoomFrozenStruct, LoomStruct
@@ -154,25 +154,42 @@ class WithAsync(_WithBase[InT, OutT]):
     Args:
         step: Step declaration executed with injected dependencies.
         scope: Lifecycle used when opening context-manager dependencies.
-        max_concurrency: Maximum concurrent executions requested by the
-            compiler/runtime adapter.
+        max_concurrency: Maximum concurrent executions within one batch.
+        error_mode: How task-level failures are handled within a batch.
+            ``"best_effort"`` captures each failure as an individual
+            :class:`~loom.streaming.ErrorEnvelope` and lets siblings
+            continue — suitable for scrapers or external enrichment calls.
+            ``"fail_fast"`` propagates the first failure immediately,
+            cancelling all remaining sibling tasks and wrapping the entire
+            batch in a single error envelope.
+        task_timeout_ms: Optional per-task wall-clock deadline in milliseconds.
+            When set, each individual message execution is cancelled with
+            :class:`TimeoutError` if it exceeds the deadline.  In
+            ``"best_effort"`` mode the timeout is captured per-message as an
+            error envelope; in ``"fail_fast"`` mode it cancels the whole batch.
         **dependencies: Named dependencies injected into step execution.
 
     Raises:
         TypeError: If a sync context manager is passed directly.
+        ValueError: If *max_concurrency* is not positive.
+        ValueError: If *task_timeout_ms* is not positive when provided.
     """
 
-    __slots__ = ("max_concurrency",)
+    __slots__ = ("error_mode", "max_concurrency", "task_timeout_ms")
 
     def __init__(
         self,
         step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
         max_concurrency: int = 10,
+        error_mode: Literal["best_effort", "fail_fast"] = "best_effort",
+        task_timeout_ms: int | None = None,
         **dependencies: object,
     ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be greater than zero")
+        if task_timeout_ms is not None and task_timeout_ms <= 0:
+            raise ValueError("task_timeout_ms must be greater than zero when provided")
         super().__init__(step, scope=scope, **dependencies)
         if self._sync_contexts:
             names = ", ".join(self._sync_contexts.keys())
@@ -182,6 +199,8 @@ class WithAsync(_WithBase[InT, OutT]):
                 f"Use With for sync context managers."
             )
         self.max_concurrency = max_concurrency
+        self.error_mode: Literal["best_effort", "fail_fast"] = error_mode
+        self.task_timeout_ms: int | None = task_timeout_ms
 
 
 def _is_sync_context_manager(value: object) -> TypeGuard[SyncContextDependency]:
