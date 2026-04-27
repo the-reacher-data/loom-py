@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -16,6 +17,7 @@ from bytewax.recovery import RecoveryConfig
 from bytewax.run import cli_main
 from omegaconf import DictConfig, OmegaConf
 
+from loom.core.async_bridge import AsyncBridge
 from loom.core.config import load_config, section
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
@@ -164,7 +166,7 @@ class StreamingRunner:
 
     def prepare_run(self) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback."""
-        prepared = _prepare_run(self._plan, observer=self._observer)
+        prepared = _prepare_run(self._plan, observer=self._observer, runtime=self._runtime)
         self._shutdown = prepared.shutdown
         return prepared
 
@@ -267,6 +269,7 @@ def _prepare_run(
     sink: Any | None = None,
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
     error_sinks: Mapping[ErrorKind, Any] | None = None,
+    runtime: BytewaxRuntimeConfig | None = None,
 ) -> _PreparedStreamingRun:
     if source is None:
         source = build_runtime_source(plan.source)
@@ -276,6 +279,7 @@ def _prepare_run(
         terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks)
     if error_sinks is None:
         error_sinks = build_runtime_error_sinks(plan.error_routes)
+    bridge = _create_bridge(plan, runtime or BytewaxRuntimeConfig())
     built = build_dataflow_with_shutdown(
         plan=plan,
         flow_observer=observer,
@@ -283,8 +287,29 @@ def _prepare_run(
         sink=sink,
         terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
+        bridge=bridge,
     )
     return _PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
+
+
+def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBridge | None:
+    """Create an AsyncBridge configured from runtime settings, or None if not needed."""
+    if not plan.needs_async_bridge:
+        return None
+    return AsyncBridge(
+        backend=runtime.async_backend,
+        backend_options=_build_backend_options(runtime.async_backend, runtime.use_uvloop),
+        shutdown_timeout_ms=runtime.force_shutdown_timeout_ms,
+    )
+
+
+def _build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
+    """Build anyio backend options dict from runtime config."""
+    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
+        import uvloop  # guarded by sys_platform marker in pyproject.toml
+
+        return {"loop_factory": uvloop.new_event_loop}
+    return {}
 
 
 __all__ = [
