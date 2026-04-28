@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig
 
 from loom.core.model import LoomStruct
 from loom.streaming import Fork, ForkRoute, FromTopic, IntoTopic, Message, Process, StreamFlow
@@ -42,24 +42,6 @@ class _HasChannelB:
 class _ChannelSelector:
     def select(self, message: Message[_Order]) -> object:
         return message.payload.channel
-
-
-def _kafka_config() -> dict[str, Any]:
-    return {
-        "kafka": {
-            "consumer": {
-                "brokers": ["localhost:9092"],
-                "group_id": "test",
-                "topics": ["orders.raw"],
-            },
-            "producer": {"brokers": ["localhost:9092"], "topic": "fallback"},
-            "producers": {
-                "orders.a": {"brokers": ["localhost:9092"], "topic": "orders.a"},
-                "orders.b": {"brokers": ["localhost:9092"], "topic": "orders.b"},
-                "orders.default": {"brokers": ["localhost:9092"], "topic": "orders.default"},
-            },
-        }
-    }
 
 
 def _fork_when_flow() -> StreamFlow[_Order, Any]:
@@ -130,14 +112,20 @@ class TestForkDSL:
 
 
 class TestForkCompiler:
-    def test_fork_when_compiles_three_terminal_branches(self) -> None:
-        plan = compile_flow(_fork_when_flow(), runtime_config=OmegaConf.create(_kafka_config()))
+    def test_fork_when_compiles_three_terminal_branches(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        plan = compile_flow(_fork_when_flow(), runtime_config=streaming_kafka_config)
 
         topics = {sink.topic for sink in plan.terminal_sinks.values()}
         assert topics == {"orders.a", "orders.b", "orders.default"}
 
-    def test_fork_by_compiles_three_terminal_branches(self) -> None:
-        plan = compile_flow(_fork_by_flow(), runtime_config=OmegaConf.create(_kafka_config()))
+    def test_fork_by_compiles_three_terminal_branches(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        plan = compile_flow(_fork_by_flow(), runtime_config=streaming_kafka_config)
 
         topics = {sink.topic for sink in plan.terminal_sinks.values()}
         assert topics == {"orders.a", "orders.b", "orders.default"}

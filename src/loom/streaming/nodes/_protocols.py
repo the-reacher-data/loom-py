@@ -7,7 +7,7 @@ from typing import Protocol, TypeVar, runtime_checkable
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._message import Message
 
-PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct, contravariant=True)
 
 
 @runtime_checkable

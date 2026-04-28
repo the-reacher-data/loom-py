@@ -12,7 +12,7 @@ from loom.core.model import LoomFrozenStruct, LoomStruct
 StreamPayload = TypeAliasType("StreamPayload", LoomStruct | LoomFrozenStruct)
 """Union of all valid streaming payload types."""
 
-PayloadT = TypeVar("PayloadT", bound=StreamPayload)
+PayloadT = TypeVar("PayloadT", bound=StreamPayload, covariant=True)
 
 
 class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):

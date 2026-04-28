@@ -7,12 +7,9 @@ to a fixed sentinel only when no metadata is available.
 
 from __future__ import annotations
 
-import pytest
-
-pytest.importorskip("bytewax")
-
-from loom.streaming.bytewax._adapter import _batch_key  # noqa: E402
-from loom.streaming.core._message import Message, MessageMeta  # noqa: E402
+from loom.core.model import LoomStruct
+from loom.streaming.bytewax._adapter import _batch_key
+from loom.streaming.core._message import Message, MessageMeta
 
 
 def _msg(
@@ -20,14 +17,14 @@ def _msg(
     topic: str | None = None,
     partition: int | None = None,
     key: bytes | str | None = None,
-) -> Message[object]:
-    from loom.core.model import LoomStruct
+) -> Message[LoomStruct]:
+    """Build a message with optional transport metadata for key derivation tests."""
 
     class _Dummy(LoomStruct):
         v: str = ""
 
     return Message(
-        payload=_Dummy(),  # type: ignore[arg-type]
+        payload=_Dummy(),
         meta=MessageMeta(
             message_id="x",
             topic=topic,

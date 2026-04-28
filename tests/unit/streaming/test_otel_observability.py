@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 from loom.core.config.observability import OtelConfig
 from loom.streaming.observability import (
     CompositeFlowObserver,
@@ -35,10 +33,9 @@ def test_make_flow_observers_includes_otel_when_enabled() -> None:
 def test_make_flow_observers_combines_structlog_and_otel() -> None:
     """The factory should combine structlog and OTEL observers when both are enabled."""
     observer = make_flow_observers(StreamingObservabilityConfig(log=True, otel=True))
-    composite = cast(CompositeFlowObserver, observer)
-    observers = cast(tuple[object, ...], composite._observers)
 
     assert isinstance(observer, CompositeFlowObserver)
+    observers = observer._observers
     assert len(observers) == 2
     assert isinstance(observers[0], StructlogFlowObserver)
     assert isinstance(observers[1], OtelFlowObserver)

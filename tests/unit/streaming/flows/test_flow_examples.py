@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-import pytest
-from omegaconf import OmegaConf
-
-pytest.importorskip("bytewax")
-
-import asyncio
+from omegaconf import DictConfig
 
 from loom.core.model import LoomStruct
 from loom.streaming import (
@@ -29,7 +25,7 @@ from loom.streaming import (
     msg,
 )
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.support.flow_cases import StreamFlowCase
+from tests.unit.streaming.flows.flow_cases import StreamFlowCase
 
 
 class TestBytewaxFlowExamples:
@@ -53,7 +49,7 @@ class TestBytewaxFlowExamples:
 
         assert tuple(message.payload for message in results) == router_flow_case.expected_payloads
 
-    def test_runs_with_batch_flow_with_for_each(
+    def test_runs_with_batch_flow_with_inner_terminal_output(
         self,
         with_batch_flow_case: StreamFlowCase,
     ) -> None:
@@ -65,7 +61,7 @@ class TestBytewaxFlowExamples:
         assert with_batch_flow_case.resource_events is not None
         assert with_batch_flow_case.resource_events.opened == [1]
 
-    def test_runs_with_batch_scope_flow_with_for_each(
+    def test_runs_with_batch_scope_flow_with_inner_terminal_output(
         self,
         with_batch_scope_flow_case: StreamFlowCase,
     ) -> None:
@@ -105,7 +101,10 @@ class TestBytewaxFlowExamples:
             tuple(message.payload for message in results) == fork_when_flow_case.expected_payloads
         )
 
-    def test_routes_record_step_errors_to_task_error_sink(self) -> None:
+    def test_routes_record_step_errors_to_task_error_sink(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
         flow: StreamFlow[Any, Any] = StreamFlow(
             name="orders_fail",
             source=FromTopic("orders.raw", payload=_Order),
@@ -115,7 +114,7 @@ class TestBytewaxFlowExamples:
         runner = (
             StreamingTestRunner.from_flow(
                 flow,
-                runtime_config=OmegaConf.create(_kafka_config()),
+                runtime_config=streaming_kafka_config,
             )
             .with_messages([_message(_Order(order_id="o-1", amount=10))])
             .capture_errors(ErrorKind.TASK)
@@ -132,6 +131,62 @@ class TestBytewaxFlowExamples:
         assert envelope.reason == "boom"
         assert envelope.original_message is not None
         assert envelope.original_message.payload == _Order(order_id="o-1", amount=10)
+
+    def test_with_async_task_timeout_captures_timed_out_messages_as_errors(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """task_timeout_ms cancels slow inner-process tasks and routes them to error envelopes."""
+        flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
+            name="timeout_flow",
+            source=FromTopic("orders.raw", payload=_Order),
+            process=Process(
+                WithAsync(
+                    process=Process(
+                        _SlowAsyncStep(),
+                        IntoTopic("orders.validated", payload=_ValidatedOrder),
+                    ),
+                    task_timeout_ms=50,
+                ),
+            ),
+        )
+        runner = StreamingTestRunner.from_flow(flow, runtime_config=streaming_kafka_config)
+        runner.capture_errors(ErrorKind.TASK)
+        msg = _message(_Order(order_id="ORD-1", amount=1))
+
+        runner.with_messages([msg]).run()
+
+        assert len(runner.output) == 0
+        assert len(runner.errors[ErrorKind.TASK]) == 1
+        envelope = runner.errors[ErrorKind.TASK][0]
+        assert isinstance(envelope, ErrorEnvelope)
+        assert envelope.kind == ErrorKind.TASK
+
+    def test_router_executes_batch_step_branch_as_singleton_batch(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """BatchStep inside a Router branch must execute as a singleton batch."""
+        flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
+            name="router_batch_flow",
+            source=FromTopic("orders.raw", payload=_Order),
+            process=Process(
+                Router.when(
+                    routes=[
+                        Route(
+                            when=msg.payload.order_id != "",
+                            process=Process(_UpperBatchStep()),
+                        )
+                    ],
+                )
+            ),
+            output=IntoTopic("orders.out", payload=_ValidatedOrder),
+        )
+        runner = StreamingTestRunner.from_flow(flow, runtime_config=streaming_kafka_config)
+        runner.with_messages([_message(_Order(order_id="ord-1", amount=10))]).run()
+
+        assert len(runner.output) == 1
+        assert runner.output[0].payload == _ValidatedOrder(order_id="ORD-1")
 
 
 def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
@@ -163,54 +218,9 @@ def _message(payload: _Order) -> Message[_Order]:
 
 
 class _SlowAsyncStep(RecordStep[_Order, _ValidatedOrder]):
-    async def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:  # type: ignore[override]
+    async def execute(self, message: Message[_Order], **kwargs: object) -> _ValidatedOrder:
         await asyncio.sleep(10)
         return _ValidatedOrder(order_id=message.payload.order_id)
-
-
-def _kafka_config() -> dict[str, object]:
-    return {
-        "kafka": {
-            "consumer": {
-                "brokers": ["localhost:9092"],
-                "group_id": "test",
-                "topics": ["orders.raw"],
-            },
-            "producer": {
-                "brokers": ["localhost:9092"],
-                "client_id": "test-producer",
-            },
-        }
-    }
-
-
-def test_with_async_task_timeout_captures_timed_out_messages_as_errors() -> None:
-    """task_timeout_ms cancels slow inner-process tasks and routes them to error envelopes."""
-    flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
-        name="timeout_flow",
-        source=FromTopic("orders.raw", payload=_Order),
-        process=Process(
-            WithAsync(
-                process=Process(
-                    _SlowAsyncStep(),
-                    IntoTopic("orders.validated", payload=_ValidatedOrder),
-                ),
-                task_timeout_ms=50,
-            ),
-        ),
-    )
-    config = OmegaConf.create(_kafka_config())
-    runner = StreamingTestRunner.from_flow(flow, runtime_config=config)
-    runner.capture_errors(ErrorKind.TASK)
-    msg = _message(_Order(order_id="ORD-1", amount=1))
-
-    runner.with_messages([msg]).run()
-
-    assert len(runner.output) == 0
-    assert len(runner.errors[ErrorKind.TASK]) == 1
-    envelope = runner.errors[ErrorKind.TASK][0]
-    assert isinstance(envelope, ErrorEnvelope)
-    assert envelope.kind == ErrorKind.TASK
 
 
 # ---------------------------------------------------------------------------
@@ -219,32 +229,5 @@ def test_with_async_task_timeout_captures_timed_out_messages_as_errors() -> None
 
 
 class _UpperBatchStep(BatchStep[_Order, _ValidatedOrder]):
-    def execute(  # type: ignore[override]
-        self, messages: list[Message[_Order]], **kwargs: object
-    ) -> list[_ValidatedOrder]:
+    def execute(self, messages: list[Message[_Order]], **kwargs: object) -> list[_ValidatedOrder]:
         return [_ValidatedOrder(order_id=m.payload.order_id.upper()) for m in messages]
-
-
-def test_router_executes_batch_step_branch_as_singleton_batch() -> None:
-    """BatchStep inside a Router branch must execute as a singleton batch and return one result."""
-    flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
-        name="router_batch_flow",
-        source=FromTopic("orders.raw", payload=_Order),
-        process=Process(
-            Router.when(
-                routes=[
-                    Route(
-                        when=msg.payload.order_id != "",
-                        process=Process(_UpperBatchStep()),
-                    )
-                ],
-            )
-        ),
-        output=IntoTopic("orders.out", payload=_ValidatedOrder),
-    )
-    config = OmegaConf.create(_kafka_config())
-    runner = StreamingTestRunner.from_flow(flow, runtime_config=config)
-    runner.with_messages([_message(_Order(order_id="ord-1", amount=10))]).run()
-
-    assert len(runner.output) == 1
-    assert runner.output[0].payload == _ValidatedOrder(order_id="ORD-1")

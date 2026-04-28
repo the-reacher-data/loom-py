@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, Protocol, TypeAlias, cast
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol, TypeAlias
 
 from bytewax.operators import branch, flat_map
 
@@ -59,11 +59,11 @@ def _execute_in_boundary(
 def _execute_batch_in_boundary(
     classify: Callable[[Exception], ErrorKind],
     originals: list[Message[StreamPayload]],
-    fn: Callable[[], list[Message[StreamPayload]]],
+    fn: Callable[[], Sequence[NodeResult]],
 ) -> list[NodeResult]:
     """Execute one batch node and capture failures as per-message envelopes."""
     try:
-        return cast(list[NodeResult], fn())
+        return list(fn())
     except Exception as exc:
         kind = classify(exc)
         return [
@@ -80,8 +80,7 @@ def _split_node_result(
 ) -> Stream:
     """Split node results into success and error branches and wire errors."""
     split = branch(f"{step_id}_split", stream, _is_message)
-    wire_outputs = cast(_ErrorWireOutputs, ctx.outputs)
-    wire_outputs.wire_node_error(kind, step_id, split.falses)
+    ctx.outputs.wire_node_error(kind, step_id, split.falses)
     return split.trues
 
 
@@ -94,8 +93,7 @@ def _split_batch_node_result(
     """Split batch-shaped node results into success and error branches."""
     split = branch(f"{step_id}_split", stream, _is_message_batch)
     errors = flat_map(f"{step_id}_errors", split.falses, _identity)
-    wire_outputs = cast(_ErrorWireOutputs, ctx.outputs)
-    wire_outputs.wire_node_error(kind, step_id, errors)
+    ctx.outputs.wire_node_error(kind, step_id, errors)
     return split.trues
 
 

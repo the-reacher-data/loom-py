@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._message import Message
 
-PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct, covariant=True)
 
 
 class ErrorKind(StrEnum):

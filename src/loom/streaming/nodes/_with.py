@@ -132,30 +132,44 @@ class _WithBase(Generic[InT, OutT]):
 
 
 class With(_WithBase[InT, OutT]):
-    """Declare a sync dependency scope around a streaming step.
+    """Declare a sync dependency scope around an inner process.
+
+    Each incoming message flows through the inner
+    :class:`~loom.streaming.graph._flow.Process` synchronously.  If the last
+    node of the inner process is an
+    :class:`~loom.streaming.nodes._boundary.IntoTopic`, results are written
+    directly to Kafka as each message completes — no ``ForEach`` or outer
+    ``IntoTopic`` is required.  The outer stream is drained after this node
+    (``StreamShape.NONE``).
 
     Args:
-        step: Step executed with injected sync context managers and plain deps.
         scope: Lifecycle used when opening context-manager dependencies.
-        **dependencies: Named dependencies injected into step execution.
+        process: Inner process executed per message.
+        **dependencies: Named sync context managers, factories, or plain
+            values injected into step execution.
 
     Raises:
         TypeError: If an async context manager is passed directly.
 
     Example::
 
-        With(step=ValidateOrder(), scope=ResourceScope.WORKER, db=SessionLocal())
+        With(
+            process=Process(ValidateOrder(), IntoTopic("validated", payload=Validated)),
+            scope=ResourceScope.WORKER,
+            db=SessionLocal(),
+        )
     """
 
     __slots__ = ()
 
     def __init__(
         self,
-        step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
+        *,
+        process: Process[Any, Any],
         **dependencies: object,
     ) -> None:
-        super().__init__(step, scope=scope, **dependencies)
+        super().__init__(None, scope=scope, process=process, **dependencies)
         if self._async_contexts:
             names = ", ".join(self._async_contexts.keys())
             raise TypeError(

@@ -1,82 +1,32 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
+import uvloop
+from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
-pytest.importorskip("bytewax")
-
-from bytewax.dataflow import Dataflow
-
-from loom.core.model import LoomFrozenStruct
-from loom.streaming import FromTopic, IntoTopic, Message, Process, RecordStep, StreamFlow
-from loom.streaming.bytewax.runner import StreamingRunner
+from loom.streaming import StreamFlow
+from loom.streaming.bytewax.runner import (
+    BytewaxRuntimeConfig,
+    StreamingRunner,
+    _build_backend_options,
+)
 from loom.streaming.observability import OtelFlowObserver
-
-_RECOVERY_DB_DIR = "/var/lib/loom/tests/bytewax-recovery"
-_RUNTIME_DB_DIR = "/var/lib/loom/tests/bytewax-runtime"
-
-
-class _Order(LoomFrozenStruct, frozen=True):
-    order_id: str
-
-
-class _Result(LoomFrozenStruct, frozen=True):
-    value: str
-
-
-class _DoubleStep(RecordStep[_Order, _Result]):
-    def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
-        return _Result(value=message.payload.order_id * 2)
-
-
-def _flow() -> StreamFlow[_Order, _Result]:
-    return StreamFlow(
-        name="runner_flow",
-        source=FromTopic("orders.in", payload=_Order),
-        process=Process(_DoubleStep()),
-        output=IntoTopic("orders.out", payload=_Result),
-    )
-
-
-def _config_dict() -> dict[str, object]:
-    return {
-        "kafka": {
-            "consumer": {
-                "brokers": ["localhost:9092"],
-                "group_id": "test",
-                "topics": ["orders.in"],
-            },
-            "producer": {
-                "brokers": ["localhost:9092"],
-                "client_id": "test-producer",
-                "topic": "orders.out",
-            },
-        },
-        "streaming": {
-            "runtime": {
-                "workers_per_process": 2,
-                "epoch_interval_ms": 5000,
-                "addresses": ["127.0.0.1:2101", "127.0.0.1:2102"],
-                "process_id": 1,
-                "recovery": {
-                    "db_dir": _RECOVERY_DB_DIR,
-                    "backup_interval_ms": 30000,
-                },
-            }
-        },
-    }
+from tests.unit.streaming.bytewax.cases import Order, Result
 
 
 class TestStreamingRunner:
     def test_run_uses_bytewax_cli_main_with_runtime_config(
         self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
         monkeypatch: MonkeyPatch,
     ) -> None:
-        runner = StreamingRunner.from_dict(_flow(), _config_dict())
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
         dataflow = Dataflow("test")
         shutdown_calls: list[str] = []
         cli_calls: dict[str, object] = {}
@@ -108,20 +58,29 @@ class TestStreamingRunner:
         assert kwargs["addresses"] == ["127.0.0.1:2101", "127.0.0.1:2102"]
         assert shutdown_calls == ["done"]
 
-    def test_from_dict_loads_runtime_section(self) -> None:
-        runner = StreamingRunner.from_dict(_flow(), _config_dict())
+    def test_from_dict_loads_runtime_section(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+    ) -> None:
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
 
         assert runner._runtime.workers_per_process == 2
         assert runner._runtime.process_id == 1
         assert runner._runtime.addresses == ("127.0.0.1:2101", "127.0.0.1:2102")
         assert runner._runtime.epoch_interval_ms == 5000
         assert runner._runtime.recovery is not None
-        assert runner._runtime.recovery.db_dir == _RECOVERY_DB_DIR
+        assert runner._runtime.recovery.db_dir == "/var/lib/loom/tests/bytewax-recovery"
         assert runner._runtime.recovery.backup_interval_ms == 30000
 
-    def test_from_dict_loads_streaming_observability_section(self) -> None:
-        config = _config_dict()
-        streaming = cast(dict[str, object], config["streaming"])
+    def test_from_dict_loads_streaming_observability_section(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+    ) -> None:
+        config = dict(bytewax_runtime_config_dict)
+        streaming = config["streaming"]
+        assert isinstance(streaming, dict)
         runtime = streaming["runtime"]
         config["streaming"] = {
             "runtime": runtime,
@@ -136,11 +95,15 @@ class TestStreamingRunner:
             },
         }
 
-        runner = StreamingRunner.from_dict(_flow(), config)
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, config)
 
         assert isinstance(runner._observer, OtelFlowObserver)
 
-    def test_from_yaml_loads_runtime_section(self, tmp_path: Path) -> None:
+    def test_from_yaml_loads_runtime_section(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        tmp_path: Path,
+    ) -> None:
         config_path = tmp_path / "streaming.yaml"
         config_path.write_text(
             """
@@ -165,12 +128,48 @@ streaming:
 """.strip()
         )
 
-        runner = StreamingRunner.from_yaml(_flow(), str(config_path))
+        runner = StreamingRunner.from_yaml(bytewax_stream_flow, str(config_path))
 
         assert runner._runtime.workers_per_process == 3
         assert runner._runtime.process_id == 2
         assert runner._runtime.addresses == ("127.0.0.1:2201", "127.0.0.1:2202")
         assert runner._runtime.epoch_interval_ms == 7000
         assert runner._runtime.recovery is not None
-        assert runner._runtime.recovery.db_dir == _RUNTIME_DB_DIR
+        assert runner._runtime.recovery.db_dir == "/var/lib/loom/tests/bytewax-runtime"
         assert runner._runtime.recovery.backup_interval_ms == 45000
+
+
+class TestBytewaxRuntimeConfig:
+    def test_defaults_match_runtime_contract(self) -> None:
+        cfg = BytewaxRuntimeConfig()
+
+        assert cfg.async_backend == "asyncio"
+        assert cfg.use_uvloop is False
+        assert cfg.force_shutdown_timeout_ms is None
+
+    def test_custom_values_are_preserved(self) -> None:
+        cfg = BytewaxRuntimeConfig(
+            async_backend="trio",
+            use_uvloop=True,
+            force_shutdown_timeout_ms=5000,
+        )
+
+        assert cfg.async_backend == "trio"
+        assert cfg.use_uvloop is True
+        assert cfg.force_shutdown_timeout_ms == 5000
+
+
+class TestBuildBackendOptions:
+    def test_asyncio_without_uvloop_returns_empty(self) -> None:
+        assert _build_backend_options("asyncio", use_uvloop=False) == {}
+
+    def test_trio_with_uvloop_flag_returns_empty(self) -> None:
+        assert _build_backend_options("trio", use_uvloop=True) == {}
+
+    def test_asyncio_with_uvloop_adds_loop_factory(self) -> None:
+        if sys.platform == "win32":
+            pytest.skip("uvloop not available on Windows")
+
+        opts = _build_backend_options("asyncio", use_uvloop=True)
+
+        assert opts.get("loop_factory") is uvloop.new_event_loop

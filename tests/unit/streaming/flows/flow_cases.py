@@ -6,14 +6,13 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming import (
     CollectBatch,
     ContextFactory,
     Drain,
-    ForEach,
     Fork,
     ForkRoute,
     FromTopic,
@@ -92,8 +91,12 @@ class MarkManualOrder(RecordStep[OrderPlaced, RoutedOrder]):
 
 
 class PriceOrder(RecordStep[OrderPlaced, PricedOrder]):
-    def execute(self, message: Message[OrderPlaced], **kwargs: object) -> PricedOrder:
-        client = kwargs["client"]
+    def execute(
+        self,
+        message: Message[OrderPlaced],
+        *,
+        client: FakePricingClient,
+    ) -> PricedOrder:
         if not isinstance(client, FakePricingClient):
             raise TypeError("client must be FakePricingClient.")
         return PricedOrder(
@@ -104,12 +107,12 @@ class PriceOrder(RecordStep[OrderPlaced, PricedOrder]):
 
 
 class ScoreRiskAsync(RecordStep[OrderPlaced, RiskScoredOrder]):
-    async def execute(  # type: ignore[override]
+    async def execute(
         self,
         message: Message[OrderPlaced],
-        **kwargs: object,
+        *,
+        client: FakeRiskClient,
     ) -> RiskScoredOrder:
-        client = kwargs["client"]
         if not isinstance(client, FakeRiskClient):
             raise TypeError("client must be FakeRiskClient.")
         risk_band = await client.risk_band(message.payload.amount)
@@ -170,9 +173,9 @@ class ResourceEvents:
         return FakePricingClient(self, self._next_client_id)
 
 
-def build_simple_validation_flow_case() -> StreamFlowCase:
+def build_simple_validation_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build the smallest topic-in, task, topic-out StreamFlow case."""
-    flow = StreamFlow(
+    flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_validate",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(ValidateOrder()),
@@ -182,17 +185,17 @@ def build_simple_validation_flow_case() -> StreamFlowCase:
         payload=OrderPlaced(order_id="o-1", amount=100),
         meta=MessageMeta(message_id="o-1"),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(message,),
         expected_payloads=(ValidatedOrder(order_id="o-1", accepted=True),),
     )
 
 
-def build_router_flow_case() -> StreamFlowCase:
+def build_router_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a topic flow with a Router that has multiple branches."""
-    flow = StreamFlow(
+    flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_route",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
@@ -207,9 +210,9 @@ def build_router_flow_case() -> StreamFlowCase:
         ),
         output=IntoTopic(_ORDERS_ROUTED_TOPIC, payload=RoutedOrder),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -223,26 +226,27 @@ def build_router_flow_case() -> StreamFlowCase:
     )
 
 
-def build_with_batch_flow_case() -> StreamFlowCase:
-    """Build a batch flow using With and ForEach, so the sink sees individual messages."""
+def build_with_batch_flow_case(config: DictConfig) -> StreamFlowCase:
+    """Build a batch flow whose scoped inner process writes each result."""
     events = ResourceEvents()
-    flow = StreamFlow(
+    flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_price_batch",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
-                step=PriceOrder(),
+                process=Process(
+                    PriceOrder(),
+                    IntoTopic(_ORDERS_PRICED_TOPIC, payload=PricedOrder),
+                ),
                 client=events.create_pricing_client(),
                 scope=ResourceScope.WORKER,
             ),
-            ForEach(),
         ),
-        output=IntoTopic(_ORDERS_PRICED_TOPIC, payload=PricedOrder),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -259,26 +263,27 @@ def build_with_batch_flow_case() -> StreamFlowCase:
     )
 
 
-def build_with_batch_scope_flow_case() -> StreamFlowCase:
+def build_with_batch_scope_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a batch flow using a fresh ContextFactory client per batch."""
     events = ResourceEvents()
-    flow = StreamFlow(
+    flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_price_batch_scope",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
             CollectBatch(max_records=2, timeout_ms=1000),
             With(
-                step=PriceOrder(),
+                process=Process(
+                    PriceOrder(),
+                    IntoTopic(_ORDERS_PRICED_BATCH_SCOPE_TOPIC, payload=PricedOrder),
+                ),
                 client=ContextFactory(events.create_pricing_client),
                 scope=ResourceScope.BATCH,
             ),
-            ForEach(),
         ),
-        output=IntoTopic(_ORDERS_PRICED_BATCH_SCOPE_TOPIC, payload=PricedOrder),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -295,7 +300,7 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
     )
 
 
-def build_async_flow_case() -> StreamFlowCase:
+def build_async_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build an async flow using WithAsync(process=...) to write results directly."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_score_async_each",
@@ -312,9 +317,9 @@ def build_async_flow_case() -> StreamFlowCase:
             ),
         ),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -326,7 +331,7 @@ def build_async_flow_case() -> StreamFlowCase:
     )
 
 
-def build_fork_flow_case() -> StreamFlowCase:
+def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a terminal Fork flow with independent branch outputs."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_fork",
@@ -344,9 +349,9 @@ def build_fork_flow_case() -> StreamFlowCase:
             )
         ),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _routed_order_message("o-1", "vip"),
             _routed_order_message("o-2", "standard"),
@@ -359,7 +364,7 @@ def build_fork_flow_case() -> StreamFlowCase:
     )
 
 
-def build_fork_with_flow_case() -> StreamFlowCase:
+def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a Fork flow whose matched branch opens a scoped resource."""
     events = ResourceEvents()
     flow: StreamFlow[Any, Any] = StreamFlow(
@@ -373,12 +378,13 @@ def build_fork_with_flow_case() -> StreamFlowCase:
                         process=Process(
                             CollectBatch(max_records=1, timeout_ms=1000),
                             With(
-                                step=PriceOrder(),
+                                process=Process(
+                                    PriceOrder(),
+                                    IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=PricedOrder),
+                                ),
                                 client=ContextFactory(events.create_pricing_client),
                                 scope=ResourceScope.BATCH,
                             ),
-                            ForEach(),
-                            IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=PricedOrder),
                         ),
                     )
                 ],
@@ -386,9 +392,9 @@ def build_fork_with_flow_case() -> StreamFlowCase:
             )
         ),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -398,7 +404,7 @@ def build_fork_with_flow_case() -> StreamFlowCase:
     )
 
 
-def build_fork_when_flow_case() -> StreamFlowCase:
+def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a Fork.when flow with ordered predicate dispatch."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_fork_when",
@@ -421,9 +427,9 @@ def build_fork_when_flow_case() -> StreamFlowCase:
             )
         ),
     )
-    return StreamFlowCase(
+    return _build_case(
         flow=flow,
-        config=OmegaConf.create(_streaming_kafka_config()),
+        config=config,
         input_messages=(
             _order_message("o-1", 100, "vip"),
             _order_message("o-2", 50, "standard"),
@@ -443,47 +449,22 @@ def _order_message(order_id: str, amount: int, segment: str) -> Message[OrderPla
     )
 
 
-def _streaming_kafka_config() -> dict[str, Any]:
-    return {
-        "kafka": {
-            "consumer": {
-                "brokers": [_KAFKA_BROKER],
-                "group_id": "test",
-                "topics": [_ORDERS_RAW_TOPIC],
-            },
-            "producer": {"brokers": [_KAFKA_BROKER], "topic": _ORDERS_VALIDATED_TOPIC},
-            "producers": {
-                _ORDERS_VALIDATED_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_VALIDATED_TOPIC,
-                },
-                _ORDERS_ROUTED_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_ROUTED_TOPIC,
-                },
-                _ORDERS_PRICED_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_PRICED_TOPIC,
-                },
-                _ORDERS_PRICED_BATCH_SCOPE_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_PRICED_BATCH_SCOPE_TOPIC,
-                },
-                _ORDERS_SCORED_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_SCORED_TOPIC,
-                },
-                _ORDERS_FORK_VIP_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_FORK_VIP_TOPIC,
-                },
-                _ORDERS_FORK_STANDARD_TOPIC: {
-                    "brokers": [_KAFKA_BROKER],
-                    "topic": _ORDERS_FORK_STANDARD_TOPIC,
-                },
-            },
-        }
-    }
+def _build_case(
+    *,
+    flow: StreamFlow[Any, Any],
+    config: DictConfig,
+    input_messages: tuple[Message[Any], ...],
+    expected_payloads: tuple[LoomStruct | LoomFrozenStruct, ...],
+    resource_events: ResourceEvents | None = None,
+) -> StreamFlowCase:
+    """Assemble one reusable streaming flow case."""
+    return StreamFlowCase(
+        flow=flow,
+        config=config,
+        input_messages=input_messages,
+        expected_payloads=expected_payloads,
+        resource_events=resource_events,
+    )
 
 
 def _routed_order_message(order_id: str, lane: str) -> Message[RoutedOrder]:

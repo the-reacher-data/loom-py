@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from prometheus_client import CollectorRegistry, generate_latest
 
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
@@ -335,9 +336,11 @@ def test_raw_producer_flush_consumes_pending_delivery_error(
     producer.flush()
 
 
-def test_raw_producer_emits_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
-    from prometheus_client import CollectorRegistry, generate_latest
-
+def test_raw_producer_emits_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    kafka_registry: CollectorRegistry,
+    kafka_metrics: KafkaPrometheusMetrics,
+) -> None:
     created: dict[str, _FakeProducer] = {}
 
     def _build(config: dict[str, str]) -> _FakeProducer:
@@ -345,30 +348,28 @@ def test_raw_producer_emits_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
         created["p"] = fake
         return fake
 
-    registry = CollectorRegistry()
-    metrics = KafkaPrometheusMetrics(registry=registry)
     monkeypatch.setattr(
         "loom.streaming.kafka.client._producer._Producer",
         _build,
     )
     producer = KafkaProducerClient(
         ProducerSettings(brokers=("k1:9092",)),
-        observer=metrics,
+        observer=kafka_metrics,
     )
 
     producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
     created["p"].produced[0]["on_delivery"](None, None)
     producer.flush()
 
-    text = generate_latest(registry).decode()
+    text = generate_latest(kafka_registry).decode()
     assert "loom_streaming_kafka_produced_total" in text
 
 
-def test_raw_consumer_emits_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
-    from prometheus_client import CollectorRegistry, generate_latest
-
-    registry = CollectorRegistry()
-    metrics = KafkaPrometheusMetrics(registry=registry)
+def test_raw_consumer_emits_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    kafka_registry: CollectorRegistry,
+    kafka_metrics: KafkaPrometheusMetrics,
+) -> None:
     fake = _FakeConsumer({})
     fake.next_message = _FakeMessage(value=b"data")
     monkeypatch.setattr(
@@ -377,12 +378,12 @@ def test_raw_consumer_emits_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     consumer = KafkaConsumerClient(
         ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
-        observer=metrics,
+        observer=kafka_metrics,
     )
 
     consumer.poll(100)
 
-    text = generate_latest(registry).decode()
+    text = generate_latest(kafka_registry).decode()
     assert "loom_streaming_kafka_consumed_total" in text
 
 

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from datetime import timedelta
 from types import MappingProxyType
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, runtime_checkable
 
 import anyio
 from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import map as bw_map
 
 from loom.core.async_bridge import AsyncBridge
+from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.bytewax._error_boundary import (
     NodeResult,
     _classify_routing,
@@ -40,6 +41,65 @@ from loom.streaming.nodes._with import With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 Stream: TypeAlias = Any
+AwaitT = TypeVar("AwaitT")
+
+
+@runtime_checkable
+class _ExecutableRecordStep(Protocol):
+    """Runtime-executable record-shaped step."""
+
+    def execute(
+        self,
+        message: Message[StreamPayload],
+        **kwargs: object,
+    ) -> StreamPayload | Awaitable[StreamPayload]:
+        """Execute one record-shaped message."""
+        ...
+
+
+@runtime_checkable
+class _ExecutableBatchStep(Protocol):
+    """Runtime-executable batch-shaped step."""
+
+    def execute(
+        self,
+        messages: list[Message[StreamPayload]],
+        **kwargs: object,
+    ) -> list[StreamPayload] | Awaitable[list[StreamPayload]]:
+        """Execute one batch-shaped message group."""
+        ...
+
+
+@runtime_checkable
+class _ExecutableExpandStep(Protocol):
+    """Runtime-executable expanding step."""
+
+    def execute(
+        self,
+        message: Message[StreamPayload],
+        **kwargs: object,
+    ) -> Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]]:
+        """Expand one message into many payloads."""
+        ...
+
+
+@runtime_checkable
+class _ExecutableBatchExpandStep(Protocol):
+    """Runtime-executable batch-expanding step."""
+
+    def execute(
+        self,
+        messages: list[Message[StreamPayload]],
+        **kwargs: object,
+    ) -> Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]]:
+        """Expand one batch into many payloads."""
+        ...
+
+
+class _WithProcessNode(Protocol):
+    """Node that carries an inner process."""
+
+    process: Any
 
 
 def _step_id(base: str, ctx: _BuildContextProtocol) -> str:
@@ -129,9 +189,8 @@ def _wire_node(stream: Stream, node: object, idx: int, ctx: _BuildContextProtoco
 
 def _resolve_node_name(raw: object) -> str:
     """Resolve a human-readable name for a DSL node."""
-    step_name = getattr(raw, "step_name", None)
-    if callable(step_name):
-        return cast(str, step_name())
+    if isinstance(raw, RecordStep):
+        return type(raw).step_name()
     return type(raw).__name__
 
 
@@ -166,8 +225,50 @@ def _observe_node(
             )
 
 
+def _resolve_record_result(
+    result: StreamPayload | Awaitable[StreamPayload],
+    node_type: str,
+) -> StreamPayload:
+    """Resolve a synchronous record-shaped result and reject awaitables."""
+    if isinstance(result, Awaitable):
+        raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
+    return result
+
+
+def _resolve_batch_result(
+    result: list[StreamPayload] | Awaitable[list[StreamPayload]],
+    node_type: str,
+) -> list[StreamPayload]:
+    """Resolve a synchronous batch-shaped result and reject awaitables."""
+    if isinstance(result, Awaitable):
+        raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
+    return result
+
+
+def _resolve_expand_result(
+    result: Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]],
+    node_type: str,
+) -> Iterable[StreamPayload]:
+    """Resolve a synchronous expanding result and reject awaitables."""
+    if isinstance(result, Awaitable):
+        raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
+    return result
+
+
+async def _resolve_async_result(
+    result: StreamPayload | Awaitable[StreamPayload],
+    timeout_ms: int | None,
+) -> StreamPayload:
+    """Resolve a step result for async execution."""
+    if isinstance(result, Awaitable):
+        return await _await_with_optional_timeout(result, timeout_ms)
+    return result
+
+
 def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    record_step = cast(RecordStep[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, _ExecutableRecordStep):
+        raise TypeError(f"Unsupported record step {type(raw).__name__}.")
+    record_step = raw
     name = _resolve_node_name(record_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
@@ -186,7 +287,9 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
 
 
 def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    batch_step = cast(BatchStep[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, _ExecutableBatchStep):
+        raise TypeError(f"Unsupported batch step {type(raw).__name__}.")
+    batch_step = raw
     name = _resolve_node_name(batch_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
@@ -217,7 +320,9 @@ def _apply_expand_step(
     idx: int,
     ctx: _BuildContextProtocol,
 ) -> Stream:
-    expand_step = cast(ExpandStep[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, _ExecutableExpandStep):
+        raise TypeError(f"Unsupported expand step {type(raw).__name__}.")
+    expand_step = raw
     name = _resolve_node_name(expand_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
@@ -249,7 +354,9 @@ def _apply_batch_expand_step(
     idx: int,
     ctx: _BuildContextProtocol,
 ) -> Stream:
-    batch_expand_step = cast(BatchExpandStep[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, _ExecutableBatchExpandStep):
+        raise TypeError(f"Unsupported batch-expand step {type(raw).__name__}.")
+    batch_expand_step = raw
     name = _resolve_node_name(batch_expand_step)
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
@@ -276,13 +383,15 @@ def _apply_batch_expand_step(
 
 
 def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    node = cast(With[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, With):
+        raise TypeError(f"Unsupported with node {type(raw).__name__}.")
+    node = raw
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
-    step_node = cast(RecordStep[StreamPayload, StreamPayload], node.step)
+    inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
     def step(batch: list[Any]) -> list[NodeResult]:
         messages = _messages_from_batch(batch)
@@ -296,7 +405,8 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
                 node_type,
                 manager,
                 worker_resources,
-                step_node,
+                inner_steps,
+                sink_partition,
                 messages,
             ),
         )
@@ -313,7 +423,9 @@ def _apply_with_async(
     idx: int,
     ctx: _BuildContextProtocol,
 ) -> Stream:
-    node = cast(WithAsync[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, WithAsync):
+        raise TypeError(f"Unsupported with-async node {type(raw).__name__}.")
+    node = raw
     if ctx.bridge is None:
         raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
     return _apply_with_async_process(stream, node, idx, ctx)
@@ -332,7 +444,9 @@ def _apply_with_async_process(
     results are written directly to Kafka as each message completes.  The outer
     stream is drained — no ``ForEach`` or outer ``IntoTopic`` is required.
     """
-    bridge = cast(AsyncBridge, ctx.bridge)
+    bridge = ctx.bridge
+    if bridge is None:
+        raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
     observer = ctx.flow_observer
@@ -366,16 +480,16 @@ def _apply_with_async_process(
 
 
 def _resolve_inner_process(
-    node: WithAsync[StreamPayload, StreamPayload],
+    node: _WithProcessNode,
     ctx: _BuildContextProtocol,
-) -> tuple[list[RecordStep[StreamPayload, StreamPayload]], Any]:
+) -> tuple[list[_ExecutableRecordStep], Any]:
     """Extract executable steps and optional sink partition from ``node.process``."""
-    inner_steps: list[RecordStep[StreamPayload, StreamPayload]] = []
+    inner_steps: list[_ExecutableRecordStep] = []
     sink_partition: Any = None
 
     for inner_idx, inner_node in enumerate(node.process.nodes):
-        if isinstance(inner_node, RecordStep):
-            inner_steps.append(cast(RecordStep[StreamPayload, StreamPayload], inner_node))
+        if isinstance(inner_node, RecordStep) and isinstance(inner_node, _ExecutableRecordStep):
+            inner_steps.append(inner_node)
         elif isinstance(inner_node, IntoTopic):
             inner_path = ctx.current_path + (inner_idx,)
             sink_partition = ctx.inline_sink_partition_for(inner_path)
@@ -386,7 +500,7 @@ def _resolve_inner_process(
 
 async def _execute_inner_process(
     message: Message[StreamPayload],
-    inner_steps: list[RecordStep[StreamPayload, StreamPayload]],
+    inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
     deps: Mapping[str, object],
     timeout_ms: int | None,
@@ -394,10 +508,7 @@ async def _execute_inner_process(
     """Execute all inner process steps for one message and write to Kafka when a sink is set."""
     current = message
     for step in inner_steps:
-        result = await _await_with_optional_timeout(
-            cast(Awaitable[object], step.execute(current, **deps)),
-            timeout_ms,
-        )
+        result = await _resolve_async_result(step.execute(current, **deps), timeout_ms)
         current = _replace_payload(current, result)
     if sink_partition is not None:
         sink_partition.write_batch([current])
@@ -414,7 +525,9 @@ def _apply_collect_batch(
     idx: int,
     ctx: _BuildContextProtocol,
 ) -> Stream:
-    node = cast(CollectBatch, raw)
+    if not isinstance(raw, CollectBatch):
+        raise TypeError(f"Unsupported collect-batch node {type(raw).__name__}.")
+    node = raw
     if node.window is WindowStrategy.COLLECT:
         return _apply_collect_batch_default(stream, node, _step_id(str(idx), ctx))
     raise TypeError(
@@ -440,7 +553,9 @@ def _apply_for_each(stream: Stream, _raw: object, idx: int, ctx: _BuildContextPr
 
 
 def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    router = cast(Router[StreamPayload, StreamPayload], raw)
+    if not isinstance(raw, Router):
+        raise TypeError(f"Unsupported router node {type(raw).__name__}.")
+    router = raw
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
 
@@ -464,7 +579,9 @@ def _apply_broadcast(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     """Wire a Broadcast node: fan-out the same stream to every branch independently."""
-    node = cast(Broadcast[StreamPayload], raw)
+    if not isinstance(raw, Broadcast):
+        raise TypeError(f"Unsupported broadcast node {type(raw).__name__}.")
+    node = raw
     broadcast_path = ctx.current_path
 
     for branch_idx, route in enumerate(node.routes):
@@ -502,11 +619,11 @@ def _execute_record_step(
     flow_name: str,
     idx: int,
     name: str,
-    record_step: RecordStep[StreamPayload, StreamPayload],
+    record_step: _ExecutableRecordStep,
     message: Message[StreamPayload],
 ) -> Message[StreamPayload]:
     with _observe_node(observer, flow_name, idx, name):
-        result = record_step.execute(message)
+        result = _resolve_record_result(record_step.execute(message), name)
         return _replace_payload(message, result)
 
 
@@ -515,11 +632,13 @@ def _execute_batch_step(
     flow_name: str,
     idx: int,
     name: str,
-    batch_step: BatchStep[StreamPayload, StreamPayload],
+    batch_step: _ExecutableBatchStep,
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
     with _observe_node(observer, flow_name, idx, name):
-        result = batch_step.execute(messages)
+        result = _resolve_batch_result(batch_step.execute(messages), name)
+        if not isinstance(result, list):
+            raise TypeError(f"{name} must return a list of payloads.")
         return _replace_payloads(messages, result)
 
 
@@ -528,11 +647,14 @@ def _execute_expand_step(
     flow_name: str,
     idx: int,
     name: str,
-    expand_step: ExpandStep[StreamPayload, StreamPayload],
+    expand_step: _ExecutableExpandStep,
     message: Message[StreamPayload],
 ) -> list[Message[StreamPayload]]:
     with _observe_node(observer, flow_name, idx, name):
-        return list(expand_step.execute(message))
+        result = _resolve_expand_result(expand_step.execute(message), name)
+        if not isinstance(result, Iterable):
+            raise TypeError(f"{name} must return an iterable of payloads.")
+        return [_replace_payload(message, payload) for payload in result]
 
 
 def _execute_batch_expand_step(
@@ -540,11 +662,14 @@ def _execute_batch_expand_step(
     flow_name: str,
     idx: int,
     name: str,
-    batch_expand_step: BatchExpandStep[StreamPayload, StreamPayload],
+    batch_expand_step: _ExecutableBatchExpandStep,
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
     with _observe_node(observer, flow_name, idx, name):
-        return list(batch_expand_step.execute(messages))
+        result = _resolve_expand_result(batch_expand_step.execute(messages), name)
+        if not isinstance(result, Iterable):
+            raise TypeError(f"{name} must return an iterable of payloads.")
+        return _replace_payloads(messages, list(result))
 
 
 def _execute_with_step(
@@ -554,15 +679,24 @@ def _execute_with_step(
     node_type: str,
     manager: ResourceLifecycle,
     worker_resources: Mapping[str, object],
-    step: RecordStep[StreamPayload, StreamPayload],
+    inner_steps: Sequence[_ExecutableRecordStep],
+    sink_partition: Any,
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
     with (
         _observe_node(observer, flow_name, idx, node_type),
         _batch_dependencies(manager, worker_resources) as deps,
     ):
-        result = [step.execute(message, **deps) for message in messages]
-        return _replace_payloads(messages, result)
+        current_messages = messages
+        for step in inner_steps:
+            result = [
+                _resolve_record_result(step.execute(message, **deps), node_type)
+                for message in current_messages
+            ]
+            current_messages = _replace_payloads(current_messages, result)
+        if sink_partition is not None:
+            sink_partition.write_batch(current_messages)
+        return current_messages
 
 
 def _execute_router_step(
@@ -577,7 +711,9 @@ def _execute_router_step(
 
 
 def _apply_fork(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    fork = cast(Fork[StreamPayload], raw)
+    if not isinstance(raw, Fork):
+        raise TypeError(f"Unsupported fork node {type(raw).__name__}.")
+    fork = raw
     if fork.kind is ForkKind.KEYED:
         return _apply_fork_by(stream, fork, idx, ctx)
     return _apply_fork_when(stream, fork, idx, ctx)
@@ -671,9 +807,9 @@ def _batch_dependencies(
 
 
 async def _await_with_optional_timeout(
-    awaitable: Awaitable[object],
+    awaitable: Awaitable[AwaitT],
     timeout_ms: int | None,
-) -> object:
+) -> AwaitT:
     """Await *awaitable*, optionally bounded by *timeout_ms* milliseconds."""
     if timeout_ms is None:
         return await awaitable
@@ -736,13 +872,19 @@ def _select_router_branch(
 
 
 def _execute_router_node(node: object, message: Message[StreamPayload]) -> Message[StreamPayload]:
-    if isinstance(node, RouterBranchSafe) and isinstance(node, RecordStep):
-        step = cast(RecordStep[StreamPayload, StreamPayload], node)
-        return _replace_payload(message, step.execute(message))
-    if isinstance(node, RouterBranchSafe) and isinstance(node, BatchStep):
-        batch_step = cast(BatchStep[StreamPayload, StreamPayload], node)
-        results = batch_step.execute([message])
+    if (
+        isinstance(node, RouterBranchSafe)
+        and isinstance(node, BatchStep)
+        and isinstance(node, _ExecutableBatchStep)
+    ):
+        results = _resolve_batch_result(node.execute([message]), "Router")
         return _replace_payload(message, results[0])
+    if (
+        isinstance(node, RouterBranchSafe)
+        and isinstance(node, RecordStep)
+        and isinstance(node, _ExecutableRecordStep)
+    ):
+        return _replace_payload(message, _resolve_record_result(node.execute(message), "Router"))
     if isinstance(node, RouterBranchSafe) and isinstance(node, (IntoTopic, Drain)):
         return message
     raise TypeError(
@@ -752,14 +894,21 @@ def _execute_router_node(node: object, message: Message[StreamPayload]) -> Messa
 
 def _require_message(value: Any) -> Message[StreamPayload]:
     """Validate that the runtime stream carries Loom messages."""
-    if not isinstance(value, Message):
+    if not _is_message(value):
         raise TypeError(f"Expected Message, got {type(value).__name__}.")
-    return cast(Message[StreamPayload], value)
+    return value
+
+
+def _is_message(value: object) -> TypeGuard[Message[StreamPayload]]:
+    """Return whether one runtime item is a Loom message."""
+    return isinstance(value, Message)
 
 
 def _replace_payload(message: Message[StreamPayload], payload: Any) -> Message[StreamPayload]:
     """Preserve metadata while replacing the logical payload."""
-    return Message(payload=cast(StreamPayload, payload), meta=message.meta)
+    if not isinstance(payload, (LoomStruct, LoomFrozenStruct)):
+        raise TypeError(f"Expected StreamPayload, got {type(payload).__name__}.")
+    return Message(payload=payload, meta=message.meta)
 
 
 def _replace_payloads(

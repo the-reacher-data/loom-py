@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from abc import ABC
 from typing import Any, ClassVar, Generic, Protocol, TypeVar, runtime_checkable
 
 from loom.core.config import Configurable
-from loom.streaming.core._message import Message, StreamPayload
+from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._shape import StreamShape
 
 InT = TypeVar("InT", bound=StreamPayload, contravariant=True)
@@ -54,55 +53,49 @@ class Step(Configurable, ABC, Generic[InT, OutT]):
 
 
 class RecordStep(Step[InT, OutT], ABC):
-    """Streaming step that consumes and produces one record at a time."""
+    """Streaming step that consumes and produces one record at a time.
+
+    Subclasses declare their own ``execute(...)`` signature. The runtime uses
+    duck typing so user code can express explicit dependencies without mypy
+    forcing a single override shape.
+    """
 
     router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.RECORD
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
 
-    @abstractmethod
-    def execute(self, message: Message[InT], **kwargs: object) -> OutT:
-        """Execute one record-oriented transformation."""
-
 
 class BatchStep(Step[InT, OutT], ABC):
-    """Streaming step that consumes and produces one batch at a time."""
+    """Streaming step that consumes and produces one batch at a time.
+
+    Subclasses declare their own ``execute(...)`` signature.
+    """
 
     router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.BATCH
     output_shape: ClassVar[StreamShape] = StreamShape.BATCH
 
-    @abstractmethod
-    def execute(self, messages: list[Message[InT]], **kwargs: object) -> list[OutT]:
-        """Execute one batch-oriented transformation."""
-
 
 class ExpandStep(Step[InT, OutT], ABC):
-    """Streaming step that expands one record into many output messages."""
+    """Streaming step that expands one record into many output messages.
+
+    Subclasses declare their own ``execute(...)`` signature.
+    """
 
     router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.RECORD
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
 
-    @abstractmethod
-    def execute(self, message: Message[InT], **kwargs: object) -> Iterable[Message[OutT]]:
-        """Execute one record-oriented fan-out transformation."""
-
 
 class BatchExpandStep(Step[InT, OutT], ABC):
-    """Streaming step that expands one batch into many output messages."""
+    """Streaming step that expands one batch into many output messages.
+
+    Subclasses declare their own ``execute(...)`` signature.
+    """
 
     router_branch_safe: ClassVar[bool] = True
     input_shape: ClassVar[StreamShape] = StreamShape.BATCH
     output_shape: ClassVar[StreamShape] = StreamShape.RECORD
-
-    @abstractmethod
-    def execute(
-        self,
-        messages: list[Message[InT]],
-        **kwargs: object,
-    ) -> Iterable[Message[OutT]]:
-        """Execute one batch-oriented fan-out transformation."""
 
 
 __all__ = [

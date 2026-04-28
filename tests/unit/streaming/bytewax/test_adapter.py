@@ -1,120 +1,50 @@
-"""TDD for Bytewax runtime adapter — end-to-end execution.
-
-These tests define how a :class:`loom.streaming.StreamFlow` is translated
-into an executable Bytewax :class:`Dataflow`.
-"""
+"""TDD for Bytewax runtime adapter — end-to-end execution."""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
 
-import pytest
-
-pytest.importorskip("bytewax")
-
-from loom.core.model import LoomStruct
-from loom.streaming.compiler._plan import (
-    CompiledNode,
-    CompiledPlan,
-    CompiledSink,
-    CompiledSource,
-)
+from loom.streaming.compiler._plan import CompiledPlan, CompiledSink
 from loom.streaming.core._errors import ErrorKind
-from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.core._message import Message
 from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, build_message
-from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
+from loom.streaming.kafka._config import ProducerSettings
 from loom.streaming.nodes._boundary import IntoTopic
-from loom.streaming.nodes._shape import Drain, StreamShape
-from loom.streaming.nodes._step import RecordStep
+from loom.streaming.nodes._shape import Drain
 from loom.streaming.testing import StreamingTestRunner
+from tests.unit.streaming.bytewax.cases import DoubleStep, Order, Result, SuffixStep
 
-
-class _Order(LoomStruct):
-    order_id: str
-
-
-class _Result(LoomStruct):
-    value: str
-
-
-class _DoubleStep(RecordStep[_Order, _Result]):
-    def execute(self, message: Message[_Order], **kwargs: object) -> _Result:
-        return _Result(value=message.payload.order_id * 2)
-
-
-class _SuffixStep(RecordStep[_Result, _Result]):
-    def execute(self, message: Message[_Result], **kwargs: object) -> _Result:
-        return _Result(value=f"{message.payload.value}:ok")
-
-
-def _dummy_consumer() -> ConsumerSettings:
-    return ConsumerSettings(
-        brokers=("localhost:9092",),
-        group_id="test",
-        topics=("in",),
-    )
-
-
-def _message(payload: LoomStruct) -> Message[LoomStruct]:
-    return Message(payload=payload, meta=MessageMeta(message_id="msg-1"))
-
-
-def _build_plan(
-    *nodes: object,
-    output: IntoTopic[Any] | None = None,
-    terminal_sinks: dict[tuple[int, ...], CompiledSink] | None = None,
-    error_routes: dict[ErrorKind, CompiledSink] | None = None,
-) -> CompiledPlan:
-    """Build a minimal CompiledPlan for testing."""
-    compiled_nodes = [
-        CompiledNode(node=node, input_shape=StreamShape.RECORD, output_shape=StreamShape.RECORD)
-        for node in nodes
-    ]
-    compiled_output = None
-    if output is not None:
-        compiled_output = CompiledSink(
-            settings=ProducerSettings(
-                brokers=("localhost:9092",),
-                client_id="test-producer",
-                topic=output.name,
-            ),
-            topic=output.name,
-            partition_policy=None,
-        )
-    return CompiledPlan(
-        name="test_flow",
-        source=CompiledSource(
-            settings=_dummy_consumer(),
-            topics=("in",),
-            payload_type=_Order,
-            shape=StreamShape.RECORD,
-            decode_strategy="record",
-        ),
-        nodes=tuple(compiled_nodes),
-        output=compiled_output,
-        terminal_sinks=terminal_sinks or {},
-        error_routes=error_routes or {},
-        needs_async_bridge=False,
-    )
+PlanFactory = Callable[..., CompiledPlan]
 
 
 class TestStepNodeExecution:
     """A simple Step node must transform records end-to-end."""
 
-    def test_single_task_produces_transformed_output(self) -> None:
-        plan = _build_plan(_DoubleStep())
-        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+    def test_single_task_produces_transformed_output(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_message: Message[Order],
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        plan = bytewax_plan_factory(bytewax_double_step)
+        runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
 
         assert len(results) == 1
         assert isinstance(results[0], Message)
-        assert results[0].payload == _Result(value="AA")
+        assert results[0].payload == Result(value="AA")
         assert results[0].meta.message_id == "msg-1"
 
-    def test_task_chain_passes_message_to_next_task(self) -> None:
-        plan = _build_plan(_DoubleStep(), _SuffixStep())
-        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+    def test_task_chain_passes_message_to_next_task(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_suffix_step: SuffixStep,
+        bytewax_message: Message[Order],
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        plan = bytewax_plan_factory(bytewax_double_step, bytewax_suffix_step)
+        runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
 
@@ -124,11 +54,16 @@ class TestStepNodeExecution:
 class TestSourceDecode:
     """Raw Kafka records must be decoded before reaching DSL nodes."""
 
-    def test_kafka_record_source_decodes_envelope_before_task_execution(self) -> None:
-        plan = _build_plan(_DoubleStep())
-        codec = MsgspecCodec[_Order]()
+    def test_kafka_record_source_decodes_envelope_before_task_execution(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_order: Order,
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        plan = bytewax_plan_factory(bytewax_double_step)
+        codec = MsgspecCodec[Order]()
         envelope = build_message(
-            _Order(order_id="A"),
+            bytewax_order,
             MessageDescriptor(message_type="order.created", message_version=1),
             correlation_id="corr-1",
             trace_id="trace-1",
@@ -148,7 +83,7 @@ class TestSourceDecode:
         results = runner.output
 
         assert len(results) == 1
-        assert results[0].payload == _Result(value="AA")
+        assert results[0].payload == Result(value="AA")
         assert results[0].meta.message_id == "orders.in:0:3"
         assert results[0].meta.message_type == "order.created"
         assert results[0].meta.message_version == 1
@@ -158,7 +93,11 @@ class TestSourceDecode:
         assert results[0].meta.key == b"tenant-a"
         assert results[0].meta.headers == {"h": b"1"}
 
-    def test_wire_decode_error_routes_to_testing_error_sink(self) -> None:
+    def test_wire_decode_error_routes_to_testing_error_sink(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
         error_sink = CompiledSink(
             settings=ProducerSettings(
                 brokers=("localhost:9092",),
@@ -168,7 +107,7 @@ class TestSourceDecode:
             topic="orders.dlq",
             partition_policy=None,
         )
-        plan = _build_plan(_DoubleStep(), error_routes={ErrorKind.WIRE: error_sink})
+        plan = bytewax_plan_factory(bytewax_double_step, error_routes={ErrorKind.WIRE: error_sink})
         source_record = KafkaRecord(
             topic="orders.in",
             key=b"tenant-a",
@@ -200,26 +139,41 @@ class TestSourceDecode:
 class TestTerminalNodes:
     """Terminal DSL nodes must be executable with Bytewax testing sinks."""
 
-    def test_into_topic_node_wires_terminal_sink(self) -> None:
-        target = IntoTopic("out", payload=_Result)
-        plan = _build_plan(_DoubleStep(), target)
-        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+    def test_into_topic_node_wires_terminal_sink(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_message: Message[Order],
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        target = IntoTopic("out", payload=Result)
+        plan = bytewax_plan_factory(bytewax_double_step, output=target)
+        runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
 
         assert [message.payload.value for message in results] == ["AA"]
 
-    def test_drain_node_swallows_stream(self) -> None:
-        plan = _build_plan(_DoubleStep(), Drain())
-        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+    def test_drain_node_swallows_stream(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_message: Message[Order],
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        plan = bytewax_plan_factory(bytewax_double_step, Drain())
+        runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
 
         assert results == []
 
-    def test_payload_helper_builds_default_test_metadata(self) -> None:
-        plan = _build_plan(_DoubleStep())
-        runner = StreamingTestRunner(plan).with_payloads([_Order(order_id="A")])
+    def test_payload_helper_builds_default_test_metadata(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_order: Order,
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        plan = bytewax_plan_factory(bytewax_double_step)
+        runner = StreamingTestRunner(plan).with_payloads([bytewax_order])
 
         runner.run()
 
@@ -228,10 +182,15 @@ class TestTerminalNodes:
         assert results[0].meta.message_id == "test-0"
         assert results[0].meta.topic == "in"
 
-    def test_into_topic_node_does_not_duplicate_flow_output(self) -> None:
-        target = IntoTopic("out", payload=_Result)
-        plan = _build_plan(_DoubleStep(), target, output=target)
-        runner = StreamingTestRunner(plan).with_messages([_message(_Order(order_id="A"))])
+    def test_into_topic_node_does_not_duplicate_flow_output(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_message: Message[Order],
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
+        target = IntoTopic("out", payload=Result)
+        plan = bytewax_plan_factory(bytewax_double_step, output=target)
+        runner = StreamingTestRunner(plan).with_messages([bytewax_message])
 
         runner.run()
 
@@ -242,7 +201,11 @@ class TestTerminalNodes:
 class TestOutputAndErrorWiring:
     """Output and error routes must coexist without interfering."""
 
-    def test_valid_output_and_wire_error_can_be_captured_together(self) -> None:
+    def test_valid_output_and_wire_error_can_be_captured_together(
+        self,
+        bytewax_double_step: DoubleStep,
+        bytewax_plan_factory: PlanFactory,
+    ) -> None:
         error_sink = CompiledSink(
             settings=ProducerSettings(
                 brokers=("localhost:9092",),
@@ -252,10 +215,10 @@ class TestOutputAndErrorWiring:
             topic="orders.dlq",
             partition_policy=None,
         )
-        target = IntoTopic("out", payload=_Result)
-        codec = MsgspecCodec[_Order]()
+        target = IntoTopic("out", payload=Result)
+        codec = MsgspecCodec[Order]()
         envelope = build_message(
-            _Order(order_id="A"),
+            Order(order_id="A"),
             MessageDescriptor(message_type="order.created", message_version=1),
         )
         valid_record = KafkaRecord(
@@ -276,7 +239,11 @@ class TestOutputAndErrorWiring:
             offset=2,
             timestamp_ms=11,
         )
-        plan = _build_plan(_DoubleStep(), output=target, error_routes={ErrorKind.WIRE: error_sink})
+        plan = bytewax_plan_factory(
+            bytewax_double_step,
+            output=target,
+            error_routes={ErrorKind.WIRE: error_sink},
+        )
         runner = (
             StreamingTestRunner(plan)
             .with_messages([valid_record, invalid_record])

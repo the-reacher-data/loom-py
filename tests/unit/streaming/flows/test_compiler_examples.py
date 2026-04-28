@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from loom.streaming import StreamShape, compile_flow
-from tests.unit.streaming.support.flow_cases import StreamFlowCase, ValidatedOrder
+from tests.unit.streaming.flows.flow_cases import StreamFlowCase, ValidatedOrder
 
 
 class TestCompilerFlowExamples:
@@ -45,7 +45,7 @@ class TestCompilerFlowExamples:
         assert plan.nodes[0].input_shape is StreamShape.RECORD
         assert plan.nodes[0].output_shape is StreamShape.RECORD
 
-    def test_compile_with_batch_flow_with_for_each(
+    def test_compile_with_batch_flow_with_inner_terminal_output(
         self,
         with_batch_flow_case: StreamFlowCase,
     ) -> None:
@@ -56,15 +56,10 @@ class TestCompilerFlowExamples:
 
         assert plan.name == "orders_price_batch"
         assert plan.source.decode_strategy == "batch"
-        assert plan.output is not None
-        assert plan.output.topic == "orders.priced"
-        assert [node.output_shape for node in plan.nodes] == [
-            StreamShape.BATCH,
-            StreamShape.MANY,
-            StreamShape.RECORD,
-        ]
+        assert plan.output is None
+        assert [node.output_shape for node in plan.nodes] == [StreamShape.BATCH, StreamShape.NONE]
 
-    def test_compile_with_batch_scope_flow_with_for_each(
+    def test_compile_with_batch_scope_flow_with_inner_terminal_output(
         self,
         with_batch_scope_flow_case: StreamFlowCase,
     ) -> None:
@@ -75,13 +70,8 @@ class TestCompilerFlowExamples:
 
         assert plan.name == "orders_price_batch_scope"
         assert plan.source.decode_strategy == "batch"
-        assert plan.output is not None
-        assert plan.output.topic == "orders.priced.batch_scope"
-        assert [node.output_shape for node in plan.nodes] == [
-            StreamShape.BATCH,
-            StreamShape.MANY,
-            StreamShape.RECORD,
-        ]
+        assert plan.output is None
+        assert [node.output_shape for node in plan.nodes] == [StreamShape.BATCH, StreamShape.NONE]
 
     def test_compile_async_flow_creates_async_bridge(
         self,

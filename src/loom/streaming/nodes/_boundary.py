@@ -10,7 +10,7 @@ from loom.core.routing import LogicalRef, as_logical_ref
 from loom.streaming.core._message import Message
 from loom.streaming.nodes._shape import StreamShape
 
-PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct, contravariant=True)
 
 
 class FromTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):

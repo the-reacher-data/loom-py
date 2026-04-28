@@ -45,16 +45,17 @@ class _FailingKafkaObserver:
         raise RuntimeError("decode failed")
 
 
-def test_kafka_prometheus_metrics_emit_counters_and_histograms() -> None:
-    registry = CollectorRegistry()
-    metrics = KafkaPrometheusMetrics(registry=registry)
+def test_kafka_prometheus_metrics_emit_counters_and_histograms(
+    kafka_registry: CollectorRegistry,
+) -> None:
+    metrics = KafkaPrometheusMetrics(registry=kafka_registry)
 
     metrics.on_produced("orders")
     metrics.on_consumed("orders")
     metrics.observe_encode("application/x-loom-msgpack", 0.01)
     metrics.observe_decode("application/x-loom-msgpack", 0.02)
 
-    text = generate_latest(registry).decode("utf-8")
+    text = generate_latest(kafka_registry).decode("utf-8")
 
     assert "loom_streaming_kafka_produced_total" in text
     assert "loom_streaming_kafka_consumed_total" in text
