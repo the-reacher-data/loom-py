@@ -296,20 +296,20 @@ def build_with_batch_scope_flow_case() -> StreamFlowCase:
 
 
 def build_async_flow_case() -> StreamFlowCase:
-    """Build a batch flow using WithAsync and ForEach to emit async results."""
+    """Build an async flow using WithAsync(process=...) to write results directly."""
     flow: StreamFlow[Any, Any] = StreamFlow(
         name="orders_score_async_each",
         source=FromTopic(_ORDERS_RAW_TOPIC, payload=OrderPlaced),
         process=Process(
-            CollectBatch(max_records=2, timeout_ms=1000),
             WithAsync(
-                step=ScoreRiskAsync(),
+                process=Process(
+                    ScoreRiskAsync(),
+                    IntoTopic(_ORDERS_SCORED_TOPIC, payload=RiskScoredOrder),
+                ),
                 client=FakeRiskClient(),
                 max_concurrency=2,
                 scope=ResourceScope.WORKER,
             ),
-            ForEach(),
-            IntoTopic(_ORDERS_SCORED_TOPIC, payload=RiskScoredOrder),
         ),
     )
     return StreamFlowCase(

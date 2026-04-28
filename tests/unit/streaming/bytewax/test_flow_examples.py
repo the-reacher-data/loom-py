@@ -14,10 +14,8 @@ import asyncio
 from loom.core.model import LoomStruct
 from loom.streaming import (
     BatchStep,
-    CollectBatch,
     ErrorEnvelope,
     ErrorKind,
-    ForEach,
     FromTopic,
     IntoTopic,
     Message,
@@ -187,20 +185,19 @@ def _kafka_config() -> dict[str, object]:
 
 
 def test_with_async_task_timeout_captures_timed_out_messages_as_errors() -> None:
-    """task_timeout_ms cancels slow tasks and routes them to error envelopes."""
+    """task_timeout_ms cancels slow inner-process tasks and routes them to error envelopes."""
     flow: StreamFlow[_Order, _ValidatedOrder] = StreamFlow(
         name="timeout_flow",
         source=FromTopic("orders.raw", payload=_Order),
         process=Process(
-            CollectBatch(max_records=1, timeout_ms=100),
             WithAsync(
-                step=_SlowAsyncStep(),
+                process=Process(
+                    _SlowAsyncStep(),
+                    IntoTopic("orders.validated", payload=_ValidatedOrder),
+                ),
                 task_timeout_ms=50,
-                error_mode="best_effort",
             ),
-            ForEach(),
         ),
-        output=IntoTopic("orders.validated", payload=_ValidatedOrder),
     )
     config = OmegaConf.create(_kafka_config())
     runner = StreamingTestRunner.from_flow(flow, runtime_config=config)

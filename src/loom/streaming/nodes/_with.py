@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeGuard, TypeVar
 
 from loom.core.config import Configurable
 from loom.core.model import LoomFrozenStruct, LoomStruct
@@ -57,25 +56,18 @@ class ContextFactory(Configurable):
 
 
 class _WithBase(Generic[InT, OutT]):
-    """Shared dependency scope declaration for streaming tasks.
+    """Shared dependency scope and lifecycle management for streaming nodes.
 
-    Accepts either a single ``step`` (executed with injected dependencies) or a
-    ``process`` (a :class:`~loom.streaming.graph._flow.Process` whose nodes are
-    executed inline, including an optional :class:`~loom.streaming.nodes._boundary.IntoTopic`
-    that writes directly to Kafka without returning to the outer stream).
+    Classifies keyword dependencies into async context managers, sync context
+    managers, :class:`ContextFactory` instances, and plain values.  Subclasses
+    are responsible for declaring and validating their primary execution target
+    (a step or a process).
 
     Args:
-        step: Step declaration executed inside the dependency scope.
+        step: Optional step stored by :class:`With`.
         scope: Lifecycle used when opening context-manager dependencies.
-        process: Process executed inline per message.  Mutually exclusive with
-            ``step``.  When a :class:`~loom.streaming.nodes._boundary.IntoTopic`
-            is the last node inside the process, messages are written to Kafka
-            directly and the outer stream is drained (no ``ForEach`` or outer
-            ``IntoTopic`` required).
-        **dependencies: Named dependencies injected into task execution.
-
-    Raises:
-        ValueError: If neither or both of *step* and *process* are provided.
+        process: Optional process stored by :class:`WithAsync`.
+        **dependencies: Named dependencies injected at execution time.
     """
 
     __slots__ = (
@@ -97,10 +89,6 @@ class _WithBase(Generic[InT, OutT]):
         process: Any = None,
         **dependencies: object,
     ) -> None:
-        if step is not None and process is not None:
-            raise ValueError("Only one of 'step' or 'process' may be provided to With/WithAsync.")
-        if step is None and process is None:
-            raise ValueError("Either 'step' or 'process' must be provided to With/WithAsync.")
         self.step = step
         self.process: Any = process
         self.scope = scope
@@ -147,25 +135,27 @@ class With(_WithBase[InT, OutT]):
     """Declare a sync dependency scope around a streaming step.
 
     Args:
-        step: Step declaration executed with injected dependencies.
+        step: Step executed with injected sync context managers and plain deps.
         scope: Lifecycle used when opening context-manager dependencies.
         **dependencies: Named dependencies injected into step execution.
 
     Raises:
         TypeError: If an async context manager is passed directly.
+
+    Example::
+
+        With(step=ValidateOrder(), scope=ResourceScope.WORKER, db=SessionLocal())
     """
 
     __slots__ = ()
 
     def __init__(
         self,
-        step: RecordStep[InT, OutT] | None = None,
+        step: RecordStep[InT, OutT],
         scope: ResourceScope = ResourceScope.WORKER,
-        *,
-        process: Process[Any, Any] | None = None,
         **dependencies: object,
     ) -> None:
-        super().__init__(step, scope=scope, process=process, **dependencies)
+        super().__init__(step, scope=scope, **dependencies)
         if self._async_contexts:
             names = ", ".join(self._async_contexts.keys())
             raise TypeError(
@@ -176,75 +166,57 @@ class With(_WithBase[InT, OutT]):
 
 
 class WithAsync(_WithBase[InT, OutT]):
-    """Declare an async dependency scope around a streaming step or process.
+    """Declare an async dependency scope around an inner process.
 
-    When ``step`` is provided, ``WithAsync`` executes each message concurrently
-    inside a ``TaskGroup`` and returns results back to the outer stream
-    (``StreamShape.MANY`` — use :class:`~loom.streaming.nodes._shape.ForEach`
-    and an outer :class:`~loom.streaming.nodes._boundary.IntoTopic` to consume
-    the batch output).
-
-    When ``process`` is provided instead, each message flows through the inner
+    Each incoming message flows through the inner
     :class:`~loom.streaming.graph._flow.Process` asynchronously.  If the last
-    node in the inner process is an
+    node of the inner process is an
     :class:`~loom.streaming.nodes._boundary.IntoTopic`, results are written
     directly to Kafka as each message completes — no ``ForEach`` or outer
     ``IntoTopic`` is required.  The outer stream is drained after this node
     (``StreamShape.NONE``).
 
     Args:
-        step: Async step executed with injected dependencies.  Mutually
-            exclusive with *process*.
         scope: Lifecycle used when opening context-manager dependencies.
-        max_concurrency: Maximum concurrent executions within one batch.
-        error_mode: How task-level failures are handled within a batch.
-            ``"best_effort"`` captures each failure as an individual
-            :class:`~loom.streaming.ErrorEnvelope` and lets siblings
-            continue — suitable for scrapers or external enrichment calls.
-            ``"fail_fast"`` propagates the first failure immediately,
-            cancelling all remaining sibling tasks and wrapping the entire
-            batch in a single error envelope.
-        task_timeout_ms: Optional per-task wall-clock deadline in milliseconds.
-            When set, each individual message execution is cancelled with
-            :class:`TimeoutError` if it exceeds the deadline.  In
-            ``"best_effort"`` mode the timeout is captured per-message as an
-            error envelope; in ``"fail_fast"`` mode it cancels the whole batch.
-        process: Process executed inline per message.  Mutually exclusive with
-            *step*.
-        **dependencies: Named dependencies injected into step execution.
+        max_concurrency: Maximum concurrent message executions.
+        task_timeout_ms: Optional per-message wall-clock deadline in
+            milliseconds.  When set, each message execution is cancelled with
+            :class:`TimeoutError` if it exceeds the deadline.
+        process: Inner process executed per message.
+        **dependencies: Named async context managers, factories, or plain
+            values injected into step execution.
 
     Raises:
         TypeError: If a sync context manager is passed directly.
-        TypeError: If *step* is provided and its ``execute`` method is not async.
         ValueError: If *max_concurrency* is not positive.
         ValueError: If *task_timeout_ms* is not positive when provided.
-        ValueError: If neither or both of *step* and *process* are provided.
+
+    Example::
+
+        WithAsync(
+            process=Process(FetchTask(), IntoTopic("results", payload=Result)),
+            scope=ResourceScope.WORKER,
+            max_concurrency=50,
+            http=ContextFactory(lambda: httpx.AsyncClient()),
+        )
     """
 
-    __slots__ = ("error_mode", "max_concurrency", "task_timeout_ms")
+    __slots__ = ("max_concurrency", "task_timeout_ms")
 
     def __init__(
         self,
-        step: RecordStep[InT, OutT] | None = None,
         scope: ResourceScope = ResourceScope.WORKER,
         max_concurrency: int = 10,
-        error_mode: Literal["best_effort", "fail_fast"] = "best_effort",
         task_timeout_ms: int | None = None,
         *,
-        process: Process[Any, Any] | None = None,
+        process: Process[Any, Any],
         **dependencies: object,
     ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be greater than zero")
         if task_timeout_ms is not None and task_timeout_ms <= 0:
             raise ValueError("task_timeout_ms must be greater than zero when provided")
-        if step is not None and not inspect.iscoroutinefunction(step.execute):
-            raise TypeError(
-                f"WithAsync requires an async step. "
-                f"{type(step).__name__}.execute is a sync function. "
-                f"Use With instead."
-            )
-        super().__init__(step, scope=scope, process=process, **dependencies)
+        super().__init__(None, scope=scope, process=process, **dependencies)
         if self._sync_contexts:
             names = ", ".join(self._sync_contexts.keys())
             raise TypeError(
@@ -253,7 +225,6 @@ class WithAsync(_WithBase[InT, OutT]):
                 f"Use With for sync context managers."
             )
         self.max_concurrency = max_concurrency
-        self.error_mode: Literal["best_effort", "fail_fast"] = error_mode
         self.task_timeout_ms: int | None = task_timeout_ms
 
 

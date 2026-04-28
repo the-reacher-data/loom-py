@@ -127,7 +127,16 @@ def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Any:
 class _BuildContext:
     """Wiring-phase state shared across operator builders."""
 
-    __slots__ = ("plan", "bridge", "flow_observer", "source", "outputs", "_managers", "_path")
+    __slots__ = (
+        "plan",
+        "bridge",
+        "flow_observer",
+        "source",
+        "outputs",
+        "_managers",
+        "_path",
+        "_terminal_sinks",
+    )
 
     def __init__(
         self,
@@ -143,15 +152,39 @@ class _BuildContext:
         self.bridge = bridge
         self.flow_observer = flow_observer
         self.source = source
+        self._terminal_sinks: Mapping[tuple[int, ...], Any] = terminal_sinks or {}
         self.outputs: _OutputWiringProtocol = _OutputWiring(
             sink=sink,
-            terminal_sinks=terminal_sinks or {},
+            terminal_sinks=self._terminal_sinks,
             error_sinks=error_sinks or {},
             observer=flow_observer,
             flow_name=plan.name,
         )
         self._managers: dict[int, ResourceLifecycle] = {}
         self._path: tuple[int, ...] = ()
+
+    def inline_sink_partition_for(
+        self,
+        path: tuple[int, ...],
+    ) -> StatelessSinkPartition[Any] | None:
+        """Build an inline sink partition for the given path.
+
+        Delegates to the runtime-wired Bytewax ``Sink`` for the path so that
+        test doubles (e.g. ``TestingSink``) are honoured instead of always
+        creating real Kafka producers.
+
+        Args:
+            path: Compiled path identifying the terminal sink.
+
+        Returns:
+            A ready-to-write ``StatelessSinkPartition``, or ``None`` if no
+            sink is registered for *path*.
+        """
+        sink = self._terminal_sinks.get(path)
+        if sink is None:
+            return None
+        step_id = "inline_" + "_".join(str(p) for p in path)
+        return cast(StatelessSinkPartition[Any], sink.build(step_id, 0, 1))
 
     def manager_for(
         self,

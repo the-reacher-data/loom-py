@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from loom.core.model import LoomStruct
@@ -15,6 +13,8 @@ from loom.streaming import (
     With,
     WithAsync,
 )
+from loom.streaming.graph._flow import Process
+from loom.streaming.nodes._boundary import IntoTopic
 
 
 class _Payload(LoomStruct):
@@ -39,10 +39,6 @@ class _FakeAsyncClient:
     async def __aexit__(self, *args: object) -> None:
         self.closed = True
 
-    async def process(self, value: str) -> str:
-        await asyncio.sleep(0)  # yield to event loop
-        return f"async:{value}"
-
 
 class _FakeSyncClient:
     """Sync context manager that tracks open/close lifecycle."""
@@ -62,44 +58,23 @@ class _FakeSyncClient:
         return f"sync:{value}"
 
 
-class _AsyncStep(RecordStep[_Payload, _Result]):
-    async def execute(self, message: Message[_Payload], *, client: _FakeAsyncClient) -> _Result:
-        processed = await client.process(message.payload.value)
-        return _Result(value=processed)
-
-
 class _SyncStep(RecordStep[_Payload, _Result]):
     def execute(self, message: Message[_Payload], *, client: _FakeSyncClient) -> _Result:
         return _Result(value=client.process(message.payload.value))
 
 
-@pytest.mark.asyncio
-async def test_with_async_executes_batch_under_open_context_manager() -> None:
-    """WithAsync detects the CM, opens it, and the task receives the injected client."""
-    client = _FakeAsyncClient()
-    step = _AsyncStep()
-    adapter = WithAsync(step=step, client=client, max_concurrency=5)
+def _make_process() -> Process[_Payload, _Result]:
+    return Process(IntoTopic("results", payload=_Result))
 
-    # Verify detection
+
+def test_with_async_detects_async_context_managers() -> None:
+    """WithAsync classifies async CMs into async_contexts."""
+    client = _FakeAsyncClient()
+    adapter = WithAsync(process=_make_process(), client=client, max_concurrency=5)
+
     assert adapter.async_contexts == {"client": client}
     assert adapter.plain_deps == {}
     assert adapter.max_concurrency == 5
-
-    # Simulate what the runtime adapter does: open CM + gather
-    async with client:
-        results = await asyncio.gather(
-            *[
-                step.execute(msg, client=client)
-                for msg in [
-                    Message(payload=_Payload(value="a"), meta=MessageMeta(message_id="m1")),
-                    Message(payload=_Payload(value="b"), meta=MessageMeta(message_id="m2")),
-                ]
-            ]
-        )
-
-    assert client.opened is True
-    assert client.closed is True
-    assert results == [_Result(value="async:a"), _Result(value="async:b")]
 
 
 def test_with_executes_batch_under_open_context_manager() -> None:
@@ -108,11 +83,9 @@ def test_with_executes_batch_under_open_context_manager() -> None:
     step = _SyncStep()
     adapter = With(step=step, client=client)
 
-    # Verify detection
     assert adapter.sync_contexts == {"client": client}
     assert adapter.plain_deps == {}
 
-    # Simulate what the runtime adapter does: open CM + sequential execution
     with client:
         results = [
             step.execute(msg, client=client)
@@ -131,7 +104,7 @@ def test_with_async_detects_mixed_dependencies() -> None:
     """WithAsync separates async CMs from plain deps."""
     async_cm = _FakeAsyncClient()
     adapter = WithAsync(
-        step=_AsyncStep(),
+        process=_make_process(),
         client=async_cm,
         validator="plain",
         max_concurrency=3,
@@ -143,44 +116,30 @@ def test_with_async_detects_mixed_dependencies() -> None:
 
 
 def test_with_async_rejects_non_positive_max_concurrency() -> None:
-    step = _AsyncStep()
-
     with pytest.raises(ValueError, match="max_concurrency"):
-        WithAsync(step=step, max_concurrency=0)
-
-
-def test_with_async_defaults_to_best_effort_error_mode() -> None:
-    adapter = WithAsync(step=_AsyncStep())
-
-    assert adapter.error_mode == "best_effort"
-
-
-def test_with_async_accepts_fail_fast_error_mode() -> None:
-    adapter = WithAsync(step=_AsyncStep(), error_mode="fail_fast")
-
-    assert adapter.error_mode == "fail_fast"
+        WithAsync(process=_make_process(), max_concurrency=0)
 
 
 def test_with_async_defaults_task_timeout_to_none() -> None:
-    adapter = WithAsync(step=_AsyncStep())
+    adapter = WithAsync(process=_make_process())
 
     assert adapter.task_timeout_ms is None
 
 
 def test_with_async_accepts_positive_task_timeout() -> None:
-    adapter = WithAsync(step=_AsyncStep(), task_timeout_ms=500)
+    adapter = WithAsync(process=_make_process(), task_timeout_ms=500)
 
     assert adapter.task_timeout_ms == 500
 
 
 def test_with_async_rejects_zero_task_timeout() -> None:
     with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
-        WithAsync(step=_AsyncStep(), task_timeout_ms=0)
+        WithAsync(process=_make_process(), task_timeout_ms=0)
 
 
 def test_with_async_rejects_negative_task_timeout() -> None:
     with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
-        WithAsync(step=_AsyncStep(), task_timeout_ms=-100)
+        WithAsync(process=_make_process(), task_timeout_ms=-100)
 
 
 def test_with_rejects_async_context_manager() -> None:
@@ -191,17 +150,8 @@ def test_with_rejects_async_context_manager() -> None:
 
 
 def test_with_async_rejects_sync_context_manager() -> None:
-    step = _AsyncStep()
-
     with pytest.raises(TypeError, match="async context managers"):
-        WithAsync(step=step, client=_FakeSyncClient())
-
-
-def test_with_async_rejects_sync_execute() -> None:
-    step = _SyncStep()
-
-    with pytest.raises(TypeError, match="WithAsync requires an async step"):
-        WithAsync(step=step)  # type: ignore[arg-type]
+        WithAsync(process=_make_process(), client=_FakeSyncClient())
 
 
 def test_with_keeps_plain_dependencies() -> None:

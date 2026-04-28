@@ -233,7 +233,7 @@ class _Compiler:
                 sinks.update(
                     self._build_broadcast_terminal_sinks(node, runtime_config, path_prefix=path)
                 )
-            elif isinstance(node, (With, WithAsync)) and node.process is not None:
+            elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
                 sinks.update(
                     self._build_terminal_sinks(
                         node.process.nodes,
@@ -392,7 +392,7 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
         elif isinstance(node, Broadcast):
             for route in node.routes:
                 yield from _walk_all_process_nodes(route.process.nodes)
-        elif isinstance(node, (With, WithAsync)) and node.process is not None:
+        elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
             yield from _walk_all_process_nodes(node.process.nodes)
 
 
@@ -435,7 +435,7 @@ def _validate_shape_sequence(
                 errors.append("broadcast must be the last node in a process")
             break
 
-        if isinstance(node, (With, WithAsync)) and node.process is not None:
+        if isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
             if idx != len(node_list) - 1:
                 errors.append(
                     f"{type(node).__name__}(process=...) must be the last node in a process"
@@ -580,8 +580,10 @@ def _has_terminal_output(nodes: Iterable[object]) -> bool:
             return True
         if isinstance(node, Broadcast):
             return True  # Broadcast always declares explicit outputs per route
+        if isinstance(node, WithAsync) and _has_terminal_output(node.process.nodes):
+            return True
         if (
-            isinstance(node, (With, WithAsync))
+            isinstance(node, With)
             and node.process is not None
             and _has_terminal_output(node.process.nodes)
         ):
@@ -652,7 +654,9 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
         return StreamShape.RECORD
     if isinstance(node, BatchExpandStep):
         return StreamShape.RECORD
-    if isinstance(node, (With, WithAsync)):
+    if isinstance(node, WithAsync):
+        return StreamShape.NONE
+    if isinstance(node, With):
         if node.process is not None:
             return StreamShape.NONE
         return StreamShape.MANY

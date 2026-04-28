@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from datetime import timedelta
 from types import MappingProxyType
@@ -25,7 +25,6 @@ from loom.streaming.bytewax._error_boundary import (
     _split_node_result,
 )
 from loom.streaming.bytewax._operators import ResourceLifecycle
-from loom.streaming.bytewax._runtime_io import build_inline_sink_partition
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
@@ -81,6 +80,13 @@ class _BuildContextProtocol(Protocol):
     @property
     def current_path(self) -> tuple[int, ...]:
         """Return the current wiring path inside the process tree."""
+        ...
+
+    def inline_sink_partition_for(
+        self,
+        path: tuple[int, ...],
+    ) -> Any:
+        """Return a ready-to-write sink partition for an inline (non-graph) write."""
         ...
 
     def manager_for(
@@ -310,31 +316,7 @@ def _apply_with_async(
     node = cast(WithAsync[StreamPayload, StreamPayload], raw)
     if ctx.bridge is None:
         raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
-
-    if node.process is not None:
-        return _apply_with_async_process(stream, node, idx, ctx)
-
-    manager = ctx.manager_for(idx, node)
-    worker_resources = manager.open_worker()
-    bridge = ctx.bridge
-    observer = ctx.flow_observer
-    flow_name = ctx.plan.name
-    node_type = type(node).__name__
-    sem = anyio.Semaphore(node.max_concurrency)
-
-    if node.error_mode == "best_effort":
-        step = _build_best_effort_step(
-            node, manager, worker_resources, bridge, observer, flow_name, idx, node_type, sem
-        )
-    else:
-        step = _build_fail_fast_step(
-            node, manager, worker_resources, bridge, observer, flow_name, idx, node_type, sem
-        )
-
-    mapped = bw_map(_step_id(f"with_async_{idx}", ctx), stream, step)
-    return _split_batch_node_result(
-        mapped, _step_id(f"with_async_{idx}_{node_type}", ctx), ctx, ErrorKind.TASK
-    )
+    return _apply_with_async_process(stream, node, idx, ctx)
 
 
 def _apply_with_async_process(
@@ -387,7 +369,7 @@ def _resolve_inner_process(
     node: WithAsync[StreamPayload, StreamPayload],
     ctx: _BuildContextProtocol,
 ) -> tuple[list[RecordStep[StreamPayload, StreamPayload]], Any]:
-    """Extract executable steps and optional Kafka sink from ``node.process``."""
+    """Extract executable steps and optional sink partition from ``node.process``."""
     inner_steps: list[RecordStep[StreamPayload, StreamPayload]] = []
     sink_partition: Any = None
 
@@ -396,9 +378,7 @@ def _resolve_inner_process(
             inner_steps.append(cast(RecordStep[StreamPayload, StreamPayload], inner_node))
         elif isinstance(inner_node, IntoTopic):
             inner_path = ctx.current_path + (inner_idx,)
-            compiled_sink = ctx.plan.terminal_sinks.get(inner_path)
-            if compiled_sink is not None:
-                sink_partition = build_inline_sink_partition(compiled_sink)
+            sink_partition = ctx.inline_sink_partition_for(inner_path)
             break
 
     return inner_steps, sink_partition
@@ -585,18 +565,6 @@ def _execute_with_step(
         return _replace_payloads(messages, result)
 
 
-def _execute_with_async_step(
-    bridge: AsyncBridge,
-    observer: StreamingFlowObserver | None,
-    flow_name: str,
-    idx: int,
-    node_type: str,
-    batch_result: Coroutine[Any, Any, list[Message[StreamPayload]]],
-) -> list[Message[StreamPayload]]:
-    with _observe_node(observer, flow_name, idx, node_type):
-        return bridge.run(batch_result)
-
-
 def _execute_router_step(
     observer: StreamingFlowObserver | None,
     flow_name: str,
@@ -702,83 +670,6 @@ def _batch_dependencies(
         manager.close_batch()
 
 
-def _build_best_effort_step(
-    node: WithAsync[StreamPayload, StreamPayload],
-    manager: ResourceLifecycle,
-    worker_resources: Mapping[str, object],
-    bridge: AsyncBridge,
-    observer: StreamingFlowObserver | None,
-    flow_name: str,
-    idx: int,
-    node_type: str,
-    sem: anyio.Semaphore,
-) -> Callable[[list[Any]], list[NodeResult]]:
-    """Build a step closure that captures per-message failures individually.
-
-    Each message runs inside the TaskGroup as an independent task.  If a task
-    raises, its slot is filled with the exception; sibling tasks are not
-    cancelled.  The TaskGroup itself only cancels on external signals (e.g.
-    runtime shutdown).
-    """
-
-    async def _execute_batch(batch: list[Any]) -> list[NodeResult]:
-        messages = _messages_from_batch(batch)
-        slot: list[object | BaseException] = [None] * len(messages)
-        with _batch_dependencies(manager, worker_resources) as deps:
-            async with anyio.create_task_group() as tg:
-                for i, msg in enumerate(messages):
-                    tg.start_soon(_run_message_best_effort, node, sem, msg, deps, slot, i)
-        return _build_best_effort_results(messages, slot)
-
-    def step(batch: list[Any]) -> list[NodeResult]:
-        with _observe_node(observer, flow_name, idx, node_type):
-            return bridge.run(_execute_batch(batch))
-
-    return step
-
-
-def _build_fail_fast_step(
-    node: WithAsync[StreamPayload, StreamPayload],
-    manager: ResourceLifecycle,
-    worker_resources: Mapping[str, object],
-    bridge: AsyncBridge,
-    observer: StreamingFlowObserver | None,
-    flow_name: str,
-    idx: int,
-    node_type: str,
-    sem: anyio.Semaphore,
-) -> Callable[[list[Any]], list[NodeResult]]:
-    """Build a step closure that cancels all sibling tasks on first failure.
-
-    If any message task raises, the TaskGroup propagates the exception
-    immediately.  The outer boundary then wraps every message in the batch
-    as a single error envelope.  Use this for transactional steps where
-    partial success is worse than total failure.
-    """
-
-    async def _execute_batch(
-        messages: list[Message[StreamPayload]],
-    ) -> list[Message[StreamPayload]]:
-        slot: list[object] = [None] * len(messages)
-        with _batch_dependencies(manager, worker_resources) as deps:
-            async with anyio.create_task_group() as tg:
-                for i, msg in enumerate(messages):
-                    tg.start_soon(_run_message_strict, node, sem, msg, deps, slot, i)
-        return _replace_payloads(messages, slot)
-
-    def step(batch: list[Any]) -> list[NodeResult]:
-        messages = _messages_from_batch(batch)
-        return _execute_batch_in_boundary(
-            _classify_task,
-            messages,
-            lambda: _execute_with_async_step(
-                bridge, observer, flow_name, idx, node_type, _execute_batch(messages)
-            ),
-        )
-
-    return step
-
-
 async def _await_with_optional_timeout(
     awaitable: Awaitable[object],
     timeout_ms: int | None,
@@ -788,72 +679,6 @@ async def _await_with_optional_timeout(
         return await awaitable
     with anyio.fail_after(timeout_ms / 1000):
         return await awaitable
-
-
-async def _invoke_execute(
-    step: RecordStep[StreamPayload, StreamPayload],
-    message: Message[StreamPayload],
-    deps: Mapping[str, object],
-    timeout_ms: int | None,
-) -> object:
-    """Invoke *step.execute* and await the coroutine.
-
-    ``WithAsync`` guarantees that ``step.execute`` is always ``async def``,
-    so no thread offload is needed here.  *timeout_ms* bounds wall-clock time.
-    """
-    awaitable: Awaitable[object] = cast(Coroutine[Any, Any, object], step.execute(message, **deps))
-    return await _await_with_optional_timeout(awaitable, timeout_ms)
-
-
-async def _run_message_best_effort(
-    node: WithAsync[StreamPayload, StreamPayload],
-    sem: anyio.Semaphore,
-    message: Message[StreamPayload],
-    deps: Mapping[str, object],
-    slot: list[object | BaseException],
-    idx: int,
-) -> None:
-    """Execute one message and capture any failure in *slot* without propagating."""
-    step = cast(RecordStep[StreamPayload, StreamPayload], node.step)
-    try:
-        async with sem:
-            slot[idx] = await _invoke_execute(step, message, deps, node.task_timeout_ms)
-    except Exception as exc:
-        slot[idx] = exc
-
-
-async def _run_message_strict(
-    node: WithAsync[StreamPayload, StreamPayload],
-    sem: anyio.Semaphore,
-    message: Message[StreamPayload],
-    deps: Mapping[str, object],
-    slot: list[object],
-    idx: int,
-) -> None:
-    """Execute one message and let failures propagate to the TaskGroup."""
-    step = cast(RecordStep[StreamPayload, StreamPayload], node.step)
-    async with sem:
-        slot[idx] = await _invoke_execute(step, message, deps, node.task_timeout_ms)
-
-
-def _build_best_effort_results(
-    messages: list[Message[StreamPayload]],
-    slot: list[object | BaseException],
-) -> list[NodeResult]:
-    """Convert per-message outcomes into NodeResult — errors become ErrorEnvelope."""
-    out: list[NodeResult] = []
-    for msg, outcome in zip(messages, slot, strict=True):
-        if isinstance(outcome, BaseException):
-            out.append(
-                ErrorEnvelope(
-                    kind=ErrorKind.TASK,
-                    reason=str(outcome),
-                    original_message=msg,
-                )
-            )
-        else:
-            out.append(_replace_payload(msg, outcome))
-    return out
 
 
 def _batch_key(item: Any) -> str:

@@ -341,11 +341,6 @@ def test_compile_succeeds_on_batch_scope_with_context_factory() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _AsyncStep(RecordStep[_Order, _Result]):
-    async def execute(self, message: Message[_Order], **kwargs: object) -> _Result:  # type: ignore[override]
-        return _Result(value=message.payload.order_id)
-
-
 def _flow_with_async_inside_router() -> StreamFlow[_Order, _Result]:
     return StreamFlow(
         name="test_async_in_router",
@@ -356,8 +351,9 @@ def _flow_with_async_inside_router() -> StreamFlow[_Order, _Result]:
                     Route(
                         when=msg.payload.order_id != "",
                         process=Process(
-                            WithAsync(step=_AsyncStep()),
-                            IntoTopic("out", payload=_Result),
+                            WithAsync(
+                                process=Process(IntoTopic("out", payload=_Result)),
+                            ),
                         ),
                     )
                 ],
@@ -387,7 +383,7 @@ def test_needs_async_bridge_is_false_when_no_with_async_present() -> None:
 
 def test_walk_all_process_nodes_yields_nodes_inside_router_branch() -> None:
     """_walk_all_process_nodes must recurse into Router sub-processes."""
-    async_node = WithAsync(step=_AsyncStep())
+    async_node = WithAsync(process=Process(IntoTopic("out", payload=_Result)))
     router = Router.when(
         routes=[Route(when=msg.payload.order_id != "", process=Process(async_node))]
     )
@@ -400,12 +396,12 @@ def test_walk_all_process_nodes_yields_nodes_inside_router_branch() -> None:
 
 def test_walk_all_process_nodes_yields_nodes_inside_fork_branch() -> None:
     """_walk_all_process_nodes must recurse into Fork sub-processes."""
-    async_node = WithAsync(step=_AsyncStep())
+    async_node = WithAsync(process=Process(IntoTopic("out", payload=_Result)))
     fork = Fork.when(
         routes=[
             ForkRoute(
                 when=msg.payload.order_id != "",
-                process=Process(async_node, IntoTopic("out", payload=_Result)),
+                process=Process(async_node),
             )
         ]
     )

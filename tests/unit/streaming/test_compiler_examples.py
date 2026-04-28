@@ -93,14 +93,11 @@ class TestCompilerFlowExamples:
         )
 
         assert plan.name == "orders_score_async_each"
-        assert plan.source.decode_strategy == "batch"
+        assert plan.source.decode_strategy == "record"
         assert plan.output is None
         assert plan.needs_async_bridge is True
         assert [node.output_shape for node in plan.nodes] == [
-            StreamShape.BATCH,
-            StreamShape.MANY,
-            StreamShape.RECORD,
-            StreamShape.RECORD,
+            StreamShape.NONE,
         ]
 
     def test_compile_fork_flow_creates_branch_terminal_sinks(
