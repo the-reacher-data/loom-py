@@ -233,6 +233,14 @@ class _Compiler:
                 sinks.update(
                     self._build_broadcast_terminal_sinks(node, runtime_config, path_prefix=path)
                 )
+            elif isinstance(node, (With, WithAsync)) and node.process is not None:
+                sinks.update(
+                    self._build_terminal_sinks(
+                        node.process.nodes,
+                        runtime_config,
+                        path_prefix=path,
+                    )
+                )
         return sinks
 
     def _build_fork_terminal_sinks(
@@ -367,7 +375,7 @@ def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
 
 
 def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
-    """Yield every process node recursively, including inside Router, Fork, and Broadcast branches.
+    """Yield every process node recursively, including Router, Fork, Broadcast, and With branches.
 
     Top-level iteration misses nodes nested inside branch sub-processes.  Use
     this walker whenever a property (async bridge, resource scope, config
@@ -384,6 +392,8 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
         elif isinstance(node, Broadcast):
             for route in node.routes:
                 yield from _walk_all_process_nodes(route.process.nodes)
+        elif isinstance(node, (With, WithAsync)) and node.process is not None:
+            yield from _walk_all_process_nodes(node.process.nodes)
 
 
 def _node_needs_async_bridge(node: object) -> bool:
@@ -423,6 +433,14 @@ def _validate_shape_sequence(
             errors.extend(broadcast_errors)
             if idx != len(node_list) - 1:
                 errors.append("broadcast must be the last node in a process")
+            break
+
+        if isinstance(node, (With, WithAsync)) and node.process is not None:
+            if idx != len(node_list) - 1:
+                errors.append(
+                    f"{type(node).__name__}(process=...) must be the last node in a process"
+                )
+            current_shape = StreamShape.NONE
             break
 
         if isinstance(node, Router):
@@ -562,6 +580,12 @@ def _has_terminal_output(nodes: Iterable[object]) -> bool:
             return True
         if isinstance(node, Broadcast):
             return True  # Broadcast always declares explicit outputs per route
+        if (
+            isinstance(node, (With, WithAsync))
+            and node.process is not None
+            and _has_terminal_output(node.process.nodes)
+        ):
+            return True
     return False
 
 
@@ -629,6 +653,8 @@ def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
     if isinstance(node, BatchExpandStep):
         return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
+        if node.process is not None:
+            return StreamShape.NONE
         return StreamShape.MANY
     if isinstance(node, IntoTopic):
         return node.shape

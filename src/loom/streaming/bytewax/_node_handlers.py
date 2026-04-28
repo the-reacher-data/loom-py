@@ -25,6 +25,7 @@ from loom.streaming.bytewax._error_boundary import (
     _split_node_result,
 )
 from loom.streaming.bytewax._operators import ResourceLifecycle
+from loom.streaming.bytewax._runtime_io import build_inline_sink_partition
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
@@ -275,6 +276,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
+    step_node = cast(RecordStep[StreamPayload, StreamPayload], node.step)
 
     def step(batch: list[Any]) -> list[NodeResult]:
         messages = _messages_from_batch(batch)
@@ -288,7 +290,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
                 node_type,
                 manager,
                 worker_resources,
-                node.step,
+                step_node,
                 messages,
             ),
         )
@@ -308,6 +310,9 @@ def _apply_with_async(
     node = cast(WithAsync[StreamPayload, StreamPayload], raw)
     if ctx.bridge is None:
         raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
+
+    if node.process is not None:
+        return _apply_with_async_process(stream, node, idx, ctx)
 
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
@@ -330,6 +335,97 @@ def _apply_with_async(
     return _split_batch_node_result(
         mapped, _step_id(f"with_async_{idx}_{node_type}", ctx), ctx, ErrorKind.TASK
     )
+
+
+def _apply_with_async_process(
+    stream: Stream,
+    node: WithAsync[StreamPayload, StreamPayload],
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    """Wire a WithAsync(process=...) node: run each message through inner steps and write to Kafka.
+
+    Each message is processed individually and asynchronously.  If the inner
+    process ends with an :class:`~loom.streaming.nodes._boundary.IntoTopic`,
+    results are written directly to Kafka as each message completes.  The outer
+    stream is drained — no ``ForEach`` or outer ``IntoTopic`` is required.
+    """
+    bridge = cast(AsyncBridge, ctx.bridge)
+    manager = ctx.manager_for(idx, node)
+    worker_resources = manager.open_worker()
+    observer = ctx.flow_observer
+    flow_name = ctx.plan.name
+    node_type = type(node).__name__
+
+    inner_steps, sink_partition = _resolve_inner_process(node, ctx)
+
+    def step_fn(msg: Any) -> list[NodeResult]:
+        message = _require_message(msg)
+        try:
+            with (
+                _observe_node(observer, flow_name, idx, node_type),
+                _batch_dependencies(manager, worker_resources) as deps,
+            ):
+                bridge.run(
+                    _execute_inner_process(
+                        message, inner_steps, sink_partition, deps, node.task_timeout_ms
+                    )
+                )
+            return []
+        except Exception as exc:
+            return [ErrorEnvelope(kind=ErrorKind.TASK, reason=str(exc), original_message=message)]
+
+    sid = _step_id(f"with_async_process_{idx}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    flat = flat_map(f"{sid}_flat", mapped, _identity)
+    split = branch(f"{sid}_split", flat, _is_message_result)
+    ctx.outputs.wire_node_error(ErrorKind.TASK, sid, split.falses)
+    return split.trues
+
+
+def _resolve_inner_process(
+    node: WithAsync[StreamPayload, StreamPayload],
+    ctx: _BuildContextProtocol,
+) -> tuple[list[RecordStep[StreamPayload, StreamPayload]], Any]:
+    """Extract executable steps and optional Kafka sink from ``node.process``."""
+    inner_steps: list[RecordStep[StreamPayload, StreamPayload]] = []
+    sink_partition: Any = None
+
+    for inner_idx, inner_node in enumerate(node.process.nodes):
+        if isinstance(inner_node, RecordStep):
+            inner_steps.append(cast(RecordStep[StreamPayload, StreamPayload], inner_node))
+        elif isinstance(inner_node, IntoTopic):
+            inner_path = ctx.current_path + (inner_idx,)
+            compiled_sink = ctx.plan.terminal_sinks.get(inner_path)
+            if compiled_sink is not None:
+                sink_partition = build_inline_sink_partition(compiled_sink)
+            break
+
+    return inner_steps, sink_partition
+
+
+async def _execute_inner_process(
+    message: Message[StreamPayload],
+    inner_steps: list[RecordStep[StreamPayload, StreamPayload]],
+    sink_partition: Any,
+    deps: Mapping[str, object],
+    timeout_ms: int | None,
+) -> None:
+    """Execute all inner process steps for one message and write to Kafka when a sink is set."""
+    current = message
+    for step in inner_steps:
+        result = await _await_with_optional_timeout(
+            cast(Awaitable[object], step.execute(current, **deps)),
+            timeout_ms,
+        )
+        current = _replace_payload(current, result)
+    if sink_partition is not None:
+        sink_partition.write_batch([current])
+
+
+def _is_message_result(item: Any) -> bool:
+    """Return True if item is a Message (not an ErrorEnvelope)."""
+    return isinstance(item, Message)
 
 
 def _apply_collect_batch(
@@ -718,9 +814,10 @@ async def _run_message_best_effort(
     idx: int,
 ) -> None:
     """Execute one message and capture any failure in *slot* without propagating."""
+    step = cast(RecordStep[StreamPayload, StreamPayload], node.step)
     try:
         async with sem:
-            slot[idx] = await _invoke_execute(node.step, message, deps, node.task_timeout_ms)
+            slot[idx] = await _invoke_execute(step, message, deps, node.task_timeout_ms)
     except Exception as exc:
         slot[idx] = exc
 
@@ -734,8 +831,9 @@ async def _run_message_strict(
     idx: int,
 ) -> None:
     """Execute one message and let failures propagate to the TaskGroup."""
+    step = cast(RecordStep[StreamPayload, StreamPayload], node.step)
     async with sem:
-        slot[idx] = await _invoke_execute(node.step, message, deps, node.task_timeout_ms)
+        slot[idx] = await _invoke_execute(step, message, deps, node.task_timeout_ms)
 
 
 def _build_best_effort_results(
