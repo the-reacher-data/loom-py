@@ -9,7 +9,13 @@ import pytest
 from loom.streaming.compiler._plan import CompiledPlan, CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
-from loom.streaming.kafka import KafkaRecord, MessageDescriptor, MsgspecCodec, build_message
+from loom.streaming.kafka import (
+    DecodeError,
+    KafkaRecord,
+    MessageDescriptor,
+    MsgspecCodec,
+    build_message,
+)
 from loom.streaming.kafka._config import ProducerSettings
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain
@@ -130,6 +136,7 @@ class TestSourceDecode:
 
         assert results == []
         assert len(errors) == 1
+        assert isinstance(errors[0], DecodeError)
         assert errors[0].error.kind is ErrorKind.WIRE
         assert errors[0].error.original_message is None
         assert errors[0].raw == b"not-msgpack"
