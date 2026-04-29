@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -37,6 +37,10 @@ def _message(value: str = "v") -> Message[_Payload]:
     return Message(payload=_Payload(value=value), meta=MessageMeta(message_id="m-1"))
 
 
+def _raise(exc: Exception) -> NoReturn:
+    raise exc
+
+
 def test_execute_in_boundary_returns_message_on_success() -> None:
     result = _error_boundary._execute_in_boundary(
         _error_boundary._classify_task,
@@ -53,7 +57,7 @@ def test_execute_in_boundary_maps_domain_error_to_business() -> None:
     result = _error_boundary._execute_in_boundary(
         _error_boundary._classify_task,
         _message(),
-        lambda: (_ for _ in ()).throw(RuleViolation("field", "boom")),
+        lambda: _raise(RuleViolation("field", "boom")),
     )
 
     assert isinstance(result, ErrorEnvelope)
@@ -71,7 +75,7 @@ def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() ->
     result = _error_boundary._execute_batch_in_boundary(
         _error_boundary._classify_routing,
         originals,
-        lambda: (_ for _ in ()).throw(RuntimeError("routing-boom")),
+        lambda: _raise(RuntimeError("routing-boom")),
     )
 
     envelopes = [item for item in result if isinstance(item, ErrorEnvelope)]

@@ -97,6 +97,7 @@ def test_msg_expression_selects_values(
             _message(country="FR", amount=20),
             True,
         ),
+        (_HighRiskPredicate(), _message(amount=10, headers={"risk": b"low"}), False),
         (_HighRiskPredicate(), _message(headers={"risk": b"high"}), True),
     ],
 )

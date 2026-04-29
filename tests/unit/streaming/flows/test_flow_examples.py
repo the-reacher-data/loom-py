@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -26,83 +27,61 @@ from loom.streaming import (
     msg,
 )
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.flows.cases import StreamFlowCase
+from tests.unit.streaming.flows.cases import (
+    StreamFlowCase,
+    build_async_flow_case,
+    build_fork_flow_case,
+    build_fork_when_flow_case,
+    build_fork_with_flow_case,
+    build_router_flow_case,
+    build_simple_validation_flow_case,
+    build_with_batch_flow_case,
+    build_with_batch_scope_flow_case,
+)
 
 pytestmark = pytest.mark.integration
+
+FlowCaseBuilder = Callable[[DictConfig], StreamFlowCase]
 
 
 class TestBytewaxFlowExamples:
     """Bytewax execution coverage for shared public DSL flow examples."""
 
-    def test_runs_simple_validation_flow(
+    @pytest.mark.parametrize(
+        "case_builder",
+        [
+            build_simple_validation_flow_case,
+            build_router_flow_case,
+            build_with_batch_flow_case,
+            build_with_batch_scope_flow_case,
+            build_async_flow_case,
+            build_fork_flow_case,
+            build_fork_with_flow_case,
+            build_fork_when_flow_case,
+        ],
+        ids=[
+            "simple",
+            "router",
+            "with_batch",
+            "with_batch_scope",
+            "async",
+            "fork",
+            "fork_with",
+            "fork_when",
+        ],
+    )
+    def test_runs_flow_examples(
         self,
-        simple_validation_flow_case: StreamFlowCase,
+        case_builder: FlowCaseBuilder,
+        streaming_kafka_config: DictConfig,
     ) -> None:
-        results = _run_flow_case(simple_validation_flow_case)
+        case = case_builder(streaming_kafka_config)
+        results = _run_flow_case(case)
 
-        assert tuple(message.payload for message in results) == (
-            simple_validation_flow_case.expected_payloads
-        )
-
-    def test_runs_router_flow(
-        self,
-        router_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(router_flow_case)
-
-        assert tuple(message.payload for message in results) == router_flow_case.expected_payloads
-
-    def test_runs_with_batch_flow_with_inner_terminal_output(
-        self,
-        with_batch_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(with_batch_flow_case)
-
-        assert (
-            tuple(message.payload for message in results) == with_batch_flow_case.expected_payloads
-        )
-        assert with_batch_flow_case.resource_events is not None
-        assert with_batch_flow_case.resource_events.opened == [1]
-
-    def test_runs_with_batch_scope_flow_with_inner_terminal_output(
-        self,
-        with_batch_scope_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(with_batch_scope_flow_case)
-
-        assert (
-            tuple(message.payload for message in results)
-            == with_batch_scope_flow_case.expected_payloads
-        )
-        assert with_batch_scope_flow_case.resource_events is not None
-        assert with_batch_scope_flow_case.resource_events.opened == [1, 2]
-        assert with_batch_scope_flow_case.resource_events.closed == [1, 2]
-
-    def test_runs_async_flow(
-        self,
-        async_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(async_flow_case)
-
-        assert tuple(message.payload for message in results) == async_flow_case.expected_payloads
-
-    def test_runs_fork_flow(
-        self,
-        fork_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(fork_flow_case)
-
-        assert tuple(message.payload for message in results) == fork_flow_case.expected_payloads
-
-    def test_runs_fork_when_flow(
-        self,
-        fork_when_flow_case: StreamFlowCase,
-    ) -> None:
-        results = _run_flow_case(fork_when_flow_case)
-
-        assert (
-            tuple(message.payload for message in results) == fork_when_flow_case.expected_payloads
-        )
+        assert tuple(message.payload for message in results) == case.expected_payloads
+        if case.resource_events is not None:
+            _assert_resource_events(case)
+            return
 
     def test_routes_record_step_errors_to_task_error_sink(
         self,
@@ -199,6 +178,23 @@ def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
     ).with_messages(list(flow_case.input_messages))
     runner.run()
     return runner.output
+
+
+def _assert_resource_events(case: StreamFlowCase) -> None:
+    assert case.resource_events is not None
+    if case.flow.name == "orders_price_batch":
+        assert case.resource_events.opened == [1]
+        assert case.resource_events.closed == [1]
+        return
+    if case.flow.name == "orders_price_batch_scope":
+        assert case.resource_events.opened == [1, 2]
+        assert case.resource_events.closed == [1, 2]
+        return
+    if case.flow.name == "orders_fork_with":
+        assert case.resource_events.opened == [1]
+        assert case.resource_events.closed == [1]
+        return
+    raise AssertionError(f"Unhandled resource-event flow {case.flow.name}")
 
 
 class _Order(LoomStruct):

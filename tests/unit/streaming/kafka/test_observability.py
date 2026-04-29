@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock
 
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
@@ -97,11 +97,14 @@ def test_noop_kafka_observer_matches_protocol() -> None:
     observer.observe_decode("application/x-loom-msgpack", 0.02)
 
 
-def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default() -> None:
+def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observer = StructlogKafkaObserver()
 
-    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
-        observer.on_produced("tenant-a.orders")
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    observer.on_produced("tenant-a.orders")
 
     log.debug.assert_called_once_with(
         "kafka_produce",
@@ -111,11 +114,14 @@ def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default
     assert log.warning.call_count == 0
 
 
-def test_structlog_kafka_observer_can_include_topic_explicitly() -> None:
+def test_structlog_kafka_observer_can_include_topic_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observer = StructlogKafkaObserver(include_topic=True)
 
-    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
-        observer.on_consumed("tenant-a.orders", status="decode_error")
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    observer.on_consumed("tenant-a.orders", status="decode_error")
 
     log.warning.assert_called_once_with(
         "kafka_consume",
@@ -126,12 +132,15 @@ def test_structlog_kafka_observer_can_include_topic_explicitly() -> None:
     assert log.debug.call_count == 0
 
 
-def test_structlog_kafka_observer_logs_codec_durations_at_debug() -> None:
+def test_structlog_kafka_observer_logs_codec_durations_at_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observer = StructlogKafkaObserver()
 
-    with patch("loom.streaming.observability.observers.structlog._kafka_log") as log:
-        observer.observe_encode("application/x-loom-msgpack", 0.0012345)
-        observer.observe_decode("application/x-loom-msgpack", 0.002)
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    observer.observe_encode("application/x-loom-msgpack", 0.0012345)
+    observer.observe_decode("application/x-loom-msgpack", 0.002)
 
     log.debug.assert_any_call(
         "kafka_encode",

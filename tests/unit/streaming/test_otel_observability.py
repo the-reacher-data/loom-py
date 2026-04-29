@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from opentelemetry.trace import StatusCode
+
 from loom.core.config.observability import OtelConfig
 from loom.streaming.observability import (
     CompositeFlowObserver,
@@ -65,3 +69,95 @@ def test_otel_config_round_trips_through_msgspec() -> None:
     assert cfg.service_name == "loom-streaming"
     assert cfg.tracer_name == "loom.streaming"
     assert cfg.endpoint.endswith("/v1/traces")
+
+
+class _FakeSpan:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.attributes: dict[str, object] = {}
+        self.ended = False
+        self.status: tuple[StatusCode, str | None] | None = None
+        self.exceptions: list[Exception] = []
+
+    def set_attribute(self, key: str, value: object) -> None:
+        self.attributes[key] = value
+
+    def set_status(self, status: StatusCode, description: str | None = None) -> None:
+        self.status = (status, description)
+
+    def end(self) -> None:
+        self.ended = True
+
+    def record_exception(self, exc: Exception) -> None:
+        self.exceptions.append(exc)
+
+
+class _FakeTracer:
+    def __init__(self) -> None:
+        self.spans: list[_FakeSpan] = []
+
+    def start_span(
+        self,
+        name: str,
+        context: object | None = None,
+        attributes: Mapping[str, object] | None = None,
+    ) -> _FakeSpan:
+        del context
+        span = _FakeSpan(name)
+        if attributes is not None:
+            span.attributes.update(dict(attributes))
+        self.spans.append(span)
+        return span
+
+
+class _FakeProvider:
+    def __init__(self) -> None:
+        self.force_flush_calls = 0
+
+    def force_flush(self) -> None:
+        self.force_flush_calls += 1
+
+
+def test_otel_flow_observer_records_successful_flow_and_node_spans() -> None:
+    tracer = _FakeTracer()
+    provider = _FakeProvider()
+    observer = OtelFlowObserver(
+        tracer=tracer,
+        tracer_provider=provider,
+        static_attributes={"team": "data"},
+    )
+
+    observer.on_flow_start("orders", node_count=2)
+    observer.on_node_start("orders", 0, node_type="Step")
+    observer.on_node_end("orders", 0, node_type="Step", status="success", duration_ms=12)
+    observer.on_flow_end("orders", status="success", duration_ms=50)
+
+    assert tracer.spans[0].name == "loom.streaming.flow"
+    assert tracer.spans[0].attributes["loom.flow"] == "orders"
+    assert tracer.spans[0].attributes["loom.node_count"] == 2
+    assert tracer.spans[0].attributes["team"] == "data"
+    assert tracer.spans[0].ended is True
+    assert tracer.spans[0].status == (StatusCode.OK, None)
+
+    assert tracer.spans[1].name == "loom.streaming.node"
+    assert tracer.spans[1].attributes["loom.node_idx"] == 0
+    assert tracer.spans[1].attributes["loom.node_type"] == "Step"
+    assert tracer.spans[1].ended is True
+    assert tracer.spans[1].status == (StatusCode.OK, None)
+    assert provider.force_flush_calls == 1
+
+
+def test_otel_flow_observer_records_node_error_on_active_span() -> None:
+    tracer = _FakeTracer()
+    provider = _FakeProvider()
+    observer = OtelFlowObserver(tracer=tracer, tracer_provider=provider)
+
+    observer.on_flow_start("orders", node_count=1)
+    observer.on_node_start("orders", 0, node_type="Step")
+    observer.on_node_error("orders", 0, node_type="Step", exc=ValueError("boom"))
+    observer.on_flow_end("orders", status="failed", duration_ms=50)
+
+    assert tracer.spans[1].exceptions and isinstance(tracer.spans[1].exceptions[0], ValueError)
+    assert tracer.spans[1].status == (StatusCode.ERROR, "ValueError('boom')")
+    assert tracer.spans[1].ended is False
+    assert provider.force_flush_calls == 1

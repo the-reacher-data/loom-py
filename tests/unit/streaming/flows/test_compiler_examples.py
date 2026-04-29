@@ -2,140 +2,130 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
+from omegaconf import DictConfig
 
 from loom.streaming import StreamShape, compile_flow
-from tests.unit.streaming.flows.cases import StreamFlowCase, ValidatedOrder
+from loom.streaming.compiler._plan import CompiledPlan
+from tests.unit.streaming.flows.cases import (
+    StreamFlowCase,
+    build_async_flow_case,
+    build_fork_flow_case,
+    build_fork_when_flow_case,
+    build_fork_with_flow_case,
+    build_router_flow_case,
+    build_simple_validation_flow_case,
+    build_with_batch_flow_case,
+    build_with_batch_scope_flow_case,
+)
 
 pytestmark = pytest.mark.integration
+
+CompilerCaseBuilder = Callable[[DictConfig], StreamFlowCase]
 
 
 class TestCompilerFlowExamples:
     """Compiler coverage for shared public DSL flow examples."""
 
-    def test_compile_simple_validation_flow(
+    @pytest.mark.parametrize(
+        "case_builder",
+        [
+            build_simple_validation_flow_case,
+            build_router_flow_case,
+            build_with_batch_flow_case,
+            build_with_batch_scope_flow_case,
+            build_async_flow_case,
+            build_fork_flow_case,
+            build_fork_with_flow_case,
+            build_fork_when_flow_case,
+        ],
+        ids=[
+            "simple",
+            "router",
+            "with_batch",
+            "with_batch_scope",
+            "async",
+            "fork",
+            "fork_with",
+            "fork_when",
+        ],
+    )
+    def test_compile_flow_examples(
         self,
-        simple_validation_flow_case: StreamFlowCase,
+        case_builder: CompilerCaseBuilder,
+        streaming_kafka_config: DictConfig,
     ) -> None:
-        plan = compile_flow(
-            simple_validation_flow_case.flow,
-            runtime_config=simple_validation_flow_case.config,
-        )
+        case = case_builder(streaming_kafka_config)
+        plan = compile_flow(case.flow, runtime_config=case.config)
 
-        assert plan.name == "orders_validate"
-        assert plan.source.payload_type is not None
-        assert plan.source.shape is StreamShape.RECORD
-        assert plan.source.decode_strategy == "record"
-        assert plan.output is not None
-        assert plan.output.topic == "orders.validated"
-        assert plan.nodes[0].input_shape is StreamShape.RECORD
-        assert plan.nodes[0].output_shape is StreamShape.RECORD
-        assert simple_validation_flow_case.expected_payloads == (
-            ValidatedOrder(order_id="o-1", accepted=True),
-        )
+        _assert_compiled_case(plan, case)
 
-    def test_compile_router_flow(
-        self,
-        router_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            router_flow_case.flow,
-            runtime_config=router_flow_case.config,
-        )
 
-        assert plan.name == "orders_route"
-        assert plan.output is not None
-        assert plan.output.topic == "orders.routed"
-        assert plan.nodes[0].input_shape is StreamShape.RECORD
-        assert plan.nodes[0].output_shape is StreamShape.RECORD
+def _assert_compiled_case(plan: CompiledPlan, case: StreamFlowCase) -> None:
+    if case.flow.name == "orders_validate":
+        compiled = plan
+        assert compiled.name == "orders_validate"
+        assert compiled.source.payload_type is not None
+        assert compiled.source.shape is StreamShape.RECORD
+        assert compiled.source.decode_strategy == "record"
+        assert compiled.output is not None
+        assert compiled.output.topic == "orders.validated"
+        assert compiled.nodes[0].input_shape is StreamShape.RECORD
+        assert compiled.nodes[0].output_shape is StreamShape.RECORD
+        return
 
-    def test_compile_with_batch_flow_with_inner_terminal_output(
-        self,
-        with_batch_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            with_batch_flow_case.flow,
-            runtime_config=with_batch_flow_case.config,
-        )
+    if case.flow.name == "orders_route":
+        compiled = plan
+        assert compiled.name == "orders_route"
+        assert compiled.output is not None
+        assert compiled.output.topic == "orders.routed"
+        assert compiled.nodes[0].input_shape is StreamShape.RECORD
+        assert compiled.nodes[0].output_shape is StreamShape.RECORD
+        return
 
-        assert plan.name == "orders_price_batch"
-        assert plan.source.decode_strategy == "batch"
-        assert plan.output is None
-        assert [node.output_shape for node in plan.nodes] == [StreamShape.BATCH, StreamShape.NONE]
-
-    def test_compile_with_batch_scope_flow_with_inner_terminal_output(
-        self,
-        with_batch_scope_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            with_batch_scope_flow_case.flow,
-            runtime_config=with_batch_scope_flow_case.config,
-        )
-
-        assert plan.name == "orders_price_batch_scope"
-        assert plan.source.decode_strategy == "batch"
-        assert plan.output is None
-        assert [node.output_shape for node in plan.nodes] == [StreamShape.BATCH, StreamShape.NONE]
-
-    def test_compile_async_flow_creates_async_bridge(
-        self,
-        async_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            async_flow_case.flow,
-            runtime_config=async_flow_case.config,
-        )
-
-        assert plan.name == "orders_score_async_each"
-        assert plan.source.decode_strategy == "record"
-        assert plan.output is None
-        assert plan.needs_async_bridge is True
-        assert [node.output_shape for node in plan.nodes] == [
+    if case.flow.name in {"orders_price_batch", "orders_price_batch_scope"}:
+        compiled = plan
+        assert compiled.source.decode_strategy == "batch"
+        assert compiled.output is None
+        assert [node.output_shape for node in compiled.nodes] == [
+            StreamShape.BATCH,
             StreamShape.NONE,
         ]
+        return
 
-    def test_compile_fork_flow_creates_branch_terminal_sinks(
-        self,
-        fork_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            fork_flow_case.flow,
-            runtime_config=fork_flow_case.config,
-        )
+    if case.flow.name == "orders_score_async_each":
+        compiled = plan
+        assert compiled.source.decode_strategy == "record"
+        assert compiled.output is None
+        assert compiled.needs_async_bridge is True
+        assert [node.output_shape for node in compiled.nodes] == [StreamShape.NONE]
+        return
 
-        assert plan.name == "orders_fork"
-        assert plan.output is None
-        assert plan.nodes[0].output_shape is StreamShape.NONE
-        assert {sink.topic for sink in plan.terminal_sinks.values()} == {
+    if case.flow.name == "orders_fork":
+        compiled = plan
+        assert compiled.output is None
+        assert compiled.nodes[0].output_shape is StreamShape.NONE
+        assert {sink.topic for sink in compiled.terminal_sinks.values()} == {
             "orders.fork.vip",
             "orders.fork.standard",
         }
+        return
 
-    def test_compile_fork_flow_with_resources_creates_branch_terminal_sinks(
-        self,
-        fork_with_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            fork_with_flow_case.flow,
-            runtime_config=fork_with_flow_case.config,
-        )
+    if case.flow.name == "orders_fork_with":
+        compiled = plan
+        assert compiled.output is None
+        assert {sink.topic for sink in compiled.terminal_sinks.values()} == {"orders.fork.vip"}
+        return
 
-        assert plan.name == "orders_fork_with"
-        assert plan.output is None
-        assert {sink.topic for sink in plan.terminal_sinks.values()} == {"orders.fork.vip"}
-
-    def test_compile_fork_when_flow_creates_branch_terminal_sinks(
-        self,
-        fork_when_flow_case: StreamFlowCase,
-    ) -> None:
-        plan = compile_flow(
-            fork_when_flow_case.flow,
-            runtime_config=fork_when_flow_case.config,
-        )
-
-        assert plan.name == "orders_fork_when"
-        assert plan.output is None
-        assert {sink.topic for sink in plan.terminal_sinks.values()} == {
+    if case.flow.name == "orders_fork_when":
+        compiled = plan
+        assert compiled.output is None
+        assert {sink.topic for sink in compiled.terminal_sinks.values()} == {
             "orders.fork.vip",
             "orders.fork.standard",
         }
+        return
+
+    raise AssertionError(f"Unhandled flow case {case.flow.name}")
