@@ -2,65 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import pytest
-from omegaconf import DictConfig
 
 from loom.streaming import StreamShape, compile_flow
 from loom.streaming.compiler._plan import CompiledPlan
-from tests.unit.streaming.flows.cases import (
-    StreamFlowCase,
-    build_async_flow_case,
-    build_fork_flow_case,
-    build_fork_when_flow_case,
-    build_fork_with_flow_case,
-    build_router_flow_case,
-    build_simple_validation_flow_case,
-    build_with_batch_flow_case,
-    build_with_batch_scope_flow_case,
-)
+from tests.unit.streaming.flows.cases import StreamFlowCase
 
 pytestmark = pytest.mark.integration
-
-CompilerCaseBuilder = Callable[[DictConfig], StreamFlowCase]
 
 
 class TestCompilerFlowExamples:
     """Compiler coverage for shared public DSL flow examples."""
 
-    @pytest.mark.parametrize(
-        "case_builder",
-        [
-            build_simple_validation_flow_case,
-            build_router_flow_case,
-            build_with_batch_flow_case,
-            build_with_batch_scope_flow_case,
-            build_async_flow_case,
-            build_fork_flow_case,
-            build_fork_with_flow_case,
-            build_fork_when_flow_case,
-        ],
-        ids=[
-            "simple",
-            "router",
-            "with_batch",
-            "with_batch_scope",
-            "async",
-            "fork",
-            "fork_with",
-            "fork_when",
-        ],
-    )
     def test_compile_flow_examples(
         self,
-        case_builder: CompilerCaseBuilder,
-        streaming_kafka_config: DictConfig,
+        flow_case: StreamFlowCase,
     ) -> None:
-        case = case_builder(streaming_kafka_config)
-        plan = compile_flow(case.flow, runtime_config=case.config)
+        plan = compile_flow(flow_case.flow, runtime_config=flow_case.config)
 
-        _assert_compiled_case(plan, case)
+        _assert_compiled_case(plan, flow_case)
 
 
 def _assert_compiled_case(plan: CompiledPlan, case: StreamFlowCase) -> None:

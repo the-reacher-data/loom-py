@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import pytest
 
-from loom.streaming.compiler._plan import CompiledPlan, CompiledSink
+from loom.streaming.compiler._plan import CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.kafka import (
@@ -20,11 +18,15 @@ from loom.streaming.kafka._config import ProducerSettings
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.bytewax.cases import DoubleStep, Order, Result, SuffixStep
+from tests.unit.streaming.bytewax.cases import (
+    DoubleStep,
+    Order,
+    Result,
+    SuffixStep,
+    build_compiled_plan,
+)
 
 pytestmark = pytest.mark.bytewax
-
-PlanFactory = Callable[..., CompiledPlan]
 
 
 class TestStepNodeExecution:
@@ -34,9 +36,8 @@ class TestStepNodeExecution:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_message: Message[Order],
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
-        plan = bytewax_plan_factory(bytewax_double_step)
+        plan = build_compiled_plan(bytewax_double_step)
         runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
@@ -51,9 +52,8 @@ class TestStepNodeExecution:
         bytewax_double_step: DoubleStep,
         bytewax_suffix_step: SuffixStep,
         bytewax_message: Message[Order],
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
-        plan = bytewax_plan_factory(bytewax_double_step, bytewax_suffix_step)
+        plan = build_compiled_plan(bytewax_double_step, bytewax_suffix_step)
         runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
@@ -68,9 +68,8 @@ class TestSourceDecode:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_order: Order,
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
-        plan = bytewax_plan_factory(bytewax_double_step)
+        plan = build_compiled_plan(bytewax_double_step)
         codec = MsgspecCodec[Order]()
         envelope = build_message(
             bytewax_order,
@@ -106,7 +105,6 @@ class TestSourceDecode:
     def test_wire_decode_error_routes_to_testing_error_sink(
         self,
         bytewax_double_step: DoubleStep,
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
         error_sink = CompiledSink(
             settings=ProducerSettings(
@@ -117,7 +115,7 @@ class TestSourceDecode:
             topic="orders.dlq",
             partition_policy=None,
         )
-        plan = bytewax_plan_factory(bytewax_double_step, error_routes={ErrorKind.WIRE: error_sink})
+        plan = build_compiled_plan(bytewax_double_step, error_routes={ErrorKind.WIRE: error_sink})
         source_record = KafkaRecord(
             topic="orders.in",
             key=b"tenant-a",
@@ -154,10 +152,9 @@ class TestTerminalNodes:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_message: Message[Order],
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
         target = IntoTopic("out", payload=Result)
-        plan = bytewax_plan_factory(bytewax_double_step, output=target)
+        plan = build_compiled_plan(bytewax_double_step, output=target)
         runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
@@ -168,9 +165,8 @@ class TestTerminalNodes:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_message: Message[Order],
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
-        plan = bytewax_plan_factory(bytewax_double_step, Drain())
+        plan = build_compiled_plan(bytewax_double_step, Drain())
         runner = StreamingTestRunner(plan).with_messages([bytewax_message])
         runner.run()
         results = runner.output
@@ -181,9 +177,8 @@ class TestTerminalNodes:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_order: Order,
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
-        plan = bytewax_plan_factory(bytewax_double_step)
+        plan = build_compiled_plan(bytewax_double_step)
         runner = StreamingTestRunner(plan).with_payloads([bytewax_order])
 
         runner.run()
@@ -197,10 +192,9 @@ class TestTerminalNodes:
         self,
         bytewax_double_step: DoubleStep,
         bytewax_message: Message[Order],
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
         target = IntoTopic("out", payload=Result)
-        plan = bytewax_plan_factory(bytewax_double_step, output=target)
+        plan = build_compiled_plan(bytewax_double_step, output=target)
         runner = StreamingTestRunner(plan).with_messages([bytewax_message])
 
         runner.run()
@@ -215,7 +209,6 @@ class TestOutputAndErrorWiring:
     def test_valid_output_and_wire_error_can_be_captured_together(
         self,
         bytewax_double_step: DoubleStep,
-        bytewax_plan_factory: PlanFactory,
     ) -> None:
         error_sink = CompiledSink(
             settings=ProducerSettings(
@@ -250,7 +243,7 @@ class TestOutputAndErrorWiring:
             offset=2,
             timestamp_ms=11,
         )
-        plan = bytewax_plan_factory(
+        plan = build_compiled_plan(
             bytewax_double_step,
             output=target,
             error_routes={ErrorKind.WIRE: error_sink},

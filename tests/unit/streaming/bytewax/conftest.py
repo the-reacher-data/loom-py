@@ -8,13 +8,7 @@ from typing import Any
 import pytest
 
 from loom.streaming import FromTopic, IntoTopic, Process, StreamFlow
-from loom.streaming.compiler._plan import (
-    CompiledNode,
-    CompiledPlan,
-    CompiledSink,
-    CompiledSource,
-)
-from loom.streaming.core._errors import ErrorKind
+from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.nodes._boundary import PartitionPolicy
@@ -105,62 +99,6 @@ def bytewax_stream_flow() -> StreamFlow[Order, Result]:
         process=Process(DoubleStep()),
         output=IntoTopic("orders.out", payload=Result),
     )
-
-
-@pytest.fixture
-def bytewax_plan_factory() -> Callable[
-    [
-        tuple[object, ...],
-        IntoTopic[Any] | None,
-        dict[tuple[int, ...], CompiledSink] | None,
-        dict[ErrorKind, CompiledSink] | None,
-    ],
-    CompiledPlan,
-]:
-    """Return a reusable compiled-plan builder for Bytewax adapter tests."""
-
-    def _build_plan(
-        *nodes: object,
-        output: IntoTopic[Any] | None = None,
-        terminal_sinks: dict[tuple[int, ...], CompiledSink] | None = None,
-        error_routes: dict[ErrorKind, CompiledSink] | None = None,
-    ) -> CompiledPlan:
-        compiled_nodes = [
-            CompiledNode(node=node, input_shape=StreamShape.RECORD, output_shape=StreamShape.RECORD)
-            for node in nodes
-        ]
-        compiled_output = None
-        if output is not None:
-            compiled_output = CompiledSink(
-                settings=ProducerSettings(
-                    brokers=("localhost:9092",),
-                    client_id="test-producer",
-                    topic=output.name,
-                ),
-                topic=output.name,
-                partition_policy=None,
-            )
-        return CompiledPlan(
-            name="test_flow",
-            source=CompiledSource(
-                settings=ConsumerSettings(
-                    brokers=("localhost:9092",),
-                    group_id="test",
-                    topics=("in",),
-                ),
-                topics=("in",),
-                payload_type=Order,
-                shape=StreamShape.RECORD,
-                decode_strategy="record",
-            ),
-            nodes=tuple(compiled_nodes),
-            output=compiled_output,
-            terminal_sinks=terminal_sinks or {},
-            error_routes=error_routes or {},
-            needs_async_bridge=False,
-        )
-
-    return _build_plan
 
 
 @pytest.fixture

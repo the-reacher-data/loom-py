@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -27,60 +26,23 @@ from loom.streaming import (
     msg,
 )
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.flows.cases import (
-    StreamFlowCase,
-    build_async_flow_case,
-    build_fork_flow_case,
-    build_fork_when_flow_case,
-    build_fork_with_flow_case,
-    build_router_flow_case,
-    build_simple_validation_flow_case,
-    build_with_batch_flow_case,
-    build_with_batch_scope_flow_case,
-)
+from tests.unit.streaming.flows.cases import StreamFlowCase
 
 pytestmark = pytest.mark.integration
-
-FlowCaseBuilder = Callable[[DictConfig], StreamFlowCase]
 
 
 class TestBytewaxFlowExamples:
     """Bytewax execution coverage for shared public DSL flow examples."""
 
-    @pytest.mark.parametrize(
-        "case_builder",
-        [
-            build_simple_validation_flow_case,
-            build_router_flow_case,
-            build_with_batch_flow_case,
-            build_with_batch_scope_flow_case,
-            build_async_flow_case,
-            build_fork_flow_case,
-            build_fork_with_flow_case,
-            build_fork_when_flow_case,
-        ],
-        ids=[
-            "simple",
-            "router",
-            "with_batch",
-            "with_batch_scope",
-            "async",
-            "fork",
-            "fork_with",
-            "fork_when",
-        ],
-    )
     def test_runs_flow_examples(
         self,
-        case_builder: FlowCaseBuilder,
-        streaming_kafka_config: DictConfig,
+        flow_case: StreamFlowCase,
     ) -> None:
-        case = case_builder(streaming_kafka_config)
-        results = _run_flow_case(case)
+        results = _run_flow_case(flow_case)
 
-        assert tuple(message.payload for message in results) == case.expected_payloads
-        if case.resource_events is not None:
-            _assert_resource_events(case)
+        assert tuple(message.payload for message in results) == flow_case.expected_payloads
+        if flow_case.resource_events is not None:
+            _assert_resource_events(flow_case)
             return
 
     def test_routes_record_step_errors_to_task_error_sink(
