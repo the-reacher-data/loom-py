@@ -37,9 +37,10 @@ from tests.unit.streaming.flows.cases.shared import (
 
 def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a terminal Fork flow with independent branch outputs."""
-    flow: StreamFlow[Any, Any] = StreamFlow(
+    return _build_fork_case(
+        config=config,
         name="orders_fork",
-        source=FromTopic("orders.raw", payload=RoutedOrder),
+        source_payload=RoutedOrder,
         process=Process(
             Fork.by(
                 msg.payload.lane,
@@ -52,10 +53,6 @@ def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
                 default=Process(Drain()),
             )
         ),
-    )
-    return _build_case(
-        flow=flow,
-        config=config,
         input_messages=(
             _routed_order_message("o-1", "vip"),
             _routed_order_message("o-2", "standard"),
@@ -71,9 +68,10 @@ def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
 def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a Fork flow whose matched branch opens a scoped resource."""
     events = ResourceEvents()
-    flow: StreamFlow[Any, Any] = StreamFlow(
+    return _build_fork_case(
+        config=config,
         name="orders_fork_with",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source_payload=OrderPlaced,
         process=Process(
             Fork.when(
                 routes=[
@@ -95,10 +93,6 @@ def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
                 default=Process(Drain()),
             )
         ),
-    )
-    return _build_case(
-        flow=flow,
-        config=config,
         input_messages=(
             _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
             _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
@@ -110,9 +104,10 @@ def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
 
 def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a Fork.when flow with ordered predicate dispatch."""
-    flow: StreamFlow[Any, Any] = StreamFlow(
+    return _build_fork_case(
+        config=config,
         name="orders_fork_when",
-        source=FromTopic("orders.raw", payload=OrderPlaced),
+        source_payload=OrderPlaced,
         process=Process(
             Fork.when(
                 routes=[
@@ -130,10 +125,6 @@ def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
                 default=Process(Drain()),
             )
         ),
-    )
-    return _build_case(
-        flow=flow,
-        config=config,
         input_messages=(
             _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
             _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
@@ -143,4 +134,28 @@ def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
             OrderPlaced(order_id="o-1", amount=100, segment="vip"),
             OrderPlaced(order_id="o-3", amount=500, segment="manual"),
         ),
+    )
+
+
+def _build_fork_case(
+    *,
+    config: DictConfig,
+    name: str,
+    source_payload: type[Any],
+    process: Process[Any, Any],
+    input_messages: tuple[Any, ...],
+    expected_payloads: tuple[Any, ...],
+    resource_events: ResourceEvents | None = None,
+) -> StreamFlowCase:
+    flow: StreamFlow[Any, Any] = StreamFlow(
+        name=name,
+        source=FromTopic("orders.raw", payload=source_payload),
+        process=process,
+    )
+    return _build_case(
+        flow=flow,
+        config=config,
+        input_messages=input_messages,
+        expected_payloads=expected_payloads,
+        resource_events=resource_events,
     )
