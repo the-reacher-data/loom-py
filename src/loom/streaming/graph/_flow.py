@@ -14,15 +14,13 @@ from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
-from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
+from loom.streaming.nodes._step import Step
 from loom.streaming.nodes._with import With, WithAsync
 
 ProcessNode: TypeAlias = (
     ConfigBinding
-    | RecordStep[Any, Any]
-    | BatchStep[Any, Any]
-    | ExpandStep[Any, Any]
-    | BatchExpandStep[Any, Any]
+    | Step[Any, Any]
+    | type[Step[Any, Any]]
     | With[Any, Any]
     | WithAsync[Any, Any]
     | CollectBatch

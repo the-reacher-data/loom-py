@@ -122,13 +122,14 @@ class OtelFlowObserver:
         node_type: str,
         exc: Exception,
     ) -> None:
-        """Record one node error on the active node span."""
-        span = self._node_spans.get(_node_key(flow_name, node_idx))
+        """Record one node error on the active node span and close it."""
+        span = self._node_spans.pop(_node_key(flow_name, node_idx))
         if span is None:
             return
         span.set_attribute(_ATTR_NODE_TYPE, node_type)
         span.record_exception(exc)
         span.set_status(StatusCode.ERROR, description=repr(exc))
+        span.end()
 
 
 class _SpanRegistry:

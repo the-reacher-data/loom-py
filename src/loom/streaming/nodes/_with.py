@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeGuard, TypeVar
 
 from loom.core.config import Configurable
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming.nodes._step import RecordStep
 
 if TYPE_CHECKING:
     from loom.streaming.graph._flow import Process
@@ -42,7 +41,7 @@ class ContextFactory(Configurable):
     Example::
 
         db = ContextFactory(lambda: SessionLocal())
-        With(step=ValidateOrder(), scope=BATCH, db=db)
+        With(process=Process(ValidateOrder, IntoTopic("validated")), scope=BATCH, db=db)
     """
 
     __slots__ = ("_factory",)
@@ -64,9 +63,8 @@ class _WithBase(Generic[InT, OutT]):
     (a step or a process).
 
     Args:
-        step: Optional step stored by :class:`With`.
         scope: Lifecycle used when opening context-manager dependencies.
-        process: Optional process stored by :class:`WithAsync`.
+        process: Inner process executed by the wrapper node.
         **dependencies: Named dependencies injected at execution time.
     """
 
@@ -77,20 +75,17 @@ class _WithBase(Generic[InT, OutT]):
         "_sync_contexts",
         "process",
         "scope",
-        "step",
     )
     router_branch_safe: ClassVar[bool] = True
 
     def __init__(
         self,
-        step: RecordStep[InT, OutT] | None = None,
         scope: ResourceScope = ResourceScope.WORKER,
         *,
-        process: Any = None,
+        process: Process[Any, Any],
         **dependencies: object,
     ) -> None:
-        self.step = step
-        self.process: Any = process
+        self.process = process
         self.scope = scope
         sync_contexts: dict[str, SyncContextDependency] = {}
         async_contexts: dict[str, AsyncContextDependency] = {}
@@ -169,7 +164,7 @@ class With(_WithBase[InT, OutT]):
         process: Process[Any, Any],
         **dependencies: object,
     ) -> None:
-        super().__init__(None, scope=scope, process=process, **dependencies)
+        super().__init__(scope=scope, process=process, **dependencies)
         if self._async_contexts:
             names = ", ".join(self._async_contexts.keys())
             raise TypeError(
@@ -230,7 +225,7 @@ class WithAsync(_WithBase[InT, OutT]):
             raise ValueError("max_concurrency must be greater than zero")
         if task_timeout_ms is not None and task_timeout_ms <= 0:
             raise ValueError("task_timeout_ms must be greater than zero when provided")
-        super().__init__(None, scope=scope, process=process, **dependencies)
+        super().__init__(scope=scope, process=process, **dependencies)
         if self._sync_contexts:
             names = ", ".join(self._sync_contexts.keys())
             raise TypeError(

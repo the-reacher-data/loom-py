@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
@@ -40,6 +41,7 @@ class KafkaProducerClient:
         self._delivery_callback = delivery_callback
         self._observer = observer
         self._pending_delivery_error: KafkaDeliveryError | None = None
+        self._delivery_error_lock = threading.Lock()
 
     def send(self, record: KafkaRecord[bytes]) -> None:
         """Produce one raw byte record.
@@ -128,7 +130,8 @@ class KafkaProducerClient:
         def _callback(error: object | None, _: _RawMessage | None) -> None:
             delivery_error = None if error is None else KafkaDeliveryError(str(error))
             if delivery_error is not None:
-                self._pending_delivery_error = delivery_error
+                with self._delivery_error_lock:
+                    self._pending_delivery_error = delivery_error
             if self._observer is not None:
                 status = "success" if delivery_error is None else "delivery_error"
                 self._observer.on_produced(record.topic, status=status)
@@ -137,10 +140,11 @@ class KafkaProducerClient:
         return _callback
 
     def _raise_pending_delivery_error(self) -> None:
-        error = self._pending_delivery_error
-        if error is None:
-            return
-        self._pending_delivery_error = None
+        with self._delivery_error_lock:
+            error = self._pending_delivery_error
+            if error is None:
+                return
+            self._pending_delivery_error = None
         raise error
 
 

@@ -55,9 +55,13 @@ class Step(Configurable, ABC, Generic[InT, OutT]):
 class RecordStep(Step[InT, OutT], ABC):
     """Streaming step that consumes and produces one record at a time.
 
-    Subclasses declare their own ``execute(...)`` signature. The runtime uses
-    duck typing so user code can express explicit dependencies without mypy
-    forcing a single override shape.
+    Declare the subclass itself in a flow, not an instance. The compiler
+    materializes the class during binding resolution.
+
+    Subclasses define ``execute(self, message, **kwargs) -> OutT`` with the
+    explicit payload and dependency signature they need. The runtime uses duck
+    typing so user code can express explicit dependencies without mypy forcing
+    a single override shape.
     """
 
     router_branch_safe: ClassVar[bool] = True
@@ -68,7 +72,11 @@ class RecordStep(Step[InT, OutT], ABC):
 class BatchStep(Step[InT, OutT], ABC):
     """Streaming step that consumes and produces one batch at a time.
 
-    Subclasses declare their own ``execute(...)`` signature.
+    Declare the subclass itself in a flow, not an instance. The compiler
+    materializes the class during binding resolution.
+
+    Subclasses define ``execute(self, messages, **kwargs) -> OutT`` with the
+    explicit batch and dependency signature they need.
     """
 
     router_branch_safe: ClassVar[bool] = True
@@ -79,7 +87,11 @@ class BatchStep(Step[InT, OutT], ABC):
 class ExpandStep(Step[InT, OutT], ABC):
     """Streaming step that expands one record into many output messages.
 
-    Subclasses declare their own ``execute(...)`` signature.
+    Declare the subclass itself in a flow, not an instance. The compiler
+    materializes the class during binding resolution.
+
+    Subclasses define ``execute(self, message, **kwargs) -> Iterable[OutT]``
+    with the explicit payload and dependency signature they need.
     """
 
     router_branch_safe: ClassVar[bool] = True
@@ -90,7 +102,11 @@ class ExpandStep(Step[InT, OutT], ABC):
 class BatchExpandStep(Step[InT, OutT], ABC):
     """Streaming step that expands one batch into many output messages.
 
-    Subclasses declare their own ``execute(...)`` signature.
+    Declare the subclass itself in a flow, not an instance. The compiler
+    materializes the class during binding resolution.
+
+    Subclasses define ``execute(self, messages, **kwargs) -> Iterable[OutT]``
+    with the explicit batch and dependency signature they need.
     """
 
     router_branch_safe: ClassVar[bool] = True

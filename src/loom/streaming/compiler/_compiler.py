@@ -8,7 +8,7 @@ from typing import Any, Literal
 from omegaconf import DictConfig
 
 from loom.core.config import ConfigError, section
-from loom.core.config.configurable import ConfigBinding
+from loom.streaming.compiler._bindings import resolve_flow_bindings
 from loom.streaming.compiler._plan import (
     CompiledNode,
     CompiledPlan,
@@ -46,16 +46,6 @@ def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> C
     return compiler.compile(flow, runtime_config=runtime_config)
 
 
-def _collect_deps(node: With[Any, Any] | WithAsync[Any, Any]) -> dict[str, object]:
-    """Return all dependency kinds of a With/WithAsync node merged into one mapping."""
-    return {
-        **node.sync_contexts,
-        **node.async_contexts,
-        **node.context_factories,
-        **node.plain_deps,
-    }
-
-
 class _Compiler:
     """Validates a StreamFlow and produces a CompiledPlan.
 
@@ -65,26 +55,20 @@ class _Compiler:
     def compile(self, flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> CompiledPlan:
         errors: list[str] = []
 
-        errors.extend(self._validate_bindings(flow, runtime_config))
-        errors.extend(self._validate_kafka(flow, runtime_config))
-        errors.extend(self._validate_resources(flow))
-        errors.extend(self._validate_shapes(flow))
-        errors.extend(self._validate_outputs(flow))
+        resolved_flow, binding_errors = resolve_flow_bindings(flow, runtime_config)
+        errors.extend(binding_errors)
+        if errors:
+            raise CompilationError(errors)
+
+        errors.extend(self._validate_kafka(resolved_flow, runtime_config))
+        errors.extend(self._validate_resources(resolved_flow))
+        errors.extend(self._validate_shapes(resolved_flow))
+        errors.extend(self._validate_outputs(resolved_flow))
 
         if errors:
             raise CompilationError(errors)
 
-        return self._build_plan(flow, runtime_config)
-
-    @staticmethod
-    def _validate_bindings(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
-        errors: list[str] = []
-        for binding in _iter_config_bindings(flow):
-            try:
-                section(cfg, binding.config_path, dict)
-            except ConfigError as exc:
-                errors.append(f"binding {binding.config_path}: {exc}")
-        return errors
+        return self._build_plan(resolved_flow, runtime_config)
 
     @staticmethod
     def _validate_kafka(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
@@ -233,7 +217,9 @@ class _Compiler:
                 sinks.update(
                     self._build_broadcast_terminal_sinks(node, runtime_config, path_prefix=path)
                 )
-            elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
+            elif isinstance(node, WithAsync) or (
+                isinstance(node, With) and node.process is not None
+            ):
                 sinks.update(
                     self._build_terminal_sinks(
                         node.process.nodes,
@@ -278,6 +264,7 @@ class _Compiler:
         path_prefix: tuple[int, ...],
     ) -> dict[tuple[int, ...], CompiledSink]:
         sinks: dict[tuple[int, ...], CompiledSink] = {}
+        keyed_count = len(router.routes)
         for branch_idx, process in enumerate(router.routes.values()):
             sinks.update(
                 self._build_terminal_sinks(
@@ -286,12 +273,12 @@ class _Compiler:
                     path_prefix=path_prefix + (branch_idx,),
                 )
             )
-        for branch_idx, route in enumerate(router.predicate_routes):
+        for i, route in enumerate(router.predicate_routes):
             sinks.update(
                 self._build_terminal_sinks(
                     route.process.nodes,
                     runtime_config,
-                    path_prefix=path_prefix + (branch_idx,),
+                    path_prefix=path_prefix + (keyed_count + i,),
                 )
             )
         if router.default is not None:
@@ -346,34 +333,6 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     return _has_terminal_output(flow.process.nodes)
 
 
-def _iter_config_bindings(flow: StreamFlow[Any, Any]) -> Iterable[ConfigBinding]:
-    """Yield all config bindings used directly or through With/WithAsync nodes."""
-    for node in _walk_all_process_nodes(flow.process.nodes):
-        yield from _node_config_bindings(node)
-
-
-def _node_config_bindings(node: object) -> Iterable[ConfigBinding]:
-    """Yield config bindings referenced by one process node."""
-    if isinstance(node, ConfigBinding):
-        yield node
-        return
-
-    scoped = _scoped_node(node)
-    if scoped is None:
-        return
-
-    for dep in _collect_deps(scoped).values():
-        if isinstance(dep, ConfigBinding):
-            yield dep
-
-
-def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
-    """Return the scoped node carried by a With-like declaration, if any."""
-    if isinstance(node, (With, WithAsync)):
-        return node
-    return None
-
-
 def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
     """Yield each group of child nodes to recurse into for a single process node."""
     if isinstance(node, Router):
@@ -385,7 +344,7 @@ def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
     elif isinstance(node, Broadcast):
         for route in node.routes:
             yield route.process.nodes
-    elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
+    elif isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
         yield node.process.nodes
 
 
@@ -427,7 +386,7 @@ def _must_be_last_errors(idx: int, node_list: tuple[object, ...], message: str) 
 
 
 def _is_scoped_process(node: object) -> bool:
-    return isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None)
+    return isinstance(node, (WithAsync, With))
 
 
 def _validate_shape_sequence(
@@ -614,7 +573,7 @@ def _node_has_terminal_output(node: object) -> bool:
         return True
     if isinstance(node, WithAsync):
         return _has_terminal_output(node.process.nodes)
-    if isinstance(node, With) and node.process is not None:
+    if isinstance(node, With):
         return _has_terminal_output(node.process.nodes)
     return False
 
