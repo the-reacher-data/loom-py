@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from omegaconf import DictConfig
@@ -35,32 +36,46 @@ from tests.unit.streaming.flows.cases.shared import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _ForkCaseSpec:
+    """Parameters for a reusable fork flow-case builder."""
+
+    name: str
+    source_payload: type[Any]
+    process: Process[Any, Any]
+    input_messages: tuple[Any, ...]
+    expected_payloads: tuple[Any, ...]
+    resource_events: ResourceEvents | None = None
+
+
 def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a terminal Fork flow with independent branch outputs."""
     return _build_fork_case(
         config=config,
-        name="orders_fork",
-        source_payload=RoutedOrder,
-        process=Process(
-            Fork.by(
-                msg.payload.lane,
-                branches={
-                    "vip": Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=RoutedOrder)),
-                    "standard": Process(
-                        IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=RoutedOrder)
-                    ),
-                },
-                default=Process(Drain()),
-            )
-        ),
-        input_messages=(
-            _routed_order_message("o-1", "vip"),
-            _routed_order_message("o-2", "standard"),
-            _routed_order_message("o-3", "manual"),
-        ),
-        expected_payloads=(
-            RoutedOrder(order_id="o-1", lane="vip"),
-            RoutedOrder(order_id="o-2", lane="standard"),
+        spec=_ForkCaseSpec(
+            name="orders_fork",
+            source_payload=RoutedOrder,
+            process=Process(
+                Fork.by(
+                    msg.payload.lane,
+                    branches={
+                        "vip": Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=RoutedOrder)),
+                        "standard": Process(
+                            IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=RoutedOrder)
+                        ),
+                    },
+                    default=Process(Drain()),
+                )
+            ),
+            input_messages=(
+                _routed_order_message("o-1", "vip"),
+                _routed_order_message("o-2", "standard"),
+                _routed_order_message("o-3", "manual"),
+            ),
+            expected_payloads=(
+                RoutedOrder(order_id="o-1", lane="vip"),
+                RoutedOrder(order_id="o-2", lane="standard"),
+            ),
         ),
     )
 
@@ -70,35 +85,40 @@ def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
     events = ResourceEvents()
     return _build_fork_case(
         config=config,
-        name="orders_fork_with",
-        source_payload=OrderPlaced,
-        process=Process(
-            Fork.when(
-                routes=[
-                    ForkRoute(
-                        when=msg.payload.amount >= 100,
-                        process=Process(
-                            CollectBatch(max_records=1, timeout_ms=1000),
-                            With(
-                                process=Process(
-                                    PriceOrder(),
-                                    IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=PricedOrder),
+        spec=_ForkCaseSpec(
+            name="orders_fork_with",
+            source_payload=OrderPlaced,
+            process=Process(
+                Fork.when(
+                    routes=[
+                        ForkRoute(
+                            when=msg.payload.amount >= 100,
+                            process=Process(
+                                CollectBatch(max_records=1, timeout_ms=1000),
+                                With(
+                                    process=Process(
+                                        PriceOrder(),
+                                        IntoTopic(
+                                            _ORDERS_FORK_VIP_TOPIC,
+                                            payload=PricedOrder,
+                                        ),
+                                    ),
+                                    client=ContextFactory(events.create_pricing_client),
+                                    scope=ResourceScope.BATCH,
                                 ),
-                                client=ContextFactory(events.create_pricing_client),
-                                scope=ResourceScope.BATCH,
                             ),
-                        ),
-                    )
-                ],
-                default=Process(Drain()),
-            )
+                        )
+                    ],
+                    default=Process(Drain()),
+                )
+            ),
+            input_messages=(
+                _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
+                _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
+            ),
+            expected_payloads=(PricedOrder(order_id="o-1", price_band="high", client_id=1),),
+            resource_events=events,
         ),
-        input_messages=(
-            _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
-            _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
-        ),
-        expected_payloads=(PricedOrder(order_id="o-1", price_band="high", client_id=1),),
-        resource_events=events,
     )
 
 
@@ -106,33 +126,38 @@ def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
     """Build a Fork.when flow with ordered predicate dispatch."""
     return _build_fork_case(
         config=config,
-        name="orders_fork_when",
-        source_payload=OrderPlaced,
-        process=Process(
-            Fork.when(
-                routes=[
-                    ForkRoute(
-                        when=msg.payload.segment == "vip",
-                        process=Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=OrderPlaced)),
-                    ),
-                    ForkRoute(
-                        when=msg.payload.amount >= 100,
-                        process=Process(
-                            IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=OrderPlaced)
+        spec=_ForkCaseSpec(
+            name="orders_fork_when",
+            source_payload=OrderPlaced,
+            process=Process(
+                Fork.when(
+                    routes=[
+                        ForkRoute(
+                            when=msg.payload.segment == "vip",
+                            process=Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=OrderPlaced)),
                         ),
-                    ),
-                ],
-                default=Process(Drain()),
-            )
-        ),
-        input_messages=(
-            _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
-            _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
-            _message(OrderPlaced(order_id="o-3", amount=500, segment="manual")),
-        ),
-        expected_payloads=(
-            OrderPlaced(order_id="o-1", amount=100, segment="vip"),
-            OrderPlaced(order_id="o-3", amount=500, segment="manual"),
+                        ForkRoute(
+                            when=msg.payload.amount >= 100,
+                            process=Process(
+                                IntoTopic(
+                                    _ORDERS_FORK_STANDARD_TOPIC,
+                                    payload=OrderPlaced,
+                                )
+                            ),
+                        ),
+                    ],
+                    default=Process(Drain()),
+                )
+            ),
+            input_messages=(
+                _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
+                _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
+                _message(OrderPlaced(order_id="o-3", amount=500, segment="manual")),
+            ),
+            expected_payloads=(
+                OrderPlaced(order_id="o-1", amount=100, segment="vip"),
+                OrderPlaced(order_id="o-3", amount=500, segment="manual"),
+            ),
         ),
     )
 
@@ -140,22 +165,17 @@ def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
 def _build_fork_case(
     *,
     config: DictConfig,
-    name: str,
-    source_payload: type[Any],
-    process: Process[Any, Any],
-    input_messages: tuple[Any, ...],
-    expected_payloads: tuple[Any, ...],
-    resource_events: ResourceEvents | None = None,
+    spec: _ForkCaseSpec,
 ) -> StreamFlowCase:
     flow: StreamFlow[Any, Any] = StreamFlow(
-        name=name,
-        source=FromTopic("orders.raw", payload=source_payload),
-        process=process,
+        name=spec.name,
+        source=FromTopic("orders.raw", payload=spec.source_payload),
+        process=spec.process,
     )
     return _build_case(
         flow=flow,
         config=config,
-        input_messages=input_messages,
-        expected_payloads=expected_payloads,
-        resource_events=resource_events,
+        input_messages=spec.input_messages,
+        expected_payloads=spec.expected_payloads,
+        resource_events=spec.resource_events,
     )

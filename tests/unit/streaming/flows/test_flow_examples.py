@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -42,7 +43,7 @@ class TestBytewaxFlowExamples:
 
         assert tuple(message.payload for message in results) == flow_case.expected_payloads
         if flow_case.resource_events is not None:
-            _assert_resource_events(flow_case)
+            _RESOURCE_EVENT_ASSERTIONS[flow_case.flow.name](flow_case)
             return
 
     def test_routes_record_step_errors_to_task_error_sink(
@@ -142,24 +143,6 @@ def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
     return runner.output
 
 
-def _assert_resource_events(case: StreamFlowCase) -> None:
-    assert case.resource_events is not None
-    opened, closed = case.resource_events.snapshot()
-    if case.flow.name == "orders_price_batch":
-        assert opened == (1,)
-        assert closed == (1,)
-        return
-    if case.flow.name == "orders_price_batch_scope":
-        assert opened == (1, 2)
-        assert closed == (1, 2)
-        return
-    if case.flow.name == "orders_fork_with":
-        assert opened == (1,)
-        assert closed == (1,)
-        return
-    raise AssertionError(f"Unhandled resource-event flow {case.flow.name}")
-
-
 class _Order(LoomStruct):
     order_id: str
     amount: int
@@ -193,3 +176,31 @@ class _SlowAsyncStep(RecordStep[_Order, _ValidatedOrder]):
 class _UpperBatchStep(BatchStep[_Order, _ValidatedOrder]):
     def execute(self, messages: list[Message[_Order]], **kwargs: object) -> list[_ValidatedOrder]:
         return [_ValidatedOrder(order_id=m.payload.order_id.upper()) for m in messages]
+
+
+def _assert_orders_price_batch(case: StreamFlowCase) -> None:
+    assert case.resource_events is not None
+    opened, closed = case.resource_events.snapshot()
+    assert opened == (1,)
+    assert closed == (1,)
+
+
+def _assert_orders_price_batch_scope(case: StreamFlowCase) -> None:
+    assert case.resource_events is not None
+    opened, closed = case.resource_events.snapshot()
+    assert opened == (1, 2)
+    assert closed == (1, 2)
+
+
+def _assert_orders_fork_with(case: StreamFlowCase) -> None:
+    assert case.resource_events is not None
+    opened, closed = case.resource_events.snapshot()
+    assert opened == (1,)
+    assert closed == (1,)
+
+
+_RESOURCE_EVENT_ASSERTIONS: dict[str, Callable[[StreamFlowCase], None]] = {
+    "orders_price_batch": _assert_orders_price_batch,
+    "orders_price_batch_scope": _assert_orders_price_batch_scope,
+    "orders_fork_with": _assert_orders_fork_with,
+}
