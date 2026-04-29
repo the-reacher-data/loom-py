@@ -55,27 +55,9 @@ def build_fork_flow_case(config: DictConfig) -> StreamFlowCase:
         spec=_ForkCaseSpec(
             name="orders_fork",
             source_payload=RoutedOrder,
-            process=Process(
-                Fork.by(
-                    msg.payload.lane,
-                    branches={
-                        "vip": Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=RoutedOrder)),
-                        "standard": Process(
-                            IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=RoutedOrder)
-                        ),
-                    },
-                    default=Process(Drain()),
-                )
-            ),
-            input_messages=(
-                _routed_order_message("o-1", "vip"),
-                _routed_order_message("o-2", "standard"),
-                _routed_order_message("o-3", "manual"),
-            ),
-            expected_payloads=(
-                RoutedOrder(order_id="o-1", lane="vip"),
-                RoutedOrder(order_id="o-2", lane="standard"),
-            ),
+            process=_fork_by_process(),
+            input_messages=_fork_by_input_messages(),
+            expected_payloads=_fork_by_expected_payloads(),
         ),
     )
 
@@ -88,35 +70,9 @@ def build_fork_with_flow_case(config: DictConfig) -> StreamFlowCase:
         spec=_ForkCaseSpec(
             name="orders_fork_with",
             source_payload=OrderPlaced,
-            process=Process(
-                Fork.when(
-                    routes=[
-                        ForkRoute(
-                            when=msg.payload.amount >= 100,
-                            process=Process(
-                                CollectBatch(max_records=1, timeout_ms=1000),
-                                With(
-                                    process=Process(
-                                        PriceOrder(),
-                                        IntoTopic(
-                                            _ORDERS_FORK_VIP_TOPIC,
-                                            payload=PricedOrder,
-                                        ),
-                                    ),
-                                    client=ContextFactory(events.create_pricing_client),
-                                    scope=ResourceScope.BATCH,
-                                ),
-                            ),
-                        )
-                    ],
-                    default=Process(Drain()),
-                )
-            ),
-            input_messages=(
-                _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
-                _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
-            ),
-            expected_payloads=(PricedOrder(order_id="o-1", price_band="high", client_id=1),),
+            process=_fork_with_process(events),
+            input_messages=_fork_with_input_messages(),
+            expected_payloads=_fork_with_expected_payloads(),
             resource_events=events,
         ),
     )
@@ -129,35 +85,9 @@ def build_fork_when_flow_case(config: DictConfig) -> StreamFlowCase:
         spec=_ForkCaseSpec(
             name="orders_fork_when",
             source_payload=OrderPlaced,
-            process=Process(
-                Fork.when(
-                    routes=[
-                        ForkRoute(
-                            when=msg.payload.segment == "vip",
-                            process=Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=OrderPlaced)),
-                        ),
-                        ForkRoute(
-                            when=msg.payload.amount >= 100,
-                            process=Process(
-                                IntoTopic(
-                                    _ORDERS_FORK_STANDARD_TOPIC,
-                                    payload=OrderPlaced,
-                                )
-                            ),
-                        ),
-                    ],
-                    default=Process(Drain()),
-                )
-            ),
-            input_messages=(
-                _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
-                _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
-                _message(OrderPlaced(order_id="o-3", amount=500, segment="manual")),
-            ),
-            expected_payloads=(
-                OrderPlaced(order_id="o-1", amount=100, segment="vip"),
-                OrderPlaced(order_id="o-3", amount=500, segment="manual"),
-            ),
+            process=_fork_when_process(),
+            input_messages=_fork_when_input_messages(),
+            expected_payloads=_fork_when_expected_payloads(),
         ),
     )
 
@@ -178,4 +108,105 @@ def _build_fork_case(
         input_messages=spec.input_messages,
         expected_payloads=spec.expected_payloads,
         resource_events=spec.resource_events,
+    )
+
+
+def _fork_by_process() -> Process[Any, Any]:
+    return Process(
+        Fork.by(
+            msg.payload.lane,
+            branches={
+                "vip": Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=RoutedOrder)),
+                "standard": Process(IntoTopic(_ORDERS_FORK_STANDARD_TOPIC, payload=RoutedOrder)),
+            },
+            default=Process(Drain()),
+        )
+    )
+
+
+def _fork_by_input_messages() -> tuple[Any, ...]:
+    return (
+        _routed_order_message("o-1", "vip"),
+        _routed_order_message("o-2", "standard"),
+        _routed_order_message("o-3", "manual"),
+    )
+
+
+def _fork_by_expected_payloads() -> tuple[Any, ...]:
+    return (
+        RoutedOrder(order_id="o-1", lane="vip"),
+        RoutedOrder(order_id="o-2", lane="standard"),
+    )
+
+
+def _fork_with_process(events: ResourceEvents) -> Process[Any, Any]:
+    return Process(
+        Fork.when(
+            routes=[
+                ForkRoute(
+                    when=msg.payload.amount >= 100,
+                    process=Process(
+                        CollectBatch(max_records=1, timeout_ms=1000),
+                        With(
+                            process=Process(
+                                PriceOrder(),
+                                IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=PricedOrder),
+                            ),
+                            client=ContextFactory(events.create_pricing_client),
+                            scope=ResourceScope.BATCH,
+                        ),
+                    ),
+                )
+            ],
+            default=Process(Drain()),
+        )
+    )
+
+
+def _fork_with_input_messages() -> tuple[Any, ...]:
+    return (
+        _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
+        _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
+    )
+
+
+def _fork_with_expected_payloads() -> tuple[Any, ...]:
+    return (PricedOrder(order_id="o-1", price_band="high", client_id=1),)
+
+
+def _fork_when_process() -> Process[Any, Any]:
+    return Process(
+        Fork.when(
+            routes=[
+                ForkRoute(
+                    when=msg.payload.segment == "vip",
+                    process=Process(IntoTopic(_ORDERS_FORK_VIP_TOPIC, payload=OrderPlaced)),
+                ),
+                ForkRoute(
+                    when=msg.payload.amount >= 100,
+                    process=Process(
+                        IntoTopic(
+                            _ORDERS_FORK_STANDARD_TOPIC,
+                            payload=OrderPlaced,
+                        )
+                    ),
+                ),
+            ],
+            default=Process(Drain()),
+        )
+    )
+
+
+def _fork_when_input_messages() -> tuple[Any, ...]:
+    return (
+        _message(OrderPlaced(order_id="o-1", amount=100, segment="vip")),
+        _message(OrderPlaced(order_id="o-2", amount=50, segment="standard")),
+        _message(OrderPlaced(order_id="o-3", amount=500, segment="manual")),
+    )
+
+
+def _fork_when_expected_payloads() -> tuple[Any, ...]:
+    return (
+        OrderPlaced(order_id="o-1", amount=100, segment="vip"),
+        OrderPlaced(order_id="o-3", amount=500, segment="manual"),
     )
