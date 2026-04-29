@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import pytest
 
 from loom.streaming.bytewax import _runtime_io
-from loom.streaming.compiler._plan import CompiledSource
 from loom.streaming.kafka._config import ConsumerSettings
+from tests.unit.streaming.bytewax.cases import build_compiled_source
 from tests.unit.streaming.kafka.fakes import RuntimeConsumerStub
 
 pytestmark = pytest.mark.bytewax
@@ -18,7 +16,6 @@ class TestKafkaPollingSource:
     def test_uses_configured_poll_timeout(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        bytewax_runtime_source_factory: Callable[[int], CompiledSource],
     ) -> None:
         """_KafkaPollingSource must forward poll_timeout_ms to the consumer."""
         polled_with: list[int] = []
@@ -33,7 +30,7 @@ class TestKafkaPollingSource:
 
         monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _PollingConsumer)
 
-        source = _runtime_io._KafkaPollingSource(bytewax_runtime_source_factory(250))
+        source = _runtime_io._KafkaPollingSource(build_compiled_source(250))
 
         with pytest.raises(_runtime_io._KafkaPollingSource.Retry):
             source.next_item()
@@ -43,7 +40,6 @@ class TestKafkaPollingSource:
     def test_close_delegates_to_raw_consumer(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        bytewax_runtime_source_factory: Callable[[int], CompiledSource],
     ) -> None:
         closed: list[str] = []
 
@@ -56,7 +52,7 @@ class TestKafkaPollingSource:
 
         monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _ClosingConsumer)
 
-        source = _runtime_io._KafkaPollingSource(bytewax_runtime_source_factory(250))
+        source = _runtime_io._KafkaPollingSource(build_compiled_source(250))
         source.close()
 
         assert closed == ["done"]

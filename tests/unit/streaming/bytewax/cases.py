@@ -15,6 +15,7 @@ from loom.streaming.compiler._plan import (
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
+from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from loom.streaming.nodes._step import RecordStep
 
@@ -93,4 +94,53 @@ def build_compiled_plan(
         terminal_sinks=terminal_sinks or {},
         error_routes=error_routes or {},
         needs_async_bridge=False,
+    )
+
+
+def build_compiled_source(poll_timeout_ms: int = 100) -> CompiledSource:
+    """Build a reusable compiled source for Bytewax adapter tests."""
+    return CompiledSource(
+        settings=ConsumerSettings(
+            brokers=("localhost:9092",),
+            group_id="test",
+            topics=("orders.in",),
+            poll_timeout_ms=poll_timeout_ms,
+        ),
+        topics=("orders.in",),
+        payload_type=Order,
+        shape=StreamShape.RECORD,
+        decode_strategy="record",
+    )
+
+
+def build_compiled_sink(
+    topic: str = "orders.out",
+    partition_policy: PartitionPolicy[Any] | None = None,
+    dlq_topic: str | None = None,
+) -> CompiledSink:
+    """Build a reusable compiled sink for Bytewax adapter tests."""
+    return CompiledSink(
+        settings=ProducerSettings(
+            brokers=("localhost:9092",),
+            client_id="test-producer",
+            topic=topic,
+        ),
+        topic=topic,
+        partition_policy=partition_policy,
+        dlq_topic=dlq_topic,
+    )
+
+
+def build_order_message(
+    order_id: str,
+    key: bytes | str | None = None,
+) -> Message[Order]:
+    """Build a reusable Bytewax order message with transport metadata."""
+    return Message(
+        payload=Order(order_id=order_id),
+        meta=MessageMeta(
+            message_id="msg-1",
+            topic="orders.in",
+            key=key,
+        ),
     )
