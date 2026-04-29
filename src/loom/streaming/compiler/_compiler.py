@@ -374,6 +374,21 @@ def _scoped_node(node: object) -> With[Any, Any] | WithAsync[Any, Any] | None:
     return None
 
 
+def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
+    """Yield each group of child nodes to recurse into for a single process node."""
+    if isinstance(node, Router):
+        for _, branch_nodes in _router_branch_nodes(node):
+            yield branch_nodes
+    elif isinstance(node, Fork):
+        for _, branch_nodes in _fork_branch_nodes(node):
+            yield branch_nodes
+    elif isinstance(node, Broadcast):
+        for route in node.routes:
+            yield route.process.nodes
+    elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
+        yield node.process.nodes
+
+
 def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
     """Yield every process node recursively, including Router, Fork, Broadcast, and With branches.
 
@@ -383,22 +398,36 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
     """
     for node in nodes:
         yield node
-        if isinstance(node, Router):
-            for _, branch_nodes in _router_branch_nodes(node):
-                yield from _walk_all_process_nodes(branch_nodes)
-        elif isinstance(node, Fork):
-            for _, branch_nodes in _fork_branch_nodes(node):
-                yield from _walk_all_process_nodes(branch_nodes)
-        elif isinstance(node, Broadcast):
-            for route in node.routes:
-                yield from _walk_all_process_nodes(route.process.nodes)
-        elif isinstance(node, WithAsync) or isinstance(node, With) and node.process is not None:
-            yield from _walk_all_process_nodes(node.process.nodes)
+        for child_nodes in _iter_child_node_groups(node):
+            yield from _walk_all_process_nodes(child_nodes)
 
 
 def _node_needs_async_bridge(node: object) -> bool:
     """Return whether a single node requires an AsyncBridge."""
     return isinstance(node, WithAsync)
+
+
+def _check_input_shape(
+    node: object,
+    current_shape: StreamShape,
+    errors: list[str],
+) -> None:
+    expected = _node_input_shape(node)
+    if expected is not None and current_shape != expected:
+        errors.append(
+            f"shape mismatch: expected {expected.value} but got {current_shape.value} "
+            f"before {type(node).__name__}"
+        )
+
+
+def _must_be_last_errors(idx: int, node_list: tuple[object, ...], message: str) -> list[str]:
+    if idx != len(node_list) - 1:
+        return [message]
+    return []
+
+
+def _is_scoped_process(node: object) -> bool:
+    return isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None)
 
 
 def _validate_shape_sequence(
@@ -410,36 +439,40 @@ def _validate_shape_sequence(
     node_list = tuple(nodes)
 
     for idx, node in enumerate(node_list):
-        expected = _node_input_shape(node)
-        if expected is not None and current_shape != expected:
-            errors.append(
-                f"shape mismatch: expected {expected.value} but got {current_shape.value} "
-                f"before {type(node).__name__}"
-            )
+        _check_input_shape(node, current_shape, errors)
 
-        if isinstance(node, (IntoTopic, Drain)) and idx != len(node_list) - 1:
-            errors.append(f"{type(node).__name__} must be the last node in a process")
+        if isinstance(node, (IntoTopic, Drain)):
+            errors.extend(
+                _must_be_last_errors(
+                    idx, node_list, f"{type(node).__name__} must be the last node in a process"
+                )
+            )
             break
 
         if isinstance(node, Fork):
             fork_errors, current_shape = _validate_fork_shapes(node, current_shape)
             errors.extend(fork_errors)
-            if idx != len(node_list) - 1:
-                errors.append("fork must be the last node in a process")
+            errors.extend(
+                _must_be_last_errors(idx, node_list, "fork must be the last node in a process")
+            )
             break
 
         if isinstance(node, Broadcast):
             broadcast_errors, current_shape = _validate_broadcast_shapes(node, current_shape)
             errors.extend(broadcast_errors)
-            if idx != len(node_list) - 1:
-                errors.append("broadcast must be the last node in a process")
+            errors.extend(
+                _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
+            )
             break
 
-        if isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
-            if idx != len(node_list) - 1:
-                errors.append(
-                    f"{type(node).__name__}(process=...) must be the last node in a process"
+        if _is_scoped_process(node):
+            errors.extend(
+                _must_be_last_errors(
+                    idx,
+                    node_list,
+                    f"{type(node).__name__}(process=...) must be the last node in a process",
                 )
+            )
             current_shape = StreamShape.NONE
             break
 
@@ -570,25 +603,24 @@ def _fork_branch_count(fork: Fork[StreamPayload]) -> int:
     return len(fork.predicate_routes)
 
 
-def _has_terminal_output(nodes: Iterable[object]) -> bool:
-    for node in nodes:
-        if isinstance(node, (IntoTopic, Drain)):
-            return True
-        if isinstance(node, Router) and _router_has_terminal_output(node):
-            return True
-        if isinstance(node, Fork) and _fork_has_terminal_output(node):
-            return True
-        if isinstance(node, Broadcast):
-            return True  # Broadcast always declares explicit outputs per route
-        if isinstance(node, WithAsync) and _has_terminal_output(node.process.nodes):
-            return True
-        if (
-            isinstance(node, With)
-            and node.process is not None
-            and _has_terminal_output(node.process.nodes)
-        ):
-            return True
+def _node_has_terminal_output(node: object) -> bool:
+    if isinstance(node, (IntoTopic, Drain)):
+        return True
+    if isinstance(node, Router):
+        return _router_has_terminal_output(node)
+    if isinstance(node, Fork):
+        return _fork_has_terminal_output(node)
+    if isinstance(node, Broadcast):
+        return True
+    if isinstance(node, WithAsync):
+        return _has_terminal_output(node.process.nodes)
+    if isinstance(node, With) and node.process is not None:
+        return _has_terminal_output(node.process.nodes)
     return False
+
+
+def _has_terminal_output(nodes: Iterable[object]) -> bool:
+    return any(_node_has_terminal_output(node) for node in nodes)
 
 
 def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) -> bool:

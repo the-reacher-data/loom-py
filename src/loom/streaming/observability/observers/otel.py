@@ -126,6 +126,7 @@ class OtelFlowObserver:
         span = self._node_spans.get(_node_key(flow_name, node_idx))
         if span is None:
             return
+        span.set_attribute(_ATTR_NODE_TYPE, node_type)
         span.record_exception(exc)
         span.set_status(StatusCode.ERROR, description=repr(exc))
 

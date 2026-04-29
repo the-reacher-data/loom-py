@@ -131,6 +131,7 @@ class FakeRiskClient:
         return None
 
     async def risk_band(self, amount: int) -> str:
+        await asyncio.sleep(0)
         return "high" if amount >= 100 else "low"
 
 

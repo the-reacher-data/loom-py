@@ -19,6 +19,9 @@ from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from loom.streaming.nodes._step import RecordStep
 
+_BROKER = "localhost:9092"
+_ORDERS_IN_TOPIC = "orders.in"
+
 
 class Order(LoomFrozenStruct, frozen=True):
     """Canonical order payload used across Bytewax tests."""
@@ -69,7 +72,7 @@ def build_compiled_plan(
     if output is not None:
         compiled_output = CompiledSink(
             settings=ProducerSettings(
-                brokers=("localhost:9092",),
+                brokers=(_BROKER,),
                 client_id="test-producer",
                 topic=output.name,
             ),
@@ -80,7 +83,7 @@ def build_compiled_plan(
         name="test_flow",
         source=CompiledSource(
             settings=ConsumerSettings(
-                brokers=("localhost:9092",),
+                brokers=(_BROKER,),
                 group_id="test",
                 topics=("in",),
             ),
@@ -101,12 +104,12 @@ def build_compiled_source(poll_timeout_ms: int = 100) -> CompiledSource:
     """Build a reusable compiled source for Bytewax adapter tests."""
     return CompiledSource(
         settings=ConsumerSettings(
-            brokers=("localhost:9092",),
+            brokers=(_BROKER,),
             group_id="test",
-            topics=("orders.in",),
+            topics=(_ORDERS_IN_TOPIC,),
             poll_timeout_ms=poll_timeout_ms,
         ),
-        topics=("orders.in",),
+        topics=(_ORDERS_IN_TOPIC,),
         payload_type=Order,
         shape=StreamShape.RECORD,
         decode_strategy="record",
@@ -121,7 +124,7 @@ def build_compiled_sink(
     """Build a reusable compiled sink for Bytewax adapter tests."""
     return CompiledSink(
         settings=ProducerSettings(
-            brokers=("localhost:9092",),
+            brokers=(_BROKER,),
             client_id="test-producer",
             topic=topic,
         ),
@@ -140,7 +143,7 @@ def build_order_message(
         payload=Order(order_id=order_id),
         meta=MessageMeta(
             message_id="msg-1",
-            topic="orders.in",
+            topic=_ORDERS_IN_TOPIC,
             key=key,
         ),
     )

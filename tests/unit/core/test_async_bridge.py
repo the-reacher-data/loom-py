@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from loom.core.async_bridge import AsyncBridge
 
 
 async def _return_value(x: int) -> int:
+    await asyncio.sleep(0)
     return x
 
 

@@ -43,7 +43,9 @@ class RecordingFlowObserver:
         status: str,
         duration_ms: int,
     ) -> None:
-        self.events.append(("node_end", flow_name, str(node_idx), node_type, status))
+        self.events.append(
+            ("node_end", flow_name, str(node_idx), node_type, status, str(duration_ms))
+        )
 
     def on_node_error(
         self,

@@ -200,7 +200,8 @@ class TestTerminalNodes:
         runner.run()
 
         results = runner.output
-        assert [message.payload.value for message in results] == ["AA"]
+        assert len(results) == 1, "IntoTopic output must not be counted twice"
+        assert results[0].payload.value == "AA"
 
 
 class TestOutputAndErrorWiring:

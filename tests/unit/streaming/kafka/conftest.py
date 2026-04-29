@@ -16,6 +16,8 @@ from loom.streaming.kafka import (
 from tests.unit.streaming.kafka.cases import OrderCreated, ProductEvent
 from tests.unit.streaming.kafka.fakes import RawConsumerStub, RawProducerStub
 
+_ORDER_CREATED_TYPE = "order.created"
+
 
 @pytest.fixture
 def kafka_registry() -> CollectorRegistry:
@@ -45,11 +47,11 @@ def product_event_payload() -> ProductEvent:
 def order_created_descriptor_v1() -> MessageDescriptor:
     """Return the canonical order.created descriptor used across Kafka tests."""
     return MessageDescriptor(
-        message_type="order.created",
+        message_type=_ORDER_CREATED_TYPE,
         message_version=1,
         schema_ref=SchemaRef(
             namespace="orders",
-            name="order.created",
+            name=_ORDER_CREATED_TYPE,
             version="1",
             format="loom-msgpack",
         ),
@@ -59,7 +61,7 @@ def order_created_descriptor_v1() -> MessageDescriptor:
 @pytest.fixture
 def order_created_descriptor_v2() -> MessageDescriptor:
     """Return the alternate order.created descriptor used in trace tests."""
-    return MessageDescriptor(message_type="order.created", message_version=2)
+    return MessageDescriptor(message_type=_ORDER_CREATED_TYPE, message_version=2)
 
 
 @pytest.fixture

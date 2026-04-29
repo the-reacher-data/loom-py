@@ -44,7 +44,6 @@ class TestBytewaxFlowExamples:
         assert tuple(message.payload for message in results) == flow_case.expected_payloads
         if flow_case.resource_events is not None:
             _RESOURCE_EVENT_ASSERTIONS[flow_case.flow.name](flow_case)
-            return
 
     def test_routes_record_step_errors_to_task_error_sink(
         self,

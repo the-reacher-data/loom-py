@@ -82,66 +82,70 @@ def fork_when_flow_case(streaming_kafka_config: DictConfig) -> StreamFlowCase:
     return build_fork_when_flow_case(streaming_kafka_config)
 
 
+_BROKER = "localhost:9092"
+_ORDERS_VALIDATED_TOPIC = "orders.validated"
+
+
 def _streaming_kafka_config_data() -> dict[str, object]:
     return {
         "kafka": {
             "consumer": {
-                "brokers": ["localhost:9092"],
+                "brokers": [_BROKER],
                 "group_id": "test",
                 "topics": ["orders.raw"],
             },
-            "producer": {"brokers": ["localhost:9092"], "topic": "orders.validated"},
+            "producer": {"brokers": [_BROKER], "topic": _ORDERS_VALIDATED_TOPIC},
             "producers": {
-                "orders.validated": {
-                    "brokers": ["localhost:9092"],
-                    "topic": "orders.validated",
+                _ORDERS_VALIDATED_TOPIC: {
+                    "brokers": [_BROKER],
+                    "topic": _ORDERS_VALIDATED_TOPIC,
                 },
                 "orders.routed": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.routed",
                 },
                 "orders.a": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.a",
                 },
                 "orders.b": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.b",
                 },
                 "orders.default": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.default",
                 },
                 "orders.priced": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.priced",
                 },
                 "orders.priced.batch_scope": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.priced.batch_scope",
                 },
                 "orders.scored": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.scored",
                 },
                 "orders.fork.vip": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.fork.vip",
                 },
                 "orders.fork.standard": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.fork.standard",
                 },
                 "events.analytics": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "events.analytics",
                 },
                 "orders.fulfillment": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "orders.fulfillment",
                 },
                 "extra_output": {
-                    "brokers": ["localhost:9092"],
+                    "brokers": [_BROKER],
                     "topic": "extra_output",
                 },
             },
