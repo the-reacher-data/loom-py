@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
@@ -18,46 +16,14 @@ from loom.streaming.kafka import (
     KafkaRecord,
     ProducerSettings,
 )
+from tests.unit.streaming.kafka.fakes import (
+    ConsumerBackendStub,
+    FakeDeliveryError,
+    FakeKafkaMessage,
+    ProducerBackendStub,
+)
 
-
-class _FakeDeliveryError:
-    def __str__(self) -> str:
-        return "delivery-boom"
-
-
-class _FakeProducer:
-    def __init__(self, config: dict[str, str]) -> None:
-        self.config = config
-        self.produced: list[dict[str, Any]] = []
-        self.flush_calls: list[float | None] = []
-        self.poll_calls: list[float] = []
-
-    def produce(
-        self,
-        *,
-        topic: str,
-        key: bytes | None,
-        value: bytes,
-        headers: list[tuple[str, bytes]] | None,
-        timestamp: int | None = None,
-        on_delivery: Any = None,
-    ) -> None:
-        self.produced.append(
-            {
-                "topic": topic,
-                "key": key,
-                "value": value,
-                "headers": headers,
-                "timestamp": timestamp,
-                "on_delivery": on_delivery,
-            }
-        )
-
-    def poll(self, timeout: float) -> None:
-        self.poll_calls.append(timeout)
-
-    def flush(self, timeout: float | None = None) -> None:
-        self.flush_calls.append(timeout)
+pytestmark = pytest.mark.kafka
 
 
 class _FakeError:
@@ -65,88 +31,12 @@ class _FakeError:
         return "boom"
 
 
-class _FakeMessage:
-    def __init__(
-        self,
-        *,
-        topic: str = "orders",
-        key: bytes | None = b"tenant-a",
-        value: bytes | None = b"payload",
-        headers: list[tuple[str, bytes | None]] | None = None,
-        partition: int = 2,
-        offset: int = 9,
-        timestamp_ms: int = 123,
-        error: object | None = None,
-    ) -> None:
-        self._topic = topic
-        self._key = key
-        self._value = value
-        self._headers = headers if headers is not None else [("x", b"1")]
-        self._partition = partition
-        self._offset = offset
-        self._timestamp_ms = timestamp_ms
-        self._error = error
-
-    def error(self) -> object | None:
-        return self._error
-
-    def value(self) -> bytes | None:
-        return self._value
-
-    def timestamp(self) -> tuple[int, int]:
-        return (0, self._timestamp_ms)
-
-    def headers(self) -> list[tuple[str, bytes | None]]:
-        return self._headers
-
-    def key(self) -> bytes | None:
-        return self._key
-
-    def topic(self) -> str:
-        return self._topic
-
-    def partition(self) -> int:
-        return self._partition
-
-    def offset(self) -> int:
-        return self._offset
-
-
-class _FakeConsumer:
-    def __init__(self, config: dict[str, str]) -> None:
-        self.config = config
-        self.subscribed: list[str] = []
-        self.next_message: _FakeMessage | None = None
-        self.closed = False
-        self.poll_calls: list[float] = []
-        self.commit_calls: list[bool] = []
-        self.commit_error: Exception | None = None
-        self.close_error: Exception | None = None
-
-    def subscribe(self, topics: list[str]) -> None:
-        self.subscribed = topics
-
-    def poll(self, timeout: float) -> _FakeMessage | None:
-        self.poll_calls.append(timeout)
-        return self.next_message
-
-    def commit(self, *, asynchronous: bool = False) -> None:
-        if self.commit_error is not None:
-            raise self.commit_error
-        self.commit_calls.append(asynchronous)
-
-    def close(self) -> None:
-        if self.close_error is not None:
-            raise self.close_error
-        self.closed = True
-
-
 class TestKafkaProducerClient:
     def test_raw_producer_sends_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        created: dict[str, _FakeProducer] = {}
+        created: dict[str, ProducerBackendStub] = {}
 
-        def _build(config: dict[str, str]) -> _FakeProducer:
-            fake = _FakeProducer(config)
+        def _build(config: dict[str, str]) -> ProducerBackendStub:
+            fake = ProducerBackendStub(config)
             created["p"] = fake
             return fake
 
@@ -184,11 +74,11 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, _FakeProducer] = {}
+        created: dict[str, ProducerBackendStub] = {}
         seen: list[KafkaDeliveryError | None] = []
 
-        def _build(config: dict[str, str]) -> _FakeProducer:
-            fake = _FakeProducer(config)
+        def _build(config: dict[str, str]) -> ProducerBackendStub:
+            fake = ProducerBackendStub(config)
             created["p"] = fake
             return fake
 
@@ -205,7 +95,7 @@ class TestKafkaProducerClient:
         callback = created["p"].produced[0]["on_delivery"]
         assert callback is not None
 
-        callback(_FakeDeliveryError(), None)
+        callback(FakeDeliveryError(), None)
 
         with pytest.raises(KafkaDeliveryError, match="delivery-boom"):
             producer.flush()
@@ -215,10 +105,10 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, _FakeProducer] = {}
+        created: dict[str, ProducerBackendStub] = {}
 
-        def _build(config: dict[str, str]) -> _FakeProducer:
-            fake = _FakeProducer(config)
+        def _build(config: dict[str, str]) -> ProducerBackendStub:
+            fake = ProducerBackendStub(config)
             created["p"] = fake
             return fake
 
@@ -228,7 +118,7 @@ class TestKafkaProducerClient:
         )
         producer = KafkaProducerClient(ProducerSettings(brokers=("k1:9092",)))
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
-        created["p"].produced[0]["on_delivery"](_FakeDeliveryError(), None)
+        created["p"].produced[0]["on_delivery"](FakeDeliveryError(), None)
 
         with pytest.raises(KafkaDeliveryError, match="delivery-boom"):
             producer.flush()
@@ -240,10 +130,10 @@ class TestKafkaProducerClient:
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
     ) -> None:
-        created: dict[str, _FakeProducer] = {}
+        created: dict[str, ProducerBackendStub] = {}
 
-        def _build(config: dict[str, str]) -> _FakeProducer:
-            fake = _FakeProducer(config)
+        def _build(config: dict[str, str]) -> ProducerBackendStub:
+            fake = ProducerBackendStub(config)
             created["p"] = fake
             return fake
 
@@ -267,10 +157,10 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, _FakeProducer] = {}
+        created: dict[str, ProducerBackendStub] = {}
 
-        def _build(config: dict[str, str]) -> _FakeProducer:
-            fake = _FakeProducer(config)
+        def _build(config: dict[str, str]) -> ProducerBackendStub:
+            fake = ProducerBackendStub(config)
             created["p"] = fake
             return fake
 
@@ -288,7 +178,7 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        class _FlushFailingProducer(_FakeProducer):
+        class _FlushFailingProducer(ProducerBackendStub):
             def flush(self, timeout: float | None = None) -> None:
                 super().flush(timeout)
                 raise RuntimeError("close-boom")
@@ -307,8 +197,8 @@ class TestKafkaProducerClient:
 
 class TestKafkaConsumerClient:
     def test_raw_consumer_polls_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _FakeConsumer({})
-        fake.next_message = _FakeMessage(value=b"raw-bytes")
+        fake = ConsumerBackendStub({})
+        fake.next_message = FakeKafkaMessage(value=b"raw-bytes")
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -336,7 +226,7 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = _FakeConsumer({})
+        fake = ConsumerBackendStub({})
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -347,8 +237,8 @@ class TestKafkaConsumerClient:
         assert consumer.poll(100) is None
 
     def test_raw_consumer_raises_on_kafka_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _FakeConsumer({})
-        fake.next_message = _FakeMessage(error=_FakeError())
+        fake = ConsumerBackendStub({})
+        fake.next_message = FakeKafkaMessage(error=_FakeError())
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -360,7 +250,7 @@ class TestKafkaConsumerClient:
             consumer.poll(100)
 
     def test_raw_consumer_commit_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _FakeConsumer({})
+        fake = ConsumerBackendStub({})
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -374,7 +264,7 @@ class TestKafkaConsumerClient:
         assert fake.commit_calls == [True]
 
     def test_raw_consumer_commit_wraps_backend_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = _FakeConsumer({})
+        fake = ConsumerBackendStub({})
         fake.commit_error = RuntimeError("commit-boom")
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
@@ -391,8 +281,8 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        class _InterruptingConsumer(_FakeConsumer):
-            def poll(self, timeout: float) -> _FakeMessage | None:
+        class _InterruptingConsumer(ConsumerBackendStub):
+            def poll(self, timeout: float) -> FakeKafkaMessage | None:
                 del timeout
                 raise KeyboardInterrupt
 
@@ -414,8 +304,8 @@ class TestKafkaConsumerClient:
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
     ) -> None:
-        fake = _FakeConsumer({})
-        fake.next_message = _FakeMessage(value=b"data")
+        fake = ConsumerBackendStub({})
+        fake.next_message = FakeKafkaMessage(value=b"data")
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -434,7 +324,7 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = _FakeConsumer({})
+        fake = ConsumerBackendStub({})
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",
             lambda config: fake,
@@ -451,7 +341,7 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = _FakeConsumer({})
+        fake = ConsumerBackendStub({})
         fake.close_error = RuntimeError("close-boom")
         monkeypatch.setattr(
             "loom.streaming.kafka.client._consumer._Consumer",

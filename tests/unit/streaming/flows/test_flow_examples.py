@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from omegaconf import DictConfig
 
 from loom.core.model import LoomStruct
@@ -26,6 +27,8 @@ from loom.streaming import (
 )
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.flows.cases import StreamFlowCase
+
+pytestmark = pytest.mark.integration
 
 
 class TestBytewaxFlowExamples:

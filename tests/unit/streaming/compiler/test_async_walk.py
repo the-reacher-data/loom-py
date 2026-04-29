@@ -17,7 +17,6 @@ from loom.streaming import (
     msg,
 )
 from loom.streaming.compiler import compile_flow
-from loom.streaming.compiler._compiler import _walk_all_process_nodes
 from tests.unit.streaming.compiler.cases import Order, Result
 
 
@@ -65,37 +64,28 @@ class TestAsyncBridgeDetection:
 
         assert plan.needs_async_bridge is False
 
-
-class TestProcessWalker:
-    def test_walk_all_process_nodes_yields_nodes_inside_router_branch(self) -> None:
-        """_walk_all_process_nodes must recurse into Router sub-processes."""
-        async_node: WithAsync[Order, Result] = WithAsync(
-            process=Process(IntoTopic("out", payload=Result))
-        )
-        router: Router[Order, Result] = Router.when(
-            routes=[Route(when=msg.payload.order_id != "", process=Process(async_node))]
-        )
-
-        all_nodes = list(_walk_all_process_nodes([router]))
-
-        assert router in all_nodes
-        assert async_node in all_nodes
-
-    def test_walk_all_process_nodes_yields_nodes_inside_fork_branch(self) -> None:
-        """_walk_all_process_nodes must recurse into Fork sub-processes."""
-        async_node: WithAsync[Order, Result] = WithAsync(
-            process=Process(IntoTopic("out", payload=Result))
-        )
-        fork: Fork[Order] = Fork.when(
-            routes=[
-                ForkRoute(
-                    when=msg.payload.order_id != "",
-                    process=Process(async_node),
+    def test_needs_async_bridge_is_true_when_with_async_is_inside_fork(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="test_async_in_fork",
+            source=FromTopic("in", payload=Order),
+            process=Process(
+                Fork.when(
+                    routes=[
+                        ForkRoute(
+                            when=msg.payload.order_id != "",
+                            process=Process(
+                                WithAsync(
+                                    process=Process(IntoTopic("out", payload=Result)),
+                                ),
+                            ),
+                        )
+                    ],
                 )
-            ]
+            ),
         )
+        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
 
-        all_nodes = list(_walk_all_process_nodes([fork]))
-
-        assert fork in all_nodes
-        assert async_node in all_nodes
+        assert plan.needs_async_bridge is True

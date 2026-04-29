@@ -50,6 +50,11 @@ class CompositeFlowObserver:
     def __init__(self, observers: Sequence[StreamingFlowObserver]) -> None:
         self._observers = tuple(observers)
 
+    @property
+    def observers(self) -> tuple[StreamingFlowObserver, ...]:
+        """Return the composed observers in wiring order."""
+        return self._observers
+
     def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
         """Fan-out flow start event to all observers."""
         notify_observers(self._observers, "on_flow_start", flow_name, node_count=node_count)

@@ -214,6 +214,12 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "DEBUG"
 log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
+markers = [
+    "bytewax: tests that exercise the Bytewax adapter and runtime wiring",
+    "kafka: tests that exercise Kafka transport and codecs",
+    "integration: end-to-end streaming flow tests",
+    "slow: long-running tests that should be opt-in in CI",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

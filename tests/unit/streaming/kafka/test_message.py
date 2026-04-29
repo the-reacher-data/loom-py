@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from loom.core.tracing import reset_trace_id, set_trace_id
 from loom.streaming.kafka import (
     ContentType,
@@ -9,6 +11,8 @@ from loom.streaming.kafka import (
     build_message,
 )
 from tests.unit.streaming.kafka.cases import OrderCreated, ProductEvent
+
+pytestmark = pytest.mark.kafka
 
 
 class TestMessageEnvelope:

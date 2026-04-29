@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from loom.streaming import StreamShape, compile_flow
 from tests.unit.streaming.flows.cases import StreamFlowCase, ValidatedOrder
+
+pytestmark = pytest.mark.integration
 
 
 class TestCompilerFlowExamples:

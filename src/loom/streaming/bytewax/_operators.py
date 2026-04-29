@@ -10,16 +10,19 @@ from contextlib import (
     ExitStack,
     suppress,
 )
-from typing import Protocol, overload
+from typing import Any, Protocol, TypeVar, overload
 
 from loom.core.async_bridge import AsyncBridge
-from loom.streaming.core._typing import StreamPayload
+from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.nodes._with import (
     ContextFactory,
     ResourceScope,
     With,
     WithAsync,
 )
+
+InT = TypeVar("InT", bound=LoomStruct | LoomFrozenStruct)
+OutT = TypeVar("OutT", bound=LoomStruct | LoomFrozenStruct)
 
 
 class ResourceLifecycle(Protocol):
@@ -303,7 +306,7 @@ class AsyncResourceLifecycle:
 
 @overload
 def lifecycle_for(
-    node: With[StreamPayload, StreamPayload],
+    node: With[InT, OutT],
     *,
     bridge: AsyncBridge | None = None,
 ) -> SyncResourceLifecycle: ...
@@ -311,14 +314,14 @@ def lifecycle_for(
 
 @overload
 def lifecycle_for(
-    node: WithAsync[StreamPayload, StreamPayload],
+    node: WithAsync[InT, OutT],
     *,
     bridge: AsyncBridge | None = None,
 ) -> AsyncResourceLifecycle: ...
 
 
 def lifecycle_for(
-    node: With[StreamPayload, StreamPayload] | WithAsync[StreamPayload, StreamPayload],
+    node: With[Any, Any] | WithAsync[Any, Any],
     *,
     bridge: AsyncBridge | None = None,
 ) -> ResourceLifecycle:

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from loom.streaming.kafka import KafkaSettings, load_kafka_settings
+
+pytestmark = pytest.mark.kafka
 
 
 def test_load_kafka_settings_uses_core_config_section(tmp_path: Path) -> None:

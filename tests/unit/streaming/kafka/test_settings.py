@@ -12,6 +12,8 @@ from loom.streaming.kafka import (
     resolve_producer_topic,
 )
 
+pytestmark = pytest.mark.kafka
+
 _TEST_SASL_USERNAME = "test-user"
 _TEST_SASL_SECRET = "test-secret"
 _TEST_CA_LOCATION = "/etc/ssl/certs/test-ca.pem"

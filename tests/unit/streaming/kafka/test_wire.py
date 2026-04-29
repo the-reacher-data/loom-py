@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from loom.streaming import ErrorKind
 from loom.streaming.kafka import (
     DecodeError,
@@ -11,6 +13,8 @@ from loom.streaming.kafka import (
     try_decode_record,
 )
 from tests.unit.streaming.kafka.cases import OrderCreated
+
+pytestmark = pytest.mark.kafka
 
 
 class TestKafkaWireDecode:

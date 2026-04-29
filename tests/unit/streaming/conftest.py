@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
@@ -18,16 +20,18 @@ from tests.unit.streaming.flows.cases import (
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def streaming_kafka_config() -> DictConfig:
     """Return the shared Kafka runtime config used by streaming flow cases."""
     return OmegaConf.create(_streaming_kafka_config_data())
 
 
-@pytest.fixture
-def streaming_kafka_config_dict() -> dict[str, object]:
+@pytest.fixture(scope="session")
+def streaming_kafka_config_dict(
+    streaming_kafka_config: DictConfig,
+) -> dict[str, object]:
     """Return the shared Kafka runtime config as a plain dictionary."""
-    return _streaming_kafka_config_data()
+    return cast(dict[str, object], OmegaConf.to_container(streaming_kafka_config, resolve=True))
 
 
 @pytest.fixture

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from loom.streaming import Message, MessageMeta, StreamFlow
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.flows.cases import StreamFlowCase
 from tests.unit.streaming.observability.cases import DropItem, RecordingFlowObserver
+
+pytestmark = pytest.mark.integration
 
 
 def test_unrouted_error_notifies_observer(
@@ -59,3 +64,24 @@ def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
         event[0] == "node_end" and event[3] == "WithAsync"
         for event in recording_flow_observer.events
     )
+
+
+def test_streaming_test_runner_reset_clears_buffers(
+    drop_flow: StreamFlow[DropItem, DropItem],
+) -> None:
+    config = {
+        "kafka": {
+            "consumer": {"brokers": ["localhost:9092"], "group_id": "g", "topics": ["items"]},
+            "producer": {"brokers": ["localhost:9092"], "topic": "items.out"},
+        }
+    }
+    runner = StreamingTestRunner.from_dict(drop_flow, config=config)
+    runner.with_messages([Message(payload=DropItem(value="x"), meta=MessageMeta(message_id="m1"))])
+    runner.capture_errors(ErrorKind.TASK)
+    runner.output.append(DropItem(value="y"))
+    runner.errors[ErrorKind.TASK].append(DropItem(value="z"))
+
+    runner.reset()
+
+    assert runner.output == []
+    assert runner.errors == {}

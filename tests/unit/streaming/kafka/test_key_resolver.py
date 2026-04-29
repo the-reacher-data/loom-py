@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from loom.streaming.kafka import FixedKey, KafkaRecord, PartitionKeyResolver, PreserveKey
+
+pytestmark = pytest.mark.kafka
 
 
 def test_preserve_key_returns_encoded_string_key() -> None:

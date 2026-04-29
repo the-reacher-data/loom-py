@@ -18,6 +18,8 @@ from loom.streaming.bytewax.runner import (
 from loom.streaming.observability import OtelFlowObserver
 from tests.unit.streaming.bytewax.cases import Order, Result
 
+pytestmark = pytest.mark.bytewax
+
 
 class TestStreamingRunner:
     def test_run_uses_bytewax_cli_main_with_runtime_config(

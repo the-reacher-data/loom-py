@@ -7,6 +7,7 @@ from typing import Any, Protocol, TypeAlias
 
 from bytewax.operators import branch, flat_map
 
+from loom.core.errors.errors import DomainError
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -30,7 +31,8 @@ class _ErrorSplitContext(Protocol):
 
 def _classify_task(exc: Exception) -> ErrorKind:
     """Classify one execution failure as a task error."""
-    del exc
+    if isinstance(exc, DomainError):
+        return ErrorKind.BUSINESS
     return ErrorKind.TASK
 
 
@@ -58,7 +60,7 @@ def _execute_in_boundary(
 
 def _execute_batch_in_boundary(
     classify: Callable[[Exception], ErrorKind],
-    originals: list[Message[StreamPayload]],
+    originals: Sequence[Message[StreamPayload]],
     fn: Callable[[], Sequence[NodeResult]],
 ) -> list[NodeResult]:
     """Execute one batch node and capture failures as per-message envelopes."""

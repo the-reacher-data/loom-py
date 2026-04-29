@@ -13,22 +13,9 @@ from loom.streaming.core._message import Message
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.nodes._boundary import PartitionGuarantee, PartitionPolicy
+from tests.unit.streaming.kafka.fakes import RawProducerStub
 
-
-class _FakeRawProducer:
-    """In-memory raw producer that captures Kafka records."""
-
-    def __init__(self) -> None:
-        self.sent: list[object] = []
-
-    def send(self, record: object) -> None:
-        self.sent.append(record)
-
-    def flush(self, timeout_ms: int | None = None) -> None:
-        del timeout_ms
-
-    def close(self) -> None:
-        return None
+pytestmark = pytest.mark.bytewax
 
 
 class _OrderPartitionStrategy:
@@ -36,22 +23,6 @@ class _OrderPartitionStrategy:
 
     def partition_key(self, message: Message[Any]) -> bytes | str | None:
         return f"order-{message.payload.order_id}".encode()
-
-
-class _FlushErrorProducer:
-    """Raw producer that always raises KafkaDeliveryError on flush."""
-
-    def __init__(self) -> None:
-        self.sent: list[KafkaRecord[bytes]] = []
-
-    def send(self, record: KafkaRecord[bytes]) -> None:
-        self.sent.append(record)
-
-    def flush(self, timeout_ms: int | None = None) -> None:
-        raise KafkaDeliveryError("broker unavailable")
-
-    def close(self) -> None:
-        return None
 
 
 class TestRuntimeSinkPartitionPolicy:
@@ -64,7 +35,7 @@ class TestRuntimeSinkPartitionPolicy:
         ],
         bytewax_order_message_factory: Callable[[str, bytes | str | None], Message[Any]],
     ) -> None:
-        fake_raw = _FakeRawProducer()
+        fake_raw = RawProducerStub()
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
 
         policy = PartitionPolicy(
@@ -91,7 +62,7 @@ class TestRuntimeSinkPartitionPolicy:
         ],
         bytewax_order_message_factory: Callable[[str, bytes | str | None], Message[Any]],
     ) -> None:
-        fake_raw = _FakeRawProducer()
+        fake_raw = RawProducerStub()
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
 
         policy = PartitionPolicy(
@@ -117,7 +88,7 @@ class TestRuntimeSinkPartitionPolicy:
         ],
         bytewax_order_message_factory: Callable[[str, bytes | str | None], Message[Any]],
     ) -> None:
-        fake_raw = _FakeRawProducer()
+        fake_raw = RawProducerStub()
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
 
         policy = PartitionPolicy(
@@ -145,7 +116,8 @@ class TestDlqRouting:
         ],
         bytewax_order_message_factory: Callable[[str, bytes | str | None], Message[Any]],
     ) -> None:
-        fake_raw = _FlushErrorProducer()
+        fake_raw = RawProducerStub()
+        fake_raw.flush_error = KafkaDeliveryError("broker unavailable")
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
 
         sink = _runtime_io._KafkaMessageSinkPartition(
@@ -169,10 +141,32 @@ class TestDlqRouting:
         ],
         bytewax_order_message_factory: Callable[[str, bytes | str | None], Message[Any]],
     ) -> None:
-        fake_raw = _FlushErrorProducer()
+        fake_raw = RawProducerStub()
+        fake_raw.flush_error = KafkaDeliveryError("broker unavailable")
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
 
         sink = _runtime_io._KafkaMessageSinkPartition(bytewax_runtime_sink_factory(None, None))
 
         with pytest.raises(KafkaDeliveryError):
             sink.write_batch([bytewax_order_message_factory("123", None)])
+
+    def test_close_delegates_to_raw_message_producer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        bytewax_runtime_sink_factory: Callable[
+            [PartitionPolicy[Any] | None, str | None],
+            CompiledSink,
+        ],
+    ) -> None:
+        closed: list[str] = []
+
+        class _ClosingProducer(RawProducerStub):
+            def close(self) -> None:
+                closed.append("done")
+
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: _ClosingProducer())
+        sink = _runtime_io._KafkaMessageSinkPartition(bytewax_runtime_sink_factory(None, None))
+
+        sink.close()
+
+        assert closed == ["done"]

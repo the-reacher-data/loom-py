@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from prometheus_client import CollectorRegistry, generate_latest
 
 from loom.prometheus import KafkaPrometheusMetrics
@@ -11,6 +12,8 @@ from loom.streaming.kafka import (
     NoopKafkaObserver,
     StructlogKafkaObserver,
 )
+
+pytestmark = pytest.mark.kafka
 
 
 class _RecordingKafkaObserver:

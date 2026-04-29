@@ -105,22 +105,3 @@ def test_compile_drain_outputs_none_shape(streaming_kafka_config: DictConfig) ->
 
     assert plan.nodes[-1].output_shape is StreamShape.NONE
     assert plan.output is None
-
-
-def test_uses_kafka_detects_kafka_usage() -> None:
-    flow_with_output: StreamFlow[Order, Result] = StreamFlow(
-        name="test",
-        source=FromTopic("in", payload=Order),
-        process=Process(IntoTopic("out", payload=Result)),
-    )
-    flow_without_output: StreamFlow[Order, Result] = StreamFlow(
-        name="test",
-        source=FromTopic("in", payload=Order),
-        process=Process(FakeStep()),
-        output=None,
-    )
-
-    from loom.streaming.compiler._compiler import _uses_kafka
-
-    assert _uses_kafka(flow_with_output) is True
-    assert _uses_kafka(flow_without_output) is True

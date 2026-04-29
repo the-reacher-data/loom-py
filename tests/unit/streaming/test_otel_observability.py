@@ -35,7 +35,7 @@ def test_make_flow_observers_combines_structlog_and_otel() -> None:
     observer = make_flow_observers(StreamingObservabilityConfig(log=True, otel=True))
 
     assert isinstance(observer, CompositeFlowObserver)
-    observers = observer._observers
+    observers = observer.observers
     assert len(observers) == 2
     assert isinstance(observers[0], StructlogFlowObserver)
     assert isinstance(observers[1], OtelFlowObserver)

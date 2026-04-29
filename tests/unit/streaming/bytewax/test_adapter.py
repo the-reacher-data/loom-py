@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import pytest
+
 from loom.streaming.compiler._plan import CompiledPlan, CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -13,6 +15,8 @@ from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import Drain
 from loom.streaming.testing import StreamingTestRunner
 from tests.unit.streaming.bytewax.cases import DoubleStep, Order, Result, SuffixStep
+
+pytestmark = pytest.mark.bytewax
 
 PlanFactory = Callable[..., CompiledPlan]
 
