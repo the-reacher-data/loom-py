@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, get_type_hints
 
+import msgspec
 from omegaconf import DictConfig
 
 from loom.core.config import ConfigBinding, ConfigError, section
+from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
@@ -95,12 +98,42 @@ def _resolve_binding(
         raw_config = (
             section(runtime_config, binding.config_path, dict) if binding.config_path else {}
         )
-        resolved_kwargs = dict(raw_config)
-        resolved_kwargs.update(binding.overrides)
-        return binding.target(**resolved_kwargs)
-    except (ConfigError, TypeError, ValueError) as exc:
+        return _instantiate_binding(binding.target, raw_config, binding.overrides)
+    except (ConfigError, TypeError, ValueError, msgspec.ValidationError) as exc:
         errors.append(f"binding {binding.config_path or binding.target.__name__}: {exc}")
         return binding
+
+
+def _instantiate_binding(
+    target: type[object],
+    raw_config: Mapping[str, object],
+    overrides: Mapping[str, object],
+) -> object:
+    resolved_kwargs = dict(raw_config)
+    resolved_kwargs.update(overrides)
+    signature = inspect.signature(target.__init__)
+    annotations = get_type_hints(target.__init__)
+
+    for name, param in signature.parameters.items():
+        if name == "self" or param.kind in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            continue
+        annotation = annotations.get(name, param.annotation)
+        if not _is_struct_annotation(annotation):
+            continue
+        if name not in resolved_kwargs:
+            if param.default is inspect._empty:
+                raise TypeError(f"{target.__name__} requires config field {name!r}")
+            continue
+        resolved_kwargs[name] = msgspec.convert(resolved_kwargs[name], annotation, strict=False)
+
+    return target(**resolved_kwargs)
+
+
+def _is_struct_annotation(annotation: object) -> bool:
+    return isinstance(annotation, type) and issubclass(annotation, (LoomStruct, LoomFrozenStruct))
 
 
 def _resolve_with(

@@ -6,6 +6,7 @@ from contextlib import AbstractContextManager, nullcontext
 
 from omegaconf import DictConfig, OmegaConf
 
+from loom.core.model import LoomFrozenStruct
 from loom.streaming import (
     ContextFactory,
     FromTopic,
@@ -51,6 +52,34 @@ class _TokenFactory(ContextFactory):
 
     def _create(self) -> AbstractContextManager[str]:
         return nullcontext(self.token)
+
+
+class _HttpxLimitsConfig(LoomFrozenStruct, frozen=True):
+    """Nested limits schema resolved from the YAML section."""
+
+    max_connections: int
+    max_keepalive_connections: int
+
+
+class _HttpxConfig(LoomFrozenStruct, frozen=True):
+    """Structured config object resolved from a nested YAML section."""
+
+    timeout_s: float
+    limits: _HttpxLimitsConfig
+
+
+class _StructuredFactory(ContextFactory):
+    """Factory resolved from a structured config plus a plain kwarg."""
+
+    __slots__ = ("config", "label")
+
+    def __init__(self, config: _HttpxConfig, *, label: str) -> None:
+        self.config = config
+        self.label = label
+        super().__init__(self._create)
+
+    def _create(self) -> AbstractContextManager[str]:
+        return nullcontext(self.label)
 
 
 class TestConfigBindings:
@@ -133,3 +162,55 @@ class TestConfigBindings:
         factory = scoped.context_factories["token_factory"]
         assert isinstance(factory, _TokenFactory)
         assert factory.token == "cfg-token"
+
+    def test_compile_flow_resolves_structured_constructor_bindings(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """Nested YAML keys should map to constructor field names."""
+        runtime_config = streaming_kafka_config.copy()
+        OmegaConf.update(
+            runtime_config,
+            "streaming.bindings.structured_factory",
+            {
+                "config": {
+                    "timeout_s": 5.0,
+                    "limits": {
+                        "max_connections": 50,
+                        "max_keepalive_connections": 20,
+                    },
+                },
+                "label": "cfg-label",
+            },
+            merge=False,
+        )
+        assert isinstance(runtime_config, DictConfig)
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="structured_binding_flow",
+            source=FromTopic("orders.raw", payload=Order),
+            process=Process(
+                With(
+                    process=Process(
+                        _DeclaredStep,
+                        IntoTopic("orders.validated", payload=Result),
+                    ),
+                    structured_factory=_StructuredFactory.from_config(
+                        "streaming.bindings.structured_factory",
+                        label="override-label",
+                    ),
+                ),
+            ),
+        )
+
+        plan = compile_flow(flow, runtime_config=runtime_config)
+
+        scoped = plan.nodes[0].node
+        assert isinstance(scoped, With)
+
+        factory = scoped.context_factories["structured_factory"]
+        assert isinstance(factory, _StructuredFactory)
+        assert factory.label == "override-label"
+        assert factory.config.timeout_s == 5.0
+        assert factory.config.limits.max_connections == 50
+        assert factory.config.limits.max_keepalive_connections == 20
