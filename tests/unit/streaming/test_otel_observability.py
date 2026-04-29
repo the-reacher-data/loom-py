@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import pytest
 from opentelemetry.trace import StatusCode
 
 from loom.core.config.observability import OtelConfig
@@ -14,6 +15,7 @@ from loom.streaming.observability import (
     build_otel_observer,
 )
 from loom.streaming.observability.factory import make_flow_observers
+from loom.streaming.observability.observers import otel as otel_observer
 from loom.streaming.observability.observers.structlog import StructlogFlowObserver
 
 
@@ -69,6 +71,50 @@ def test_otel_config_round_trips_through_msgspec() -> None:
     assert cfg.service_name == "loom-streaming"
     assert cfg.tracer_name == "loom.streaming"
     assert cfg.endpoint.endswith("/v1/traces")
+
+
+class _FakeExporter:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
+def test_build_otel_exporter_for_http_forwards_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(otel_observer, "HttpOTLPSpanExporter", _FakeExporter)
+    cfg = OtelConfig(
+        service_name="loom-streaming",
+        tracer_name="loom.streaming",
+        protocol="http/protobuf",
+        endpoint="https://collector:4318/v1/traces",
+        headers={"x-api-key": "token"},
+        exporter_kwargs={"timeout": 10},
+    )
+
+    exporter = otel_observer._build_exporter(cfg)
+
+    assert isinstance(exporter, _FakeExporter)
+    assert exporter.kwargs["endpoint"] == "https://collector:4318/v1/traces"
+    assert exporter.kwargs["headers"] == {"x-api-key": "token"}
+    assert exporter.kwargs["timeout"] == 10
+    assert "insecure" not in exporter.kwargs
+
+
+def test_build_otel_exporter_for_grpc_forwards_insecure_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(otel_observer, "GrpcOTLPSpanExporter", _FakeExporter)
+    cfg = OtelConfig(
+        service_name="loom-streaming",
+        tracer_name="loom.streaming",
+        protocol="grpc",
+        endpoint="http://collector:4317",
+        insecure=True,
+    )
+
+    exporter = otel_observer._build_exporter(cfg)
+
+    assert isinstance(exporter, _FakeExporter)
+    assert exporter.kwargs["endpoint"] == "http://collector:4317"
+    assert exporter.kwargs["insecure"] is True
 
 
 class _FakeSpan:
