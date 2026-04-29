@@ -15,7 +15,7 @@ from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._shape import CollectBatch, Drain
-from loom.streaming.nodes._step import BatchStep, RecordStep
+from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 
 pytestmark = pytest.mark.bytewax
 
@@ -82,6 +82,33 @@ class _BoomRecordStep(RecordStep[_Payload, _Payload]):
 
 
 class _UpperBatchStep(BatchStep[_Payload, _Payload]):
+    def execute(
+        self,
+        messages: list[Message[StreamPayload]],
+        **kwargs: object,
+    ) -> list[StreamPayload]:
+        del kwargs
+        return [
+            cast(StreamPayload, _Payload(value=_message_payload(message).value.upper()))
+            for message in messages
+        ]
+
+
+class _UpperExpandStep(ExpandStep[_Payload, _Payload]):
+    def execute(
+        self,
+        message: Message[StreamPayload],
+        **kwargs: object,
+    ) -> list[StreamPayload]:
+        del kwargs
+        payload = _message_payload(message)
+        return [
+            cast(StreamPayload, _Payload(value=payload.value.upper())),
+            cast(StreamPayload, _Payload(value=payload.value.lower())),
+        ]
+
+
+class _UpperBatchExpandStep(BatchExpandStep[_Payload, _Payload]):
     def execute(
         self,
         messages: list[Message[StreamPayload]],
@@ -214,6 +241,42 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
     assert observer.events == [
         ("start", "orders", 2, "UpperBatch"),
         ("end", "orders", 2, "UpperBatch:success"),
+    ]
+
+
+def test_execute_expand_step_replaces_payloads_and_observes() -> None:
+    observer = _RecordingObserver()
+    result = _node_handlers._execute_expand_step(
+        observer,
+        "orders",
+        3,
+        "UpperExpand",
+        _UpperExpandStep(),
+        _message("ab"),
+    )
+
+    assert [_message_payload(item).value for item in result] == ["AB", "ab"]
+    assert observer.events == [
+        ("start", "orders", 3, "UpperExpand"),
+        ("end", "orders", 3, "UpperExpand:success"),
+    ]
+
+
+def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
+    observer = _RecordingObserver()
+    result = _node_handlers._execute_batch_expand_step(
+        observer,
+        "orders",
+        4,
+        "UpperBatchExpand",
+        _UpperBatchExpandStep(),
+        [_message("a"), _message("b")],
+    )
+
+    assert [_message_payload(item).value for item in result] == ["A", "B"]
+    assert observer.events == [
+        ("start", "orders", 4, "UpperBatchExpand"),
+        ("end", "orders", 4, "UpperBatchExpand:success"),
     ]
 
 
