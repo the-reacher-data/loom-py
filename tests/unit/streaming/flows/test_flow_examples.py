@@ -144,17 +144,18 @@ def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
 
 def _assert_resource_events(case: StreamFlowCase) -> None:
     assert case.resource_events is not None
+    opened, closed = case.resource_events.snapshot()
     if case.flow.name == "orders_price_batch":
-        assert case.resource_events.opened == [1]
-        assert case.resource_events.closed == [1]
+        assert opened == (1,)
+        assert closed == (1,)
         return
     if case.flow.name == "orders_price_batch_scope":
-        assert case.resource_events.opened == [1, 2]
-        assert case.resource_events.closed == [1, 2]
+        assert opened == (1, 2)
+        assert closed == (1, 2)
         return
     if case.flow.name == "orders_fork_with":
-        assert case.resource_events.opened == [1]
-        assert case.resource_events.closed == [1]
+        assert opened == (1,)
+        assert closed == (1,)
         return
     raise AssertionError(f"Unhandled resource-event flow {case.flow.name}")
 

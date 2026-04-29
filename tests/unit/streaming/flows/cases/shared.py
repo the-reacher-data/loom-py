@@ -111,11 +111,11 @@ class FakePricingClient:
         self.client_id = client_id
 
     def __enter__(self) -> FakePricingClient:
-        self._events.opened.append(self.client_id)
+        self._events.record_opened(self.client_id)
         return self
 
     def __exit__(self, *args: object) -> None:
-        self._events.closed.append(self.client_id)
+        self._events.record_closed(self.client_id)
         return None
 
     def price_band(self, amount: int) -> str:
@@ -153,10 +153,22 @@ class ResourceEvents:
     closed: list[int] = field(default_factory=list)
     _next_client_id: int = 0
 
+    def record_opened(self, client_id: int) -> None:
+        """Record one opened client identifier."""
+        self.opened.append(client_id)
+
+    def record_closed(self, client_id: int) -> None:
+        """Record one closed client identifier."""
+        self.closed.append(client_id)
+
     def create_pricing_client(self) -> FakePricingClient:
         """Create a fake pricing client with a stable test identifier."""
         self._next_client_id += 1
         return FakePricingClient(self, self._next_client_id)
+
+    def snapshot(self) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Return stable lifecycle snapshots for assertions."""
+        return tuple(self.opened), tuple(self.closed)
 
 
 def _build_case(
