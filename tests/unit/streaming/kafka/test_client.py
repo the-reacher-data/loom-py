@@ -21,6 +21,8 @@ from tests.unit.streaming.kafka.fakes import (
     FakeDeliveryError,
     FakeKafkaMessage,
     ProducerBackendStub,
+    install_raw_consumer_stub,
+    install_raw_producer_stub,
 )
 
 pytestmark = pytest.mark.kafka
@@ -33,17 +35,7 @@ class _FakeError:
 
 class TestKafkaProducerClient:
     def test_raw_producer_sends_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        created: dict[str, ProducerBackendStub] = {}
-
-        def _build(config: dict[str, str]) -> ProducerBackendStub:
-            fake = ProducerBackendStub(config)
-            created["p"] = fake
-            return fake
-
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._producer._Producer",
-            _build,
-        )
+        installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(
             ProducerSettings(brokers=("k1:9092",), client_id="p1"),
         )
@@ -60,7 +52,8 @@ class TestKafkaProducerClient:
         producer.flush(250)
         producer.close()
 
-        fake = created["p"]
+        fake = installer.stub
+        assert fake is not None
         assert fake.config["bootstrap.servers"] == "k1:9092"
         assert fake.produced[0]["topic"] == "orders"
         assert fake.produced[0]["key"] == b"tenant-a"
@@ -74,25 +67,17 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, ProducerBackendStub] = {}
         seen: list[KafkaDeliveryError | None] = []
-
-        def _build(config: dict[str, str]) -> ProducerBackendStub:
-            fake = ProducerBackendStub(config)
-            created["p"] = fake
-            return fake
-
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._producer._Producer",
-            _build,
-        )
+        installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(
             ProducerSettings(brokers=("k1:9092",)),
             delivery_callback=lambda record, error: seen.append(error),
         )
 
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
-        callback = created["p"].produced[0]["on_delivery"]
+        fake = installer.stub
+        assert fake is not None
+        callback = fake.produced[0]["on_delivery"]
         assert callback is not None
 
         callback(FakeDeliveryError(), None)
@@ -105,20 +90,12 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, ProducerBackendStub] = {}
-
-        def _build(config: dict[str, str]) -> ProducerBackendStub:
-            fake = ProducerBackendStub(config)
-            created["p"] = fake
-            return fake
-
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._producer._Producer",
-            _build,
-        )
+        installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(ProducerSettings(brokers=("k1:9092",)))
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
-        created["p"].produced[0]["on_delivery"](FakeDeliveryError(), None)
+        fake = installer.stub
+        assert fake is not None
+        fake.produced[0]["on_delivery"](FakeDeliveryError(), None)
 
         with pytest.raises(KafkaDeliveryError, match="delivery-boom"):
             producer.flush()
@@ -130,24 +107,16 @@ class TestKafkaProducerClient:
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
     ) -> None:
-        created: dict[str, ProducerBackendStub] = {}
-
-        def _build(config: dict[str, str]) -> ProducerBackendStub:
-            fake = ProducerBackendStub(config)
-            created["p"] = fake
-            return fake
-
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._producer._Producer",
-            _build,
-        )
+        installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(
             ProducerSettings(brokers=("k1:9092",)),
             observer=kafka_metrics,
         )
 
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
-        created["p"].produced[0]["on_delivery"](None, None)
+        fake = installer.stub
+        assert fake is not None
+        fake.produced[0]["on_delivery"](None, None)
         producer.flush()
 
         text = generate_latest(kafka_registry).decode()
@@ -157,22 +126,14 @@ class TestKafkaProducerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        created: dict[str, ProducerBackendStub] = {}
-
-        def _build(config: dict[str, str]) -> ProducerBackendStub:
-            fake = ProducerBackendStub(config)
-            created["p"] = fake
-            return fake
-
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._producer._Producer",
-            _build,
-        )
+        installer = install_raw_producer_stub(monkeypatch)
 
         with KafkaProducerClient(ProducerSettings(brokers=("k1:9092",))) as producer:
             producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
 
-        assert created["p"].flush_calls == [None]
+        fake = installer.stub
+        assert fake is not None
+        assert fake.flush_calls == [None]
 
     def test_raw_producer_context_manager_does_not_mask_body_exception(
         self,
@@ -197,12 +158,10 @@ class TestKafkaProducerClient:
 
 class TestKafkaConsumerClient:
     def test_raw_consumer_polls_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = ConsumerBackendStub({})
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         fake.next_message = FakeKafkaMessage(value=b"raw-bytes")
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
@@ -226,23 +185,19 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = ConsumerBackendStub({})
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
         assert consumer.poll(100) is None
 
     def test_raw_consumer_raises_on_kafka_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = ConsumerBackendStub({})
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         fake.next_message = FakeKafkaMessage(error=_FakeError())
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
@@ -250,11 +205,9 @@ class TestKafkaConsumerClient:
             consumer.poll(100)
 
     def test_raw_consumer_commit_delegates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = ConsumerBackendStub({})
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
@@ -264,12 +217,10 @@ class TestKafkaConsumerClient:
         assert fake.commit_calls == [True]
 
     def test_raw_consumer_commit_wraps_backend_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake = ConsumerBackendStub({})
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         fake.commit_error = RuntimeError("commit-boom")
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
@@ -287,10 +238,7 @@ class TestKafkaConsumerClient:
                 raise KeyboardInterrupt
 
         fake = _InterruptingConsumer({})
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
+        monkeypatch.setattr("loom.streaming.kafka.client._consumer._Consumer", lambda config: fake)
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
@@ -304,12 +252,10 @@ class TestKafkaConsumerClient:
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
     ) -> None:
-        fake = ConsumerBackendStub({})
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         fake.next_message = FakeKafkaMessage(value=b"data")
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
             observer=kafka_metrics,
@@ -324,11 +270,9 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = ConsumerBackendStub({})
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
 
         with KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
@@ -341,12 +285,10 @@ class TestKafkaConsumerClient:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fake = ConsumerBackendStub({})
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
         fake.close_error = RuntimeError("close-boom")
-        monkeypatch.setattr(
-            "loom.streaming.kafka.client._consumer._Consumer",
-            lambda config: fake,
-        )
 
         with (
             pytest.raises(ValueError, match="body-boom"),

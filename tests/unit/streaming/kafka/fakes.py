@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
+
+import pytest
 
 from loom.streaming.kafka import KafkaRecord
 from loom.streaming.kafka._config import ConsumerSettings
@@ -199,3 +202,51 @@ class RuntimeConsumerStub:
         if self.close_error is not None:
             raise self.close_error
         self.closed = True
+
+
+@dataclass(slots=True)
+class ProducerBackendInstaller:
+    """Callable installer that captures the raw producer stub created by Kafka."""
+
+    stub: ProducerBackendStub = field(default_factory=lambda: ProducerBackendStub({}))
+
+    def __call__(self, config: dict[str, str]) -> ProducerBackendStub:
+        self.stub.config = config
+        return self.stub
+
+
+@dataclass(slots=True)
+class ConsumerBackendInstaller:
+    """Callable installer that captures the raw consumer stub created by Kafka."""
+
+    stub: ConsumerBackendStub = field(default_factory=lambda: ConsumerBackendStub({}))
+
+    def __call__(self, config: dict[str, str]) -> ConsumerBackendStub:
+        self.stub.config = config
+        return self.stub
+
+
+def install_raw_producer_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    installer: ProducerBackendInstaller | None = None,
+) -> ProducerBackendInstaller:
+    """Install a raw producer stub into the Kafka client module and return the installer."""
+    producer_installer = installer or ProducerBackendInstaller()
+    monkeypatch.setattr(
+        "loom.streaming.kafka.client._producer._Producer",
+        producer_installer,
+    )
+    return producer_installer
+
+
+def install_raw_consumer_stub(
+    monkeypatch: pytest.MonkeyPatch,
+    installer: ConsumerBackendInstaller | None = None,
+) -> ConsumerBackendInstaller:
+    """Install a raw consumer stub into the Kafka client module and return the installer."""
+    consumer_installer = installer or ConsumerBackendInstaller()
+    monkeypatch.setattr(
+        "loom.streaming.kafka.client._consumer._Consumer",
+        consumer_installer,
+    )
+    return consumer_installer
