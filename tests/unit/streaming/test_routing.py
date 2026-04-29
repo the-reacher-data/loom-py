@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from loom.core.expr import ExprNode, PathRef
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import Message, MessageMeta, Process, RecordStep, Route, Router, msg
+from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import evaluate_predicate, select_value
 
 
@@ -61,42 +63,49 @@ def _message(
     )
 
 
-def test_msg_expression_can_select_message_payload_fields() -> None:
-    message = _message(country="FR")
-
-    assert select_value(msg.payload.country, message) == "FR"
-    assert select_value(_CountrySelector(), message) == "FR"
-
-
-def test_msg_expression_can_select_message_contract_metadata() -> None:
-    message = _message(message_type="order.created")
-
-    assert select_value(msg.meta.message_type, message) == "order.created"
-
-
-def test_msg_expression_can_evaluate_composed_predicates() -> None:
-    message = _message(headers={"risk": b"high"})
-    predicate = (
-        (msg.payload.country == "ES")
-        & (msg.payload.amount >= 1000)
-        & msg.payload.amount.between(1000, 2000)
-        & (msg.meta.headers["risk"] == b"high")
-    )
-
-    assert evaluate_predicate(predicate, message) is True
+@pytest.mark.parametrize(
+    ("expr", "message", "expected"),
+    [
+        (msg.payload.country, _message(country="FR"), "FR"),
+        (msg.meta.message_type, _message(message_type="order.created"), "order.created"),
+        (_CountrySelector(), _message(country="FR"), "FR"),
+    ],
+)
+def test_msg_expression_selects_values(
+    expr: PathRef | Selector[_Order],
+    message: Message[_Order],
+    expected: object,
+) -> None:
+    assert select_value(expr, message) == expected
 
 
-def test_msg_expression_supports_in_or_and_not() -> None:
-    message = _message(country="FR", amount=20)
-    predicate = (msg.payload.country.isin({"ES", "FR"})) & ~(msg.payload.amount > 100)
-
-    assert evaluate_predicate(predicate, message) is True
-
-
-def test_custom_predicate_can_match_message() -> None:
-    message = _message(headers={"risk": b"high"})
-
-    assert evaluate_predicate(_HighRiskPredicate(), message) is True
+@pytest.mark.parametrize(
+    ("predicate", "message", "expected"),
+    [
+        (
+            (
+                (msg.payload.country == "ES")
+                & (msg.payload.amount >= 1000)
+                & msg.payload.amount.between(1000, 2000)
+                & (msg.meta.headers["risk"] == b"high")
+            ),
+            _message(headers={"risk": b"high"}),
+            True,
+        ),
+        (
+            (msg.payload.country.isin({"ES", "FR"})) & ~(msg.payload.amount > 100),
+            _message(country="FR", amount=20),
+            True,
+        ),
+        (_HighRiskPredicate(), _message(headers={"risk": b"high"}), True),
+    ],
+)
+def test_msg_expression_evaluates_predicates(
+    predicate: ExprNode | Predicate[_Order],
+    message: Message[_Order],
+    expected: bool,
+) -> None:
+    assert evaluate_predicate(predicate, message) is expected
 
 
 def test_router_by_declares_keyed_routes() -> None:

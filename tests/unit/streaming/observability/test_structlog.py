@@ -2,59 +2,96 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock
+
+import pytest
 
 from loom.streaming.observability import StructlogFlowObserver
 
 
-def test_structlog_flow_observer_logs_flow_start() -> None:
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs", "expected_logger_method", "expected_event"),
+    [
+        (
+            "on_flow_start",
+            ("orders",),
+            {"node_count": 3},
+            "info",
+            ("flow_start", {"flow": "orders", "node_count": 3}),
+        ),
+        (
+            "on_flow_end",
+            ("orders",),
+            {"status": "success", "duration_ms": 150},
+            "info",
+            ("flow_end", {"flow": "orders", "status": "success", "duration_ms": 150}),
+        ),
+        (
+            "on_node_start",
+            ("orders", 0),
+            {"node_type": "FakeStep"},
+            "debug",
+            ("node_start", {"flow": "orders", "node_idx": 0, "node_type": "FakeStep"}),
+        ),
+        (
+            "on_node_end",
+            ("orders", 0),
+            {"node_type": "FakeStep", "status": "success", "duration_ms": 5},
+            "debug",
+            (
+                "node_end",
+                {
+                    "flow": "orders",
+                    "node_idx": 0,
+                    "node_type": "FakeStep",
+                    "status": "success",
+                    "duration_ms": 5,
+                },
+            ),
+        ),
+        (
+            "on_node_error",
+            ("orders", 0),
+            {"node_type": "FakeStep", "exc": ValueError("bad input")},
+            "error",
+            (
+                "node_error",
+                {
+                    "flow": "orders",
+                    "node_idx": 0,
+                    "node_type": "FakeStep",
+                    "error": "ValueError('bad input')",
+                },
+            ),
+        ),
+    ],
+)
+def test_structlog_flow_observer_emits_expected_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    expected_logger_method: str,
+    expected_event: tuple[str, dict[str, object]],
+) -> None:
     observer = StructlogFlowObserver()
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._flow_log", log)
 
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_flow_start("orders", node_count=3)
+    getattr(observer, method_name)(*args, **kwargs)
 
-    log.info.assert_called_once_with("flow_start", flow="orders", node_count=3)
-
-
-def test_structlog_flow_observer_logs_flow_end() -> None:
-    observer = StructlogFlowObserver()
-
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_flow_end("orders", status="success", duration_ms=150)
-
-    log.info.assert_called_once_with("flow_end", flow="orders", status="success", duration_ms=150)
-
-
-def test_structlog_flow_observer_logs_node_start_at_debug() -> None:
-    observer = StructlogFlowObserver()
-
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_start("orders", 0, node_type="FakeStep")
-
-    log.debug.assert_called_once_with("node_start", flow="orders", node_idx=0, node_type="FakeStep")
-
-
-def test_structlog_flow_observer_logs_node_end_at_debug() -> None:
-    observer = StructlogFlowObserver()
-
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="FakeStep", status="success", duration_ms=5)
-
-    log.debug.assert_called_once_with(
-        "node_end",
-        flow="orders",
-        node_idx=0,
-        node_type="FakeStep",
-        status="success",
-        duration_ms=5,
+    getattr(log, expected_logger_method).assert_called_once_with(
+        expected_event[0],
+        **expected_event[1],
     )
 
 
-def test_structlog_flow_observer_warns_on_slow_node() -> None:
+def test_structlog_flow_observer_warns_on_slow_node(monkeypatch: pytest.MonkeyPatch) -> None:
     observer = StructlogFlowObserver(slow_node_threshold_ms=100)
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._flow_log", log)
 
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="SlowStep", status="success", duration_ms=200)
+    observer.on_node_end("orders", 0, node_type="SlowStep", status="success", duration_ms=200)
 
     log.warning.assert_called_once_with(
         "slow_node",
@@ -66,25 +103,13 @@ def test_structlog_flow_observer_warns_on_slow_node() -> None:
     )
 
 
-def test_structlog_flow_observer_no_slow_warning_below_threshold() -> None:
+def test_structlog_flow_observer_no_slow_warning_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     observer = StructlogFlowObserver(slow_node_threshold_ms=100)
+    log = Mock()
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._flow_log", log)
 
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_end("orders", 0, node_type="FastStep", status="success", duration_ms=50)
+    observer.on_node_end("orders", 0, node_type="FastStep", status="success", duration_ms=50)
 
     assert log.warning.call_count == 0
-
-
-def test_structlog_flow_observer_logs_node_error() -> None:
-    observer = StructlogFlowObserver()
-
-    with patch("loom.streaming.observability.observers.structlog._flow_log") as log:
-        observer.on_node_error("orders", 0, node_type="FakeStep", exc=ValueError("bad input"))
-
-    log.error.assert_called_once_with(
-        "node_error",
-        flow="orders",
-        node_idx=0,
-        node_type="FakeStep",
-        error="ValueError('bad input')",
-    )
