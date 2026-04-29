@@ -15,8 +15,9 @@ from loom.streaming.compiler._plan import (
     CompiledSource,
 )
 from loom.streaming.core._errors import ErrorKind
-from loom.streaming.core._message import Message
+from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
+from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from tests.unit.streaming.bytewax.cases import (
     DoubleStep,
@@ -160,3 +161,65 @@ def bytewax_plan_factory() -> Callable[
         )
 
     return _build_plan
+
+
+@pytest.fixture
+def bytewax_runtime_sink_factory() -> Callable[
+    [PartitionPolicy[Any] | None, str | None], CompiledSink
+]:
+    """Return a factory for compiled runtime sink test objects."""
+
+    def _build_sink(
+        partitioning: PartitionPolicy[Any] | None,
+        dlq_topic: str | None = None,
+    ) -> CompiledSink:
+        return CompiledSink(
+            settings=ProducerSettings(
+                brokers=("localhost:9092",),
+                client_id="test-producer",
+                topic="orders.out",
+            ),
+            topic="orders.out",
+            partition_policy=partitioning,
+            dlq_topic=dlq_topic,
+        )
+
+    return _build_sink
+
+
+@pytest.fixture
+def bytewax_runtime_source_factory() -> Callable[[int], CompiledSource]:
+    """Return a factory for compiled runtime source test objects."""
+
+    def _build_source(poll_timeout_ms: int = 100) -> CompiledSource:
+        return CompiledSource(
+            settings=ConsumerSettings(
+                brokers=("localhost:9092",),
+                group_id="test",
+                topics=("orders.in",),
+                poll_timeout_ms=poll_timeout_ms,
+            ),
+            topics=("orders.in",),
+            payload_type=Order,
+            shape=StreamShape.RECORD,
+            decode_strategy="record",
+        )
+
+    return _build_source
+
+
+@pytest.fixture
+def bytewax_order_message_factory() -> Callable[[str, bytes | str | None], Message[Order]]:
+    """Return a factory for order payload messages used by runtime I/O tests."""
+
+    def _build_message(order_id: str, key: bytes | str | None = None) -> Message[Order]:
+        return Message(
+            payload=Order(order_id=order_id),
+            meta=MessageMeta(
+                message_id="msg-1",
+                topic="orders.in",
+                key=key,
+            ),
+        )
+
+    return _build_message
