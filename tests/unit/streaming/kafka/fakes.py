@@ -163,11 +163,15 @@ class RawProducerStub:
 class RawConsumerStub:
     """In-memory raw consumer for message-level tests."""
 
-    def __init__(self, records: list[KafkaRecord[bytes] | None]) -> None:
-        self._records = list(records)
+    def __init__(self, records: list[KafkaRecord[bytes] | None] | None = None) -> None:
+        self._records = list(records or [])
         self.closed = False
         self.commit_calls: list[bool] = []
         self.close_error: Exception | None = None
+
+    def load_records(self, records: list[KafkaRecord[bytes] | None]) -> None:
+        """Replace the queued records consumed by the stub."""
+        self._records = list(records)
 
     def poll(self, timeout_ms: int) -> KafkaRecord[bytes] | None:
         del timeout_ms

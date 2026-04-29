@@ -31,12 +31,12 @@ class _OrderKeyResolver:
 class TestKafkaMessageProducer:
     def test_encodes_and_delegates_to_raw(
         self,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
     ) -> None:
-        raw = RawProducerStub()
-        codec = MsgspecCodec[OrderCreated]()
-        producer = KafkaMessageProducer(raw=raw, codec=codec)
+        producer = KafkaMessageProducer(raw=raw_producer_stub, codec=order_created_codec)
 
         producer.send(
             topic="orders",
@@ -50,15 +50,15 @@ class TestKafkaMessageProducer:
             headers={"h": b"1"},
         )
 
-        assert len(raw.sent) == 1
-        record = raw.sent[0]
+        assert len(raw_producer_stub.sent) == 1
+        record = raw_producer_stub.sent[0]
         assert record.topic == "orders"
         assert record.key == "tenant-a"
         assert record.headers == {"h": b"1"}
         assert record.timestamp_ms == 99
         assert isinstance(record.value, bytes)
 
-        decoded = codec.decode(record.value, OrderCreated)
+        decoded = order_created_codec.decode(record.value, OrderCreated)
         assert decoded.payload == order_created_payload
         assert decoded.meta.trace_id == "trace-1"
         assert decoded.meta.correlation_id == "corr-1"
@@ -68,14 +68,14 @@ class TestKafkaMessageProducer:
 
     def test_resolves_key_when_explicit_key_is_absent(
         self,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
     ) -> None:
-        raw = RawProducerStub()
-        codec = MsgspecCodec[OrderCreated]()
         producer = KafkaMessageProducer(
-            raw=raw,
-            codec=codec,
+            raw=raw_producer_stub,
+            codec=order_created_codec,
             key_resolver=_OrderKeyResolver(),
         )
 
@@ -85,20 +85,20 @@ class TestKafkaMessageProducer:
             descriptor=order_created_descriptor_v1,
         )
 
-        assert len(raw.sent) == 1
-        record = raw.sent[0]
+        assert len(raw_producer_stub.sent) == 1
+        record = raw_producer_stub.sent[0]
         assert record.key == b"o-1"
 
     def test_keeps_explicit_key_over_resolved_key(
         self,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
     ) -> None:
-        raw = RawProducerStub()
-        codec = MsgspecCodec[OrderCreated]()
         producer = KafkaMessageProducer(
-            raw=raw,
-            codec=codec,
+            raw=raw_producer_stub,
+            codec=order_created_codec,
             key_resolver=_OrderKeyResolver(),
         )
 
@@ -109,20 +109,20 @@ class TestKafkaMessageProducer:
             descriptor=order_created_descriptor_v1,
         )
 
-        assert len(raw.sent) == 1
-        record = raw.sent[0]
+        assert len(raw_producer_stub.sent) == 1
+        record = raw_producer_stub.sent[0]
         assert record.key == "tenant-a"
 
     def test_can_disable_record_timestamp(
         self,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
     ) -> None:
-        raw = RawProducerStub()
-        codec = MsgspecCodec[OrderCreated]()
         producer = KafkaMessageProducer(
-            raw=raw,
-            codec=codec,
+            raw=raw_producer_stub,
+            codec=order_created_codec,
             use_message_timestamp=False,
         )
 
@@ -133,8 +133,8 @@ class TestKafkaMessageProducer:
             produced_at_ms=99,
         )
 
-        assert len(raw.sent) == 1
-        record = raw.sent[0]
+        assert len(raw_producer_stub.sent) == 1
+        record = raw_producer_stub.sent[0]
         assert record.timestamp_ms is None
 
     def test_flush_and_close_delegate(self) -> None:
@@ -152,12 +152,16 @@ class TestKafkaMessageProducer:
         self,
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
     ) -> None:
-        raw = RawProducerStub()
-        codec = MsgspecCodec[OrderCreated]()
-        producer = KafkaMessageProducer(raw=raw, codec=codec, observer=kafka_metrics)
+        producer = KafkaMessageProducer(
+            raw=raw_producer_stub,
+            codec=order_created_codec,
+            observer=kafka_metrics,
+        )
 
         producer.send(
             topic="orders",
@@ -199,12 +203,13 @@ class TestKafkaMessageProducer:
 class TestKafkaMessageConsumer:
     def test_decodes_envelope(
         self,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_payload: OrderCreated,
         order_created_envelope_with_metadata: MessageEnvelope[OrderCreated],
+        raw_consumer_stub: RawConsumerStub,
     ) -> None:
-        codec = MsgspecCodec[OrderCreated]()
-        encoded = codec.encode(order_created_envelope_with_metadata)
-        raw = RawConsumerStub(
+        encoded = order_created_codec.encode(order_created_envelope_with_metadata)
+        raw_consumer_stub.load_records(
             [
                 KafkaRecord(
                     topic="orders",
@@ -218,8 +223,8 @@ class TestKafkaMessageConsumer:
             ]
         )
         consumer = KafkaMessageConsumer(
-            raw=raw,
-            codec=codec,
+            raw=raw_consumer_stub,
+            codec=order_created_codec,
             payload_type=OrderCreated,
         )
 
@@ -263,7 +268,7 @@ class TestKafkaMessageConsumer:
 
     def test_close_delegates(self) -> None:
         codec = MsgspecCodec[OrderCreated]()
-        raw = RawConsumerStub([])
+        raw = RawConsumerStub()
         consumer = KafkaMessageConsumer(
             raw=raw,
             codec=codec,
@@ -275,7 +280,7 @@ class TestKafkaMessageConsumer:
 
     def test_commit_delegates(self) -> None:
         codec = MsgspecCodec[OrderCreated]()
-        raw = RawConsumerStub([])
+        raw = RawConsumerStub()
         consumer = KafkaMessageConsumer(
             raw=raw,
             codec=codec,
@@ -290,18 +295,15 @@ class TestKafkaMessageConsumer:
         self,
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
+        order_created_codec: MsgspecCodec[OrderCreated],
         order_created_envelope: MessageEnvelope[OrderCreated],
+        raw_consumer_stub: RawConsumerStub,
     ) -> None:
-        codec = MsgspecCodec[OrderCreated]()
-        encoded = codec.encode(order_created_envelope)
-        raw = RawConsumerStub(
-            [
-                KafkaRecord(topic="orders", key=None, value=encoded),
-            ]
-        )
+        encoded = order_created_codec.encode(order_created_envelope)
+        raw_consumer_stub.load_records([KafkaRecord(topic="orders", key=None, value=encoded)])
         consumer = KafkaMessageConsumer(
-            raw=raw,
-            codec=codec,
+            raw=raw_consumer_stub,
+            codec=order_created_codec,
             payload_type=OrderCreated,
             observer=kafka_metrics,
         )
@@ -315,16 +317,13 @@ class TestKafkaMessageConsumer:
         self,
         kafka_registry: CollectorRegistry,
         kafka_metrics: KafkaPrometheusMetrics,
+        order_created_codec: MsgspecCodec[OrderCreated],
+        raw_consumer_stub: RawConsumerStub,
     ) -> None:
-        codec = MsgspecCodec[OrderCreated]()
-        raw = RawConsumerStub(
-            [
-                KafkaRecord(topic="orders", key=None, value=b"bad"),
-            ]
-        )
+        raw_consumer_stub.load_records([KafkaRecord(topic="orders", key=None, value=b"bad")])
         consumer = KafkaMessageConsumer(
-            raw=raw,
-            codec=codec,
+            raw=raw_consumer_stub,
+            codec=order_created_codec,
             payload_type=OrderCreated,
             observer=kafka_metrics,
         )
@@ -337,7 +336,7 @@ class TestKafkaMessageConsumer:
 
     def test_context_manager_closes_raw_on_exit(self) -> None:
         codec = MsgspecCodec[OrderCreated]()
-        raw = RawConsumerStub([])
+        raw = RawConsumerStub()
 
         with KafkaMessageConsumer(
             raw=raw,
@@ -350,7 +349,7 @@ class TestKafkaMessageConsumer:
 
     def test_context_manager_does_not_mask_body_exception(self) -> None:
         codec = MsgspecCodec[OrderCreated]()
-        raw = RawConsumerStub([])
+        raw = RawConsumerStub()
         raw.close_error = RuntimeError("close-boom")
 
         with (

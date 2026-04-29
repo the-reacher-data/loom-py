@@ -48,6 +48,14 @@ class _FailingKafkaObserver:
         raise RuntimeError("decode failed")
 
 
+def _patch_kafka_log(
+    monkeypatch: pytest.MonkeyPatch,
+    log: Mock,
+) -> None:
+    """Patch the shared Kafka structlog logger used by the observer."""
+    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+
+
 def test_kafka_prometheus_metrics_emit_counters_and_histograms(
     kafka_registry: CollectorRegistry,
 ) -> None:
@@ -103,7 +111,7 @@ def test_structlog_kafka_observer_logs_success_at_debug_without_topic_by_default
     observer = StructlogKafkaObserver()
 
     log = Mock()
-    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    _patch_kafka_log(monkeypatch, log)
     observer.on_produced("tenant-a.orders")
 
     log.debug.assert_called_once_with(
@@ -120,7 +128,7 @@ def test_structlog_kafka_observer_can_include_topic_explicitly(
     observer = StructlogKafkaObserver(include_topic=True)
 
     log = Mock()
-    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    _patch_kafka_log(monkeypatch, log)
     observer.on_consumed("tenant-a.orders", status="decode_error")
 
     log.warning.assert_called_once_with(
@@ -138,7 +146,7 @@ def test_structlog_kafka_observer_logs_codec_durations_at_debug(
     observer = StructlogKafkaObserver()
 
     log = Mock()
-    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    _patch_kafka_log(monkeypatch, log)
     observer.observe_encode("application/x-loom-msgpack", 0.0012345)
     observer.observe_decode("application/x-loom-msgpack", 0.002)
 

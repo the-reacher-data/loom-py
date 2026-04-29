@@ -14,6 +14,7 @@ from loom.streaming.kafka import (
     build_message,
 )
 from tests.unit.streaming.kafka.cases import OrderCreated, ProductEvent
+from tests.unit.streaming.kafka.fakes import RawConsumerStub, RawProducerStub
 
 
 @pytest.fixture
@@ -115,3 +116,21 @@ def product_event_encoded_envelope(
 ) -> bytes:
     """Return the encoded canonical product.stock.updated envelope."""
     return MsgspecCodec[ProductEvent]().encode(product_event_envelope)
+
+
+@pytest.fixture
+def order_created_codec() -> MsgspecCodec[OrderCreated]:
+    """Return the canonical Msgspec codec for OrderCreated payloads."""
+    return MsgspecCodec[OrderCreated]()
+
+
+@pytest.fixture
+def raw_producer_stub() -> RawProducerStub:
+    """Return a raw producer stub for message-level Kafka tests."""
+    return RawProducerStub()
+
+
+@pytest.fixture
+def raw_consumer_stub() -> RawConsumerStub:
+    """Return a raw consumer stub for message-level Kafka tests."""
+    return RawConsumerStub()
