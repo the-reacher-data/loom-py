@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from tests.unit.streaming.flows.flow_cases import (
+from tests.unit.streaming.flows.cases import (
     StreamFlowCase,
     build_async_flow_case,
     build_fork_flow_case,

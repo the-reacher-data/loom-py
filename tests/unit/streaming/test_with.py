@@ -93,7 +93,7 @@ def _make_process(step: RecordStep[_Payload, _Result]) -> Process[_Payload, _Res
     return Process(step, IntoTopic("results", payload=_Result))
 
 
-class TestWith:
+class TestWithAsync:
     def test_with_async_detects_async_context_managers(self) -> None:
         """WithAsync classifies async CMs into async_contexts."""
         client = _FakeAsyncClient()
@@ -166,7 +166,6 @@ class TestWith:
             WithAsync(process=_make_process(_SyncStep()), task_timeout_ms=-100)
 
     def test_with_rejects_async_context_manager(self) -> None:
-
         with pytest.raises(TypeError, match="sync context managers"):
             With(process=_make_process(_AsyncStep()), client=_FakeAsyncClient())
 
@@ -174,6 +173,8 @@ class TestWith:
         with pytest.raises(TypeError, match="async context managers"):
             WithAsync(process=_make_process(_SyncStep()), client=_FakeSyncClient())
 
+
+class TestWith:
     def test_with_keeps_plain_dependencies(self) -> None:
         adapter: With[_Payload, _Result] = With(
             process=_make_process(_SyncStep()), validator="plain", retries=3
@@ -191,6 +192,8 @@ class TestWith:
         assert adapter.sync_contexts == {}
         assert adapter.plain_deps == {}
 
+
+class TestContextFactory:
     def test_context_factory_creates_fresh_instance(self) -> None:
         """Each call to create() returns a new instance."""
         factory = ContextFactory(lambda: _FakeSyncClient())

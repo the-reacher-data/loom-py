@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from loom.streaming import StreamShape, compile_flow
-from tests.unit.streaming.flows.flow_cases import StreamFlowCase, ValidatedOrder
+from tests.unit.streaming.flows.cases import StreamFlowCase, ValidatedOrder
 
 
 class TestCompilerFlowExamples:

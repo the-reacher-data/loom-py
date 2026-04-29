@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from loom.streaming import Message, MessageMeta, StreamFlow
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.flows.flow_cases import StreamFlowCase
+from tests.unit.streaming.flows.cases import StreamFlowCase
 from tests.unit.streaming.observability.cases import DropItem, RecordingFlowObserver
 
 

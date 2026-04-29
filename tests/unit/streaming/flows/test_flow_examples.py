@@ -25,7 +25,7 @@ from loom.streaming import (
     msg,
 )
 from loom.streaming.testing import StreamingTestRunner
-from tests.unit.streaming.flows.flow_cases import StreamFlowCase
+from tests.unit.streaming.flows.cases import StreamFlowCase
 
 
 class TestBytewaxFlowExamples:
