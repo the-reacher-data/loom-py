@@ -106,14 +106,14 @@ def test_build_otel_exporter_for_grpc_forwards_insecure_flag(
         service_name="loom-streaming",
         tracer_name="loom.streaming",
         protocol="grpc",
-        endpoint="http://collector:4317",
+        endpoint="https://collector:4317",
         insecure=True,
     )
 
     exporter = otel_observer._build_exporter(cfg)
 
     assert isinstance(exporter, _FakeExporter)
-    assert exporter.kwargs["endpoint"] == "http://collector:4317"
+    assert exporter.kwargs["endpoint"] == "https://collector:4317"
     assert exporter.kwargs["insecure"] is True
 
 
