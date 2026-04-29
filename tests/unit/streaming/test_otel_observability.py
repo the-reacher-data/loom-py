@@ -178,18 +178,22 @@ def test_otel_flow_observer_records_successful_flow_and_node_spans() -> None:
     observer.on_node_end("orders", 0, node_type="Step", status="success", duration_ms=12)
     observer.on_flow_end("orders", status="success", duration_ms=50)
 
-    assert tracer.spans[0].name == "loom.streaming.flow"
-    assert tracer.spans[0].attributes["loom.flow"] == "orders"
-    assert tracer.spans[0].attributes["loom.node_count"] == 2
-    assert tracer.spans[0].attributes["team"] == "data"
-    assert tracer.spans[0].ended is True
-    assert tracer.spans[0].status == (StatusCode.OK, None)
+    assert len(tracer.spans) == 2
+    flow_span = tracer.spans[0]
+    node_span = tracer.spans[1]
 
-    assert tracer.spans[1].name == "loom.streaming.node"
-    assert tracer.spans[1].attributes["loom.node_idx"] == 0
-    assert tracer.spans[1].attributes["loom.node_type"] == "Step"
-    assert tracer.spans[1].ended is True
-    assert tracer.spans[1].status == (StatusCode.OK, None)
+    assert flow_span.name == "loom.streaming.flow"
+    assert flow_span.attributes["loom.flow"] == "orders"
+    assert flow_span.attributes["loom.node_count"] == 2
+    assert flow_span.attributes["team"] == "data"
+    assert flow_span.ended is True
+    assert flow_span.status == (StatusCode.OK, None)
+
+    assert node_span.name == "loom.streaming.node"
+    assert node_span.attributes["loom.node_idx"] == 0
+    assert node_span.attributes["loom.node_type"] == "Step"
+    assert node_span.ended is True
+    assert node_span.status == (StatusCode.OK, None)
     assert provider.force_flush_calls == 1
 
 
@@ -203,7 +207,10 @@ def test_otel_flow_observer_records_node_error_on_active_span() -> None:
     observer.on_node_error("orders", 0, node_type="Step", exc=ValueError("boom"))
     observer.on_flow_end("orders", status="failed", duration_ms=50)
 
-    assert tracer.spans[1].exceptions and isinstance(tracer.spans[1].exceptions[0], ValueError)
-    assert tracer.spans[1].status == (StatusCode.ERROR, "ValueError('boom')")
-    assert tracer.spans[1].ended is False
+    assert len(tracer.spans) == 2
+    node_span = tracer.spans[1]
+
+    assert node_span.exceptions and isinstance(node_span.exceptions[0], ValueError)
+    assert node_span.status == (StatusCode.ERROR, "ValueError('boom')")
+    assert node_span.ended is False
     assert provider.force_flush_calls == 1
