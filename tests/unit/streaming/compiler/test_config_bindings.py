@@ -286,7 +286,7 @@ class TestConfigBindings:
         factory = scoped.context_factories["structured_factory"]
         assert isinstance(factory, _StructuredFactory)
         assert factory.label == "override-label"
-        assert factory.config.timeout_s == 5.0
+        assert factory.config.timeout_s == pytest.approx(5.0)
         assert factory.config.limits.max_connections == 50
         assert factory.config.limits.max_keepalive_connections == 20
 
