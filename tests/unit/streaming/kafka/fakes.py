@@ -74,7 +74,9 @@ class FakeKafkaMessage:
         self._topic = topic
         self._key = key
         self._value = value
-        self._headers = headers if headers is not None else [("x", b"1")]
+        self._headers: list[tuple[str, bytes | None]] = (
+            headers if headers is not None else [("x", b"1")]
+        )
         self._partition = partition
         self._offset = offset
         self._timestamp_ms = timestamp_ms

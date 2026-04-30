@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from datetime import timedelta
 from types import MappingProxyType
-from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, cast, runtime_checkable
 
 import anyio
 from bytewax.operators import branch, collect, flat_map, key_on, key_rm
@@ -43,6 +44,7 @@ from loom.streaming.observability.observers.protocol import StreamingFlowObserve
 
 Stream: TypeAlias = Any
 AwaitT = TypeVar("AwaitT")
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -53,8 +55,8 @@ class _ExecutableRecordStep(Protocol):
         self,
         message: Message[StreamPayload],
         **kwargs: object,
-    ) -> StreamPayload | Awaitable[StreamPayload]:
-        """Execute one record-shaped message."""
+    ) -> StreamPayload | Message[StreamPayload] | Awaitable[StreamPayload | Message[StreamPayload]]:
+        """Execute one record-shaped message or replacement message."""
         ...
 
 
@@ -66,8 +68,11 @@ class _ExecutableBatchStep(Protocol):
         self,
         messages: list[Message[StreamPayload]],
         **kwargs: object,
-    ) -> list[StreamPayload] | Awaitable[list[StreamPayload]]:
-        """Execute one batch-shaped message group."""
+    ) -> (
+        list[StreamPayload | Message[StreamPayload]]
+        | Awaitable[list[StreamPayload | Message[StreamPayload]]]
+    ):
+        """Execute one batch-shaped message group or replacement messages."""
         ...
 
 
@@ -79,8 +84,11 @@ class _ExecutableExpandStep(Protocol):
         self,
         message: Message[StreamPayload],
         **kwargs: object,
-    ) -> Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]]:
-        """Expand one message into many payloads."""
+    ) -> (
+        Iterable[StreamPayload | Message[StreamPayload]]
+        | Awaitable[Iterable[StreamPayload | Message[StreamPayload]]]
+    ):
+        """Expand one message into many payloads or replacement messages."""
         ...
 
 
@@ -92,8 +100,11 @@ class _ExecutableBatchExpandStep(Protocol):
         self,
         messages: list[Message[StreamPayload]],
         **kwargs: object,
-    ) -> Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]]:
-        """Expand one batch into many payloads."""
+    ) -> (
+        Iterable[StreamPayload | Message[StreamPayload]]
+        | Awaitable[Iterable[StreamPayload | Message[StreamPayload]]]
+    ):
+        """Expand one batch into many payloads or replacement messages."""
         ...
 
 
@@ -167,10 +178,10 @@ class _BuildContextProtocol(Protocol):
 class _CommitTrackerProtocol(Protocol):
     """Offset completion tracker used by the Kafka runtime adapter."""
 
-    def fork(self, message_id: str, extra_outputs: int) -> None:
+    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
         """Increase the expected completions for one logical message."""
 
-    def complete(self, message_id: str) -> None:
+    def complete(self, topic: str, partition: int, offset: int) -> None:
         """Mark one logical message branch as complete."""
 
 
@@ -245,9 +256,11 @@ def _observe_node(
 
 
 def _resolve_record_result(
-    result: StreamPayload | Awaitable[StreamPayload],
+    result: StreamPayload
+    | Message[StreamPayload]
+    | Awaitable[StreamPayload | Message[StreamPayload]],
     node_type: str,
-) -> StreamPayload:
+) -> StreamPayload | Message[StreamPayload]:
     """Resolve a synchronous record-shaped result and reject awaitables."""
     if isinstance(result, Awaitable):
         raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
@@ -255,9 +268,10 @@ def _resolve_record_result(
 
 
 def _resolve_batch_result(
-    result: list[StreamPayload] | Awaitable[list[StreamPayload]],
+    result: list[StreamPayload | Message[StreamPayload]]
+    | Awaitable[list[StreamPayload | Message[StreamPayload]]],
     node_type: str,
-) -> list[StreamPayload]:
+) -> list[StreamPayload | Message[StreamPayload]]:
     """Resolve a synchronous batch-shaped result and reject awaitables."""
     if isinstance(result, Awaitable):
         raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
@@ -265,9 +279,10 @@ def _resolve_batch_result(
 
 
 def _resolve_expand_result(
-    result: Iterable[StreamPayload] | Awaitable[Iterable[StreamPayload]],
+    result: Iterable[StreamPayload | Message[StreamPayload]]
+    | Awaitable[Iterable[StreamPayload | Message[StreamPayload]]],
     node_type: str,
-) -> Iterable[StreamPayload]:
+) -> Iterable[StreamPayload | Message[StreamPayload]]:
     """Resolve a synchronous expanding result and reject awaitables."""
     if isinstance(result, Awaitable):
         raise TypeError(f"{node_type} returned an awaitable outside WithAsync.")
@@ -460,10 +475,17 @@ def _apply_with_async_process(
 ) -> Stream:
     """Wire a WithAsync(process=...) node: run each message through inner steps and write to Kafka.
 
-    Each message is processed individually and asynchronously.  If the inner
-    process ends with an :class:`~loom.streaming.nodes._boundary.IntoTopic`,
-    results are written directly to Kafka as each message completes.  The outer
-    stream is drained — no ``ForEach`` or outer ``IntoTopic`` is required.
+    Each incoming item may be either one message or one batch of messages.
+    When the upstream shape is ``record``, each message is processed
+    individually and asynchronously.  When the upstream shape is ``batch``
+    (for example after :class:`~loom.streaming.nodes._shape.CollectBatch`),
+    every message in the batch is executed concurrently with the same
+    per-message error and sink semantics.
+
+    If the inner process ends with an
+    :class:`~loom.streaming.nodes._boundary.IntoTopic`, results are written
+    directly to Kafka as each message completes.  The outer stream is drained
+    — no ``ForEach`` or outer ``IntoTopic`` is required.
     """
     bridge = ctx.bridge
     if bridge is None:
@@ -478,25 +500,53 @@ def _apply_with_async_process(
     inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
     def step_fn(msg: Any) -> list[NodeResult]:
-        message = _require_message(msg)
+        batch = _messages_from_batch(msg) if isinstance(msg, list) else [_require_message(msg)]
+        logger.info(
+            "with_async_step_begin flow=%s node_idx=%d node_type=%s batch_size=%d",
+            flow_name,
+            idx,
+            node_type,
+            len(batch),
+        )
         try:
             with (
                 _observe_node(observer, flow_name, idx, node_type),
                 _batch_dependencies(manager, worker_resources) as deps,
             ):
-                bridge.run(
-                    _execute_inner_process(
-                        message,
+                results = bridge.run(
+                    _execute_with_async_batch(
+                        batch,
                         inner_steps,
                         sink_partition,
                         tracker,
                         deps,
                         node.task_timeout_ms,
+                        node.max_concurrency,
                     )
                 )
-            return []
+            logger.info(
+                "with_async_step_end flow=%s node_idx=%d node_type=%s batch_size=%d error_count=%d",
+                flow_name,
+                idx,
+                node_type,
+                len(batch),
+                len(results),
+            )
+            return results
         except Exception as exc:
-            return [ErrorEnvelope(kind=ErrorKind.TASK, reason=str(exc), original_message=message)]
+            logger.info(
+                "with_async_step_error flow=%s node_idx=%d node_type=%s "
+                "error_type=%s batch_size=%d",
+                flow_name,
+                idx,
+                node_type,
+                type(exc).__name__,
+                len(batch),
+            )
+            return [
+                ErrorEnvelope(kind=ErrorKind.TASK, reason=str(exc), original_message=message)
+                for message in batch
+            ]
 
     sid = _step_id(f"with_async_process_{idx}", ctx)
     mapped = bw_map(sid, stream, step_fn)
@@ -521,6 +571,11 @@ def _resolve_inner_process(
             inner_path = ctx.current_path + (inner_idx,)
             sink_partition = ctx.inline_sink_partition_for(inner_path)
             break
+        else:
+            raise TypeError(
+                f"{type(node).__name__}(process=...) only supports RecordStep nodes and an "
+                f"optional terminal IntoTopic; found {type(inner_node).__name__}."
+            )
 
     return inner_steps, sink_partition
 
@@ -532,16 +587,117 @@ async def _execute_inner_process(
     tracker: _CommitTrackerProtocol | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
-) -> None:
+) -> Message[StreamPayload]:
     """Execute all inner process steps for one message and write to Kafka when a sink is set."""
     current = message
+    logger.info(
+        "with_async_inner_start request_id=%s payload_type=%s inner_step_count=%d",
+        getattr(current.payload, "request_id", None),
+        type(current.payload).__name__,
+        len(inner_steps),
+    )
     for step in inner_steps:
+        logger.info(
+            "with_async_inner_step request_id=%s step_type=%s payload_type=%s",
+            getattr(current.payload, "request_id", None),
+            type(step).__name__,
+            type(current.payload).__name__,
+        )
         result = await _resolve_async_result(step.execute(current, **deps), timeout_ms)
         current = _replace_payload(current, result)
+        logger.info(
+            "with_async_inner_step_done request_id=%s step_type=%s result_type=%s",
+            getattr(current.payload, "request_id", None),
+            type(step).__name__,
+            type(result).__name__,
+        )
     if sink_partition is not None:
+        logger.info(
+            "with_async_write_batch request_id=%s payload_type=%s inner_step_count=%d",
+            getattr(current.payload, "request_id", None),
+            type(current.payload).__name__,
+            len(inner_steps),
+        )
         sink_partition.write_batch([current])
     if tracker is not None:
-        tracker.complete(current.meta.message_id)
+        t, p, o = current.meta.topic, current.meta.partition, current.meta.offset
+        if t is not None and p is not None and o is not None:
+            tracker.complete(t, p, o)
+    logger.info(
+        "with_async_inner_done request_id=%s payload_type=%s sink_written=%s",
+        getattr(current.payload, "request_id", None),
+        type(current.payload).__name__,
+        sink_partition is not None,
+    )
+    return current
+
+
+async def _execute_with_async_message(
+    message: Message[StreamPayload],
+    inner_steps: Sequence[_ExecutableRecordStep],
+    sink_partition: Any,
+    tracker: _CommitTrackerProtocol | None,
+    deps: Mapping[str, object],
+    timeout_ms: int | None,
+) -> NodeResult:
+    """Execute one async message and classify failures like other task nodes."""
+    try:
+        current = await _execute_inner_process(
+            message,
+            inner_steps,
+            sink_partition,
+            tracker,
+            deps,
+            timeout_ms,
+        )
+        return current
+    except Exception as exc:
+        return ErrorEnvelope(
+            kind=_classify_task(exc),
+            reason=str(exc),
+            original_message=message,
+        )
+
+
+async def _execute_with_async_batch(
+    messages: Sequence[Message[StreamPayload]],
+    inner_steps: Sequence[_ExecutableRecordStep],
+    sink_partition: Any,
+    tracker: _CommitTrackerProtocol | None,
+    deps: Mapping[str, object],
+    timeout_ms: int | None,
+    max_concurrency: int,
+) -> list[NodeResult]:
+    """Execute a batch of messages concurrently through the async inner process."""
+    if not messages:
+        return []
+
+    limiter = anyio.Semaphore(max_concurrency)
+    results: list[NodeResult | None] = [None] * len(messages)
+
+    async def _run_one(index: int, message: Message[StreamPayload]) -> None:
+        async with limiter:
+            try:
+                results[index] = await _execute_with_async_message(
+                    message,
+                    inner_steps,
+                    sink_partition,
+                    tracker,
+                    deps,
+                    timeout_ms,
+                )
+            except Exception as exc:
+                results[index] = ErrorEnvelope(
+                    kind=_classify_task(exc),
+                    reason=str(exc),
+                    original_message=message,
+                )
+
+    async with anyio.create_task_group() as task_group:
+        for index, message in enumerate(messages):
+            task_group.start_soon(_run_one, index, message)
+
+    return [result for result in results if result is not None]
 
 
 def _is_message_result(item: Any) -> bool:
@@ -759,6 +915,7 @@ def _execute_with_step(
     sink_partition: Any,
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
+    del tracker
     with (
         _observe_node(observer, flow_name, idx, node_type),
         _batch_dependencies(manager, worker_resources) as deps,
@@ -771,9 +928,6 @@ def _execute_with_step(
             ]
             current_messages = _replace_payloads(current_messages, result)
         if sink_partition is not None:
-            if tracker is not None:
-                for message in current_messages:
-                    tracker.fork(message.meta.message_id, 1)
             sink_partition.write_batch(current_messages)
         return current_messages
 
@@ -992,6 +1146,8 @@ def _is_message(value: object) -> TypeGuard[Message[StreamPayload]]:
 
 def _replace_payload(message: Message[StreamPayload], payload: Any) -> Message[StreamPayload]:
     """Preserve metadata while replacing the logical payload."""
+    if isinstance(payload, Message):
+        return cast(Message[StreamPayload], payload)
     if not isinstance(payload, (LoomStruct, LoomFrozenStruct)):
         raise TypeError(f"Expected StreamPayload, got {type(payload).__name__}.")
     return Message(payload=payload, meta=message.meta)
@@ -1019,7 +1175,9 @@ def _drop_and_commit(item: Any, tracker: Any) -> tuple[()]:
     """Drop one item and mark it complete for commit tracking."""
     if not _is_message(item):
         return ()
-    tracker.complete(item.meta.message_id)
+    t, p, o = item.meta.topic, item.meta.partition, item.meta.offset
+    if t is not None and p is not None and o is not None:
+        tracker.complete(t, p, o)
     return ()
 
 
@@ -1033,7 +1191,9 @@ def _register_broadcast_fanout(item: Any, tracker: Any, route_count: int) -> Any
     if route_count <= 1:
         return item
     message = _require_message(item)
-    tracker.fork(message.meta.message_id, route_count - 1)
+    t, p, o = message.meta.topic, message.meta.partition, message.meta.offset
+    if t is not None and p is not None and o is not None:
+        tracker.fork(t, p, o, route_count - 1)
     return message
 
 

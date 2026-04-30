@@ -6,6 +6,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.streaming import (
+    CollectBatch,
     ContextFactory,
     FromTopic,
     IntoTopic,
@@ -13,6 +14,7 @@ from loom.streaming import (
     ResourceScope,
     StreamFlow,
     With,
+    WithAsync,
 )
 from loom.streaming.compiler import CompilationError, compile_flow
 from tests.unit.streaming.compiler.cases import FakeStep, Order, Result
@@ -74,3 +76,27 @@ class TestWithCompiler:
         plan = compile_flow(flow, runtime_config=streaming_kafka_config)
 
         assert plan.name == "test"
+
+    def test_compile_rejects_collect_batch_inside_with_async(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """WithAsync(process=...) only supports record steps and an optional terminal IntoTopic."""
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="test",
+            source=FromTopic("in", payload=Order),
+            process=Process(
+                WithAsync(
+                    process=Process(
+                        CollectBatch(max_records=2, timeout_ms=500),
+                        IntoTopic("out", payload=Result),
+                    )
+                )
+            ),
+        )
+
+        with pytest.raises(
+            CompilationError, match="WithAsync\\(process=\\.\\.\\.\\) only supports"
+        ):
+            compile_flow(flow, runtime_config=streaming_kafka_config)

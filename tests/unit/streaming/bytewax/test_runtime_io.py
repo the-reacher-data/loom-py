@@ -125,7 +125,8 @@ class TestRuntimeIOBuilders:
                 build_order_message(
                     "123",
                     None,
-                    message_id="orders.in:2:9",
+                    partition=2,
+                    offset=9,
                 )
             ]
         )
@@ -152,11 +153,11 @@ class TestRuntimeIOBuilders:
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=5)
         )
 
-        tracker.complete("orders.in:2:5")
-        tracker.complete("orders.in:2:3")
+        tracker.complete("orders.in", 2, 5)
+        tracker.complete("orders.in", 2, 3)
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 4)]]
 
-        tracker.complete("orders.in:2:4")
+        tracker.complete("orders.in", 2, 4)
 
         assert consumer.commit_offset_calls == [
             [TopicPartition("orders.in", 2, 4)],
@@ -174,15 +175,15 @@ class TestRuntimeIOBuilders:
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=9)
         )
-        tracker.fork("orders.in:2:9", 2)
+        tracker.fork("orders.in", 2, 9, 2)
 
-        tracker.complete("orders.in:2:9")
+        tracker.complete("orders.in", 2, 9)
         assert consumer.commit_offset_calls == []
 
-        tracker.complete("orders.in:2:9")
+        tracker.complete("orders.in", 2, 9)
         assert consumer.commit_offset_calls == []
 
-        tracker.complete("orders.in:2:9")
+        tracker.complete("orders.in", 2, 9)
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 10)]]
 
     def test_commit_tracker_propagates_commit_offset_errors(
@@ -199,7 +200,7 @@ class TestRuntimeIOBuilders:
         )
 
         with pytest.raises(RuntimeError, match="commit-boom"):
-            tracker.complete("orders.in:2:9")
+            tracker.complete("orders.in", 2, 9)
 
     def test_build_inline_sink_partition_can_write_dlq_payloads(
         self,

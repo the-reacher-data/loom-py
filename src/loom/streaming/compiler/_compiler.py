@@ -98,6 +98,7 @@ class _Compiler:
     def _validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
         errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
         errors.extend(_validate_window_strategies(flow.process.nodes))
+        errors.extend(_validate_scoped_process_nodes(_walk_all_process_nodes(flow.process.nodes)))
         return errors
 
     @staticmethod
@@ -627,6 +628,30 @@ def _validate_window_strategies(nodes: Iterable[object]) -> list[str]:
             errors.append(
                 f"CollectBatch.window={node.window} is not yet supported by the Bytewax adapter. "
                 f"Only WindowStrategy.COLLECT is available in this adapter version."
+            )
+    return errors
+
+
+def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
+    """Return errors for scoped processes that contain unsupported inner nodes."""
+    errors: list[str] = []
+    for node in nodes:
+        if not isinstance(node, (With, WithAsync)):
+            continue
+        inner_nodes = tuple(node.process.nodes)
+        for idx, inner_node in enumerate(inner_nodes):
+            if isinstance(inner_node, RecordStep):
+                continue
+            if isinstance(inner_node, IntoTopic):
+                if idx != len(inner_nodes) - 1:
+                    errors.append(
+                        f"{type(node).__name__}(process=...) requires IntoTopic to be last; "
+                        f"found {type(inner_nodes[idx + 1]).__name__} after it."
+                    )
+                continue
+            errors.append(
+                f"{type(node).__name__}(process=...) only supports RecordStep nodes and an "
+                f"optional terminal IntoTopic; found {type(inner_node).__name__}."
             )
     return errors
 

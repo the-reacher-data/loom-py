@@ -144,6 +144,8 @@ def build_order_message(
     key: bytes | str | None = None,
     *,
     message_id: str = "msg-1",
+    partition: int | None = None,
+    offset: int | None = None,
 ) -> Message[Order]:
     """Build a reusable Bytewax order message with transport metadata."""
     return Message(
@@ -152,5 +154,7 @@ def build_order_message(
             message_id=message_id,
             topic=_ORDERS_IN_TOPIC,
             key=key,
+            partition=partition,
+            offset=offset,
         ),
     )

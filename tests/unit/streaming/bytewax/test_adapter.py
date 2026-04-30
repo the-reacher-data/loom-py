@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from loom.streaming.bytewax import _adapter
 from loom.streaming.compiler._plan import CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -262,3 +263,29 @@ class TestOutputAndErrorWiring:
         assert len(errors) == 1
         assert errors[0].raw == b"bad-wire"
         assert errors[0].offset == 2
+
+    def test_wire_decode_error_without_explicit_sink_uses_drop_sink(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        recorded: dict[str, object] = {}
+
+        def _bw_output(step_id: str, stream: object, sink: object) -> None:
+            recorded["step_id"] = step_id
+            recorded["stream"] = stream
+            recorded["sink_type"] = type(sink).__name__
+
+        monkeypatch.setattr(_adapter, "bw_output", _bw_output)
+
+        wiring = _adapter._OutputWiring(
+            sink=None,
+            error_sinks={},
+            terminal_sinks={},
+            observer=None,
+            flow_name="orders",
+        )
+        wiring.wire_node_error(ErrorKind.WIRE, "decode", "stream")
+
+        assert recorded["step_id"] == "decode_wire_dropped"
+        assert recorded["stream"] == "stream"
+        assert recorded["sink_type"] == "_DropLoggingSink"

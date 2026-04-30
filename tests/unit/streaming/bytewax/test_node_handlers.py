@@ -8,12 +8,14 @@ from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 
+import anyio
 import pytest
 from structlog.contextvars import get_contextvars
 
 from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
 from loom.streaming.bytewax import _node_handlers
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import Process
@@ -21,6 +23,7 @@ from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
 from loom.streaming.nodes._shape import CollectBatch, Drain
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
+from loom.streaming.nodes._with import WithAsync
 
 pytestmark = pytest.mark.bytewax
 
@@ -33,8 +36,23 @@ class _FakeNode:
     pass
 
 
-def _message(value: str = "v", *, message_id: str = "m-1") -> Message[_Payload]:
-    return Message(payload=_Payload(value=value), meta=MessageMeta(message_id=message_id))
+def _message(
+    value: str = "v",
+    *,
+    message_id: str = "m-1",
+    topic: str = "t",
+    partition: int = 0,
+    offset: int = 0,
+) -> Message[_Payload]:
+    return Message(
+        payload=_Payload(value=value),
+        meta=MessageMeta(
+            message_id=message_id,
+            topic=topic,
+            partition=partition,
+            offset=offset,
+        ),
+    )
 
 
 class _RecordingObserver:
@@ -100,10 +118,52 @@ class _UpperRecordStep(RecordStep[_Payload, _Payload]):
         return _Payload(value=payload.value.upper())
 
 
+class _MessageReturningRecordStep(RecordStep[_Payload, _Payload]):
+    def execute(self, message: Message[StreamPayload], **kwargs: object) -> Message[_Payload]:
+        del kwargs
+        payload = _message_payload(message)
+        return Message(
+            payload=_Payload(value=payload.value.upper()),
+            meta=MessageMeta(
+                message_id="override",
+                topic=message.meta.topic,
+                partition=message.meta.partition,
+                offset=message.meta.offset,
+            ),
+        )
+
+
 class _BoomRecordStep(RecordStep[_Payload, _Payload]):
     def execute(self, message: Message[StreamPayload], **kwargs: object) -> _Payload:
         del message, kwargs
         raise RuleViolation("value", "boom")
+
+
+class _AsyncUpperRecordStep(RecordStep[_Payload, _Payload]):
+    def __init__(self, probe: _ConcurrencyProbe | None = None) -> None:
+        self._probe = probe
+
+    async def execute(self, message: Message[StreamPayload], **kwargs: object) -> _Payload:
+        del kwargs
+        payload = _message_payload(message)
+        if self._probe is not None:
+            self._probe.enter()
+        try:
+            await anyio.sleep(0.01)
+            return _Payload(value=payload.value.upper())
+        finally:
+            if self._probe is not None:
+                self._probe.exit()
+
+
+class _ConditionalAsyncRecordStep(RecordStep[_Payload, _Payload]):
+    async def execute(self, message: Message[StreamPayload], **kwargs: object) -> _Payload:
+        del kwargs
+        payload = _message_payload(message)
+        await anyio.sleep(0.001)
+        if payload.value == "bad":
+            raise RuleViolation("value", "boom")
+        return _Payload(value=payload.value.upper())
 
 
 class _UpperBatchStep(BatchStep[_Payload, _Payload]):
@@ -133,6 +193,27 @@ class _UpperExpandStep(ExpandStep[_Payload, _Payload]):
         ]
 
 
+class _MessageReturningExpandStep(ExpandStep[_Payload, _Payload]):
+    def execute(
+        self,
+        message: Message[StreamPayload],
+        **kwargs: object,
+    ) -> list[Message[_Payload]]:
+        del kwargs
+        payload = _message_payload(message)
+        return [
+            Message(
+                payload=_Payload(value=payload.value.upper()),
+                meta=MessageMeta(
+                    message_id="override",
+                    topic=message.meta.topic,
+                    partition=message.meta.partition,
+                    offset=message.meta.offset,
+                ),
+            )
+        ]
+
+
 class _UpperBatchExpandStep(BatchExpandStep[_Payload, _Payload]):
     def execute(
         self,
@@ -158,14 +239,47 @@ class _ContextAwareRecordStep(RecordStep[_Payload, _Payload]):
 
 class _CommitTracker:
     def __init__(self) -> None:
-        self.forks: list[tuple[str, int]] = []
-        self.completes: list[str] = []
+        self.forks: list[tuple[str, int, int, int]] = []
+        self.completes: list[tuple[str, int, int]] = []
 
-    def fork(self, message_id: str, extra_outputs: int) -> None:
-        self.forks.append((message_id, extra_outputs))
+    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
+        self.forks.append((topic, partition, offset, extra_outputs))
 
-    def complete(self, message_id: str) -> None:
-        self.completes.append(message_id)
+    def complete(self, topic: str, partition: int, offset: int) -> None:
+        self.completes.append((topic, partition, offset))
+
+
+class _ConcurrencyProbe:
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    def enter(self) -> None:
+        self.active += 1
+        if self.active > self.max_active:
+            self.max_active = self.active
+
+    def exit(self) -> None:
+        self.active -= 1
+
+
+class _WithAsyncLifecycle:
+    def open_worker(self) -> dict[str, object]:
+        return {}
+
+    def open_batch(self) -> dict[str, object]:
+        return {}
+
+    def close_batch(self) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        return None
+
+
+class _WithAsyncBridge:
+    def run(self, coro: object) -> object:
+        return asyncio.run(cast(Any, coro))
 
 
 class _RecordingSinkPartition:
@@ -180,6 +294,17 @@ class _FailingSinkPartition:
     def write_batch(self, items: list[Message[StreamPayload]]) -> None:
         del items
         raise RuntimeError("sink-boom")
+
+
+class _ConditionalFailingSinkPartition:
+    def __init__(self) -> None:
+        self.writes: list[list[Message[StreamPayload]]] = []
+
+    def write_batch(self, items: list[Message[StreamPayload]]) -> None:
+        values = [_message_payload(item).value for item in items]
+        if "BAD" in values:
+            raise RuntimeError("sink-boom")
+        self.writes.append(items)
 
 
 def test_require_message_rejects_non_message() -> None:
@@ -212,7 +337,7 @@ def test_wire_node_dispatches_registered_handler(monkeypatch: pytest.MonkeyPatch
 def test_apply_collect_batch_default_wires_timeout_and_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: dict[str, tuple[object, ...]] = {}
+    calls: dict[str, Any] = {}
     observer = _RecordingObserver()
     node = CollectBatch(max_records=3, timeout_ms=250)
 
@@ -286,6 +411,22 @@ def test_execute_record_step_replaces_payload_and_observes() -> None:
         ("start", "orders", 0, "Upper"),
         ("end", "orders", 0, "Upper:success"),
     ]
+
+
+def test_execute_record_step_accepts_replacement_message() -> None:
+    observer = _RecordingObserver()
+    result = _node_handlers._execute_record_step(
+        observer,
+        "orders",
+        0,
+        "Upper",
+        _MessageReturningRecordStep(),
+        _message("abc"),
+    )
+
+    assert isinstance(result, Message)
+    assert _message_payload(result).value == "ABC"
+    assert result.meta.message_id == "override"
 
 
 def test_execute_record_step_binds_flow_context() -> None:
@@ -362,6 +503,23 @@ def test_execute_expand_step_replaces_payloads_and_observes() -> None:
     ]
 
 
+def test_execute_expand_step_accepts_replacement_messages() -> None:
+    observer = _RecordingObserver()
+    result = _node_handlers._execute_expand_step(
+        observer,
+        "orders",
+        3,
+        "UpperExpand",
+        _MessageReturningExpandStep(),
+        _message("ab"),
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], Message)
+    assert _message_payload(result[0]).value == "AB"
+    assert result[0].meta.message_id == "override"
+
+
 def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
     result = _node_handlers._execute_batch_expand_step(
@@ -380,7 +538,7 @@ def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
     ]
 
 
-def test_execute_with_step_forks_commit_tracker_for_inline_sink() -> None:
+def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> None:
     tracker = _CommitTracker()
 
     class _Lifecycle:
@@ -418,7 +576,7 @@ def test_execute_with_step_forks_commit_tracker_for_inline_sink() -> None:
     )
 
     assert [_message_payload(item).value for item in result] == ["ABC", "DEF"]
-    assert tracker.forks == [("m-1", 1), ("m-2", 1)]
+    assert tracker.forks == []
     assert len(sink_partition.writes) == 1
 
 
@@ -437,7 +595,7 @@ def test_execute_inner_process_completes_commit_tracker_on_success() -> None:
         )
     )
 
-    assert tracker.completes == ["m-1"]
+    assert tracker.completes == [("t", 0, 0)]
     assert [_message_payload(item).value for item in sink_partition.writes[0]] == ["ABC"]
 
 
@@ -455,7 +613,7 @@ def test_execute_inner_process_completes_without_sink_partition() -> None:
         )
     )
 
-    assert tracker.completes == ["m-1"]
+    assert tracker.completes == [("t", 0, 0)]
 
 
 def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
@@ -474,6 +632,252 @@ def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
         )
 
     assert tracker.completes == []
+
+
+class TestWithAsyncBatch:
+    @pytest.fixture
+    def lifecycle(self) -> _WithAsyncLifecycle:
+        return _WithAsyncLifecycle()
+
+    @pytest.fixture
+    def bridge(self) -> _WithAsyncBridge:
+        return _WithAsyncBridge()
+
+    @pytest.fixture
+    def observer(self) -> _RecordingObserver:
+        return _RecordingObserver()
+
+    @pytest.fixture
+    def tracker(self) -> _CommitTracker:
+        return _CommitTracker()
+
+    @pytest.fixture
+    def sink_partition(self) -> _RecordingSinkPartition:
+        return _RecordingSinkPartition()
+
+    @pytest.fixture
+    def probe(self) -> _ConcurrencyProbe:
+        return _ConcurrencyProbe()
+
+    @pytest.fixture
+    def with_async_node(self) -> WithAsync[StreamPayload, StreamPayload]:
+        return cast(
+            WithAsync[StreamPayload, StreamPayload],
+            WithAsync(
+                process=Process(_UpperRecordStep()),
+                max_concurrency=7,
+                task_timeout_ms=500,
+            ),
+        )
+
+    @pytest.fixture
+    def with_async_ctx(
+        self,
+        bridge: _WithAsyncBridge,
+        observer: _RecordingObserver,
+        tracker: _CommitTracker,
+        lifecycle: _WithAsyncLifecycle,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            bridge=bridge,
+            commit_tracker=tracker,
+            flow_observer=observer,
+            plan=SimpleNamespace(name="orders"),
+            current_path=(),
+            manager_for=lambda idx, node: lifecycle,
+            outputs=SimpleNamespace(wire_node_error=lambda *args, **kwargs: None),
+        )
+
+    @pytest.mark.parametrize(
+        ("runtime_input", "expected_ids"),
+        [
+            (_message("abc", message_id="m-1"), ["m-1"]),
+            (
+                [_message("abc", message_id="m-1"), _message("def", message_id="m-2")],
+                ["m-1", "m-2"],
+            ),
+        ],
+    )
+    def test_apply_with_async_process_accepts_record_and_batch_inputs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        with_async_node: WithAsync[StreamPayload, StreamPayload],
+        with_async_ctx: SimpleNamespace,
+        runtime_input: object,
+        expected_ids: list[str],
+    ) -> None:
+        calls: dict[str, Any] = {}
+
+        async def _execute_with_async_batch(
+            messages: list[Message[StreamPayload]],
+            inner_steps: list[object],
+            sink_partition: object,
+            tracker: object,
+            deps: dict[str, object],
+            timeout_ms: int | None,
+            max_concurrency: int,
+        ) -> list[object]:
+            del inner_steps, sink_partition, tracker, deps, timeout_ms
+            calls["batch"] = [message.meta.message_id for message in messages]
+            calls["max_concurrency"] = max_concurrency
+            return []
+
+        def _bw_map(step_id: str, stream: object, fn: object) -> object:
+            del step_id, stream
+            assert callable(fn)
+            calls["mapped"] = fn(runtime_input)
+            return "mapped-stream"
+
+        def _flat_map(step_id: str, stream: object, fn: object) -> object:
+            del step_id, fn
+            return stream
+
+        def _branch(step_id: str, stream: object, predicate: object) -> object:
+            del step_id, predicate
+            return SimpleNamespace(trues=stream, falses=[])
+
+        monkeypatch.setattr(_node_handlers, "bw_map", _bw_map)
+        monkeypatch.setattr(_node_handlers, "flat_map", _flat_map)
+        monkeypatch.setattr(_node_handlers, "branch", _branch)
+        monkeypatch.setattr(_node_handlers, "_execute_with_async_batch", _execute_with_async_batch)
+
+        result = _node_handlers._apply_with_async_process(
+            "input-stream",
+            with_async_node,
+            0,
+            with_async_ctx,
+        )
+
+        assert result == "mapped-stream"
+        assert calls["batch"] == expected_ids
+        assert calls["max_concurrency"] == 7
+        assert calls["mapped"] == []
+
+    @pytest.mark.asyncio
+    async def test_execute_with_async_batch_writes_each_message_and_tracks_completion(
+        self,
+        tracker: _CommitTracker,
+        sink_partition: _RecordingSinkPartition,
+        probe: _ConcurrencyProbe,
+    ) -> None:
+        messages = [
+            _message("abc", message_id="m-1", offset=0),
+            _message("def", message_id="m-2", offset=1),
+        ]
+
+        results = await _node_handlers._execute_with_async_batch(
+            messages,
+            [_AsyncUpperRecordStep(probe)],
+            sink_partition,
+            tracker,
+            {},
+            None,
+            2,
+        )
+
+        successes = [item for item in results if isinstance(item, Message)]
+        assert len(successes) == 2
+        assert [(_message_payload(item).value, item.meta.offset) for item in successes] == [
+            ("ABC", 0),
+            ("DEF", 1),
+        ]
+        assert sorted(
+            _message_payload(item).value for batch in sink_partition.writes for item in batch
+        ) == ["ABC", "DEF"]
+        assert sorted(tracker.completes, key=lambda item: item[2]) == [
+            ("t", 0, 0),
+            ("t", 0, 1),
+        ]
+        assert probe.max_active == 2
+
+    @pytest.mark.asyncio
+    async def test_execute_with_async_batch_returns_classified_error_for_failed_message(
+        self,
+        tracker: _CommitTracker,
+        sink_partition: _RecordingSinkPartition,
+    ) -> None:
+        messages = [
+            _message("ok", message_id="m-1", offset=0),
+            _message("bad", message_id="m-2", offset=1),
+        ]
+
+        results = await _node_handlers._execute_with_async_batch(
+            messages,
+            [_ConditionalAsyncRecordStep()],
+            sink_partition,
+            tracker,
+            {},
+            None,
+            2,
+        )
+
+        assert len(results) == 2
+        assert any(isinstance(item, Message) for item in results)
+        error = next(item for item in results if isinstance(item, ErrorEnvelope))
+        assert error.kind == ErrorKind.BUSINESS
+        assert error.original_message is not None
+        assert error.original_message.meta.message_id == "m-2"
+        assert sorted(
+            _message_payload(item).value for batch in sink_partition.writes for item in batch
+        ) == ["OK"]
+        assert tracker.completes == [("t", 0, 0)]
+
+    @pytest.mark.asyncio
+    async def test_execute_with_async_batch_returns_classified_error_for_sink_failure(
+        self,
+        tracker: _CommitTracker,
+    ) -> None:
+        sink_partition = _ConditionalFailingSinkPartition()
+        messages = [
+            _message("ok", message_id="m-1", offset=0),
+            _message("bad", message_id="m-2", offset=1),
+        ]
+
+        results = await _node_handlers._execute_with_async_batch(
+            messages,
+            [_AsyncUpperRecordStep()],
+            sink_partition,
+            tracker,
+            {},
+            None,
+            2,
+        )
+
+        successes = [item for item in results if isinstance(item, Message)]
+        errors = [item for item in results if isinstance(item, ErrorEnvelope)]
+        assert len(successes) == 1
+        assert len(errors) == 1
+        assert errors[0].kind == ErrorKind.TASK
+        assert errors[0].original_message is not None
+        assert errors[0].original_message.meta.message_id == "m-2"
+        assert sorted(
+            _message_payload(item).value for batch in sink_partition.writes for item in batch
+        ) == ["OK"]
+        assert tracker.completes == [("t", 0, 0)]
+
+    @pytest.mark.asyncio
+    async def test_execute_with_async_batch_respects_max_concurrency(
+        self,
+        sink_partition: _RecordingSinkPartition,
+        tracker: _CommitTracker,
+        probe: _ConcurrencyProbe,
+    ) -> None:
+        results = await _node_handlers._execute_with_async_batch(
+            [
+                _message("one", message_id="m-1", offset=0),
+                _message("two", message_id="m-2", offset=1),
+            ],
+            [_AsyncUpperRecordStep(probe)],
+            sink_partition,
+            tracker,
+            {},
+            None,
+            1,
+        )
+
+        successes = [item for item in results if isinstance(item, Message)]
+        assert len(successes) == 2
+        assert probe.max_active == 1
 
 
 @pytest.mark.parametrize(
@@ -505,7 +909,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
         assert step_id == "1_broadcast_5_fanout"
         assert callable(fn)
         result = fn(_message("abc"))
-        assert _message_payload(result).value == "abc"
+        assert _message_payload(cast(Message[_Payload], result)).value == "abc"
         return "tracked-stream"
 
     def _wire_process(
@@ -542,7 +946,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
     result = _node_handlers._apply_broadcast("input-stream", node, 5, ctx)
 
     assert result == "tracked-stream"
-    assert tracker.forks == [("m-1", 1)]
+    assert tracker.forks == [("t", 0, 0, 1)]
     assert [call[0] for call in wire_process_calls] == ["tracked-stream", "tracked-stream"]
     assert [call[2] for call in wire_process_calls] == [(1, 0), (1, 1)]
     assert all(len(call[1]) == 1 and isinstance(call[1][0], Drain) for call in wire_process_calls)
@@ -573,7 +977,7 @@ def test_apply_drain_completes_commit_tracker(
     )
 
     assert result == "dropped-stream"
-    assert tracker.completes == ["m-1"]
+    assert tracker.completes == [("t", 0, 0)]
 
 
 def _record_branch_terminal(

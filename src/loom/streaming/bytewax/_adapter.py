@@ -12,7 +12,7 @@ import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import Any, Protocol, TypeAlias, cast, runtime_checkable
 
 import bytewax.dataflow as _bytewax_dataflow
 from bytewax.operators import branch
@@ -120,13 +120,20 @@ def build_dataflow_with_shutdown(
     return _BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
 
 
-def _bind_commit_tracker_object(item: Any | None, commit_tracker: Any | None) -> None:
+@runtime_checkable
+class _SupportsCommitBind(Protocol):
+    """Runtime object that accepts a Kafka commit tracker."""
+
+    def bind_commit_tracker(self, tracker: Any) -> None:
+        """Bind a commit tracker to this runtime object."""
+
+
+def _bind_commit_tracker_object(item: object | None, commit_tracker: object | None) -> None:
     """Bind a commit tracker to one runtime object when supported."""
     if item is None or commit_tracker is None:
         return
-    binder = getattr(item, "bind_commit_tracker", None)
-    if callable(binder):
-        binder(commit_tracker)
+    if isinstance(item, _SupportsCommitBind):
+        item.bind_commit_tracker(commit_tracker)
 
 
 def _bind_commit_tracker_mapping(
@@ -304,6 +311,38 @@ class _DropObserverSink(DynamicSink[Any]):
         return _DropObserverSinkPartition(self._observer, self._flow_name, self._kind)
 
 
+class _DropLoggingSinkPartition(StatelessSinkPartition[Any]):
+    """Sink partition that logs every unrouted error item."""
+
+    def __init__(self, flow_name: str, kind: ErrorKind) -> None:
+        self._flow_name = flow_name
+        self._kind = kind
+
+    def write_batch(self, items: list[Any]) -> None:
+        for _ in items:
+            logger.warning(
+                "unrouted_error_dropped",
+                extra={
+                    "flow": self._flow_name,
+                    "error_kind": self._kind.value,
+                },
+            )
+
+
+class _DropLoggingSink(DynamicSink[Any]):
+    """Logs every item on an unrouted error stream."""
+
+    def __init__(self, flow_name: str, kind: ErrorKind) -> None:
+        self._flow_name = flow_name
+        self._kind = kind
+
+    def build(
+        self, step_id: str, worker_index: int, worker_count: int
+    ) -> StatelessSinkPartition[Any]:
+        del step_id, worker_index, worker_count
+        return _DropLoggingSinkPartition(self._flow_name, self._kind)
+
+
 class _OutputWiring:
     """Coordinate terminal output and explicit error routes for one build."""
 
@@ -357,16 +396,20 @@ class _OutputWiring:
         """Wire one node-error branch to the configured sink.
 
         When no sink is registered for *kind*, the stream is wired to a drop
-        sink that notifies the observer for every discarded message so the
-        error is never silent.
+        sink that either notifies the observer or logs a warning for every
+        discarded message so the error is never silent.
         """
         sink = self.error_sinks.get(kind)
         if sink is not None:
             bw_output(f"{step_id}_{kind.value}_errors", stream, sink)
             return
+        drop_sink: DynamicSink[Any]
         if self._observer is not None:
             drop_sink = _DropObserverSink(self._observer, self._flow_name, kind)
             bw_output(f"{step_id}_{kind.value}_dropped", stream, drop_sink)
+            return
+        drop_sink = _DropLoggingSink(self._flow_name, kind)
+        bw_output(f"{step_id}_{kind.value}_dropped", stream, drop_sink)
 
     def wire_flow_output(self, stream: Stream, plan: CompiledPlan) -> None:
         """Wire the flow-level output and declared error routes."""

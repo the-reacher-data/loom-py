@@ -118,7 +118,9 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
         if tracker is None:
             return
         for message in items:
-            tracker.complete(message.meta.message_id)
+            t, p, o = message.meta.topic, message.meta.partition, message.meta.offset
+            if t is not None and p is not None and o is not None:
+                tracker.complete(t, p, o)
 
 
 class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
@@ -219,11 +221,11 @@ class _KafkaCommitTracker:
         """Register one newly polled Kafka record for offset tracking."""
         if record.partition is None or record.offset is None:
             return
-        message_id = _record_id(record)
+        key = f"{record.topic}:{record.partition}:{record.offset}"
         with self._lock:
-            if message_id in self._messages:
+            if key in self._messages:
                 return
-            self._messages[message_id] = _TrackedMessage(
+            self._messages[key] = _TrackedMessage(
                 topic=record.topic,
                 partition=record.partition,
                 offset=record.offset,
@@ -235,28 +237,30 @@ class _KafkaCommitTracker:
             )
             watermark.register(record.offset)
 
-    def fork(self, message_id: str, extra_outputs: int) -> None:
+    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
         """Increase the number of expected completions for one message."""
         if extra_outputs <= 0:
             return
+        key = f"{topic}:{partition}:{offset}"
         with self._lock:
-            state = self._messages.get(message_id)
+            state = self._messages.get(key)
             if state is None:
                 return
             state.pending += extra_outputs
 
-    def complete(self, message_id: str) -> None:
+    def complete(self, topic: str, partition: int, offset: int) -> None:
         """Mark one logical branch as completed and commit when all finish."""
+        key = f"{topic}:{partition}:{offset}"
         consumer: KafkaConsumerClient | None = None
         commit_partitions: list[TopicPartition] = []
         with self._lock:
-            state = self._messages.get(message_id)
+            state = self._messages.get(key)
             if state is None:
                 return
             state.pending -= 1
             if state.pending > 0:
                 return
-            self._messages.pop(message_id, None)
+            self._messages.pop(key, None)
             watermark = self._watermarks.get((state.topic, state.partition))
             if watermark is None:
                 return
@@ -287,11 +291,10 @@ class _PartitionWatermark:
     next_offset: int | None = None
     pending: set[int] = field(default_factory=set)
     ready: set[int] = field(default_factory=set)
-    committed: bool = False
 
     def register(self, offset: int) -> None:
         """Register one offset as in-flight for this partition."""
-        if self.next_offset is None or (not self.committed and offset < self.next_offset):
+        if self.next_offset is None or offset < self.next_offset:
             self.next_offset = offset
         self.pending.add(offset)
 
@@ -302,13 +305,12 @@ class _PartitionWatermark:
         self.pending.discard(offset)
         self.ready.add(offset)
         advanced = False
-        while self.next_offset in self.ready and self.next_offset not in self.pending:
+        while self.next_offset in self.ready:
             self.ready.remove(self.next_offset)
             self.next_offset += 1
             advanced = True
         if not advanced:
             return None
-        self.committed = True
         return TopicPartition(self.topic, self.partition, self.next_offset)
 
 
@@ -340,17 +342,6 @@ def _resolve_partition_key(
     if partition_policy.allow_repartition:
         return policy_key if policy_key is not None else incoming_key
     return incoming_key
-
-
-def _record_id(record: KafkaRecord[bytes]) -> str:
-    """Derive a stable logical id for one raw Kafka record."""
-    if record.partition is not None and record.offset is not None:
-        return f"{record.topic}:{record.partition}:{record.offset}"
-    if record.key is not None:
-        return f"{record.topic}:{record.key!s}"
-    if record.timestamp_ms is not None:
-        return f"{record.topic}:{record.timestamp_ms}"
-    return record.topic
 
 
 def _send_batch_to_dlq(
