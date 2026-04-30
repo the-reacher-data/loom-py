@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from confluent_kafka import TopicPartition
 
 from loom.streaming.kafka import KafkaRecord
 from loom.streaming.kafka._config import ConsumerSettings
@@ -114,6 +115,7 @@ class ConsumerBackendStub:
         self.closed = False
         self.poll_calls: list[float] = []
         self.commit_calls: list[bool] = []
+        self.commit_offset_calls: list[list[TopicPartition]] = []
         self.commit_error: Exception | None = None
         self.close_error: Exception | None = None
 
@@ -124,10 +126,21 @@ class ConsumerBackendStub:
         self.poll_calls.append(timeout)
         return self.next_message
 
-    def commit(self, *, asynchronous: bool = False) -> None:
+    def commit(
+        self,
+        *,
+        asynchronous: bool = False,
+        offsets: list[TopicPartition] | None = None,
+    ) -> None:
         if self.commit_error is not None:
             raise self.commit_error
+        if offsets is not None:
+            self.commit_offset_calls.append(offsets)
+            return
         self.commit_calls.append(asynchronous)
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        self.commit(offsets=partitions, asynchronous=False)
 
     def close(self) -> None:
         if self.close_error is not None:
@@ -167,7 +180,9 @@ class RawConsumerStub:
         self._records = list(records or [])
         self.closed = False
         self.commit_calls: list[bool] = []
+        self.commit_offset_calls: list[list[TopicPartition]] = []
         self.close_error: Exception | None = None
+        self.commit_offset_error: Exception | None = None
 
     def load_records(self, records: list[KafkaRecord[bytes] | None]) -> None:
         """Replace the queued records consumed by the stub."""
@@ -181,6 +196,11 @@ class RawConsumerStub:
 
     def commit(self, *, asynchronous: bool = False) -> None:
         self.commit_calls.append(asynchronous)
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        if self.commit_offset_error is not None:
+            raise self.commit_offset_error
+        self.commit_offset_calls.append(partitions)
 
     def close(self) -> None:
         if self.close_error is not None:
@@ -196,7 +216,9 @@ class RuntimeConsumerStub:
         self.closed = False
         self.poll_calls: list[int] = []
         self.commit_calls: list[bool] = []
+        self.commit_offset_calls: list[list[TopicPartition]] = []
         self.close_error: Exception | None = None
+        self.commit_offset_error: Exception | None = None
         self.next_message: Any | None = None
 
     def poll(self, timeout_ms: int) -> object | None:
@@ -205,6 +227,11 @@ class RuntimeConsumerStub:
 
     def commit(self, *, asynchronous: bool = False) -> None:
         self.commit_calls.append(asynchronous)
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        if self.commit_offset_error is not None:
+            raise self.commit_offset_error
+        self.commit_offset_calls.append(partitions)
 
     def close(self) -> None:
         if self.close_error is not None:

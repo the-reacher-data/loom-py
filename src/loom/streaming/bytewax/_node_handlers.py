@@ -135,7 +135,7 @@ class _BuildContextProtocol(Protocol):
 
     plan: CompiledPlan
     bridge: AsyncBridge | None
-    commit_tracker: Any | None
+    commit_tracker: _CommitTrackerProtocol | None
     flow_observer: StreamingFlowObserver | None
     outputs: _OutputWiringProtocol
 
@@ -162,6 +162,16 @@ class _BuildContextProtocol(Protocol):
     def enter_path(self, path: tuple[int, ...]) -> AbstractContextManager[None]:
         """Temporarily set the current compilation path."""
         ...
+
+
+class _CommitTrackerProtocol(Protocol):
+    """Offset completion tracker used by the Kafka runtime adapter."""
+
+    def fork(self, message_id: str, extra_outputs: int) -> None:
+        """Increase the expected completions for one logical message."""
+
+    def complete(self, message_id: str) -> None:
+        """Mark one logical message branch as complete."""
 
 
 NodeHandler: TypeAlias = Callable[[Stream, object, int, _BuildContextProtocol], Stream]
@@ -400,6 +410,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
+    tracker = ctx.commit_tracker
     inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
     def step(batch: list[Any]) -> list[NodeResult]:
@@ -412,6 +423,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
                 flow_name,
                 idx,
                 node_type,
+                tracker,
                 manager,
                 worker_resources,
                 inner_steps,
@@ -461,6 +473,7 @@ def _apply_with_async_process(
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
     node_type = type(node).__name__
+    tracker = ctx.commit_tracker
 
     inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
@@ -473,7 +486,12 @@ def _apply_with_async_process(
             ):
                 bridge.run(
                     _execute_inner_process(
-                        message, inner_steps, sink_partition, deps, node.task_timeout_ms
+                        message,
+                        inner_steps,
+                        sink_partition,
+                        tracker,
+                        deps,
+                        node.task_timeout_ms,
                     )
                 )
             return []
@@ -511,6 +529,7 @@ async def _execute_inner_process(
     message: Message[StreamPayload],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
+    tracker: _CommitTrackerProtocol | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
 ) -> None:
@@ -521,6 +540,8 @@ async def _execute_inner_process(
         current = _replace_payload(current, result)
     if sink_partition is not None:
         sink_partition.write_batch([current])
+    if tracker is not None:
+        tracker.complete(current.meta.message_id)
 
 
 def _is_message_result(item: Any) -> bool:
@@ -731,6 +752,7 @@ def _execute_with_step(
     flow_name: str,
     idx: int,
     node_type: str,
+    tracker: _CommitTrackerProtocol | None,
     manager: ResourceLifecycle,
     worker_resources: Mapping[str, object],
     inner_steps: Sequence[_ExecutableRecordStep],
@@ -749,6 +771,9 @@ def _execute_with_step(
             ]
             current_messages = _replace_payloads(current_messages, result)
         if sink_partition is not None:
+            if tracker is not None:
+                for message in current_messages:
+                    tracker.fork(message.meta.message_id, 1)
             sink_partition.write_batch(current_messages)
         return current_messages
 

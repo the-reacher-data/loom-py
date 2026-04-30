@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import timedelta
 from types import SimpleNamespace
@@ -32,8 +33,8 @@ class _FakeNode:
     pass
 
 
-def _message(value: str = "v") -> Message[_Payload]:
-    return Message(payload=_Payload(value=value), meta=MessageMeta(message_id="m-1"))
+def _message(value: str = "v", *, message_id: str = "m-1") -> Message[_Payload]:
+    return Message(payload=_Payload(value=value), meta=MessageMeta(message_id=message_id))
 
 
 class _RecordingObserver:
@@ -165,6 +166,20 @@ class _CommitTracker:
 
     def complete(self, message_id: str) -> None:
         self.completes.append(message_id)
+
+
+class _RecordingSinkPartition:
+    def __init__(self) -> None:
+        self.writes: list[list[Message[StreamPayload]]] = []
+
+    def write_batch(self, items: list[Message[StreamPayload]]) -> None:
+        self.writes.append(items)
+
+
+class _FailingSinkPartition:
+    def write_batch(self, items: list[Message[StreamPayload]]) -> None:
+        del items
+        raise RuntimeError("sink-boom")
 
 
 def test_require_message_rejects_non_message() -> None:
@@ -363,6 +378,102 @@ def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
         ("start", "orders", 4, "UpperBatchExpand"),
         ("end", "orders", 4, "UpperBatchExpand:success"),
     ]
+
+
+def test_execute_with_step_forks_commit_tracker_for_inline_sink() -> None:
+    tracker = _CommitTracker()
+
+    class _Lifecycle:
+        def open_worker(self) -> dict[str, object]:
+            return {}
+
+        def open_batch(self) -> dict[str, object]:
+            return {}
+
+        def close_batch(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            return None
+
+    class _SinkPartition:
+        def __init__(self) -> None:
+            self.writes: list[list[Message[StreamPayload]]] = []
+
+        def write_batch(self, items: list[Message[StreamPayload]]) -> None:
+            self.writes.append(items)
+
+    sink_partition = _SinkPartition()
+    result = _node_handlers._execute_with_step(
+        None,
+        "orders",
+        5,
+        "With",
+        tracker,
+        _Lifecycle(),
+        {},
+        [_UpperRecordStep()],
+        sink_partition,
+        [_message("abc", message_id="m-1"), _message("def", message_id="m-2")],
+    )
+
+    assert [_message_payload(item).value for item in result] == ["ABC", "DEF"]
+    assert tracker.forks == [("m-1", 1), ("m-2", 1)]
+    assert len(sink_partition.writes) == 1
+
+
+def test_execute_inner_process_completes_commit_tracker_on_success() -> None:
+    tracker = _CommitTracker()
+    sink_partition = _RecordingSinkPartition()
+
+    asyncio.run(
+        _node_handlers._execute_inner_process(
+            _message("abc", message_id="m-1"),
+            [_UpperRecordStep()],
+            sink_partition,
+            tracker,
+            {},
+            None,
+        )
+    )
+
+    assert tracker.completes == ["m-1"]
+    assert [_message_payload(item).value for item in sink_partition.writes[0]] == ["ABC"]
+
+
+def test_execute_inner_process_completes_without_sink_partition() -> None:
+    tracker = _CommitTracker()
+
+    asyncio.run(
+        _node_handlers._execute_inner_process(
+            _message("abc", message_id="m-1"),
+            [_UpperRecordStep()],
+            None,
+            tracker,
+            {},
+            None,
+        )
+    )
+
+    assert tracker.completes == ["m-1"]
+
+
+def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
+    tracker = _CommitTracker()
+
+    with pytest.raises(RuntimeError, match="sink-boom"):
+        asyncio.run(
+            _node_handlers._execute_inner_process(
+                _message("abc", message_id="m-1"),
+                [_UpperRecordStep()],
+                _FailingSinkPartition(),
+                tracker,
+                {},
+                None,
+            )
+        )
+
+    assert tracker.completes == []
 
 
 @pytest.mark.parametrize(

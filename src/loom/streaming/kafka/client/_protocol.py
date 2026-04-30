@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
+from confluent_kafka import TopicPartition
+
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 
@@ -58,6 +60,13 @@ class KafkaConsumer(Protocol):
 
         Args:
             asynchronous: Whether the backend may commit asynchronously.
+        """
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        """Commit explicit offsets.
+
+        Args:
+            partitions: Kafka topic-partition offsets to commit.
         """
 
     def close(self) -> None:

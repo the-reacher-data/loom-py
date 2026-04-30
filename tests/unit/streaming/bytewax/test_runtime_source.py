@@ -63,6 +63,7 @@ class TestKafkaPollingSource:
 
         assert isinstance(record, KafkaRecord)
         assert cast(RuntimeConsumerStub, source._consumer).commit_calls == []
+        assert cast(RuntimeConsumerStub, source._consumer).commit_offset_calls == []
 
     def test_close_delegates_to_raw_consumer(
         self,

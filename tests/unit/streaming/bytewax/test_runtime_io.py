@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
+from confluent_kafka import TopicPartition
 
 from loom.streaming.bytewax import _runtime_io
 from loom.streaming.core._errors import ErrorKind
@@ -129,7 +130,76 @@ class TestRuntimeIOBuilders:
             ]
         )
 
-        assert cast(ConsumerBackendStub, source._consumer).commit_calls == [False]
+        assert cast(ConsumerBackendStub, source._consumer).commit_offset_calls == [
+            [TopicPartition("orders.in", 2, 10)]
+        ]
+
+    def test_commit_tracker_waits_for_contiguous_offsets(
+        self,
+    ) -> None:
+        tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
+        assert tracker is not None
+        consumer = ConsumerBackendStub({})
+        tracker.bind(consumer)
+
+        tracker.register_record(
+            KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=3)
+        )
+        tracker.register_record(
+            KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=4)
+        )
+        tracker.register_record(
+            KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=5)
+        )
+
+        tracker.complete("orders.in:2:5")
+        tracker.complete("orders.in:2:3")
+        assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 4)]]
+
+        tracker.complete("orders.in:2:4")
+
+        assert consumer.commit_offset_calls == [
+            [TopicPartition("orders.in", 2, 4)],
+            [TopicPartition("orders.in", 2, 6)],
+        ]
+
+    def test_commit_tracker_accounts_for_broadcast_fanout(
+        self,
+    ) -> None:
+        tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
+        assert tracker is not None
+        consumer = ConsumerBackendStub({})
+        tracker.bind(consumer)
+
+        tracker.register_record(
+            KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=9)
+        )
+        tracker.fork("orders.in:2:9", 2)
+
+        tracker.complete("orders.in:2:9")
+        assert consumer.commit_offset_calls == []
+
+        tracker.complete("orders.in:2:9")
+        assert consumer.commit_offset_calls == []
+
+        tracker.complete("orders.in:2:9")
+        assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 10)]]
+
+    def test_commit_tracker_propagates_commit_offset_errors(
+        self,
+    ) -> None:
+        tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
+        assert tracker is not None
+        consumer = ConsumerBackendStub({})
+        consumer.commit_error = RuntimeError("commit-boom")
+        tracker.bind(consumer)
+
+        tracker.register_record(
+            KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=9)
+        )
+
+        with pytest.raises(RuntimeError, match="commit-boom"):
+            tracker.complete("orders.in:2:9")
 
     def test_build_inline_sink_partition_can_write_dlq_payloads(
         self,

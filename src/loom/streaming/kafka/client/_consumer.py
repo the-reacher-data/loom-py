@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
+from confluent_kafka import TopicPartition
 
 from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
@@ -16,8 +17,13 @@ if TYPE_CHECKING:
     from loom.streaming.observability.observers import KafkaStreamingObserver
 
 
-class _CommitWithBool(Protocol):
-    def __call__(self, *, asynchronous: bool) -> object: ...
+class _CommitMethod(Protocol):
+    def __call__(
+        self,
+        *,
+        asynchronous: bool = ...,
+        offsets: list[TopicPartition] | None = ...,
+    ) -> object: ...
 
 
 class KafkaConsumerClient:
@@ -76,8 +82,23 @@ class KafkaConsumerClient:
             KafkaCommitError: If the backend commit fails.
         """
         try:
-            commit = cast(_CommitWithBool, self._consumer.commit)
+            commit = cast(_CommitMethod, self._consumer.commit)
             commit(asynchronous=asynchronous)
+        except Exception as exc:
+            raise KafkaCommitError(str(exc)) from exc
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        """Commit explicit Kafka offsets.
+
+        Args:
+            partitions: Kafka topic-partition offsets to commit.
+
+        Raises:
+            KafkaCommitError: If the backend commit fails.
+        """
+        try:
+            commit = cast(_CommitMethod, self._consumer.commit)
+            commit(offsets=partitions, asynchronous=False)
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 

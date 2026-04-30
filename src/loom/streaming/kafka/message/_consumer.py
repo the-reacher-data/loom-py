@@ -5,6 +5,8 @@ from __future__ import annotations
 from time import perf_counter
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 
+from confluent_kafka import TopicPartition
+
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.kafka._codec import KafkaCodec
 from loom.streaming.kafka._errors import KafkaDeserializationError
@@ -90,6 +92,14 @@ class KafkaMessageConsumer(Generic[PayloadT]):
             asynchronous: Whether the backend may commit asynchronously.
         """
         self._raw.commit(asynchronous=asynchronous)
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        """Commit explicit offsets through the raw consumer.
+
+        Args:
+            partitions: Kafka topic-partition offsets to commit.
+        """
+        self._raw.commit_offset(partitions)
 
     def close(self) -> None:
         """Close the consumer and release resources."""

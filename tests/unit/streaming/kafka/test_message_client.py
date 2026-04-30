@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
 from loom.prometheus import KafkaPrometheusMetrics
@@ -290,6 +291,35 @@ class TestKafkaMessageConsumer:
         consumer.commit(asynchronous=True)
 
         assert raw.commit_calls == [True]
+
+    def test_commit_offset_delegates(self) -> None:
+        codec = MsgspecCodec[OrderCreated]()
+        raw = RawConsumerStub()
+        consumer = KafkaMessageConsumer(
+            raw=raw,
+            codec=codec,
+            payload_type=OrderCreated,
+        )
+
+        consumer.commit_offset([TopicPartition("orders", 1, 12)])
+
+        assert len(raw.commit_offset_calls) == 1
+        assert raw.commit_offset_calls[0][0].topic == "orders"
+        assert raw.commit_offset_calls[0][0].partition == 1
+        assert raw.commit_offset_calls[0][0].offset == 12
+
+    def test_commit_offset_wraps_backend_error(self) -> None:
+        codec = MsgspecCodec[OrderCreated]()
+        raw = RawConsumerStub()
+        raw.commit_offset_error = RuntimeError("commit-boom")
+        consumer = KafkaMessageConsumer(
+            raw=raw,
+            codec=codec,
+            payload_type=OrderCreated,
+        )
+
+        with pytest.raises(RuntimeError, match="commit-boom"):
+            consumer.commit_offset([TopicPartition("orders", 1, 12)])
 
     def test_emits_decode_metrics(
         self,

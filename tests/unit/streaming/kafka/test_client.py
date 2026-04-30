@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
 from loom.prometheus import KafkaPrometheusMetrics
@@ -215,6 +216,39 @@ class TestKafkaConsumerClient:
         consumer.commit(asynchronous=True)
 
         assert fake.commit_calls == [True]
+
+    def test_raw_consumer_commit_offset_delegates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+        )
+
+        consumer.commit_offset([TopicPartition("orders", 1, 12)])
+
+        assert len(fake.commit_offset_calls) == 1
+        assert fake.commit_offset_calls[0][0].topic == "orders"
+        assert fake.commit_offset_calls[0][0].partition == 1
+        assert fake.commit_offset_calls[0][0].offset == 12
+
+    def test_raw_consumer_commit_offset_wraps_backend_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        fake.commit_error = RuntimeError("commit-boom")
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+        )
+
+        with pytest.raises(KafkaCommitError, match="commit-boom"):
+            consumer.commit_offset([TopicPartition("orders", 1, 12)])
 
     def test_raw_consumer_commit_wraps_backend_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         installer = install_raw_consumer_stub(monkeypatch)

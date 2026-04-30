@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
+from confluent_kafka import TopicPartition
+
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.kafka._message import MessageDescriptor, MessageEnvelope
 from loom.streaming.kafka._record import KafkaRecord
@@ -84,6 +86,13 @@ class MessageConsumer(Protocol[PayloadT]):
 
         Args:
             asynchronous: Whether the backend may commit asynchronously.
+        """
+
+    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+        """Commit explicit offsets.
+
+        Args:
+            partitions: Kafka topic-partition offsets to commit.
         """
 
     def close(self) -> None:
