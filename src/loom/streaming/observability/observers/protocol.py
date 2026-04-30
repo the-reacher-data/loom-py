@@ -124,5 +124,29 @@ class StreamingFlowObserver(Protocol):
             exc: The exception raised by the node.
         """
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        """Called when a batch is emitted by ``CollectBatch``.
+
+        Args:
+            flow_name: Stable name of the compiled flow.
+            node_idx: Zero-based index of the node in the plan.
+            node_type: Class name of the DSL node.
+            batch_size: Number of messages emitted in the batch.
+            max_records: Configured batch size threshold.
+            timeout_ms: Configured batch timeout in milliseconds.
+            reason: Best-effort outcome label, typically ``size`` or
+                ``timeout_or_flush``.
+        """
+
 
 __all__ = ["KafkaStreamingObserver", "StreamingFlowObserver"]

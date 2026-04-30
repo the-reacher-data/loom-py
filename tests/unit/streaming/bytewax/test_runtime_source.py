@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from loom.streaming.bytewax import _runtime_io
@@ -36,6 +38,24 @@ class TestKafkaPollingSource:
             source.next_item()
 
         assert polled_with == [250]
+
+    def test_commits_after_successful_poll(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _CommittingConsumer(RuntimeConsumerStub):
+            def __init__(self, settings: ConsumerSettings) -> None:
+                super().__init__(settings)
+                self.next_message = object()
+
+        monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _CommittingConsumer)
+
+        source = _runtime_io._KafkaPollingSource(build_compiled_source(250))
+
+        record = source.next_item()
+
+        assert record is not None
+        assert cast(RuntimeConsumerStub, source._consumer).commit_calls == [False]
 
     def test_close_delegates_to_raw_consumer(
         self,

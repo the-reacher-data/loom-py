@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, runtime_checkab
 import anyio
 from bytewax.operators import branch, collect, flat_map, key_on, key_rm
 from bytewax.operators import map as bw_map
+from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from loom.core.async_bridge import AsyncBridge
 from loom.core.model import LoomFrozenStruct, LoomStruct
@@ -210,6 +211,12 @@ def _observe_node(
         observer.on_node_start(flow_name, idx, node_type=node_type)
     t0 = time.monotonic()
     success = False
+    context_tokens = bind_contextvars(
+        flow_name=flow_name,
+        node_idx=idx,
+        node_type=node_type,
+        method="execute",
+    )
     try:
         yield
         success = True
@@ -218,6 +225,7 @@ def _observe_node(
             observer.on_node_error(flow_name, idx, node_type=node_type, exc=exc)
         raise
     finally:
+        reset_contextvars(**context_tokens)
         if observer is not None and success:
             elapsed = int((time.monotonic() - t0) * 1000)
             observer.on_node_end(
@@ -529,14 +537,29 @@ def _apply_collect_batch(
         raise TypeError(f"Unsupported collect-batch node {type(raw).__name__}.")
     node = raw
     if node.window is WindowStrategy.COLLECT:
-        return _apply_collect_batch_default(stream, node, _step_id(str(idx), ctx))
+        return _apply_collect_batch_default(
+            stream,
+            node,
+            _step_id(str(idx), ctx),
+            observer=ctx.flow_observer,
+            flow_name=ctx.plan.name,
+            idx=idx,
+        )
     raise TypeError(
         f"WindowStrategy.{node.window} reached the adapter — "
         "this should have been rejected at compile time."
     )
 
 
-def _apply_collect_batch_default(stream: Stream, node: CollectBatch, step_prefix: str) -> Stream:
+def _apply_collect_batch_default(
+    stream: Stream,
+    node: CollectBatch,
+    step_prefix: str,
+    *,
+    observer: StreamingFlowObserver | None = None,
+    flow_name: str = "",
+    idx: int = 0,
+) -> Stream:
     """Apply processing-time count-and-timeout collect (``WindowStrategy.COLLECT``)."""
     keyed = key_on(f"collect_key_{step_prefix}", stream, _batch_key)
     collected = collect(
@@ -545,7 +568,23 @@ def _apply_collect_batch_default(stream: Stream, node: CollectBatch, step_prefix
         timeout=timedelta(milliseconds=node.timeout_ms),
         max_size=node.max_records,
     )
-    return key_rm(f"collect_unkey_{step_prefix}", collected)
+
+    def observe(item: tuple[str, list[Any]]) -> tuple[str, list[Any]]:
+        key, batch = item
+        if observer is not None:
+            observer.on_collect_batch(
+                flow_name,
+                idx,
+                node_type="CollectBatch",
+                batch_size=len(batch),
+                max_records=node.max_records,
+                timeout_ms=node.timeout_ms,
+                reason=_collect_batch_reason(batch, node.max_records),
+            )
+        return key, batch
+
+    observed = bw_map(f"collect_observe_{step_prefix}", collected, observe)
+    return key_rm(f"collect_unkey_{step_prefix}", observed)
 
 
 def _apply_for_each(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -838,6 +877,13 @@ def _batch_key(item: Any) -> str:
         raw_key = meta.key
         return raw_key if isinstance(raw_key, str) else raw_key.decode("utf-8", errors="replace")
     return "loom"
+
+
+def _collect_batch_reason(batch: list[Any], max_records: int) -> str:
+    """Best-effort reason label for a collected batch."""
+    if len(batch) >= max_records:
+        return "size"
+    return "timeout_or_flush"
 
 
 def _execute_router(

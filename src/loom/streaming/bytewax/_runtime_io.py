@@ -37,6 +37,7 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
         record = self._consumer.poll(self._poll_timeout_ms)
         if record is None:
             raise SimplePollingSource.Retry(timedelta(milliseconds=0))
+        self._consumer.commit(asynchronous=False)
         return record
 
     def close(self) -> None:

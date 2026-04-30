@@ -127,6 +127,29 @@ class StructlogFlowObserver:
             error=repr(exc),
         )
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        """Log one batch emission with its best-effort outcome label."""
+        _flow_log.info(
+            "collect_batch",
+            flow=flow_name,
+            node_idx=node_idx,
+            node_type=node_type,
+            batch_size=batch_size,
+            max_records=max_records,
+            timeout_ms=timeout_ms,
+            reason=reason,
+        )
+
 
 def _duration_ms(duration_seconds: float) -> float:
     return round(duration_seconds * 1000, 3)

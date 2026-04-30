@@ -64,6 +64,30 @@ from loom.streaming.observability import StructlogFlowObserver
                 },
             ),
         ),
+        (
+            "on_collect_batch",
+            ("orders", 2),
+            {
+                "node_type": "CollectBatch",
+                "batch_size": 2,
+                "max_records": 4,
+                "timeout_ms": 500,
+                "reason": "timeout_or_flush",
+            },
+            "info",
+            (
+                "collect_batch",
+                {
+                    "flow": "orders",
+                    "node_idx": 2,
+                    "node_type": "CollectBatch",
+                    "batch_size": 2,
+                    "max_records": 4,
+                    "timeout_ms": 500,
+                    "reason": "timeout_or_flush",
+                },
+            ),
+        ),
     ],
 )
 def test_structlog_flow_observer_emits_expected_calls(

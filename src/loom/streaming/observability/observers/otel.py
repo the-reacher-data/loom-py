@@ -131,6 +131,20 @@ class OtelFlowObserver:
         span.set_status(StatusCode.ERROR, description=repr(exc))
         span.end()
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        """Ignore collect-batch summaries for now."""
+        del flow_name, node_idx, node_type, batch_size, max_records, timeout_ms, reason
+
 
 class _SpanRegistry:
     """Thread-safe in-memory span registry."""

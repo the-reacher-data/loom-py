@@ -57,6 +57,30 @@ class RecordingFlowObserver:
     ) -> None:
         self.events.append(("node_error", flow_name, str(node_idx), node_type, repr(exc)))
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        self.events.append(
+            (
+                "collect_batch",
+                flow_name,
+                str(node_idx),
+                node_type,
+                str(batch_size),
+                str(max_records),
+                str(timeout_ms),
+                reason,
+            )
+        )
+
 
 class FailingFlowObserver:
     """Observer that always raises to test error isolation."""
@@ -88,6 +112,19 @@ class FailingFlowObserver:
         *,
         node_type: str,
         exc: Exception,
+    ) -> None:
+        raise RuntimeError("boom")
+
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
     ) -> None:
         raise RuntimeError("boom")
 

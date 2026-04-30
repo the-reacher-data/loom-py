@@ -41,5 +41,18 @@ class NoopFlowObserver:
     ) -> None:
         """No-op."""
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        """No-op."""
+
 
 __all__ = ["NoopFlowObserver", "NoopKafkaObserver"]

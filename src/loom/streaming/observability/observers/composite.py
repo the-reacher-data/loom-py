@@ -97,5 +97,29 @@ class CompositeFlowObserver:
             self._observers, "on_node_error", flow_name, node_idx, node_type=node_type, exc=exc
         )
 
+    def on_collect_batch(
+        self,
+        flow_name: str,
+        node_idx: int,
+        *,
+        node_type: str,
+        batch_size: int,
+        max_records: int,
+        timeout_ms: int,
+        reason: str,
+    ) -> None:
+        """Fan-out collect-batch event to all observers."""
+        notify_observers(
+            self._observers,
+            "on_collect_batch",
+            flow_name,
+            node_idx,
+            node_type=node_type,
+            batch_size=batch_size,
+            max_records=max_records,
+            timeout_ms=timeout_ms,
+            reason=reason,
+        )
+
 
 __all__ = ["CompositeFlowObserver", "CompositeKafkaObserver"]

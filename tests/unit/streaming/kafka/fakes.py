@@ -195,12 +195,16 @@ class RuntimeConsumerStub:
         del settings
         self.closed = False
         self.poll_calls: list[int] = []
+        self.commit_calls: list[bool] = []
         self.close_error: Exception | None = None
         self.next_message: object | None = None
 
     def poll(self, timeout_ms: int) -> object | None:
         self.poll_calls.append(timeout_ms)
         return self.next_message
+
+    def commit(self, *, asynchronous: bool = False) -> None:
+        self.commit_calls.append(asynchronous)
 
     def close(self) -> None:
         if self.close_error is not None:
