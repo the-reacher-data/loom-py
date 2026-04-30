@@ -85,6 +85,7 @@ def build_dataflow_with_shutdown(
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
     error_sinks: Mapping[ErrorKind, Any] | None = None,
     bridge: AsyncBridge | None = None,
+    commit_tracker: Any | None = None,
 ) -> _BuiltDataflow:
     """Build a Bytewax Dataflow and expose its shutdown callback.
 
@@ -100,7 +101,11 @@ def build_dataflow_with_shutdown(
             Pass an explicit bridge to control backend and uvloop settings.
     """
     if terminal_sinks is None:
-        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks)
+        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks, commit_tracker)
+    _bind_commit_tracker_object(source, commit_tracker)
+    _bind_commit_tracker_object(sink, commit_tracker)
+    _bind_commit_tracker_mapping(terminal_sinks, commit_tracker)
+    _bind_commit_tracker_mapping(error_sinks, commit_tracker)
     resolved_bridge = bridge if bridge is not None else _maybe_create_bridge(plan)
     ctx = _BuildContext(
         plan=plan,
@@ -110,8 +115,29 @@ def build_dataflow_with_shutdown(
         sink=sink,
         terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
+        commit_tracker=commit_tracker,
     )
     return _BuiltDataflow(dataflow=_assemble_dataflow(plan, ctx), shutdown=ctx.shutdown_all)
+
+
+def _bind_commit_tracker_object(item: Any | None, commit_tracker: Any | None) -> None:
+    """Bind a commit tracker to one runtime object when supported."""
+    if item is None or commit_tracker is None:
+        return
+    binder = getattr(item, "bind_commit_tracker", None)
+    if callable(binder):
+        binder(commit_tracker)
+
+
+def _bind_commit_tracker_mapping(
+    items: Mapping[Any, Any] | None,
+    commit_tracker: Any | None,
+) -> None:
+    """Bind a commit tracker to each runtime object in a mapping when supported."""
+    if items is None or commit_tracker is None:
+        return
+    for item in items.values():
+        _bind_commit_tracker_object(item, commit_tracker)
 
 
 def _assemble_dataflow(plan: CompiledPlan, ctx: _BuildContext) -> Any:
@@ -130,6 +156,7 @@ class _BuildContext:
     __slots__ = (
         "plan",
         "bridge",
+        "commit_tracker",
         "flow_observer",
         "source",
         "outputs",
@@ -147,9 +174,11 @@ class _BuildContext:
         sink: Any | None = None,
         terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
         error_sinks: Mapping[ErrorKind, Any] | None = None,
+        commit_tracker: Any | None = None,
     ) -> None:
         self.plan = plan
         self.bridge = bridge
+        self.commit_tracker = commit_tracker
         self.flow_observer = flow_observer
         self.source = source
         self._terminal_sinks: Mapping[tuple[int, ...], Any] = terminal_sinks or {}

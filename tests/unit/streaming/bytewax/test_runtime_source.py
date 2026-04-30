@@ -8,6 +8,7 @@ import pytest
 
 from loom.streaming.bytewax import _runtime_io
 from loom.streaming.kafka._config import ConsumerSettings
+from loom.streaming.kafka._record import KafkaRecord
 from tests.unit.streaming.bytewax.cases import build_compiled_source
 from tests.unit.streaming.kafka.fakes import RuntimeConsumerStub
 
@@ -39,14 +40,20 @@ class TestKafkaPollingSource:
 
         assert polled_with == [250]
 
-    def test_commits_after_successful_poll(
+    def test_does_not_commit_on_poll(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         class _CommittingConsumer(RuntimeConsumerStub):
             def __init__(self, settings: ConsumerSettings) -> None:
                 super().__init__(settings)
-                self.next_message = object()
+                self.next_message = KafkaRecord(
+                    topic="orders.in",
+                    key=None,
+                    value=b"raw",
+                    partition=2,
+                    offset=9,
+                )
 
         monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _CommittingConsumer)
 
@@ -54,8 +61,8 @@ class TestKafkaPollingSource:
 
         record = source.next_item()
 
-        assert record is not None
-        assert cast(RuntimeConsumerStub, source._consumer).commit_calls == [False]
+        assert isinstance(record, KafkaRecord)
+        assert cast(RuntimeConsumerStub, source._consumer).commit_calls == []
 
     def test_close_delegates_to_raw_consumer(
         self,

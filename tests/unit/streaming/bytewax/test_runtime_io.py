@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from loom.streaming.bytewax import _runtime_io
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.kafka._errors import KafkaDeliveryError
+from loom.streaming.kafka._record import KafkaRecord
 from tests.unit.streaming.bytewax.cases import (
     build_compiled_sink,
     build_compiled_source,
@@ -48,13 +51,18 @@ class TestRuntimeIOBuilders:
     ) -> None:
         fake_raw = RawProducerStub()
         monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+        source = build_compiled_source(enable_auto_commit=False)
+        tracker = _runtime_io.build_commit_tracker(source)
+        assert tracker is not None
 
-        sink = _runtime_io.build_runtime_sink(build_compiled_sink())
+        sink = _runtime_io.build_runtime_sink(build_compiled_sink(), tracker)
         error_sinks = _runtime_io.build_runtime_error_sinks(
-            {ErrorKind.WIRE: build_compiled_sink(topic="orders.dlq")}
+            {ErrorKind.WIRE: build_compiled_sink(topic="orders.dlq")},
+            tracker,
         )
         terminal_sinks = _runtime_io.build_runtime_terminal_sinks(
-            {(0,): build_compiled_sink(topic="orders.terminal")}
+            {(0,): build_compiled_sink(topic="orders.terminal")},
+            tracker,
         )
 
         assert isinstance(sink, _runtime_io._KafkaMessageSink)
@@ -79,6 +87,49 @@ class TestRuntimeIOBuilders:
             "orders.dlq",
             "orders.terminal",
         ]
+
+    def test_commit_tracker_commits_after_sink_write(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_cfg = build_compiled_source(enable_auto_commit=False)
+        tracker = _runtime_io.build_commit_tracker(source_cfg)
+        assert tracker is not None
+
+        class _TrackingConsumer(ConsumerBackendStub):
+            def __init__(self, settings: object) -> None:
+                super().__init__({})
+                del settings
+                self.next_message = KafkaRecord(
+                    topic="orders.in",
+                    key=None,
+                    value=b"raw",
+                    partition=2,
+                    offset=9,
+                )
+
+        fake_raw = RawProducerStub()
+        monkeypatch.setattr(_runtime_io, "KafkaConsumerClient", _TrackingConsumer)
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+
+        source = _runtime_io.build_runtime_source(source_cfg, tracker)
+        sink = _runtime_io.build_runtime_sink(build_compiled_sink(), tracker)
+
+        record = source.next_item()
+        assert isinstance(record, KafkaRecord)
+
+        partition = sink.build("step", 0, 1)
+        partition.write_batch(
+            [
+                build_order_message(
+                    "123",
+                    None,
+                    message_id="orders.in:2:9",
+                )
+            ]
+        )
+
+        assert cast(ConsumerBackendStub, source._consumer).commit_calls == [False]
 
     def test_build_inline_sink_partition_can_write_dlq_payloads(
         self,

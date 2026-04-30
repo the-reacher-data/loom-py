@@ -21,6 +21,7 @@ from loom.core.async_bridge import AsyncBridge
 from loom.core.config import load_config, section
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
+    build_commit_tracker,
     build_runtime_error_sinks,
     build_runtime_sink,
     build_runtime_source,
@@ -64,13 +65,11 @@ class BytewaxRecoverySettings(msgspec.Struct, frozen=True, kw_only=True):
 class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
     """Runtime settings for executing a Bytewax dataflow.
 
-    **Delivery guarantee:** The runtime currently provides **at-most-once**
-    delivery. Kafka offsets are committed by the consumer's auto-commit policy
-    and are not tied to successful downstream processing. To achieve
-    at-least-once delivery, configure Bytewax recovery (see
-    :class:`BytewaxRecoverySettings`) and disable ``enable.auto.commit`` in
-    the consumer settings; offset commits must then be wired to epoch
-    snapshots via the Bytewax recovery mechanism.
+    **Delivery guarantee:** By default Kafka offsets are committed by the
+    consumer's auto-commit policy and are not tied to downstream success.
+    When ``enable.auto.commit`` is disabled in the consumer settings, Loom
+    tracks item completion through the adapter and commits offsets only after
+    the downstream branch finishes successfully.
 
     Args:
         workers_per_process: Number of worker threads in this process.
@@ -271,14 +270,15 @@ def _prepare_run(
     error_sinks: Mapping[ErrorKind, Any] | None = None,
     runtime: BytewaxRuntimeConfig | None = None,
 ) -> _PreparedStreamingRun:
+    commit_tracker = build_commit_tracker(plan.source)
     if source is None:
-        source = build_runtime_source(plan.source)
+        source = build_runtime_source(plan.source, commit_tracker)
     if sink is None and plan.output is not None:
-        sink = build_runtime_sink(plan.output)
+        sink = build_runtime_sink(plan.output, commit_tracker)
     if terminal_sinks is None:
-        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks)
+        terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks, commit_tracker)
     if error_sinks is None:
-        error_sinks = build_runtime_error_sinks(plan.error_routes)
+        error_sinks = build_runtime_error_sinks(plan.error_routes, commit_tracker)
     bridge = _create_bridge(plan, runtime or BytewaxRuntimeConfig())
     built = build_dataflow_with_shutdown(
         plan=plan,
@@ -288,6 +288,7 @@ def _prepare_run(
         terminal_sinks=terminal_sinks,
         error_sinks=error_sinks,
         bridge=bridge,
+        commit_tracker=commit_tracker,
     )
     return _PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
 

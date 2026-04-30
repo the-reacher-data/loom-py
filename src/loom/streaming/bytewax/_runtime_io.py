@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import timedelta
 from typing import Any
 
@@ -28,17 +29,31 @@ logger = logging.getLogger(__name__)
 class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
     """Poll Kafka records from one worker using the project Kafka client."""
 
-    def __init__(self, source: CompiledSource) -> None:
+    def __init__(
+        self,
+        source: CompiledSource,
+        commit_tracker: _KafkaCommitTracker | None = None,
+    ) -> None:
         self._poll_timeout_ms = source.settings.poll_timeout_ms
         super().__init__(interval=timedelta(milliseconds=self._poll_timeout_ms))
         self._consumer = KafkaConsumerClient(source.settings)
+        self._commit_tracker = commit_tracker
+        if self._commit_tracker is not None:
+            self._commit_tracker.bind(self._consumer)
 
     def next_item(self) -> KafkaRecord[bytes]:
         record = self._consumer.poll(self._poll_timeout_ms)
         if record is None:
             raise SimplePollingSource.Retry(timedelta(milliseconds=0))
-        self._consumer.commit(asynchronous=False)
+        if self._commit_tracker is not None:
+            self._commit_tracker.register(_record_id(record))
         return record
+
+    def bind_commit_tracker(self, commit_tracker: _KafkaCommitTracker | None) -> None:
+        """Bind or clear the source commit tracker."""
+        self._commit_tracker = commit_tracker
+        if self._commit_tracker is not None:
+            self._commit_tracker.bind(self._consumer)
 
     def close(self) -> None:
         self._consumer.close()
@@ -47,7 +62,11 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
 class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]]):
     """Write Loom messages to one Kafka output topic."""
 
-    def __init__(self, sink: CompiledSink) -> None:
+    def __init__(
+        self,
+        sink: CompiledSink,
+        commit_tracker: _KafkaCommitTracker | None = None,
+    ) -> None:
         self._sink = sink
         self._dlq_topic = sink.dlq_topic
         self._producer = KafkaProducerClient(sink.settings)
@@ -55,6 +74,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
             self._producer,
             MsgspecCodec(),
         )
+        self._commit_tracker = commit_tracker
 
     def write_batch(self, items: list[Message[StreamPayload]]) -> None:
         try:
@@ -76,14 +96,27 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
                     produced_at_ms=message.meta.produced_at_ms,
                 )
             self._producer.flush()
+            self._commit_items(items)
         except KafkaDeliveryError as exc:
             if self._dlq_topic is not None:
                 _send_batch_to_dlq(self._message_producer, self._dlq_topic, items, exc)
+                self._commit_items(items)
             else:
                 raise
 
     def close(self) -> None:
         self._message_producer.close()
+
+    def bind_commit_tracker(self, tracker: _KafkaCommitTracker | None) -> None:
+        """Bind a commit tracker used to ack source offsets after success."""
+        self._commit_tracker = tracker
+
+    def _commit_items(self, items: list[Message[StreamPayload]]) -> None:
+        tracker = self._commit_tracker
+        if tracker is None:
+            return
+        for message in items:
+            tracker.complete(message.meta.message_id)
 
 
 class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
@@ -91,6 +124,7 @@ class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
 
     def __init__(self, sink: CompiledSink) -> None:
         self._sink = sink
+        self._commit_tracker: _KafkaCommitTracker | None = None
 
     def build(
         self,
@@ -98,34 +132,51 @@ class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
         worker_index: int,
         worker_count: int,
     ) -> StatelessSinkPartition[Message[StreamPayload]]:
-        return _KafkaMessageSinkPartition(self._sink)
+        return _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
+
+    def bind_commit_tracker(self, tracker: _KafkaCommitTracker | None) -> None:
+        """Bind a commit tracker used by all partitions built from this sink."""
+        self._commit_tracker = tracker
 
 
-def build_runtime_source(source: CompiledSource) -> _KafkaPollingSource:
+def build_runtime_source(
+    source: CompiledSource,
+    commit_tracker: _KafkaCommitTracker | None = None,
+) -> _KafkaPollingSource:
     """Build the runtime source for one compiled Kafka input."""
-    return _KafkaPollingSource(source)
+    return _KafkaPollingSource(source, commit_tracker)
 
 
-def build_runtime_sink(sink: CompiledSink) -> _KafkaMessageSink:
+def build_runtime_sink(
+    sink: CompiledSink,
+    commit_tracker: _KafkaCommitTracker | None = None,
+) -> _KafkaMessageSink:
     """Build the runtime sink for one compiled Kafka output."""
-    return _KafkaMessageSink(sink)
+    runtime_sink = _KafkaMessageSink(sink)
+    runtime_sink.bind_commit_tracker(commit_tracker)
+    return runtime_sink
 
 
 def build_runtime_error_sinks(
     error_routes: dict[ErrorKind, CompiledSink],
+    commit_tracker: _KafkaCommitTracker | None = None,
 ) -> dict[ErrorKind, _KafkaMessageSink]:
     """Build runtime sinks for explicit error routes."""
-    return {kind: build_runtime_sink(sink) for kind, sink in error_routes.items()}
+    return {kind: build_runtime_sink(sink, commit_tracker) for kind, sink in error_routes.items()}
 
 
 def build_runtime_terminal_sinks(
     terminal_sinks: dict[tuple[int, ...], CompiledSink],
+    commit_tracker: _KafkaCommitTracker | None = None,
 ) -> dict[tuple[int, ...], _KafkaMessageSink]:
     """Build runtime sinks for terminal branch outputs."""
-    return {path: build_runtime_sink(sink) for path, sink in terminal_sinks.items()}
+    return {path: build_runtime_sink(sink, commit_tracker) for path, sink in terminal_sinks.items()}
 
 
-def build_inline_sink_partition(sink: CompiledSink) -> _KafkaMessageSinkPartition:
+def build_inline_sink_partition(
+    sink: CompiledSink,
+    commit_tracker: _KafkaCommitTracker | None = None,
+) -> _KafkaMessageSinkPartition:
     """Build a sink partition for direct (non-Bytewax-graph) message writing.
 
     Used by ``WithAsync(process=...)`` to write messages directly to Kafka
@@ -138,7 +189,58 @@ def build_inline_sink_partition(sink: CompiledSink) -> _KafkaMessageSinkPartitio
     Returns:
         A ready-to-write sink partition.
     """
-    return _KafkaMessageSinkPartition(sink)
+    return _KafkaMessageSinkPartition(sink, commit_tracker)
+
+
+def build_commit_tracker(source: CompiledSource) -> _KafkaCommitTracker | None:
+    """Build a commit tracker when explicit source commits are required."""
+    if source.settings.enable_auto_commit:
+        return None
+    return _KafkaCommitTracker()
+
+
+class _KafkaCommitTracker:
+    """Track per-message completion and commit Kafka offsets once safe."""
+
+    def __init__(self) -> None:
+        self._consumer: KafkaConsumerClient | None = None
+        self._pending: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def bind(self, consumer: KafkaConsumerClient) -> None:
+        """Bind the source consumer that will be committed."""
+        with self._lock:
+            self._consumer = consumer
+
+    def register(self, message_id: str) -> None:
+        """Register one new source message."""
+        with self._lock:
+            self._pending[message_id] = 1
+
+    def fork(self, message_id: str, extra_outputs: int) -> None:
+        """Increase the number of expected completions for one message."""
+        if extra_outputs <= 0:
+            return
+        with self._lock:
+            if message_id not in self._pending:
+                return
+            self._pending[message_id] += extra_outputs
+
+    def complete(self, message_id: str) -> None:
+        """Mark one logical branch as completed and commit when all finish."""
+        consumer: KafkaConsumerClient | None = None
+        with self._lock:
+            pending = self._pending.get(message_id)
+            if pending is None:
+                return
+            pending -= 1
+            if pending > 0:
+                self._pending[message_id] = pending
+                return
+            self._pending.pop(message_id, None)
+            consumer = self._consumer
+        if consumer is not None:
+            consumer.commit(asynchronous=False)
 
 
 def _resolve_partition_key(
@@ -169,6 +271,17 @@ def _resolve_partition_key(
     if partition_policy.allow_repartition:
         return policy_key if policy_key is not None else incoming_key
     return incoming_key
+
+
+def _record_id(record: KafkaRecord[bytes]) -> str:
+    """Derive a stable logical id for one raw Kafka record."""
+    if record.partition is not None and record.offset is not None:
+        return f"{record.topic}:{record.partition}:{record.offset}"
+    if record.key is not None:
+        return f"{record.topic}:{record.key!s}"
+    if record.timestamp_ms is not None:
+        return f"{record.topic}:{record.timestamp_ms}"
+    return record.topic
 
 
 def _send_batch_to_dlq(

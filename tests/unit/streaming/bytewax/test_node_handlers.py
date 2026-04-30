@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from structlog.contextvars import get_contextvars
@@ -14,7 +15,9 @@ from loom.core.model import LoomStruct
 from loom.streaming.bytewax import _node_handlers
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.core._typing import StreamPayload
+from loom.streaming.graph._flow import Process
 from loom.streaming.nodes._boundary import IntoTopic
+from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
 from loom.streaming.nodes._shape import CollectBatch, Drain
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 
@@ -150,6 +153,18 @@ class _ContextAwareRecordStep(RecordStep[_Payload, _Payload]):
         del kwargs
         self.context = dict(get_contextvars())
         return _message_payload(message)
+
+
+class _CommitTracker:
+    def __init__(self) -> None:
+        self.forks: list[tuple[str, int]] = []
+        self.completes: list[str] = []
+
+    def fork(self, message_id: str, extra_outputs: int) -> None:
+        self.forks.append((message_id, extra_outputs))
+
+    def complete(self, message_id: str) -> None:
+        self.completes.append(message_id)
 
 
 def test_require_message_rejects_non_message() -> None:
@@ -366,6 +381,97 @@ def test_execute_router_node_supports_allowed_branch_nodes(
     result = _node_handlers._execute_router_node(node, _message("abc"))
 
     assert _message_payload(result).value == expected_value
+
+
+def test_apply_broadcast_increments_commit_tracker_for_fanout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _CommitTracker()
+    wire_process_calls: list[tuple[object, tuple[object, ...], tuple[int, ...]]] = []
+    terminal_calls: list[tuple[object, object, object]] = []
+
+    def _bw_map(step_id: str, stream: object, fn: object) -> object:
+        assert step_id == "1_broadcast_5_fanout"
+        assert callable(fn)
+        result = fn(_message("abc"))
+        assert _message_payload(result).value == "abc"
+        return "tracked-stream"
+
+    def _wire_process(
+        stream: object,
+        nodes: tuple[object, ...],
+        ctx: object,
+        *,
+        path_prefix: tuple[int, ...] = (),
+    ) -> object:
+        wire_process_calls.append((stream, nodes, path_prefix))
+        return f"wired-{path_prefix}"
+
+    monkeypatch.setattr(_node_handlers, "bw_map", _bw_map)
+    monkeypatch.setattr(_node_handlers, "_wire_process", _wire_process)
+
+    node: Broadcast[Any] = Broadcast(
+        BroadcastRoute(
+            process=Process(Drain()),
+            output=IntoTopic("a", payload=_Payload),
+        ),
+        BroadcastRoute(
+            process=Process(Drain()),
+            output=IntoTopic("b", payload=_Payload),
+        ),
+    )
+    ctx = SimpleNamespace(
+        current_path=(1,),
+        commit_tracker=tracker,
+        outputs=SimpleNamespace(
+            wire_branch_terminal=_record_branch_terminal(terminal_calls),
+        ),
+    )
+
+    result = _node_handlers._apply_broadcast("input-stream", node, 5, ctx)
+
+    assert result == "tracked-stream"
+    assert tracker.forks == [("m-1", 1)]
+    assert [call[0] for call in wire_process_calls] == ["tracked-stream", "tracked-stream"]
+    assert [call[2] for call in wire_process_calls] == [(1, 0), (1, 1)]
+    assert all(len(call[1]) == 1 and isinstance(call[1][0], Drain) for call in wire_process_calls)
+    assert terminal_calls == [
+        ("broadcast_5_out_0", "wired-(1, 0)", (1, 0)),
+        ("broadcast_5_out_1", "wired-(1, 1)", (1, 1)),
+    ]
+
+
+def test_apply_drain_completes_commit_tracker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _CommitTracker()
+
+    def _flat_map(step_id: str, stream: object, fn: object) -> object:
+        assert step_id == "drain_7"
+        assert callable(fn)
+        assert fn(_message("abc")) == ()
+        return "dropped-stream"
+
+    monkeypatch.setattr(_node_handlers, "flat_map", _flat_map)
+
+    result = _node_handlers._apply_drain(
+        "input-stream",
+        object(),
+        7,
+        SimpleNamespace(current_path=(), commit_tracker=tracker),
+    )
+
+    assert result == "dropped-stream"
+    assert tracker.completes == ["m-1"]
+
+
+def _record_branch_terminal(
+    calls: list[tuple[object, object, object]],
+) -> Callable[[object, object, object], None]:
+    def _record(step_id: object, stream: object, path: object) -> None:
+        calls.append((step_id, stream, path))
+
+    return _record
 
 
 def _message_payload(message: Message[StreamPayload]) -> _Payload:

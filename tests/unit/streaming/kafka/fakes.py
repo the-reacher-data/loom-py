@@ -110,7 +110,7 @@ class ConsumerBackendStub:
     def __init__(self, config: dict[str, str]) -> None:
         self.config = config
         self.subscribed: list[str] = []
-        self.next_message: FakeKafkaMessage | None = None
+        self.next_message: Any | None = None
         self.closed = False
         self.poll_calls: list[float] = []
         self.commit_calls: list[bool] = []
@@ -197,7 +197,7 @@ class RuntimeConsumerStub:
         self.poll_calls: list[int] = []
         self.commit_calls: list[bool] = []
         self.close_error: Exception | None = None
-        self.next_message: object | None = None
+        self.next_message: Any | None = None
 
     def poll(self, timeout_ms: int) -> object | None:
         self.poll_calls.append(timeout_ms)

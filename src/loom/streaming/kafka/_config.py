@@ -95,6 +95,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
         poll_timeout_ms: Maximum milliseconds to block waiting for a message on
             each poll call.  Higher values reduce CPU usage when the topic is
             idle; lower values decrease end-to-end latency.  Defaults to 100.
+        enable_auto_commit: Whether Kafka should auto-commit offsets.
         security: Optional security configuration.
         extra: Optional extra Confluent settings.
     """
@@ -104,6 +105,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
     topics: tuple[str, ...]
     auto_offset_reset: Literal["earliest", "latest"] = "earliest"
     poll_timeout_ms: int = 100
+    enable_auto_commit: bool = True
     security: KafkaSecuritySettings | None = None
     extra: dict[str, KafkaConfigValue] = msgspec.field(default_factory=dict)
 
@@ -121,6 +123,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
             "bootstrap.servers": _broker_list(self.brokers),
             "group.id": self.group_id,
             "auto.offset.reset": self.auto_offset_reset,
+            "enable.auto.commit": self.enable_auto_commit,
             **_security_config(self.security),
         }
         return _merge_extra_config(managed, self.extra)

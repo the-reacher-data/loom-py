@@ -135,6 +135,7 @@ class _BuildContextProtocol(Protocol):
 
     plan: CompiledPlan
     bridge: AsyncBridge | None
+    commit_tracker: Any | None
     flow_observer: StreamingFlowObserver | None
     outputs: _OutputWiringProtocol
 
@@ -622,6 +623,13 @@ def _apply_broadcast(
         raise TypeError(f"Unsupported broadcast node {type(raw).__name__}.")
     node = raw
     broadcast_path = ctx.current_path
+    tracker = ctx.commit_tracker
+    if tracker is not None and len(node.routes) > 1:
+        stream = bw_map(
+            _step_id(f"broadcast_{idx}_fanout", ctx),
+            stream,
+            lambda item: _register_broadcast_fanout(item, tracker, len(node.routes)),
+        )
 
     for branch_idx, route in enumerate(node.routes):
         branch_stream = _wire_process(
@@ -640,7 +648,14 @@ def _apply_broadcast(
 
 
 def _apply_drain(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    return flat_map(_step_id(f"drain_{idx}", ctx), stream, _empty)
+    tracker = ctx.commit_tracker
+    if tracker is None:
+        return flat_map(_step_id(f"drain_{idx}", ctx), stream, _empty)
+
+    def drop_and_commit(item: Any) -> tuple[()]:
+        return _drop_and_commit(item, tracker)
+
+    return flat_map(_step_id(f"drain_{idx}", ctx), stream, drop_and_commit)
 
 
 def _apply_into_topic(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
@@ -975,9 +990,26 @@ def _empty(_item: Any) -> tuple[()]:
     return ()
 
 
+def _drop_and_commit(item: Any, tracker: Any) -> tuple[()]:
+    """Drop one item and mark it complete for commit tracking."""
+    if not _is_message(item):
+        return ()
+    tracker.complete(item.meta.message_id)
+    return ()
+
+
 def _identity(items: Any) -> Any:
     """Pass through one item unchanged for flat_map."""
     return items
+
+
+def _register_broadcast_fanout(item: Any, tracker: Any, route_count: int) -> Any:
+    """Increase pending completions for a broadcast fan-out item."""
+    if route_count <= 1:
+        return item
+    message = _require_message(item)
+    tracker.fork(message.meta.message_id, route_count - 1)
+    return message
 
 
 _NODE_HANDLERS: Mapping[type[object], NodeHandler] = MappingProxyType(

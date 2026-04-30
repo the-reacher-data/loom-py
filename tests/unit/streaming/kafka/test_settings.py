@@ -53,7 +53,8 @@ def test_consumer_settings_compile_to_confluent_config() -> None:
         group_id="g-1",
         topics=("orders",),
         auto_offset_reset="latest",
-        extra={"enable.auto.commit": False, "fetch.min.bytes": 1024},
+        enable_auto_commit=False,
+        extra={"fetch.min.bytes": 1024},
     )
 
     config = settings.to_confluent_config()
@@ -63,6 +64,18 @@ def test_consumer_settings_compile_to_confluent_config() -> None:
     assert config["auto.offset.reset"] == "latest"
     assert config["enable.auto.commit"] is False
     assert config["fetch.min.bytes"] == 1024
+
+
+def test_consumer_settings_enable_auto_commit_defaults_to_true() -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+    )
+
+    config = settings.to_confluent_config()
+
+    assert config["enable.auto.commit"] is True
 
 
 def test_security_settings_omit_unset_optional_values() -> None:

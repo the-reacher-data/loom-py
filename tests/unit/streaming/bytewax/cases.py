@@ -100,7 +100,11 @@ def build_compiled_plan(
     )
 
 
-def build_compiled_source(poll_timeout_ms: int = 100) -> CompiledSource:
+def build_compiled_source(
+    poll_timeout_ms: int = 100,
+    *,
+    enable_auto_commit: bool = True,
+) -> CompiledSource:
     """Build a reusable compiled source for Bytewax adapter tests."""
     return CompiledSource(
         settings=ConsumerSettings(
@@ -108,6 +112,7 @@ def build_compiled_source(poll_timeout_ms: int = 100) -> CompiledSource:
             group_id="test",
             topics=(_ORDERS_IN_TOPIC,),
             poll_timeout_ms=poll_timeout_ms,
+            enable_auto_commit=enable_auto_commit,
         ),
         topics=(_ORDERS_IN_TOPIC,),
         payload_type=Order,
@@ -137,12 +142,14 @@ def build_compiled_sink(
 def build_order_message(
     order_id: str,
     key: bytes | str | None = None,
+    *,
+    message_id: str = "msg-1",
 ) -> Message[Order]:
     """Build a reusable Bytewax order message with transport metadata."""
     return Message(
         payload=Order(order_id=order_id),
         meta=MessageMeta(
-            message_id="msg-1",
+            message_id=message_id,
             topic=_ORDERS_IN_TOPIC,
             key=key,
         ),
