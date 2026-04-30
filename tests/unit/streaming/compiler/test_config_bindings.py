@@ -4,20 +4,25 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 
+import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import (
     ContextFactory,
+    Fork,
     FromTopic,
     IntoTopic,
     Message,
     Process,
     RecordStep,
+    Route,
+    Router,
     StreamFlow,
     With,
+    msg,
 )
-from loom.streaming.compiler import compile_flow
+from loom.streaming.compiler import CompilationError, compile_flow
 from tests.unit.streaming.compiler.cases import Order, Result
 
 
@@ -163,6 +168,76 @@ class TestConfigBindings:
         assert isinstance(factory, _TokenFactory)
         assert factory.token == "cfg-token"
 
+    def test_compile_flow_rejects_missing_required_binding_field(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """Missing required keys should fail binding resolution."""
+        runtime_config = streaming_kafka_config.copy()
+        OmegaConf.update(
+            runtime_config,
+            "streaming.bindings.bad_step",
+            {"suffix": "cfg-suffix"},
+            merge=False,
+        )
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="missing_binding_flow",
+            source=FromTopic("orders.raw", payload=Order),
+            process=Process(
+                _ConfiguredStep.from_config("streaming.bindings.bad_step"),
+                IntoTopic("orders.validated", payload=Result),
+            ),
+        )
+
+        with pytest.raises(
+            CompilationError,
+            match="missing 1 required keyword-only argument: 'prefix'",
+        ):
+            compile_flow(flow, runtime_config=runtime_config)
+
+    def test_compile_flow_rejects_invalid_structured_binding_type(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """Invalid structured values should fail validation."""
+        runtime_config = streaming_kafka_config.copy()
+        OmegaConf.update(
+            runtime_config,
+            "streaming.bindings.bad_structured_factory",
+            {
+                "config": {
+                    "timeout_s": "wrong",
+                    "limits": {
+                        "max_connections": 50,
+                        "max_keepalive_connections": 20,
+                    },
+                },
+                "label": "cfg-label",
+            },
+            merge=False,
+        )
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="invalid_structured_binding_flow",
+            source=FromTopic("orders.raw", payload=Order),
+            process=Process(
+                With(
+                    process=Process(
+                        _DeclaredStep,
+                        IntoTopic("orders.validated", payload=Result),
+                    ),
+                    structured_factory=_StructuredFactory.from_config(
+                        "streaming.bindings.bad_structured_factory",
+                        label="override-label",
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(CompilationError, match="Expected `float`, got `str`"):
+            compile_flow(flow, runtime_config=runtime_config)
+
     def test_compile_flow_resolves_structured_constructor_bindings(
         self,
         streaming_kafka_config: DictConfig,
@@ -214,3 +289,81 @@ class TestConfigBindings:
         assert factory.config.timeout_s == 5.0
         assert factory.config.limits.max_connections == 50
         assert factory.config.limits.max_keepalive_connections == 20
+
+    def test_compile_flow_resolves_router_branch_bindings(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """Router branches should resolve bindings without dropping a family."""
+        runtime_config = streaming_kafka_config.copy()
+        OmegaConf.update(
+            runtime_config,
+            "streaming.bindings.step",
+            {"prefix": "cfg-prefix", "suffix": "cfg-suffix"},
+            merge=False,
+        )
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="router_binding_flow",
+            source=FromTopic("orders.raw", payload=Order),
+            process=Process(
+                Router(
+                    selector=msg.payload.order_id,
+                    routes={
+                        "vip": Process(
+                            _ConfiguredStep.from_config("streaming.bindings.step"),
+                            IntoTopic("orders.a", payload=Result),
+                        )
+                    },
+                    predicate_routes=(
+                        Route(
+                            when=msg.payload.order_id != "",
+                            process=Process(
+                                _ConfiguredStep.from_config("streaming.bindings.step"),
+                                IntoTopic("orders.b", payload=Result),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        plan = compile_flow(flow, runtime_config=runtime_config)
+        router = plan.nodes[0].node
+        assert isinstance(router, Router)
+        assert isinstance(router.routes["vip"].nodes[0], _ConfiguredStep)
+        assert isinstance(router.predicate_routes[0].process.nodes[0], _ConfiguredStep)
+
+    def test_compile_flow_resolves_fork_branch_bindings(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        """Fork branches should resolve bindings without dropping a family."""
+        runtime_config = streaming_kafka_config.copy()
+        OmegaConf.update(
+            runtime_config,
+            "streaming.bindings.step",
+            {"prefix": "cfg-prefix", "suffix": "cfg-suffix"},
+            merge=False,
+        )
+
+        flow: StreamFlow[Order, Result] = StreamFlow(
+            name="fork_binding_flow",
+            source=FromTopic("orders.raw", payload=Order),
+            process=Process(
+                Fork.by(
+                    msg.payload.order_id,
+                    branches={
+                        "vip": Process(
+                            _ConfiguredStep.from_config("streaming.bindings.step"),
+                            IntoTopic("orders.a", payload=Result),
+                        )
+                    },
+                ),
+            ),
+        )
+
+        plan = compile_flow(flow, runtime_config=runtime_config)
+        fork = plan.nodes[0].node
+        assert isinstance(fork, Fork)
+        assert isinstance(fork.routes["vip"].nodes[0], _ConfiguredStep)

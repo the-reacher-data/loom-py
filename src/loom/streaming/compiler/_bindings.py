@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import sys
 from collections.abc import Mapping
 from typing import Any, TypeGuard, get_type_hints
 
@@ -112,7 +113,7 @@ def _instantiate_binding(
     resolved_kwargs = dict(raw_config)
     resolved_kwargs.update(overrides)
     signature = inspect.signature(target.__init__)
-    annotations = get_type_hints(target.__init__)
+    annotations = _get_type_hints(target)
 
     for name, param in signature.parameters.items():
         if name == "self" or param.kind in {
@@ -124,12 +125,18 @@ def _instantiate_binding(
         if not _is_struct_annotation(annotation):
             continue
         if name not in resolved_kwargs:
-            if param.default is inspect._empty:
+            if param.default is inspect.Parameter.empty:
                 raise TypeError(f"{target.__name__} requires config field {name!r}")
             continue
         resolved_kwargs[name] = msgspec.convert(resolved_kwargs[name], annotation, strict=False)
 
     return target(**resolved_kwargs)
+
+
+def _get_type_hints(target: type[object]) -> dict[str, object]:
+    module = sys.modules.get(target.__module__)
+    globalns = getattr(module, "__dict__", {}) if module is not None else {}
+    return get_type_hints(target.__init__, globalns=globalns)
 
 
 def _is_struct_annotation(annotation: object) -> bool:
@@ -172,12 +179,10 @@ def _resolve_router(
     errors: list[str],
 ) -> Router[Any, Any]:
     default = _resolve_process(node.default, runtime_config, errors) if node.default else None
-    if node.selector is not None:
-        routes = {
-            key: _resolve_process(process, runtime_config, errors)
-            for key, process in node.routes.items()
-        }
-        return Router.by(node.selector, routes, default=default)
+    routes = {
+        key: _resolve_process(process, runtime_config, errors)
+        for key, process in node.routes.items()
+    }
     predicate_routes = tuple(
         Route(
             when=route.when,
@@ -185,7 +190,12 @@ def _resolve_router(
         )
         for route in node.predicate_routes
     )
-    return Router.when(predicate_routes, default=default)
+    return Router(
+        selector=node.selector,
+        routes=routes,
+        predicate_routes=predicate_routes,
+        default=default,
+    )
 
 
 def _resolve_fork(
