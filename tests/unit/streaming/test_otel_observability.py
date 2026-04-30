@@ -212,5 +212,5 @@ def test_otel_flow_observer_records_node_error_on_active_span() -> None:
 
     assert node_span.exceptions and isinstance(node_span.exceptions[0], ValueError)
     assert node_span.status == (StatusCode.ERROR, "ValueError('boom')")
-    assert node_span.ended is False
+    assert node_span.ended is True
     assert provider.force_flush_calls == 1
