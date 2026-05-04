@@ -15,6 +15,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _is_message,
     _step_id,
 )
+from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.nodes._shape import CollectBatch, WindowStrategy
 
 Stream = Any
@@ -47,7 +48,7 @@ def _apply_collect_batch(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     if not isinstance(raw, CollectBatch):
-        raise TypeError(f"Unsupported collect-batch node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported collect-batch node {type(raw).__name__}.")
     node = raw
     if node.window is WindowStrategy.COLLECT:
         return _apply_collect_batch_default(
@@ -58,7 +59,7 @@ def _apply_collect_batch(
             flow_name=ctx.plan.name,
             idx=idx,
         )
-    raise TypeError(
+    raise UnsupportedNodeError(
         f"WindowStrategy.{node.window} reached the adapter — "
         "this should have been rejected at compile time."
     )

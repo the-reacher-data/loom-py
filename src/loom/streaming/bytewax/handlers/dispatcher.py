@@ -27,6 +27,7 @@ from loom.streaming.bytewax.handlers.steps import (
     _apply_expand_step,
     _apply_record_step,
 )
+from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
@@ -59,7 +60,7 @@ def _wire_node(stream: Stream, node: object, idx: int, ctx: _BuildContextProtoco
     for handler_type, handler in _NODE_HANDLERS.items():
         if isinstance(node, handler_type):
             return handler(stream, node, idx, ctx)
-    raise TypeError(f"No adapter handler for {type(node).__name__}")
+    raise UnsupportedNodeError(f"No adapter handler for {type(node).__name__}")
 
 
 _NODE_HANDLERS: MappingProxyType[type[object], NodeHandler] = MappingProxyType(

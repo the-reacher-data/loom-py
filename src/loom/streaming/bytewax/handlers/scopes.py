@@ -30,6 +30,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _step_id,
 )
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+from loom.streaming.core._exceptions import MissingBridgeError, UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._boundary import IntoTopic
@@ -41,7 +42,7 @@ Stream = Any
 
 def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, With):
-        raise TypeError(f"Unsupported with node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported with node {type(raw).__name__}.")
     node = raw
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
@@ -83,10 +84,10 @@ def _apply_with_async(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     if not isinstance(raw, WithAsync):
-        raise TypeError(f"Unsupported with-async node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported with-async node {type(raw).__name__}.")
     node = raw
     if ctx.bridge is None:
-        raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
+        raise MissingBridgeError("WithAsync requires an AsyncBridge but none was created.")
     return _apply_with_async_process(stream, node, idx, ctx)
 
 
@@ -98,7 +99,7 @@ def _apply_with_async_process(
 ) -> Stream:
     bridge = ctx.bridge
     if bridge is None:
-        raise RuntimeError("WithAsync requires an AsyncBridge but none was created.")
+        raise MissingBridgeError("WithAsync requires an AsyncBridge but none was created.")
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
     observer = ctx.flow_observer
@@ -157,7 +158,7 @@ def _resolve_inner_process(
             sink_partition = ctx.inline_sink_partition_for(inner_path)
             break
         else:
-            raise TypeError(
+            raise UnsupportedNodeError(
                 f"{type(node).__name__}(process=...) only supports RecordStep nodes and an "
                 f"optional terminal IntoTopic; found {type(inner_node).__name__}."
             )

@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from typing_extensions import TypeAliasType
-
-from loom.core.model import LoomFrozenStruct, LoomStruct
-
-StreamPayload = TypeAliasType("StreamPayload", LoomStruct | LoomFrozenStruct)
+from loom.streaming.core._message import StreamPayload
 
 __all__ = ["StreamPayload"]

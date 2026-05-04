@@ -33,6 +33,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _step_id,
 )
 from loom.streaming.core._errors import ErrorKind
+from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 
@@ -41,7 +42,7 @@ Stream = Any
 
 def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, _ExecutableRecordStep):
-        raise TypeError(f"Unsupported record step {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported record step {type(raw).__name__}.")
     record_step = raw
     name = _resolve_node_name(record_step)
     observer = ctx.flow_observer
@@ -62,7 +63,7 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
 
 def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, _ExecutableBatchStep):
-        raise TypeError(f"Unsupported batch step {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported batch step {type(raw).__name__}.")
     batch_step = raw
     name = _resolve_node_name(batch_step)
     observer = ctx.flow_observer
@@ -95,7 +96,7 @@ def _apply_expand_step(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     if not isinstance(raw, _ExecutableExpandStep):
-        raise TypeError(f"Unsupported expand step {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported expand step {type(raw).__name__}.")
     expand_step = raw
     name = _resolve_node_name(expand_step)
     observer = ctx.flow_observer
@@ -132,7 +133,7 @@ def _apply_batch_expand_step(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     if not isinstance(raw, _ExecutableBatchExpandStep):
-        raise TypeError(f"Unsupported batch-expand step {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported batch-expand step {type(raw).__name__}.")
     batch_expand_step = raw
     name = _resolve_node_name(batch_expand_step)
     observer = ctx.flow_observer

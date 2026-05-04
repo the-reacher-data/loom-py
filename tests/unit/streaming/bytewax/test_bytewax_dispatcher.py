@@ -14,6 +14,7 @@ from structlog.contextvars import get_contextvars
 
 from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
+from loom.streaming.bytewax.handlers import _shared as _shared
 from loom.streaming.bytewax.handlers import dispatcher as _dispatcher
 from loom.streaming.bytewax.handlers import routing as _routing
 from loom.streaming.bytewax.handlers import scopes as _scopes
@@ -313,18 +314,18 @@ class _ConditionalFailingSinkPartition:
 
 def test_require_message_rejects_non_message() -> None:
     with pytest.raises(TypeError, match="Expected Message"):
-        _dispatcher._require_message(object())
+        _shared._require_message(object())
 
 
 def test_replace_payloads_rejects_mismatched_lengths() -> None:
     with pytest.raises(RuntimeError, match="must match input length"):
-        _dispatcher._replace_payloads([_message("a")], [])
+        _shared._replace_payloads([_message("a")], [])
 
 
 def test_wire_node_dispatches_registered_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[tuple[object, object, int, object]] = []
     node = _FakeNode()
-    ctx = SimpleNamespace()
+    ctx: Any = SimpleNamespace()
 
     def _handler(stream: object, node: object, idx: int, ctx: object) -> object:
         seen.append((stream, node, idx, ctx))
@@ -375,7 +376,7 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
     monkeypatch.setattr(_shapes, "bw_map", _bw_map)
     monkeypatch.setattr(_shapes, "key_rm", _key_rm)
 
-    result = _dispatcher._apply_collect_batch_default(
+    result = _shapes._apply_collect_batch_default(
         "input-stream",
         node,
         "step-1",
@@ -681,7 +682,7 @@ class TestWithAsyncBatch:
         observer: _RecordingObserver,
         tracker: _CommitTracker,
         lifecycle: _WithAsyncLifecycle,
-    ) -> SimpleNamespace:
+    ) -> Any:
         return SimpleNamespace(
             bridge=bridge,
             commit_tracker=tracker,
@@ -706,7 +707,7 @@ class TestWithAsyncBatch:
         self,
         monkeypatch: pytest.MonkeyPatch,
         with_async_node: WithAsync[StreamPayload, StreamPayload],
-        with_async_ctx: SimpleNamespace,
+        with_async_ctx: Any,
         runtime_input: object,
         expected_ids: list[str],
     ) -> None:
@@ -919,7 +920,6 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
     def _wire_process(
         stream: object,
         nodes: tuple[object, ...],
-        ctx: object,
         *,
         path_prefix: tuple[int, ...] = (),
     ) -> object:
@@ -938,7 +938,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
             output=IntoTopic("b", payload=_Payload),
         ),
     )
-    ctx = SimpleNamespace(
+    ctx: Any = SimpleNamespace(
         current_path=(1,),
         commit_tracker=tracker,
         wire_process=_wire_process,
@@ -977,7 +977,7 @@ def test_apply_drain_completes_commit_tracker(
         "input-stream",
         object(),
         7,
-        SimpleNamespace(current_path=(), commit_tracker=tracker),
+        cast(Any, SimpleNamespace(current_path=(), commit_tracker=tracker)),
     )
 
     assert result == "dropped-stream"

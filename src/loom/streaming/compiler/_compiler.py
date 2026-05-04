@@ -15,6 +15,7 @@ from loom.streaming.compiler._plan import (
     CompiledSink,
     CompiledSource,
 )
+from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeError
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
@@ -110,15 +111,27 @@ class _Compiler:
             has_terminal = True
 
         if flow.output is not None and _contains_fork(flow.process.nodes):
-            errors.append("flow.output cannot be combined with Fork: branches must be terminal")
+            errors.append(
+                str(
+                    UnsupportedNodeError(
+                        "flow.output cannot be combined with Fork: branches must be terminal"
+                    )
+                )
+            )
 
         if flow.output is not None and _contains_broadcast(flow.process.nodes):
             errors.append(
-                "flow.output cannot be combined with Broadcast: branches must be terminal"
+                str(
+                    UnsupportedNodeError(
+                        "flow.output cannot be combined with Broadcast: branches must be terminal"
+                    )
+                )
             )
 
         if not has_terminal:
-            errors.append("no terminal output found: add IntoTopic or flow.output")
+            errors.append(
+                str(MissingSinkError("no terminal output found: add IntoTopic or flow.output"))
+            )
 
         return errors
 

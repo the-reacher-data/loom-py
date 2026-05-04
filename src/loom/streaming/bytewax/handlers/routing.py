@@ -17,6 +17,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _require_message,
     _step_id,
 )
+from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
@@ -30,7 +31,7 @@ Stream = Any
 
 def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, Router):
-        raise TypeError(f"Unsupported router node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported router node {type(raw).__name__}.")
     router = raw
     observer = ctx.flow_observer
     flow_name = ctx.plan.name
@@ -69,7 +70,7 @@ def _apply_broadcast(
     ctx: _BuildContextProtocol,
 ) -> Stream:
     if not isinstance(raw, Broadcast):
-        raise TypeError(f"Unsupported broadcast node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported broadcast node {type(raw).__name__}.")
     node = raw
     broadcast_path = ctx.current_path
     tracker = ctx.commit_tracker
@@ -97,7 +98,7 @@ def _apply_broadcast(
 
 def _apply_fork(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, Fork):
-        raise TypeError(f"Unsupported fork node {type(raw).__name__}.")
+        raise UnsupportedNodeError(f"Unsupported fork node {type(raw).__name__}.")
     fork = raw
     if fork.kind is ForkKind.KEYED:
         return _apply_fork_by(stream, fork, idx, ctx)
@@ -112,7 +113,7 @@ def _apply_fork_by(
 ) -> Stream:
     selector = fork.selector
     if selector is None:
-        raise RuntimeError("Fork.by requires a selector.")
+        raise UnsupportedNodeError("Fork.by requires a selector.")
     remaining = stream
     fork_path = ctx.current_path
 
