@@ -12,6 +12,10 @@ from loom.core.tracing import get_trace_id
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
+HEADER_CORRELATION_ID = "x-correlation-id"
+HEADER_CAUSATION_ID = "x-causation-id"
+HEADER_TRACE_ID = "x-trace-id"
+
 
 class ContentType(LoomFrozenStruct, frozen=True):
     """Describe the logical wire content type of one Kafka payload.

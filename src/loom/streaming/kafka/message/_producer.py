@@ -8,7 +8,14 @@ from typing import TYPE_CHECKING, Generic, Literal, TypeVar
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.kafka._codec import KafkaCodec
 from loom.streaming.kafka._key_resolver import PartitionKeyResolver
-from loom.streaming.kafka._message import MessageDescriptor, MessageEnvelope, build_message
+from loom.streaming.kafka._message import (
+    HEADER_CAUSATION_ID,
+    HEADER_CORRELATION_ID,
+    HEADER_TRACE_ID,
+    MessageDescriptor,
+    MessageEnvelope,
+    build_message,
+)
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._protocol import KafkaProducer
 
@@ -16,6 +23,22 @@ if TYPE_CHECKING:
     from loom.streaming.observability.observers import KafkaStreamingObserver
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
+
+
+def _build_record_headers(
+    headers: dict[str, bytes] | None,
+    correlation_id: str | None,
+    causation_id: str | None,
+    trace_id: str | None,
+) -> dict[str, bytes]:
+    result: dict[str, bytes] = dict(headers) if headers else {}
+    if correlation_id is not None:
+        result[HEADER_CORRELATION_ID] = correlation_id.encode()
+    if causation_id is not None:
+        result[HEADER_CAUSATION_ID] = causation_id.encode()
+    if trace_id is not None:
+        result[HEADER_TRACE_ID] = trace_id.encode()
+    return result
 
 
 class KafkaMessageProducer(Generic[PayloadT]):
@@ -87,6 +110,7 @@ class KafkaMessageProducer(Generic[PayloadT]):
             trace_id=trace_id,
             produced_at_ms=produced_at_ms,
         )
+        record_headers = _build_record_headers(headers, correlation_id, causation_id, trace_id)
         encode_started = perf_counter()
         encoded = self._codec.encode(message)
         if self._observer is not None:
@@ -94,7 +118,6 @@ class KafkaMessageProducer(Generic[PayloadT]):
                 descriptor.content_type.media_type,
                 perf_counter() - encode_started,
             )
-        record_headers = headers if headers is not None else {}
         resolved_key: bytes | str | None = key
         if resolved_key is None and self._key_resolver is not None:
             resolved_key = self._key_resolver.resolve(

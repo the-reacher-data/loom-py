@@ -8,11 +8,21 @@ from loom.streaming.core._errors import ErrorEnvelope
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._errors import KafkaDeliveryError
-from loom.streaming.kafka._message import MessageDescriptor
+from loom.streaming.kafka._message import (
+    HEADER_CAUSATION_ID,
+    HEADER_CORRELATION_ID,
+    HEADER_TRACE_ID,
+    MessageDescriptor,
+)
 from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_str_header(headers: dict[str, bytes], key: str) -> str | None:
+    raw = headers.get(key)
+    return raw.decode() if raw is not None else None
 
 
 def send_batch_to_dlq(
@@ -21,7 +31,17 @@ def send_batch_to_dlq(
     messages: list[Message[StreamPayload]],
     exc: KafkaDeliveryError,
 ) -> None:
-    """Best-effort: send all messages in *messages* to the DLQ topic."""
+    """Best-effort: send all messages in *messages* to the DLQ topic.
+
+    Each message is sent individually so a single failure does not block
+    the remaining items. Per-item failures are logged and silently swallowed.
+
+    Args:
+        producer: Message producer used to write DLQ records.
+        dlq_topic: Target DLQ Kafka topic name.
+        messages: Batch of messages that failed delivery.
+        exc: Delivery error that triggered the DLQ fallback.
+    """
     error_bytes = str(exc).encode("utf-8")
     for message in messages:
         try:
@@ -50,7 +70,17 @@ def send_error_batch_to_dlq(
     envelopes: list[ErrorEnvelope[StreamPayload]],
     exc: KafkaDeliveryError,
 ) -> None:
-    """Best-effort: send all error envelopes to the DLQ topic."""
+    """Best-effort: send all error envelopes to the DLQ topic.
+
+    Each envelope is sent individually so a single failure does not block
+    the remaining items. Per-item failures are logged and silently swallowed.
+
+    Args:
+        producer: Message producer used to write DLQ records.
+        dlq_topic: Target DLQ Kafka topic name.
+        envelopes: Batch of error envelopes that failed delivery.
+        exc: Delivery error that triggered the DLQ fallback.
+    """
     error_bytes = str(exc).encode("utf-8")
     for envelope in envelopes:
         try:
@@ -97,7 +127,19 @@ def send_decode_error_batch_to_dlq(
     errors: list[DecodeError],
     exc: KafkaDeliveryError,
 ) -> None:
-    """Best-effort: send all decode errors to the DLQ topic."""
+    """Best-effort: send all decode errors to the DLQ topic.
+
+    Trace context is recovered from the original Kafka record headers when
+    present (written there by the producer via ``x-correlation-id`` et al.),
+    preserving lineage even when the envelope payload could not be decoded.
+    Per-item failures are logged and silently swallowed.
+
+    Args:
+        producer: Message producer used to write DLQ records.
+        dlq_topic: Target DLQ Kafka topic name.
+        errors: Batch of decode errors that failed delivery.
+        exc: Delivery error that triggered the DLQ fallback.
+    """
     error_bytes = str(exc).encode("utf-8")
     for error in errors:
         try:
@@ -117,9 +159,9 @@ def send_decode_error_batch_to_dlq(
                 descriptor=descriptor,
                 key=error.key,
                 headers=headers,
-                correlation_id=None,
-                causation_id=None,
-                trace_id=None,
+                correlation_id=_decode_str_header(error.headers, HEADER_CORRELATION_ID),
+                causation_id=_decode_str_header(error.headers, HEADER_CAUSATION_ID),
+                trace_id=_decode_str_header(error.headers, HEADER_TRACE_ID),
                 produced_at_ms=error.timestamp_ms,
             )
         except Exception:

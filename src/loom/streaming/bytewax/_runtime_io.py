@@ -6,20 +6,29 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeAlias, TypeVar
 
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.bytewax._dlq import send_batch_to_dlq, send_decode_error_batch_to_dlq
+from loom.streaming.bytewax._dlq import (
+    send_batch_to_dlq,
+    send_decode_error_batch_to_dlq,
+    send_error_batch_to_dlq,
+)
 from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
 from loom.streaming.kafka._errors import KafkaDeliveryError
-from loom.streaming.kafka._message import MessageDescriptor
+from loom.streaming.kafka._message import (
+    HEADER_CAUSATION_ID,
+    HEADER_CORRELATION_ID,
+    HEADER_TRACE_ID,
+    MessageDescriptor,
+)
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
@@ -130,18 +139,34 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
         self._consumer.close()
 
 
-class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]]):
-    """Write typed runtime messages to Kafka."""
+class _KafkaSinkPartitionBase:
+    """Shared Kafka producer lifecycle and commit-tracker management."""
 
     def __init__(
-        self, sink: CompiledSink, commit_tracker: KafkaCommitTracker | None = None
+        self,
+        sink: CompiledSink,
+        commit_tracker: KafkaCommitTracker | None = None,
     ) -> None:
         self._sink = sink
         self._producer = KafkaProducerClient(sink.settings)
-        self._message_producer: KafkaMessageProducer[StreamPayload] = KafkaMessageProducer(
+        self._message_producer: KafkaMessageProducer[Any] = KafkaMessageProducer(
             self._producer, MsgspecCodec()
         )
         self._commit_tracker = commit_tracker
+
+    def close(self) -> None:
+        self._message_producer.close()
+
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+        self._commit_tracker = tracker
+
+
+class _KafkaMessageSinkPartition(
+    _KafkaSinkPartitionBase, StatelessSinkPartition[Message[StreamPayload]]
+):
+    """Write typed runtime messages to Kafka."""
+
+    _message_producer: KafkaMessageProducer[StreamPayload]
 
     def write_batch(self, items: list[Message[StreamPayload]]) -> None:
         _write_kafka_batch(
@@ -149,35 +174,19 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
             producer=self._producer,
             message_producer=self._message_producer,
             items=items,
-            item_to_send=lambda message: _message_to_send_with_policy(
-                message,
-                self._sink.partition_policy,
-            ),
+            item_to_send=lambda msg: _message_to_send_with_policy(msg, self._sink.partition_policy),
             item_to_commit=_message_to_commit,
             dlq_sender=send_batch_to_dlq,
             commit_tracker=self._commit_tracker,
         )
 
-    def close(self) -> None:
-        self._message_producer.close()
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used to ack source offsets after success."""
-        self._commit_tracker = tracker
-
-
-class _KafkaErrorEnvelopeSinkPartition(StatelessSinkPartition[ErrorEnvelope[StreamPayload]]):
+class _KafkaErrorEnvelopeSinkPartition(
+    _KafkaSinkPartitionBase, StatelessSinkPartition[ErrorEnvelope[StreamPayload]]
+):
     """Write Loom error envelopes to Kafka."""
 
-    def __init__(
-        self, sink: CompiledSink, commit_tracker: KafkaCommitTracker | None = None
-    ) -> None:
-        self._sink = sink
-        self._producer = KafkaProducerClient(sink.settings)
-        self._message_producer: KafkaMessageProducer[ErrorEnvelope[StreamPayload]] = (
-            KafkaMessageProducer(self._producer, MsgspecCodec())
-        )
-        self._commit_tracker = commit_tracker
+    _message_producer: KafkaMessageProducer[ErrorEnvelope[StreamPayload]]
 
     def write_batch(self, items: list[ErrorEnvelope[StreamPayload]]) -> None:
         _write_kafka_batch(
@@ -186,55 +195,18 @@ class _KafkaErrorEnvelopeSinkPartition(StatelessSinkPartition[ErrorEnvelope[Stre
             message_producer=self._message_producer,
             items=items,
             item_to_send=lambda envelope: _error_item_to_send(
-                envelope,
-                self._sink.partition_policy,
+                envelope, self._sink.partition_policy
             ),
             item_to_commit=_error_item_to_commit,
-            dlq_sender=None,
+            dlq_sender=send_error_batch_to_dlq,
             commit_tracker=self._commit_tracker,
         )
 
-    def close(self) -> None:
-        self._message_producer.close()
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used to ack source offsets after success."""
-        self._commit_tracker = tracker
-
-
-class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
-    """Build Kafka sink partitions for the runtime output topic."""
-
-    def __init__(self, sink: CompiledSink) -> None:
-        self._sink = sink
-        self._commit_tracker: KafkaCommitTracker | None = None
-
-    def build(
-        self,
-        step_id: str,
-        worker_index: int,
-        worker_count: int,
-    ) -> StatelessSinkPartition[Message[StreamPayload]]:
-        del step_id, worker_index, worker_count
-        return _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
-
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used by all partitions built from this sink."""
-        self._commit_tracker = tracker
-
-
-class _KafkaDecodeErrorSinkPartition(StatelessSinkPartition[DecodeError]):
+class _KafkaDecodeErrorSinkPartition(_KafkaSinkPartitionBase, StatelessSinkPartition[DecodeError]):
     """Write Kafka wire decode failures to Kafka."""
 
-    def __init__(
-        self, sink: CompiledSink, commit_tracker: KafkaCommitTracker | None = None
-    ) -> None:
-        self._sink = sink
-        self._producer = KafkaProducerClient(sink.settings)
-        self._message_producer: KafkaMessageProducer[DecodeError] = KafkaMessageProducer(
-            self._producer, MsgspecCodec()
-        )
-        self._commit_tracker = commit_tracker
+    _message_producer: KafkaMessageProducer[DecodeError]
 
     def write_batch(self, items: list[DecodeError]) -> None:
         _write_kafka_batch(
@@ -242,63 +214,65 @@ class _KafkaDecodeErrorSinkPartition(StatelessSinkPartition[DecodeError]):
             producer=self._producer,
             message_producer=self._message_producer,
             items=items,
-            item_to_send=lambda error: _decode_error_to_send(
-                error,
-                self._sink.partition_policy,
-            ),
+            item_to_send=lambda error: _decode_error_to_send(error, self._sink.partition_policy),
             item_to_commit=_decode_error_to_commit,
             dlq_sender=send_decode_error_batch_to_dlq,
             commit_tracker=self._commit_tracker,
         )
 
-    def close(self) -> None:
-        self._message_producer.close()
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used to ack source offsets after success."""
-        self._commit_tracker = tracker
-
-
-class _KafkaErrorEnvelopeSink(DynamicSink[ErrorEnvelope[StreamPayload]]):
-    """Build Kafka sink partitions for routed error envelopes."""
+class _KafkaDynamicSinkBase:
+    """Shared init and commit-tracker management for Kafka dynamic sinks."""
 
     def __init__(self, sink: CompiledSink) -> None:
         self._sink = sink
         self._commit_tracker: KafkaCommitTracker | None = None
+
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+        """Bind a commit tracker used by all partitions built from this sink."""
+        self._commit_tracker = tracker
+
+
+class _KafkaMessageSink(_KafkaDynamicSinkBase, DynamicSink[Message[StreamPayload]]):
+    """Build Kafka sink partitions for the runtime output topic."""
 
     def build(
         self,
         step_id: str,
         worker_index: int,
         worker_count: int,
-    ) -> StatelessSinkPartition[ErrorEnvelope[StreamPayload]]:
+    ) -> _KafkaMessageSinkPartition:
+        del step_id, worker_index, worker_count
+        return _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
+
+
+class _KafkaErrorEnvelopeSink(_KafkaDynamicSinkBase, DynamicSink[ErrorEnvelope[StreamPayload]]):
+    """Build Kafka sink partitions for routed error envelopes."""
+
+    def build(
+        self,
+        step_id: str,
+        worker_index: int,
+        worker_count: int,
+    ) -> _KafkaErrorEnvelopeSinkPartition:
         del step_id, worker_index, worker_count
         return _KafkaErrorEnvelopeSinkPartition(self._sink, self._commit_tracker)
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used by all partitions built from this sink."""
-        self._commit_tracker = tracker
 
-
-class _KafkaDecodeErrorSink(DynamicSink[DecodeError]):
+class _KafkaDecodeErrorSink(_KafkaDynamicSinkBase, DynamicSink[DecodeError]):
     """Build Kafka sink partitions for wire decode failures."""
-
-    def __init__(self, sink: CompiledSink) -> None:
-        self._sink = sink
-        self._commit_tracker: KafkaCommitTracker | None = None
 
     def build(
         self,
         step_id: str,
         worker_index: int,
         worker_count: int,
-    ) -> StatelessSinkPartition[DecodeError]:
+    ) -> _KafkaDecodeErrorSinkPartition:
         del step_id, worker_index, worker_count
         return _KafkaDecodeErrorSinkPartition(self._sink, self._commit_tracker)
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
-        """Bind a commit tracker used by all partitions built from this sink."""
-        self._commit_tracker = tracker
+
+_ErrorSink: TypeAlias = _KafkaErrorEnvelopeSink | _KafkaDecodeErrorSink
 
 
 def build_runtime_source(
@@ -322,16 +296,22 @@ def build_runtime_sink(
 def build_runtime_error_sinks(
     error_routes: dict[ErrorKind, CompiledSink],
     commit_tracker: KafkaCommitTracker | None = None,
-) -> dict[ErrorKind, Any]:
-    """Build runtime sinks for explicit error routes."""
-    runtime_sinks: dict[ErrorKind, Any] = {}
+) -> dict[ErrorKind, _ErrorSink]:
+    """Build runtime sinks for explicit error routes.
+
+    ``WIRE`` errors carry ``DecodeError`` items and require ``_KafkaDecodeErrorSink``.
+    All other kinds carry ``ErrorEnvelope`` items and use ``_KafkaErrorEnvelopeSink``.
+    Keeping these as distinct typed sinks is the invariant that prevents routing a
+    ``DecodeError`` into a function expecting an ``ErrorEnvelope``.
+    """
+    runtime_sinks: dict[ErrorKind, _ErrorSink] = {}
     for kind, sink in error_routes.items():
         if kind is ErrorKind.WIRE:
             runtime_sinks[kind] = _KafkaDecodeErrorSink(sink)
         else:
             runtime_sinks[kind] = _KafkaErrorEnvelopeSink(sink)
-    for sink in runtime_sinks.values():
-        sink.bind_commit_tracker(commit_tracker)
+    for error_sink in runtime_sinks.values():
+        error_sink.bind_commit_tracker(commit_tracker)
     return runtime_sinks
 
 
@@ -355,6 +335,7 @@ def build_inline_sink_partition(
 
     Args:
         sink: Compiled Kafka sink configuration.
+        commit_tracker: Optional commit tracker for manual offset acknowledgment.
 
     Returns:
         A ready-to-write sink partition.
@@ -474,6 +455,11 @@ def _error_item_to_commit(
     return original.meta.topic, original.meta.partition, original.meta.offset
 
 
+def _decode_str_header(headers: dict[str, bytes], key: str) -> str | None:
+    raw = headers.get(key)
+    return raw.decode() if raw is not None else None
+
+
 def _decode_error_to_send(
     item: DecodeError,
     partition_policy: PartitionPolicy[Any] | None,
@@ -491,9 +477,9 @@ def _decode_error_to_send(
             "x-error-kind": item.error.kind.value.encode("utf-8"),
             "x-error-reason": item.error.reason.encode("utf-8"),
         },
-        correlation_id=None,
-        causation_id=None,
-        trace_id=None,
+        correlation_id=_decode_str_header(item.headers, HEADER_CORRELATION_ID),
+        causation_id=_decode_str_header(item.headers, HEADER_CAUSATION_ID),
+        trace_id=_decode_str_header(item.headers, HEADER_TRACE_ID),
         produced_at_ms=item.timestamp_ms,
     )
 
