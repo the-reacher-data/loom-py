@@ -11,6 +11,7 @@ from loom.streaming.bytewax import _output_wiring, _runtime_io
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka._wire import DecodeError
 from tests.unit.streaming.bytewax.cases import (
     build_compiled_sink,
     build_compiled_source,
@@ -67,7 +68,7 @@ class TestRuntimeIOBuilders:
         )
 
         assert isinstance(sink, _runtime_io._KafkaMessageSink)
-        assert isinstance(error_sinks[ErrorKind.WIRE], _runtime_io._KafkaErrorEnvelopeSink)
+        assert isinstance(error_sinks[ErrorKind.WIRE], _runtime_io._KafkaDecodeErrorSink)
         assert isinstance(terminal_sinks[(0,)], _runtime_io._KafkaMessageSink)
 
         partition = sink.build("step", 0, 1)
@@ -77,10 +78,19 @@ class TestRuntimeIOBuilders:
         error_partition = error_sinks[ErrorKind.WIRE].build("step", 0, 1)
         error_partition.write_batch(
             [
-                ErrorEnvelope(
-                    kind=ErrorKind.WIRE,
-                    reason="decode failed",
-                    original_message=build_order_message("456", None),
+                DecodeError(
+                    error=ErrorEnvelope(
+                        kind=ErrorKind.WIRE,
+                        reason="decode failed",
+                        original_message=None,
+                    ),
+                    raw=b"bad-wire",
+                    topic="orders.in",
+                    key=b"tenant-a",
+                    headers={"h": b"1"},
+                    partition=0,
+                    offset=4,
+                    timestamp_ms=12,
                 )
             ]
         )
@@ -123,6 +133,44 @@ class TestRuntimeIOBuilders:
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"task"
         assert fake_raw.sent[0].headers["x-error-reason"] == b"boom"
+
+    def test_build_runtime_error_sink_writes_decode_error_payloads(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_raw = RawProducerStub()
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+
+        error_sinks = _runtime_io.build_runtime_error_sinks(
+            {ErrorKind.WIRE: build_compiled_sink(topic="orders.errors")},
+            None,
+        )
+        partition = cast(
+            _runtime_io._KafkaDecodeErrorSinkPartition,
+            error_sinks[ErrorKind.WIRE].build("step", 0, 1),
+        )
+        envelope = DecodeError(
+            error=ErrorEnvelope(
+                kind=ErrorKind.WIRE,
+                reason="decode failed",
+                original_message=None,
+            ),
+            raw=b"bad-wire",
+            topic="orders.in",
+            key=b"tenant-a",
+            headers={"h": b"1"},
+            partition=0,
+            offset=4,
+            timestamp_ms=12,
+        )
+
+        partition.write_batch([envelope])
+        partition.close()
+
+        assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
+        assert fake_raw.sent[0].key == b"tenant-a"
+        assert fake_raw.sent[0].headers["x-error-kind"] == b"wire"
+        assert fake_raw.sent[0].headers["x-error-reason"] == b"decode failed"
 
     def test_commit_tracker_commits_after_sink_write(
         self,

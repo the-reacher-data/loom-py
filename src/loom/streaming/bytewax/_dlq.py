@@ -9,6 +9,7 @@ from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import MessageDescriptor
+from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ def send_error_batch_to_dlq(
                 message_type=f"loom.streaming.error.{envelope.kind.value}",
                 message_version=1,
             )
-            headers: dict[str, bytes] = {"x-dlq-error": error_bytes}
+            headers = {"x-dlq-error": error_bytes}
             correlation_id = None
             causation_id = None
             trace_id = None
@@ -90,4 +91,39 @@ def send_error_batch_to_dlq(
             logger.warning("dlq_send_failed", extra={"dlq_topic": dlq_topic})
 
 
-__all__ = ["send_batch_to_dlq", "send_error_batch_to_dlq"]
+def send_decode_error_batch_to_dlq(
+    producer: KafkaMessageProducer[DecodeError],
+    dlq_topic: str,
+    errors: list[DecodeError],
+    exc: KafkaDeliveryError,
+) -> None:
+    """Best-effort: send all decode errors to the DLQ topic."""
+    error_bytes = str(exc).encode("utf-8")
+    for error in errors:
+        try:
+            headers: dict[str, bytes] = {
+                **error.headers,
+                "x-dlq-error": error_bytes,
+                "x-error-kind": error.error.kind.value.encode("utf-8"),
+                "x-error-reason": error.error.reason.encode("utf-8"),
+            }
+            descriptor = MessageDescriptor(
+                message_type=f"loom.streaming.error.{error.error.kind.value}",
+                message_version=1,
+            )
+            producer.send(
+                topic=dlq_topic,
+                payload=error,
+                descriptor=descriptor,
+                key=error.key,
+                headers=headers,
+                correlation_id=None,
+                causation_id=None,
+                trace_id=None,
+                produced_at_ms=error.timestamp_ms,
+            )
+        except Exception:
+            logger.warning("dlq_send_failed", extra={"dlq_topic": dlq_topic})
+
+
+__all__ = ["send_batch_to_dlq", "send_decode_error_batch_to_dlq", "send_error_batch_to_dlq"]

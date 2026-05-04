@@ -12,7 +12,7 @@ from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
-from loom.streaming.bytewax._dlq import send_batch_to_dlq, send_error_batch_to_dlq
+from loom.streaming.bytewax._dlq import send_batch_to_dlq, send_decode_error_batch_to_dlq
 from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
@@ -21,6 +21,7 @@ from loom.streaming.kafka._codec import MsgspecCodec
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import MessageDescriptor
 from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
 from loom.streaming.kafka.client._producer import KafkaProducerClient
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
@@ -184,12 +185,12 @@ class _KafkaErrorEnvelopeSinkPartition(StatelessSinkPartition[ErrorEnvelope[Stre
             producer=self._producer,
             message_producer=self._message_producer,
             items=items,
-            item_to_send=lambda envelope: _error_envelope_to_send(
+            item_to_send=lambda envelope: _error_item_to_send(
                 envelope,
                 self._sink.partition_policy,
             ),
-            item_to_commit=_error_envelope_to_commit,
-            dlq_sender=send_error_batch_to_dlq,
+            item_to_commit=_error_item_to_commit,
+            dlq_sender=None,
             commit_tracker=self._commit_tracker,
         )
 
@@ -222,6 +223,42 @@ class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
         self._commit_tracker = tracker
 
 
+class _KafkaDecodeErrorSinkPartition(StatelessSinkPartition[DecodeError]):
+    """Write Kafka wire decode failures to Kafka."""
+
+    def __init__(
+        self, sink: CompiledSink, commit_tracker: KafkaCommitTracker | None = None
+    ) -> None:
+        self._sink = sink
+        self._producer = KafkaProducerClient(sink.settings)
+        self._message_producer: KafkaMessageProducer[DecodeError] = KafkaMessageProducer(
+            self._producer, MsgspecCodec()
+        )
+        self._commit_tracker = commit_tracker
+
+    def write_batch(self, items: list[DecodeError]) -> None:
+        _write_kafka_batch(
+            sink=self._sink,
+            producer=self._producer,
+            message_producer=self._message_producer,
+            items=items,
+            item_to_send=lambda error: _decode_error_to_send(
+                error,
+                self._sink.partition_policy,
+            ),
+            item_to_commit=_decode_error_to_commit,
+            dlq_sender=send_decode_error_batch_to_dlq,
+            commit_tracker=self._commit_tracker,
+        )
+
+    def close(self) -> None:
+        self._message_producer.close()
+
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+        """Bind a commit tracker used to ack source offsets after success."""
+        self._commit_tracker = tracker
+
+
 class _KafkaErrorEnvelopeSink(DynamicSink[ErrorEnvelope[StreamPayload]]):
     """Build Kafka sink partitions for routed error envelopes."""
 
@@ -237,6 +274,27 @@ class _KafkaErrorEnvelopeSink(DynamicSink[ErrorEnvelope[StreamPayload]]):
     ) -> StatelessSinkPartition[ErrorEnvelope[StreamPayload]]:
         del step_id, worker_index, worker_count
         return _KafkaErrorEnvelopeSinkPartition(self._sink, self._commit_tracker)
+
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+        """Bind a commit tracker used by all partitions built from this sink."""
+        self._commit_tracker = tracker
+
+
+class _KafkaDecodeErrorSink(DynamicSink[DecodeError]):
+    """Build Kafka sink partitions for wire decode failures."""
+
+    def __init__(self, sink: CompiledSink) -> None:
+        self._sink = sink
+        self._commit_tracker: KafkaCommitTracker | None = None
+
+    def build(
+        self,
+        step_id: str,
+        worker_index: int,
+        worker_count: int,
+    ) -> StatelessSinkPartition[DecodeError]:
+        del step_id, worker_index, worker_count
+        return _KafkaDecodeErrorSinkPartition(self._sink, self._commit_tracker)
 
     def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
         """Bind a commit tracker used by all partitions built from this sink."""
@@ -264,9 +322,14 @@ def build_runtime_sink(
 def build_runtime_error_sinks(
     error_routes: dict[ErrorKind, CompiledSink],
     commit_tracker: KafkaCommitTracker | None = None,
-) -> dict[ErrorKind, _KafkaErrorEnvelopeSink]:
+) -> dict[ErrorKind, Any]:
     """Build runtime sinks for explicit error routes."""
-    runtime_sinks = {kind: _KafkaErrorEnvelopeSink(sink) for kind, sink in error_routes.items()}
+    runtime_sinks: dict[ErrorKind, Any] = {}
+    for kind, sink in error_routes.items():
+        if kind is ErrorKind.WIRE:
+            runtime_sinks[kind] = _KafkaDecodeErrorSink(sink)
+        else:
+            runtime_sinks[kind] = _KafkaErrorEnvelopeSink(sink)
     for sink in runtime_sinks.values():
         sink.bind_commit_tracker(commit_tracker)
     return runtime_sinks
@@ -365,22 +428,22 @@ def _message_to_commit(
     return message.meta.topic, message.meta.partition, message.meta.offset
 
 
-def _error_envelope_to_send(
-    envelope: ErrorEnvelope[StreamPayload],
+def _error_item_to_send(
+    item: ErrorEnvelope[StreamPayload],
     partition_policy: PartitionPolicy[Any] | None,
 ) -> _KafkaSendRequest[ErrorEnvelope[StreamPayload]]:
-    original = envelope.original_message
+    original = item.original_message
     headers: dict[str, bytes] = {
-        "x-error-kind": envelope.kind.value.encode("utf-8"),
-        "x-error-reason": envelope.reason.encode("utf-8"),
+        "x-error-kind": item.kind.value.encode("utf-8"),
+        "x-error-reason": item.reason.encode("utf-8"),
     }
     descriptor = MessageDescriptor(
-        message_type=f"loom.streaming.error.{envelope.kind.value}",
+        message_type=f"loom.streaming.error.{item.kind.value}",
         message_version=1,
     )
     if original is None:
         return _KafkaSendRequest(
-            payload=envelope,
+            payload=item,
             descriptor=descriptor,
             key=None,
             headers=headers,
@@ -391,7 +454,7 @@ def _error_envelope_to_send(
         )
     key = _resolve_partition_key(original, partition_policy)
     return _KafkaSendRequest(
-        payload=envelope,
+        payload=item,
         descriptor=descriptor,
         key=key,
         headers={**original.meta.headers, **headers},
@@ -402,10 +465,40 @@ def _error_envelope_to_send(
     )
 
 
-def _error_envelope_to_commit(
-    envelope: ErrorEnvelope[StreamPayload],
+def _error_item_to_commit(
+    item: ErrorEnvelope[StreamPayload],
 ) -> tuple[str | None, int | None, int | None]:
-    original = envelope.original_message
+    original = item.original_message
     if original is None:
         return (None, None, None)
     return original.meta.topic, original.meta.partition, original.meta.offset
+
+
+def _decode_error_to_send(
+    item: DecodeError,
+    partition_policy: PartitionPolicy[Any] | None,
+) -> _KafkaSendRequest[DecodeError]:
+    del partition_policy
+    return _KafkaSendRequest(
+        payload=item,
+        descriptor=MessageDescriptor(
+            message_type=f"loom.streaming.error.{item.error.kind.value}",
+            message_version=1,
+        ),
+        key=item.key,
+        headers={
+            **item.headers,
+            "x-error-kind": item.error.kind.value.encode("utf-8"),
+            "x-error-reason": item.error.reason.encode("utf-8"),
+        },
+        correlation_id=None,
+        causation_id=None,
+        trace_id=None,
+        produced_at_ms=item.timestamp_ms,
+    )
+
+
+def _decode_error_to_commit(
+    item: DecodeError,
+) -> tuple[str | None, int | None, int | None]:
+    return item.topic, item.partition, item.offset
