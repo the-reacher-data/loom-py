@@ -1,27 +1,13 @@
-"""Streaming flow compiler: validates and compiles StreamFlow into CompiledPlan."""
+"""Validation phase for streaming flow compilation."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Literal
+from typing import Any
 
 from omegaconf import DictConfig
 
 from loom.core.config import ConfigError, section
-from loom.streaming.compiler._bindings import resolve_flow_bindings
-from loom.streaming.compiler._plan import (
-    CompiledNode,
-    CompiledPlan,
-    CompiledSink,
-    CompiledSource,
-)
-from loom.streaming.compiler.phases.build_plan import PlanBuilder
-from loom.streaming.compiler.phases.validate import (
-    validate_kafka,
-    validate_outputs,
-    validate_resources,
-    validate_shapes,
-)
 from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeError
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
@@ -36,288 +22,75 @@ from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, R
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
-class CompilationError(Exception):
-    """Raised when a StreamFlow fails validation."""
-
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
-
-
-def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> CompiledPlan:
-    """Compile a flow into an immutable plan.
-
-    Raises:
-        loom.streaming.compiler.CompilationError: If any validation fails.
-    """
-    compiler = _Compiler()
-    return compiler.compile(flow, runtime_config=runtime_config)
+def validate_kafka(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
+    """Validate Kafka settings required by *flow*."""
+    if not _uses_kafka(flow):
+        return []
+    try:
+        section(cfg, "kafka", KafkaSettings)
+        return []
+    except ConfigError as exc:
+        return [f"kafka: {exc}"]
 
 
-class _Compiler:
-    """Validates a StreamFlow and produces a CompiledPlan.
+def validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
+    """Validate resource usage across the full process tree."""
+    errors: list[str] = []
+    for node in _walk_all_process_nodes(flow.process.nodes):
+        if isinstance(node, (With, WithAsync)) and node.scope == ResourceScope.BATCH:
+            direct_cms = list(node.sync_contexts.keys()) + list(node.async_contexts.keys())
+            if direct_cms:
+                errors.append(
+                    f"{type(node).__name__} with scope=BATCH cannot use direct context "
+                    f"manager instances: {', '.join(direct_cms)}. "
+                    f"Use ContextFactory for batch-scoped resources."
+                )
+    return errors
 
-    Each validator is a pure function that returns a list of error strings.
-    """
 
-    def compile(self, flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> CompiledPlan:
-        errors: list[str] = []
+def validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
+    """Validate shape transitions through the process tree."""
+    errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
+    errors.extend(_validate_window_strategies(flow.process.nodes))
+    errors.extend(_validate_scoped_process_nodes(_walk_all_process_nodes(flow.process.nodes)))
+    return errors
 
-        resolved_flow, binding_errors = resolve_flow_bindings(flow, runtime_config)
-        errors.extend(binding_errors)
-        if errors:
-            raise CompilationError(errors)
 
-        errors.extend(validate_kafka(resolved_flow, runtime_config))
-        errors.extend(validate_resources(resolved_flow))
-        errors.extend(validate_shapes(resolved_flow))
-        errors.extend(validate_outputs(resolved_flow))
+def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
+    """Validate terminal outputs and branch terminality."""
+    errors: list[str] = []
+    has_terminal = flow.output is not None
 
-        if errors:
-            raise CompilationError(errors)
+    if _has_terminal_output(flow.process.nodes):
+        has_terminal = True
 
-        return self._build_plan(resolved_flow, runtime_config)
-
-    @staticmethod
-    def _validate_kafka(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
-        if not _uses_kafka(flow):
-            return []
-        try:
-            section(cfg, "kafka", KafkaSettings)
-            return []
-        except ConfigError as exc:
-            return [f"kafka: {exc}"]
-
-    @staticmethod
-    def _validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
-        errors: list[str] = []
-        for node in _walk_all_process_nodes(flow.process.nodes):
-            if isinstance(node, (With, WithAsync)) and node.scope == ResourceScope.BATCH:
-                direct_cms = list(node.sync_contexts.keys()) + list(node.async_contexts.keys())
-                if direct_cms:
-                    errors.append(
-                        f"{type(node).__name__} with scope=BATCH cannot use direct context "
-                        f"manager instances: {', '.join(direct_cms)}. "
-                        f"Use ContextFactory for batch-scoped resources."
-                    )
-        return errors
-
-    @staticmethod
-    def _validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
-        errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
-        errors.extend(_validate_window_strategies(flow.process.nodes))
-        errors.extend(_validate_scoped_process_nodes(_walk_all_process_nodes(flow.process.nodes)))
-        return errors
-
-    @staticmethod
-    def _validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
-        errors: list[str] = []
-        has_terminal = flow.output is not None
-
-        if _has_terminal_output(flow.process.nodes):
-            has_terminal = True
-
-        if flow.output is not None and _contains_fork(flow.process.nodes):
-            errors.append(
-                str(
-                    UnsupportedNodeError(
-                        "flow.output cannot be combined with Fork: branches must be terminal"
-                    )
+    if flow.output is not None and _contains_fork(flow.process.nodes):
+        errors.append(
+            str(
+                UnsupportedNodeError(
+                    "flow.output cannot be combined with Fork: branches must be terminal"
                 )
             )
-
-        if flow.output is not None and _contains_broadcast(flow.process.nodes):
-            errors.append(
-                str(
-                    UnsupportedNodeError(
-                        "flow.output cannot be combined with Broadcast: branches must be terminal"
-                    )
-                )
-            )
-
-        if not has_terminal:
-            errors.append(
-                str(MissingSinkError("no terminal output found: add IntoTopic or flow.output"))
-            )
-
-        return errors
-
-    def _build_plan(self, flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledPlan:
-        return PlanBuilder().build(flow, runtime_config)
-
-    def _build_source(
-        self, flow: StreamFlow[Any, Any], runtime_config: DictConfig
-    ) -> CompiledSource:
-        kafka = section(runtime_config, "kafka", KafkaSettings)
-        consumer = kafka.consumer_for(flow.source.logical_ref)
-
-        # Infer decode strategy from nodes
-        decode_strategy: Literal["record", "batch"] = "record"
-        if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
-            decode_strategy = "batch"
-
-        return CompiledSource(
-            settings=consumer,
-            topics=consumer.topics,
-            payload_type=flow.source.payload,
-            shape=flow.source.shape,
-            decode_strategy=decode_strategy,
         )
 
-    def _build_nodes(self, flow: StreamFlow[Any, Any]) -> list[CompiledNode]:
-        nodes: list[CompiledNode] = []
-        current_shape = flow.source.shape
-
-        for node in flow.process.nodes:
-            input_shape = current_shape
-            output_shape = _node_output_shape(node, current_shape)
-            nodes.append(
-                CompiledNode(
-                    node=node,
-                    input_shape=input_shape,
-                    output_shape=output_shape,
-                    path=(len(nodes),),
+    if flow.output is not None and _contains_broadcast(flow.process.nodes):
+        errors.append(
+            str(
+                UnsupportedNodeError(
+                    "flow.output cannot be combined with Broadcast: branches must be terminal"
                 )
             )
-            current_shape = output_shape
-
-        return nodes
-
-    def _build_terminal_sinks(
-        self,
-        nodes: Iterable[object],
-        runtime_config: DictConfig,
-        *,
-        path_prefix: tuple[int, ...] = (),
-    ) -> dict[tuple[int, ...], CompiledSink]:
-        sinks: dict[tuple[int, ...], CompiledSink] = {}
-        node_list = tuple(nodes)
-        for idx, node in enumerate(node_list):
-            path = path_prefix + (idx,)
-            if isinstance(node, IntoTopic):
-                sinks[path] = self._build_sink(node, runtime_config)
-            elif isinstance(node, Fork):
-                sinks.update(
-                    self._build_fork_terminal_sinks(node, runtime_config, path_prefix=path)
-                )
-            elif isinstance(node, Router):
-                sinks.update(
-                    self._build_router_terminal_sinks(node, runtime_config, path_prefix=path)
-                )
-            elif isinstance(node, Broadcast):
-                sinks.update(
-                    self._build_broadcast_terminal_sinks(node, runtime_config, path_prefix=path)
-                )
-            elif isinstance(node, WithAsync) or (
-                isinstance(node, With) and node.process is not None
-            ):
-                sinks.update(
-                    self._build_terminal_sinks(
-                        node.process.nodes,
-                        runtime_config,
-                        path_prefix=path,
-                    )
-                )
-        return sinks
-
-    def _build_fork_terminal_sinks(
-        self,
-        fork: Fork[Any],
-        runtime_config: DictConfig,
-        *,
-        path_prefix: tuple[int, ...],
-    ) -> dict[tuple[int, ...], CompiledSink]:
-        sinks: dict[tuple[int, ...], CompiledSink] = {}
-        branch_count = _fork_branch_count(fork)
-        for branch_idx, (_, nodes) in enumerate(_fork_branch_nodes(fork)):
-            sinks.update(
-                self._build_terminal_sinks(
-                    nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (branch_idx,),
-                )
-            )
-        if fork.default is not None:
-            sinks.update(
-                self._build_terminal_sinks(
-                    fork.default.nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (branch_count,),
-                )
-            )
-        return sinks
-
-    def _build_router_terminal_sinks(
-        self,
-        router: Router[Any, Any],
-        runtime_config: DictConfig,
-        *,
-        path_prefix: tuple[int, ...],
-    ) -> dict[tuple[int, ...], CompiledSink]:
-        sinks: dict[tuple[int, ...], CompiledSink] = {}
-        keyed_count = len(router.routes)
-        for branch_idx, process in enumerate(router.routes.values()):
-            sinks.update(
-                self._build_terminal_sinks(
-                    process.nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (branch_idx,),
-                )
-            )
-        for i, route in enumerate(router.predicate_routes):
-            sinks.update(
-                self._build_terminal_sinks(
-                    route.process.nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (keyed_count + i,),
-                )
-            )
-        if router.default is not None:
-            sinks.update(
-                self._build_terminal_sinks(
-                    router.default.nodes,
-                    runtime_config,
-                    path_prefix=path_prefix + (len(router.routes),),
-                )
-            )
-        return sinks
-
-    def _build_broadcast_terminal_sinks(
-        self,
-        broadcast: Broadcast[Any],
-        runtime_config: DictConfig,
-        *,
-        path_prefix: tuple[int, ...],
-    ) -> dict[tuple[int, ...], CompiledSink]:
-        sinks: dict[tuple[int, ...], CompiledSink] = {}
-        for branch_idx, route in enumerate(broadcast.routes):
-            branch_path = path_prefix + (branch_idx,)
-            if route.output is not None:
-                sinks[branch_path] = self._build_sink(route.output, runtime_config)
-            # Traverse the branch process for any nested terminal nodes
-            sinks.update(
-                self._build_terminal_sinks(
-                    route.process.nodes,
-                    runtime_config,
-                    path_prefix=branch_path,
-                )
-            )
-        return sinks
-
-    def _build_sink(self, topic: IntoTopic[Any], runtime_config: DictConfig) -> CompiledSink:
-        kafka = section(runtime_config, "kafka", KafkaSettings)
-        producer = kafka.producer_for(topic.logical_ref)
-
-        return CompiledSink(
-            settings=producer,
-            topic=producer.topic or str(topic.logical_ref),
-            partition_policy=topic.partitioning,
-            dlq_topic=topic.dlq,
         )
+
+    if not has_terminal:
+        errors.append(
+            str(MissingSinkError("no terminal output found: add IntoTopic or flow.output"))
+        )
+
+    return errors
 
 
 def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
-    """Return True if the flow uses Kafka topics."""
     if isinstance(flow.source, FromTopic):
         return True
     if flow.output is not None:
@@ -326,7 +99,6 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
 
 
 def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
-    """Yield each group of child nodes to recurse into for a single process node."""
     if isinstance(node, Router):
         for _, branch_nodes in _router_branch_nodes(node):
             yield branch_nodes
@@ -341,12 +113,6 @@ def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
 
 
 def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
-    """Yield every process node recursively, including Router, Fork, Broadcast, and With branches.
-
-    Top-level iteration misses nodes nested inside branch sub-processes.  Use
-    this walker whenever a property (async bridge, resource scope, config
-    binding) must be checked across the full node tree.
-    """
     for node in nodes:
         yield node
         for child_nodes in _iter_child_node_groups(node):
@@ -354,7 +120,6 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
 
 
 def _node_needs_async_bridge(node: object) -> bool:
-    """Return whether a single node requires an AsyncBridge."""
     return isinstance(node, WithAsync)
 
 
@@ -467,13 +232,6 @@ def _validate_router_branch_shape_sequence(
     nodes: Iterable[object],
     initial_shape: StreamShape,
 ) -> tuple[list[str], StreamShape]:
-    """Validate shape sequence inside a Router branch.
-
-    Identical to :func:`_validate_shape_sequence` but treats ``BatchStep`` as
-    accepting any input shape and producing RECORD output.  The Bytewax adapter
-    wraps the incoming record into a singleton batch and unwraps the result, so
-    the effective cardinality remains 1-to-1.
-    """
     errors: list[str] = []
     current_shape = initial_shape
     node_list = tuple(nodes)
@@ -591,7 +349,6 @@ def _contains_broadcast(nodes: Iterable[object]) -> bool:
 
 
 def _node_input_shape(node: object) -> StreamShape | None:
-    """Expected input shape for a node, or None if any shape is accepted."""
     if isinstance(node, RecordStep):
         return StreamShape.RECORD
     if isinstance(node, BatchStep):
@@ -612,7 +369,6 @@ def _node_input_shape(node: object) -> StreamShape | None:
 
 
 def _validate_window_strategies(nodes: Iterable[object]) -> list[str]:
-    """Return errors for any CollectBatch node using an unimplemented strategy."""
     errors: list[str] = []
     for node in nodes:
         if isinstance(node, CollectBatch) and node.window is not WindowStrategy.COLLECT:
@@ -624,7 +380,6 @@ def _validate_window_strategies(nodes: Iterable[object]) -> list[str]:
 
 
 def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
-    """Return errors for scoped processes that contain unsupported inner nodes."""
     errors: list[str] = []
     for node in nodes:
         if not isinstance(node, (With, WithAsync)):
@@ -648,7 +403,6 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
 
 
 def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
-    """Output shape produced by a node."""
     if isinstance(node, CollectBatch):
         return StreamShape.BATCH
     if isinstance(node, ForEach):
