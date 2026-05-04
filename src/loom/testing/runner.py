@@ -146,7 +146,7 @@ class UseCaseTest(Generic[ResultT]):
         Raises:
             loom.core.errors.RuleViolations: If one or more rule steps fail.
             NotFound: If a Load step finds no entity.
-            loom.core.engine.CompilationError: If the UseCase fails
+            loom.core.engine.compiler.CompilationError: If the UseCase fails
                 structural validation.
         """
         compiler = UseCaseCompiler()

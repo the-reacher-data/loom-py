@@ -22,7 +22,8 @@ from loom.streaming import (
     With,
     msg,
 )
-from loom.streaming.compiler import CompilationError, compile_flow
+from loom.streaming.compiler import compile_flow
+from loom.streaming.compiler._compiler import CompilationError
 from tests.unit.streaming.compiler.cases import Order, Result
 
 

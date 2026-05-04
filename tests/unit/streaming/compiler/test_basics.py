@@ -6,7 +6,8 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.streaming import Drain, FromTopic, IntoTopic, Process, StreamFlow, StreamShape
-from loom.streaming.compiler import CompilationError, CompiledSource, compile_flow
+from loom.streaming.compiler import CompiledSource, compile_flow
+from loom.streaming.compiler._compiler import CompilationError
 from tests.unit.streaming.compiler.cases import FakeStep, Order, Result
 
 

@@ -48,7 +48,7 @@ def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> C
     """Compile a flow into an immutable plan.
 
     Raises:
-        loom.streaming.compiler.CompilationError: If any validation fails.
+        loom.streaming.compiler._compiler.CompilationError: If any validation fails.
     """
     compiler = _Compiler()
     return compiler.compile(flow, runtime_config=runtime_config)

@@ -70,7 +70,6 @@ def _skip_duplicate_reexports(
         ("loom.core.use_case", "RuleViolation"),
         ("loom.core.use_case", "RuleViolations"),
         ("loom.etl.observability", "OtelConfig"),
-        ("loom.streaming", "CompilationError"),
         ("loom.streaming", "Process"),
         ("loom.streaming", "StreamFlow"),
         ("loom.streaming", "FromTopic"),

@@ -1,6 +1,6 @@
 """Streaming compiler: validates StreamFlow and produces CompiledPlan."""
 
-from loom.streaming.compiler._compiler import CompilationError, compile_flow
+from loom.streaming.compiler._compiler import compile_flow
 from loom.streaming.compiler._plan import (
     CompiledNode,
     CompiledPlan,
@@ -9,7 +9,6 @@ from loom.streaming.compiler._plan import (
 )
 
 __all__ = [
-    "CompilationError",
     "compile_flow",
     "CompiledPlan",
     "CompiledNode",

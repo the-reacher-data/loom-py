@@ -35,7 +35,7 @@ class WindowStrategy(StrEnum):
     Note:
         ``COLLECT`` is the only strategy available in the current adapter.
         ``TUMBLING`` and ``SESSION`` are forward-declared and will raise
-        :class:`loom.streaming.compiler.CompilationError` until implemented.
+        :class:`loom.streaming.compiler._compiler.CompilationError` until implemented.
     """
 
     COLLECT = "collect"

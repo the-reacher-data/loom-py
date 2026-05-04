@@ -9,7 +9,8 @@ from omegaconf import DictConfig
 
 from loom.core.model import LoomStruct
 from loom.streaming import Broadcast, BroadcastRoute, Drain, FromTopic, Process, StreamFlow
-from loom.streaming.compiler import CompilationError, compile_flow
+from loom.streaming.compiler import compile_flow
+from loom.streaming.compiler._compiler import CompilationError
 from loom.streaming.testing import StreamingTestRunner
 
 

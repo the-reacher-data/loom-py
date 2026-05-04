@@ -6,7 +6,8 @@ import pytest
 from omegaconf import DictConfig
 
 from loom.streaming import CollectBatch, Drain, FromTopic, Process, StreamFlow, WindowStrategy
-from loom.streaming.compiler import CompilationError, compile_flow
+from loom.streaming.compiler import compile_flow
+from loom.streaming.compiler._compiler import CompilationError
 from tests.unit.streaming.compiler.cases import Order, Result
 
 pytestmark = pytest.mark.integration
