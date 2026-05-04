@@ -43,12 +43,8 @@ class KafkaStreamingObserver(Protocol):
 
 
 @runtime_checkable
-class StreamingFlowObserver(Protocol):
-    """Observability contract for streaming flow execution lifecycle.
-
-    Mirrors the ETL :class:`ETLRunObserver` hierarchy at the granularity
-    that makes sense for streaming: one flow, many compiled nodes.
-    """
+class FlowLifecycleObserver(Protocol):
+    """Observability contract for streaming flow lifecycle events."""
 
     def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
         """Called when a flow begins execution.
@@ -72,6 +68,11 @@ class StreamingFlowObserver(Protocol):
             status: Terminal status (``success`` or ``failed``).
             duration_ms: Wall-clock duration in milliseconds.
         """
+
+
+@runtime_checkable
+class NodeLifecycleObserver(Protocol):
+    """Observability contract for streaming node lifecycle events."""
 
     def on_node_start(
         self,
@@ -124,6 +125,11 @@ class StreamingFlowObserver(Protocol):
             exc: The exception raised by the node.
         """
 
+
+@runtime_checkable
+class BatchCollectionObserver(Protocol):
+    """Observability contract for batch collection summaries."""
+
     def on_collect_batch(
         self,
         flow_name: str,
@@ -149,4 +155,20 @@ class StreamingFlowObserver(Protocol):
         """
 
 
-__all__ = ["KafkaStreamingObserver", "StreamingFlowObserver"]
+@runtime_checkable
+class StreamingFlowObserver(
+    FlowLifecycleObserver,
+    NodeLifecycleObserver,
+    BatchCollectionObserver,
+    Protocol,
+):
+    """Composed streaming observability contract."""
+
+
+__all__ = [
+    "BatchCollectionObserver",
+    "FlowLifecycleObserver",
+    "KafkaStreamingObserver",
+    "NodeLifecycleObserver",
+    "StreamingFlowObserver",
+]
