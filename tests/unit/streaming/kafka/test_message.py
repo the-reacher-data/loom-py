@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from loom.core.tracing import reset_trace_id, set_trace_id
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
+from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka import (
     ContentType,
     MessageDescriptor,
@@ -67,3 +69,34 @@ class TestMsgspecCodec:
         decoded = codec.decode(raw, ProductEvent)
 
         assert decoded == product_event_envelope
+
+    def test_roundtrip_error_envelope(
+        self,
+        order_created_payload: OrderCreated,
+        order_created_descriptor_v1: MessageDescriptor,
+    ) -> None:
+        codec = MsgspecCodec[ErrorEnvelope[OrderCreated]]()
+        original = Message(
+            payload=order_created_payload,
+            meta=MessageMeta(
+                message_id="msg-1",
+                key=b"tenant-a",
+            ),
+        )
+        envelope = build_message(
+            ErrorEnvelope(
+                kind=ErrorKind.TASK,
+                reason="boom",
+                original_message=snapshot_message(original),
+            ),
+            order_created_descriptor_v1,
+        )
+
+        raw = codec.encode(envelope)
+        decoded = codec.decode(raw, ErrorEnvelope[OrderCreated])
+
+        assert decoded.payload.kind is ErrorKind.TASK
+        assert decoded.payload.reason == "boom"
+        assert decoded.payload.original_message is not None
+        assert decoded.payload.original_message.payload == order_created_payload
+        assert decoded.payload.original_message.meta.key == b"tenant-a"

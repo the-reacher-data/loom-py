@@ -8,11 +8,12 @@ import pytest
 from confluent_kafka import TopicPartition
 
 from loom.streaming.bytewax import _output_wiring, _runtime_io
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeError
 from tests.unit.streaming.bytewax.cases import (
+    Order,
     build_compiled_sink,
     build_compiled_source,
     build_order_message,
@@ -75,7 +76,10 @@ class TestRuntimeIOBuilders:
         assert isinstance(partition, _runtime_io._KafkaMessageSinkPartition)
         partition.write_batch([build_order_message("123", None)])
 
-        error_partition = error_sinks[ErrorKind.WIRE].build("step", 0, 1)
+        error_partition = cast(
+            _runtime_io._KafkaDecodeErrorSinkPartition,
+            error_sinks[ErrorKind.WIRE].build("step", 0, 1),
+        )
         error_partition.write_batch(
             [
                 DecodeError(
@@ -118,12 +122,15 @@ class TestRuntimeIOBuilders:
             {ErrorKind.TASK: build_compiled_sink(topic="orders.errors")},
             None,
         )
-        partition = error_sinks[ErrorKind.TASK].build("step", 0, 1)
+        partition = cast(
+            _runtime_io._KafkaErrorEnvelopeSinkPartition,
+            error_sinks[ErrorKind.TASK].build("step", 0, 1),
+        )
         original = build_order_message("123", b"tenant-a")
-        envelope = ErrorEnvelope(
+        envelope: ErrorEnvelope[Order] = ErrorEnvelope(
             kind=ErrorKind.TASK,
             reason="boom",
-            original_message=original,
+            original_message=snapshot_message(original),
         )
 
         partition.write_batch([envelope])

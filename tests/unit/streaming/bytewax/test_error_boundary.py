@@ -82,7 +82,11 @@ def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() ->
 
     assert len(result) == 2
     assert len(envelopes) == 2
-    assert [item.original_message for item in envelopes] == originals
+    assert all(item.original_message is not None for item in envelopes)
+    original_payloads = [
+        item.original_message.payload for item in envelopes if item.original_message is not None
+    ]
+    assert original_payloads == [item.payload for item in originals]
     assert all(item.kind is ErrorKind.ROUTING for item in envelopes)
 
 

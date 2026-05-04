@@ -830,6 +830,7 @@ class TestWithAsyncBatch:
         assert error.kind == ErrorKind.BUSINESS
         assert error.original_message is not None
         assert error.original_message.meta.message_id == "m-2"
+        assert error.original_message.meta.key is None
         assert sorted(
             _message_payload(item).value for batch in sink_partition.writes for item in batch
         ) == ["OK"]
@@ -863,6 +864,7 @@ class TestWithAsyncBatch:
         assert errors[0].kind == ErrorKind.TASK
         assert errors[0].original_message is not None
         assert errors[0].original_message.meta.message_id == "m-2"
+        assert errors[0].original_message.meta.key is None
         assert sorted(
             _message_payload(item).value for batch in sink_partition.writes for item in batch
         ) == ["OK"]

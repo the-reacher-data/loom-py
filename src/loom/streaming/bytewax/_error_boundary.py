@@ -8,7 +8,7 @@ from typing import Any, Protocol, TypeAlias
 from bytewax.operators import branch, flat_map
 
 from loom.core.errors.errors import DomainError
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 
@@ -54,7 +54,7 @@ def _execute_in_boundary(
         return ErrorEnvelope(
             kind=classify(exc),
             reason=str(exc),
-            original_message=original,
+            original_message=snapshot_message(original),
         )
 
 
@@ -69,7 +69,7 @@ def _execute_batch_in_boundary(
     except Exception as exc:
         kind = classify(exc)
         return [
-            ErrorEnvelope(kind=kind, reason=str(exc), original_message=message)
+            ErrorEnvelope(kind=kind, reason=str(exc), original_message=snapshot_message(message))
             for message in originals
         ]
 

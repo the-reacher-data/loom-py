@@ -29,7 +29,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _resolve_record_result,
     _step_id,
 )
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._exceptions import MissingBridgeError, UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -130,7 +130,11 @@ def _apply_with_async_process(
             return results
         except Exception as exc:
             return [
-                ErrorEnvelope(kind=ErrorKind.TASK, reason=str(exc), original_message=message)
+                ErrorEnvelope(
+                    kind=ErrorKind.TASK,
+                    reason=str(exc),
+                    original_message=snapshot_message(message),
+                )
                 for message in batch
             ]
 
@@ -209,7 +213,7 @@ async def _execute_with_async_message(
         return ErrorEnvelope(
             kind=_classify_task(exc),
             reason=str(exc),
-            original_message=message,
+            original_message=snapshot_message(message),
         )
 
 
@@ -243,7 +247,7 @@ async def _execute_with_async_batch(
                 results[index] = ErrorEnvelope(
                     kind=_classify_task(exc),
                     reason=str(exc),
-                    original_message=message,
+                    original_message=snapshot_message(message),
                 )
 
     async with anyio.create_task_group() as task_group:

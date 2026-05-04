@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Generic, TypeAlias, TypeVar
+from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
@@ -433,7 +433,7 @@ def _error_item_to_send(
             trace_id=None,
             produced_at_ms=None,
         )
-    key = _resolve_partition_key(original, partition_policy)
+    key = _resolve_partition_key(cast(Message[StreamPayload], original), partition_policy)
     return _KafkaSendRequest(
         payload=item,
         descriptor=descriptor,

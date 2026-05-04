@@ -8,6 +8,7 @@ import pytest
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import CollectBatch, ErrorEnvelope, ErrorKind, Message, MessageMeta
+from loom.streaming.core._errors import snapshot_message
 from tests.unit.streaming.contracts.cases import Order
 
 
@@ -51,12 +52,15 @@ class TestMessageContracts:
 
     def test_error_envelope_carries_error_kind_and_original_message(self) -> None:
         message = Message(payload=Order(order_id="o-1"), meta=MessageMeta(message_id="msg-1"))
-        envelope = ErrorEnvelope(
+        envelope: ErrorEnvelope[Order] = ErrorEnvelope(
             kind=ErrorKind.TASK,
             reason="task failed",
-            original_message=message,
+            original_message=snapshot_message(message),
         )
 
         assert envelope.kind is ErrorKind.TASK
         assert envelope.reason == "task failed"
-        assert envelope.original_message is message
+        assert envelope.original_message is not None
+        assert envelope.original_message.payload == message.payload
+        assert envelope.original_message.meta.message_id == "msg-1"
+        assert envelope.original_message.meta.key is None
