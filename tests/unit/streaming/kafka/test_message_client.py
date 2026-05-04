@@ -55,7 +55,12 @@ class TestKafkaMessageProducer:
         record = raw_producer_stub.sent[0]
         assert record.topic == "orders"
         assert record.key == "tenant-a"
-        assert record.headers == {"h": b"1"}
+        assert record.headers == {
+            "h": b"1",
+            "x-correlation-id": b"corr-1",
+            "x-causation-id": b"cause-1",
+            "x-trace-id": b"trace-1",
+        }
         assert record.timestamp_ms == 99
         assert isinstance(record.value, bytes)
 
