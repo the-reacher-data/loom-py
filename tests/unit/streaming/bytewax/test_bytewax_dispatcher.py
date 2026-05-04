@@ -360,7 +360,11 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
         calls["collect"] = (step_id, keyed, timeout, max_size)
         return "collected-stream"
 
-    def _bw_map(step_id: str, collected: object, fn: object) -> object:
+    def _bw_map(
+        step_id: str,
+        collected: object,
+        fn: Callable[[tuple[str, list[object]]], object],
+    ) -> object:
         calls["bw_map"] = (step_id, collected, fn)
         assert callable(fn)
         result = fn(("batch-key", [_message("a"), _message("b")]))
@@ -713,7 +717,7 @@ class TestWithAsyncBatch:
     ) -> None:
         calls: dict[str, Any] = {}
 
-        async def _execute_with_async_batch(
+        def _execute_with_async_batch(
             messages: list[Message[StreamPayload]],
             inner_steps: list[object],
             sink_partition: object,
@@ -721,13 +725,17 @@ class TestWithAsyncBatch:
             deps: dict[str, object],
             timeout_ms: int | None,
             max_concurrency: int,
-        ) -> list[object]:
+        ) -> Any:
             del inner_steps, sink_partition, tracker, deps, timeout_ms
             calls["batch"] = [message.meta.message_id for message in messages]
             calls["max_concurrency"] = max_concurrency
-            return []
+            return asyncio.sleep(0, result=[])
 
-        def _bw_map(step_id: str, stream: object, fn: object) -> object:
+        def _bw_map(
+            step_id: str,
+            stream: object,
+            fn: Callable[[object], object],
+        ) -> object:
             del step_id, stream
             assert callable(fn)
             calls["mapped"] = fn(runtime_input)
@@ -910,7 +918,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
     wire_process_calls: list[tuple[object, tuple[object, ...], tuple[int, ...]]] = []
     terminal_calls: list[tuple[object, object, object]] = []
 
-    def _bw_map(step_id: str, stream: object, fn: object) -> object:
+    def _bw_map(step_id: str, stream: object, fn: Callable[[object], object]) -> object:
         assert step_id == "1_broadcast_5_fanout"
         assert callable(fn)
         result = fn(_message("abc"))
@@ -965,7 +973,7 @@ def test_apply_drain_completes_commit_tracker(
 ) -> None:
     tracker = _CommitTracker()
 
-    def _flat_map(step_id: str, stream: object, fn: object) -> object:
+    def _flat_map(step_id: str, stream: object, fn: Callable[[object], object]) -> object:
         assert step_id == "drain_7"
         assert callable(fn)
         assert fn(_message("abc")) == ()

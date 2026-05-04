@@ -119,7 +119,6 @@ def _apply_expand_step(
 
     sid = _step_id(f"expand_{idx}_{name}", ctx)
     mapped = bw_map(sid, stream, step_fn)
-    flattened = bw_map  # noqa: F841
     from bytewax.operators import flat_map
 
     flattened_stream = flat_map(_step_id(f"flatten_expand_{idx}", ctx), mapped, _identity)
