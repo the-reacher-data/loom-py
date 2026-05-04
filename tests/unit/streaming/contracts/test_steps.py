@@ -7,6 +7,7 @@ import pytest
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming import (
     ErrorKind,
+    ErrorRoute,
     FromTopic,
     IntoTopic,
     Message,
@@ -83,6 +84,40 @@ class TestSteps:
         assert flow.process is process
         assert flow.output is output
         assert flow.errors[ErrorKind.TASK] is dlq
+
+    def test_stream_flow_accepts_single_error_sink_for_all_kinds(self) -> None:
+        source = FromTopic("orders.in", payload=Order)
+        process = Process[Order, ValidatedOrder](ValidateOrder())
+        error_sink: IntoTopic[LoomStruct | LoomFrozenStruct] = IntoTopic("orders.errors")
+
+        flow = StreamFlow(
+            name="orders",
+            source=source,
+            process=process,
+            errors=error_sink,
+        )
+
+        assert flow.errors[ErrorKind.WIRE] is error_sink
+        assert flow.errors[ErrorKind.ROUTING] is error_sink
+        assert flow.errors[ErrorKind.TASK] is error_sink
+        assert flow.errors[ErrorKind.BUSINESS] is error_sink
+
+    def test_stream_flow_accepts_error_route_groups(self) -> None:
+        source = FromTopic("orders.in", payload=Order)
+        process = Process[Order, ValidatedOrder](ValidateOrder())
+        error_sink: IntoTopic[LoomStruct | LoomFrozenStruct] = IntoTopic("orders.errors")
+
+        flow = StreamFlow(
+            name="orders",
+            source=source,
+            process=process,
+            errors=ErrorRoute((ErrorKind.WIRE, ErrorKind.ROUTING), error_sink),
+        )
+
+        assert flow.errors[ErrorKind.WIRE] is error_sink
+        assert flow.errors[ErrorKind.ROUTING] is error_sink
+        assert ErrorKind.TASK not in flow.errors
+        assert ErrorKind.BUSINESS not in flow.errors
 
     def test_stream_flow_rejects_empty_name(self) -> None:
         source = FromTopic("orders.in", payload=Order)

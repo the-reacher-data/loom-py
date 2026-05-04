@@ -151,11 +151,8 @@ class OutputWiringManager(_OutputWiringProtocol):
 
     def wire_branch_terminal(self, step_id: str, stream: Stream, path: tuple[int, ...]) -> None:
         sink = self.terminal_sinks.get(path)
-        if sink is None and self.sink is not None and not self.terminal_sinks:
-            sink = self.sink
-            self._terminal_output_wired = True
         if sink is None:
-            raise RuntimeError(f"Bytewax sink is required for branch terminal path {path}.")
+            return
         bw_output(_qualified_step_id(step_id, path), stream, sink)
 
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:

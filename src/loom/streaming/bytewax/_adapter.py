@@ -18,8 +18,7 @@ import bytewax.dataflow as _bytewax_dataflow
 from bytewax.operators import branch
 from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
-from bytewax.operators import output as bw_output
-from bytewax.outputs import DynamicSink, StatelessSinkPartition
+from bytewax.outputs import StatelessSinkPartition
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.bytewax._output_wiring import OutputWiringManager
@@ -30,7 +29,6 @@ from loom.streaming.bytewax.handlers.dispatcher import (
     _NODE_HANDLERS,
     _wire_process,
 )
-from loom.streaming.bytewax.handlers.shapes import _batch_key as _node_batch_key
 from loom.streaming.compiler import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -259,179 +257,6 @@ class _BuildContext:
         self.resource_manager.shutdown_all()
 
 
-class _DropObserverSinkPartition(StatelessSinkPartition[Any]):
-    """Sink partition that notifies the observer for each unrouted error item."""
-
-    def __init__(
-        self,
-        observer: StreamingFlowObserver,
-        flow_name: str,
-        kind: ErrorKind,
-    ) -> None:
-        self._observer = observer
-        self._flow_name = flow_name
-        self._kind = kind
-
-    def write_batch(self, items: list[Any]) -> None:
-        exc = RuntimeError(
-            f"No sink registered for {self._kind.value} error route — message dropped"
-        )
-        for _ in items:
-            self._observer.on_node_error(
-                self._flow_name,
-                -1,
-                node_type=f"unrouted_{self._kind.value}_error",
-                exc=exc,
-            )
-
-
-class _DropObserverSink(DynamicSink[Any]):
-    """Notifies the observer for every item on an unrouted error stream."""
-
-    def __init__(
-        self,
-        observer: StreamingFlowObserver,
-        flow_name: str,
-        kind: ErrorKind,
-    ) -> None:
-        self._observer = observer
-        self._flow_name = flow_name
-        self._kind = kind
-
-    def build(
-        self, step_id: str, worker_index: int, worker_count: int
-    ) -> StatelessSinkPartition[Any]:
-        return _DropObserverSinkPartition(self._observer, self._flow_name, self._kind)
-
-
-class _DropLoggingSinkPartition(StatelessSinkPartition[Any]):
-    """Sink partition that logs every unrouted error item."""
-
-    def __init__(self, flow_name: str, kind: ErrorKind) -> None:
-        self._flow_name = flow_name
-        self._kind = kind
-
-    def write_batch(self, items: list[Any]) -> None:
-        for _ in items:
-            logger.warning(
-                "unrouted_error_dropped",
-                extra={
-                    "flow": self._flow_name,
-                    "error_kind": self._kind.value,
-                },
-            )
-
-
-class _DropLoggingSink(DynamicSink[Any]):
-    """Logs every item on an unrouted error stream."""
-
-    def __init__(self, flow_name: str, kind: ErrorKind) -> None:
-        self._flow_name = flow_name
-        self._kind = kind
-
-    def build(
-        self, step_id: str, worker_index: int, worker_count: int
-    ) -> StatelessSinkPartition[Any]:
-        del step_id, worker_index, worker_count
-        return _DropLoggingSinkPartition(self._flow_name, self._kind)
-
-
-class _OutputWiring:
-    """Coordinate terminal output and explicit error routes for one build."""
-
-    __slots__ = (
-        "sink",
-        "error_sinks",
-        "terminal_sinks",
-        "_terminal_output_wired",
-        "_observer",
-        "_flow_name",
-    )
-
-    def __init__(
-        self,
-        *,
-        sink: Any | None,
-        error_sinks: Mapping[ErrorKind, Any],
-        terminal_sinks: Mapping[tuple[int, ...], Any],
-        observer: StreamingFlowObserver | None = None,
-        flow_name: str = "",
-    ) -> None:
-        self.sink = sink
-        self.error_sinks = error_sinks
-        self.terminal_sinks = terminal_sinks
-        self._terminal_output_wired = False
-        self._observer = observer
-        self._flow_name = flow_name
-
-    def needs_flow_output(self) -> bool:
-        """Return whether the flow-level output still needs wiring."""
-        return not self._terminal_output_wired
-
-    def wire_terminal(self, step_id: str, stream: Stream) -> None:
-        """Wire the configured terminal sink exactly once."""
-        if self.sink is None:
-            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
-        bw_output(step_id, stream, self.sink)
-        self._terminal_output_wired = True
-
-    def wire_branch_terminal(self, step_id: str, stream: Stream, path: tuple[int, ...]) -> None:
-        """Wire one branch terminal sink by its compiled path."""
-        sink = self.terminal_sinks.get(path)
-        if sink is None and self.sink is not None and not self.terminal_sinks:
-            sink = self.sink
-            self._terminal_output_wired = True
-        if sink is None:
-            raise RuntimeError(f"Bytewax sink is required for branch terminal path {path}.")
-        bw_output(_qualified_step_id(step_id, path), stream, sink)
-
-    def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
-        """Wire one node-error branch to the configured sink.
-
-        When no sink is registered for *kind*, the stream is wired to a drop
-        sink that either notifies the observer or logs a warning for every
-        discarded message so the error is never silent.
-        """
-        sink = self.error_sinks.get(kind)
-        if sink is not None:
-            bw_output(f"{step_id}_{kind.value}_errors", stream, sink)
-            return
-        drop_sink: DynamicSink[Any]
-        if self._observer is not None:
-            drop_sink = _DropObserverSink(self._observer, self._flow_name, kind)
-            bw_output(f"{step_id}_{kind.value}_dropped", stream, drop_sink)
-            return
-        drop_sink = _DropLoggingSink(self._flow_name, kind)
-        bw_output(f"{step_id}_{kind.value}_dropped", stream, drop_sink)
-
-    def wire_flow_output(self, stream: Stream, plan: CompiledPlan) -> None:
-        """Wire the flow-level output and declared error routes."""
-        if not self.needs_flow_output():
-            return
-
-        if self.sink is None and plan.output is not None:
-            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
-        if self.sink is not None:
-            self.wire_terminal("output", stream)
-
-        for kind, sink in plan.error_routes.items():
-            logger.info(
-                "error_route_registered",
-                extra={"error_kind": kind.value, "topic": sink.topic},
-            )
-            if kind not in self.error_sinks:
-                raise RuntimeError(f"Bytewax sink is required for error route {kind.value}.")
-
-    def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
-        """Wire source decode errors to an explicit test sink or runtime route."""
-        if self.error_sinks.get(ErrorKind.WIRE) is not None:
-            self.wire_node_error(ErrorKind.WIRE, "decode", stream)
-            return
-
-        if ErrorKind.WIRE in plan.error_routes:
-            raise RuntimeError("Bytewax sink is required for WIRE error routing.")
-
-
 def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     """Build the source-side pipeline up to the first decoded Message stream."""
     if ctx.source is None:
@@ -509,16 +334,3 @@ def _decode_ok_message(result: DecodeResult[StreamPayload]) -> Message[StreamPay
     if isinstance(result, DecodeOk):
         return result.message
     raise TypeError(f"Expected DecodeOk, got {type(result).__name__}.")
-
-
-def _qualified_step_id(step_id: str, path: tuple[int, ...]) -> str:
-    """Return a branch-stable Bytewax step id."""
-    if not path:
-        return step_id
-    suffix = "_".join(str(part) for part in path)
-    return f"{step_id}_{suffix}"
-
-
-def _batch_key(item: Any) -> str:
-    """Return the collect key used for batch grouping tests and runtime wiring."""
-    return _node_batch_key(item)

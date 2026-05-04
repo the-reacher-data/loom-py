@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from loom.streaming.bytewax import _adapter
+from loom.streaming.bytewax import _output_wiring
 from loom.streaming.compiler._plan import CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -275,13 +275,12 @@ class TestOutputAndErrorWiring:
             recorded["stream"] = stream
             recorded["sink_type"] = type(sink).__name__
 
-        monkeypatch.setattr(_adapter, "bw_output", _bw_output)
+        monkeypatch.setattr(_output_wiring, "bw_output", _bw_output)
 
-        wiring = _adapter._OutputWiring(
+        wiring = _output_wiring.OutputWiringManager(
             sink=None,
             error_sinks={},
             terminal_sinks={},
-            observer=None,
             flow_name="orders",
         )
         wiring.wire_node_error(ErrorKind.WIRE, "decode", "stream")

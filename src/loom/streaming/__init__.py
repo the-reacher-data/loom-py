@@ -21,7 +21,7 @@ Kafka-specific codecs, clients, and transport settings live under
 from loom.streaming.compiler import compile_flow
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
+from loom.streaming.graph._flow import ErrorRoute, Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import (
     FromTopic,
     IntoTopic,
@@ -65,6 +65,7 @@ __all__ = [
     "Drain",
     "ErrorEnvelope",
     "ErrorKind",
+    "ErrorRoute",
     "ForEach",
     "FromTopic",
     "Fork",

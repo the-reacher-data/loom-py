@@ -7,8 +7,8 @@ from typing import cast
 import pytest
 from confluent_kafka import TopicPartition
 
-from loom.streaming.bytewax import _runtime_io
-from loom.streaming.core._errors import ErrorKind
+from loom.streaming.bytewax import _output_wiring, _runtime_io
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from tests.unit.streaming.bytewax.cases import (
@@ -67,7 +67,7 @@ class TestRuntimeIOBuilders:
         )
 
         assert isinstance(sink, _runtime_io._KafkaMessageSink)
-        assert isinstance(error_sinks[ErrorKind.WIRE], _runtime_io._KafkaMessageSink)
+        assert isinstance(error_sinks[ErrorKind.WIRE], _runtime_io._KafkaErrorEnvelopeSink)
         assert isinstance(terminal_sinks[(0,)], _runtime_io._KafkaMessageSink)
 
         partition = sink.build("step", 0, 1)
@@ -75,7 +75,15 @@ class TestRuntimeIOBuilders:
         partition.write_batch([build_order_message("123", None)])
 
         error_partition = error_sinks[ErrorKind.WIRE].build("step", 0, 1)
-        error_partition.write_batch([build_order_message("456", None)])
+        error_partition.write_batch(
+            [
+                ErrorEnvelope(
+                    kind=ErrorKind.WIRE,
+                    reason="decode failed",
+                    original_message=build_order_message("456", None),
+                )
+            ]
+        )
 
         terminal_partition = terminal_sinks[(0,)].build("step", 0, 1)
         terminal_partition.write_batch([build_order_message("789", None)])
@@ -88,6 +96,33 @@ class TestRuntimeIOBuilders:
             "orders.dlq",
             "orders.terminal",
         ]
+
+    def test_build_runtime_error_sink_writes_error_envelope_payloads(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_raw = RawProducerStub()
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+
+        error_sinks = _runtime_io.build_runtime_error_sinks(
+            {ErrorKind.TASK: build_compiled_sink(topic="orders.errors")},
+            None,
+        )
+        partition = error_sinks[ErrorKind.TASK].build("step", 0, 1)
+        original = build_order_message("123", b"tenant-a")
+        envelope = ErrorEnvelope(
+            kind=ErrorKind.TASK,
+            reason="boom",
+            original_message=original,
+        )
+
+        partition.write_batch([envelope])
+        partition.close()
+
+        assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
+        assert fake_raw.sent[0].key == b"tenant-a"
+        assert fake_raw.sent[0].headers["x-error-kind"] == b"task"
+        assert fake_raw.sent[0].headers["x-error-reason"] == b"boom"
 
     def test_commit_tracker_commits_after_sink_write(
         self,
@@ -218,3 +253,12 @@ class TestRuntimeIOBuilders:
         topics = [record.topic for record in fake_raw.sent]
         assert "orders.out" in topics
         assert "orders.dlq" in topics
+
+    def test_branch_terminal_without_sink_is_discarded(self) -> None:
+        manager = _output_wiring.OutputWiringManager(
+            sink=None,
+            error_sinks={},
+            terminal_sinks={},
+        )
+
+        manager.wire_branch_terminal("branch", object(), (0, 1))
