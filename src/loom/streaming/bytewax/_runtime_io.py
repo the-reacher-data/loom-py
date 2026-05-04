@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import logging
-import threading
-from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
-from confluent_kafka import TopicPartition
 
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.bytewax._dlq import send_batch_to_dlq
 from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._errors import ErrorKind
@@ -35,7 +33,7 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
     def __init__(
         self,
         source: CompiledSource,
-        commit_tracker: _KafkaCommitTracker | None = None,
+        commit_tracker: KafkaCommitTracker | None = None,
     ) -> None:
         self._poll_timeout_ms = source.settings.poll_timeout_ms
         super().__init__(interval=timedelta(milliseconds=self._poll_timeout_ms))
@@ -52,7 +50,7 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
             self._commit_tracker.register_record(record)
         return record
 
-    def bind_commit_tracker(self, commit_tracker: _KafkaCommitTracker | None) -> None:
+    def bind_commit_tracker(self, commit_tracker: KafkaCommitTracker | None) -> None:
         """Bind or clear the source commit tracker."""
         self._commit_tracker = commit_tracker
         if self._commit_tracker is not None:
@@ -68,7 +66,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
     def __init__(
         self,
         sink: CompiledSink,
-        commit_tracker: _KafkaCommitTracker | None = None,
+        commit_tracker: KafkaCommitTracker | None = None,
     ) -> None:
         self._sink = sink
         self._dlq_topic = sink.dlq_topic
@@ -110,7 +108,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
     def close(self) -> None:
         self._message_producer.close()
 
-    def bind_commit_tracker(self, tracker: _KafkaCommitTracker | None) -> None:
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
         """Bind a commit tracker used to ack source offsets after success."""
         self._commit_tracker = tracker
 
@@ -129,7 +127,7 @@ class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
 
     def __init__(self, sink: CompiledSink) -> None:
         self._sink = sink
-        self._commit_tracker: _KafkaCommitTracker | None = None
+        self._commit_tracker: KafkaCommitTracker | None = None
 
     def build(
         self,
@@ -137,16 +135,17 @@ class _KafkaMessageSink(DynamicSink[Message[StreamPayload]]):
         worker_index: int,
         worker_count: int,
     ) -> StatelessSinkPartition[Message[StreamPayload]]:
+        del step_id, worker_index, worker_count
         return _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
 
-    def bind_commit_tracker(self, tracker: _KafkaCommitTracker | None) -> None:
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
         """Bind a commit tracker used by all partitions built from this sink."""
         self._commit_tracker = tracker
 
 
 def build_runtime_source(
     source: CompiledSource,
-    commit_tracker: _KafkaCommitTracker | None = None,
+    commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaPollingSource:
     """Build the runtime source for one compiled Kafka input."""
     return _KafkaPollingSource(source, commit_tracker)
@@ -154,7 +153,7 @@ def build_runtime_source(
 
 def build_runtime_sink(
     sink: CompiledSink,
-    commit_tracker: _KafkaCommitTracker | None = None,
+    commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaMessageSink:
     """Build the runtime sink for one compiled Kafka output."""
     runtime_sink = _KafkaMessageSink(sink)
@@ -164,7 +163,7 @@ def build_runtime_sink(
 
 def build_runtime_error_sinks(
     error_routes: dict[ErrorKind, CompiledSink],
-    commit_tracker: _KafkaCommitTracker | None = None,
+    commit_tracker: KafkaCommitTracker | None = None,
 ) -> dict[ErrorKind, _KafkaMessageSink]:
     """Build runtime sinks for explicit error routes."""
     return {kind: build_runtime_sink(sink, commit_tracker) for kind, sink in error_routes.items()}
@@ -172,7 +171,7 @@ def build_runtime_error_sinks(
 
 def build_runtime_terminal_sinks(
     terminal_sinks: dict[tuple[int, ...], CompiledSink],
-    commit_tracker: _KafkaCommitTracker | None = None,
+    commit_tracker: KafkaCommitTracker | None = None,
 ) -> dict[tuple[int, ...], _KafkaMessageSink]:
     """Build runtime sinks for terminal branch outputs."""
     return {path: build_runtime_sink(sink, commit_tracker) for path, sink in terminal_sinks.items()}
@@ -180,7 +179,7 @@ def build_runtime_terminal_sinks(
 
 def build_inline_sink_partition(
     sink: CompiledSink,
-    commit_tracker: _KafkaCommitTracker | None = None,
+    commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaMessageSinkPartition:
     """Build a sink partition for direct (non-Bytewax-graph) message writing.
 
@@ -197,122 +196,11 @@ def build_inline_sink_partition(
     return _KafkaMessageSinkPartition(sink, commit_tracker)
 
 
-def build_commit_tracker(source: CompiledSource) -> _KafkaCommitTracker | None:
+def build_commit_tracker(source: CompiledSource) -> KafkaCommitTracker | None:
     """Build a commit tracker when explicit source commits are required."""
     if source.settings.enable_auto_commit:
         return None
-    return _KafkaCommitTracker()
-
-
-class _KafkaCommitTracker:
-    """Track per-offset completion and commit Kafka offsets once safe."""
-
-    def __init__(self) -> None:
-        self._consumer: Any | None = None
-        self._messages: dict[str, _TrackedMessage] = {}
-        self._watermarks: dict[tuple[str, int], _PartitionWatermark] = {}
-        self._lock = threading.Lock()
-
-    def bind(self, consumer: object) -> None:
-        """Bind the source consumer that will be committed."""
-        with self._lock:
-            self._consumer = consumer
-
-    def register_record(self, record: KafkaRecord[bytes]) -> None:
-        """Register one newly polled Kafka record for offset tracking."""
-        if record.partition is None or record.offset is None:
-            return
-        key = f"{record.topic}:{record.partition}:{record.offset}"
-        with self._lock:
-            if key in self._messages:
-                return
-            self._messages[key] = _TrackedMessage(
-                topic=record.topic,
-                partition=record.partition,
-                offset=record.offset,
-                pending=1,
-            )
-            watermark = self._watermarks.setdefault(
-                (record.topic, record.partition),
-                _PartitionWatermark(topic=record.topic, partition=record.partition),
-            )
-            watermark.register(record.offset)
-
-    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
-        """Increase the number of expected completions for one message."""
-        if extra_outputs <= 0:
-            return
-        key = f"{topic}:{partition}:{offset}"
-        with self._lock:
-            state = self._messages.get(key)
-            if state is None:
-                return
-            state.pending += extra_outputs
-
-    def complete(self, topic: str, partition: int, offset: int) -> None:
-        """Mark one logical branch as completed and commit when all finish."""
-        key = f"{topic}:{partition}:{offset}"
-        consumer: KafkaConsumerClient | None = None
-        commit_partitions: list[TopicPartition] = []
-        with self._lock:
-            state = self._messages.get(key)
-            if state is None:
-                return
-            state.pending -= 1
-            if state.pending > 0:
-                return
-            self._messages.pop(key, None)
-            watermark = self._watermarks.get((state.topic, state.partition))
-            if watermark is None:
-                return
-            commit_partition = watermark.complete(state.offset)
-            if commit_partition is not None:
-                commit_partitions.append(commit_partition)
-            consumer = self._consumer
-        if consumer is not None and commit_partitions:
-            consumer.commit_offset(commit_partitions)
-
-
-@dataclass(slots=True)
-class _TrackedMessage:
-    """Pending Kafka message that still requires downstream completion."""
-
-    topic: str
-    partition: int
-    offset: int
-    pending: int
-
-
-@dataclass(slots=True)
-class _PartitionWatermark:
-    """Contiguous watermark for one Kafka topic-partition."""
-
-    topic: str
-    partition: int
-    next_offset: int | None = None
-    pending: set[int] = field(default_factory=set)
-    ready: set[int] = field(default_factory=set)
-
-    def register(self, offset: int) -> None:
-        """Register one offset as in-flight for this partition."""
-        if self.next_offset is None or offset < self.next_offset:
-            self.next_offset = offset
-        self.pending.add(offset)
-
-    def complete(self, offset: int) -> TopicPartition | None:
-        """Advance the contiguous watermark when one offset completes."""
-        if self.next_offset is None:
-            return None
-        self.pending.discard(offset)
-        self.ready.add(offset)
-        advanced = False
-        while self.next_offset in self.ready:
-            self.ready.remove(self.next_offset)
-            self.next_offset += 1
-            advanced = True
-        if not advanced:
-            return None
-        return TopicPartition(self.topic, self.partition, self.next_offset)
+    return KafkaCommitTracker()
 
 
 def _resolve_partition_key(
@@ -343,38 +231,3 @@ def _resolve_partition_key(
     if partition_policy.allow_repartition:
         return policy_key if policy_key is not None else incoming_key
     return incoming_key
-
-
-def _send_batch_to_dlq(
-    producer: KafkaMessageProducer[StreamPayload],
-    dlq_topic: str,
-    messages: list[Message[StreamPayload]],
-    exc: KafkaDeliveryError,
-) -> None:
-    """Best-effort: send all messages in *messages* to the DLQ topic.
-
-    Called when a batch delivery fails and a DLQ is configured. Each message
-    is re-sent to *dlq_topic* with an ``x-dlq-error`` header. Failures during
-    DLQ delivery are logged and suppressed — a crashing DLQ is worse than a
-    missing one.
-    """
-    error_bytes = str(exc).encode("utf-8")
-    for message in messages:
-        try:
-            descriptor = MessageDescriptor(
-                message_type=message.meta.message_type or dlq_topic,
-                message_version=message.meta.message_version or 1,
-            )
-            headers = {**message.meta.headers, "x-dlq-error": error_bytes}
-            producer.send(
-                topic=dlq_topic,
-                payload=message.payload,
-                descriptor=descriptor,
-                headers=headers,
-                correlation_id=message.meta.correlation_id,
-                causation_id=message.meta.causation_id,
-                trace_id=message.meta.trace_id,
-                produced_at_ms=message.meta.produced_at_ms,
-            )
-        except Exception:
-            logger.warning("dlq_send_failed", extra={"dlq_topic": dlq_topic})
