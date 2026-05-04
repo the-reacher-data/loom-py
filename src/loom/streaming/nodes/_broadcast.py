@@ -10,6 +10,14 @@ from loom.streaming.nodes._boundary import IntoTopic
 
 if TYPE_CHECKING:
     from loom.streaming.graph._flow import Process
+else:
+
+    class Process:
+        @classmethod
+        def __class_getitem__(cls, item: object) -> type[Process]:
+            del item
+            return cls
+
 
 InT = TypeVar("InT", bound=StreamPayload)
 OutT = TypeVar("OutT", bound=StreamPayload)

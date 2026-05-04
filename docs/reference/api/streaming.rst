@@ -8,8 +8,6 @@ Public authoring API
    :toctree: generated
 
    loom.streaming
-   loom.streaming.nodes
-   loom.streaming.graph
    loom.streaming.compiler
 
 Runtime adapter
@@ -28,5 +26,4 @@ Transport and observability
    :toctree: generated
 
    loom.streaming.kafka
-   loom.streaming.observability
    loom.streaming.testing

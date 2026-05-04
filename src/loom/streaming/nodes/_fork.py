@@ -17,6 +17,14 @@ from loom.streaming.nodes._expr_eval import (
 
 if TYPE_CHECKING:
     from loom.streaming.graph._flow import Process
+else:
+
+    class Process:
+        @classmethod
+        def __class_getitem__(cls, item: object) -> type[Process]:
+            del item
+            return cls
+
 
 InT = TypeVar("InT", bound=StreamPayload)
 
