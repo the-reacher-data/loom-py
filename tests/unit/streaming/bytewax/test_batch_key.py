@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from loom.core.model import LoomStruct
-from loom.streaming.bytewax._adapter import _batch_key
+from loom.streaming.bytewax.handlers import shapes as _shapes
 from loom.streaming.core._message import Message, MessageMeta
 
 pytestmark = pytest.mark.bytewax
@@ -56,4 +56,4 @@ class TestBatchKey:
         ],
     )
     def test_batch_key_derivation(self, message: object, expected: str) -> None:
-        assert _batch_key(message) == expected
+        assert _shapes._batch_key(message) == expected
