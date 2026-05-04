@@ -22,7 +22,8 @@ from bytewax.operators import output as bw_output
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.core.async_bridge import AsyncBridge
-from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
+from loom.streaming.bytewax._output_wiring import OutputWiringManager
+from loom.streaming.bytewax._resource_manager import ResourceManager
 from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks
 from loom.streaming.bytewax.handlers._shared import _OutputWiringProtocol
 from loom.streaming.bytewax.handlers.dispatcher import (
@@ -165,7 +166,7 @@ class _BuildContext:
         "flow_observer",
         "source",
         "outputs",
-        "_managers",
+        "resource_manager",
         "_path",
         "_terminal_sinks",
     )
@@ -187,14 +188,14 @@ class _BuildContext:
         self.flow_observer = flow_observer
         self.source = source
         self._terminal_sinks: Mapping[tuple[int, ...], Any] = terminal_sinks or {}
-        self.outputs: _OutputWiringProtocol = _OutputWiring(
+        self.outputs: _OutputWiringProtocol = OutputWiringManager(
             sink=sink,
             terminal_sinks=self._terminal_sinks,
             error_sinks=error_sinks or {},
             observer=flow_observer,
             flow_name=plan.name,
         )
-        self._managers: dict[int, ResourceLifecycle] = {}
+        self.resource_manager = ResourceManager(bridge)
         self._path: tuple[int, ...] = ()
 
     def inline_sink_partition_for(
@@ -224,11 +225,9 @@ class _BuildContext:
         self,
         idx: int,
         node: With[StreamPayload, StreamPayload] | WithAsync[StreamPayload, StreamPayload],
-    ) -> ResourceLifecycle:
+    ) -> Any:
         """Get or create a resource manager for *node* at position *idx*."""
-        if idx not in self._managers:
-            self._managers[idx] = lifecycle_for(node, bridge=self.bridge)
-        return self._managers[idx]
+        return self.resource_manager.manager_for(idx, node)
 
     @property
     def current_path(self) -> tuple[int, ...]:
@@ -257,21 +256,7 @@ class _BuildContext:
 
     def shutdown_all(self) -> None:
         """Shutdown all resource managers."""
-        errors: list[Exception] = []
-        for manager in self._managers.values():
-            try:
-                manager.shutdown()
-            except Exception as exc:
-                errors.append(exc)
-        if self.bridge is not None:
-            try:
-                self.bridge.shutdown()
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                self.bridge = None
-        if errors:
-            raise ExceptionGroup("shutdown errors", errors)
+        self.resource_manager.shutdown_all()
 
 
 class _DropObserverSinkPartition(StatelessSinkPartition[Any]):
