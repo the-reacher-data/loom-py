@@ -35,7 +35,7 @@ class WindowStrategy(StrEnum):
     Note:
         ``COLLECT`` is the only strategy available in the current adapter.
         ``TUMBLING`` and ``SESSION`` are forward-declared and will raise
-        ``CompilationError`` until implemented.
+        :class:`loom.streaming.compiler.CompilationError` until implemented.
     """
 
     COLLECT = "collect"
@@ -45,6 +45,9 @@ class WindowStrategy(StrEnum):
 
 class ForEach(LoomFrozenStruct, frozen=True):
     """Explicit shape adapter from ``batch`` to ``record``.
+
+    Pattern:
+        Shape adapter.
 
     Note:
         This is a shape-level adapter only. It flattens a batch stream back
@@ -57,6 +60,9 @@ class ForEach(LoomFrozenStruct, frozen=True):
 
 class CollectBatch(LoomFrozenStruct, frozen=True):
     """Explicit shape adapter from ``record`` to ``batch``.
+
+    Pattern:
+        Shape adapter.
 
     Groups individual records into batches before handing them to downstream
     batch-aware nodes. Batch is an **optimization grouping**, not a
@@ -99,7 +105,11 @@ class CollectBatch(LoomFrozenStruct, frozen=True):
 
 
 class Drain(LoomFrozenStruct, frozen=True):
-    """Explicit terminal adapter from any shape to ``none``."""
+    """Explicit terminal adapter from any shape to ``none``.
+
+    Pattern:
+        Shape adapter.
+    """
 
     router_branch_safe: ClassVar[bool] = True
 

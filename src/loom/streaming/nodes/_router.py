@@ -5,10 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from loom.core.expr import ExprNode, PathRef, evaluate_expr
 from loom.core.model import LoomFrozenStruct
-from loom.streaming.core._message import Message, StreamPayload
-from loom.streaming.nodes._protocols import Predicate, Selector
+from loom.streaming.core._message import StreamPayload
+from loom.streaming.nodes._expr_eval import (
+    PredicateSpec,
+    SelectorSpec,
+    evaluate_predicate,
+    select_value,
+)
 
 if TYPE_CHECKING:
     from loom.streaming.graph._flow import Process
@@ -16,12 +20,12 @@ if TYPE_CHECKING:
 InT = TypeVar("InT", bound=StreamPayload)
 OutT = TypeVar("OutT", bound=StreamPayload)
 
-PredicateSpec = ExprNode | Predicate[InT]
-SelectorSpec = PathRef | Selector[InT]
-
 
 class Route(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
     """One predicate route branch.
+
+    Pattern:
+        Route declaration.
 
     Args:
         when: Predicate expression or custom predicate.
@@ -34,6 +38,9 @@ class Route(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
 
 class Router(Generic[InT, OutT]):
     """Declarative streaming router.
+
+    Pattern:
+        In-place routing.
 
     Use :meth:`by` for key-based dispatch and :meth:`when` for ordered
     predicate dispatch. The router only declares graph shape; runtime
@@ -119,38 +126,6 @@ class Router(Generic[InT, OutT]):
     def default(self) -> Process[InT, OutT] | None:
         """Fallback process."""
         return self._default
-
-
-def select_value(selector: SelectorSpec[InT], message: Message[InT]) -> object:
-    """Evaluate a selector for one message.
-
-    Args:
-        selector: Path expression or custom selector.
-        message: Streaming message.
-
-    Returns:
-        Route key.
-    """
-
-    if isinstance(selector, PathRef):
-        return evaluate_expr(selector, {"message": message, "payload": message.payload})
-    return selector.select(message)
-
-
-def evaluate_predicate(predicate: PredicateSpec[InT], message: Message[InT]) -> bool:
-    """Evaluate a predicate for one message.
-
-    Args:
-        predicate: Expression predicate or custom predicate.
-        message: Streaming message.
-
-    Returns:
-        Whether the predicate matched.
-    """
-
-    if isinstance(predicate, Predicate):
-        return predicate.matches(message)
-    return bool(evaluate_expr(predicate, {"message": message, "payload": message.payload}))
 
 
 __all__ = ["Route", "Router", "evaluate_predicate", "select_value"]

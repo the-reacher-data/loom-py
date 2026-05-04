@@ -6,18 +6,19 @@ from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from loom.core.expr import ExprNode, PathRef, evaluate_expr
 from loom.core.model import LoomFrozenStruct
-from loom.streaming.core._message import Message, StreamPayload
-from loom.streaming.nodes._protocols import Predicate, Selector
+from loom.streaming.core._message import StreamPayload
+from loom.streaming.nodes._expr_eval import (
+    PredicateSpec,
+    SelectorSpec,
+    evaluate_predicate,
+    select_value,
+)
 
 if TYPE_CHECKING:
     from loom.streaming.graph._flow import Process
 
 InT = TypeVar("InT", bound=StreamPayload)
-
-ForkPredicateSpec = ExprNode | Predicate[InT]
-ForkSelectorSpec = PathRef | Selector[InT]
 
 
 class ForkKind(StrEnum):
@@ -30,17 +31,23 @@ class ForkKind(StrEnum):
 class ForkRoute(LoomFrozenStruct, Generic[InT], frozen=True):
     """One predicate branch of a :class:`Fork` node.
 
+    Pattern:
+        Branch declaration.
+
     Args:
         when: Predicate expression or custom predicate.
         process: Terminal process executed when the predicate matches.
     """
 
-    when: ForkPredicateSpec[InT]
+    when: PredicateSpec[InT]
     process: Process[InT, Any]
 
 
 class Fork(Generic[InT]):
     """Terminal graph-level routing node that physically splits the stream.
+
+    Pattern:
+        Terminal branching.
 
     Unlike :class:`loom.streaming.nodes.Router`, branches are full
     independent sub-graphs. Each branch may contain any process node,
@@ -54,7 +61,7 @@ class Fork(Generic[InT]):
         self,
         *,
         kind: ForkKind,
-        selector: ForkSelectorSpec[InT] | None = None,
+        selector: SelectorSpec[InT] | None = None,
         routes: Mapping[object, Process[InT, Any]] | None = None,
         predicate_routes: Sequence[ForkRoute[InT]] = (),
         default: Process[InT, Any] | None = None,
@@ -68,7 +75,7 @@ class Fork(Generic[InT]):
     @classmethod
     def by(
         cls,
-        selector: ForkSelectorSpec[InT],
+        selector: SelectorSpec[InT],
         branches: Mapping[object, Process[InT, Any]],
         *,
         default: Process[InT, Any] | None = None,
@@ -117,7 +124,7 @@ class Fork(Generic[InT]):
         return self._kind
 
     @property
-    def selector(self) -> ForkSelectorSpec[InT] | None:
+    def selector(self) -> SelectorSpec[InT] | None:
         """Key selector for ``Fork.by`` branches."""
         return self._selector
 
@@ -135,20 +142,6 @@ class Fork(Generic[InT]):
     def default(self) -> Process[InT, Any] | None:
         """Fallback process."""
         return self._default
-
-
-def select_value(selector: ForkSelectorSpec[InT], message: Message[InT]) -> object:
-    """Evaluate a selector for one message."""
-    if isinstance(selector, PathRef):
-        return evaluate_expr(selector, {"message": message, "payload": message.payload})
-    return selector.select(message)
-
-
-def evaluate_predicate(predicate: ForkPredicateSpec[InT], message: Message[InT]) -> bool:
-    """Evaluate a predicate for one message."""
-    if isinstance(predicate, Predicate):
-        return predicate.matches(message)
-    return bool(evaluate_expr(predicate, {"message": message, "payload": message.payload}))
 
 
 __all__ = ["Fork", "ForkKind", "ForkRoute", "evaluate_predicate", "select_value"]

@@ -12,6 +12,7 @@ from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from confluent_kafka import TopicPartition
 
+from loom.streaming.bytewax._dlq import send_batch_to_dlq
 from loom.streaming.compiler._plan import CompiledSink, CompiledSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -101,7 +102,7 @@ class _KafkaMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]])
             self._commit_items(items)
         except KafkaDeliveryError as exc:
             if self._dlq_topic is not None:
-                _send_batch_to_dlq(self._message_producer, self._dlq_topic, items, exc)
+                send_batch_to_dlq(self._message_producer, self._dlq_topic, items, exc)
                 self._commit_items(items)
             else:
                 raise

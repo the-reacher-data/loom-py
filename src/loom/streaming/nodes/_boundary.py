@@ -16,6 +16,9 @@ PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct, contravarian
 class FromTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
     """Declare a topic-based input boundary.
 
+    Pattern:
+        Boundary node.
+
     Args:
         name: Logical input reference. By default this is also used as the
             Kafka config reference.
@@ -35,6 +38,9 @@ class FromTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
 
 class IntoTopic(LoomFrozenStruct, Generic[PayloadT], frozen=True):
     """Declare a topic-based output boundary.
+
+    Pattern:
+        Boundary node.
 
     Args:
         name: Logical output reference. By default this is also used as the
@@ -78,6 +84,9 @@ class PartitionGuarantee(StrEnum):
 
 class PartitionPolicy(LoomFrozenStruct, Generic[PayloadT], frozen=True):
     """Declarative partitioning policy for topic output.
+
+    Pattern:
+        Boundary helper.
 
     Args:
         strategy: Partition-key strategy used for output records.

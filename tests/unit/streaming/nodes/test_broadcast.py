@@ -7,9 +7,14 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig
 
-from loom.streaming import Broadcast
+from loom.core.model import LoomStruct
+from loom.streaming import Broadcast, BroadcastRoute, Drain, FromTopic, Process, StreamFlow
 from loom.streaming.compiler import CompilationError, compile_flow
 from loom.streaming.testing import StreamingTestRunner
+
+
+class _DiscardOrder(LoomStruct):
+    order_id: str
 
 
 class TestBroadcast:
@@ -85,3 +90,25 @@ class TestBroadcast:
         node: Broadcast[Any] = Broadcast(route_a, route_b)
 
         assert node.routes == (route_a, route_b)
+
+    def test_broadcast_route_can_discard_without_output(
+        self,
+        streaming_kafka_config: DictConfig,
+    ) -> None:
+        flow: StreamFlow[_DiscardOrder, Any] = StreamFlow(
+            name="orders_broadcast_discard",
+            source=FromTopic("orders.raw", payload=_DiscardOrder),
+            process=Process(
+                Broadcast(
+                    BroadcastRoute(
+                        process=Process(Drain()),
+                        output=None,
+                    ),
+                )
+            ),
+        )
+
+        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+
+        assert plan.name == "orders_broadcast_discard"
+        assert plan.terminal_sinks == {}

@@ -14,7 +14,11 @@ from structlog.contextvars import get_contextvars
 
 from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
-from loom.streaming.bytewax import _node_handlers
+from loom.streaming.bytewax.handlers import dispatcher as _dispatcher
+from loom.streaming.bytewax.handlers import routing as _routing
+from loom.streaming.bytewax.handlers import scopes as _scopes
+from loom.streaming.bytewax.handlers import shapes as _shapes
+from loom.streaming.bytewax.handlers import steps as _steps
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.core._typing import StreamPayload
@@ -309,12 +313,12 @@ class _ConditionalFailingSinkPartition:
 
 def test_require_message_rejects_non_message() -> None:
     with pytest.raises(TypeError, match="Expected Message"):
-        _node_handlers._require_message(object())
+        _dispatcher._require_message(object())
 
 
 def test_replace_payloads_rejects_mismatched_lengths() -> None:
     with pytest.raises(RuntimeError, match="must match input length"):
-        _node_handlers._replace_payloads([_message("a")], [])
+        _dispatcher._replace_payloads([_message("a")], [])
 
 
 def test_wire_node_dispatches_registered_handler(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,9 +330,9 @@ def test_wire_node_dispatches_registered_handler(monkeypatch: pytest.MonkeyPatch
         seen.append((stream, node, idx, ctx))
         return "wired"
 
-    monkeypatch.setattr(_node_handlers, "_NODE_HANDLERS", {_FakeNode: _handler})
+    monkeypatch.setattr(_dispatcher, "_NODE_HANDLERS", {_FakeNode: _handler})
 
-    result = _node_handlers._wire_node("input-stream", node, 7, ctx)
+    result = _dispatcher._wire_node("input-stream", node, 7, ctx)
 
     assert result == "wired"
     assert seen == [("input-stream", node, 7, ctx)]
@@ -366,12 +370,12 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
         calls["key_rm"] = (step_id, collected)
         return "result-stream"
 
-    monkeypatch.setattr(_node_handlers, "key_on", _key_on)
-    monkeypatch.setattr(_node_handlers, "collect", _collect)
-    monkeypatch.setattr(_node_handlers, "bw_map", _bw_map)
-    monkeypatch.setattr(_node_handlers, "key_rm", _key_rm)
+    monkeypatch.setattr(_shapes, "key_on", _key_on)
+    monkeypatch.setattr(_shapes, "collect", _collect)
+    monkeypatch.setattr(_shapes, "bw_map", _bw_map)
+    monkeypatch.setattr(_shapes, "key_rm", _key_rm)
 
-    result = _node_handlers._apply_collect_batch_default(
+    result = _dispatcher._apply_collect_batch_default(
         "input-stream",
         node,
         "step-1",
@@ -381,7 +385,7 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
     )
 
     assert result == "result-stream"
-    assert calls["key_on"] == ("collect_key_step-1", "input-stream", _node_handlers._batch_key)
+    assert calls["key_on"] == ("collect_key_step-1", "input-stream", _shapes._batch_key)
     assert calls["collect"] == (
         "collect_step-1",
         "keyed-stream",
@@ -396,7 +400,7 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
 
 def test_execute_record_step_replaces_payload_and_observes() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_record_step(
+    result = _steps._execute_record_step(
         observer,
         "orders",
         0,
@@ -415,7 +419,7 @@ def test_execute_record_step_replaces_payload_and_observes() -> None:
 
 def test_execute_record_step_accepts_replacement_message() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_record_step(
+    result = _steps._execute_record_step(
         observer,
         "orders",
         0,
@@ -432,7 +436,7 @@ def test_execute_record_step_accepts_replacement_message() -> None:
 def test_execute_record_step_binds_flow_context() -> None:
     step = _ContextAwareRecordStep()
 
-    _node_handlers._execute_record_step(
+    _steps._execute_record_step(
         None,
         "orders",
         3,
@@ -452,7 +456,7 @@ def test_execute_record_step_binds_flow_context() -> None:
 def test_execute_record_step_propagates_business_error_and_observes() -> None:
     observer = _RecordingObserver()
     with pytest.raises(RuleViolation, match="value: boom"):
-        _node_handlers._execute_record_step(
+        _steps._execute_record_step(
             observer,
             "orders",
             1,
@@ -469,7 +473,7 @@ def test_execute_record_step_propagates_business_error_and_observes() -> None:
 
 def test_execute_batch_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_batch_step(
+    result = _steps._execute_batch_step(
         observer,
         "orders",
         2,
@@ -487,7 +491,7 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
 
 def test_execute_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_expand_step(
+    result = _steps._execute_expand_step(
         observer,
         "orders",
         3,
@@ -505,7 +509,7 @@ def test_execute_expand_step_replaces_payloads_and_observes() -> None:
 
 def test_execute_expand_step_accepts_replacement_messages() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_expand_step(
+    result = _steps._execute_expand_step(
         observer,
         "orders",
         3,
@@ -522,7 +526,7 @@ def test_execute_expand_step_accepts_replacement_messages() -> None:
 
 def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
-    result = _node_handlers._execute_batch_expand_step(
+    result = _steps._execute_batch_expand_step(
         observer,
         "orders",
         4,
@@ -562,7 +566,7 @@ def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> Non
             self.writes.append(items)
 
     sink_partition = _SinkPartition()
-    result = _node_handlers._execute_with_step(
+    result = _scopes._execute_with_step(
         None,
         "orders",
         5,
@@ -585,7 +589,7 @@ def test_execute_inner_process_completes_commit_tracker_on_success() -> None:
     sink_partition = _RecordingSinkPartition()
 
     asyncio.run(
-        _node_handlers._execute_inner_process(
+        _scopes._execute_inner_process(
             _message("abc", message_id="m-1"),
             [_UpperRecordStep()],
             sink_partition,
@@ -603,7 +607,7 @@ def test_execute_inner_process_completes_without_sink_partition() -> None:
     tracker = _CommitTracker()
 
     asyncio.run(
-        _node_handlers._execute_inner_process(
+        _scopes._execute_inner_process(
             _message("abc", message_id="m-1"),
             [_UpperRecordStep()],
             None,
@@ -621,7 +625,7 @@ def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
 
     with pytest.raises(RuntimeError, match="sink-boom"):
         asyncio.run(
-            _node_handlers._execute_inner_process(
+            _scopes._execute_inner_process(
                 _message("abc", message_id="m-1"),
                 [_UpperRecordStep()],
                 _FailingSinkPartition(),
@@ -736,12 +740,12 @@ class TestWithAsyncBatch:
             del step_id, predicate
             return SimpleNamespace(trues=stream, falses=[])
 
-        monkeypatch.setattr(_node_handlers, "bw_map", _bw_map)
-        monkeypatch.setattr(_node_handlers, "flat_map", _flat_map)
-        monkeypatch.setattr(_node_handlers, "branch", _branch)
-        monkeypatch.setattr(_node_handlers, "_execute_with_async_batch", _execute_with_async_batch)
+        monkeypatch.setattr(_scopes, "bw_map", _bw_map)
+        monkeypatch.setattr(_scopes, "flat_map", _flat_map)
+        monkeypatch.setattr(_scopes, "branch", _branch)
+        monkeypatch.setattr(_scopes, "_execute_with_async_batch", _execute_with_async_batch)
 
-        result = _node_handlers._apply_with_async_process(
+        result = _scopes._apply_with_async_process(
             "input-stream",
             with_async_node,
             0,
@@ -765,7 +769,7 @@ class TestWithAsyncBatch:
             _message("def", message_id="m-2", offset=1),
         ]
 
-        results = await _node_handlers._execute_with_async_batch(
+        results = await _scopes._execute_with_async_batch(
             messages,
             [_AsyncUpperRecordStep(probe)],
             sink_partition,
@@ -801,7 +805,7 @@ class TestWithAsyncBatch:
             _message("bad", message_id="m-2", offset=1),
         ]
 
-        results = await _node_handlers._execute_with_async_batch(
+        results = await _scopes._execute_with_async_batch(
             messages,
             [_ConditionalAsyncRecordStep()],
             sink_partition,
@@ -833,7 +837,7 @@ class TestWithAsyncBatch:
             _message("bad", message_id="m-2", offset=1),
         ]
 
-        results = await _node_handlers._execute_with_async_batch(
+        results = await _scopes._execute_with_async_batch(
             messages,
             [_AsyncUpperRecordStep()],
             sink_partition,
@@ -862,7 +866,7 @@ class TestWithAsyncBatch:
         tracker: _CommitTracker,
         probe: _ConcurrencyProbe,
     ) -> None:
-        results = await _node_handlers._execute_with_async_batch(
+        results = await _scopes._execute_with_async_batch(
             [
                 _message("one", message_id="m-1", offset=0),
                 _message("two", message_id="m-2", offset=1),
@@ -893,7 +897,7 @@ def test_execute_router_node_supports_allowed_branch_nodes(
     node: object,
     expected_value: str,
 ) -> None:
-    result = _node_handlers._execute_router_node(node, _message("abc"))
+    result = _routing._execute_router_node(node, _message("abc"))
 
     assert _message_payload(result).value == expected_value
 
@@ -922,8 +926,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
         wire_process_calls.append((stream, nodes, path_prefix))
         return f"wired-{path_prefix}"
 
-    monkeypatch.setattr(_node_handlers, "bw_map", _bw_map)
-    monkeypatch.setattr(_node_handlers, "_wire_process", _wire_process)
+    monkeypatch.setattr(_routing, "bw_map", _bw_map)
 
     node: Broadcast[Any] = Broadcast(
         BroadcastRoute(
@@ -938,12 +941,13 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
     ctx = SimpleNamespace(
         current_path=(1,),
         commit_tracker=tracker,
+        wire_process=_wire_process,
         outputs=SimpleNamespace(
             wire_branch_terminal=_record_branch_terminal(terminal_calls),
         ),
     )
 
-    result = _node_handlers._apply_broadcast("input-stream", node, 5, ctx)
+    result = _routing._apply_broadcast("input-stream", node, 5, ctx)
 
     assert result == "tracked-stream"
     assert tracker.forks == [("t", 0, 0, 1)]
@@ -967,9 +971,9 @@ def test_apply_drain_completes_commit_tracker(
         assert fn(_message("abc")) == ()
         return "dropped-stream"
 
-    monkeypatch.setattr(_node_handlers, "flat_map", _flat_map)
+    monkeypatch.setattr(_shapes, "flat_map", _flat_map)
 
-    result = _node_handlers._apply_drain(
+    result = _shapes._apply_drain(
         "input-stream",
         object(),
         7,

@@ -22,16 +22,14 @@ from bytewax.operators import output as bw_output
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.core.async_bridge import AsyncBridge
-from loom.streaming.bytewax._node_handlers import (
-    _NODE_HANDLERS,
-    _OutputWiringProtocol,
-    _wire_process,
-)
-from loom.streaming.bytewax._node_handlers import (
-    _batch_key as _node_batch_key,
-)
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
 from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks
+from loom.streaming.bytewax.handlers._shared import _OutputWiringProtocol
+from loom.streaming.bytewax.handlers.dispatcher import (
+    _NODE_HANDLERS,
+    _wire_process,
+)
+from loom.streaming.bytewax.handlers.shapes import _batch_key as _node_batch_key
 from loom.streaming.compiler import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -246,6 +244,16 @@ class _BuildContext:
             yield
         finally:
             self._path = previous
+
+    def wire_process(
+        self,
+        stream: Any,
+        nodes: tuple[object, ...],
+        *,
+        path_prefix: tuple[int, ...] = (),
+    ) -> Any:
+        """Wire one nested process subtree."""
+        return _wire_process(stream, nodes, self, path_prefix=path_prefix)
 
     def shutdown_all(self) -> None:
         """Shutdown all resource managers."""

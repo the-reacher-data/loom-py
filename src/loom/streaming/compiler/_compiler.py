@@ -40,7 +40,7 @@ def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> C
     """Compile a flow into an immutable plan.
 
     Raises:
-        CompilationError: If any validation fails.
+        loom.streaming.compiler.CompilationError: If any validation fails.
     """
     compiler = _Compiler()
     return compiler.compile(flow, runtime_config=runtime_config)
@@ -302,7 +302,8 @@ class _Compiler:
         sinks: dict[tuple[int, ...], CompiledSink] = {}
         for branch_idx, route in enumerate(broadcast.routes):
             branch_path = path_prefix + (branch_idx,)
-            sinks[branch_path] = self._build_sink(route.output, runtime_config)
+            if route.output is not None:
+                sinks[branch_path] = self._build_sink(route.output, runtime_config)
             # Traverse the branch process for any nested terminal nodes
             sinks.update(
                 self._build_terminal_sinks(

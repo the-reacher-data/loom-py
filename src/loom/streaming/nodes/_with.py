@@ -24,7 +24,11 @@ ContextDependency = SyncContextDependency | AsyncContextDependency
 
 
 class ResourceScope(StrEnum):
-    """Context-manager lifecycle for dependencies declared through ``With``."""
+    """Context-manager lifecycle for dependencies declared through ``With``.
+
+    Pattern:
+        Wrapper scope.
+    """
 
     WORKER = "worker"
     BATCH = "batch"
@@ -32,6 +36,9 @@ class ResourceScope(StrEnum):
 
 class ContextFactory(Configurable):
     """Factory that creates a fresh context manager on demand.
+
+    Pattern:
+        Wrapper dependency.
 
     Use this when you need a new context-manager instance per batch
     (``scope=BATCH``) or when you want to configure the factory from YAML.
@@ -73,6 +80,9 @@ class ContextFactory(Configurable):
 
 class _WithBase(Generic[InT, OutT]):
     """Shared dependency scope and lifecycle management for streaming nodes.
+
+    Pattern:
+        Wrapper node.
 
     Classifies keyword dependencies into async context managers, sync context
     managers, :class:`ContextFactory` instances, and plain values.  Subclasses
@@ -146,6 +156,9 @@ class _WithBase(Generic[InT, OutT]):
 class With(_WithBase[InT, OutT]):
     """Declare a sync dependency scope around an inner process.
 
+    Pattern:
+        Sync wrapper.
+
     Each incoming message flows through the inner
     :class:`~loom.streaming.graph.Process` synchronously.  If the last
     node of the inner process is an
@@ -193,6 +206,9 @@ class With(_WithBase[InT, OutT]):
 
 class WithAsync(_WithBase[InT, OutT]):
     """Declare an async dependency scope around an inner process.
+
+    Pattern:
+        Async wrapper.
 
     Each incoming message flows through the inner
     :class:`~loom.streaming.graph.Process` asynchronously.  If the last

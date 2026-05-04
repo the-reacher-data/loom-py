@@ -40,7 +40,11 @@ class StepContext(Protocol[ResourceCoT]):
 
 
 class Step(Configurable, ABC, Generic[InT, OutT]):
-    """Base class for declarative streaming steps."""
+    """Base class for declarative streaming steps.
+
+    Pattern:
+        Declarative step.
+    """
 
     resource: ClassVar[type[ResourceFactory[Any]] | None] = None
     name: ClassVar[str] = ""
@@ -75,6 +79,9 @@ class RecordStep(Step[InT, OutT], ABC):
     Declare the subclass itself in a flow, not an instance. The compiler
     materializes the class during binding resolution.
 
+    Pattern:
+        Record-shaped step.
+
     Subclasses define ``execute(self, message, **kwargs) -> OutT`` with the
     explicit payload and dependency signature they need. The runtime uses duck
     typing so user code can express explicit dependencies without mypy forcing
@@ -92,6 +99,9 @@ class BatchStep(Step[InT, OutT], ABC):
     Declare the subclass itself in a flow, not an instance. The compiler
     materializes the class during binding resolution.
 
+    Pattern:
+        Batch-shaped step.
+
     Subclasses define ``execute(self, messages, **kwargs) -> OutT`` with the
     explicit batch and dependency signature they need.
     """
@@ -107,6 +117,9 @@ class ExpandStep(Step[InT, OutT], ABC):
     Declare the subclass itself in a flow, not an instance. The compiler
     materializes the class during binding resolution.
 
+    Pattern:
+        Record fan-out step.
+
     Subclasses define ``execute(self, message, **kwargs) -> Iterable[OutT]``
     with the explicit payload and dependency signature they need.
     """
@@ -121,6 +134,9 @@ class BatchExpandStep(Step[InT, OutT], ABC):
 
     Declare the subclass itself in a flow, not an instance. The compiler
     materializes the class during binding resolution.
+
+    Pattern:
+        Batch fan-out step.
 
     Subclasses define ``execute(self, messages, **kwargs) -> Iterable[OutT]``
     with the explicit batch and dependency signature they need.

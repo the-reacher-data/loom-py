@@ -18,10 +18,15 @@ OutT = TypeVar("OutT", bound=StreamPayload)
 class BroadcastRoute(LoomFrozenStruct, Generic[OutT], frozen=True):
     """One branch of a :class:`Broadcast` node.
 
+    Pattern:
+        Fan-out branch.
+
     Args:
         process: Transformation nodes applied to every incoming message on
             this branch.
-        output: Terminal Kafka topic that receives the transformed messages.
+        output: Optional terminal Kafka topic that receives the transformed
+            messages. When omitted, the branch acts as a discard branch after
+            its inner process completes.
 
     Example::
 
@@ -32,11 +37,14 @@ class BroadcastRoute(LoomFrozenStruct, Generic[OutT], frozen=True):
     """
 
     process: Process[StreamPayload, OutT]
-    output: IntoTopic[OutT]
+    output: IntoTopic[OutT] | None = None
 
 
 class Broadcast(Generic[InT]):
     """Terminal fan-out node that delivers every message to all branches simultaneously.
+
+    Pattern:
+        Inclusive fan-out.
 
     Unlike :class:`~loom.streaming.Fork`, which routes each message to exactly
     one branch, ``Broadcast`` copies the message to every declared branch.

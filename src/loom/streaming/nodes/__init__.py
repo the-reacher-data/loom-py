@@ -2,6 +2,14 @@
 
 These are the building blocks used to declare a
 :class:`~loom.streaming.graph.Process`.
+
+Families:
+    * Boundary nodes: ``FromTopic`` and ``IntoTopic``.
+    * Shape adapters: ``CollectBatch``, ``ForEach`` and ``Drain``.
+    * Record steps: ``Step`` subclasses declared declaratively.
+    * Wrappers: ``With`` and ``WithAsync``.
+    * Routing nodes: ``Router`` and ``Fork``.
+    * Fan-out nodes: ``Broadcast``.
 """
 
 from loom.streaming.nodes._boundary import (
