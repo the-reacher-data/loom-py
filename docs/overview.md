@@ -18,6 +18,9 @@ design rules:
 - keep runtime concerns behind adapters
 - prefer explicit contracts over reflection-heavy magic
 
+The companion demo repository for the streaming subsystem is
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
+
 ## At a glance
 
 | Area | What it is | Main runtime |

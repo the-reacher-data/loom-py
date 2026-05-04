@@ -100,7 +100,8 @@ class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
 
 
 class StreamingRunner:
-    """Wire a :class:`StreamFlow` declaration into the real Bytewax runtime.
+    """Wire a :class:`~loom.streaming.StreamFlow` declaration into the real
+    Bytewax runtime.
 
     Args:
         flow: User-declared streaming flow.

@@ -147,7 +147,7 @@ class With(_WithBase[InT, OutT]):
     """Declare a sync dependency scope around an inner process.
 
     Each incoming message flows through the inner
-    :class:`~loom.streaming.graph._flow.Process` synchronously.  If the last
+    :class:`~loom.streaming.graph.Process` synchronously.  If the last
     node of the inner process is an
     :class:`~loom.streaming.nodes._boundary.IntoTopic`, results are written
     directly to Kafka as each message completes — no ``ForEach`` or outer
@@ -195,7 +195,7 @@ class WithAsync(_WithBase[InT, OutT]):
     """Declare an async dependency scope around an inner process.
 
     Each incoming message flows through the inner
-    :class:`~loom.streaming.graph._flow.Process` asynchronously.  If the last
+    :class:`~loom.streaming.graph.Process` asynchronously.  If the last
     node of the inner process is an
     :class:`~loom.streaming.nodes._boundary.IntoTopic`, results are written
     directly to Kafka as each message completes — no ``ForEach`` or outer

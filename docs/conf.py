@@ -70,6 +70,17 @@ def _skip_duplicate_reexports(
         ("loom.core.use_case", "RuleViolation"),
         ("loom.core.use_case", "RuleViolations"),
         ("loom.etl.observability", "OtelConfig"),
+        ("loom.streaming", "CompilationError"),
+        ("loom.streaming", "Process"),
+        ("loom.streaming", "StreamFlow"),
+        ("loom.streaming", "FromTopic"),
+        ("loom.streaming", "IntoTopic"),
+        ("loom.streaming.graph", "Process"),
+        ("loom.streaming.graph", "StreamFlow"),
+        ("loom.streaming.nodes", "Process"),
+        ("loom.streaming.nodes", "FromTopic"),
+        ("loom.streaming.nodes", "IntoTopic"),
+        ("loom.testing", "CompilationError"),
         ("loom.rest.model", "PaginationMode"),
     }
     if (current_module, name) in duplicated_reexports:

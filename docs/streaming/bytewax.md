@@ -3,6 +3,9 @@
 `loom.streaming.bytewax` is the production adapter that turns a declarative
 `StreamFlow` into a real Bytewax dataflow.
 
+For a runnable end-to-end reference implementation, see:
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
+
 ## What it does
 
 - compiles the flow

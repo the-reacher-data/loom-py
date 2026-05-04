@@ -1,6 +1,7 @@
 """Streaming DSL node primitives.
 
-These are the building blocks used to declare a :class:`Process`.
+These are the building blocks used to declare a
+:class:`~loom.streaming.graph.Process`.
 """
 
 from loom.streaming.nodes._boundary import (

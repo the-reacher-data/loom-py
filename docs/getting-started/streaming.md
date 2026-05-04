@@ -3,6 +3,9 @@
 `loom.streaming` lets you declare typed streaming flows with explicit sources,
 steps, batching, branching, and transport wiring.
 
+The companion demo repository for this subsystem is
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
+
 ## Install
 
 Choose the streaming runtime and Kafka transport:
@@ -89,3 +92,6 @@ from loom.streaming import (
 Use `loom.streaming.nodes`, `loom.streaming.kafka`, and
 `loom.streaming.bytewax` only when you need a narrower or runtime-specific
 surface.
+
+For a runnable end-to-end example, see the companion repository:
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
