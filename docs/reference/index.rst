@@ -9,6 +9,7 @@ autodoc output easier to navigate.
 
    api/core
    api/etl
+   api/streaming
    api/repository
    api/rest
    api/testing

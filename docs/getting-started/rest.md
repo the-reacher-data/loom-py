@@ -1,4 +1,4 @@
-# Quickstart
+# REST Quickstart
 
 `loom-kernel` lets you define business behavior in typed use cases and expose it
 through REST interfaces — with full auto-CRUD, background jobs, and Celery workers.

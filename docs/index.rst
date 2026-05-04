@@ -44,10 +44,17 @@ Companion demo application:
 
 .. toctree::
    :maxdepth: 2
+   :caption: Overview
+
+   overview
+
+.. toctree::
+   :maxdepth: 2
    :caption: Getting Started
 
    getting-started/rest
    getting-started/etl
+   getting-started/streaming
 
 .. toctree::
    :maxdepth: 2
@@ -66,6 +73,12 @@ Companion demo application:
    etl/pipelines
    etl/testing
    etl/examples
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Streaming
+
+   streaming/bytewax
 
 .. toctree::
    :maxdepth: 2
