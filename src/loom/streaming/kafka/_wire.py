@@ -20,6 +20,10 @@ PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
 _ERROR_PREFIX = "loom.streaming.error."
 logger = get_logger(__name__)
+_ERROR_ENVELOPE_TYPES = frozenset(
+    f"{_ERROR_PREFIX}{kind.value}" for kind in ErrorKind if kind is not ErrorKind.WIRE
+)
+_WIRE_MESSAGE_TYPE = f"{_ERROR_PREFIX}{ErrorKind.WIRE.value}"
 
 
 def _record_ctx(record: KafkaRecord[bytes]) -> dict[str, Any]:
@@ -62,10 +66,13 @@ class DispatchTable:
         plain: Maps outer ``message_type`` strings to their payload types.
         error: Maps inner ``ErrorEnvelope.payload_type`` strings to the
             corresponding ``ErrorEnvelope[T]`` generic alias.
+        wire: Maps outer wire-error ``message_type`` strings to their payload
+            types.
     """
 
     plain: Mapping[str, type[LoomStruct | LoomFrozenStruct]]
     error: Mapping[str, Any]
+    wire: Mapping[str, type[LoomStruct | LoomFrozenStruct]]
 
 
 class DecodeOk(LoomFrozenStruct, Generic[PayloadT], frozen=True):
@@ -85,21 +92,26 @@ class DecodeError(LoomFrozenStruct, frozen=True):
         error: Structured WIRE error for DSL error routing.
         raw: Original record bytes that failed to decode.
         topic: Source Kafka topic.
-        key: Source Kafka key.
+        key: Source Kafka key, normalized to bytes when available.
         headers: Source Kafka headers.
         partition: Source Kafka partition when available.
         offset: Source Kafka offset when available.
         timestamp_ms: Source Kafka timestamp when available.
     """
 
-    error: ErrorEnvelope[LoomStruct | LoomFrozenStruct]
+    error: ErrorEnvelope[Any]
     raw: bytes
     topic: str
-    key: bytes | str | None
+    key: bytes | None
     headers: dict[str, bytes]
     partition: int | None = None
     offset: int | None = None
     timestamp_ms: int | None = None
+
+    @classmethod
+    def loom_message_type(cls) -> str:
+        """Return the stable logical message type for wire decode errors."""
+        return _WIRE_MESSAGE_TYPE
 
 
 DecodeResult: TypeAlias = DecodeOk[PayloadT] | DecodeError
@@ -161,16 +173,7 @@ def try_decode_record(
     try:
         envelope = codec.decode(record.value, payload_type)
     except Exception as exc:
-        return DecodeError(
-            error=ErrorEnvelope(kind=ErrorKind.WIRE, reason=str(exc), original_message=None),
-            raw=record.value,
-            topic=record.topic,
-            key=record.key,
-            headers=record.headers,
-            partition=record.partition,
-            offset=record.offset,
-            timestamp_ms=record.timestamp_ms,
-        )
+        return _wire_error(str(exc), record)
     return DecodeOk(message=envelope_to_message(envelope, record))
 
 
@@ -181,11 +184,12 @@ def try_decode_multi_record(
 ) -> DecodeResult[Any]:
     """Decode one Kafka record from a heterogeneous topic using a dispatch table.
 
-    Uses a two-stage probe strategy:
+    Uses an exact-type dispatch strategy:
 
-    1. Decode only ``MessageEnvelope.meta.descriptor.message_type`` (cheap).
-    2. For error envelopes, additionally probe ``ErrorEnvelope.payload_type``.
-    3. Look up the concrete type in ``dispatch`` and perform the full decode.
+    1. Plain payload envelopes dispatch by ``MessageEnvelope.meta.descriptor.message_type``.
+    2. Business/task/routing error envelopes dispatch by their outer error kind
+       type and inner ``ErrorEnvelope.payload_type``.
+    3. Wire-decode payloads dispatch by the dedicated wire error type.
 
     Unknown ``message_type`` values and decode failures both produce a
     ``DecodeError`` with ``ErrorKind.WIRE``.
@@ -203,17 +207,21 @@ def try_decode_multi_record(
     outer_message_type = _probe_message_type(record.value)
     if outer_message_type is None:
         return _wire_error("failed to probe message_type from envelope", record)
-    logger.debug(
-        "multi_source_probe",
-        **_record_ctx(record),
-        outer_message_type=outer_message_type,
-    )
-
-    if outer_message_type.startswith(_ERROR_PREFIX):
-        return _decode_error_envelope(record, dispatch, codec, outer_message_type)
+    logger.debug("multi_source_probe", **_record_ctx(record), outer_message_type=outer_message_type)
 
     payload_type = dispatch.plain.get(outer_message_type)
     if payload_type is None:
+        if outer_message_type in _ERROR_ENVELOPE_TYPES:
+            return _decode_error_envelope(record, dispatch, codec, outer_message_type)
+        wire_payload_type = dispatch.wire.get(outer_message_type)
+        if wire_payload_type is not None:
+            logger.debug(
+                "multi_source_dispatch_wire",
+                **_record_ctx(record),
+                outer_message_type=outer_message_type,
+                target_type=_describe_target_type(wire_payload_type),
+            )
+            return try_decode_record(record, wire_payload_type, codec)
         return _wire_error(f"unknown message_type: {outer_message_type!r}", record)
     logger.debug(
         "multi_source_dispatch_plain",
@@ -268,7 +276,7 @@ def _probe_error_payload_type(raw: bytes) -> str | None:
 
 
 def _wire_error(reason: str, record: KafkaRecord[bytes]) -> DecodeError:
-    logger.debug(
+    logger.warning(
         "multi_source_wire_error",
         **_record_ctx(record),
         reason=reason,
@@ -277,7 +285,7 @@ def _wire_error(reason: str, record: KafkaRecord[bytes]) -> DecodeError:
         error=ErrorEnvelope(kind=ErrorKind.WIRE, reason=reason, original_message=None),
         raw=record.value,
         topic=record.topic,
-        key=record.key,
+        key=_normalize_key(record.key),
         headers=record.headers,
         partition=record.partition,
         offset=record.offset,
@@ -299,3 +307,11 @@ def _describe_target_type(t: Any) -> str:
     if not isinstance(t, type):
         return repr(t)
     return f"{t.__module__}.{t.__qualname__}"
+
+
+def _normalize_key(key: bytes | str | None) -> bytes | None:
+    if key is None:
+        return None
+    if isinstance(key, bytes):
+        return key
+    return key.encode("utf-8")

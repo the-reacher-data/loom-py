@@ -32,7 +32,8 @@ class CompiledMultiSource:
         settings: Resolved Kafka consumer settings.
         topics: Kafka topic names to subscribe to.
         dispatch: Pre-built table mapping ``message_type`` and error
-            ``payload_type`` strings to their concrete Python types.
+            ``payload_type`` strings to their concrete Python types, plus
+            explicit wire-error payload types.
         shape: Declared source shape.
         decode_strategy: Whether to decode records individually or in batches.
     """

@@ -468,8 +468,7 @@ def _decode_error_to_send(
     return _KafkaSendRequest(
         payload=item,
         descriptor=MessageDescriptor(
-            message_type=f"loom.streaming.error.{item.error.kind.value}",
-            message_version=1,
+            message_type=DecodeError.loom_message_type(), message_version=1
         ),
         key=item.key,
         headers={

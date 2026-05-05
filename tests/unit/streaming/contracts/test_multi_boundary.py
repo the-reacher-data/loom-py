@@ -8,6 +8,7 @@ from loom.core.model import LoomFrozenStruct
 from loom.core.routing import LogicalRef
 from loom.streaming import FromMultiTypeTopic, StreamShape
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+from loom.streaming.kafka import DecodeError
 
 
 class _OrderEvent(LoomFrozenStruct, frozen=True):
@@ -86,3 +87,6 @@ class TestErrorEnvelopePayloadTypeField:
 
         assert envelope.payload_type == "order.event"
         assert envelope.original_message is None
+
+    def test_decode_error_uses_stable_wire_type(self) -> None:
+        assert DecodeError.loom_message_type() == "loom.streaming.error.wire"

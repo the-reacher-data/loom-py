@@ -99,6 +99,7 @@ class TestTryDecodeMultiRecord:
         dispatch = DispatchTable(
             plain={_ORDER_MT: _OrderEvent, _PRODUCT_MT: _ProductEvent},
             error={},
+            wire={},
         )
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
         record = _record(_encode_plain(payload, message_type))
@@ -127,7 +128,7 @@ class TestTryDecodeMultiRecord:
         record: KafkaRecord[bytes],
         expected_reason: str,
     ) -> None:
-        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={})
+        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={}, wire={})
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
 
         result = try_decode_multi_record(record, dispatch, codec)
@@ -135,6 +136,16 @@ class TestTryDecodeMultiRecord:
         assert isinstance(result, DecodeError)
         assert result.error.kind is ErrorKind.WIRE
         assert expected_reason in result.error.reason
+
+    def test_wire_errors_log_a_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={}, wire={})
+        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
+
+        result = try_decode_multi_record(_record(b"not-msgpack"), dispatch, codec)
+
+        assert isinstance(result, DecodeError)
+        captured = capsys.readouterr()
+        assert "multi_source_wire_error" in captured.out
 
     @pytest.mark.parametrize(
         ("payload", "inner_message_type"),
@@ -154,6 +165,7 @@ class TestTryDecodeMultiRecord:
                 _ORDER_MT: ErrorEnvelope[_OrderEvent],
                 _PRODUCT_MT: ErrorEnvelope[_ProductEvent],
             },
+            wire={},
         )
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
 
@@ -170,6 +182,7 @@ class TestTryDecodeMultiRecord:
         dispatch = DispatchTable(
             plain={},
             error={_ORDER_MT: ErrorEnvelope[_OrderEvent]},
+            wire={},
         )
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
         record = _record(
@@ -213,7 +226,7 @@ class TestTryDecodeMultiRecord:
         record: KafkaRecord[bytes],
         expect_ok: bool,
     ) -> None:
-        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={})
+        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={}, wire={})
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
 
         result = try_decode_multi_record(record, dispatch, codec)
@@ -231,3 +244,32 @@ class TestTryDecodeMultiRecord:
         assert result.topic == "events.all"
         assert result.partition == 1
         assert result.offset == 7
+
+    def test_dispatches_wire_decode_error_by_message_type(self) -> None:
+        dispatch = DispatchTable(
+            plain={_ORDER_MT: _OrderEvent},
+            error={},
+            wire={DecodeError.loom_message_type(): DecodeError},
+        )
+        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
+        error = DecodeError(
+            error=ErrorEnvelope(kind=ErrorKind.WIRE, reason="wire-failed"),
+            raw=b"bad-wire",
+            topic="errors.all",
+            key=b"k",
+            headers={},
+            partition=3,
+            offset=9,
+            timestamp_ms=222,
+        )
+        record = _record(
+            _encode_plain(error, DecodeError.loom_message_type()),
+            topic="errors.all",
+        )
+
+        result = try_decode_multi_record(record, dispatch, codec)
+
+        assert isinstance(result, DecodeOk)
+        assert isinstance(result.message.payload, DecodeError)
+        assert result.message.payload.error.kind is ErrorKind.WIRE
+        assert result.message.payload.error.reason == "wire-failed"

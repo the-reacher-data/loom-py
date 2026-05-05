@@ -63,10 +63,36 @@ def test_execute_in_boundary_maps_domain_error_to_business() -> None:
     assert isinstance(result, ErrorEnvelope)
     assert result.kind is ErrorKind.BUSINESS
     assert result.reason == "field: boom"
+    assert result.payload_type == _Payload.loom_message_type()
     original = result.original_message
     assert original is not None
     payload = cast(_Payload, original.payload)
     assert payload.value == "v"
+
+
+def test_execute_in_boundary_logs_managed_domain_error(capsys: pytest.CaptureFixture[str]) -> None:
+
+    _error_boundary._execute_in_boundary(
+        _error_boundary._classify_task,
+        _message(),
+        lambda: _raise(RuleViolation("field", "boom")),
+    )
+
+    captured = capsys.readouterr()
+    assert "managed_boundary_error" in captured.out
+
+
+def test_execute_in_boundary_logs_unhandled_runtime_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _error_boundary._execute_in_boundary(
+        _error_boundary._classify_task,
+        _message(),
+        lambda: _raise(RuntimeError("boom")),
+    )
+
+    captured = capsys.readouterr()
+    assert "unhandled_boundary_error" in captured.out
 
 
 def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() -> None:
@@ -83,6 +109,7 @@ def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() ->
     assert len(result) == 2
     assert len(envelopes) == 2
     assert all(item.original_message is not None for item in envelopes)
+    assert all(item.payload_type == _Payload.loom_message_type() for item in envelopes)
     original_payloads = [
         item.original_message.payload for item in envelopes if item.original_message is not None
     ]

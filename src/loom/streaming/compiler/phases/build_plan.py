@@ -28,7 +28,7 @@ from loom.streaming.compiler.phases.validate import (
 from loom.streaming.core._errors import ErrorEnvelope
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
-from loom.streaming.kafka._wire import DispatchTable
+from loom.streaming.kafka._wire import DecodeError, DispatchTable
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
@@ -114,7 +114,11 @@ def _build_dispatch_table(
 ) -> DispatchTable:
     plain: dict[str, Any] = {}
     error: dict[str, Any] = {}
+    wire: dict[str, Any] = {}
     for t in payloads:
+        if isinstance(t, type) and issubclass(t, DecodeError):
+            wire[t.loom_message_type()] = t
+            continue
         origin = get_origin(t)
         if origin is ErrorEnvelope:
             args = get_args(t)
@@ -131,7 +135,7 @@ def _build_dispatch_table(
         else:
             key = _require_message_type(t)
             plain[key] = t
-    return DispatchTable(plain=plain, error=error)
+    return DispatchTable(plain=plain, error=error, wire=wire)
 
 
 def _require_message_type(t: type[Any]) -> str:

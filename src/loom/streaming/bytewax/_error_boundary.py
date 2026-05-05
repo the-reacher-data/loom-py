@@ -8,12 +8,14 @@ from typing import Any, Protocol, TypeAlias
 from bytewax.operators import branch, flat_map
 
 from loom.core.errors.errors import DomainError
+from loom.core.logger import get_logger
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 
 Stream: TypeAlias = Any
 NodeResult: TypeAlias = Message[StreamPayload] | ErrorEnvelope[StreamPayload]
+logger = get_logger(__name__)
 
 
 class _ErrorWireOutputs(Protocol):
@@ -48,10 +50,11 @@ def _build_error_envelope(
     original: Message[StreamPayload],
 ) -> ErrorEnvelope[StreamPayload]:
     snapshot = snapshot_message(original)
+    payload_type = original.payload.__class__.loom_message_type()
     return ErrorEnvelope(
         kind=kind,
         reason=reason,
-        payload_type=snapshot.meta.message_type,
+        payload_type=payload_type,
         original_message=snapshot,
     )
 
@@ -65,7 +68,9 @@ def _execute_in_boundary(
     try:
         return fn()
     except Exception as exc:
-        return _build_error_envelope(classify(exc), str(exc), original)
+        kind = classify(exc)
+        _log_boundary_error(kind, exc, original)
+        return _build_error_envelope(kind, str(exc), original)
 
 
 def _execute_batch_in_boundary(
@@ -78,6 +83,8 @@ def _execute_batch_in_boundary(
         return list(fn())
     except Exception as exc:
         kind = classify(exc)
+        for message in originals:
+            _log_boundary_error(kind, exc, message)
         return [_build_error_envelope(kind, str(exc), message) for message in originals]
 
 
@@ -123,3 +130,19 @@ def _is_message_batch(item: Any) -> bool:
 def _identity(items: Any) -> Any:
     """Pass through an item unchanged for flat_map."""
     return items
+
+
+def _log_boundary_error(kind: ErrorKind, exc: Exception, original: Message[StreamPayload]) -> None:
+    payload_type = original.payload.__class__.loom_message_type()
+    context = {
+        "kind": kind.value,
+        "payload_type": payload_type,
+        "message_id": original.meta.message_id,
+        "topic": original.meta.topic,
+        "partition": original.meta.partition,
+        "offset": original.meta.offset,
+    }
+    if isinstance(exc, DomainError):
+        logger.warning("managed_boundary_error", **context, reason=str(exc))
+        return
+    logger.exception("unhandled_boundary_error", **context, reason=str(exc))
