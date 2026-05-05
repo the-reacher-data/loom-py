@@ -83,8 +83,8 @@ def _execute_batch_in_boundary(
         return list(fn())
     except Exception as exc:
         kind = classify(exc)
-        for message in originals:
-            _log_boundary_error(kind, exc, message)
+        if originals:
+            _log_boundary_error(kind, exc, originals[0], batch_size=len(originals))
         return [_build_error_envelope(kind, str(exc), message) for message in originals]
 
 
@@ -132,7 +132,12 @@ def _identity(items: Any) -> Any:
     return items
 
 
-def _log_boundary_error(kind: ErrorKind, exc: Exception, original: Message[StreamPayload]) -> None:
+def _log_boundary_error(
+    kind: ErrorKind,
+    exc: Exception,
+    original: Message[StreamPayload],
+    batch_size: int = 1,
+) -> None:
     payload_type = original.payload.__class__.loom_message_type()
     context = {
         "kind": kind.value,
@@ -141,6 +146,7 @@ def _log_boundary_error(kind: ErrorKind, exc: Exception, original: Message[Strea
         "topic": original.meta.topic,
         "partition": original.meta.partition,
         "offset": original.meta.offset,
+        "batch_size": batch_size,
     }
     if isinstance(exc, DomainError):
         logger.warning("managed_boundary_error", **context, reason=str(exc))
