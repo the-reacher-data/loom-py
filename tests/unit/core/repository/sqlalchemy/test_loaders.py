@@ -85,13 +85,13 @@ class TestMemoryLoadersLoadFromObject:
 
 
 class TestMemoryLoadersSafetyCheck:
-    def test_raises_when_relation_not_in_dict(self) -> None:
+    def test_raises_when_relation_not_present(self) -> None:
         loader = _MemoryCountLoader(relation="notes")
 
         class _Bare:
             pass
 
-        with pytest.raises(RuntimeError, match="notes.*__dict__"):
+        with pytest.raises(RuntimeError, match="relation 'notes' on _Bare"):
             loader.load_from_object(_Bare())
 
     def test_error_includes_model_class_name(self) -> None:

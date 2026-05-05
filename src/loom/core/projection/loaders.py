@@ -12,10 +12,6 @@ _MISSING = object()
 
 
 def _related_values(obj: Any, relation: str) -> list[Any]:
-    if hasattr(obj, "__dict__") and relation not in obj.__dict__:
-        raise RuntimeError(
-            f"Relation loader requires '{relation}' to be present in {type(obj).__name__}.__dict__"
-        )
     related = getattr(obj, relation, _MISSING)
     if related is _MISSING:
         raise RuntimeError(
