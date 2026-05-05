@@ -10,6 +10,7 @@ from bytewax.operators import branch, flat_map
 from bytewax.operators import map as bw_map
 
 from loom.streaming.bytewax._error_boundary import (
+    _build_error_envelope,
     _classify_task,
     _execute_batch_in_boundary,
     _split_batch_node_result,
@@ -29,7 +30,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _resolve_record_result,
     _step_id,
 )
-from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._exceptions import MissingBridgeError, UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -129,14 +130,7 @@ def _apply_with_async_process(
                 )
             return results
         except Exception as exc:
-            return [
-                ErrorEnvelope(
-                    kind=ErrorKind.TASK,
-                    reason=str(exc),
-                    original_message=snapshot_message(message),
-                )
-                for message in batch
-            ]
+            return [_build_error_envelope(ErrorKind.TASK, str(exc), message) for message in batch]
 
     sid = _step_id(f"with_async_process_{idx}", ctx)
     mapped = bw_map(sid, stream, step_fn)
@@ -210,11 +204,7 @@ async def _execute_with_async_message(
         )
         return current
     except Exception as exc:
-        return ErrorEnvelope(
-            kind=_classify_task(exc),
-            reason=str(exc),
-            original_message=snapshot_message(message),
-        )
+        return _build_error_envelope(_classify_task(exc), str(exc), message)
 
 
 async def _execute_with_async_batch(
@@ -234,21 +224,14 @@ async def _execute_with_async_batch(
 
     async def _run_one(index: int, message: Message[StreamPayload]) -> None:
         async with limiter:
-            try:
-                results[index] = await _execute_with_async_message(
-                    message,
-                    inner_steps,
-                    sink_partition,
-                    tracker,
-                    deps,
-                    timeout_ms,
-                )
-            except Exception as exc:
-                results[index] = ErrorEnvelope(
-                    kind=_classify_task(exc),
-                    reason=str(exc),
-                    original_message=snapshot_message(message),
-                )
+            results[index] = await _execute_with_async_message(
+                message,
+                inner_steps,
+                sink_partition,
+                tracker,
+                deps,
+                timeout_ms,
+            )
 
     async with anyio.create_task_group() as task_group:
         for index, message in enumerate(messages):

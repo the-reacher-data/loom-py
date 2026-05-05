@@ -42,6 +42,20 @@ def _classify_routing(exc: Exception) -> ErrorKind:
     return ErrorKind.ROUTING
 
 
+def _build_error_envelope(
+    kind: ErrorKind,
+    reason: str,
+    original: Message[StreamPayload],
+) -> ErrorEnvelope[StreamPayload]:
+    snapshot = snapshot_message(original)
+    return ErrorEnvelope(
+        kind=kind,
+        reason=reason,
+        payload_type=snapshot.meta.message_type,
+        original_message=snapshot,
+    )
+
+
 def _execute_in_boundary(
     classify: Callable[[Exception], ErrorKind],
     original: Message[StreamPayload],
@@ -51,11 +65,7 @@ def _execute_in_boundary(
     try:
         return fn()
     except Exception as exc:
-        return ErrorEnvelope(
-            kind=classify(exc),
-            reason=str(exc),
-            original_message=snapshot_message(original),
-        )
+        return _build_error_envelope(classify(exc), str(exc), original)
 
 
 def _execute_batch_in_boundary(
@@ -68,10 +78,7 @@ def _execute_batch_in_boundary(
         return list(fn())
     except Exception as exc:
         kind = classify(exc)
-        return [
-            ErrorEnvelope(kind=kind, reason=str(exc), original_message=snapshot_message(message))
-            for message in originals
-        ]
+        return [_build_error_envelope(kind, str(exc), message) for message in originals]
 
 
 def _split_node_result(
