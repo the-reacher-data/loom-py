@@ -137,15 +137,23 @@ class TestTryDecodeMultiRecord:
         assert result.error.kind is ErrorKind.WIRE
         assert expected_reason in result.error.reason
 
-    def test_wire_errors_log_a_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_wire_errors_log_a_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _LoggerProbe:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def warning(self, event: str, **fields: object) -> None:
+                self.calls.append(("warning", event))
+
+        logger = _LoggerProbe()
+        monkeypatch.setattr("loom.streaming.kafka._wire.logger", logger)
         dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={}, wire={})
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
 
         result = try_decode_multi_record(_record(b"not-msgpack"), dispatch, codec)
 
         assert isinstance(result, DecodeError)
-        captured = capsys.readouterr()
-        assert "multi_source_wire_error" in captured.out
+        assert ("warning", "multi_source_wire_error") in logger.calls
 
     @pytest.mark.parametrize(
         ("payload", "inner_message_type"),
@@ -244,6 +252,7 @@ class TestTryDecodeMultiRecord:
         assert result.topic == "events.all"
         assert result.partition == 1
         assert result.offset == 7
+        assert result.key == b"k"
 
     def test_dispatches_wire_decode_error_by_message_type(self) -> None:
         dispatch = DispatchTable(

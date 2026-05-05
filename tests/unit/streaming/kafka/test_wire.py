@@ -71,6 +71,6 @@ class TestKafkaWireDecode:
         assert result.topic == "orders.events"
         assert result.partition == 1
         assert result.offset == 7
-        assert result.key == "tenant-a"
+        assert result.key == b"tenant-a"
         assert result.headers == {"content-type": b"application/x-loom-msgpack"}
         assert result.timestamp_ms == 999

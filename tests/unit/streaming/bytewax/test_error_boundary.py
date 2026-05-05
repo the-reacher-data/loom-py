@@ -33,6 +33,17 @@ class _Context:
         self.outputs = _OutputWire()
 
 
+class _LoggerProbe:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def warning(self, event: str, **fields: object) -> None:
+        self.calls.append(("warning", event))
+
+    def exception(self, event: str, **fields: object) -> None:
+        self.calls.append(("exception", event))
+
+
 def _message(value: str = "v") -> Message[_Payload]:
     return Message(payload=_Payload(value=value), meta=MessageMeta(message_id="m-1"))
 
@@ -70,7 +81,9 @@ def test_execute_in_boundary_maps_domain_error_to_business() -> None:
     assert payload.value == "v"
 
 
-def test_execute_in_boundary_logs_managed_domain_error(capsys: pytest.CaptureFixture[str]) -> None:
+def test_execute_in_boundary_logs_managed_domain_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = _LoggerProbe()
+    monkeypatch.setattr(_error_boundary, "logger", logger)
 
     _error_boundary._execute_in_boundary(
         _error_boundary._classify_task,
@@ -78,21 +91,19 @@ def test_execute_in_boundary_logs_managed_domain_error(capsys: pytest.CaptureFix
         lambda: _raise(RuleViolation("field", "boom")),
     )
 
-    captured = capsys.readouterr()
-    assert "managed_boundary_error" in captured.out
+    assert ("warning", "managed_boundary_error") in logger.calls
 
 
-def test_execute_in_boundary_logs_unhandled_runtime_error(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_execute_in_boundary_logs_unhandled_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = _LoggerProbe()
+    monkeypatch.setattr(_error_boundary, "logger", logger)
     _error_boundary._execute_in_boundary(
         _error_boundary._classify_task,
         _message(),
         lambda: _raise(RuntimeError("boom")),
     )
 
-    captured = capsys.readouterr()
-    assert "unhandled_boundary_error" in captured.out
+    assert ("exception", "unhandled_boundary_error") in logger.calls
 
 
 def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() -> None:
