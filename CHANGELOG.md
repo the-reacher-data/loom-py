@@ -1,3 +1,30 @@
+# 🚀 Release 0.5.0 ([#20](https://github.com/the-reacher-data/loom-py/pull/20)) ([`70f7cf8`](https://github.com/the-reacher-data/loom-py/commit/70f7cf85275fcc1f590e06f980dfac91cad50893))
+
+
+## ✨ Features
+### core
+- **core:** add shared expression routing primitives
+
+### streaming
+- **streaming:** add process DSL and routing
+- **streaming:** add kafka transport and observability
+- **streaming:** allow task resource kwargs
+- **streaming:** add scoped dependency nodes
+- **streaming:** make tasks configurable
+
+### config
+- **config:** add declarative config bindings
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.4.0 ([#18](https://github.com/the-reacher-data/loom-py/pull/18)) ([`09e5aa3`](https://github.com/the-reacher-data/loom-py/commit/09e5aa340f88e0488daca2bf10320aad7aebbe1d))
 
 
