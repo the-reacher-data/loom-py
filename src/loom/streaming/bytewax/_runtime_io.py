@@ -17,7 +17,7 @@ from loom.streaming.bytewax._dlq import (
     send_decode_error_batch_to_dlq,
     send_error_batch_to_dlq,
 )
-from loom.streaming.compiler._plan import CompiledSink, CompiledSource
+from loom.streaming.compiler._plan import CompiledSink, CompiledSourceLike
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -111,7 +111,7 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
 
     def __init__(
         self,
-        source: CompiledSource,
+        source: CompiledSourceLike,
         commit_tracker: KafkaCommitTracker | None = None,
     ) -> None:
         self._poll_timeout_ms = source.settings.poll_timeout_ms
@@ -276,7 +276,7 @@ _ErrorSink: TypeAlias = _KafkaErrorEnvelopeSink | _KafkaDecodeErrorSink
 
 
 def build_runtime_source(
-    source: CompiledSource,
+    source: CompiledSourceLike,
     commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaPollingSource:
     """Build the runtime source for one compiled Kafka input."""
@@ -343,7 +343,7 @@ def build_inline_sink_partition(
     return _KafkaMessageSinkPartition(sink, commit_tracker)
 
 
-def build_commit_tracker(source: CompiledSource) -> KafkaCommitTracker | None:
+def build_commit_tracker(source: CompiledSourceLike) -> KafkaCommitTracker | None:
     """Build a commit tracker when explicit source commits are required."""
     if source.settings.enable_auto_commit:
         return None

@@ -2,6 +2,8 @@
 
 from loom.streaming.compiler._compiler import compile_flow
 from loom.streaming.compiler._plan import (
+    CompilationError,
+    CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
     CompiledSink,
@@ -10,6 +12,8 @@ from loom.streaming.compiler._plan import (
 
 __all__ = [
     "compile_flow",
+    "CompilationError",
+    "CompiledMultiSource",
     "CompiledPlan",
     "CompiledNode",
     "CompiledSource",

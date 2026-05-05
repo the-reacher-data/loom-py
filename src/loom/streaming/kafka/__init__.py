@@ -36,7 +36,9 @@ from loom.streaming.kafka._wire import (
     DecodeError,
     DecodeOk,
     DecodeResult,
+    DispatchTable,
     envelope_to_message,
+    try_decode_multi_record,
     try_decode_record,
 )
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
@@ -59,6 +61,7 @@ __all__ = [
     "DecodeError",
     "DecodeOk",
     "DecodeResult",
+    "DispatchTable",
     "FixedKey",
     "KafkaClientError",
     "KafkaCodec",
@@ -98,5 +101,6 @@ __all__ = [
     "build_message",
     "envelope_to_message",
     "load_kafka_settings",
+    "try_decode_multi_record",
     "try_decode_record",
 ]

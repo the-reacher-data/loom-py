@@ -23,6 +23,7 @@ from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, ErrorMessage, 
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.graph._flow import ErrorRoute, Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import (
+    FromMultiTypeTopic,
     FromTopic,
     IntoTopic,
     PartitionGuarantee,
@@ -69,6 +70,7 @@ __all__ = [
     "ErrorMessageMeta",
     "ErrorRoute",
     "ForEach",
+    "FromMultiTypeTopic",
     "FromTopic",
     "Fork",
     "ForkRoute",

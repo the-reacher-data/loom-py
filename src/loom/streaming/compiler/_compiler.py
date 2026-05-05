@@ -7,7 +7,7 @@ from typing import Any
 from omegaconf import DictConfig
 
 from loom.streaming.compiler._bindings import resolve_flow_bindings
-from loom.streaming.compiler._plan import CompiledPlan
+from loom.streaming.compiler._plan import CompilationError, CompiledPlan
 from loom.streaming.compiler.phases.build_plan import build_plan
 from loom.streaming.compiler.phases.validate import (
     validate_kafka,
@@ -16,14 +16,6 @@ from loom.streaming.compiler.phases.validate import (
     validate_shapes,
 )
 from loom.streaming.graph._flow import StreamFlow
-
-
-class CompilationError(Exception):
-    """Raised when a StreamFlow fails validation."""
-
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
 
 
 def compile_flow(flow: StreamFlow[Any, Any], *, runtime_config: DictConfig) -> CompiledPlan:

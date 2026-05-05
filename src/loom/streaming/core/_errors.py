@@ -74,12 +74,16 @@ class ErrorEnvelope(LoomFrozenStruct, Generic[PayloadT], frozen=True):
     Args:
         kind: Logical error category.
         reason: Human-readable reason.
+        payload_type: The ``message_type`` of the original payload, mirrored
+            from ``original_message.meta.message_type`` for efficient
+            top-level dispatch without nested decode.
         original_message: Wire-safe snapshot of the original message when
             available.
     """
 
     kind: ErrorKind
     reason: str
+    payload_type: str | None = None
     original_message: ErrorMessage[PayloadT] | None = None
 
 

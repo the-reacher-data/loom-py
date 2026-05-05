@@ -30,12 +30,18 @@ from loom.streaming.bytewax.handlers.dispatcher import (
     _wire_process,
 )
 from loom.streaming.compiler import CompiledPlan
+from loom.streaming.compiler._plan import CompiledMultiSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
 from loom.streaming.kafka._record import KafkaRecord
-from loom.streaming.kafka._wire import DecodeOk, DecodeResult, try_decode_record
+from loom.streaming.kafka._wire import (
+    DecodeOk,
+    DecodeResult,
+    try_decode_multi_record,
+    try_decode_record,
+)
 from loom.streaming.nodes._with import With, WithAsync
 from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
@@ -316,11 +322,11 @@ def _decode_source_record(
     if isinstance(payload, Message):
         return DecodeOk(message=cast(Message[StreamPayload], payload))
     if isinstance(payload, KafkaRecord):
-        return try_decode_record(
-            cast(KafkaRecord[bytes], payload),
-            ctx.plan.source.payload_type,
-            codec,
-        )
+        record = cast(KafkaRecord[bytes], payload)
+        source = ctx.plan.source
+        if isinstance(source, CompiledMultiSource):
+            return try_decode_multi_record(record, source.dispatch, codec)
+        return try_decode_record(record, source.payload_type, codec)
     raise TypeError(f"Expected Message or KafkaRecord, got {type(payload).__name__}.")
 
 

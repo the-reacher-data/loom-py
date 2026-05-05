@@ -12,7 +12,7 @@ from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeErr
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
-from loom.streaming.nodes._boundary import FromTopic, IntoTopic
+from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._fork import Fork, ForkKind
@@ -91,7 +91,7 @@ def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
 
 
 def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
-    if isinstance(flow.source, FromTopic):
+    if isinstance(flow.source, (FromTopic, FromMultiTypeTopic)):
         return True
     if flow.output is not None:
         return True

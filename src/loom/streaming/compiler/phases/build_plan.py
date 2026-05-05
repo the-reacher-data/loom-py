@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, get_args, get_origin
 
 from omegaconf import DictConfig
 
 from loom.core.config import section
 from loom.streaming.compiler._plan import (
+    CompilationError,
+    CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
     CompiledSink,
     CompiledSource,
+    CompiledSourceLike,
 )
 from loom.streaming.compiler.phases.validate import (
     _fork_branch_count,
@@ -22,9 +25,11 @@ from loom.streaming.compiler.phases.validate import (
     _node_output_shape,
     _walk_all_process_nodes,
 )
+from loom.streaming.core._errors import ErrorEnvelope
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
-from loom.streaming.nodes._boundary import IntoTopic
+from loom.streaming.kafka._wire import DispatchTable
+from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
@@ -61,19 +66,82 @@ def build_plan(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> Compil
     )
 
 
-def _build_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSource:
+def _build_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSourceLike:
+    if isinstance(flow.source, FromMultiTypeTopic):
+        return _build_multi_source(flow, runtime_config)
+    return _build_single_source(flow, runtime_config)
+
+
+def _build_single_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSource:
+    source: FromTopic[Any] = flow.source  # type: ignore[assignment]
     kafka = section(runtime_config, "kafka", KafkaSettings)
-    consumer = kafka.consumer_for(flow.source.logical_ref)
+    consumer = kafka.consumer_for(source.logical_ref)
     decode_strategy: Literal["record", "batch"] = "record"
     if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
         decode_strategy = "batch"
     return CompiledSource(
         settings=consumer,
         topics=consumer.topics,
-        payload_type=flow.source.payload,
-        shape=flow.source.shape,
+        payload_type=source.payload,
+        shape=source.shape,
         decode_strategy=decode_strategy,
     )
+
+
+def _build_multi_source(
+    flow: StreamFlow[Any, Any], runtime_config: DictConfig
+) -> CompiledMultiSource:
+    source: FromMultiTypeTopic[Any] = flow.source  # type: ignore[assignment]
+    kafka = section(runtime_config, "kafka", KafkaSettings)
+    consumer = kafka.consumer_for(source.logical_ref)
+    decode_strategy: Literal["record", "batch"] = "record"
+    if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
+        decode_strategy = "batch"
+    dispatch = _build_dispatch_table(source.payloads)
+    return CompiledMultiSource(
+        settings=consumer,
+        topics=consumer.topics,
+        dispatch=dispatch,
+        shape=source.shape,
+        decode_strategy=decode_strategy,
+    )
+
+
+def _build_dispatch_table(
+    payloads: tuple[type[Any], ...],
+) -> DispatchTable:
+    plain: dict[str, Any] = {}
+    error: dict[str, Any] = {}
+    for t in payloads:
+        origin = get_origin(t)
+        if origin is ErrorEnvelope:
+            args = get_args(t)
+            if not args:
+                raise CompilationError(
+                    [
+                        "ErrorEnvelope in FromMultiTypeTopic must be parameterized, "
+                        f"e.g. ErrorEnvelope[OrderEvent]. Got: {t!r}"
+                    ]
+                )
+            inner_type = args[0]
+            key = _require_message_type(inner_type)
+            error[key] = t
+        else:
+            key = _require_message_type(t)
+            plain[key] = t
+    return DispatchTable(plain=plain, error=error)
+
+
+def _require_message_type(t: type[Any]) -> str:
+    mt = getattr(t, "__loom_message_type__", None)
+    if mt is None:
+        raise CompilationError(
+            [
+                f"Type {t.__name__!r} must declare __loom_message_type__: ClassVar[str] "
+                "to be used in FromMultiTypeTopic."
+            ]
+        )
+    return str(mt)
 
 
 def _build_nodes(flow: StreamFlow[Any, Any]) -> list[CompiledNode]:
