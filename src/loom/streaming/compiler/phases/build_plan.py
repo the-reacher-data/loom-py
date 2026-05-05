@@ -14,9 +14,9 @@ from loom.streaming.compiler._plan import (
     CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
+    CompiledSingleSource,
     CompiledSink,
     CompiledSource,
-    CompiledSourceLike,
 )
 from loom.streaming.compiler.phases.validate import (
     _fork_branch_count,
@@ -66,20 +66,22 @@ def build_plan(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> Compil
     )
 
 
-def _build_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSourceLike:
+def _build_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSource:
     if isinstance(flow.source, FromMultiTypeTopic):
         return _build_multi_source(flow, runtime_config)
     return _build_single_source(flow, runtime_config)
 
 
-def _build_single_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSource:
+def _build_single_source(
+    flow: StreamFlow[Any, Any], runtime_config: DictConfig
+) -> CompiledSingleSource:
     source: FromTopic[Any] = flow.source  # type: ignore[assignment]
     kafka = section(runtime_config, "kafka", KafkaSettings)
     consumer = kafka.consumer_for(source.logical_ref)
     decode_strategy: Literal["record", "batch"] = "record"
     if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
         decode_strategy = "batch"
-    return CompiledSource(
+    return CompiledSingleSource(
         settings=consumer,
         topics=consumer.topics,
         payload_type=source.payload,
@@ -133,15 +135,7 @@ def _build_dispatch_table(
 
 
 def _require_message_type(t: type[Any]) -> str:
-    mt = getattr(t, "__loom_message_type__", None)
-    if mt is None:
-        raise CompilationError(
-            [
-                f"Type {t.__name__!r} must declare __loom_message_type__: ClassVar[str] "
-                "to be used in FromMultiTypeTopic."
-            ]
-        )
-    return str(mt)
+    return str(t.loom_message_type())
 
 
 def _build_nodes(flow: StreamFlow[Any, Any]) -> list[CompiledNode]:

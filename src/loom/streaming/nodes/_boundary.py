@@ -45,8 +45,10 @@ class FromMultiTypeTopic(LoomFrozenStruct, Generic[MultiPayloadT], frozen=True):
     ``MessageEnvelope.meta.descriptor.message_type`` (and for
     ``ErrorEnvelope`` variants, ``ErrorEnvelope.payload_type``).
 
-    Each type in ``payloads`` must declare ``__loom_message_type__: ClassVar[str]``
-    so the compiler can build the dispatch table at compile time.
+    Each type in ``payloads`` uses ``__loom_message_type__`` when present and
+    otherwise falls back to the fully qualified Python name
+    ``f"{type.__module__}.{type.__qualname__}"`` so the compiler can build the
+    dispatch table at compile time without requiring extra boilerplate.
 
     Args:
         name: Logical input reference.

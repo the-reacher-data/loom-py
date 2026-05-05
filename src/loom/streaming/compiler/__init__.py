@@ -6,6 +6,7 @@ from loom.streaming.compiler._plan import (
     CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
+    CompiledSingleSource,
     CompiledSink,
     CompiledSource,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "CompiledMultiSource",
     "CompiledPlan",
     "CompiledNode",
+    "CompiledSingleSource",
     "CompiledSource",
     "CompiledSink",
 ]

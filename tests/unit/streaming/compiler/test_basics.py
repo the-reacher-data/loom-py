@@ -6,7 +6,7 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.streaming import Drain, FromTopic, IntoTopic, Process, StreamFlow, StreamShape
-from loom.streaming.compiler import CompiledSource, compile_flow
+from loom.streaming.compiler import CompiledSingleSource, compile_flow
 from loom.streaming.compiler._compiler import CompilationError
 from tests.unit.streaming.compiler.cases import FakeStep, Order, Result
 
@@ -21,7 +21,7 @@ def test_compile_success_with_minimal_flow(streaming_kafka_config: DictConfig) -
     plan = compile_flow(flow, runtime_config=streaming_kafka_config)
 
     assert plan.name == "test"
-    assert isinstance(plan.source, CompiledSource)
+    assert isinstance(plan.source, CompiledSingleSource)
     assert plan.source.payload_type is Order
     assert plan.source.shape is StreamShape.RECORD
     assert plan.source.decode_strategy == "record"

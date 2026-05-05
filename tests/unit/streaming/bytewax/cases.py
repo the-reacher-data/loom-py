@@ -9,8 +9,8 @@ from loom.streaming import IntoTopic
 from loom.streaming.compiler._plan import (
     CompiledNode,
     CompiledPlan,
+    CompiledSingleSource,
     CompiledSink,
-    CompiledSource,
 )
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
@@ -81,7 +81,7 @@ def build_compiled_plan(
         )
     return CompiledPlan(
         name="test_flow",
-        source=CompiledSource(
+        source=CompiledSingleSource(
             settings=ConsumerSettings(
                 brokers=(_BROKER,),
                 group_id="test",
@@ -104,9 +104,9 @@ def build_compiled_source(
     poll_timeout_ms: int = 100,
     *,
     enable_auto_commit: bool = True,
-) -> CompiledSource:
+) -> CompiledSingleSource:
     """Build a reusable compiled source for Bytewax adapter tests."""
-    return CompiledSource(
+    return CompiledSingleSource(
         settings=ConsumerSettings(
             brokers=(_BROKER,),
             group_id="test",

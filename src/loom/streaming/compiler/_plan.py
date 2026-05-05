@@ -14,8 +14,8 @@ from loom.streaming.nodes._shape import StreamShape
 
 
 @dataclass(frozen=True)
-class CompiledSource:
-    """Resolved Kafka source with decode strategy."""
+class CompiledSingleSource:
+    """Resolved Kafka source with a single payload type and decode strategy."""
 
     settings: ConsumerSettings
     topics: tuple[str, ...]
@@ -76,8 +76,8 @@ class CompilationError(Exception):
         super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
 
 
-CompiledSourceLike = CompiledSource | CompiledMultiSource
-"""Union of all compiled source types accepted by a CompiledPlan."""
+CompiledSource = CompiledSingleSource | CompiledMultiSource
+"""Union of all compiled source variants accepted by a :class:`CompiledPlan`."""
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ class CompiledPlan:
     """Immutable result of compiling a StreamFlow."""
 
     name: str
-    source: CompiledSourceLike
+    source: CompiledSource
     nodes: tuple[CompiledNode, ...]
     output: CompiledSink | None
     error_routes: dict[ErrorKind, CompiledSink]

@@ -24,10 +24,8 @@ class _OrderPartitionStrategy:
 
 class TestBoundaryContracts:
     def test_topic_boundaries_hold_payload_classes_and_explicit_shapes(self) -> None:
-        from loom.streaming import IntoTopic as Topic
-
         source = FromTopic("orders.in", payload=Order, shape=StreamShape.BATCH)
-        target = Topic("orders.out", payload=Order, shape=StreamShape.MANY)
+        target = IntoTopic("orders.out", payload=Order, shape=StreamShape.MANY)
 
         assert source.name == "orders.in"
         assert source.payload is Order

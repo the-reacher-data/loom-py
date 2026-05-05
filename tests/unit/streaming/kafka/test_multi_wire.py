@@ -10,10 +10,12 @@ from loom.streaming.core._errors import ErrorEnvelope, ErrorMessage, ErrorMessag
 from loom.streaming.kafka import (
     DecodeError,
     DecodeOk,
+    DispatchTable,
     KafkaRecord,
     MessageDescriptor,
     MsgspecCodec,
     build_message,
+    try_decode_multi_record,
 )
 
 pytestmark = pytest.mark.kafka
@@ -67,92 +69,85 @@ def _record(value: bytes, topic: str = "events.all") -> KafkaRecord[bytes]:
 
 
 class TestTryDecodeMultiRecord:
-    def test_dispatches_first_type_by_message_type(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
+    @pytest.mark.parametrize(
+        ("payload", "message_type", "expected_type", "expected_field", "expected_value"),
+        [
+            (
+                _OrderEvent(order_id="o-1"),
+                _ORDER_MT,
+                _OrderEvent,
+                "order_id",
+                "o-1",
+            ),
+            (
+                _ProductEvent(sku="sku-1", stock=10),
+                _PRODUCT_MT,
+                _ProductEvent,
+                "sku",
+                "sku-1",
+            ),
+        ],
+    )
+    def test_dispatches_plain_types_by_message_type(
+        self,
+        payload: LoomFrozenStruct,
+        message_type: str,
+        expected_type: type[LoomFrozenStruct],
+        expected_field: str,
+        expected_value: str,
+    ) -> None:
         dispatch = DispatchTable(
             plain={_ORDER_MT: _OrderEvent, _PRODUCT_MT: _ProductEvent},
             error={},
         )
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = _record(_encode_plain(_OrderEvent(order_id="o-1"), _ORDER_MT))
+        record = _record(_encode_plain(payload, message_type))
 
         result = try_decode_multi_record(record, dispatch, codec)
 
         assert isinstance(result, DecodeOk)
-        assert isinstance(result.message.payload, _OrderEvent)
-        assert result.message.payload.order_id == "o-1"
+        assert isinstance(result.message.payload, expected_type)
+        assert getattr(result.message.payload, expected_field) == expected_value
 
-    def test_dispatches_second_type_by_message_type(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
-        dispatch = DispatchTable(
-            plain={_ORDER_MT: _OrderEvent, _PRODUCT_MT: _ProductEvent},
-            error={},
-        )
+    @pytest.mark.parametrize(
+        ("record", "expected_reason"),
+        [
+            (
+                _record(_encode_plain(_ProductEvent(sku="sku-1", stock=5), _PRODUCT_MT)),
+                _PRODUCT_MT,
+            ),
+            (
+                _record(b"not-msgpack"),
+                "failed to probe message_type from envelope",
+            ),
+        ],
+    )
+    def test_wire_errors_return_decode_error(
+        self,
+        record: KafkaRecord[bytes],
+        expected_reason: str,
+    ) -> None:
+        dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={})
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = _record(_encode_plain(_ProductEvent(sku="sku-1", stock=10), _PRODUCT_MT))
-
-        result = try_decode_multi_record(record, dispatch, codec)
-
-        assert isinstance(result, DecodeOk)
-        assert isinstance(result.message.payload, _ProductEvent)
-        assert result.message.payload.sku == "sku-1"
-
-    def test_unknown_message_type_returns_wire_error(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
-        dispatch = DispatchTable(
-            plain={_ORDER_MT: _OrderEvent},
-            error={},
-        )
-        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = _record(_encode_plain(_ProductEvent(sku="sku-1", stock=5), _PRODUCT_MT))
 
         result = try_decode_multi_record(record, dispatch, codec)
 
         assert isinstance(result, DecodeError)
         assert result.error.kind is ErrorKind.WIRE
-        assert _PRODUCT_MT in result.error.reason
+        assert expected_reason in result.error.reason
 
-    def test_malformed_bytes_for_known_type_returns_wire_error(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
-        dispatch = DispatchTable(
-            plain={_ORDER_MT: _OrderEvent},
-            error={},
-        )
-        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = _record(b"not-msgpack")
-
-        result = try_decode_multi_record(record, dispatch, codec)
-
-        assert isinstance(result, DecodeError)
-        assert result.error.kind is ErrorKind.WIRE
-
-    def test_dispatches_error_envelope_by_inner_payload_type(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
-        dispatch = DispatchTable(
-            plain={},
-            error={_ORDER_MT: ErrorEnvelope[_OrderEvent]},
-        )
-        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = _record(
-            _encode_error(_OrderEvent(order_id="o-2"), _ORDER_MT),
-            topic="errors.all",
-        )
-
-        result = try_decode_multi_record(record, dispatch, codec)
-
-        assert isinstance(result, DecodeOk)
-        assert isinstance(result.message.payload, ErrorEnvelope)
-        assert result.message.payload.payload_type == _ORDER_MT
-        assert result.message.payload.kind is ErrorKind.TASK
-
-    def test_distinguishes_two_error_envelope_variants(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
+    @pytest.mark.parametrize(
+        ("payload", "inner_message_type"),
+        [
+            (_OrderEvent(order_id="o-2"), _ORDER_MT),
+            (_ProductEvent(sku="s-1", stock=3), _PRODUCT_MT),
+        ],
+    )
+    def test_dispatches_error_envelope_by_inner_payload_type(
+        self,
+        payload: LoomFrozenStruct,
+        inner_message_type: str,
+    ) -> None:
         dispatch = DispatchTable(
             plain={},
             error={
@@ -162,25 +157,16 @@ class TestTryDecodeMultiRecord:
         )
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
 
-        order_record = _record(
-            _encode_error(_OrderEvent(order_id="o-3"), _ORDER_MT), topic="errors.all"
-        )
-        product_record = _record(
-            _encode_error(_ProductEvent(sku="s-1", stock=3), _PRODUCT_MT), topic="errors.all"
-        )
+        record = _record(_encode_error(payload, inner_message_type), topic="errors.all")
 
-        order_result = try_decode_multi_record(order_record, dispatch, codec)
-        product_result = try_decode_multi_record(product_record, dispatch, codec)
+        result = try_decode_multi_record(record, dispatch, codec)
 
-        assert isinstance(order_result, DecodeOk)
-        assert order_result.message.payload.payload_type == _ORDER_MT
-
-        assert isinstance(product_result, DecodeOk)
-        assert product_result.message.payload.payload_type == _PRODUCT_MT
+        assert isinstance(result, DecodeOk)
+        assert isinstance(result.message.payload, ErrorEnvelope)
+        assert result.message.payload.payload_type == inner_message_type
+        assert result.message.payload.kind is ErrorKind.TASK
 
     def test_error_envelope_with_unknown_inner_type_returns_wire_error(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
         dispatch = DispatchTable(
             plain={},
             error={_ORDER_MT: ErrorEnvelope[_OrderEvent]},
@@ -195,46 +181,50 @@ class TestTryDecodeMultiRecord:
         assert isinstance(result, DecodeError)
         assert result.error.kind is ErrorKind.WIRE
 
-    def test_preserves_record_metadata_on_decode_ok(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
-        dispatch = DispatchTable(
-            plain={_ORDER_MT: _OrderEvent},
-            error={},
-        )
-        codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = KafkaRecord(
-            topic="events.all",
-            key=b"tenant-1",
-            value=_encode_plain(_OrderEvent(order_id="o-4"), _ORDER_MT),
-            partition=2,
-            offset=5,
-            timestamp_ms=9999,
-        )
-
-        result = try_decode_multi_record(record, dispatch, codec)
-
-        assert isinstance(result, DecodeOk)
-        assert result.message.meta.topic == "events.all"
-        assert result.message.meta.partition == 2
-        assert result.message.meta.offset == 5
-        assert result.message.meta.key == b"tenant-1"
-
-    def test_preserves_record_metadata_on_decode_error(self) -> None:
-        from loom.streaming.kafka import DispatchTable, try_decode_multi_record
-
+    @pytest.mark.parametrize(
+        ("record", "expect_ok"),
+        [
+            (
+                KafkaRecord(
+                    topic="events.all",
+                    key=b"tenant-1",
+                    value=_encode_plain(_OrderEvent(order_id="o-4"), _ORDER_MT),
+                    partition=2,
+                    offset=5,
+                    timestamp_ms=9999,
+                ),
+                True,
+            ),
+            (
+                KafkaRecord(
+                    topic="events.all",
+                    key="k",
+                    value=b"garbage",
+                    partition=1,
+                    offset=7,
+                    timestamp_ms=111,
+                ),
+                False,
+            ),
+        ],
+    )
+    def test_preserves_record_metadata_on_decode_results(
+        self,
+        record: KafkaRecord[bytes],
+        expect_ok: bool,
+    ) -> None:
         dispatch = DispatchTable(plain={_ORDER_MT: _OrderEvent}, error={})
         codec: MsgspecCodec[LoomFrozenStruct] = MsgspecCodec()
-        record = KafkaRecord(
-            topic="events.all",
-            key="k",
-            value=b"garbage",
-            partition=1,
-            offset=7,
-            timestamp_ms=111,
-        )
 
         result = try_decode_multi_record(record, dispatch, codec)
+
+        if expect_ok:
+            assert isinstance(result, DecodeOk)
+            assert result.message.meta.topic == "events.all"
+            assert result.message.meta.partition == 2
+            assert result.message.meta.offset == 5
+            assert result.message.meta.key == b"tenant-1"
+            return
 
         assert isinstance(result, DecodeError)
         assert result.raw == b"garbage"
