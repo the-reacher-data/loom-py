@@ -69,6 +69,8 @@ def _skip_duplicate_reexports(
         ("loom.core.errors", "RuleViolations"),
         ("loom.core.use_case", "RuleViolation"),
         ("loom.core.use_case", "RuleViolations"),
+        ("loom.etl.observability", "OtelConfig"),
+        ("loom.testing", "CompilationError"),
         ("loom.rest.model", "PaginationMode"),
     }
     if (current_module, name) in duplicated_reexports:

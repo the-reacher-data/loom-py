@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from loom.core.routing import LogicalRef, as_logical_ref
 from loom.etl.declarative.expr._predicate import _ColOps
 
 
@@ -14,13 +15,13 @@ class TableRef:
 
     __slots__ = ("_ref",)
 
-    def __init__(self, ref: str) -> None:
-        self._ref = ref
+    def __init__(self, ref: str | LogicalRef) -> None:
+        self._ref = as_logical_ref(ref)
 
     @property
     def ref(self) -> str:
         """Raw dotted table reference."""
-        return self._ref
+        return self._ref.ref
 
     @property
     def c(self) -> _ColumnNamespace:
@@ -39,21 +40,21 @@ class TableRef:
         Returns:
             New ``TableRef`` with catalog prefix, or self if already qualified.
         """
-        parts = self._ref.split(".")
+        parts = self.ref.split(".")
         if len(parts) == 2 and default_catalog:
-            return TableRef(f"{default_catalog}.{self._ref}")
+            return TableRef(f"{default_catalog}.{self.ref}")
         return self
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TableRef):
             return NotImplemented
-        return self._ref == other._ref
+        return self.ref == other.ref
 
     def __hash__(self) -> int:
-        return hash(self._ref)
+        return hash(self.ref)
 
     def __repr__(self) -> str:
-        return f"TableRef({self._ref!r})"
+        return f"TableRef({self.ref!r})"
 
 
 class _ColumnNamespace:

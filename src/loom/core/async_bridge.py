@@ -1,0 +1,149 @@
+"""Persistent async portal for synchronous runtimes.
+
+Wraps anyio's blocking portal so that synchronous workers (Celery prefork,
+Bytewax operators) can execute async code without managing event loops directly.
+
+Lifecycle::
+
+    bridge = AsyncBridge()
+    result = bridge.run(some_coroutine())
+    bridge.shutdown()
+
+Backend selection::
+
+    # asyncio (default)
+    bridge = AsyncBridge()
+
+    # asyncio + uvloop
+    bridge = AsyncBridge(backend="asyncio", backend_options={"loop_factory": uvloop.new_event_loop})
+
+    # trio
+    bridge = AsyncBridge(backend="trio")
+
+Thread safety:
+    :meth:`run` is safe to call from the thread that owns the bridge.
+    :meth:`shutdown` must be called once at worker exit.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Coroutine
+from typing import Any, TypeVar, cast
+
+import anyio
+from anyio.from_thread import BlockingPortal, start_blocking_portal
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+class AsyncBridge:
+    """Anyio blocking portal wrapper for sync-to-async execution.
+
+    Args:
+        backend: Anyio backend name — ``"asyncio"`` or ``"trio"``.
+        backend_options: Backend-specific options passed to anyio.
+            For the asyncio backend, ``{"loop_factory": uvloop.new_event_loop}``
+            enables uvloop.
+        shutdown_timeout_ms: Maximum milliseconds to wait for in-flight tasks
+            to finish during :meth:`shutdown`.  When exceeded, the portal thread
+            is abandoned (it will be killed on process exit).  ``None`` waits
+            indefinitely.
+    """
+
+    __slots__ = (
+        "_backend",
+        "_backend_options",
+        "_closed",
+        "_portal",
+        "_portal_cm",
+        "_shutdown_timeout_ms",
+    )
+
+    def __init__(
+        self,
+        *,
+        backend: str = "asyncio",
+        backend_options: dict[str, Any] | None = None,
+        shutdown_timeout_ms: int | None = None,
+    ) -> None:
+        self._backend = backend
+        self._backend_options: dict[str, Any] = backend_options or {}
+        self._shutdown_timeout_ms = shutdown_timeout_ms
+        self._closed = False
+        self._portal_cm = start_blocking_portal(self._backend, self._backend_options)
+        self._portal: BlockingPortal = self._portal_cm.__enter__()
+
+    def run(self, coro: Coroutine[Any, Any, T], *, timeout: float | None = None) -> T:
+        """Submit *coro* to the portal and block until done.
+
+        Args:
+            coro: Awaitable coroutine.
+            timeout: Maximum seconds to wait.  ``None`` waits indefinitely.
+
+        Returns:
+            The coroutine's return value.
+
+        Raises:
+            RuntimeError: If the bridge has been shut down.
+            TimeoutError: If *timeout* elapses before completion.
+            Exception: Any exception raised by *coro*.
+        """
+        if self._closed:
+            coro.close()
+            raise RuntimeError("AsyncBridge has been shut down.")
+        if timeout is not None:
+            return cast(T, self._portal.call(_await_with_timeout, coro, timeout))
+        return cast(T, self._portal.call(_await_coro, coro))
+
+    @property
+    def is_alive(self) -> bool:
+        """Whether the portal is still open."""
+        return not self._closed
+
+    def shutdown(self) -> None:
+        """Close the portal and release the background thread.
+
+        Idempotent — safe to call multiple times.  When *shutdown_timeout_ms*
+        was provided at construction, the portal exit runs in a daemon thread
+        and the call returns after the timeout regardless of whether in-flight
+        tasks have finished.  The daemon thread is silently abandoned and will
+        be killed when the process exits.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._shutdown_timeout_ms is None:
+            self._portal_cm.__exit__(None, None, None)
+            return
+        _exit_portal_with_timeout(self._portal_cm, self._shutdown_timeout_ms)
+
+
+def _exit_portal_with_timeout(portal_cm: Any, timeout_ms: int) -> None:
+    """Run portal.__exit__ in a daemon thread, return after *timeout_ms* ms."""
+    done = threading.Event()
+
+    def _do_exit() -> None:
+        portal_cm.__exit__(None, None, None)
+        done.set()
+
+    thread = threading.Thread(target=_do_exit, daemon=True)
+    thread.start()
+    if not done.wait(timeout=timeout_ms / 1000):
+        logger.warning("async_bridge_shutdown_timeout", extra={"timeout_ms": timeout_ms})
+
+
+async def _await_coro(coro: Coroutine[Any, Any, T]) -> T:
+    return await coro
+
+
+async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:  # noqa: S7483
+    with anyio.fail_after(timeout):
+        return await coro
+
+
+AsyncWorker = AsyncBridge
+
+__all__ = ["AsyncBridge", "AsyncWorker"]

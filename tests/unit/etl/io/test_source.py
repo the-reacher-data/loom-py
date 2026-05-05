@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
+from loom.core.routing import LogicalRef
 from loom.etl.declarative._format import Format
 from loom.etl.declarative.expr._params import params
 from loom.etl.declarative.expr._refs import TableRef, col
@@ -31,11 +32,12 @@ class TestFromTable:
         [
             ("raw.orders", "raw.orders", False),
             (TableRef("raw.orders"), "raw.orders", True),
+            (LogicalRef("raw.orders"), "raw.orders", False),
         ],
     )
     def test_ref_normalization(
         self,
-        ref: str | TableRef,
+        ref: str | LogicalRef | TableRef,
         expected_ref: str,
         is_same_instance: bool,
     ) -> None:

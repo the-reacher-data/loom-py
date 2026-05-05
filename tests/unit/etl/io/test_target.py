@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from loom.core.routing import LogicalRef
 from loom.etl import col
 from loom.etl.checkpoint import CheckpointScope
 from loom.etl.declarative._format import Format
@@ -91,10 +92,15 @@ class TestIntoTableModes:
         "table_ref,expected",
         [
             ("staging.orders", TableRef("staging.orders")),
+            (LogicalRef("staging.orders"), TableRef("staging.orders")),
             (TableRef("staging.orders"), TableRef("staging.orders")),
         ],
     )
-    def test_table_ref_normalization(self, table_ref: str | TableRef, expected: TableRef) -> None:
+    def test_table_ref_normalization(
+        self,
+        table_ref: str | LogicalRef | TableRef,
+        expected: TableRef,
+    ) -> None:
         spec = IntoTable(table_ref)._to_spec()
         assert spec.table_ref == expected
 

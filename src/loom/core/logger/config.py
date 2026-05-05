@@ -136,6 +136,10 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
             setup.  Useful for silencing noisy third-party libraries like
             ``celery`` or ``redis`` from YAML.
         handlers: Additional stdlib handler configurations.
+        fields: Static key-value pairs bound globally at startup via
+            ``structlog.contextvars``.  Every log entry will carry these
+            fields automatically.  Useful for per-deployment metadata such as
+            ``service``, ``version``, or ``region``.
 
     Example::
 
@@ -148,6 +152,7 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
             level=cfg.level,
             named_levels=cfg.named_levels,
             handlers=cfg.handlers,
+            fields=cfg.fields,
         )
     """
 
@@ -158,6 +163,7 @@ class LoggerConfig(msgspec.Struct, kw_only=True):
     level: str = "INFO"
     named_levels: dict[str, str] = msgspec.field(default_factory=dict)
     handlers: list[HandlerConfig] = msgspec.field(default_factory=list)
+    fields: dict[str, str] = msgspec.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -174,6 +180,8 @@ class LogConfig:
         name: stdlib logger name to attach handlers to. ``""`` targets the root logger.
         named_levels: Per-logger level overrides for specific stdlib logger names.
         handlers: stdlib handler configurations. Empty tuple falls back to ``basicConfig``.
+        fields: Static key-value pairs bound globally at startup via
+            ``structlog.contextvars``.  Every log entry will carry these fields.
         extra_processors: Additional structlog processors inserted before the final renderer.
 
     Example:
@@ -188,6 +196,7 @@ class LogConfig:
     name: str = ""
     named_levels: tuple[tuple[str, str], ...] = ()
     handlers: tuple[HandlerConfig, ...] = ()
+    fields: tuple[tuple[str, str], ...] = ()
     extra_processors: tuple[Any, ...] = ()
 
 
@@ -267,11 +276,23 @@ def configure_logging_from_values(
     level: str = "INFO",
     named_levels: Mapping[str, str] | None = None,
     handlers: Sequence[HandlerConfig] = (),
+    fields: Mapping[str, str] | None = None,
 ) -> None:
     """Configure logging from plain scalar values.
 
     Intended for bootstrap layers that parse config structs and want to avoid
     duplicating ``Environment``/``Renderer`` conversion logic.
+
+    Args:
+        name: stdlib logger name. ``""`` targets the root logger.
+        environment: Deployment environment string (``"dev"``, ``"prod"``).
+        renderer: Output renderer name (``"json"`` or ``"console"``).
+        colors: Enable ANSI colours. ``None`` auto-detects from ``environment``.
+        level: Minimum log level name.
+        named_levels: Per-logger level overrides.
+        handlers: stdlib handler configurations.
+        fields: Static key-value pairs bound globally at startup. Every log
+            entry will carry these fields automatically via ``structlog.contextvars``.
     """
     env = Environment.from_str(environment.strip()) if environment.strip() else Environment.DEV
     configure_logging(
@@ -283,6 +304,7 @@ def configure_logging_from_values(
             level=level,
             named_levels=tuple((named_levels or {}).items()),
             handlers=tuple(handlers),
+            fields=tuple((fields or {}).items()),
         )
     )
 
@@ -305,6 +327,9 @@ def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:
     level = _parse_level(config.level)
     _setup_stdlib(config, level)
     _apply_named_levels(config)
+
+    if config.fields:
+        structlog.contextvars.bind_contextvars(**dict(config.fields))
 
     structlog.configure(
         processors=[

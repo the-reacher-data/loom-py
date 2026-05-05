@@ -164,6 +164,29 @@ wheels = [
 ]
 
 [[package]]
+name = "bytewax"
+version = "0.21.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "prometheus-client" },
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/14/7a/a102ec999fb53634589e186b03fc25904ed64d632840714f8085ba2a007f/bytewax-0.21.1-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:c53a7fd5b2c4dc30f7574c85f9e7dd017c2365c05f714cf5215871dea190199c", size = 6141867, upload-time = "2024-11-25T20:09:46.138Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/cf/3d2e7a19dda70a0399f690b87419ce57d5f04d0693941f157edc4feb9cef/bytewax-0.21.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:87f01bd8e92a873e84fb98959bd53c0ef955fcd9f8b9d0f6c0945014bc7f59d0", size = 6049823, upload-time = "2024-11-25T20:09:48.376Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/aa/00658c797fcc28a1bba208b8bf92fc6892059b75ece180894a4cd17ed4b3/bytewax-0.21.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e809e15308262679c3366b262a56675f699bd53cc0ff41b0e124768c59232e94", size = 7960629, upload-time = "2024-11-25T20:09:50.771Z" },
+    { url = "https://files.pythonhosted.org/packages/31/e5/7f7775dd2a2f64e454a215cfab3bd5955241a261dd4c1f055c7cf6497f49/bytewax-0.21.1-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:9495b4a677f6675a70790c66176646a4994ca5af82624703292e54b0e45d5682", size = 7688534, upload-time = "2024-11-25T20:09:52.468Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/dd/6c2d93f9c699f36462e37611b9e370d099953b6ab9f7171bd504db0c3567/bytewax-0.21.1-cp311-cp311-manylinux_2_31_x86_64.whl", hash = "sha256:877f63068c963b62d2171302d1fc1b7aa221c40087c7b2478e4ba4e50e26eb1e", size = 7978417, upload-time = "2024-11-25T20:09:53.95Z" },
+    { url = "https://files.pythonhosted.org/packages/90/a9/e06af46d9d0122c235abd9604e1fd286adf464450f18d726e9b36cba7e94/bytewax-0.21.1-cp311-none-win_amd64.whl", hash = "sha256:7ede7d3b1626fb65a584a0d8944244da329a64a6f974ab386b12243dc934b52d", size = 5177076, upload-time = "2024-11-25T20:09:55.353Z" },
+    { url = "https://files.pythonhosted.org/packages/41/eb/ee253e60ab676e2a70aa306cffee67d6a6a40993c8467d3b83ea8bb91e99/bytewax-0.21.1-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:62f5edef91908e555b70f3794271cd29ff29132a63b0b5cd367c5f53695a3c14", size = 6140409, upload-time = "2024-11-25T20:09:56.772Z" },
+    { url = "https://files.pythonhosted.org/packages/38/ef/4dd07083f32f9b019101837a10dc97806fbe3455c70f8cd976eb987dedab/bytewax-0.21.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:e3ab20069f323ffe508249d72c8c708cac05fddea11b74943103c623676785b6", size = 6041464, upload-time = "2024-11-25T20:09:58.244Z" },
+    { url = "https://files.pythonhosted.org/packages/20/1c/41b84d0de3949d75dd52b4b04341bed1c72250c4c1e017b527d7f7570f0b/bytewax-0.21.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ed8da9bfceb3299df8cf4e8e7efbbda924dbbfea990dff50c8602a059dc8b9cf", size = 7953966, upload-time = "2024-11-25T20:09:59.709Z" },
+    { url = "https://files.pythonhosted.org/packages/87/f2/57829eea0d188bd1d54e2555a11ecfd3589ec66d710c8163fb7010a0c82e/bytewax-0.21.1-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:ba078e8bc7c6f1e7d7c99c4c07433977717b949112fc53377a0b0f3289398072", size = 7681915, upload-time = "2024-11-25T20:10:01.819Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/66/47d1dbdd2a035074b2be3eac983d15742cc2749fee24aa3cc0c505277622/bytewax-0.21.1-cp312-cp312-manylinux_2_31_x86_64.whl", hash = "sha256:a118a61a5fc5a1849605e062f80e897922dbdadd37790cf8379e8f1e000d463c", size = 7983932, upload-time = "2024-11-25T20:10:03.284Z" },
+    { url = "https://files.pythonhosted.org/packages/de/bc/82686047e63fa709dc084399230c430c4fd2f2f2de3cf8be8d339ebd3f21/bytewax-0.21.1-cp312-none-win_amd64.whl", hash = "sha256:9b3c44984fe76da1fbac941392103610f884523a733a43fcd74543927c179854", size = 5183365, upload-time = "2024-11-25T20:10:04.676Z" },
+]
+
+[[package]]
 name = "celery"
 version = "5.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -365,6 +388,34 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/16/18/8d88d98251fe3cdf5ae97a780807ecd33dcb394875ba7ce7664ac92c4fa1/commitizen-4.13.7.tar.gz", hash = "sha256:61b1872a3b5b9da69f1819a4e238249071a636ef422cf6f3735c491eb77e9526", size = 64093, upload-time = "2026-02-09T11:48:53.426Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/31/64/663c6e9cf645000acc26571959492b6a6ab06251aba2053f04b6fa0d0543/commitizen-4.13.7-py3-none-any.whl", hash = "sha256:7e179fa2a29626d330e38332e3f306caa3f11ac1cc0bc139f61dff167f224434", size = 85340, upload-time = "2026-02-09T11:48:51.797Z" },
+]
+
+[[package]]
+name = "confluent-kafka"
+version = "2.14.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/52/2c71d8e0b2de51076f90cea05342dc9c20fa14ded11992827680db4bbdfa/confluent_kafka-2.14.0.tar.gz", hash = "sha256:34efddfd06766d1153d10a70c23a98f6035e253a906db8ed04cb0249fc3b0fd2", size = 287868, upload-time = "2026-04-02T11:28:57.862Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/87/ae316df6411e87c14acf9d83bff12582a0f45dea76df1b5d2a623701d389/confluent_kafka-2.14.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:21c5ce6f388a5bd5d8f102026250faa528694cf7cf71fb6a1b321dad27874c1c", size = 3645064, upload-time = "2026-04-02T11:27:56.259Z" },
+    { url = "https://files.pythonhosted.org/packages/41/5f/b154300af17a3f03a8fb071d9e3ec857d60b27191560f323b750966272ba/confluent_kafka-2.14.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:2eaeabe10c44f8b4c0b879602e804548f2c49eae9e5d40a6d88e372c4c876810", size = 3203249, upload-time = "2026-04-02T11:27:58.556Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/5e/2d051982b3097e5bee61e2b38d1c95079db78b6c13bafe750d159fcfe6d1/confluent_kafka-2.14.0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:163f30cfe49f56d85d208ddf6db50a64cb4156d85ff0d5925cbf53c9c1ff5229", size = 3734511, upload-time = "2026-04-02T11:28:00.939Z" },
+    { url = "https://files.pythonhosted.org/packages/05/fd/17f9982fc7ba905c2f667a6a5b8ce8fd032d42c97235235d35ccee172b70/confluent_kafka-2.14.0-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:c86583d81b71c097e7fb9b2b7e45aa7e3f43cf23308319e0d6bd6eede3027732", size = 3991298, upload-time = "2026-04-02T11:28:03.375Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/16/069b1d090fa76a62dc3c897f2b081f42208cc8ee3c7dfa75d8e0852c9935/confluent_kafka-2.14.0-cp311-cp311-win_amd64.whl", hash = "sha256:74a9af680de1aab2a701c3a4645275374f556cabbf559fa569450fe4f8c61e25", size = 4111893, upload-time = "2026-04-02T11:28:05.799Z" },
+    { url = "https://files.pythonhosted.org/packages/12/05/f27091396c1e5fb98844e3e8b114ec7b896d1b54209e796e3946649de2cd/confluent_kafka-2.14.0-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:737b63f2389c9d63f3da0923681aa95abad1cb2f96b10f38192ef19ab727c883", size = 3650743, upload-time = "2026-04-02T11:28:07.697Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/49/b9de672412c4290b4719f99ac17b31ff35c64b221e4961a3047f6c1f334f/confluent_kafka-2.14.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1610aa31880c874bfa3351d898d6e6cdbfab2a0f9443598fd64425bbc815cb06", size = 3207894, upload-time = "2026-04-02T11:28:09.813Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/b6/d892b50a48bbd95e8937d557baf89ffa07fc48bc27f792141476a004334d/confluent_kafka-2.14.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:9cca8929bbc3d68a3299b21239c48def860f04e4661c7a59efe3104ecaea0e08", size = 3739440, upload-time = "2026-04-02T11:28:11.595Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/27/04d0f106820219e2621cf9e9a3ab49e910b7a19e55a72a21768b82031a85/confluent_kafka-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4d2e4718371c06579f649835239d1acf6ab5386a88f70e9cb9b839855c83c4a9", size = 3995763, upload-time = "2026-04-02T11:28:14.46Z" },
+    { url = "https://files.pythonhosted.org/packages/64/d9/46258cefee841d65dda31d20ce61d12f7573e07ef8d26f49169edfd0b0fa/confluent_kafka-2.14.0-cp312-cp312-win_amd64.whl", hash = "sha256:c37aff51512e817316edd6eafa8a2e59745052a7d1e61e09931b1caa11803266", size = 4112399, upload-time = "2026-04-02T11:28:16.264Z" },
+    { url = "https://files.pythonhosted.org/packages/26/a3/13ca4b42c580cb8e8d4bc0711467c7c501573f0133dcaf1ed6d7e34abb42/confluent_kafka-2.14.0-cp313-cp313-macosx_13_0_arm64.whl", hash = "sha256:a6dc0e49e8ac99854bd89ec7ac16c54af4488c7617baa633e615320dfbe44b25", size = 3212698, upload-time = "2026-04-02T11:28:18.351Z" },
+    { url = "https://files.pythonhosted.org/packages/27/f6/3b4744a8d1b7714500e830a615671d27f76bf64c15966740cc6ee1c960f7/confluent_kafka-2.14.0-cp313-cp313-macosx_13_0_x86_64.whl", hash = "sha256:308c972b23f44e4d0eb3e76b987872c9a7d04148a5a4f29313bbbec3841d75b4", size = 3654148, upload-time = "2026-04-02T11:28:20.532Z" },
+    { url = "https://files.pythonhosted.org/packages/48/9b/928775785983a2840c1944a689308e346badb2475765030f8e2a0db21f7a/confluent_kafka-2.14.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:9b0acf2fffa19a6ffc2d6f0b82f3b7f1771f5d3943312438f3532ae69b6f2e83", size = 3739774, upload-time = "2026-04-02T11:28:22.283Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/37/c2d7a24f0c12673c763b25c2b32defe3b47b8458ad54befd842b6a3a0cde/confluent_kafka-2.14.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:0023a941dbd8a2325e9e0d13ed1b2236c7d4ff3279b3d99cf06cf1409ab26d22", size = 3996169, upload-time = "2026-04-02T11:28:24.639Z" },
+    { url = "https://files.pythonhosted.org/packages/be/fe/4c2e517a404110adbb5b560dafb5d0b3ba36c2af47d52b5508c90f65d5b0/confluent_kafka-2.14.0-cp313-cp313-win_amd64.whl", hash = "sha256:3da898df3ebb866f61312365e9108cbadcfe74fb73af8d03add856542e715cfe", size = 4172080, upload-time = "2026-04-02T11:28:26.801Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/07/e217beea9a543c53484144164db337b33ec7f95912cc76f09f03fbc6ee7f/confluent_kafka-2.14.0-cp314-cp314-macosx_13_0_arm64.whl", hash = "sha256:05bbf9745cadb1a6fd3b03508572d2cd5455d8d9960a437537ddac9d3f89ee49", size = 3212541, upload-time = "2026-04-02T11:28:28.882Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/73/cbb44df7afa3ac8746e0ebc37be5f457d0e91e32648c144226da26c5f682/confluent_kafka-2.14.0-cp314-cp314-macosx_13_0_x86_64.whl", hash = "sha256:32a72ff85d7b4428532aa477b8dfa4223a5c69f4e90fecaa64e1924cc99a06b6", size = 3653993, upload-time = "2026-04-02T11:28:31.042Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/49/49d9e62ff70a06e68c96dd65d8e621583e6b51682ccc08051ec585bfdf96/confluent_kafka-2.14.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:4fd75d53e0e36f7ff9c5454f7a3cf4a54790db3bfda169c3b582ddc97111f6f6", size = 3739535, upload-time = "2026-04-02T11:28:32.844Z" },
+    { url = "https://files.pythonhosted.org/packages/33/6a/df467787418c24e063ed0c19e96aedf05c26eabc32d8adc75235d45d830b/confluent_kafka-2.14.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:eb17528ec7b177ec5e38214852f3dadb5d77172e0fb25c7c992c0cbc3dcfbaa2", size = 3995845, upload-time = "2026-04-02T11:28:34.538Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/0a/c5ce2a48ece0ae2dd050ab28d4cd81b9efc610276a4e72f622582f5371d3/confluent_kafka-2.14.0-cp314-cp314-win_amd64.whl", hash = "sha256:578afb532ded604cb98174a14a88847367191bcbe4f52a1661f5238dc5cf75dd", size = 4290326, upload-time = "2026-04-02T11:28:36.679Z" },
 ]
 
 [[package]]
@@ -917,7 +968,7 @@ wheels = [
 
 [[package]]
 name = "loom-kernel"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },
@@ -983,14 +1034,26 @@ rest = [
 sqlalchemy = [
     { name = "sqlalchemy" },
 ]
+streaming = [
+    { name = "anyio" },
+    { name = "bytewax" },
+    { name = "confluent-kafka" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "aiocache" },
     { name = "aiosqlite" },
+    { name = "bytewax" },
     { name = "celery" },
     { name = "chispa" },
     { name = "commitizen" },
+    { name = "confluent-kafka" },
     { name = "delta-spark" },
     { name = "deltalake" },
     { name = "fakeredis" },
@@ -1025,7 +1088,10 @@ dev = [
 requires-dist = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
+    { name = "anyio", marker = "extra == 'streaming'", specifier = ">=4.0,<5.0" },
+    { name = "bytewax", marker = "extra == 'streaming'", specifier = ">=0.21" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
+    { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.6,<3.0" },
     { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=1.5,<2.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
@@ -1042,15 +1108,19 @@ requires-dist = [
     { name = "opentelemetry-api", marker = "extra == 'etl-otel'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-api", marker = "extra == 'etl-polars'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-api", marker = "extra == 'etl-spark'", specifier = ">=1.20,<2.0" },
+    { name = "opentelemetry-api", marker = "extra == 'streaming'", specifier = ">=1.27,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'etl-otel'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'etl-polars'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'etl-spark'", specifier = ">=1.20,<2.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'streaming'", specifier = ">=1.27,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'etl-otel'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'etl-polars'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'etl-spark'", specifier = ">=1.20,<2.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'streaming'", specifier = ">=1.27,<2.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'etl-otel'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'etl-polars'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-sdk", marker = "extra == 'etl-spark'", specifier = ">=1.20,<2.0" },
+    { name = "opentelemetry-sdk", marker = "extra == 'streaming'", specifier = ">=1.27,<2.0" },
     { name = "polars", marker = "extra == 'etl-polars'", specifier = ">=1.0,<2.0" },
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "prometheus-client", marker = "extra == 'prometheus'", specifier = ">=0.20" },
@@ -1063,16 +1133,19 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.4,<26.0" },
     { name = "uvicorn", marker = "extra == 'rest'", specifier = ">=0.30,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
+    { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },
 ]
-provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "etl-spark", "etl-otel", "pyspark", "prometheus", "celery"]
+provides-extras = ["rest", "sqlalchemy", "config", "cache", "etl-polars", "etl-spark", "etl-otel", "pyspark", "prometheus", "streaming", "celery"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "aiocache", specifier = ">=0.12,<1.0" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "bytewax", specifier = ">=0.21" },
     { name = "celery", specifier = ">=5.3,<6.0" },
     { name = "chispa", specifier = ">=0.10,<1.0" },
     { name = "commitizen", specifier = ">=3.30.0" },
+    { name = "confluent-kafka", specifier = ">=2.6,<3.0" },
     { name = "delta-spark", specifier = ">=3.2,<4.0" },
     { name = "deltalake", specifier = ">=1.5,<2.0" },
     { name = "fakeredis", specifier = ">=2.23.0" },

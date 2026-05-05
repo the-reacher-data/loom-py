@@ -63,6 +63,16 @@ pyspark = [
 prometheus = [
     "prometheus-client>=0.20",
 ]
+streaming = [
+    "anyio>=4.0,<5.0",
+    "confluent-kafka>=2.6,<3.0",
+    "bytewax>=0.21",
+    "uvloop>=0.21,<1.0; sys_platform != 'win32'",
+    "opentelemetry-api>=1.27,<2.0",
+    "opentelemetry-sdk>=1.27,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27,<2.0",
+]
 celery = [
     "celery>=5.3,<6.0",
     "kombu>=5.3,<6.0",
@@ -113,6 +123,8 @@ dev = [
     "chispa>=0.10,<1.0",
     "pytest-cov>=7.1.0",
     "findspark>=2.0.1",
+    "confluent-kafka>=2.6,<3.0",
+    "bytewax>=0.21",
     "opentelemetry-api>=1.20,<2.0",
     "opentelemetry-sdk>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
@@ -202,6 +214,12 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "DEBUG"
 log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
+markers = [
+    "bytewax: tests that exercise the Bytewax adapter and runtime wiring",
+    "kafka: tests that exercise Kafka transport and codecs",
+    "integration: end-to-end streaming flow tests",
+    "slow: long-running tests that should be opt-in in CI",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

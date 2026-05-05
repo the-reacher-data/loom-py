@@ -94,10 +94,8 @@ class CoreProfilePlan:
 class _CoreEntityAdapter:
     """Wraps a Core ``RowMapping`` plus pre-loaded relation data.
 
-    ``__slots__`` without ``__dict__`` ensures
-    ``hasattr(obj, "__dict__") is False``, which bypasses the ORM guard in
-    :func:`~loom.core.projection.loaders._related_values` transparently —
-    no changes to the loader layer are required.
+    ``__slots__`` keeps the adapter lean and guarantees relation data is read
+    from the preloaded mapping rather than a mutable instance dictionary.
     """
 
     __slots__ = ("_row", "_relations")

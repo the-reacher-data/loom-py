@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
+from loom.core.routing import LogicalRef
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import ReadOptions
 from loom.etl.declarative._utils import _clone_slots
@@ -79,8 +80,8 @@ class FromTable:
 
     __slots__ = ("_ref", "_predicates", "_schema", "_columns", "_json_columns")
 
-    def __init__(self, ref: str | TableRef) -> None:
-        self._ref: TableRef = TableRef(ref) if isinstance(ref, str) else ref
+    def __init__(self, ref: str | LogicalRef | TableRef) -> None:
+        self._ref: TableRef = ref if isinstance(ref, TableRef) else TableRef(ref)
         self._predicates: tuple[PredicateNode, ...] = ()
         self._schema: tuple[ColumnSchema, ...] = ()
         self._columns: tuple[str, ...] = ()
