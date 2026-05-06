@@ -220,6 +220,39 @@ class _UpperBatchExpandStep(BatchExpandStep[_Payload, _Payload]):
         ]
 
 
+class _InvalidBatchStep(BatchStep[_Payload, _Payload]):
+    def execute(
+        self,
+        messages: list[Message[StreamPayload]],
+        **kwargs: object,
+    ) -> Any:
+        del kwargs
+        del messages
+        return _Payload(value="bad")
+
+
+class _InvalidExpandStep(ExpandStep[_Payload, _Payload]):
+    def execute(
+        self,
+        message: Message[StreamPayload],
+        **kwargs: object,
+    ) -> Any:
+        del kwargs
+        del message
+        return _Payload(value="bad")
+
+
+class _InvalidBatchExpandStep(BatchExpandStep[_Payload, _Payload]):
+    def execute(
+        self,
+        messages: list[Message[StreamPayload]],
+        **kwargs: object,
+    ) -> Any:
+        del kwargs
+        del messages
+        return _Payload(value="bad")
+
+
 class _ContextAwareRecordStep(RecordStep[_Payload, _Payload]):
     def __init__(self) -> None:
         self.context: dict[str, object] | None = None
@@ -467,6 +500,18 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
     ]
 
 
+def test_execute_batch_step_rejects_non_list_result() -> None:
+    with pytest.raises(TypeError, match="UpperBatch must return a list of payloads."):
+        _steps._execute_batch_step(
+            ObservabilityRuntime.noop(),
+            "orders",
+            2,
+            "UpperBatch",
+            _InvalidBatchStep(),
+            [_message("a"), _message("b")],
+        )
+
+
 def test_execute_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
     runtime = ObservabilityRuntime([observer])
@@ -484,6 +529,18 @@ def test_execute_expand_step_replaces_payloads_and_observes() -> None:
         ("start", "orders", 3, "UpperExpand"),
         ("end", "orders", 3, "UpperExpand:success"),
     ]
+
+
+def test_execute_expand_step_rejects_non_iterable_result() -> None:
+    with pytest.raises(TypeError, match="UpperExpand must return an iterable of payloads."):
+        _steps._execute_expand_step(
+            ObservabilityRuntime.noop(),
+            "orders",
+            3,
+            "UpperExpand",
+            _InvalidExpandStep(),
+            _message("ab"),
+        )
 
 
 def test_execute_expand_step_accepts_replacement_messages() -> None:
@@ -521,6 +578,21 @@ def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
         ("start", "orders", 4, "UpperBatchExpand"),
         ("end", "orders", 4, "UpperBatchExpand:success"),
     ]
+
+
+def test_execute_batch_expand_step_rejects_non_iterable_result() -> None:
+    with pytest.raises(
+        TypeError,
+        match="UpperBatchExpand must return an iterable of payloads.",
+    ):
+        _steps._execute_batch_expand_step(
+            ObservabilityRuntime.noop(),
+            "orders",
+            4,
+            "UpperBatchExpand",
+            _InvalidBatchExpandStep(),
+            [_message("a"), _message("b")],
+        )
 
 
 def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> None:

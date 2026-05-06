@@ -156,9 +156,10 @@ class TestRuntimeIOBuilders:
 
         codec = MsgspecCodec[Order]()
         assert len(fake_raw.sent) >= 2
-        decoded_message = codec.decode(fake_raw.sent[0].value, Order)
+        first_record, second_record = fake_raw.sent[:2]
+        decoded_message = codec.decode(first_record.value, Order)
         decoded_error = MsgspecCodec[ErrorEnvelope[Order]]().decode(
-            fake_raw.sent[1].value,
+            second_record.value,
             ErrorEnvelope[Order],
         )
 

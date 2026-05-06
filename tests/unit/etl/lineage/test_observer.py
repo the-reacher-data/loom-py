@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.etl.lineage._observer import LineageObserver
-from loom.etl.lineage._records import EventName, PipelineRunRecord, RunStatus, StepRunRecord
+from loom.etl.lineage._records import (
+    EventName,
+    PipelineRunRecord,
+    ProcessRunRecord,
+    RunStatus,
+    StepRunRecord,
+)
 
 
 class _CaptureStore:
@@ -88,3 +94,94 @@ def test_lineage_observer_writes_step_error_details_on_failure() -> None:
     assert record.error == "boom"
     assert record.error_type == "RuntimeError"
     assert record.error_message == "boom"
+
+
+def test_lineage_observer_handles_process_record_and_defaults() -> None:
+    store = _CaptureStore()
+    observer = LineageObserver(store)
+
+    observer.on_event(
+        LifecycleEvent.start(
+            scope=Scope.PROCESS,
+            name="BuildCatalog",
+            id="proc-1",
+            correlation_id="corr-1",
+            meta={"run_id": "run-1"},
+        )
+    )
+    observer.on_event(
+        LifecycleEvent.exception(
+            scope=Scope.PROCESS,
+            name="BuildCatalog",
+            id="proc-1",
+            correlation_id="corr-1",
+            error="boom",
+            meta={"run_id": "run-1", "error_type": "ValueError"},
+        )
+    )
+
+    assert len(store.records) == 1
+    [record] = store.records
+    assert isinstance(record, ProcessRunRecord)
+    assert record.event is EventName.PROCESS_END
+    assert record.run_id == "run-1"
+    assert record.attempt == 1
+    assert record.status is RunStatus.FAILED
+    assert record.error == "boom"
+    assert record.error_type == "ValueError"
+
+
+def test_lineage_observer_handles_step_success_and_ignores_unknown_scope() -> None:
+    store = _CaptureStore()
+    observer = LineageObserver(store)
+
+    observer.on_event(
+        LifecycleEvent.start(
+            scope=Scope.STEP,
+            name="Transform",
+            id="step-1",
+            meta={"run_id": "run-1", "process_run_id": "proc-1"},
+        )
+    )
+    observer.on_event(
+        LifecycleEvent.end(
+            scope=Scope.STEP,
+            name="Transform",
+            id="step-1",
+            duration_ms=2.0,
+            status=LifecycleStatus.SUCCESS,
+            meta={"run_id": "run-1", "process_run_id": "proc-1"},
+        )
+    )
+    observer.on_event(
+        LifecycleEvent(
+            scope=Scope.USE_CASE,
+            name="ignored",
+            kind=EventKind.START,
+        )
+    )
+
+    assert len(store.records) == 1
+    [record] = store.records
+    assert isinstance(record, StepRunRecord)
+    assert record.event is EventName.STEP_END
+    assert record.process_run_id == "proc-1"
+    assert record.status is RunStatus.SUCCESS
+    assert record.duration_ms == 2
+
+
+def test_lineage_observer_ignores_terminal_events_without_start() -> None:
+    store = _CaptureStore()
+    observer = LineageObserver(store)
+
+    observer.on_event(
+        LifecycleEvent.end(
+            scope=Scope.PIPELINE,
+            name="DailyPipeline",
+            id="missing",
+            duration_ms=1.0,
+            status=LifecycleStatus.SUCCESS,
+        )
+    )
+
+    assert store.records == []

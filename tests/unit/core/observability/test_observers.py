@@ -133,11 +133,11 @@ class TestStructlogLifecycleObserver:
 
             def info(self, event: str, **_: object) -> None:
                 # Intentional no-op: this branch is not exercised here.
-                pass
+                return None
 
             def error(self, event: str, **_: object) -> None:
                 # Intentional no-op: this branch is not exercised here.
-                pass
+                return None
 
         monkeypatch.setattr(structlog, "get_logger", lambda *_: _FakeLogger())
         observer = StructlogLifecycleObserver()
@@ -162,14 +162,14 @@ class TestStructlogLifecycleObserver:
 
             def debug(self, event: str, **_: object) -> None:
                 # Intentional no-op: this branch is not exercised here.
-                pass
+                return None
 
             def info(self, event: str, **kwargs: object) -> None:
                 captured.update(kwargs)
 
             def error(self, event: str, **_: object) -> None:
                 # Intentional no-op: this branch is not exercised here.
-                pass
+                return None
 
         monkeypatch.setattr(structlog, "get_logger", lambda *_: _FakeLogger())
         observer = StructlogLifecycleObserver()

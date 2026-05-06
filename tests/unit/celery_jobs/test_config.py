@@ -31,7 +31,7 @@ class _JobA(Job[None]):
 
     def execute(self) -> None:
         # Intentional no-op: the test only needs a concrete Job subclass.
-        pass
+        return None
 
 
 class _JobB(Job[None]):
@@ -40,7 +40,7 @@ class _JobB(Job[None]):
 
     def execute(self) -> None:
         # Intentional no-op: the test only needs a concrete Job subclass.
-        pass
+        return None
 
 
 # ---------------------------------------------------------------------------

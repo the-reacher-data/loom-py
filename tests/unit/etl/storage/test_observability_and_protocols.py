@@ -49,6 +49,7 @@ def test_etl_observability_config_defaults_and_conversion() -> None:
 
 
 def test_lineage_config_validate_requires_exactly_one_destination() -> None:
+    LineageConfig().validate()
     LineageConfig(enabled=True, root="s3://lake/runs").validate()
     LineageConfig(enabled=True, database="ops").validate()
 

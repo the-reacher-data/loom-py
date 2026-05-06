@@ -219,42 +219,33 @@ class ETLExecutor:
             step_run_id,
             [b.alias for b in plan.source_bindings],
         )
-        status = RunStatus.SUCCESS
-        try:
-            with self._observability.span(
-                Scope.STEP,
-                plan.step_type.__name__,
-                trace_id=ctx.run_id,
-                correlation_id=ctx.correlation_id,
-                id=step_run_id,
-                run_id=ctx.run_id,
-                process_run_id=ctx.process_run_id,
-                step_run_id=step_run_id,
-                sources=[b.alias for b in plan.source_bindings],
-                target=str(
-                    getattr(plan.target_binding.spec, "table_ref", None)
-                    or getattr(plan.target_binding.spec, "path", None)
-                ),
-                streaming=plan.streaming,
-            ):
-                frames = {
-                    b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings
-                }
-                step = plan.step_type()
-                if isinstance(step, StepSQL):
-                    query = _render_sql_query(step, params)
-                    sql_reader = self._require_sql_executor(step)
-                    result = sql_reader.execute_sql(frames, query)
-                else:
-                    result = step.execute(params, **frames)
-                self._write_target(
-                    result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
-                )
-        except Exception:
-            status = RunStatus.FAILED
-            raise
-        finally:
-            _ = status
+        with self._observability.span(
+            Scope.STEP,
+            plan.step_type.__name__,
+            trace_id=ctx.run_id,
+            correlation_id=ctx.correlation_id,
+            id=step_run_id,
+            run_id=ctx.run_id,
+            process_run_id=ctx.process_run_id,
+            step_run_id=step_run_id,
+            sources=[b.alias for b in plan.source_bindings],
+            target=str(
+                getattr(plan.target_binding.spec, "table_ref", None)
+                or getattr(plan.target_binding.spec, "path", None)
+            ),
+            streaming=plan.streaming,
+        ):
+            frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
+            step = plan.step_type()
+            if isinstance(step, StepSQL):
+                query = _render_sql_query(step, params)
+                sql_reader = self._require_sql_executor(step)
+                result = sql_reader.execute_sql(frames, query)
+            else:
+                result = step.execute(params, **frames)
+            self._write_target(
+                result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
+            )
 
     def _require_checkpoint_store(self, name: str) -> CheckpointStore:
         """Return the checkpoint store, or raise if unconfigured."""
