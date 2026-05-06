@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, MutableMapping
-from importlib.util import find_spec
 from typing import Any
 
 from opentelemetry import trace
@@ -25,23 +24,25 @@ _ROOT_SCOPES: frozenset[str] = frozenset(
     {"use_case", "job", "poll_cycle", "pipeline", "maintenance"}
 )
 
-if find_spec("opentelemetry.exporter.otlp.proto.grpc.trace_exporter") is not None:
+_grpc_exporter_cls: type[Any] | None
+try:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter as _GrpcExporter,
     )
-
-    _grpc_exporter_cls: type[Any] | None = _GrpcExporter
-else:
+except ImportError:
     _grpc_exporter_cls = None
+else:
+    _grpc_exporter_cls = _GrpcExporter
 
-if find_spec("opentelemetry.exporter.otlp.proto.http.trace_exporter") is not None:
+_http_exporter_cls: type[Any] | None
+try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
         OTLPSpanExporter as _HttpExporter,
     )
-
-    _http_exporter_cls: type[Any] | None = _HttpExporter
-else:
+except ImportError:
     _http_exporter_cls = None
+else:
+    _http_exporter_cls = _HttpExporter
 
 
 class OtelLifecycleObserver:

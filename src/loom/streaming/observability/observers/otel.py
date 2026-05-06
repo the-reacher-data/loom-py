@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
-from importlib.util import find_spec
 from typing import Any
 
 from opentelemetry import trace
@@ -21,20 +20,22 @@ _ATTR_NODE_TYPE = "loom.node_type"
 _ATTR_STATUS = "loom.status"
 _ATTR_DURATION_MS = "loom.duration_ms"
 
-if find_spec("opentelemetry.exporter.otlp.proto.grpc.trace_exporter") is not None:
+_grpc_exporter: type[Any] | None
+try:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as _GrpcOTLP
-
-    _grpc_exporter: type[Any] | None = _GrpcOTLP
-else:
+except ImportError:
     _grpc_exporter = None
+else:
+    _grpc_exporter = _GrpcOTLP
 GrpcOTLPSpanExporter: type[Any] | None = _grpc_exporter
 
-if find_spec("opentelemetry.exporter.otlp.proto.http.trace_exporter") is not None:
+_http_exporter: type[Any] | None
+try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter as _HttpOTLP
-
-    _http_exporter: type[Any] | None = _HttpOTLP
-else:
+except ImportError:
     _http_exporter = None
+else:
+    _http_exporter = _HttpOTLP
 HttpOTLPSpanExporter: type[Any] | None = _http_exporter
 
 
