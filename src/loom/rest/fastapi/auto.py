@@ -122,7 +122,7 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
 def _build_celery_service(
     raw: DictConfig,
     result: KernelRuntime,
-    observability_runtime: ObservabilityRuntime,
+    observability_runtime: ObservabilityRuntime | None,
 ) -> Any | None:
     """Return a ``CeleryJobService`` if the celery extra is installed and configured.
 
@@ -182,7 +182,7 @@ def _build_inline_service(result: KernelRuntime) -> InlineJobService:
 def _configure_job_service(
     raw: DictConfig,
     result: KernelRuntime,
-    observability_runtime: ObservabilityRuntime,
+    observability_runtime: ObservabilityRuntime | None,
 ) -> None:
     """Register a ``JobService`` implementation in the container.
 
@@ -201,6 +201,14 @@ def _configure_job_service(
     """
     svc = _build_celery_service(raw, result, observability_runtime) or _build_inline_service(result)
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
+
+
+def _load_observability_config(raw: DictConfig) -> ObservabilityConfig:
+    """Load top-level observability config or fall back to defaults."""
+    try:
+        return section(raw, "observability", ObservabilityConfig)
+    except ConfigError:
+        return ObservabilityConfig()
 
 
 def _build_bootstrap(
@@ -382,7 +390,7 @@ def create_app(
     raw = load_config(*config_paths)
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
-    observability_cfg = section(raw, "observability", ObservabilityConfig)
+    observability_cfg = _load_observability_config(raw)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
 

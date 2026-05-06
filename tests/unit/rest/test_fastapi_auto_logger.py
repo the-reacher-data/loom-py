@@ -78,14 +78,16 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         )
         return result, session_manager, discovered
 
-    def _fake_configure_job_service(raw_cfg: Any, result: Any) -> None:
-        del raw_cfg, result
+    def _fake_configure_job_service(
+        raw_cfg: Any, result: Any, observability_runtime: ObservabilityRuntime | None
+    ) -> None:
+        del raw_cfg, result, observability_runtime
 
     def _fake_create_fastapi_app(
         result: Any,
         interfaces: Any,
         *,
-        observability_runtime: ObservabilityRuntime,
+        observability_runtime: ObservabilityRuntime | None = None,
         **kwargs: Any,
     ) -> FastAPI:
         del result, interfaces, kwargs

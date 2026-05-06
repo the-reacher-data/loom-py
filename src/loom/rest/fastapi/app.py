@@ -57,7 +57,7 @@ def create_fastapi_app(
     result: BootstrapResult,
     interfaces: Sequence[type[RestInterface[Any]]],
     *,
-    observability_runtime: ObservabilityRuntime,
+    observability_runtime: ObservabilityRuntime | None = None,
     middleware: Sequence[_MiddlewareClass] = (),
     defaults: RestApiDefaults | None = None,
     **fastapi_kwargs: Any,
@@ -118,6 +118,7 @@ def create_fastapi_app(
             version="2.0.0",
         )
     """
+    runtime = observability_runtime or ObservabilityRuntime.noop()
     app = FastAPI(**fastapi_kwargs)
 
     for mw_class in middleware:
@@ -138,7 +139,7 @@ def create_fastapi_app(
         all_routes,
         result.factory,
         executor,
-        observability_runtime=observability_runtime,
+        observability_runtime=runtime,
     )
     if component_registry:
         _register_openapi_components(app, component_registry)

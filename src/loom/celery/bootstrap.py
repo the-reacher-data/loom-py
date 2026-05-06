@@ -204,6 +204,9 @@ class _WorkerResolved:
 # ---------------------------------------------------------------------------
 
 
+_SIGNALS_CONNECTED = False
+
+
 def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntime:
     """Build the per-process async runtime used by Celery worker tasks."""
     return _CeleryAsyncRuntime(
@@ -236,7 +239,8 @@ def _connect_worker_signals(
             on shutdown when present.
         async_runtime: Per-process async bridge runtime used for async jobs.
     """
-    if _CeleryAsyncRuntime._signals_connected:
+    global _SIGNALS_CONNECTED
+    if _SIGNALS_CONNECTED:
         return
 
     def _on_init(**kwargs: Any) -> None:
@@ -260,6 +264,7 @@ def _connect_worker_signals(
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
     _CeleryAsyncRuntime._signals_connected = True
+    _SIGNALS_CONNECTED = True
 
 
 def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
