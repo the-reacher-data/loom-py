@@ -37,21 +37,21 @@ class StructlogLifecycleObserver:
         )
         match event.kind:
             case EventKind.START:
-                bound.debug("lifecycle_start")
+                bound.debug(event.kind.value)
             case EventKind.END:
                 bound.info(
-                    "lifecycle_end",
+                    event.kind.value,
                     duration_ms=event.duration_ms,
                     status=event.status,
                 )
             case EventKind.ERROR:
                 bound.error(
-                    "lifecycle_error",
+                    event.kind.value,
                     duration_ms=event.duration_ms,
                     error=event.error,
                 )
             case EventKind.COLLECT:
-                bound.info("lifecycle_collect", **event.meta)
+                bound.info(event.kind.value, **event.meta)
 
 
 __all__ = ["StructlogLifecycleObserver"]

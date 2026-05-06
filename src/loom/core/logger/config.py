@@ -277,6 +277,7 @@ def configure_logging_from_values(
     named_levels: Mapping[str, str] | None = None,
     handlers: Sequence[HandlerConfig] = (),
     fields: Mapping[str, str] | None = None,
+    extra_processors: Sequence[Any] = (),
 ) -> None:
     """Configure logging from plain scalar values.
 
@@ -293,6 +294,7 @@ def configure_logging_from_values(
         handlers: stdlib handler configurations.
         fields: Static key-value pairs bound globally at startup. Every log
             entry will carry these fields automatically via ``structlog.contextvars``.
+        extra_processors: Additional structlog processors inserted before the final renderer.
     """
     env = Environment.from_str(environment.strip()) if environment.strip() else Environment.DEV
     configure_logging(
@@ -305,6 +307,7 @@ def configure_logging_from_values(
             named_levels=tuple((named_levels or {}).items()),
             handlers=tuple(handlers),
             fields=tuple((fields or {}).items()),
+            extra_processors=tuple(extra_processors),
         )
     )
 

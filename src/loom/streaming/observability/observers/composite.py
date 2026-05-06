@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from loom.core.observability import notify_observers
+from loom.core.observability._fanout import notify_observers
 from loom.streaming.observability.observers.protocol import (
     KafkaStreamingObserver,
     StreamingFlowObserver,

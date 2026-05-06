@@ -6,9 +6,10 @@ import msgspec
 
 from loom.core.config.observability import OtelConfig
 from loom.core.logger.config import LoggerConfig
+from loom.core.model import LoomFrozenStruct
 
 
-class PrometheusConfig(msgspec.Struct, frozen=True, kw_only=True):
+class PrometheusConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Prometheus scrape endpoint configuration.
 
     Args:
@@ -18,7 +19,7 @@ class PrometheusConfig(msgspec.Struct, frozen=True, kw_only=True):
     path: str = "/metrics"
 
 
-class LogObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
+class LogObservabilityConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Structured-log observability backend configuration.
 
     Args:
@@ -32,7 +33,7 @@ class LogObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
     config: LoggerConfig | None = None
 
 
-class OtelObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
+class OtelObservabilityConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """OpenTelemetry traces and logs backend configuration.
 
     Args:
@@ -49,7 +50,7 @@ class OtelObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
     config: OtelConfig | None = None
 
 
-class PrometheusObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
+class PrometheusObservabilityConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Prometheus metrics backend configuration.
 
     Args:
@@ -65,7 +66,7 @@ class PrometheusObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
     config: PrometheusConfig | None = None
 
 
-class ObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
+class ObservabilityConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Top-level observability configuration shared by all Loom runners.
 
     Compose this struct inside any runner config under an ``observability``
@@ -78,7 +79,7 @@ class ObservabilityConfig(msgspec.Struct, frozen=True, kw_only=True):
 
     Example::
 
-        class MyRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
+        class MyRuntimeConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             observability: ObservabilityConfig = msgspec.field(
                 default_factory=ObservabilityConfig
             )

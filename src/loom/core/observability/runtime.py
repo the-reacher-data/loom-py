@@ -154,6 +154,13 @@ class ObservabilityRuntime:
         observers: list[LifecycleObserver] = []
 
         if config.log.enabled:
+            extra_processors: tuple[object, ...] = ()
+            if config.otel.enabled and config.otel.export_logs:
+                from loom.core.observability.observer.otel import (
+                    build_log_correlation_processor,
+                )
+
+                extra_processors = (build_log_correlation_processor(),)
             if config.log.config is not None:
                 from loom.core.logger.config import configure_logging_from_values
 
@@ -167,18 +174,14 @@ class ObservabilityRuntime:
                     named_levels=cfg.named_levels,
                     handlers=cfg.handlers,
                     fields=cfg.fields,
+                    extra_processors=extra_processors,
                 )
             observers.append(StructlogLifecycleObserver())
 
         if config.otel.enabled and config.otel.config is not None:
             from loom.core.observability.observer.otel import OtelLifecycleObserver
 
-            observers.append(
-                OtelLifecycleObserver(
-                    config=config.otel.config,
-                    export_logs=config.otel.export_logs,
-                )
-            )
+            observers.append(OtelLifecycleObserver(config=config.otel.config))
 
         if config.prometheus.enabled:
             from loom.prometheus.lifecycle import PrometheusLifecycleAdapter

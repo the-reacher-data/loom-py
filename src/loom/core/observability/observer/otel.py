@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable, MutableMapping
 from importlib.util import find_spec
 from typing import Any
 
@@ -50,21 +51,17 @@ class OtelLifecycleObserver:
     matching ``END`` or ``ERROR`` event closes it. Concurrent spans with
     different ``trace_id`` values are tracked independently.
 
-    When ``export_logs=True``, a structlog processor is installed that adds
-    the active OTEL trace and span IDs to every log entry, correlating logs
-    with traces in the same collector.
+    When the runtime enables log export, it installs a structlog processor
+    that adds the active OTEL trace and span IDs to every log entry.
 
     Args:
         config: OTLP exporter configuration.
-        export_logs: Install the OTEL log-correlation structlog processor.
     """
 
-    def __init__(self, config: OtelConfig, *, export_logs: bool = False) -> None:
+    def __init__(self, config: OtelConfig) -> None:
         config.validate()
         self._tracer, self._provider = _build_tracer(config)
         self._spans = _SpanRegistry()
-        if export_logs:
-            _install_log_correlation()
 
     def on_event(self, event: LifecycleEvent) -> None:
         """Handle one lifecycle event.
@@ -187,34 +184,29 @@ def _build_exporter(config: OtelConfig) -> Any:
     return _http_exporter_cls(**kwargs)
 
 
-def _install_log_correlation() -> None:
-    """Install a structlog processor that adds OTEL trace/span IDs to log entries."""
-    try:
-        from collections.abc import MutableMapping
+def build_log_correlation_processor() -> Callable[
+    [Any, str, MutableMapping[str, Any]],
+    MutableMapping[str, Any],
+]:
+    """Build a structlog processor that adds the active OTEL span IDs.
 
-        import structlog
-        from opentelemetry import trace as otel_trace
+    Returns:
+        A processor function compatible with ``structlog``.
+    """
 
-        def _otel_correlation_processor(
-            logger: Any,
-            method: str,
-            event_dict: MutableMapping[str, Any],
-        ) -> MutableMapping[str, Any]:
-            span = otel_trace.get_current_span()
-            if span.is_recording():
-                ctx = span.get_span_context()
-                event_dict.setdefault("otel_trace_id", format(ctx.trace_id, "032x"))
-                event_dict.setdefault("otel_span_id", format(ctx.span_id, "016x"))
-            return event_dict
+    def _processor(
+        logger: Any,
+        method: str,
+        event_dict: MutableMapping[str, Any],
+    ) -> MutableMapping[str, Any]:
+        span = trace.get_current_span()
+        if span.is_recording():
+            ctx = span.get_span_context()
+            event_dict.setdefault("otel_trace_id", format(ctx.trace_id, "032x"))
+            event_dict.setdefault("otel_span_id", format(ctx.span_id, "016x"))
+        return event_dict
 
-        existing = structlog.get_config().get("processors", [])
-        if _otel_correlation_processor not in existing:
-            structlog.configure(processors=[_otel_correlation_processor, *existing])
-    except Exception:
-        _logger.warning(
-            "otel_log_correlation_failed",
-            exc_info=True,
-        )
+    return _processor
 
 
-__all__ = ["OtelLifecycleObserver"]
+__all__ = ["OtelLifecycleObserver", "build_log_correlation_processor"]

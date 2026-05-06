@@ -6,6 +6,7 @@ import pytest
 
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.observer.noop import NoopObserver
+from loom.core.observability.observer.otel import build_log_correlation_processor
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 
 
@@ -42,7 +43,7 @@ class TestStructlogLifecycleObserver:
         monkeypatch.setattr("loom.core.observability.observer.structlog._log", _FakeLogger())
 
         observer.on_event(LifecycleEvent(scope="node", name="x", kind=EventKind.START))
-        assert calls == ["lifecycle_start"]
+        assert calls == [EventKind.START.value]
 
     def test_end_event_calls_info(
         self, observer: StructlogLifecycleObserver, monkeypatch: pytest.MonkeyPatch
@@ -67,7 +68,7 @@ class TestStructlogLifecycleObserver:
         observer.on_event(
             LifecycleEvent(scope="use_case", name="x", kind=EventKind.END, duration_ms=12.5)
         )
-        assert calls == ["lifecycle_end"]
+        assert calls == ["end"]
 
     def test_error_event_calls_error(
         self, observer: StructlogLifecycleObserver, monkeypatch: pytest.MonkeyPatch
@@ -92,7 +93,7 @@ class TestStructlogLifecycleObserver:
         observer.on_event(
             LifecycleEvent(scope="node", name="x", kind=EventKind.ERROR, error="boom")
         )
-        assert calls == ["lifecycle_error"]
+        assert calls == [EventKind.ERROR.value]
 
 
 class TestPrometheusLifecycleAdapter:
@@ -147,3 +148,45 @@ class TestPrometheusLifecycleAdapter:
         adapter = PrometheusLifecycleAdapter(registry=registry)
 
         adapter.on_event(LifecycleEvent(scope="node", name="x", kind=EventKind.START))
+
+
+class TestOtelLogCorrelationProcessor:
+    def test_adds_trace_and_span_ids_when_span_is_recording(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        processor = build_log_correlation_processor()
+
+        class _SpanContext:
+            trace_id = 0x123
+            span_id = 0x456
+
+        class _Span:
+            def is_recording(self) -> bool:
+                return True
+
+            def get_span_context(self) -> _SpanContext:
+                return _SpanContext()
+
+        monkeypatch.setattr(
+            "loom.core.observability.observer.otel.trace.get_current_span", lambda: _Span()
+        )
+
+        result = processor(object(), "info", {})
+
+        assert result["otel_trace_id"] == "00000000000000000000000000000123"
+        assert result["otel_span_id"] == "0000000000000456"
+
+    def test_ignores_non_recording_span(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        processor = build_log_correlation_processor()
+
+        class _Span:
+            def is_recording(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "loom.core.observability.observer.otel.trace.get_current_span", lambda: _Span()
+        )
+
+        result = processor(object(), "info", {"x": "1"})
+
+        assert result == {"x": "1"}
