@@ -578,8 +578,11 @@ app:
 database:
   url: ${oc.env:DATABASE_URL,sqlite+aiosqlite:///./store.db}
 
-trace:
-  enabled: ${oc.decode:${oc.env:TRACE_ENABLED,true}}
+observability:
+  log:
+    enabled: false
+  otel:
+    enabled: false
 
 metrics:
   enabled: ${oc.decode:${oc.env:METRICS_ENABLED,true}}

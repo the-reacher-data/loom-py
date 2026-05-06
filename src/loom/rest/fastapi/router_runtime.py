@@ -36,6 +36,8 @@ from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import LoomError
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc.query import (
     FilterGroup,
     FilterOp,
@@ -44,10 +46,11 @@ from loom.core.repository.abc.query import (
     QuerySpec,
     SortSpec,
 )
+from loom.core.tracing import get_trace_id
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.compiler import CompiledRoute
 from loom.rest.constants import QueryParam
-from loom.rest.errors import HttpErrorMapper
+from loom.rest.errors import ErrorField, HttpErrorMapper
 from loom.rest.fastapi.openapi import (
     QUERY_SPEC_PARAMETER_NAMES,
     build_query_parameters_schema,
@@ -60,6 +63,18 @@ _error_mapper = HttpErrorMapper()
 
 _DEFAULT_PAGE = 1
 _DEFAULT_LIMIT = 50
+
+
+def _internal_error_response(trace_id: str) -> MsgspecJSONResponse:
+    """Build the generic 500 response returned by REST handlers."""
+    return MsgspecJSONResponse(
+        status_code=500,
+        content={
+            ErrorField.CODE: "internal_error",
+            ErrorField.MESSAGE: "An unexpected error occurred",
+            ErrorField.TRACE_ID: trace_id,
+        },
+    )
 
 
 def _extract_path_params(path: str) -> list[str]:
@@ -281,6 +296,7 @@ def _make_handler(
     compiled_route: CompiledRoute,
     factory: UseCaseFactory,
     executor: RuntimeExecutor,
+    observability_runtime: ObservabilityRuntime,
 ) -> Any:
     """Build an async handler for the given compiled route.
 
@@ -328,31 +344,43 @@ def _make_handler(
         return requested
 
     async def _handler(request: Request, **kwargs: Any) -> Response:
-        params: dict[str, Any] = {p: kwargs[p] for p in path_params}
-        selected_profile = _resolve_profile(request)
-        if accepts_profile_param:
-            params["profile"] = selected_profile
-        if query_param_name is not None:
-            params[query_param_name] = _build_query_spec(
-                request,
-                default_pagination_mode=compiled_route.effective_pagination_mode,
-                allow_pagination_override=compiled_route.effective_allow_pagination_override,
-            )
-
-        payload: dict[str, Any] | None = None
-        if has_input_binding:
-            body = await request.body()
-            if body:
-                payload = msgspec.json.decode(body)
-
-        uc = factory.build(uc_type)
         try:
-            result: Any = await executor.execute(
-                uc, params=params, payload=payload, read_only=route_read_only
-            )
+            with observability_runtime.span(
+                Scope.USE_CASE,
+                uc_type.__name__,
+                trace_id=get_trace_id(),
+                route=compiled_route.full_path,
+                method=compiled_route.route.method.upper(),
+                status_code=status_code,
+                read_only=route_read_only,
+            ):
+                params: dict[str, Any] = {p: kwargs[p] for p in path_params}
+                selected_profile = _resolve_profile(request)
+                if accepts_profile_param:
+                    params["profile"] = selected_profile
+                if query_param_name is not None:
+                    params[query_param_name] = _build_query_spec(
+                        request,
+                        default_pagination_mode=compiled_route.effective_pagination_mode,
+                        allow_pagination_override=compiled_route.effective_allow_pagination_override,
+                    )
+                payload: dict[str, Any] | None = None
+                if has_input_binding:
+                    body = await request.body()
+                    if body:
+                        payload = msgspec.json.decode(body)
+
+                uc = factory.build(uc_type)
+                result = await executor.execute(
+                    uc, params=params, payload=payload, read_only=route_read_only
+                )
+            return MsgspecJSONResponse(content=result, status_code=status_code)
+        except HTTPException:
+            raise
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
-        return MsgspecJSONResponse(content=result, status_code=status_code)
+        except Exception:
+            return _internal_error_response(get_trace_id() or "")
 
     sig_params: list[inspect.Parameter] = [
         inspect.Parameter(
@@ -383,6 +411,7 @@ def bind_interfaces(
     compiled_routes: Sequence[CompiledRoute],
     factory: UseCaseFactory,
     executor: RuntimeExecutor,
+    observability_runtime: ObservabilityRuntime,
 ) -> dict[str, Any]:
     """Register compiled routes on a FastAPI application.
 
@@ -401,6 +430,8 @@ def bind_interfaces(
             :class:`~loom.rest.compiler.RestInterfaceCompiler`.
         factory: Use-case factory for constructing instances per request.
         executor: Runtime executor that drives the use-case pipeline.
+        observability_runtime: Shared runtime used to emit request lifecycle
+            events around each handler execution.
 
     Returns:
         Mapping of schema name → JSON Schema fragment for all collected
@@ -410,12 +441,18 @@ def bind_interfaces(
 
         compiler = RestInterfaceCompiler(use_case_compiler)
         routes = compiler.compile(UserRestInterface)
-        component_schemas = bind_interfaces(app, routes, factory, executor)
+        component_schemas = bind_interfaces(
+            app,
+            routes,
+            factory,
+            executor,
+            observability_runtime=ObservabilityRuntime.noop(),
+        )
     """
     component_registry: dict[str, Any] = {}
 
     for cr in compiled_routes:
-        handler = _make_handler(cr, factory, executor)
+        handler = _make_handler(cr, factory, executor, observability_runtime)
         summary, description = _route_docs(cr)
         request_body = build_request_body_schema(cr, component_registry)
         success_response = build_success_response_schema(cr, component_registry)

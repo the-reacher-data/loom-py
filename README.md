@@ -329,6 +329,12 @@ app:
 database:
   url: ${oc.env:DATABASE_URL,sqlite+aiosqlite:///store.db}
 
+observability:
+  log:
+    enabled: false
+  otel:
+    enabled: false
+
 metrics:
   enabled: false
 ```

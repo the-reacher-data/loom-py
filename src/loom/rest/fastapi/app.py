@@ -19,6 +19,7 @@ Usage::
     app = create_fastapi_app(
         result,
         interfaces=[OrderRestInterface],
+        observability_runtime=ObservabilityRuntime.noop(),
         title="Orders API",
         version="1.0.0",
     )
@@ -30,19 +31,13 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from fastapi import FastAPI
-from starlette.requests import Request
 
 from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.logger import get_logger
-from loom.core.tracing import get_trace_id
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.compiler import RestInterfaceCompiler
-from loom.rest.errors import ErrorField
-from loom.rest.fastapi.response import MsgspecJSONResponse
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
-
-_log = get_logger(__name__)
 
 # Type alias for ASGI middleware classes accepted by FastAPI.add_middleware.
 _MiddlewareClass = Any
@@ -62,6 +57,7 @@ def create_fastapi_app(
     result: BootstrapResult,
     interfaces: Sequence[type[RestInterface[Any]]],
     *,
+    observability_runtime: ObservabilityRuntime,
     middleware: Sequence[_MiddlewareClass] = (),
     defaults: RestApiDefaults | None = None,
     **fastapi_kwargs: Any,
@@ -82,6 +78,8 @@ def create_fastapi_app(
             from :func:`~loom.core.bootstrap.bootstrap.bootstrap_app`.
         interfaces: ``RestInterface`` subclasses declaring which endpoints to
             expose.  Compiled in declaration order.
+        observability_runtime: Shared runtime used to emit lifecycle events
+            around each request.
         middleware: ASGI middleware classes to register on the application.
             Added in declaration order (first = outermost wrapper).
             Accepts any class compatible with ``FastAPI.add_middleware``.
@@ -93,6 +91,7 @@ def create_fastapi_app(
                 app = create_fastapi_app(
                     result,
                     interfaces=[...],
+                    observability_runtime=ObservabilityRuntime.noop(),
                     middleware=[TraceIdMiddleware, PrometheusMiddleware],
                 )
         defaults: Global REST API defaults (pagination mode, profile policy).
@@ -114,24 +113,12 @@ def create_fastapi_app(
             result,
             interfaces=[UserRestInterface, OrderRestInterface],
             defaults=RestApiDefaults(pagination_mode=PaginationMode.CURSOR),
+            observability_runtime=ObservabilityRuntime.noop(),
             title="My API",
             version="2.0.0",
         )
     """
     app = FastAPI(**fastapi_kwargs)
-
-    @app.exception_handler(Exception)
-    async def _unhandled_exception(request: Request, exc: Exception) -> MsgspecJSONResponse:
-        trace_id = get_trace_id()
-        _log.error("UnhandledException", error=repr(exc), trace_id=trace_id)
-        return MsgspecJSONResponse(
-            status_code=500,
-            content={
-                ErrorField.CODE: "internal_error",
-                ErrorField.MESSAGE: "An unexpected error occurred",
-                ErrorField.TRACE_ID: trace_id,
-            },
-        )
 
     for mw_class in middleware:
         app.add_middleware(mw_class)
@@ -146,7 +133,13 @@ def create_fastapi_app(
     for iface in interfaces:
         all_routes.extend(interface_compiler.compile(iface))
 
-    component_registry = bind_interfaces(app, all_routes, result.factory, executor)
+    component_registry = bind_interfaces(
+        app,
+        all_routes,
+        result.factory,
+        executor,
+        observability_runtime=observability_runtime,
+    )
     if component_registry:
         _register_openapi_components(app, component_registry)
 

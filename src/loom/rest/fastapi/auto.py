@@ -7,7 +7,7 @@ import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from omegaconf import DictConfig
@@ -31,8 +31,9 @@ from loom.core.discovery import (
 )
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.job.service import InlineJobService, JobService
-from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
@@ -40,26 +41,6 @@ from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.middleware import TraceIdMiddleware
-
-_CfgT = TypeVar("_CfgT")
-
-
-def _section_or_default(raw: DictConfig, key: str, cls: type[_CfgT]) -> _CfgT:
-    """Load *key* from config, returning ``cls()`` when the section is absent.
-
-    Args:
-        raw: Root OmegaConf DictConfig produced by :func:`load_config`.
-        key: Top-level YAML key to look up.
-        cls: Config struct class.  Must be instantiable with no arguments
-            (all fields optional or have defaults).
-
-    Returns:
-        Parsed instance of *cls*, or ``cls()`` if *key* is not present.
-    """
-    try:
-        return section(raw, key, cls)
-    except ConfigError:
-        return cls()
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -99,18 +80,13 @@ class _AppConfig(msgspec.Struct, kw_only=True):
 
 class _DatabaseConfig(msgspec.Struct, kw_only=True):
     url: str
-    echo: bool | None = None  # None = inherit from trace.enabled
+    echo: bool | None = None
     pool_pre_ping: bool = True
 
 
 class _MetricsConfig(msgspec.Struct, kw_only=True):
     enabled: bool = False
     path: str = "/metrics"
-
-
-class _TraceConfig(msgspec.Struct, kw_only=True):
-    enabled: bool = True
-    header: str = "x-request-id"
 
 
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
@@ -221,19 +197,6 @@ def _configure_job_service(
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
-def _resolve_effective_echo(db_cfg: _DatabaseConfig, trace_cfg: _TraceConfig) -> bool:
-    """Return the effective SQLAlchemy echo setting.
-
-    Args:
-        db_cfg: Database configuration.
-        trace_cfg: Trace configuration.
-
-    Returns:
-        ``db_cfg.echo`` when explicitly set; ``trace_cfg.enabled`` otherwise.
-    """
-    return db_cfg.echo if db_cfg.echo is not None else trace_cfg.enabled
-
-
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
@@ -315,20 +278,17 @@ def _build_metrics_adapter(
 
 def _mount_optional_middlewares(
     app: FastAPI,
-    trace_cfg: _TraceConfig,
     metrics_cfg: _MetricsConfig,
     registry: CollectorRegistry | None,
 ) -> None:
-    """Mount trace and metrics middlewares when their feature flags are enabled.
+    """Mount request tracing and metrics middlewares.
 
     Args:
         app: FastAPI application to mutate.
-        trace_cfg: Trace feature config.
         metrics_cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
-    if trace_cfg.enabled:
-        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
+    app.add_middleware(TraceIdMiddleware)
     if metrics_cfg.enabled:
         _mount_metrics(app, metrics_cfg, registry)
 
@@ -377,11 +337,9 @@ def create_app(
     Each file may also declare a top-level ``includes`` list to pull in
     additional base files before its own values (see :func:`load_config`).
 
-    :class:`~loom.rest.middleware.TraceIdMiddleware` is mounted
-    automatically when ``trace.enabled`` is ``true`` (the default).
-    SQLAlchemy SQL echo inherits ``trace.enabled`` unless ``database.echo``
-    is set explicitly.  Prometheus middleware is mounted when
-    ``metrics.enabled`` is ``true``.
+    ``TraceIdMiddleware`` is mounted automatically. Structured logging and
+    OTEL come from the top-level ``observability:`` section. Prometheus
+    middleware is mounted when ``metrics.enabled`` is ``true``.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -418,18 +376,9 @@ def create_app(
     raw = load_config(*config_paths)
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
+    observability_cfg = section(raw, "observability", ObservabilityConfig)
     metrics_cfg = section(raw, "metrics", _MetricsConfig)
-    trace_cfg = _section_or_default(raw, "trace", _TraceConfig)
-    logger_cfg = _section_or_default(raw, "logger", LoggerConfig)
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment,
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        named_levels=logger_cfg.named_levels,
-        handlers=logger_cfg.handlers,
-    )
+    observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
@@ -437,7 +386,7 @@ def create_app(
         effective_code_path = (config_file.parent / effective_code_path).resolve()
     _ensure_code_path(effective_code_path)
 
-    effective_echo = _resolve_effective_echo(db_cfg, trace_cfg)
+    effective_echo = db_cfg.echo if db_cfg.echo is not None else False
     metrics_adapter = _build_metrics_adapter(metrics_cfg, metrics_registry)
 
     result, session_manager, discovered = _build_bootstrap(
@@ -461,11 +410,12 @@ def create_app(
     app = create_fastapi_app(
         result,
         interfaces=tuple(type_i for type_i in discovered.interfaces),
+        observability_runtime=observability_runtime,
         title=app_cfg.rest.title,
         version=app_cfg.rest.version,
         docs_url=app_cfg.rest.docs_url,
         redoc_url=app_cfg.rest.redoc_url,
         lifespan=lifespan,
     )
-    _mount_optional_middlewares(app, trace_cfg, metrics_cfg, metrics_registry)
+    _mount_optional_middlewares(app, metrics_cfg, metrics_registry)
     return app

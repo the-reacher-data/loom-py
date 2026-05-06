@@ -1,157 +1,112 @@
 from __future__ import annotations
 
-import logging
-from collections.abc import Iterator
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
+from omegaconf import OmegaConf
 
-from loom.core.logger import (
-    StructLogger,
-    configure_logging_from_values,
-    get_logger,
-    reset_logger_factory,
-)
-from loom.rest.fastapi.auto import (
-    _DatabaseConfig,
-    _resolve_effective_echo,
-    _TraceConfig,
-)
+import loom.rest.fastapi.auto as auto
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.runtime import ObservabilityRuntime
+from loom.prometheus.middleware import PrometheusMiddleware
+from loom.rest.fastapi.auto import _MetricsConfig, _mount_optional_middlewares, create_app
 from loom.rest.middleware import TraceIdMiddleware
 
-
-@pytest.fixture(autouse=True)
-def reset_factory() -> Iterator[None]:
-    reset_logger_factory()
-    yield
-    reset_logger_factory()
+_AUTO = cast(Any, auto)
 
 
-def test_configure_logger_uses_structlog_backend_by_default() -> None:
-    configure_logging_from_values()
-    logger = get_logger("loom.struct")
-    assert isinstance(logger, StructLogger)
-
-
-def test_configure_logger_uses_json_renderer() -> None:
-    configure_logging_from_values(renderer="json", colors=False, level="DEBUG")
-    logger = get_logger("loom.struct.json")
-    assert isinstance(logger, StructLogger)
-
-
-def test_configure_logger_rejects_unknown_renderer() -> None:
-    with pytest.raises(ValueError, match="Unsupported renderer"):
-        configure_logging_from_values(renderer="unknown")
-
-
-def test_configure_logger_prod_environment_defaults_to_json() -> None:
-    configure_logging_from_values(environment="prod")
-    logger = get_logger("loom.struct.prod")
-    assert isinstance(logger, StructLogger)
-
-
-def test_configure_logger_unknown_environment_falls_back_to_dev() -> None:
-    configure_logging_from_values(environment="staging")
-    logger = get_logger("loom.struct.staging")
-    assert isinstance(logger, StructLogger)
-
-
-def test_configure_logger_applies_named_levels() -> None:
-    celery_logger = logging.getLogger("celery")
-    kombu_logger = logging.getLogger("kombu")
-    old_celery = celery_logger.level
-    old_kombu = kombu_logger.level
-    try:
-        celery_logger.setLevel(logging.NOTSET)
-        kombu_logger.setLevel(logging.NOTSET)
-
-        configure_logging_from_values(
-            named_levels={
-                "celery": "WARNING",
-                "kombu": "ERROR",
-            }
-        )
-
-        assert celery_logger.level == logging.WARNING
-        assert kombu_logger.level == logging.ERROR
-    finally:
-        celery_logger.setLevel(old_celery)
-        kombu_logger.setLevel(old_kombu)
-
-
-def test_configure_logger_rejects_unknown_named_level() -> None:
-    with pytest.raises(ValueError, match="Invalid level"):
-        configure_logging_from_values(named_levels={"celery": "LOUD"})
-
-
-# ---------------------------------------------------------------------------
-# _TraceConfig defaults
-# ---------------------------------------------------------------------------
-
-
-def test_trace_default_enabled() -> None:
-    cfg = _TraceConfig()
-    assert cfg.enabled is True
-    assert cfg.header == "x-request-id"
-
-
-def test_trace_explicit_disabled() -> None:
-    cfg = _TraceConfig(enabled=False)
-    assert cfg.enabled is False
-
-
-# ---------------------------------------------------------------------------
-# _resolve_effective_echo
-# ---------------------------------------------------------------------------
-
-
-def test_trace_enabled_inherits_echo() -> None:
-    trace_cfg = _TraceConfig(enabled=True)
-    db_cfg = _DatabaseConfig(url="sqlite+aiosqlite:///")
-    assert _resolve_effective_echo(db_cfg, trace_cfg) is True
-
-
-def test_trace_disabled_inherits_echo() -> None:
-    trace_cfg = _TraceConfig(enabled=False)
-    db_cfg = _DatabaseConfig(url="sqlite+aiosqlite:///")
-    assert _resolve_effective_echo(db_cfg, trace_cfg) is False
-
-
-def test_database_echo_explicit_false_overrides_trace() -> None:
-    trace_cfg = _TraceConfig(enabled=True)
-    db_cfg = _DatabaseConfig(url="sqlite+aiosqlite:///", echo=False)
-    assert _resolve_effective_echo(db_cfg, trace_cfg) is False
-
-
-def test_database_echo_explicit_true_overrides_trace_disabled() -> None:
-    trace_cfg = _TraceConfig(enabled=False)
-    db_cfg = _DatabaseConfig(url="sqlite+aiosqlite:///", echo=True)
-    assert _resolve_effective_echo(db_cfg, trace_cfg) is True
-
-
-def test_database_echo_default_is_none() -> None:
-    db_cfg = _DatabaseConfig(url="sqlite+aiosqlite:///")
-    assert db_cfg.echo is None
-
-
-# ---------------------------------------------------------------------------
-# TraceIdMiddleware presence based on trace config
-# ---------------------------------------------------------------------------
-
-
-def test_trace_enabled_adds_trace_middleware() -> None:
-    trace_cfg = _TraceConfig(enabled=True, header="x-request-id")
+def test_mount_optional_middlewares_always_adds_trace_middleware() -> None:
     app = FastAPI()
-    if trace_cfg.enabled:
-        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
-    classes = [m.cls for m in app.user_middleware]
+
+    _mount_optional_middlewares(app, _MetricsConfig(enabled=False), None)
+
+    classes: list[Any] = [m.cls for m in app.user_middleware]
     assert TraceIdMiddleware in classes
 
 
-def test_trace_disabled_no_trace_middleware() -> None:
-    trace_cfg = _TraceConfig(enabled=False)
+def test_mount_optional_middlewares_adds_prometheus_when_enabled() -> None:
     app = FastAPI()
-    if trace_cfg.enabled:
-        app.add_middleware(TraceIdMiddleware, header=trace_cfg.header)
-    classes = [m.cls for m in app.user_middleware]
-    assert TraceIdMiddleware not in classes
+
+    _mount_optional_middlewares(app, _MetricsConfig(enabled=True), None)
+
+    classes: list[Any] = [m.cls for m in app.user_middleware]
+    assert TraceIdMiddleware in classes
+    assert PrometheusMiddleware in classes
+
+
+def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = OmegaConf.create(
+        {
+            "app": {"name": "demo"},
+            "database": {"url": "sqlite+aiosqlite:///"},
+            "metrics": {"enabled": False},
+            "observability": {"log": {"enabled": False}},
+        }
+    )
+    captured: dict[str, Any] = {}
+    runtime = ObservabilityRuntime.noop()
+
+    def _fake_load_config(*config_paths: str) -> Any:
+        del config_paths
+        return raw
+
+    def _fake_from_config(
+        cls: type[ObservabilityRuntime], config: ObservabilityConfig
+    ) -> ObservabilityRuntime:
+        captured["observability_config"] = config
+        return runtime
+
+    def _fake_build_bootstrap(
+        app_cfg: Any,
+        db_cfg: Any,
+        echo: bool,
+        metrics: Any | None = None,
+    ) -> tuple[Any, Any, Any]:
+        del app_cfg, db_cfg, echo, metrics
+        result = SimpleNamespace(
+            compiler=object(),
+            factory=object(),
+            container=SimpleNamespace(),
+        )
+        session_manager = SimpleNamespace(engine=SimpleNamespace())
+        discovered = SimpleNamespace(
+            use_cases=(object(),),
+            interfaces=(type("DummyRestInterface", (), {}),),
+            models=(object(),),
+        )
+        return result, session_manager, discovered
+
+    def _fake_configure_job_service(raw_cfg: Any, result: Any) -> None:
+        del raw_cfg, result
+
+    def _fake_create_fastapi_app(
+        result: Any,
+        interfaces: Any,
+        *,
+        observability_runtime: ObservabilityRuntime,
+        **kwargs: Any,
+    ) -> FastAPI:
+        del result, interfaces, kwargs
+        captured["runtime"] = observability_runtime
+        return FastAPI()
+
+    monkeypatch.setattr(auto, "load_config", _fake_load_config)
+    monkeypatch.setattr(
+        _AUTO.ObservabilityRuntime,
+        "from_config",
+        classmethod(_fake_from_config),
+    )
+    monkeypatch.setattr(auto, "_build_bootstrap", _fake_build_bootstrap)
+    monkeypatch.setattr(auto, "_configure_job_service", _fake_configure_job_service)
+    monkeypatch.setattr(auto, "create_fastapi_app", _fake_create_fastapi_app)
+    monkeypatch.setattr(auto, "_ensure_code_path", lambda code_path: None)
+
+    app = create_app("config.yaml")
+
+    assert captured["observability_config"].log.enabled is False
+    assert captured["runtime"] is runtime
+    classes: list[Any] = [m.cls for m in app.user_middleware]
+    assert TraceIdMiddleware in classes
+    assert PrometheusMiddleware not in classes
