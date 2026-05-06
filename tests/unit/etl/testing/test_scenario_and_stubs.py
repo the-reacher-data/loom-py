@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import TableSourceSpec
 from loom.etl.declarative.target._table import ReplaceSpec
-from loom.etl.observability.records import EventName, RunContext, RunStatus
+from loom.etl.lineage._records import EventName, RunContext, RunStatus
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 from loom.etl.testing._scenario import ETLScenario, StepRunnerProto
 from loom.etl.testing._stubs import StubCatalog, StubRunObserver, StubSourceReader, StubTargetWriter
@@ -45,7 +46,9 @@ class TestScenario:
 
 class TestStubCatalog:
     def test_prefers_explicit_schema_over_table_columns(self) -> None:
-        schemas = {"raw.orders": (ColumnSchema("id", LoomDtype.INT64),)}
+        schemas: dict[str, tuple[ColumnSchema, ...]] = {
+            "raw.orders": (ColumnSchema("id", LoomDtype.INT64),)
+        }
         catalog = StubCatalog(tables={"raw.orders": ("legacy",)}, schemas=schemas)
 
         assert catalog.exists(TableRef("raw.orders")) is True
@@ -77,14 +80,92 @@ class TestStubObserver:
             last_attempt=False,
         )
 
-        step_plan = type("StepPlan", (), {"step_type": type("MyStep", (), {})})()
-        observer.on_pipeline_start(type("Pipe", (), {})(), object(), ctx)
-        observer.on_process_start(type("Proc", (), {})(), ctx, "proc-1")
-        observer.on_step_start(step_plan, ctx, "step-1")
-        observer.on_step_error("step-1", RuntimeError("boom"))
-        observer.on_step_end("step-1", RunStatus.FAILED, 5)
-        observer.on_process_end("proc-1", RunStatus.FAILED, 6)
-        observer.on_pipeline_end(ctx, RunStatus.FAILED, 7)
+        observer.on_event(
+            LifecycleEvent.start(
+                scope=Scope.PIPELINE,
+                name="Pipe",
+                id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+                meta={
+                    "run_id": ctx.run_id,
+                    "attempt": ctx.attempt,
+                    "last_attempt": ctx.last_attempt,
+                },
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.start(
+                scope=Scope.PROCESS,
+                name="Proc",
+                id="proc-1",
+                correlation_id=ctx.correlation_id,
+                meta={"run_id": ctx.run_id, "attempt": ctx.attempt},
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.start(
+                scope=Scope.STEP,
+                name="MyStep",
+                id="step-1",
+                correlation_id=ctx.correlation_id,
+                meta={
+                    "run_id": ctx.run_id,
+                    "attempt": ctx.attempt,
+                    "process_run_id": "proc-1",
+                },
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.exception(
+                scope=Scope.STEP,
+                name="MyStep",
+                id="step-1",
+                correlation_id=ctx.correlation_id,
+                error="boom",
+                meta={
+                    "run_id": ctx.run_id,
+                    "attempt": ctx.attempt,
+                    "process_run_id": "proc-1",
+                },
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.end(
+                scope=Scope.STEP,
+                name="MyStep",
+                id="step-1",
+                correlation_id=ctx.correlation_id,
+                duration_ms=5,
+                status=LifecycleStatus.FAILURE,
+                meta={
+                    "run_id": ctx.run_id,
+                    "attempt": ctx.attempt,
+                    "process_run_id": "proc-1",
+                },
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.end(
+                scope=Scope.PROCESS,
+                name="Proc",
+                id="proc-1",
+                correlation_id=ctx.correlation_id,
+                duration_ms=6,
+                status=LifecycleStatus.FAILURE,
+                meta={"run_id": ctx.run_id, "attempt": ctx.attempt},
+            )
+        )
+        observer.on_event(
+            LifecycleEvent.end(
+                scope=Scope.PIPELINE,
+                name="Pipe",
+                id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+                duration_ms=7,
+                status=LifecycleStatus.FAILURE,
+                meta={"run_id": ctx.run_id, "attempt": ctx.attempt},
+            )
+        )
 
         assert observer.event_names == [
             EventName.PIPELINE_START,

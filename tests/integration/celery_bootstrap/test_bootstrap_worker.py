@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,8 @@ import loom.celery.runner as _runner
 from loom.celery.bootstrap import WorkerBootstrapResult, bootstrap_worker
 from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.runtime import ObservabilityRuntime
 
 # ---------------------------------------------------------------------------
 # Jobs used in tests
@@ -109,6 +111,41 @@ class TestBootstrapWorkerResult:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         assert result.celery_app.conf.task_serializer == "json"
         assert result.celery_app.conf.result_serializer == "json"
+
+    def test_bootstrap_worker_uses_top_level_observability_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg: dict[str, Any] = {
+            "observability": {"log": {"enabled": False}},
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+            },
+            "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
+        }
+        config_file = tmp_path / "worker_observability.yaml"
+        config_file.write_text(yaml.dump(cfg))
+
+        captured: dict[str, Any] = {}
+        runtime = ObservabilityRuntime.noop()
+
+        def _fake_from_config(
+            cls: type[ObservabilityRuntime], config: ObservabilityConfig
+        ) -> ObservabilityRuntime:
+            captured["config"] = config
+            return runtime
+
+        boot_module = cast(Any, boot)
+        monkeypatch.setattr(
+            boot_module.ObservabilityRuntime,
+            "from_config",
+            classmethod(_fake_from_config),
+        )
+
+        result = bootstrap_worker(str(config_file), jobs=[_DoubleSyncJob])
+        assert isinstance(result, WorkerBootstrapResult)
+        assert captured["config"].log.enabled is False
 
 
 class TestBootstrapWorkerTaskExecution:

@@ -89,8 +89,9 @@ from loom.core.di.container import LoomContainer
 from loom.core.discovery._utils import collect_from_modules, import_modules
 from loom.core.engine.compilable import Compilable
 from loom.core.job.job import Job
-from loom.core.logger import LoggerConfig, configure_logging_from_values
 from loom.core.model import BaseModel
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
@@ -588,21 +589,13 @@ def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel],
 # ---------------------------------------------------------------------------
 
 
-def _configure_logging(raw: DictConfig) -> None:
-    """Configure structlog from YAML logger section, falling back to defaults."""
+def _build_observability_runtime(raw: DictConfig) -> ObservabilityRuntime:
+    """Build the shared observability runtime from top-level config."""
     try:
-        logger_cfg = section(raw, ConfigKey.LOGGER, LoggerConfig)
+        observability_cfg = section(raw, ConfigKey.OBSERVABILITY, ObservabilityConfig)
     except ConfigError:
-        logger_cfg = LoggerConfig()
-    configure_logging_from_values(
-        name=logger_cfg.name,
-        environment=logger_cfg.environment,
-        renderer=logger_cfg.renderer,
-        colors=logger_cfg.colors,
-        level=logger_cfg.level,
-        named_levels=logger_cfg.named_levels,
-        handlers=logger_cfg.handlers,
-    )
+        observability_cfg = ObservabilityConfig()
+    return ObservabilityRuntime.from_config(observability_cfg)
 
 
 def _compile_db_layer(
@@ -754,7 +747,7 @@ def bootstrap_worker(
     """
     raw = load_config(*config_paths)
     celery_cfg = section(raw, ConfigKey.CELERY, CeleryConfig)
-    _configure_logging(raw)
+    observability_runtime = _build_observability_runtime(raw)
     async_runtime = _build_async_runtime(celery_cfg.runtime)
 
     resolved = _resolve_compilables_and_jobs(raw, jobs, use_cases)
@@ -794,11 +787,24 @@ def bootstrap_worker(
             kernel.executor,
             async_runtime,
             metrics,
+            observability_runtime=observability_runtime,
         )
 
     for callback_type in resolved.callbacks:
-        _make_callback_task(celery_app, callback_type, kernel.factory, async_runtime)
-        _make_callback_error_task(celery_app, callback_type, kernel.factory, async_runtime)
+        _make_callback_task(
+            celery_app,
+            callback_type,
+            kernel.factory,
+            async_runtime,
+            observability_runtime=observability_runtime,
+        )
+        _make_callback_error_task(
+            celery_app,
+            callback_type,
+            kernel.factory,
+            async_runtime,
+            observability_runtime=observability_runtime,
+        )
 
     _connect_worker_signals(session_manager, async_runtime)
 

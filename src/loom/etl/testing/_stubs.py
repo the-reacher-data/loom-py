@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.protocol import LifecycleObserver
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import SourceSpec
 from loom.etl.declarative.target import TargetSpec
-from loom.etl.observability.records import EventName, RunContext, RunStatus
+from loom.etl.lineage._records import EventName, RunStatus
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 _UNKNOWN_DTYPE = LoomDtype.NULL
@@ -140,8 +142,8 @@ class StubTargetWriter:
         self.streaming_flags.append(streaming)
 
 
-class StubRunObserver:
-    """In-memory :class:`~loom.etl.executor.ETLRunObserver` for tests.
+class StubRunObserver(LifecycleObserver):
+    """In-memory lifecycle observer for tests.
 
     Captures all lifecycle events as a flat list of ``(event_name, data)``
     tuples.  Helper properties provide quick access to common assertions.
@@ -152,7 +154,8 @@ class StubRunObserver:
     Example::
 
         observer = StubRunObserver()
-        executor = ETLExecutor(reader, writer, observers=[observer])
+        runtime = ObservabilityRuntime([observer])
+        executor = ETLExecutor(reader, writer, observability=runtime)
         executor.run_step(plan, params)
 
         assert observer.step_statuses == ["success"]
@@ -161,40 +164,68 @@ class StubRunObserver:
 
     def __init__(self) -> None:
         self.events: list[tuple[EventName, dict[str, Any]]] = []
+        self._synthesized_terminal_events: set[tuple[Scope, str | None]] = set()
 
-    def on_pipeline_start(self, _plan: Any, _params: Any, ctx: RunContext) -> None:
-        self.events.append((EventName.PIPELINE_START, {"run_id": ctx.run_id, "ctx": ctx}))
-
-    def on_pipeline_end(self, ctx: RunContext, status: RunStatus, _duration_ms: int) -> None:
-        self.events.append((EventName.PIPELINE_END, {"run_id": ctx.run_id, "status": status}))
-
-    def on_process_start(self, _plan: Any, ctx: RunContext, process_run_id: str) -> None:
-        self.events.append(
-            (EventName.PROCESS_START, {"run_id": ctx.run_id, "process_run_id": process_run_id})
-        )
-
-    def on_process_end(self, process_run_id: str, status: RunStatus, _duration_ms: int) -> None:
-        self.events.append(
-            (EventName.PROCESS_END, {"process_run_id": process_run_id, "status": status})
-        )
-
-    def on_step_start(self, plan: Any, ctx: RunContext, step_run_id: str) -> None:
-        self.events.append(
-            (
-                EventName.STEP_START,
-                {
-                    "step": plan.step_type.__name__,
-                    "run_id": ctx.run_id,
-                    "step_run_id": step_run_id,
-                },
-            )
-        )
-
-    def on_step_end(self, step_run_id: str, status: RunStatus, _duration_ms: int) -> None:
-        self.events.append((EventName.STEP_END, {"step_run_id": step_run_id, "status": status}))
-
-    def on_step_error(self, step_run_id: str, exc: Exception) -> None:
-        self.events.append((EventName.STEP_ERROR, {"step_run_id": step_run_id, "error": repr(exc)}))
+    def on_event(self, event: LifecycleEvent) -> None:
+        event_key = (event.scope, event.id)
+        if event.kind is EventKind.END and event_key in self._synthesized_terminal_events:
+            return
+        name = _event_name(event)
+        data: dict[str, Any] = {
+            "scope": event.scope,
+            "kind": event.kind,
+            "name": event.name,
+            "trace_id": event.trace_id,
+            "correlation_id": event.correlation_id,
+            "id": event.id,
+            "status": _run_status(event),
+            "duration_ms": event.duration_ms,
+            "error": event.error,
+            "meta": event.meta,
+        }
+        if event.scope is Scope.PIPELINE and event.kind is EventKind.START:
+            data["pipeline"] = event.name
+            data["run_id"] = event.meta.get("run_id")
+        if event.scope is Scope.PROCESS and event.kind is EventKind.START:
+            data["process"] = event.name
+            data["process_run_id"] = event.id
+        if event.scope is Scope.STEP:
+            data["step"] = event.name
+            data["step_run_id"] = event.id
+            run_id = event.meta.get("run_id")
+            data["run_id"] = run_id if isinstance(run_id, str) else None
+        self.events.append((name, data))
+        if event.kind is EventKind.ERROR:
+            if event.scope is Scope.STEP:
+                self.events.append(
+                    (
+                        EventName.STEP_END,
+                        {
+                            "step_run_id": event.id,
+                            "status": RunStatus.FAILED,
+                        },
+                    )
+                )
+                self._synthesized_terminal_events.add(event_key)
+            elif event.scope is Scope.PROCESS:
+                self.events.append(
+                    (
+                        EventName.PROCESS_END,
+                        {
+                            "process_run_id": event.id,
+                            "status": RunStatus.FAILED,
+                        },
+                    )
+                )
+                self._synthesized_terminal_events.add(event_key)
+            elif event.scope is Scope.PIPELINE:
+                self.events.append(
+                    (
+                        EventName.PIPELINE_END,
+                        {"run_id": event.id, "status": RunStatus.FAILED},
+                    )
+                )
+                self._synthesized_terminal_events.add(event_key)
 
     @property
     def event_names(self) -> list[EventName]:
@@ -209,4 +240,33 @@ class StubRunObserver:
     @property
     def pipeline_statuses(self) -> list[RunStatus]:
         """Statuses from all ``pipeline_end`` events in order."""
-        return [d["status"] for name, d in self.events if name is EventName.PIPELINE_END]
+        statuses = [d["status"] for name, d in self.events if name is EventName.PIPELINE_END]
+        deduped: list[RunStatus] = []
+        for status in statuses:
+            if not deduped or deduped[-1] is not status:
+                deduped.append(status)
+        return deduped
+
+
+def _event_name(event: LifecycleEvent) -> EventName:
+    if event.scope is Scope.PIPELINE and event.kind is EventKind.START:
+        return EventName.PIPELINE_START
+    if event.scope is Scope.PIPELINE and event.kind is not EventKind.START:
+        return EventName.PIPELINE_END
+    if event.scope is Scope.PROCESS and event.kind is EventKind.START:
+        return EventName.PROCESS_START
+    if event.scope is Scope.PROCESS and event.kind is not EventKind.START:
+        return EventName.PROCESS_END
+    if event.scope is Scope.STEP and event.kind is EventKind.START:
+        return EventName.STEP_START
+    if event.scope is Scope.STEP and event.kind is EventKind.ERROR:
+        return EventName.STEP_ERROR
+    return EventName.STEP_END
+
+
+def _run_status(event: LifecycleEvent) -> RunStatus | None:
+    if event.status is LifecycleStatus.SUCCESS:
+        return RunStatus.SUCCESS
+    if event.status is LifecycleStatus.FAILURE:
+        return RunStatus.FAILED
+    return None

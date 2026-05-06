@@ -12,21 +12,18 @@ import msgspec
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl.checkpoint import CheckpointStore, TempCleaner
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
-from loom.etl.observability import (
-    CompositeObserver,
-    ETLRunObserver,
-    ObservabilityConfig,
-    RunContext,
-    make_observers,
-)
+from loom.etl.lineage._config import ETLObservabilityConfig
+from loom.etl.lineage._observer import LineageObserver
+from loom.etl.lineage._records import RunContext
 from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.runner._wiring import (
     make_backends,
     make_checkpoint_store,
-    make_execution_record_writer,
+    make_lineage_store,
 )
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
@@ -51,12 +48,17 @@ class ETLRunner:
         self,
         reader: SourceReader,
         writer: TargetWriter,
-        observers: Sequence[ETLRunObserver] = (),
+        observability: ObservabilityRuntime | None = None,
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
     ) -> None:
-        composite = CompositeObserver(observers)
-        self._executor = ETLExecutor(reader, writer, (composite,), dispatcher, checkpoint_store)
+        self._executor = ETLExecutor(
+            reader,
+            writer,
+            observability or ObservabilityRuntime.noop(),
+            dispatcher,
+            checkpoint_store,
+        )
         self._compiler = ETLCompiler()
         self._checkpoint_store = checkpoint_store
 
@@ -64,19 +66,24 @@ class ETLRunner:
     def from_config(
         cls,
         config: StorageConfig,
-        obs_config: ObservabilityConfig | None = None,
+        obs_config: ETLObservabilityConfig | None = None,
         *,
         spark: SparkSession | None = None,
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
     ) -> ETLRunner:
         """Build an :class:`ETLRunner` from resolved config objects."""
-        resolved_obs_config = obs_config or ObservabilityConfig()
+        resolved_obs_config = obs_config or ETLObservabilityConfig()
         reader, writer = make_backends(config, spark)
-        record_writer = make_execution_record_writer(config, resolved_obs_config, spark)
-        observers = make_observers(resolved_obs_config, record_writer=record_writer)
+        observability = ObservabilityRuntime.from_config(resolved_obs_config)
+        if resolved_obs_config.lineage.enabled:
+            lineage_store = make_lineage_store(config, resolved_obs_config.lineage, spark)
+            if lineage_store is not None:
+                observability = ObservabilityRuntime(
+                    [*observability.observers, LineageObserver(lineage_store)]
+                )
         checkpoint_store = make_checkpoint_store(config, spark, cleaner)
-        return cls(reader, writer, observers, dispatcher, checkpoint_store)
+        return cls(reader, writer, observability, dispatcher, checkpoint_store)
 
     @classmethod
     def from_yaml(
@@ -96,7 +103,7 @@ class ETLRunner:
     def from_spark(
         cls,
         spark: SparkSession,
-        obs_config: ObservabilityConfig | None = None,
+        obs_config: ETLObservabilityConfig | None = None,
         *,
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
@@ -121,9 +128,9 @@ class ETLRunner:
         storage_config = convert_storage_config(storage)
         storage_config.validate()
         obs_config = (
-            msgspec.convert(observability, ObservabilityConfig)
+            msgspec.convert(observability, ETLObservabilityConfig)
             if observability is not None
-            else ObservabilityConfig()
+            else ETLObservabilityConfig()
         )
         return cls.from_config(
             storage_config, obs_config, spark=spark, dispatcher=dispatcher, cleaner=cleaner

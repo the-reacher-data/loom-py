@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from loom.core.engine.events import EventKind
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
+from loom.core.observability.event import Scope
 from loom.core.tracing import reset_trace_id, set_trace_id
 
 # ---------------------------------------------------------------------------
@@ -26,7 +28,7 @@ class _EmailJob(Job[None]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self) -> None:  # type: ignore[override]
+    def execute(self) -> None:
         pass
 
 
@@ -37,7 +39,7 @@ class _HeavyJob(Job[int]):
     __timeout__ = 300
     __priority__ = 5
 
-    def execute(self) -> int:  # type: ignore[override]
+    def execute(self) -> int:
         return 42
 
 
@@ -67,15 +69,22 @@ def _make_service() -> tuple[CeleryJobService, MagicMock]:
     return service, mock_app
 
 
+def _make_runtime() -> MagicMock:
+    runtime = MagicMock()
+    runtime.span.return_value.__enter__.return_value = None
+    runtime.span.return_value.__exit__.return_value = None
+    return runtime
+
+
 @pytest.fixture(autouse=True)
-def _clean_pending() -> pytest.FixtureRequest:  # type: ignore[return]
+def _clean_pending() -> Generator[None, None, None]:
     """Isolate the pending-dispatch ContextVar for every test.
 
     Runs before and after each test (sync or async) to prevent leakage
     between tests that dispatch without flushing.
     """
     clear_pending_dispatches()
-    yield  # type: ignore[misc]
+    yield
     clear_pending_dispatches()
 
 
@@ -95,6 +104,17 @@ class TestDispatchDeferred:
         service.dispatch(_EmailJob, payload={"email": "a@b.com"})
         await flush_pending_dispatches()
         mock_app.send_task.assert_called_once()
+
+    async def test_send_task_emits_transport_span(self) -> None:
+        runtime = _make_runtime()
+        service = CeleryJobService(MagicMock(), observability_runtime=runtime)
+        service.dispatch(_EmailJob, payload={"email": "a@b.com"})
+        await flush_pending_dispatches()
+        runtime.span.assert_called_once()
+        args, kwargs = runtime.span.call_args
+        assert args[0] is Scope.TRANSPORT
+        assert args[1] == f"{TASK_JOB_PREFIX}.{_EmailJob.__qualname__}"
+        assert kwargs["trace_id"] is None
 
     async def test_send_task_receives_correct_task_name(self) -> None:
         service, mock_app = _make_service()

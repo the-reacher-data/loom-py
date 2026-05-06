@@ -45,7 +45,7 @@ def test_definition_modules_support_reload_contracts() -> None:
     [
         ("loom.etl", "FromTable"),
         ("loom.etl.compiler", "ETLCompiler"),
-        ("loom.etl.executor", "ExecutionRecordsObserver"),
+        ("loom.etl.executor", "ETLExecutor"),
         ("loom.etl.declarative", "IntoTable"),
         ("loom.etl.pipeline", "ETLStep"),
         ("loom.etl.runner", "ETLRunner"),
@@ -54,8 +54,8 @@ def test_definition_modules_support_reload_contracts() -> None:
         ("loom.etl.checkpoint", "CheckpointStore"),
         ("loom.etl.testing", "PolarsStepRunner"),
         ("loom.etl.compiler", "validate_plan_catalog"),
-        ("loom.etl.observability", "StructlogRunObserver"),
-        ("loom.etl.observability.sinks", "TableExecutionRecordStore"),
+        ("loom.etl.lineage", "LineageConfig"),
+        ("loom.etl.lineage.sinks", "TableLineageStore"),
     ],
 )
 def test_package_entrypoints_support_reload_contracts(
@@ -69,12 +69,12 @@ def test_package_entrypoints_support_reload_contracts(
 @pytest.mark.parametrize(
     ("module_name", "attribute_name"),
     [
-        ("loom.etl.observability.records", "RunContext"),
-        ("loom.etl.observability.observers.protocol", "ETLRunObserver"),
-        ("loom.etl.observability.sinks._protocol", "ExecutionRecordStore"),
+        ("loom.etl.lineage._records", "RunContext"),
+        ("loom.core.observability.protocol", "LifecycleObserver"),
+        ("loom.etl.lineage.sinks._protocol", "LineageStore"),
         ("loom.etl.pipeline._params", "ETLParams"),
         ("loom.etl.runtime.contracts", "TableDiscovery"),
-        ("loom.etl.observability.config", "ObservabilityConfig"),
+        ("loom.etl.lineage._config", "ETLObservabilityConfig"),
     ],
 )
 def test_internal_protocol_and_event_modules_support_reload_contracts(
@@ -322,7 +322,7 @@ def test_schema_structural_types_compose_normally() -> None:
 
 
 def test_observer_event_records_hold_runtime_data() -> None:
-    from loom.etl.observability.records import (
+    from loom.etl.lineage._records import (
         EventName,
         PipelineRunRecord,
         ProcessRunRecord,

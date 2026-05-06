@@ -1,4 +1,4 @@
-"""Execution observability records and lifecycle enums."""
+"""ETL lineage records and lifecycle enums."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class EventName(StrEnum):
 
 
 class RecordField(StrEnum):
-    """Field names for execution records."""
+    """Field names for lineage records."""
 
     PIPELINE_RUNS = "pipeline_runs"
     PROCESS_RUNS = "process_runs"
@@ -136,7 +136,7 @@ class StepRunRecord:
         return _record_to_row(self)
 
 
-ExecutionRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord
+LineageRecord = PipelineRunRecord | ProcessRunRecord | StepRunRecord
 
 
 def _record_to_row(record: Any) -> dict[str, Any]:
@@ -192,50 +192,39 @@ _STEP_RECORD_SCHEMA: tuple[ColumnSchema, ...] = (
     ColumnSchema("error_message", LoomDtype.UTF8, nullable=True),
 )
 
-_RECORD_SCHEMA_MAP: Final[dict[type[ExecutionRecord], tuple[ColumnSchema, ...]]] = {
+_RECORD_SCHEMA_MAP: Final[dict[type[LineageRecord], tuple[ColumnSchema, ...]]] = {
     PipelineRunRecord: _PIPELINE_RECORD_SCHEMA,
     ProcessRunRecord: _PROCESS_RECORD_SCHEMA,
     StepRunRecord: _STEP_RECORD_SCHEMA,
 }
 
 
-def get_record_schema(record_type: type[ExecutionRecord]) -> tuple[ColumnSchema, ...]:
-    """Return the canonical :class:`~loom.etl.schema.ColumnSchema` tuple for *record_type*.
-
-    Args:
-        record_type: One of ``PipelineRunRecord``, ``ProcessRunRecord``, or ``StepRunRecord``.
-
-    Returns:
-        Ordered tuple of column schemas that describes the storage representation
-        produced by :meth:`~ExecutionRecord.to_row`.
-
-    Raises:
-        KeyError: If *record_type* has no registered schema.
-    """
+def get_lineage_schema(record_type: type[LineageRecord]) -> tuple[ColumnSchema, ...]:
+    """Return the canonical schema tuple for *record_type*."""
     return _RECORD_SCHEMA_MAP[record_type]
 
 
-_TABLE_MAP: dict[type[ExecutionRecord], str] = {
+_TABLE_MAP: dict[type[LineageRecord], str] = {
     PipelineRunRecord: RecordField.PIPELINE_RUNS,
     ProcessRunRecord: RecordField.PROCESS_RUNS,
     StepRunRecord: RecordField.STEP_RUNS,
 }
 
 
-def get_record_table_name(record_type: type[ExecutionRecord]) -> str:
-    """Get table name for a given record type."""
+def get_lineage_table_name(record_type: type[LineageRecord]) -> str:
+    """Get table name for a given lineage record type."""
     return _TABLE_MAP[record_type]
 
 
 __all__ = [
     "EventName",
-    "ExecutionRecord",
-    "get_record_schema",
-    "get_record_table_name",
+    "LineageRecord",
     "PipelineRunRecord",
     "ProcessRunRecord",
     "RecordField",
     "RunContext",
     "RunStatus",
     "StepRunRecord",
+    "get_lineage_schema",
+    "get_lineage_table_name",
 ]

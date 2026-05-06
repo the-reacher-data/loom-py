@@ -8,12 +8,28 @@ from typing import Any
 
 import pytest
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
-from loom.etl.executor import ETLExecutor, EventName, RunContext, RunStatus, ThreadDispatcher
+from loom.etl.executor import ETLExecutor, ThreadDispatcher
+from loom.etl.lineage._records import (
+    EventName as LineageEventName,
+)
+from loom.etl.lineage._records import (
+    RunContext as LineageRunContext,
+)
+from loom.etl.lineage._records import (
+    RunStatus as LineageRunStatus,
+)
 from loom.etl.testing import StubRunObserver, StubSourceReader, StubTargetWriter
 
 ExecutorFactory = Callable[..., tuple[ETLExecutor, StubTargetWriter, StubRunObserver]]
+
+
+def _table_ref(spec: Any) -> Any:
+    table_ref = getattr(spec, "table_ref", None)
+    assert table_ref is not None
+    return table_ref
 
 
 class RunParams(ETLParams):  # type: ignore[misc]
@@ -100,7 +116,12 @@ def executor_factory() -> ExecutorFactory:
         writer = StubTargetWriter()
         run_observer = observer or StubRunObserver()
         reader = StubSourceReader(frames or {"orders": SENTINEL_A, "customers": SENTINEL_B})
-        executor = ETLExecutor(reader, writer, observers=[run_observer], dispatcher=dispatcher)
+        executor = ETLExecutor(
+            reader,
+            writer,
+            observability=ObservabilityRuntime([run_observer]),
+            dispatcher=dispatcher,
+        )
         return executor, writer, run_observer
 
     return _make
@@ -130,8 +151,8 @@ class TestRunStep:
         assert len(writer.written) == 1
         frame, spec = writer.written[0]
         assert frame == expected_frame
-        assert spec.table_ref is not None
-        assert spec.table_ref.ref == expected_target
+        table_ref = _table_ref(spec)
+        assert table_ref.ref == expected_target
 
     def test_run_step_observer_success_and_metadata(
         self,
@@ -141,11 +162,11 @@ class TestRunStep:
     ) -> None:
         plan = compiler.compile_step(StepA)
         executor, _, observer = executor_factory()
-        context = RunContext(run_id="fixed-run-id")
+        context = LineageRunContext(run_id="fixed-run-id")
         executor.run_step(plan, params, context)
 
-        assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
-        assert observer.step_statuses == [RunStatus.SUCCESS]
+        assert observer.event_names == [LineageEventName.STEP_START, LineageEventName.STEP_END]
+        assert observer.step_statuses == [LineageRunStatus.SUCCESS]
         start_event = next(data for name, data in observer.events if name == "step_start")
         assert start_event["step"] == "StepA"
         assert start_event["run_id"] == "fixed-run-id"
@@ -176,10 +197,10 @@ class TestRunStep:
         with pytest.raises(ValueError, match="intentional failure"):
             executor.run_step(plan, params)
 
-        assert EventName.STEP_ERROR in observer.event_names
-        assert observer.step_statuses == [RunStatus.FAILED]
+        assert LineageEventName.STEP_ERROR in observer.event_names
+        assert observer.step_statuses == [LineageRunStatus.FAILED]
         names = observer.event_names
-        assert names.index(EventName.STEP_ERROR) < names.index(EventName.STEP_END)
+        assert names.index(LineageEventName.STEP_ERROR) < names.index(LineageEventName.STEP_END)
 
 
 class TestRunProcess:
@@ -203,7 +224,11 @@ class TestRunProcess:
         executor.run_process(plan, params)
 
         assert len(writer.written) == 2
-        refs = [spec.table_ref.ref for _, spec in writer.written if spec.table_ref is not None]
+        refs: list[str] = []
+        for _, spec in writer.written:
+            table_ref = getattr(spec, "table_ref", None)
+            if table_ref is not None:
+                refs.append(table_ref.ref)
         assert set(refs) == {"staging.a", "staging.b"}
         if expect_order:
             assert refs == ["staging.a", "staging.b"]
@@ -217,9 +242,9 @@ class TestRunProcess:
         plan = compiler.compile_process(ProcAB)
         executor, _, observer = executor_factory()
         executor.run_process(plan, params)
-        assert EventName.PROCESS_START in observer.event_names
-        assert EventName.PROCESS_END in observer.event_names
-        assert observer.step_statuses == [RunStatus.SUCCESS, RunStatus.SUCCESS]
+        assert LineageEventName.PROCESS_START in observer.event_names
+        assert LineageEventName.PROCESS_END in observer.event_names
+        assert observer.step_statuses == [LineageRunStatus.SUCCESS, LineageRunStatus.SUCCESS]
 
     def test_run_process_failed_status_on_step_error(
         self,
@@ -265,9 +290,9 @@ class TestRunPipeline:
         plan = compiler.compile(PipelineSeq)
         executor, _, observer = executor_factory()
         executor.run_pipeline(plan, params)
-        assert EventName.PIPELINE_START in observer.event_names
-        assert EventName.PIPELINE_END in observer.event_names
-        assert observer.pipeline_statuses == [RunStatus.SUCCESS]
+        assert LineageEventName.PIPELINE_START in observer.event_names
+        assert LineageEventName.PIPELINE_END in observer.event_names
+        assert observer.pipeline_statuses == [LineageRunStatus.SUCCESS]
 
     def test_run_pipeline_failed_status_on_step_error(
         self,
@@ -285,7 +310,7 @@ class TestRunPipeline:
         executor, _, observer = executor_factory()
         with pytest.raises(ValueError):
             executor.run_pipeline(plan, params)
-        assert observer.pipeline_statuses == [RunStatus.FAILED]
+        assert observer.pipeline_statuses == [LineageRunStatus.FAILED]
 
 
 class TestThreadDispatcher:

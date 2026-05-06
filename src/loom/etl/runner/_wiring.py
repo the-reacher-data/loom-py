@@ -11,8 +11,8 @@ from loom.etl.checkpoint import CheckpointStore, FsspecTempCleaner, TempCleaner
 from loom.etl.checkpoint._backends._polars import _PolarsCheckpointBackend
 from loom.etl.checkpoint._backends._spark import _SparkCheckpointBackend
 from loom.etl.checkpoint._cleaners import _is_cloud_path
-from loom.etl.observability.config import ObservabilityConfig
-from loom.etl.observability.sinks import ExecutionRecordWriter
+from loom.etl.lineage._config import LineageConfig
+from loom.etl.lineage.sinks import LineageStore, LineageWriter, TableLineageStore
 from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
@@ -82,19 +82,35 @@ def make_checkpoint_store(
     )
 
 
-def make_execution_record_writer(
+def make_lineage_writer(
     storage: StorageConfig,
-    observability: ObservabilityConfig,
+    lineage: LineageConfig,
     spark: Any = None,
-) -> ExecutionRecordWriter | None:
-    """Build execution-record writer from storage/observability configs."""
-    store_cfg = observability.record_store
-    if store_cfg is None:
+) -> LineageWriter | None:
+    """Build a lineage writer from storage/lineage config."""
+    if not lineage.enabled:
         return None
-    store_cfg.validate()
+    lineage.validate()
     engine = _resolve_engine(storage, spark)
     provider = load_backend_provider(engine)
-    return provider.create_execution_record_writer(storage, store_cfg, spark)
+    return provider.create_lineage_writer(storage, lineage, spark)
+
+
+def make_lineage_store(
+    storage: StorageConfig,
+    lineage: LineageConfig,
+    spark: Any = None,
+) -> LineageStore | None:
+    """Build a lineage store from storage/lineage config."""
+    if not lineage.enabled:
+        return None
+    lineage.validate()
+    engine = _resolve_engine(storage, spark)
+    provider = load_backend_provider(engine)
+    writer = provider.create_lineage_writer(storage, lineage, spark)
+    if lineage.database:
+        return TableLineageStore(writer, database=lineage.database)
+    return TableLineageStore(writer, database="")
 
 
 def _make_checkpoint_backend(spark: Any, storage_options: dict[str, str]) -> Any:
@@ -109,4 +125,9 @@ def _resolve_engine(config: StorageConfig, spark: Any) -> str:
     return config.engine
 
 
-__all__ = ["make_backends", "make_checkpoint_store", "make_execution_record_writer"]
+__all__ = [
+    "make_backends",
+    "make_checkpoint_store",
+    "make_lineage_writer",
+    "make_lineage_store",
+]

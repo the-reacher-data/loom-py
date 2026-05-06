@@ -34,6 +34,8 @@ from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREF
 from loom.core.async_bridge import AsyncBridge
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import reset_trace_id, set_trace_id
 
 if TYPE_CHECKING:
@@ -200,6 +202,7 @@ def _make_job_task(
     executor: RuntimeExecutor,
     async_runtime: _CeleryAsyncRuntime,
     metrics: MetricsAdapter | None = None,
+    observability_runtime: ObservabilityRuntime | None = None,
     backoff: int = 2,
 ) -> Any:
     """Register and return a Celery task that executes *job_type* on the worker.
@@ -228,6 +231,7 @@ def _make_job_task(
     """
 
     timeout_value = job_type.__timeout__
+    runtime = observability_runtime or ObservabilityRuntime.noop()
     run_timeout = float(timeout_value) if timeout_value is not None and timeout_value > 0 else None
 
     @celery_app.task(  # type: ignore[untyped-decorator]
@@ -250,17 +254,24 @@ def _make_job_task(
         _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
         t0 = time.monotonic()
         try:
-            instance = factory.build(job_type)
-            result = async_runtime.run(
-                _run_job(
-                    instance,
-                    payload=payload or {},
-                    params=params,
-                    executor=executor,
-                ),
-                timeout=run_timeout,
-                eager_fallback=_is_eager_request(self),
-            )
+            with runtime.span(
+                Scope.JOB,
+                name,
+                trace_id=trace_id,
+                id=getattr(getattr(self, "request", None), "id", None),
+                payload_size=len(payload or {}),
+            ):
+                instance = factory.build(job_type)
+                result = async_runtime.run(
+                    _run_job(
+                        instance,
+                        payload=payload or {},
+                        params=params,
+                        executor=executor,
+                    ),
+                    timeout=run_timeout,
+                    eager_fallback=_is_eager_request(self),
+                )
             _emit(
                 metrics,
                 _job_event(
@@ -310,6 +321,7 @@ def _make_callback_task(
     callback_type: type[Any],
     factory: UseCaseFactory,
     async_runtime: _CeleryAsyncRuntime,
+    observability_runtime: ObservabilityRuntime | None = None,
 ) -> Any:
     """Register and return a Celery task for the ``on_success`` callback.
 
@@ -329,6 +341,7 @@ def _make_callback_task(
         The registered Celery task object.
     """
     _on_success_is_async = inspect.iscoroutinefunction(callback_type.on_success)
+    runtime = observability_runtime or ObservabilityRuntime.noop()
 
     @celery_app.task(name=f"{TASK_CALLBACK_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_task(
@@ -340,14 +353,21 @@ def _make_callback_task(
     ) -> None:
         token = _install_trace(trace_id)
         try:
-            cb = factory.build(callback_type)
-            if _on_success_is_async:
-                async_runtime.run(
-                    cb.on_success(job_id=job_id, result=result, **context),
-                    eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
-                )
-            else:
-                cb.on_success(job_id=job_id, result=result, **context)
+            with runtime.span(
+                Scope.JOB,
+                callback_type.__qualname__,
+                trace_id=trace_id,
+                id=job_id,
+                callback="success",
+            ):
+                cb = factory.build(callback_type)
+                if _on_success_is_async:
+                    async_runtime.run(
+                        cb.on_success(job_id=job_id, result=result, **context),
+                        eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
+                    )
+                else:
+                    cb.on_success(job_id=job_id, result=result, **context)
         finally:
             _uninstall_trace(token)
 
@@ -377,6 +397,7 @@ def _make_callback_error_task(
     callback_type: type[Any],
     factory: UseCaseFactory,
     async_runtime: _CeleryAsyncRuntime,
+    observability_runtime: ObservabilityRuntime | None = None,
 ) -> Any:
     """Register and return a Celery task for the ``on_failure`` callback.
 
@@ -398,6 +419,7 @@ def _make_callback_error_task(
         The registered Celery task object.
     """
     _on_failure_is_async = inspect.iscoroutinefunction(callback_type.on_failure)
+    runtime = observability_runtime or ObservabilityRuntime.noop()
 
     @celery_app.task(name=f"{TASK_CALLBACK_ERROR_PREFIX}.{callback_type.__qualname__}")  # type: ignore[untyped-decorator]
     def _callback_error_task(
@@ -408,20 +430,27 @@ def _make_callback_error_task(
     ) -> None:
         token = _install_trace(trace_id)
         try:
-            exc_type, exc_msg = _resolve_error_info(job_id)
-            cb = factory.build(callback_type)
-            if _on_failure_is_async:
-                async_runtime.run(
-                    cb.on_failure(
-                        job_id=job_id,
-                        exc_type=exc_type,
-                        exc_msg=exc_msg,
-                        **context,
-                    ),
-                    eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
-                )
-            else:
-                cb.on_failure(job_id=job_id, exc_type=exc_type, exc_msg=exc_msg, **context)
+            with runtime.span(
+                Scope.JOB,
+                callback_type.__qualname__,
+                trace_id=trace_id,
+                id=job_id,
+                callback="failure",
+            ):
+                exc_type, exc_msg = _resolve_error_info(job_id)
+                cb = factory.build(callback_type)
+                if _on_failure_is_async:
+                    async_runtime.run(
+                        cb.on_failure(
+                            job_id=job_id,
+                            exc_type=exc_type,
+                            exc_msg=exc_msg,
+                            **context,
+                        ),
+                        eager_fallback=bool(getattr(celery_app.conf, "task_always_eager", False)),
+                    )
+                else:
+                    cb.on_failure(job_id=job_id, exc_type=exc_type, exc_msg=exc_msg, **context)
         finally:
             _uninstall_trace(token)
 

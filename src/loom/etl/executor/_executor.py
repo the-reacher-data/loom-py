@@ -1,21 +1,21 @@
 """ETL executor — internal engine; use :class:`~loom.etl.ETLRunner` instead.
 
 Walks a compiled :class:`~loom.etl.compiler._plan.PipelinePlan` and drives
-read → execute → write for each step, emitting lifecycle events to the
-injected observers.
+read → execute → write for each step, emitting lifecycle events through the
+shared :class:`~loom.core.observability.runtime.ObservabilityRuntime`.
 
 This class is **not** part of the public API.  It is instantiated exclusively
-by :class:`~loom.etl.ETLRunner`, which wires reader, writer, catalog, and
-observers from a :data:`~loom.etl.StorageConfig`.
+by :class:`~loom.etl.ETLRunner`, which wires reader, writer, catalog, and the
+shared observability runtime from a :data:`~loom.etl.StorageConfig`.
 
 For normal usage::
 
     from loom.etl import ETLRunner
-    from loom.etl.executor import StructlogRunObserver
+    from loom.core.observability import ObservabilityRuntime
 
     runner = ETLRunner.from_yaml(
         "loom.yaml",
-        observers=[StructlogRunObserver()],
+        observability=ObservabilityRuntime.noop(),
     )
     runner.run(DailyOrdersPipeline, DailyOrdersParams(run_date=date.today()))
 
@@ -33,10 +33,12 @@ import functools
 import logging
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl.checkpoint import CheckpointStore
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -50,8 +52,7 @@ from loom.etl.compiler._plan import (
 from loom.etl.declarative.source import TempSourceSpec
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.observability.observers.protocol import ETLRunObserver
-from loom.etl.observability.records import RunContext, RunStatus
+from loom.etl.lineage._records import RunContext, RunStatus
 from loom.etl.pipeline._step_sql import StepSQL
 from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
 
@@ -66,7 +67,7 @@ class ETLExecutor:
     * Read each source via the injected :class:`~loom.etl._io.SourceReader`.
     * Invoke the step's ``execute()`` with the resulting frames.
     * Write the result via the injected :class:`~loom.etl._io.TargetWriter`.
-    * Emit lifecycle events to each :class:`~loom.etl.executor.ETLRunObserver`.
+    * Emit lifecycle events to the shared observability runtime.
     * Dispatch parallel groups through the :class:`~loom.etl.executor.ParallelDispatcher`.
 
     All collaborators are injected — the executor has no dependency on any
@@ -80,7 +81,7 @@ class ETLExecutor:
     Args:
         reader:     Source reader implementation.
         writer:     Target writer implementation.
-        observers:  Sequence of lifecycle observers.  Defaults to empty.
+        observability: Shared observability runtime.  Defaults to a no-op runtime.
         dispatcher: Parallel task dispatcher.  Defaults to
                     :class:`~loom.etl.executor.ThreadDispatcher`.
     """
@@ -89,13 +90,13 @@ class ETLExecutor:
         self,
         reader: SourceReader,
         writer: TargetWriter,
-        observers: Sequence[ETLRunObserver] = (),
+        observability: ObservabilityRuntime | None = None,
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
-        self._observers: Sequence[ETLRunObserver] = observers
+        self._observability = observability or ObservabilityRuntime.noop()
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
         self._checkpoint_store: CheckpointStore | None = checkpoint_store
 
@@ -128,19 +129,25 @@ class ETLExecutor:
             len(plan.nodes),
             ctx.attempt,
         )
-        start = time.monotonic()
-        for obs in self._observers:
-            obs.on_pipeline_start(plan, params, ctx)
         status = RunStatus.SUCCESS
         try:
-            for node in plan.nodes:
-                self._run_pipeline_node(node, params, ctx)
+            with self._observability.span(
+                Scope.PIPELINE,
+                plan.pipeline_type.__name__,
+                trace_id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+                id=ctx.run_id,
+                run_id=ctx.run_id,
+                attempt=ctx.attempt,
+                last_attempt=ctx.last_attempt,
+                nodes=len(plan.nodes),
+            ):
+                for node in plan.nodes:
+                    self._run_pipeline_node(node, params, ctx)
         except Exception:
             status = RunStatus.FAILED
             raise
         finally:
-            for obs in self._observers:
-                obs.on_pipeline_end(ctx, status, _ms(start))
             self._cleanup_temps(ctx, status)
 
     def run_process(
@@ -170,20 +177,22 @@ class ETLExecutor:
             process_run_id,
             len(plan.nodes),
         )
-        start = time.monotonic()
-        for obs in self._observers:
-            obs.on_process_start(plan, ctx, process_run_id)
         process_ctx: RunContext = replace(ctx, process_run_id=process_run_id)
-        status = RunStatus.SUCCESS
         try:
-            for node in plan.nodes:
-                self._run_process_node(node, params, process_ctx)
+            with self._observability.span(
+                Scope.PROCESS,
+                plan.process_type.__name__,
+                trace_id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+                id=process_run_id,
+                run_id=ctx.run_id,
+                process_run_id=process_run_id,
+                steps=len(plan.nodes),
+            ):
+                for node in plan.nodes:
+                    self._run_process_node(node, params, process_ctx)
         except Exception:
-            status = RunStatus.FAILED
             raise
-        finally:
-            for obs in self._observers:
-                obs.on_process_end(process_run_id, status, _ms(start))
 
     def run_step(
         self,
@@ -213,30 +222,42 @@ class ETLExecutor:
             step_run_id,
             [b.alias for b in plan.source_bindings],
         )
-        start = time.monotonic()
-        for obs in self._observers:
-            obs.on_step_start(plan, ctx, step_run_id)
         status = RunStatus.SUCCESS
         try:
-            frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
-            step = plan.step_type()
-            if isinstance(step, StepSQL):
-                query = _render_sql_query(step, params)
-                sql_reader = self._require_sql_executor(step)
-                result = sql_reader.execute_sql(frames, query)
-            else:
-                result = step.execute(params, **frames)
-            self._write_target(
-                result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
-            )
-        except Exception as exc:
+            with self._observability.span(
+                Scope.STEP,
+                plan.step_type.__name__,
+                trace_id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+                id=step_run_id,
+                run_id=ctx.run_id,
+                process_run_id=ctx.process_run_id,
+                step_run_id=step_run_id,
+                sources=[b.alias for b in plan.source_bindings],
+                target=str(
+                    getattr(plan.target_binding.spec, "table_ref", None)
+                    or getattr(plan.target_binding.spec, "path", None)
+                ),
+                streaming=plan.streaming,
+            ):
+                frames = {
+                    b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings
+                }
+                step = plan.step_type()
+                if isinstance(step, StepSQL):
+                    query = _render_sql_query(step, params)
+                    sql_reader = self._require_sql_executor(step)
+                    result = sql_reader.execute_sql(frames, query)
+                else:
+                    result = step.execute(params, **frames)
+                self._write_target(
+                    result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
+                )
+        except Exception:
             status = RunStatus.FAILED
-            for obs in self._observers:
-                obs.on_step_error(step_run_id, exc)
             raise
         finally:
-            for obs in self._observers:
-                obs.on_step_end(step_run_id, status, _ms(start))
+            _ = status
 
     def _require_checkpoint_store(self, name: str) -> CheckpointStore:
         """Return the checkpoint store, or raise if unconfigured."""

@@ -10,6 +10,7 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, IntoTable
 from loom.etl.backends.spark._dtype import spark_to_loom
 from loom.etl.compiler import ETLCompiler
@@ -19,7 +20,8 @@ from loom.etl.declarative.source import FileSourceSpec
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import ReplacePartitionsSpec
-from loom.etl.executor import ETLExecutor, EventName, RunStatus
+from loom.etl.executor import ETLExecutor
+from loom.etl.lineage._records import EventName, RunStatus
 from loom.etl.schema._schema import ColumnSchema, LoomDtype, SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.testing import StubRunObserver
@@ -211,7 +213,11 @@ class TestRunStepEvents:
 
         observer = StubRunObserver()
         plan = ETLCompiler().compile_step(DoubleAmountStep)
-        ETLExecutor(spark_reader, spark_writer, observers=[observer]).run_step(plan, NoParams())
+        ETLExecutor(
+            spark_reader,
+            spark_writer,
+            observability=ObservabilityRuntime([observer]),
+        ).run_step(plan, NoParams())
 
         assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
         assert observer.step_statuses == [RunStatus.SUCCESS]
@@ -225,9 +231,11 @@ class TestRunStepEvents:
         plan = ETLCompiler().compile_step(DoubleAmountStep)
 
         with pytest.raises(RuntimeError, match="spark read failure"):
-            ETLExecutor(FailingReader(), spark_writer, observers=[observer]).run_step(
-                plan, NoParams()
-            )
+            ETLExecutor(
+                FailingReader(),
+                spark_writer,
+                observability=ObservabilityRuntime([observer]),
+            ).run_step(plan, NoParams())
 
         assert observer.step_statuses == [RunStatus.FAILED]
 

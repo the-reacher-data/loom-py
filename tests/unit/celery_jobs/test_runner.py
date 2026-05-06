@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +26,7 @@ from loom.celery.runner import (
 )
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.job import Job
+from loom.core.observability.event import Scope
 
 # ---------------------------------------------------------------------------
 # Test fixtures / helpers
@@ -97,6 +100,21 @@ def _mock_runtime(return_value: object = None, error: Exception | None = None) -
     runtime.initialize = MagicMock()
     runtime.shutdown = MagicMock()
     return runtime
+
+
+def _mock_observability_runtime() -> tuple[
+    MagicMock, list[tuple[tuple[object, ...], dict[str, object]]]
+]:
+    runtime = MagicMock()
+    span_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    @contextmanager
+    def _span(*args: object, **kwargs: object) -> Generator[None, None, None]:
+        span_calls.append((args, kwargs))
+        yield
+
+    runtime.span = MagicMock(side_effect=_span)
+    return runtime, span_calls
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +267,28 @@ class TestMakeJobTaskExecution:
         runtime.run.assert_called_once()
         _, kwargs = runtime.run.call_args
         assert kwargs["timeout"] is None
+
+    def test_job_task_emits_observability_span(self) -> None:
+        instance = _SyncJob()
+        factory = _mock_factory(instance)
+        runtime = _mock_runtime(return_value=10)
+        observability_runtime, span_calls = _mock_observability_runtime()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            factory,
+            MagicMock(),
+            runtime,
+            observability_runtime=observability_runtime,
+        )
+        task_fn(_mock_self(), payload={"value": 5})
+
+        observability_runtime.span.assert_called_once()
+        args, kwargs = observability_runtime.span.call_args
+        assert args[0] is Scope.JOB
+        assert args[1] == _SyncJob.__qualname__
+        assert kwargs["trace_id"] is None
+        assert span_calls
 
     def test_async_job_also_calls_async_runtime_run(self) -> None:
         instance = MagicMock()

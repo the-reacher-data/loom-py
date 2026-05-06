@@ -19,6 +19,7 @@ class ConfigKey(StrEnum):
     APP = "app"
     DATABASE = "database"
     CELERY = "celery"
+    OBSERVABILITY = "observability"
     LOGGER = "logger"
     METRICS = "metrics"
     JOBS = "jobs"

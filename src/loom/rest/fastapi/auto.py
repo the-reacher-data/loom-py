@@ -119,7 +119,11 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
     return engine(discovery_cfg)
 
 
-def _build_celery_service(raw: DictConfig, result: KernelRuntime) -> Any | None:
+def _build_celery_service(
+    raw: DictConfig,
+    result: KernelRuntime,
+    observability_runtime: ObservabilityRuntime,
+) -> Any | None:
     """Return a ``CeleryJobService`` if the celery extra is installed and configured.
 
     Returns ``None`` when the ``loom[celery]`` extra is absent or the
@@ -150,6 +154,7 @@ def _build_celery_service(raw: DictConfig, result: KernelRuntime) -> Any | None:
             metrics=result.metrics,
             factory=result.factory,
             executor=result.executor,
+            observability_runtime=observability_runtime,
         )
     except ImportError:
         return None
@@ -177,6 +182,7 @@ def _build_inline_service(result: KernelRuntime) -> InlineJobService:
 def _configure_job_service(
     raw: DictConfig,
     result: KernelRuntime,
+    observability_runtime: ObservabilityRuntime,
 ) -> None:
     """Register a ``JobService`` implementation in the container.
 
@@ -193,7 +199,7 @@ def _configure_job_service(
         raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
         result: Kernel runtime carrying container, factory and executor.
     """
-    svc = _build_celery_service(raw, result) or _build_inline_service(result)
+    svc = _build_celery_service(raw, result, observability_runtime) or _build_inline_service(result)
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
@@ -395,7 +401,7 @@ def create_app(
         effective_echo,
         metrics=metrics_adapter,
     )
-    _configure_job_service(raw, result)
+    _configure_job_service(raw, result, observability_runtime)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

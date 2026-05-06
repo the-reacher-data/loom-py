@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 
-from loom.etl.observability.records import (
+from loom.etl.lineage._records import (
     _RECORD_SCHEMA_MAP,
     PipelineRunRecord,
     ProcessRunRecord,
@@ -38,7 +38,7 @@ def test_schema_columns_match_dataclass_fields(
     assert schema_cols == dataclass_fields, (
         f"{record_type.__name__}: schema map has {sorted(schema_cols)} "
         f"but dataclass fields (excluding 'event') are {sorted(dataclass_fields)}. "
-        "Update _RECORD_SCHEMA_MAP in observability/records.py."
+        "Update _RECORD_SCHEMA_MAP in lineage/_records.py."
     )
 
 

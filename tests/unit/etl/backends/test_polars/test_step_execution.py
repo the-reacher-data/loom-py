@@ -14,10 +14,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl import ETLParams, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative.expr._refs import TableRef
-from loom.etl.executor import ETLExecutor, EventName, RunStatus
+from loom.etl.executor import ETLExecutor
+from loom.etl.lineage._records import EventName, RunStatus
 from loom.etl.schema._schema import LoomDtype
 from loom.etl.testing import StubRunObserver
 
@@ -144,7 +146,11 @@ def test_run_step_emits_start_and_end_events(
     observer = StubRunObserver()
 
     plan = ETLCompiler().compile_step(DoubleAmountStep)
-    ETLExecutor(polars_reader, polars_writer, observers=[observer]).run_step(plan, NoParams())
+    ETLExecutor(
+        polars_reader,
+        polars_writer,
+        observability=ObservabilityRuntime([observer]),
+    ).run_step(plan, NoParams())
 
     assert observer.event_names == [EventName.STEP_START, EventName.STEP_END]
     assert observer.step_statuses == ["success"]
@@ -165,7 +171,11 @@ def test_run_step_emits_error_event_on_failure(
     plan = ETLCompiler().compile_step(DoubleAmountStep)
 
     with pytest.raises(RuntimeError, match="read failure"):
-        ETLExecutor(FailingReader(), polars_writer, observers=[observer]).run_step(plan, NoParams())
+        ETLExecutor(
+            FailingReader(),
+            polars_writer,
+            observability=ObservabilityRuntime([observer]),
+        ).run_step(plan, NoParams())
 
     assert EventName.STEP_ERROR in observer.event_names
     assert observer.step_statuses == [RunStatus.FAILED]

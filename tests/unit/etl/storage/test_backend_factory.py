@@ -10,18 +10,15 @@ from typing import Any
 import pytest
 
 from loom.etl.backends.spark.provider import SparkProvider
-from loom.etl.observability.config import (
-    ExecutionRecordStoreConfig,
-    ObservabilityConfig,
-    OtelConfig,
-)
-from loom.etl.observability.factory import make_observers
-from loom.etl.observability.observers.structlog import StructlogRunObserver
+from loom.etl.lineage._config import LineageConfig
+from loom.etl.lineage._records import EventName, PipelineRunRecord, RunStatus
+from loom.etl.lineage.sinks import TableLineageStore
 from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runner._wiring import (
     make_backends,
     make_checkpoint_store,
-    make_execution_record_writer,
+    make_lineage_store,
+    make_lineage_writer,
 )
 from loom.etl.storage._config import (
     CatalogConnection,
@@ -35,11 +32,6 @@ from loom.etl.storage._config import (
 
 def _path_defaults(root: str) -> StorageDefaults:
     return StorageDefaults(table_path=TablePathConfig(uri=root))
-
-
-class _DummyExecutionRecordWriter:
-    def write_record(self, record: object, table_ref: object, /) -> None:
-        _ = (record, table_ref)
 
 
 class _DummyTargetWriter:
@@ -183,115 +175,45 @@ def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.M
 
 
 # ---------------------------------------------------------------------------
-# make_observers
+# lineage wiring
 # ---------------------------------------------------------------------------
 
 
-def test_make_observers_log_true_includes_structlog() -> None:
-    config = ObservabilityConfig(log=True)
-    observers = make_observers(config)
-
-    assert len(observers) == 1
-    assert isinstance(observers[0], StructlogRunObserver)
+def test_make_lineage_writer_rejects_database_destination_for_polars_engine() -> None:
+    lineage = LineageConfig(enabled=True, database="ops")
+    with pytest.raises(ValueError, match="observability.lineage.database"):
+        make_lineage_writer(StorageConfig(engine="polars"), lineage)
 
 
-def test_make_observers_log_false_returns_empty() -> None:
-    config = ObservabilityConfig(log=False)
-    observers = make_observers(config)
-
-    assert observers == []
-
-
-def test_make_observers_otel_true_includes_otel_observer() -> None:
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
-    config = ObservabilityConfig(log=False, otel=True)
-    observers = make_observers(config)
-
-    assert len(observers) == 1
-    assert isinstance(observers[0], OtelRunObserver)
-
-
-def test_make_observers_log_and_otel_true_includes_both() -> None:
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
-    config = ObservabilityConfig(log=True, otel=True)
-    observers = make_observers(config)
-
-    assert len(observers) == 2
-    assert isinstance(observers[0], StructlogRunObserver)
-    assert isinstance(observers[1], OtelRunObserver)
-
-
-def test_make_observers_with_otel_config_enables_otel_observer() -> None:
-    from loom.etl.observability.observers.otel import OtelRunObserver
-
-    config = ObservabilityConfig(
-        log=False,
-        otel=False,
-        otel_config=OtelConfig(service_name="loom-tests"),
-    )
-    observers = make_observers(config)
-
-    assert len(observers) == 1
-    assert isinstance(observers[0], OtelRunObserver)
-
-
-def test_make_observers_with_record_store_root_adds_observer() -> None:
-    config = ObservabilityConfig(
-        log=False,
-        record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs"),
-    )
-    observers = make_observers(config, record_writer=_DummyExecutionRecordWriter())
-
-    assert len(observers) == 1
-    assert type(observers[0]).__name__ == "ExecutionRecordsObserver"
-
-
-def test_make_execution_record_writer_rejects_database_destination_for_polars_engine() -> None:
-    obs_config = ObservabilityConfig(
-        log=False,
-        record_store=ExecutionRecordStoreConfig(database="ops"),
-    )
-    with pytest.raises(ValueError, match="storage.engine='spark'"):
-        make_execution_record_writer(StorageConfig(engine="polars"), obs_config)
-
-
-def test_make_execution_record_writer_polars_root_returns_writer() -> None:
-    obs_config = ObservabilityConfig(
-        log=False,
-        record_store=ExecutionRecordStoreConfig(root="s3://bucket/runs"),
-    )
-    writer = make_execution_record_writer(StorageConfig(engine="polars"), obs_config)
+def test_make_lineage_writer_polars_root_returns_writer() -> None:
+    lineage = LineageConfig(enabled=True, root="s3://bucket/runs")
+    writer = make_lineage_writer(StorageConfig(engine="polars"), lineage)
     assert writer is not None
-    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert type(writer).__name__ == "TargetLineageWriter"
 
 
-def test_make_execution_record_writer_spark_database_requires_session() -> None:
-    obs_config = ObservabilityConfig(
-        log=False,
-        record_store=ExecutionRecordStoreConfig(database="ops"),
-    )
+def test_make_lineage_writer_spark_database_requires_session() -> None:
+    lineage = LineageConfig(enabled=True, database="ops")
     with pytest.raises(ValueError, match="SparkSession"):
-        make_execution_record_writer(StorageConfig(engine="spark"), obs_config, spark=None)
+        make_lineage_writer(StorageConfig(engine="spark"), lineage, spark=None)
 
 
-def test_spark_provider_record_writer_root_returns_target_writer_wrapper() -> None:
+def test_spark_provider_lineage_writer_root_returns_target_writer_wrapper() -> None:
     from unittest.mock import MagicMock
 
     spark = MagicMock()
     provider = SparkProvider()
-    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+    store = LineageConfig(enabled=True, root="s3://bucket/runs")
 
-    writer = provider.create_execution_record_writer(
+    writer = provider.create_lineage_writer(
         StorageConfig(engine="spark"),
         store,
         spark=spark,
     )
-    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert type(writer).__name__ == "TargetLineageWriter"
 
 
-def test_spark_provider_record_writer_honors_missing_table_policy() -> None:
+def test_spark_provider_lineage_writer_honors_missing_table_policy() -> None:
     from unittest.mock import MagicMock
 
     captured: dict[str, MissingTablePolicy] = {}
@@ -311,7 +233,7 @@ def test_spark_provider_record_writer_honors_missing_table_policy() -> None:
 
     spark = MagicMock()
     provider = SparkProvider()
-    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+    store = LineageConfig(enabled=True, root="s3://bucket/runs")
     config = StorageConfig(engine="spark", missing_table_policy=MissingTablePolicy.CREATE)
 
     monkeypatch = pytest.MonkeyPatch()
@@ -319,15 +241,15 @@ def test_spark_provider_record_writer_honors_missing_table_policy() -> None:
         "loom.etl.backends.spark.provider.SparkTargetWriter", _FakeSparkTargetWriter
     )
     try:
-        writer = provider.create_execution_record_writer(config, store, spark=spark)
+        writer = provider.create_lineage_writer(config, store, spark=spark)
     finally:
         monkeypatch.undo()
 
-    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert type(writer).__name__ == "TargetLineageWriter"
     assert captured["policy"] is MissingTablePolicy.CREATE
 
 
-def test_polars_provider_record_writer_honors_missing_table_policy() -> None:
+def test_polars_provider_lineage_writer_honors_missing_table_policy() -> None:
     from loom.etl.backends.polars.provider import PolarsProvider
 
     captured: dict[str, MissingTablePolicy] = {}
@@ -344,7 +266,7 @@ def test_polars_provider_record_writer_honors_missing_table_policy() -> None:
             captured["policy"] = missing_table_policy
 
     provider = PolarsProvider()
-    store = ExecutionRecordStoreConfig(root="s3://bucket/runs")
+    store = LineageConfig(enabled=True, root="s3://bucket/runs")
     config = StorageConfig(engine="polars", missing_table_policy=MissingTablePolicy.CREATE)
 
     monkeypatch = pytest.MonkeyPatch()
@@ -352,23 +274,20 @@ def test_polars_provider_record_writer_honors_missing_table_policy() -> None:
         "loom.etl.backends.polars.provider.PolarsTargetWriter", _FakePolarsTargetWriter
     )
     try:
-        writer = provider.create_execution_record_writer(config, store)
+        writer = provider.create_lineage_writer(config, store)
     finally:
         monkeypatch.undo()
 
-    assert type(writer).__name__ == "TargetExecutionRecordWriter"
+    assert type(writer).__name__ == "TargetLineageWriter"
     assert captured["policy"] is MissingTablePolicy.CREATE
 
 
-def test_target_execution_record_writer_direct_module_import_executes_frame_and_append() -> None:
+def test_target_lineage_writer_direct_module_import_executes_frame_and_append() -> None:
     from loom.etl.declarative.expr._refs import TableRef
-    from loom.etl.observability.records import EventName, PipelineRunRecord, RunStatus
 
-    writer_module = importlib.reload(
-        importlib.import_module("loom.etl.observability.sinks._writer")
-    )
+    writer_module = importlib.reload(importlib.import_module("loom.etl.lineage.sinks._writer"))
     target_writer = _DummyTargetWriter()
-    writer = writer_module.TargetExecutionRecordWriter(target_writer)
+    writer = writer_module.TargetLineageWriter(target_writer)
 
     record = PipelineRunRecord(
         event=EventName.PIPELINE_END,
@@ -387,12 +306,10 @@ def test_target_execution_record_writer_direct_module_import_executes_frame_and_
     assert len(target_writer.append_calls) == 1
 
 
-def test_make_observers_record_store_requires_record_writer() -> None:
-    config = ObservabilityConfig(
-        log=False, record_store=ExecutionRecordStoreConfig(root="/var/lib/loom/runs")
-    )
-    with pytest.raises(ValueError, match="record_writer is required"):
-        make_observers(config)
+def test_make_lineage_store_returns_table_store_when_enabled() -> None:
+    lineage = LineageConfig(enabled=True, root="s3://bucket/runs")
+    store = make_lineage_store(StorageConfig(engine="polars"), lineage)
+    assert isinstance(store, TableLineageStore)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ class CheckpointScope(StrEnum):
     * ``CORRELATION`` — Survives a failed run so that the next retry attempt
                         can reuse already-materialised intermediates.  Cleaned
                         automatically on success when ``last_attempt=True`` in
-                        :class:`loom.etl.observability.RunContext`.  On
+                        :class:`loom.etl.lineage.RunContext`.  On
                         failure the executor emits a structured warning; the
                         caller must invoke
                         :meth:`~loom.etl.ETLRunner.cleanup_correlation`

@@ -10,6 +10,7 @@ from typing import Any
 import msgspec
 import pytest
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
 from loom.etl.compiler._plan import (
@@ -91,7 +92,7 @@ def runner_factory() -> RunnerFactory:
         return ETLRunner(
             reader,
             StubTargetWriter(),
-            observers=list(observers or ()),
+            observability=ObservabilityRuntime(list(observers or ())),
         )
 
     return _make
@@ -276,7 +277,7 @@ class TestRunnerFromDict:
     def test_from_dict_with_observability_dict(self, tmp_path: Path) -> None:
         runner = ETLRunner.from_dict(
             {"defaults": {"table_path": {"uri": str(tmp_path)}}},
-            observability={"log": False},
+            observability={"log": {"enabled": False}},
         )
         assert runner is not None
 

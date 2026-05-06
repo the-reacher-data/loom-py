@@ -30,7 +30,7 @@ from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
-from loom.etl.observability.records import ExecutionRecord, get_record_schema
+from loom.etl.lineage._records import LineageRecord, get_lineage_schema
 from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
@@ -79,8 +79,8 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
 
-    def to_frame(self, records: Sequence[ExecutionRecord], /) -> pl.LazyFrame:
-        """Convert execution records into a Polars LazyFrame."""
+    def to_frame(self, records: Sequence[LineageRecord], /) -> pl.LazyFrame:
+        """Convert lineage records into a Polars LazyFrame."""
         if not records:
             raise ValueError("PolarsTargetWriter.to_frame requires at least one record.")
         first = records[0]
@@ -90,7 +90,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
                 "PolarsTargetWriter.to_frame requires homogeneous record types per batch."
             )
         rows = [record.to_row() for record in records]
-        return pl.from_dicts(rows, schema=_polars_record_schema(first)).lazy()
+        return pl.from_dicts(rows, schema=_polars_lineage_schema(first)).lazy()
 
     # ====================================================================
     # Schema Hooks
@@ -451,6 +451,6 @@ def _partition_filter(
     return result
 
 
-def _polars_record_schema(record: ExecutionRecord) -> pl.Schema:
-    cols = get_record_schema(type(record))
+def _polars_lineage_schema(record: LineageRecord) -> pl.Schema:
+    cols = get_lineage_schema(type(record))
     return pl.Schema({c.name: loom_type_to_polars(c.dtype) for c in cols})

@@ -35,6 +35,8 @@ from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.context import add_pending_dispatch
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import get_trace_id
 
 if TYPE_CHECKING:
@@ -74,25 +76,35 @@ class _PendingCeleryDispatch:
     soft_time_limit: int | None
     link: Any | None
     link_error: Any | None
+    observability_runtime: ObservabilityRuntime
 
     def __call__(self) -> None:
         """Invoke ``send_task`` synchronously. Called by flush."""
-        self.celery_app.send_task(
+        with self.observability_runtime.span(
+            Scope.TRANSPORT,
             self.task_name,
-            kwargs={
-                "payload": self.payload,
-                "params": self.params,
-                "trace_id": self.trace_id,
-            },
-            task_id=self.task_id,
+            trace_id=self.trace_id,
+            id=self.task_id,
             queue=self.queue,
             countdown=self.countdown,
             priority=self.priority,
-            eta=self.eta,
-            soft_time_limit=self.soft_time_limit,
-            link=self.link,
-            link_error=self.link_error,
-        )
+        ):
+            self.celery_app.send_task(
+                self.task_name,
+                kwargs={
+                    "payload": self.payload,
+                    "params": self.params,
+                    "trace_id": self.trace_id,
+                },
+                task_id=self.task_id,
+                queue=self.queue,
+                countdown=self.countdown,
+                priority=self.priority,
+                eta=self.eta,
+                soft_time_limit=self.soft_time_limit,
+                link=self.link,
+                link_error=self.link_error,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +238,13 @@ class CeleryJobService:
         metrics: MetricsAdapter | None = None,
         factory: UseCaseFactory | None = None,
         executor: RuntimeExecutor | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> None:
         self._app = celery_app
         self._metrics = metrics
         self._factory = factory
         self._executor = executor
+        self._observability_runtime = observability_runtime or ObservabilityRuntime.noop()
 
     # ------------------------------------------------------------------
     # JobService protocol
@@ -342,6 +356,7 @@ class CeleryJobService:
             soft_time_limit=job_type.__timeout__,
             link=link,
             link_error=link_error,
+            observability_runtime=self._observability_runtime,
         )
         add_pending_dispatch(pending)
         self._emit(
