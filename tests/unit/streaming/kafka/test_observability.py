@@ -26,7 +26,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert 'loom_streaming_kafka_produced_total{status="success",topic="orders"}' in text
+        assert 'streaming_kafka_produced_total{status="success",topic="orders"}' in text
 
     def test_produce_error_increments_produced_total_with_delivery_error(
         self, kafka_registry: CollectorRegistry
@@ -43,7 +43,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert 'loom_streaming_kafka_produced_total{status="delivery_error",topic="orders"}' in text
+        assert 'streaming_kafka_produced_total{status="delivery_error",topic="orders"}' in text
 
     def test_consume_end_increments_consumed_total(self, kafka_registry: CollectorRegistry) -> None:
         obs, _ = _make_obs(kafka_registry)
@@ -55,7 +55,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert 'loom_streaming_kafka_consumed_total{status="success",topic="orders"}' in text
+        assert 'streaming_kafka_consumed_total{status="success",topic="orders"}' in text
 
     def test_decode_error_increments_consumed_total_with_decode_error(
         self, kafka_registry: CollectorRegistry
@@ -72,7 +72,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert 'loom_streaming_kafka_consumed_total{status="decode_error",topic="orders"}' in text
+        assert 'streaming_kafka_consumed_total{status="decode_error",topic="orders"}' in text
 
     def test_encode_end_observes_encode_duration(self, kafka_registry: CollectorRegistry) -> None:
         obs, _ = _make_obs(kafka_registry)
@@ -87,7 +87,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_encode_duration_seconds" in text
+        assert "streaming_kafka_encode_duration_seconds" in text
 
     def test_decode_end_observes_decode_duration(self, kafka_registry: CollectorRegistry) -> None:
         obs, _ = _make_obs(kafka_registry)
@@ -102,7 +102,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_decode_duration_seconds" in text
+        assert "streaming_kafka_decode_duration_seconds" in text
 
     def test_non_transport_events_are_ignored(self, kafka_registry: CollectorRegistry) -> None:
         obs, _ = _make_obs(kafka_registry)
@@ -152,7 +152,7 @@ class TestKafkaPrometheusMetrics:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_produced_total" in text
-        assert "loom_streaming_kafka_consumed_total" in text
-        assert "loom_streaming_kafka_encode_duration_seconds" in text
-        assert "loom_streaming_kafka_decode_duration_seconds" in text
+        assert "streaming_kafka_produced_total" in text
+        assert "streaming_kafka_consumed_total" in text
+        assert "streaming_kafka_encode_duration_seconds" in text
+        assert "streaming_kafka_decode_duration_seconds" in text

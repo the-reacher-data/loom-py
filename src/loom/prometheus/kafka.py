@@ -17,12 +17,22 @@ Usage::
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry, Counter, Histogram
+
+
+class KafkaMetricName(StrEnum):
+    """Prometheus metric names for Kafka transport instruments."""
+
+    PRODUCED_TOTAL = "streaming_kafka_produced_total"
+    CONSUMED_TOTAL = "streaming_kafka_consumed_total"
+    ENCODE_DURATION = "streaming_kafka_encode_duration_seconds"
+    DECODE_DURATION = "streaming_kafka_decode_duration_seconds"
 
 
 class KafkaPrometheusMetrics:
@@ -94,13 +104,11 @@ def _build_produced_total(registry: CollectorRegistry | None) -> Counter:
 
     if registry is None:
         return Counter(
-            "loom_streaming_kafka_produced_total",
-            "Total Kafka records produced by Loom streaming.",
-            ["topic", "status"],
+            KafkaMetricName.PRODUCED_TOTAL, "Total Kafka records produced.", ["topic", "status"]
         )
     return Counter(
-        "loom_streaming_kafka_produced_total",
-        "Total Kafka records produced by Loom streaming.",
+        KafkaMetricName.PRODUCED_TOTAL,
+        "Total Kafka records produced.",
         ["topic", "status"],
         registry=registry,
     )
@@ -111,13 +119,11 @@ def _build_consumed_total(registry: CollectorRegistry | None) -> Counter:
 
     if registry is None:
         return Counter(
-            "loom_streaming_kafka_consumed_total",
-            "Total Kafka records consumed by Loom streaming.",
-            ["topic", "status"],
+            KafkaMetricName.CONSUMED_TOTAL, "Total Kafka records consumed.", ["topic", "status"]
         )
     return Counter(
-        "loom_streaming_kafka_consumed_total",
-        "Total Kafka records consumed by Loom streaming.",
+        KafkaMetricName.CONSUMED_TOTAL,
+        "Total Kafka records consumed.",
         ["topic", "status"],
         registry=registry,
     )
@@ -128,12 +134,12 @@ def _build_encode_duration(registry: CollectorRegistry | None) -> Histogram:
 
     if registry is None:
         return Histogram(
-            "loom_streaming_kafka_encode_duration_seconds",
+            KafkaMetricName.ENCODE_DURATION,
             "Kafka envelope encode duration in seconds.",
             ["content_type"],
         )
     return Histogram(
-        "loom_streaming_kafka_encode_duration_seconds",
+        KafkaMetricName.ENCODE_DURATION,
         "Kafka envelope encode duration in seconds.",
         ["content_type"],
         registry=registry,
@@ -145,12 +151,12 @@ def _build_decode_duration(registry: CollectorRegistry | None) -> Histogram:
 
     if registry is None:
         return Histogram(
-            "loom_streaming_kafka_decode_duration_seconds",
+            KafkaMetricName.DECODE_DURATION,
             "Kafka envelope decode duration in seconds.",
             ["content_type"],
         )
     return Histogram(
-        "loom_streaming_kafka_decode_duration_seconds",
+        KafkaMetricName.DECODE_DURATION,
         "Kafka envelope decode duration in seconds.",
         ["content_type"],
         registry=registry,
