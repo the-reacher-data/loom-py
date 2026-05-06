@@ -15,6 +15,9 @@ Typical YAML layout::
       result_backend: "redis://redis:6379/1"
       worker_concurrency: 8
       worker_prefetch_multiplier: 1
+      runtime:
+        backend: "asyncio"
+        use_uvloop: true
 
     jobs:
       RecalcPricesJob:
@@ -27,17 +30,37 @@ Typical YAML layout::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import sys
+from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
 from kombu import Queue  # type: ignore[import-untyped]
 
+from loom.core.model import LoomFrozenStruct
+
 if TYPE_CHECKING:
     from loom.core.job.job import Job
 
 
-class CeleryConfig(msgspec.Struct, kw_only=True):
+class CeleryRuntimeConfig(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Async bridge settings for a Celery worker process.
+
+    Attributes:
+        backend: AnyIO backend used by :class:`~loom.core.async_bridge.AsyncBridge`.
+            Accepted values are ``"asyncio"`` and ``"trio"``.
+        use_uvloop: When ``True`` and the backend is ``"asyncio"``, the worker
+            uses uvloop on supported platforms.
+        shutdown_timeout_ms: Maximum milliseconds to wait for in-flight async
+            work during worker shutdown.  ``None`` waits indefinitely.
+    """
+
+    backend: Literal["asyncio", "trio"] = "asyncio"
+    use_uvloop: bool = False
+    shutdown_timeout_ms: int | None = None
+
+
+class CeleryConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Broker and worker settings for the Celery application.
 
     Attributes:
@@ -64,6 +87,7 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
             ``queue=`` argument — including callback signatures produced by
             ``link`` / ``link_error``.  Must be one of ``queues`` when that
             list is non-empty.  Defaults to ``"default"``.
+        runtime: AnyIO bridge settings for worker-side async execution.
 
     Example::
 
@@ -83,9 +107,10 @@ class CeleryConfig(msgspec.Struct, kw_only=True):
     accept_content: list[str] = msgspec.field(default_factory=lambda: ["json"])
     queues: list[str] = msgspec.field(default_factory=list)
     task_default_queue: str = "default"
+    runtime: CeleryRuntimeConfig = msgspec.field(default_factory=CeleryRuntimeConfig)
 
 
-class JobConfig(msgspec.Struct, kw_only=True):
+class JobConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Per-job routing and execution overrides applied at bootstrap.
 
     Fields set to ``None`` leave the corresponding ClassVar on the
@@ -145,6 +170,15 @@ def apply_job_config(job_type: type[Job[Any]], cfg: JobConfig) -> None:
         value = getattr(cfg, field_name)
         if value is not None:
             setattr(job_type, class_var, value)
+
+
+def _build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
+    """Return AnyIO backend options for an async bridge."""
+    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
+        import uvloop  # guarded by sys_platform marker in pyproject.toml
+
+        return {"loop_factory": uvloop.new_event_loop}
+    return {}
 
 
 def create_celery_app(cfg: CeleryConfig) -> Celery:

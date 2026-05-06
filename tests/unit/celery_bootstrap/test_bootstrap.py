@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 import types
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +17,7 @@ from loom.celery.bootstrap import (
     _apply_job_config_if_present,
     _connect_worker_signals,
 )
+from loom.celery.config import CeleryRuntimeConfig
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.job.job import Job
 from loom.core.model import BaseModel, ColumnField
@@ -34,7 +35,7 @@ class _SyncJob(Job[int]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self, value: int = 0) -> int:  # type: ignore[override]
+    def execute(self, value: int = 0) -> int:
         return value * 2
 
 
@@ -85,8 +86,8 @@ class TestApplyJobConfigIfPresent:
             assert _SyncJob.__queue__ == "override"
             assert _SyncJob.__retries__ == 5
         finally:
-            _SyncJob.__queue__ = original_queue  # type: ignore[assignment]
-            _SyncJob.__retries__ = original_retries  # type: ignore[assignment]
+            _SyncJob.__queue__ = original_queue
+            _SyncJob.__retries__ = original_retries
 
     def test_does_not_raise_when_section_absent(self) -> None:
         raw = _make_raw_config()
@@ -113,7 +114,7 @@ class TestWorkerBootstrapResult:
             celery_app=MagicMock(),
         )
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-            result.container = MagicMock()  # type: ignore[misc]
+            cast(Any, result).container = MagicMock()
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ class TestBootstrapWorkerTaskRegistration:
         jobs: tuple[type[Job[Any]], ...] | None = (_SyncJob,),
     ) -> WorkerBootstrapResult:
         """Write a minimal YAML config and call bootstrap_worker."""
-        import yaml
+        import yaml  # type: ignore[import-untyped]
 
         cfg: dict[str, Any] = {
             "celery": {
@@ -162,6 +163,37 @@ class TestBootstrapWorkerTaskRegistration:
         result = self._run(tmp_path)
         assert result.celery_app.conf.task_always_eager is True
 
+    def test_builds_async_runtime_from_yaml(self, tmp_path: Any) -> None:
+        import yaml
+
+        runtime_cfg: dict[str, object] = {
+            "backend": "trio",
+            "use_uvloop": True,
+            "shutdown_timeout_ms": 77,
+        }
+        cfg: dict[str, Any] = {
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+                "runtime": runtime_cfg,
+            },
+            "database": {"url": "sqlite+aiosqlite:///test.db"},
+        }
+        config_path = tmp_path / "worker_with_runtime.yaml"
+        config_path.write_text(yaml.dump(cfg))
+
+        with patch.object(boot, "_build_async_runtime", wraps=boot._build_async_runtime) as spy:
+            boot.bootstrap_worker(str(config_path), jobs=[_SyncJob])
+
+        call = spy.call_args
+        assert call is not None
+        runtime = call.args[0]
+        assert isinstance(runtime, CeleryRuntimeConfig)
+        assert runtime.backend == "trio"
+        assert runtime.use_uvloop is True
+        assert runtime.shutdown_timeout_ms == 77
+
     def test_returns_valid_result_type(self, tmp_path: Any) -> None:
         result = self._run(tmp_path)
         assert isinstance(result, WorkerBootstrapResult)
@@ -189,7 +221,7 @@ class TestBootstrapWorkerTaskRegistration:
             )
             assert _SyncJob.__retries__ == 7
         finally:
-            _SyncJob.__retries__ = original_retries  # type: ignore[assignment]
+            _SyncJob.__retries__ = original_retries
 
     def test_pure_job_bootstrap_without_database_section(self, tmp_path: Any) -> None:
         """Database config is optional for jobs that do not access repositories."""
@@ -209,7 +241,7 @@ class TestBootstrapWorkerTaskRegistration:
             result = boot.bootstrap_worker(str(config_path), jobs=[_SyncJob])
 
         assert isinstance(result, WorkerBootstrapResult)
-        mock_signals.assert_not_called()
+        mock_signals.assert_called_once()
 
     def test_discovers_jobs_from_modules_when_jobs_not_passed(self, tmp_path: Any) -> None:
         cfg = {
@@ -351,86 +383,72 @@ def isolated_celery_signals() -> Any:
 
 
 class TestWorkerSignals:
-    def test_on_init_calls_worker_event_loop_initialize(self, isolated_celery_signals: Any) -> None:
-        from celery.signals import worker_process_init  # type: ignore[import-untyped]
+    def test_on_init_calls_async_runtime_initialize(self, isolated_celery_signals: Any) -> None:
+        from celery.signals import worker_process_init
 
         mock_sm = MagicMock()
+        mock_runtime = MagicMock()
 
-        with patch.object(boot, "WorkerEventLoop") as mock_loop:
-            _connect_worker_signals(mock_sm)
-            worker_process_init.send(sender=None)
+        _connect_worker_signals(mock_sm, mock_runtime)
+        worker_process_init.send(sender=None)
 
-        mock_loop.initialize.assert_called_once()
+        mock_runtime.initialize.assert_called_once()
 
-    def test_on_shutdown_disposes_session_manager_via_loop(
+    def test_on_shutdown_disposes_session_manager_via_runtime(
         self, isolated_celery_signals: Any
     ) -> None:
-        from celery.signals import (  # type: ignore[import-untyped]
-            worker_process_init,
-            worker_process_shutdown,
-        )
+        from celery.signals import worker_process_init, worker_process_shutdown
 
         mock_sm = MagicMock()
         dispose_coro = MagicMock()
         mock_sm.dispose.return_value = dispose_coro
+        mock_runtime = MagicMock()
 
-        with patch.object(boot, "WorkerEventLoop") as mock_loop:
-            mock_loop.is_initialized.return_value = True
-            _connect_worker_signals(mock_sm)
-            worker_process_init.send(sender=None)
-            worker_process_shutdown.send(sender=None)
+        _connect_worker_signals(mock_sm, mock_runtime)
+        worker_process_init.send(sender=None)
+        worker_process_shutdown.send(sender=None)
 
-        mock_loop.run.assert_called_once_with(dispose_coro)
+        mock_runtime.run.assert_called_once_with(dispose_coro, eager_fallback=False)
 
-    def test_on_shutdown_calls_worker_event_loop_shutdown(
-        self, isolated_celery_signals: Any
-    ) -> None:
-        from celery.signals import (  # type: ignore[import-untyped]
-            worker_process_init,
-            worker_process_shutdown,
-        )
+    def test_on_shutdown_calls_async_runtime_shutdown(self, isolated_celery_signals: Any) -> None:
+        from celery.signals import worker_process_init, worker_process_shutdown
 
         mock_sm = MagicMock()
+        mock_runtime = MagicMock()
 
-        with patch.object(boot, "WorkerEventLoop") as mock_loop:
-            mock_loop.is_initialized.return_value = True
-            _connect_worker_signals(mock_sm)
-            worker_process_init.send(sender=None)
-            worker_process_shutdown.send(sender=None)
+        _connect_worker_signals(mock_sm, mock_runtime)
+        worker_process_init.send(sender=None)
+        worker_process_shutdown.send(sender=None)
 
-        mock_loop.shutdown.assert_called_once()
+        mock_runtime.shutdown.assert_called_once()
 
-    def test_on_shutdown_skips_dispose_when_loop_not_initialized(
+    def test_on_shutdown_skips_dispose_when_session_manager_missing(
         self, isolated_celery_signals: Any
     ) -> None:
-        from celery.signals import worker_process_shutdown  # type: ignore[import-untyped]
+        from celery.signals import worker_process_shutdown
 
-        mock_sm = MagicMock()
+        mock_runtime = MagicMock()
 
-        with patch.object(boot, "WorkerEventLoop") as mock_loop:
-            mock_loop.is_initialized.return_value = False
-            _connect_worker_signals(mock_sm)
-            worker_process_shutdown.send(sender=None)
+        _connect_worker_signals(None, mock_runtime)
+        worker_process_shutdown.send(sender=None)
 
-        mock_sm.dispose.assert_not_called()
-        mock_loop.run.assert_not_called()
-        mock_loop.shutdown.assert_called_once()
+        mock_runtime.run.assert_not_called()
+        mock_runtime.shutdown.assert_called_once()
 
     def test_on_shutdown_always_calls_shutdown_when_dispose_fails(
         self, isolated_celery_signals: Any
     ) -> None:
-        from celery.signals import worker_process_shutdown  # type: ignore[import-untyped]
+        from celery.signals import worker_process_shutdown
 
         mock_sm = MagicMock()
         dispose_coro = MagicMock()
         mock_sm.dispose.return_value = dispose_coro
+        mock_runtime = MagicMock()
+        mock_runtime.run.side_effect = RuntimeError("loop stopped")
 
-        with patch.object(boot, "WorkerEventLoop") as mock_loop:
-            mock_loop.is_initialized.return_value = True
-            mock_loop.run.side_effect = RuntimeError("loop stopped")
-            _connect_worker_signals(mock_sm)
-            worker_process_shutdown.send(sender=None)
+        _connect_worker_signals(mock_sm, mock_runtime)
+        worker_process_shutdown.send(sender=None)
 
-        mock_loop.run.assert_called_once_with(dispose_coro)
+        mock_runtime.run.assert_called_once_with(dispose_coro, eager_fallback=False)
         dispose_coro.close.assert_called_once()
-        mock_loop.shutdown.assert_called_once()
+        mock_runtime.shutdown.assert_called_once()

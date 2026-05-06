@@ -9,7 +9,9 @@ import pytest
 
 from loom.celery.config import (
     CeleryConfig,
+    CeleryRuntimeConfig,
     JobConfig,
+    _build_backend_options,
     apply_job_config,
     create_celery_app,
 )
@@ -27,7 +29,7 @@ class _JobA(Job[None]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self) -> None:  # type: ignore[override]
+    def execute(self) -> None:
         pass
 
 
@@ -35,7 +37,7 @@ class _JobB(Job[None]):
     __queue__ = "other"
     __retries__ = 1
 
-    def execute(self) -> None:  # type: ignore[override]
+    def execute(self) -> None:
         pass
 
 
@@ -59,16 +61,23 @@ class TestCeleryConfig:
         assert cfg.timezone == "UTC"
         assert cfg.enable_utc is True
         assert cfg.queues == []
+        assert cfg.runtime.backend == "asyncio"
+        assert cfg.runtime.use_uvloop is False
+        assert cfg.runtime.shutdown_timeout_ms is None
 
     def test_msgspec_convert_from_dict(self) -> None:
         raw = {
             "broker_url": "redis://b",
             "result_backend": "redis://r",
             "worker_concurrency": 8,
+            "runtime": {"backend": "trio", "use_uvloop": True, "shutdown_timeout_ms": 1234},
         }
         cfg = msgspec.convert(raw, CeleryConfig, strict=False)
         assert cfg.worker_concurrency == 8
         assert cfg.queues == []
+        assert cfg.runtime.backend == "trio"
+        assert cfg.runtime.use_uvloop is True
+        assert cfg.runtime.shutdown_timeout_ms == 1234
 
     def test_missing_required_field_raises(self) -> None:
         with pytest.raises(msgspec.ValidationError):
@@ -78,6 +87,40 @@ class TestCeleryConfig:
         cfg1 = CeleryConfig(broker_url="r://b", result_backend="r://r")
         cfg2 = CeleryConfig(broker_url="r://b", result_backend="r://r")
         assert cfg1.queues is not cfg2.queues
+
+
+class TestCeleryRuntimeConfig:
+    def test_defaults(self) -> None:
+        cfg = CeleryRuntimeConfig()
+        assert cfg.backend == "asyncio"
+        assert cfg.use_uvloop is False
+        assert cfg.shutdown_timeout_ms is None
+
+    def test_msgspec_convert_from_dict(self) -> None:
+        raw = {"backend": "trio", "use_uvloop": True, "shutdown_timeout_ms": 10}
+        cfg = msgspec.convert(raw, CeleryRuntimeConfig, strict=False)
+        assert cfg.backend == "trio"
+        assert cfg.use_uvloop is True
+        assert cfg.shutdown_timeout_ms == 10
+
+
+class TestBuildBackendOptions:
+    def test_non_asyncio_returns_empty(self) -> None:
+        assert _build_backend_options("trio", use_uvloop=True) == {}
+
+    def test_asyncio_without_uvloop_returns_empty(self) -> None:
+        assert _build_backend_options("asyncio", use_uvloop=False) == {}
+
+    def test_asyncio_with_uvloop_adds_loop_factory(self) -> None:
+        import sys
+
+        if sys.platform == "win32":
+            pytest.skip("uvloop not available on Windows")
+
+        import uvloop
+
+        opts = _build_backend_options("asyncio", use_uvloop=True)
+        assert opts.get("loop_factory") is uvloop.new_event_loop
 
 
 # ---------------------------------------------------------------------------

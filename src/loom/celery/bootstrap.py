@@ -16,8 +16,8 @@ registration:
 7. Build the ``SessionManager`` and ``UnitOfWorkFactory`` (pre-fork; the
    engine is lazy so no TCP connections are opened yet).
 8. Build the Celery application and register tasks.
-9. Connect Celery worker lifecycle signals for per-process event loop
-   management via :class:`~loom.celery.event_loop.WorkerEventLoop`.
+9. Connect Celery worker lifecycle signals for per-process async bridge
+   management via :class:`~loom.core.async_bridge.AsyncBridge`.
 10. Validate the container (fail-fast).
 11. Return :class:`WorkerBootstrapResult`.
 
@@ -28,8 +28,8 @@ TCP connections until the first ``async with session`` call.  It is
 therefore safe to create the :class:`~SessionManager` in the parent
 process before ``fork()``.  After ``fork()``, each child inherits the
 engine object but starts with an empty connection pool — connections are
-only opened after :class:`~loom.celery.event_loop.WorkerEventLoop`
-starts the background asyncio loop in the child process (via the
+only opened after :class:`~loom.core.async_bridge.AsyncBridge`
+starts the background AnyIO portal in the child process (via the
 ``worker_process_init`` Celery signal).
 
 Typical YAML layout (database optional for pure in-memory jobs)::
@@ -37,6 +37,9 @@ Typical YAML layout (database optional for pure in-memory jobs)::
     celery:
       broker_url: "redis://redis:6379/0"
       result_backend: "redis://redis:6379/1"
+      runtime:
+        backend: "asyncio"
+        use_uvloop: true
 
     database:
       url: "postgresql+asyncpg://user:pass@db/mydb"  # optional
@@ -62,10 +65,21 @@ from celery.signals import (  # type: ignore[import-untyped]
     worker_process_shutdown,
 )
 
-from loom.celery.config import CeleryConfig, JobConfig, apply_job_config, create_celery_app
+from loom.celery.config import (
+    CeleryConfig,
+    CeleryRuntimeConfig,
+    JobConfig,
+    _build_backend_options,
+    apply_job_config,
+    create_celery_app,
+)
 from loom.celery.constants import WorkerManifestAttr
-from loom.celery.event_loop import WorkerEventLoop
-from loom.celery.runner import _make_callback_error_task, _make_callback_task, _make_job_task
+from loom.celery.runner import (
+    _CeleryAsyncRuntime,
+    _make_callback_error_task,
+    _make_callback_task,
+    _make_job_task,
+)
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.bootstrap import create_kernel
 from loom.core.config.errors import ConfigError
@@ -192,15 +206,27 @@ class _WorkerResolved:
 # ---------------------------------------------------------------------------
 
 
-def _connect_worker_signals(session_manager: SessionManager) -> None:
-    """Connect Celery worker lifecycle signals for per-process loop management.
+def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntime:
+    """Build the per-process async runtime used by Celery worker tasks."""
+    return _CeleryAsyncRuntime(
+        backend=runtime_cfg.backend,
+        backend_options=_build_backend_options(runtime_cfg.backend, runtime_cfg.use_uvloop),
+        shutdown_timeout_ms=runtime_cfg.shutdown_timeout_ms,
+    )
+
+
+def _connect_worker_signals(
+    session_manager: SessionManager | None,
+    async_runtime: _CeleryAsyncRuntime,
+) -> None:
+    """Connect Celery worker lifecycle signals for per-process bridge management.
 
     Registers two signal handlers:
 
-    * ``worker_process_init`` — starts :class:`~WorkerEventLoop` in the
-      forked child process.
+    * ``worker_process_init`` — starts the async bridge in the forked
+      child process.
     * ``worker_process_shutdown`` — disposes the session manager through
-      the event loop, then shuts the loop down.
+      the bridge, then shuts it down.
 
     Idempotent: subsequent calls within the same process are no-ops.
     This prevents handler accumulation when :func:`bootstrap_worker` is
@@ -209,21 +235,22 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
     Args:
         session_manager: The shared :class:`~SessionManager` instance
             (created pre-fork with a lazy engine).  Disposed per-process
-            on shutdown.
+            on shutdown when present.
+        async_runtime: Per-process async bridge runtime used for async jobs.
     """
     global _SIGNALS_CONNECTED
     if _SIGNALS_CONNECTED:
         return
 
     def _on_init(**kwargs: Any) -> None:
-        WorkerEventLoop.initialize()
+        async_runtime.initialize()
 
     def _on_shutdown(**kwargs: Any) -> None:
         dispose_coro: Any | None = None
         try:
-            if WorkerEventLoop.is_initialized():
+            if session_manager is not None:
                 dispose_coro = session_manager.dispose()
-                WorkerEventLoop.run(dispose_coro)
+                async_runtime.run(dispose_coro, eager_fallback=False)
         except Exception:
             if dispose_coro is not None:
                 close = getattr(dispose_coro, "close", None)
@@ -231,7 +258,7 @@ def _connect_worker_signals(session_manager: SessionManager) -> None:
                     close()
             raise
         finally:
-            WorkerEventLoop.shutdown()
+            async_runtime.shutdown()
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
@@ -250,7 +277,7 @@ def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, Ses
 
     # SessionManager is created pre-fork. The async engine is lazy — no TCP
     # connections are opened until the first async context manager usage in
-    # the child process after WorkerEventLoop.initialize() runs.
+    # the child process after the async bridge initializes.
     session_manager = SessionManager(
         db_cfg.url, echo=db_cfg.echo, pool_pre_ping=db_cfg.pool_pre_ping
     )
@@ -664,7 +691,7 @@ def bootstrap_worker(
 
     Loads configuration from ``config_paths``, compiles all ``Job``
     subclasses, registers Celery tasks, and connects worker lifecycle
-    signals for per-process event loop management.
+    signals for per-process async bridge management.
 
     This function is **independent** of
     :func:`~loom.core.bootstrap.bootstrap.bootstrap_app` — it targets the
@@ -673,7 +700,7 @@ def bootstrap_worker(
 
     Fork-safety note: the :class:`~SessionManager` is created here
     (pre-fork) using a lazy async engine.  No TCP connections are
-    established until the background asyncio loop is started in each
+    established until the background async bridge is started in each
     child process via ``worker_process_init``.
 
     Database note: the ``database`` section is optional. When absent, no
@@ -730,6 +757,7 @@ def bootstrap_worker(
     raw = load_config(*config_paths)
     celery_cfg = section(raw, ConfigKey.CELERY, CeleryConfig)
     _configure_logging(raw)
+    async_runtime = _build_async_runtime(celery_cfg.runtime)
 
     resolved = _resolve_compilables_and_jobs(raw, jobs, use_cases)
     all_compilables = _merge_unique(
@@ -761,14 +789,20 @@ def bootstrap_worker(
     celery_app = create_celery_app(celery_cfg)
 
     for job_type in resolved.jobs:
-        _make_job_task(celery_app, job_type, kernel.factory, kernel.executor, metrics)
+        _make_job_task(
+            celery_app,
+            job_type,
+            kernel.factory,
+            kernel.executor,
+            async_runtime,
+            metrics,
+        )
 
     for callback_type in resolved.callbacks:
-        _make_callback_task(celery_app, callback_type, kernel.factory)
-        _make_callback_error_task(celery_app, callback_type, kernel.factory)
+        _make_callback_task(celery_app, callback_type, kernel.factory, async_runtime)
+        _make_callback_error_task(celery_app, callback_type, kernel.factory, async_runtime)
 
-    if session_manager is not None:
-        _connect_worker_signals(session_manager)
+    _connect_worker_signals(session_manager, async_runtime)
 
     return WorkerBootstrapResult(
         container=kernel.container,

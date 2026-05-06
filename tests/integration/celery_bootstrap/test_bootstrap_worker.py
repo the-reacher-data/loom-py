@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
-import yaml
+import yaml  # type: ignore[import-untyped]
 from celery import Celery  # type: ignore[import-untyped]
 
 import loom.celery.bootstrap as boot
@@ -32,7 +31,7 @@ class _DoubleSyncJob(Job[int]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self, value: int = 0) -> int:  # type: ignore[override]
+    def execute(self, value: int = 0) -> int:
         return value * 2
 
 
@@ -45,7 +44,7 @@ class _UpperJob(Job[str]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self, text: str = "") -> str:  # type: ignore[override]
+    def execute(self, text: str = "") -> str:
         return text.upper()
 
 
@@ -70,20 +69,6 @@ def worker_config(tmp_path: Path) -> str:
     return str(config_file)
 
 
-@pytest.fixture(autouse=True)
-def mock_worker_loop() -> Any:
-    """Replace WorkerEventLoop.run() with asyncio.run() for test isolation.
-
-    Integration tests verify bootstrap and task execution pipelines; the
-    WorkerEventLoop itself is covered by dedicated unit tests in
-    ``test_event_loop.py``.  Running the real loop in integration tests
-    adds thread lifecycle complexity without additional coverage benefit.
-    """
-    with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
-        mock_loop.run = lambda coro, timeout=None: asyncio.run(coro)
-        yield mock_loop
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -105,7 +90,10 @@ class TestBootstrapWorkerResult:
     def test_result_is_frozen(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-            result.container = None  # type: ignore[misc]
+            from typing import Any as _Any
+
+            cast_result: _Any = result
+            cast_result.container = None
 
     def test_job_task_registered(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
@@ -183,4 +171,4 @@ class TestBootstrapWorkerJobConfigOverride:
             )
             assert _DoubleSyncJob.__retries__ == 3
         finally:
-            _DoubleSyncJob.__retries__ = original_retries  # type: ignore[assignment]
+            _DoubleSyncJob.__retries__ = original_retries
