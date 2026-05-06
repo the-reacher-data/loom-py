@@ -10,6 +10,8 @@ from confluent_kafka import TopicPartition
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _adapter, _runtime_io
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
+from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.kafka import MsgspecCodec
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeError
@@ -112,6 +114,56 @@ class TestRuntimeIOBuilders:
             "orders.dlq",
             "orders.terminal",
         ]
+
+    def test_runtime_sinks_generate_child_traces_with_parent_lineage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_raw = RawProducerStub()
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+        monkeypatch.setattr(_runtime_io, "generate_trace_id", lambda: "child-trace")
+
+        sink = _runtime_io.build_runtime_sink(build_compiled_sink(), None)
+        error_sinks = _runtime_io.build_runtime_error_sinks(
+            {ErrorKind.TASK: build_compiled_sink(topic="orders.errors")},
+            None,
+        )
+
+        message = Message(
+            payload=Order(order_id="123"),
+            meta=MessageMeta(
+                message_id="m-1",
+                trace_id="parent-trace",
+                correlation_id="corr-1",
+                causation_id="cause-1",
+                topic="orders.in",
+                partition=2,
+                offset=9,
+            ),
+        )
+        sink.build("step", 0, 1).write_batch([message])
+
+        error_envelope = ErrorEnvelope[Order](
+            kind=ErrorKind.TASK,
+            reason="boom",
+            original_message=snapshot_message(message),
+        )
+        cast(
+            _runtime_io._KafkaErrorEnvelopeSinkPartition,
+            error_sinks[ErrorKind.TASK].build("step", 0, 1),
+        ).write_batch([error_envelope])
+
+        codec = MsgspecCodec[Order]()
+        decoded_message = codec.decode(fake_raw.sent[0].value, Order)
+        decoded_error = MsgspecCodec[ErrorEnvelope[Order]]().decode(
+            fake_raw.sent[1].value,
+            ErrorEnvelope[Order],
+        )
+
+        assert decoded_message.meta.trace_id == "child-trace"
+        assert decoded_message.meta.parent_trace_id == "parent-trace"
+        assert decoded_error.meta.trace_id == "child-trace"
+        assert decoded_error.meta.parent_trace_id == "parent-trace"
 
     def test_build_runtime_error_sink_writes_error_envelope_payloads(
         self,

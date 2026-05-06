@@ -140,6 +140,7 @@ def envelope_to_message(
             message_id=_message_id(record),
             correlation_id=envelope.meta.correlation_id,
             trace_id=envelope.meta.trace_id,
+            parent_trace_id=envelope.meta.parent_trace_id,
             causation_id=envelope.meta.causation_id,
             produced_at_ms=envelope.meta.produced_at_ms,
             message_type=descriptor.message_type,

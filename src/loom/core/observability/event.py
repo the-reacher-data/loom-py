@@ -8,6 +8,8 @@ from typing import Self
 
 import msgspec
 
+from loom.core.model import LoomFrozenStruct
+
 
 class EventKind(StrEnum):
     """Lifecycle phase emitted by an ``ObservabilityRuntime`` span."""
@@ -57,7 +59,7 @@ class Scope(StrEnum):
     MAINTENANCE = "maintenance"
 
 
-class LifecycleEvent(msgspec.Struct, frozen=True, kw_only=True):
+class LifecycleEvent(LoomFrozenStruct, frozen=True, kw_only=True):
     """Immutable lifecycle event emitted to all registered observers.
 
     All fields except ``scope``, ``name``, and ``kind`` are optional — observers

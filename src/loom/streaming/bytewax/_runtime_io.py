@@ -11,6 +11,7 @@ from typing import Any, Generic, TypeAlias, TypeVar, cast
 from bytewax.inputs import SimplePollingSource
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
+from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.bytewax._dlq import (
     send_batch_to_dlq,
@@ -50,6 +51,7 @@ class _KafkaSendRequest(Generic[PayloadT]):
     key: bytes | str | None
     headers: dict[str, bytes]
     correlation_id: str | None
+    parent_trace_id: str | None
     causation_id: str | None
     trace_id: str | None
     produced_at_ms: int | None
@@ -79,6 +81,7 @@ def _write_kafka_batch(
                 key=request.key,
                 headers=request.headers,
                 correlation_id=request.correlation_id,
+                parent_trace_id=request.parent_trace_id,
                 causation_id=request.causation_id,
                 trace_id=request.trace_id,
                 produced_at_ms=request.produced_at_ms,
@@ -397,8 +400,9 @@ def _message_to_send_with_policy(
         key=_resolve_partition_key(message, partition_policy),
         headers=message.meta.headers,
         correlation_id=message.meta.correlation_id,
+        parent_trace_id=message.meta.trace_id,
         causation_id=message.meta.causation_id,
-        trace_id=message.meta.trace_id,
+        trace_id=generate_trace_id(),
         produced_at_ms=message.meta.produced_at_ms,
     )
 
@@ -429,8 +433,9 @@ def _error_item_to_send(
             key=None,
             headers=headers,
             correlation_id=None,
+            parent_trace_id=None,
             causation_id=None,
-            trace_id=None,
+            trace_id=generate_trace_id(),
             produced_at_ms=None,
         )
     key = _resolve_partition_key(cast(Message[StreamPayload], original), partition_policy)
@@ -440,8 +445,9 @@ def _error_item_to_send(
         key=key,
         headers={**original.meta.headers, **headers},
         correlation_id=original.meta.correlation_id,
+        parent_trace_id=original.meta.trace_id,
         causation_id=original.meta.causation_id,
-        trace_id=original.meta.trace_id,
+        trace_id=generate_trace_id(),
         produced_at_ms=original.meta.produced_at_ms,
     )
 
@@ -477,8 +483,9 @@ def _decode_error_to_send(
             "x-error-reason": item.error.reason.encode("utf-8"),
         },
         correlation_id=_decode_str_header(item.headers, HEADER_CORRELATION_ID),
+        parent_trace_id=_decode_str_header(item.headers, HEADER_TRACE_ID),
         causation_id=_decode_str_header(item.headers, HEADER_CAUSATION_ID),
-        trace_id=_decode_str_header(item.headers, HEADER_TRACE_ID),
+        trace_id=generate_trace_id(),
         produced_at_ms=item.timestamp_ms,
     )
 

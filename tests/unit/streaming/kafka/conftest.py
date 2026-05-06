@@ -89,6 +89,7 @@ def order_created_envelope_with_metadata(
         order_created_payload,
         order_created_descriptor_v1,
         correlation_id="corr-1",
+        parent_trace_id="parent-1",
         causation_id="cause-1",
         trace_id="trace-1",
         produced_at_ms=1234,

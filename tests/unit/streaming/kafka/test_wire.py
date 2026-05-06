@@ -40,6 +40,7 @@ class TestKafkaWireDecode:
         assert result.message.meta.message_id == "orders.events:3:9"
         assert result.message.meta.correlation_id == "corr-1"
         assert result.message.meta.trace_id == "trace-1"
+        assert result.message.meta.parent_trace_id == "parent-1"
         assert result.message.meta.causation_id == "cause-1"
         assert result.message.meta.produced_at_ms == 1234
         assert result.message.meta.message_type == "order.created"

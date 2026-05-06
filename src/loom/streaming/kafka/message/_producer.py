@@ -13,6 +13,7 @@ from loom.streaming.kafka._key_resolver import PartitionKeyResolver
 from loom.streaming.kafka._message import (
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
+    HEADER_PARENT_TRACE_ID,
     HEADER_TRACE_ID,
     MessageDescriptor,
     MessageEnvelope,
@@ -27,12 +28,15 @@ PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 def _build_record_headers(
     headers: dict[str, bytes] | None,
     correlation_id: str | None,
+    parent_trace_id: str | None,
     causation_id: str | None,
     trace_id: str | None,
 ) -> dict[str, bytes]:
     result: dict[str, bytes] = dict(headers) if headers else {}
     if correlation_id is not None:
         result[HEADER_CORRELATION_ID] = correlation_id.encode()
+    if parent_trace_id is not None:
+        result[HEADER_PARENT_TRACE_ID] = parent_trace_id.encode()
     if causation_id is not None:
         result[HEADER_CAUSATION_ID] = causation_id.encode()
     if trace_id is not None:
@@ -80,6 +84,7 @@ class KafkaMessageProducer(Generic[PayloadT]):
         key: bytes | str | None = None,
         headers: dict[str, bytes] | None = None,
         correlation_id: str | None = None,
+        parent_trace_id: str | None = None,
         causation_id: str | None = None,
         trace_id: str | None = None,
         produced_at_ms: int | None = None,
@@ -93,6 +98,7 @@ class KafkaMessageProducer(Generic[PayloadT]):
             key: Optional Kafka partition key.
             headers: Optional Kafka headers.
             correlation_id: Optional correlation identifier.
+            parent_trace_id: Optional upstream trace identifier.
             causation_id: Optional upstream message identifier.
             trace_id: Optional explicit trace identifier.
             produced_at_ms: Optional producer timestamp in epoch milliseconds.
@@ -105,11 +111,18 @@ class KafkaMessageProducer(Generic[PayloadT]):
             payload,
             descriptor,
             correlation_id=correlation_id,
+            parent_trace_id=parent_trace_id,
             causation_id=causation_id,
             trace_id=trace_id,
             produced_at_ms=produced_at_ms,
         )
-        record_headers = _build_record_headers(headers, correlation_id, causation_id, trace_id)
+        record_headers = _build_record_headers(
+            headers,
+            correlation_id,
+            parent_trace_id,
+            causation_id,
+            trace_id,
+        )
         encode_started = perf_counter()
         encoded = self._codec.encode(message)
         if self._obs is not None:

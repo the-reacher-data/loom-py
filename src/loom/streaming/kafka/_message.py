@@ -15,6 +15,7 @@ PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 HEADER_CORRELATION_ID = "x-correlation-id"
 HEADER_CAUSATION_ID = "x-causation-id"
 HEADER_TRACE_ID = "x-trace-id"
+HEADER_PARENT_TRACE_ID = "x-parent-trace-id"
 
 
 class ContentType(LoomFrozenStruct, frozen=True):
@@ -88,6 +89,7 @@ class MessageMetadata(LoomFrozenStruct, frozen=True):
     Attributes:
         descriptor: Stable message contract descriptor.
         trace_id: Trace identifier propagated across process boundaries.
+        parent_trace_id: Optional upstream trace identifier.
         correlation_id: Correlation identifier shared across related messages.
         causation_id: Optional upstream message identifier.
         produced_at_ms: Producer timestamp in epoch milliseconds.
@@ -95,6 +97,7 @@ class MessageMetadata(LoomFrozenStruct, frozen=True):
 
     descriptor: MessageDescriptor
     trace_id: str | None = None
+    parent_trace_id: str | None = None
     correlation_id: str | None = None
     causation_id: str | None = None
     produced_at_ms: int = msgspec.field(default_factory=lambda: int(time.time() * 1000))
@@ -117,6 +120,7 @@ def build_message(
     descriptor: MessageDescriptor,
     *,
     correlation_id: str | None = None,
+    parent_trace_id: str | None = None,
     causation_id: str | None = None,
     trace_id: str | None = None,
     produced_at_ms: int | None = None,
@@ -130,6 +134,7 @@ def build_message(
         payload: Typed message payload.
         descriptor: Stable message contract descriptor.
         correlation_id: Optional correlation identifier.
+        parent_trace_id: Optional upstream trace identifier.
         causation_id: Optional upstream message identifier.
         trace_id: Optional explicit trace identifier.
         produced_at_ms: Optional producer timestamp in epoch milliseconds.
@@ -144,6 +149,7 @@ def build_message(
         meta=MessageMetadata(
             descriptor=descriptor,
             trace_id=active_trace_id,
+            parent_trace_id=parent_trace_id,
             correlation_id=correlation_id,
             causation_id=causation_id,
             produced_at_ms=timestamp_ms,
