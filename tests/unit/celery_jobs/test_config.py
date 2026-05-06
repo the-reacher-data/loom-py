@@ -30,6 +30,7 @@ class _JobA(Job[None]):
     __priority__ = 0
 
     def execute(self) -> None:
+        # Intentional no-op: the test only needs a concrete Job subclass.
         pass
 
 
@@ -38,6 +39,7 @@ class _JobB(Job[None]):
     __retries__ = 1
 
     def execute(self) -> None:
+        # Intentional no-op: the test only needs a concrete Job subclass.
         pass
 
 

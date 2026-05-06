@@ -69,8 +69,6 @@ class OtelLifecycleObserver:
                 self._close_span(event, ok=True)
             case EventKind.ERROR:
                 self._close_span(event, ok=False)
-            case _:
-                pass
 
     def _open_span(self, event: LifecycleEvent) -> None:
         attrs = event.otel_attributes()

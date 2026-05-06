@@ -178,21 +178,18 @@ class ETLExecutor:
             len(plan.nodes),
         )
         process_ctx: RunContext = replace(ctx, process_run_id=process_run_id)
-        try:
-            with self._observability.span(
-                Scope.PROCESS,
-                plan.process_type.__name__,
-                trace_id=ctx.run_id,
-                correlation_id=ctx.correlation_id,
-                id=process_run_id,
-                run_id=ctx.run_id,
-                process_run_id=process_run_id,
-                steps=len(plan.nodes),
-            ):
-                for node in plan.nodes:
-                    self._run_process_node(node, params, process_ctx)
-        except Exception:
-            raise
+        with self._observability.span(
+            Scope.PROCESS,
+            plan.process_type.__name__,
+            trace_id=ctx.run_id,
+            correlation_id=ctx.correlation_id,
+            id=process_run_id,
+            run_id=ctx.run_id,
+            process_run_id=process_run_id,
+            steps=len(plan.nodes),
+        ):
+            for node in plan.nodes:
+                self._run_process_node(node, params, process_ctx)
 
     def run_step(
         self,

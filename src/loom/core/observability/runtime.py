@@ -27,9 +27,10 @@ from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
 
 def _build_structlog_processors(config: ObservabilityConfig) -> tuple[object, ...]:
     """Return extra structlog processors required by the observability config."""
+    processors: list[object] = []
     if config.otel.enabled and config.otel.export_logs:
-        return (build_log_correlation_processor(),)
-    return ()
+        processors.append(build_log_correlation_processor())
+    return tuple(processors)
 
 
 def _configure_structlog_logging(config: ObservabilityConfig) -> None:

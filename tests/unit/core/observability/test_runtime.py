@@ -62,6 +62,7 @@ class TestSpan:
         runtime = ObservabilityRuntime([obs])
 
         with runtime.span(Scope.USE_CASE, "CreateOrder"):
+            # Intentional no-op: the test only needs the context manager to close.
             pass
 
         assert obs.events[0].kind is EventKind.START
@@ -90,6 +91,7 @@ class TestSpan:
         runtime = ObservabilityRuntime([obs])
 
         with runtime.span(Scope.JOB, "ingest"):
+            # Intentional no-op: the test only needs the context manager to close.
             pass
 
         end = obs.events[1]
@@ -101,6 +103,7 @@ class TestSpan:
         runtime = ObservabilityRuntime([obs])
 
         with runtime.span(Scope.NODE, "x", trace_id="t-1", correlation_id="c-1"):
+            # Intentional no-op: the test only needs the context manager to close.
             pass
 
         for event in obs.events:
@@ -112,6 +115,7 @@ class TestSpan:
         runtime = ObservabilityRuntime([obs])
 
         with runtime.span(Scope.NODE, "x", flow="my_flow"):
+            # Intentional no-op: the test only needs the context manager to close.
             pass
 
         for event in obs.events:
@@ -123,6 +127,7 @@ class TestNoop:
         runtime = ObservabilityRuntime.noop()
 
         with runtime.span(Scope.USE_CASE, "GetOrder"):
+            # Intentional no-op: the noop runtime still needs to accept the scope.
             pass
 
     def test_noop_emit_is_safe(self) -> None:

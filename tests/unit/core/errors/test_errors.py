@@ -28,43 +28,55 @@ class TestLoomError:
         assert err.code == "broken"
 
     def test_is_exception(self) -> None:
-        err = LoomError("msg", code="x")
-        assert isinstance(err, Exception)
+        assert isinstance(LoomError("msg", code="x"), Exception)
 
     def test_str_is_message(self) -> None:
-        err = LoomError("readable message", code="x")
-        assert str(err) == "readable message"
+        assert str(LoomError("readable message", code="x")) == "readable message"
 
 
 # ---------------------------------------------------------------------------
-# Hierarchy
+# Hierarchy — one parametrized test replaces eight individual issubclass checks
 # ---------------------------------------------------------------------------
 
 
-class TestHierarchy:
-    def test_domain_error_is_loom_error(self) -> None:
-        assert issubclass(DomainError, LoomError)
+@pytest.mark.parametrize(
+    "subclass,base",
+    [
+        (DomainError, LoomError),
+        (SystemError, LoomError),
+        (NotFound, DomainError),
+        (Forbidden, DomainError),
+        (Conflict, DomainError),
+        (RuleViolation, DomainError),
+        (RuleViolations, DomainError),
+    ],
+)
+def test_error_hierarchy(subclass: type, base: type) -> None:
+    assert issubclass(subclass, base)
 
-    def test_system_error_is_loom_error(self) -> None:
-        assert issubclass(SystemError, LoomError)
 
-    def test_not_found_is_domain_error(self) -> None:
-        assert issubclass(NotFound, DomainError)
+def test_domain_error_not_system_error() -> None:
+    assert not issubclass(DomainError, SystemError)
 
-    def test_forbidden_is_domain_error(self) -> None:
-        assert issubclass(Forbidden, DomainError)
 
-    def test_conflict_is_domain_error(self) -> None:
-        assert issubclass(Conflict, DomainError)
+# ---------------------------------------------------------------------------
+# Error codes — one parametrized test replaces per-class code checks
+# ---------------------------------------------------------------------------
 
-    def test_rule_violation_is_domain_error(self) -> None:
-        assert issubclass(RuleViolation, DomainError)
 
-    def test_rule_violations_is_domain_error(self) -> None:
-        assert issubclass(RuleViolations, DomainError)
-
-    def test_domain_error_not_system_error(self) -> None:
-        assert not issubclass(DomainError, SystemError)
+@pytest.mark.parametrize(
+    "factory,expected_code",
+    [
+        (lambda: NotFound("User", id=1), ErrorCode.NOT_FOUND),
+        (lambda: Forbidden(), ErrorCode.FORBIDDEN),
+        (lambda: Conflict("x"), ErrorCode.CONFLICT),
+        (lambda: SystemError("x"), ErrorCode.SYSTEM_ERROR),
+        (lambda: RuleViolation("f", "m"), ErrorCode.RULE_VIOLATION),
+        (lambda: RuleViolations([]), ErrorCode.RULE_VIOLATIONS),
+    ],
+)
+def test_error_codes(factory: Any, expected_code: ErrorCode) -> None:
+    assert factory().code == expected_code
 
 
 # ---------------------------------------------------------------------------
@@ -78,17 +90,10 @@ class TestNotFound:
         assert err.entity == "User"
         assert err.id == 42
 
-    def test_code(self) -> None:
-        assert NotFound("User", id=1).code == ErrorCode.NOT_FOUND
-
     def test_message_format(self) -> None:
         err = NotFound("Product", id="abc-123")
         assert "Product" in err.message
         assert "abc-123" in err.message
-
-    def test_catchable_as_domain_error(self) -> None:
-        with pytest.raises(DomainError):
-            raise NotFound("User", id=99)
 
     def test_catchable_as_loom_error(self) -> None:
         with pytest.raises(LoomError):
@@ -102,56 +107,26 @@ class TestNotFound:
 
 class TestForbidden:
     def test_default_message(self) -> None:
-        err = Forbidden()
-        assert "Forbidden" in err.message
+        assert "Forbidden" in Forbidden().message
 
     def test_custom_message(self) -> None:
-        err = Forbidden("You cannot update other users")
-        assert err.message == "You cannot update other users"
-
-    def test_code(self) -> None:
-        assert Forbidden().code == ErrorCode.FORBIDDEN
+        assert Forbidden("You cannot update other users").message == "You cannot update other users"
 
 
 # ---------------------------------------------------------------------------
-# Conflict
+# SystemError — must NOT be catchable as DomainError
 # ---------------------------------------------------------------------------
 
 
-class TestConflict:
-    def test_message(self) -> None:
-        err = Conflict("Email already registered")
-        assert err.message == "Email already registered"
-
-    def test_code(self) -> None:
-        assert Conflict("x").code == ErrorCode.CONFLICT
-
-
-# ---------------------------------------------------------------------------
-# SystemError
-# ---------------------------------------------------------------------------
-
-
-class TestSystemError:
-    def test_message(self) -> None:
-        err = SystemError("Database connection lost")
-        assert err.message == "Database connection lost"
-
-    def test_code(self) -> None:
-        assert SystemError("x").code == ErrorCode.SYSTEM_ERROR
-
-    def test_not_catchable_as_domain_error(self) -> None:
-        with pytest.raises(SystemError):
-            raise SystemError("boom")
-        # Must NOT be caught by DomainError
-        caught = False
-        try:
-            raise SystemError("boom")
-        except DomainError:
-            caught = True
-        except SystemError:
-            pass
-        assert not caught
+def test_system_error_not_catchable_as_domain_error() -> None:
+    caught = False
+    try:
+        raise SystemError("boom")
+    except DomainError:
+        caught = True
+    except SystemError:
+        pass
+    assert not caught
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +139,6 @@ class TestRuleViolation:
         err = RuleViolation("email", "Invalid format")
         assert err.field == "email"
         assert err.message == "Invalid format"
-
-    def test_code(self) -> None:
-        assert RuleViolation("f", "m").code == ErrorCode.RULE_VIOLATION
 
     def test_str_contains_field_and_message(self) -> None:
         err = RuleViolation("email", "Invalid format")
@@ -195,13 +167,8 @@ class TestRuleViolations:
         err = RuleViolations([v1, v2])
         assert err.violations == (v1, v2)
 
-    def test_code(self) -> None:
-        assert RuleViolations([]).code == ErrorCode.RULE_VIOLATIONS
-
     def test_message_joins_violations(self) -> None:
-        v1 = RuleViolation("email", "bad")
-        v2 = RuleViolation("name", "empty")
-        err = RuleViolations([v1, v2])
+        err = RuleViolations([RuleViolation("email", "bad"), RuleViolation("name", "empty")])
         assert "email" in err.message
         assert "name" in err.message
 

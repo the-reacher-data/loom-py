@@ -79,6 +79,7 @@ class TestRuntimeIOBuilders:
         partition = sink.build("step", 0, 1)
         assert isinstance(partition, _runtime_io._KafkaMessageSinkPartition)
         partition.write_batch([build_order_message("123", None)])
+        assert len(fake_raw.sent) >= 1
 
         error_partition = cast(
             _runtime_io._KafkaDecodeErrorSinkPartition,
@@ -154,6 +155,7 @@ class TestRuntimeIOBuilders:
         ).write_batch([error_envelope])
 
         codec = MsgspecCodec[Order]()
+        assert len(fake_raw.sent) >= 2
         decoded_message = codec.decode(fake_raw.sent[0].value, Order)
         decoded_error = MsgspecCodec[ErrorEnvelope[Order]]().decode(
             fake_raw.sent[1].value,
@@ -190,6 +192,7 @@ class TestRuntimeIOBuilders:
         partition.write_batch([envelope])
         partition.close()
 
+        assert len(fake_raw.sent) >= 1
         assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"task"
@@ -228,6 +231,7 @@ class TestRuntimeIOBuilders:
         partition.write_batch([envelope])
         partition.close()
 
+        assert len(fake_raw.sent) >= 1
         assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"wire"

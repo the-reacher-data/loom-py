@@ -132,9 +132,11 @@ class TestStructlogLifecycleObserver:
                 captured.update(kwargs)
 
             def info(self, event: str, **_: object) -> None:
+                # Intentional no-op: this branch is not exercised here.
                 pass
 
             def error(self, event: str, **_: object) -> None:
+                # Intentional no-op: this branch is not exercised here.
                 pass
 
         monkeypatch.setattr(structlog, "get_logger", lambda *_: _FakeLogger())
@@ -159,12 +161,14 @@ class TestStructlogLifecycleObserver:
                 return self
 
             def debug(self, event: str, **_: object) -> None:
+                # Intentional no-op: this branch is not exercised here.
                 pass
 
             def info(self, event: str, **kwargs: object) -> None:
                 captured.update(kwargs)
 
             def error(self, event: str, **_: object) -> None:
+                # Intentional no-op: this branch is not exercised here.
                 pass
 
         monkeypatch.setattr(structlog, "get_logger", lambda *_: _FakeLogger())
@@ -200,13 +204,10 @@ class TestPrometheusLifecycleAdapter:
             )
         )
 
-        assert (
-            registry.get_sample_value(
-                "loom_lifecycle_duration_seconds_count",
-                {"scope": "use_case", "name": "CreateOrder"},
-            )
-            == 1.0
-        )
+        assert registry.get_sample_value(
+            "loom_lifecycle_duration_seconds_count",
+            {"scope": "use_case", "name": "CreateOrder"},
+        ) == pytest.approx(1.0)
 
     def test_increments_errors_on_error_event(self) -> None:
         from prometheus_client import CollectorRegistry
@@ -218,13 +219,10 @@ class TestPrometheusLifecycleAdapter:
 
         adapter.on_event(LifecycleEvent(scope=Scope.NODE, name="transform", kind=EventKind.ERROR))
 
-        assert (
-            registry.get_sample_value(
-                "loom_lifecycle_errors_total",
-                {"scope": "node", "name": "transform"},
-            )
-            == 1.0
-        )
+        assert registry.get_sample_value(
+            "loom_lifecycle_errors_total",
+            {"scope": "node", "name": "transform"},
+        ) == pytest.approx(1.0)
 
     def test_start_event_is_ignored(self) -> None:
         from prometheus_client import CollectorRegistry
