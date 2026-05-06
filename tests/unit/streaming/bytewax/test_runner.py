@@ -9,13 +9,13 @@ import uvloop
 from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
+from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.streaming import StreamFlow
 from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
     StreamingRunner,
     _build_backend_options,
 )
-from loom.streaming.observability import OtelFlowObserver
 from tests.unit.streaming.bytewax.cases import Order, Result
 
 pytestmark = pytest.mark.bytewax
@@ -83,23 +83,26 @@ class TestStreamingRunner:
         config = dict(bytewax_runtime_config_dict)
         streaming = config["streaming"]
         assert isinstance(streaming, dict)
-        runtime = streaming["runtime"]
-        config["streaming"] = {
-            "runtime": runtime,
-            "observability": {
-                "log": False,
-                "otel": True,
-                "otel_config": {
+        runtime = dict(streaming["runtime"])
+        runtime["observability"] = {
+            "log": {"enabled": False},
+            "otel": {
+                "enabled": True,
+                "config": {
                     "service_name": "loom-streaming",
                     "tracer_name": "loom.streaming",
                     "endpoint": "",
                 },
             },
         }
+        config["streaming"] = {"runtime": runtime}
 
         runner = StreamingRunner.from_dict(bytewax_stream_flow, config)
 
-        assert isinstance(runner._observer, OtelFlowObserver)
+        assert any(
+            isinstance(obs, OtelLifecycleObserver)
+            for obs in runner._observability_runtime.observers
+        )
 
     def test_from_yaml_loads_runtime_section(
         self,

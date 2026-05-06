@@ -9,17 +9,16 @@ from loom.core.observability.config import (
     PrometheusConfig,
     PrometheusObservabilityConfig,
 )
-from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.protocol import LifecycleObserver
-from loom.core.observability.runtime import ObservabilityRuntime
 
 __all__ = [
     "EventKind",
     "LifecycleEvent",
     "LifecycleObserver",
+    "Scope",
     "LogObservabilityConfig",
     "ObservabilityConfig",
-    "ObservabilityRuntime",
     "OtelObservabilityConfig",
     "PrometheusConfig",
     "PrometheusObservabilityConfig",

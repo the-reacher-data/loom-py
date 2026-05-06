@@ -14,6 +14,8 @@ from structlog.contextvars import get_contextvars
 
 from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax.handlers import _shared as _shared
 from loom.streaming.bytewax.handlers import dispatcher as _dispatcher
 from loom.streaming.bytewax.handlers import routing as _routing
@@ -64,56 +66,42 @@ class _RecordingObserver:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, int, str | None]] = []
 
-    def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
-        del flow_name, node_count
-
-    def on_flow_end(self, flow_name: str, *, status: str, duration_ms: int) -> None:
-        del flow_name, status, duration_ms
-
-    def on_node_start(self, flow_name: str, node_idx: int, *, node_type: str) -> None:
-        self.events.append(("start", flow_name, node_idx, node_type))
-
-    def on_node_end(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        status: str,
-        duration_ms: int,
-    ) -> None:
-        del duration_ms
-        self.events.append(("end", flow_name, node_idx, f"{node_type}:{status}"))
-
-    def on_node_error(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        exc: Exception,
-    ) -> None:
-        self.events.append(("error", flow_name, node_idx, f"{node_type}:{type(exc).__name__}"))
-
-    def on_collect_batch(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        batch_size: int,
-        max_records: int,
-        timeout_ms: int,
-        reason: str,
-    ) -> None:
-        self.events.append(
-            (
-                "collect",
-                flow_name,
-                node_idx,
-                f"{node_type}:{batch_size}:{max_records}:{timeout_ms}:{reason}",
+    def emit(self, event: LifecycleEvent) -> None:
+        if event.scope is Scope.NODE and event.kind is EventKind.START:
+            node_idx = cast(int, event.meta.get("node_idx", 0))
+            self.events.append(
+                (
+                    "start",
+                    str(event.meta.get("flow", "")),
+                    node_idx,
+                    str(event.meta.get("node_type")),
+                )
             )
-        )
+        elif event.scope is Scope.NODE and event.kind is EventKind.END:
+            node_idx = cast(int, event.meta.get("node_idx", 0))
+            self.events.append(
+                (
+                    "end",
+                    str(event.meta.get("flow", "")),
+                    node_idx,
+                    f"{event.meta.get('node_type')}:"
+                    f"{event.status.value if event.status is not None else None}",
+                )
+            )
+        elif event.scope is Scope.NODE and event.kind is EventKind.ERROR:
+            error_type = (event.error or "Exception").split("(", 1)[0]
+            node_idx = cast(int, event.meta.get("node_idx", 0))
+            self.events.append(
+                (
+                    "error",
+                    str(event.meta.get("flow", "")),
+                    node_idx,
+                    f"{event.meta.get('node_type')}:{error_type}",
+                )
+            )
+
+    def on_event(self, event: LifecycleEvent) -> None:
+        self.emit(event)
 
 
 class _UpperRecordStep(RecordStep[_Payload, _Payload]):
@@ -343,7 +331,6 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, Any] = {}
-    observer = _RecordingObserver()
     node = CollectBatch(max_records=3, timeout_ms=250)
 
     def _key_on(step_id: str, stream: object, fn: object) -> object:
@@ -360,33 +347,18 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
         calls["collect"] = (step_id, keyed, timeout, max_size)
         return "collected-stream"
 
-    def _bw_map(
-        step_id: str,
-        collected: object,
-        fn: Callable[[tuple[str, list[object]]], object],
-    ) -> object:
-        calls["bw_map"] = (step_id, collected, fn)
-        assert callable(fn)
-        result = fn(("batch-key", [_message("a"), _message("b")]))
-        calls["observe"] = result
-        return "observed-stream"
-
     def _key_rm(step_id: str, collected: object) -> object:
         calls["key_rm"] = (step_id, collected)
         return "result-stream"
 
     monkeypatch.setattr(_shapes, "key_on", _key_on)
     monkeypatch.setattr(_shapes, "collect", _collect)
-    monkeypatch.setattr(_shapes, "bw_map", _bw_map)
     monkeypatch.setattr(_shapes, "key_rm", _key_rm)
 
     result = _shapes._apply_collect_batch_default(
         "input-stream",
         node,
         "step-1",
-        observer=observer,
-        flow_name="orders",
-        idx=4,
     )
 
     assert result == "result-stream"
@@ -397,16 +369,14 @@ def test_apply_collect_batch_default_wires_timeout_and_size(
         timedelta(milliseconds=250),
         3,
     )
-    assert calls["bw_map"][:2] == ("collect_observe_step-1", "collected-stream")
-    assert calls["observe"] == ("batch-key", [_message("a"), _message("b")])
-    assert calls["key_rm"] == ("collect_unkey_step-1", "observed-stream")
-    assert observer.events == [("collect", "orders", 4, "CollectBatch:2:3:250:timeout_or_flush")]
+    assert calls["key_rm"] == ("collect_unkey_step-1", "collected-stream")
 
 
 def test_execute_record_step_replaces_payload_and_observes() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_record_step(
-        observer,
+        runtime,
         "orders",
         0,
         "Upper",
@@ -424,8 +394,9 @@ def test_execute_record_step_replaces_payload_and_observes() -> None:
 
 def test_execute_record_step_accepts_replacement_message() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_record_step(
-        observer,
+        runtime,
         "orders",
         0,
         "Upper",
@@ -442,7 +413,7 @@ def test_execute_record_step_binds_flow_context() -> None:
     step = _ContextAwareRecordStep()
 
     _steps._execute_record_step(
-        None,
+        ObservabilityRuntime.noop(),
         "orders",
         3,
         "ContextAware",
@@ -460,9 +431,10 @@ def test_execute_record_step_binds_flow_context() -> None:
 
 def test_execute_record_step_propagates_business_error_and_observes() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     with pytest.raises(RuleViolation, match="value: boom"):
         _steps._execute_record_step(
-            observer,
+            runtime,
             "orders",
             1,
             "Boom",
@@ -478,8 +450,9 @@ def test_execute_record_step_propagates_business_error_and_observes() -> None:
 
 def test_execute_batch_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_batch_step(
-        observer,
+        runtime,
         "orders",
         2,
         "UpperBatch",
@@ -496,8 +469,9 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
 
 def test_execute_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_expand_step(
-        observer,
+        runtime,
         "orders",
         3,
         "UpperExpand",
@@ -514,8 +488,9 @@ def test_execute_expand_step_replaces_payloads_and_observes() -> None:
 
 def test_execute_expand_step_accepts_replacement_messages() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_expand_step(
-        observer,
+        runtime,
         "orders",
         3,
         "UpperExpand",
@@ -531,8 +506,9 @@ def test_execute_expand_step_accepts_replacement_messages() -> None:
 
 def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
     observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
     result = _steps._execute_batch_expand_step(
-        observer,
+        runtime,
         "orders",
         4,
         "UpperBatchExpand",
@@ -572,7 +548,7 @@ def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> Non
 
     sink_partition = _SinkPartition()
     result = _scopes._execute_with_step(
-        None,
+        ObservabilityRuntime.noop(),
         "orders",
         5,
         "With",
@@ -690,11 +666,11 @@ class TestWithAsyncBatch:
         return SimpleNamespace(
             bridge=bridge,
             commit_tracker=tracker,
-            flow_observer=observer,
+            flow_runtime=ObservabilityRuntime([observer]),
             plan=SimpleNamespace(name="orders"),
             current_path=(),
             manager_for=lambda idx, node: lifecycle,
-            outputs=SimpleNamespace(wire_node_error=lambda *args, **kwargs: None),
+            wire_node_error=lambda *args, **kwargs: None,
         )
 
     @pytest.mark.parametrize(
@@ -952,9 +928,7 @@ def test_apply_broadcast_increments_commit_tracker_for_fanout(
         current_path=(1,),
         commit_tracker=tracker,
         wire_process=_wire_process,
-        outputs=SimpleNamespace(
-            wire_branch_terminal=_record_branch_terminal(terminal_calls),
-        ),
+        wire_branch_terminal=_record_branch_terminal(terminal_calls),
     )
 
     result = _routing._apply_broadcast("input-stream", node, 5, ctx)

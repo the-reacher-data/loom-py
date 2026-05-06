@@ -20,17 +20,12 @@ class _Payload(LoomStruct):
     value: str
 
 
-class _OutputWire:
+class _Context:
     def __init__(self) -> None:
         self.calls: list[tuple[ErrorKind, str, object]] = []
 
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: object) -> None:
         self.calls.append((kind, step_id, stream))
-
-
-class _Context:
-    def __init__(self) -> None:
-        self.outputs = _OutputWire()
 
 
 class _LoggerProbe:
@@ -150,7 +145,7 @@ def test_split_node_result_wires_error_branch_and_returns_success_branch(
     )
 
     assert result == "ok-stream"
-    assert ctx.outputs.calls == [(ErrorKind.TASK, "node_1", "error-stream")]
+    assert ctx.calls == [(ErrorKind.TASK, "node_1", "error-stream")]
 
 
 def test_split_batch_node_result_flattens_error_branch_and_wires_it(
@@ -181,4 +176,4 @@ def test_split_batch_node_result_flattens_error_branch_and_wires_it(
     )
 
     assert result == "ok-stream"
-    assert ctx.outputs.calls == [(ErrorKind.ROUTING, "node_2", "error-stream")]
+    assert ctx.calls == [(ErrorKind.ROUTING, "node_2", "error-stream")]

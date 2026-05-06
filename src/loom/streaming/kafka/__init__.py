@@ -31,6 +31,11 @@ from loom.streaming.kafka._message import (
     SchemaRef,
     build_message,
 )
+from loom.streaming.kafka._observability import (
+    KafkaStreamingObserver,
+    NoopKafkaObserver,
+    StructlogKafkaObserver,
+)
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import (
     DecodeError,
@@ -47,17 +52,10 @@ from loom.streaming.kafka.client._protocol import KafkaConsumer, KafkaProducer
 from loom.streaming.kafka.message._consumer import KafkaMessageConsumer
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
 from loom.streaming.kafka.message._protocol import MessageConsumer, MessageProducer
-from loom.streaming.observability.observers import (
-    CompositeKafkaObserver,
-    KafkaStreamingObserver,
-    NoopKafkaObserver,
-    StructlogKafkaObserver,
-)
 
 __all__ = [
     "ContentType",
     "ConsumerSettings",
-    "CompositeKafkaObserver",
     "DecodeError",
     "DecodeOk",
     "DecodeResult",

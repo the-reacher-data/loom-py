@@ -7,6 +7,7 @@ from typing import Any
 
 from bytewax.operators import map as bw_map
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._error_boundary import (
     NodeResult,
     _classify_task,
@@ -45,7 +46,7 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
         raise UnsupportedNodeError(f"Unsupported record step {type(raw).__name__}.")
     record_step = raw
     name = _resolve_node_name(record_step)
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
     def step_fn(msg: Any) -> NodeResult:
@@ -66,7 +67,7 @@ def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextP
         raise UnsupportedNodeError(f"Unsupported batch step {type(raw).__name__}.")
     batch_step = raw
     name = _resolve_node_name(batch_step)
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
     def step_fn(batch: list[Any]) -> list[NodeResult]:
@@ -99,7 +100,7 @@ def _apply_expand_step(
         raise UnsupportedNodeError(f"Unsupported expand step {type(raw).__name__}.")
     expand_step = raw
     name = _resolve_node_name(expand_step)
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
     def step_fn(msg: Any) -> list[NodeResult]:
@@ -135,7 +136,7 @@ def _apply_batch_expand_step(
         raise UnsupportedNodeError(f"Unsupported batch-expand step {type(raw).__name__}.")
     batch_expand_step = raw
     name = _resolve_node_name(batch_expand_step)
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
     def step_fn(batch: list[Any]) -> list[NodeResult]:
@@ -162,7 +163,7 @@ def _apply_batch_expand_step(
 
 
 def _execute_record_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     name: str,
@@ -175,7 +176,7 @@ def _execute_record_step(
 
 
 def _execute_batch_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     name: str,
@@ -190,7 +191,7 @@ def _execute_batch_step(
 
 
 def _execute_expand_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     name: str,
@@ -205,7 +206,7 @@ def _execute_expand_step(
 
 
 def _execute_batch_expand_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     name: str,

@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
-from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.core.config.observability import OtelConfig
+from loom.core.logger.config import LoggerConfig
+from loom.core.observability.config import (
+    LogObservabilityConfig,
+    ObservabilityConfig,
+    OtelObservabilityConfig,
+)
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 
 
@@ -25,7 +34,7 @@ class TestEmit:
     def test_fans_out_to_all_observers(self) -> None:
         a, b = _RecordingObserver(), _RecordingObserver()
         runtime = ObservabilityRuntime([a, b])
-        event = LifecycleEvent(scope="node", name="transform", kind=EventKind.START)
+        event = LifecycleEvent(scope=Scope.NODE, name="transform", kind=EventKind.START)
 
         runtime.emit(event)
 
@@ -36,7 +45,7 @@ class TestEmit:
         broken = _BrokenObserver()
         good = _RecordingObserver()
         runtime = ObservabilityRuntime([broken, good])
-        event = LifecycleEvent(scope="node", name="x", kind=EventKind.START)
+        event = LifecycleEvent(scope=Scope.NODE, name="x", kind=EventKind.START)
 
         runtime.emit(event)
 
@@ -44,7 +53,7 @@ class TestEmit:
 
     def test_empty_observers_is_safe(self) -> None:
         runtime = ObservabilityRuntime([])
-        runtime.emit(LifecycleEvent(scope="node", name="x", kind=EventKind.START))
+        runtime.emit(LifecycleEvent(scope=Scope.NODE, name="x", kind=EventKind.START))
 
 
 class TestSpan:
@@ -52,18 +61,18 @@ class TestSpan:
         obs = _RecordingObserver()
         runtime = ObservabilityRuntime([obs])
 
-        with runtime.span("use_case", "CreateOrder"):
+        with runtime.span(Scope.USE_CASE, "CreateOrder"):
             pass
 
         assert obs.events[0].kind is EventKind.START
         assert obs.events[1].kind is EventKind.END
-        assert obs.events[1].status == "ok"
+        assert obs.events[1].status is LifecycleStatus.SUCCESS
 
     def test_emits_start_and_error_on_exception(self) -> None:
         obs = _RecordingObserver()
         runtime = ObservabilityRuntime([obs])
 
-        with pytest.raises(ValueError), runtime.span("use_case", "CreateOrder"):
+        with pytest.raises(ValueError), runtime.span(Scope.USE_CASE, "CreateOrder"):
             raise ValueError("bad input")
 
         assert obs.events[0].kind is EventKind.START
@@ -73,14 +82,14 @@ class TestSpan:
     def test_error_event_reraises_exception(self) -> None:
         runtime = ObservabilityRuntime([_RecordingObserver()])
 
-        with pytest.raises(RuntimeError, match="boom"), runtime.span("node", "step"):
+        with pytest.raises(RuntimeError, match="boom"), runtime.span(Scope.NODE, "step"):
             raise RuntimeError("boom")
 
     def test_end_event_carries_duration(self) -> None:
         obs = _RecordingObserver()
         runtime = ObservabilityRuntime([obs])
 
-        with runtime.span("job", "ingest"):
+        with runtime.span(Scope.JOB, "ingest"):
             pass
 
         end = obs.events[1]
@@ -91,7 +100,7 @@ class TestSpan:
         obs = _RecordingObserver()
         runtime = ObservabilityRuntime([obs])
 
-        with runtime.span("node", "x", trace_id="t-1", correlation_id="c-1"):
+        with runtime.span(Scope.NODE, "x", trace_id="t-1", correlation_id="c-1"):
             pass
 
         for event in obs.events:
@@ -102,7 +111,7 @@ class TestSpan:
         obs = _RecordingObserver()
         runtime = ObservabilityRuntime([obs])
 
-        with runtime.span("node", "x", flow="my_flow"):
+        with runtime.span(Scope.NODE, "x", flow="my_flow"):
             pass
 
         for event in obs.events:
@@ -113,9 +122,53 @@ class TestNoop:
     def test_noop_runtime_is_callable(self) -> None:
         runtime = ObservabilityRuntime.noop()
 
-        with runtime.span("use_case", "GetOrder"):
+        with runtime.span(Scope.USE_CASE, "GetOrder"):
             pass
 
     def test_noop_emit_is_safe(self) -> None:
         runtime = ObservabilityRuntime.noop()
-        runtime.emit(LifecycleEvent(scope="node", name="x", kind=EventKind.END))
+        runtime.emit(LifecycleEvent(scope=Scope.NODE, name="x", kind=EventKind.END))
+
+
+class TestFromConfig:
+    def test_export_logs_requires_logger_config(self) -> None:
+        config = ObservabilityConfig(
+            log=LogObservabilityConfig(enabled=True, config=None),
+            otel=OtelObservabilityConfig(
+                enabled=True,
+                export_logs=True,
+                config=OtelConfig(endpoint="", service_name="loom"),
+            ),
+        )
+
+        with pytest.raises(ValueError, match="export_logs requires observability.log.enabled"):
+            ObservabilityRuntime.from_config(config)
+
+    def test_export_logs_passes_extra_processor_when_logger_config_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_configure_logging_from_values(**kwargs: object) -> None:
+            captured.update(kwargs)
+
+        monkeypatch.setattr(
+            "loom.core.observability.runtime.configure_logging_from_values",
+            _fake_configure_logging_from_values,
+        )
+
+        config = ObservabilityConfig(
+            log=LogObservabilityConfig(enabled=True, config=LoggerConfig()),
+            otel=OtelObservabilityConfig(
+                enabled=True,
+                export_logs=True,
+                config=OtelConfig(endpoint="", service_name="loom"),
+            ),
+        )
+
+        runtime = ObservabilityRuntime.from_config(config)
+
+        assert isinstance(runtime, ObservabilityRuntime)
+        assert "extra_processors" in captured
+        extra_processors = cast(tuple[object, ...], captured["extra_processors"])
+        assert len(extra_processors) == 1

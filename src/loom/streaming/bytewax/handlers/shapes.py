@@ -6,7 +6,6 @@ from datetime import timedelta
 from typing import Any
 
 from bytewax.operators import collect, flat_map, key_on, key_rm
-from bytewax.operators import map as bw_map
 
 from loom.streaming.bytewax.handlers._shared import (
     _BuildContextProtocol,
@@ -34,13 +33,6 @@ def _batch_key(item: Any) -> str:
     return "loom"
 
 
-def _collect_batch_reason(batch: list[Any], max_records: int) -> str:
-    """Best-effort reason label for a collected batch."""
-    if len(batch) >= max_records:
-        return "size"
-    return "timeout_or_flush"
-
-
 def _apply_collect_batch(
     stream: Stream,
     raw: object,
@@ -51,14 +43,7 @@ def _apply_collect_batch(
         raise UnsupportedNodeError(f"Unsupported collect-batch node {type(raw).__name__}.")
     node = raw
     if node.window is WindowStrategy.COLLECT:
-        return _apply_collect_batch_default(
-            stream,
-            node,
-            _step_id(str(idx), ctx),
-            observer=ctx.flow_observer,
-            flow_name=ctx.plan.name,
-            idx=idx,
-        )
+        return _apply_collect_batch_default(stream, node, _step_id(str(idx), ctx))
     raise UnsupportedNodeError(
         f"WindowStrategy.{node.window} reached the adapter — "
         "this should have been rejected at compile time."
@@ -69,10 +54,6 @@ def _apply_collect_batch_default(
     stream: Stream,
     node: CollectBatch,
     step_prefix: str,
-    *,
-    observer: Any = None,
-    flow_name: str = "",
-    idx: int = 0,
 ) -> Stream:
     """Apply processing-time count-and-timeout collect (``WindowStrategy.COLLECT``)."""
     keyed = key_on(f"collect_key_{step_prefix}", stream, _batch_key)
@@ -82,23 +63,7 @@ def _apply_collect_batch_default(
         timeout=timedelta(milliseconds=node.timeout_ms),
         max_size=node.max_records,
     )
-
-    def observe(item: tuple[str, list[Any]]) -> tuple[str, list[Any]]:
-        key, batch = item
-        if observer is not None:
-            observer.on_collect_batch(
-                flow_name,
-                idx,
-                node_type="CollectBatch",
-                batch_size=len(batch),
-                max_records=node.max_records,
-                timeout_ms=node.timeout_ms,
-                reason=_collect_batch_reason(batch, node.max_records),
-            )
-        return key, batch
-
-    observed = bw_map(f"collect_observe_{step_prefix}", collected, observe)
-    return key_rm(f"collect_unkey_{step_prefix}", observed)
+    return key_rm(f"collect_unkey_{step_prefix}", collected)
 
 
 def _apply_for_each(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:

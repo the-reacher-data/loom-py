@@ -6,15 +6,65 @@ import logging
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from time import perf_counter
-from typing import TYPE_CHECKING, Self
+from typing import Self
 
-from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.core.logger.config import configure_logging_from_values
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.event import (
+    LifecycleEvent,
+    LifecycleStatus,
+    Scope,
+)
+from loom.core.observability.observer.noop import NoopObserver
+from loom.core.observability.observer.otel import (
+    OtelLifecycleObserver,
+    build_log_correlation_processor,
+)
+from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 from loom.core.observability.protocol import LifecycleObserver
+from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
 
-if TYPE_CHECKING:
-    from loom.core.observability.config import ObservabilityConfig
 
-_logger = logging.getLogger(__name__)
+def _build_structlog_processors(config: ObservabilityConfig) -> tuple[object, ...]:
+    """Return extra structlog processors required by the observability config."""
+    if config.otel.enabled and config.otel.export_logs:
+        return (build_log_correlation_processor(),)
+    return ()
+
+
+def _configure_structlog_logging(config: ObservabilityConfig) -> None:
+    """Configure structlog when the observability config owns logging setup."""
+    logger_config = config.log.config
+    if logger_config is None:
+        return
+    configure_logging_from_values(
+        name=logger_config.name,
+        environment=logger_config.environment,
+        renderer=logger_config.renderer,
+        colors=logger_config.colors,
+        level=logger_config.level,
+        named_levels=logger_config.named_levels,
+        handlers=logger_config.handlers,
+        fields=logger_config.fields,
+        extra_processors=_build_structlog_processors(config),
+    )
+
+
+def _build_observers(config: ObservabilityConfig) -> list[LifecycleObserver]:
+    """Build the observer chain declared by the observability config."""
+    observers: list[LifecycleObserver] = []
+    if config.log.enabled:
+        _configure_structlog_logging(config)
+        observers.append(StructlogLifecycleObserver())
+    if config.otel.enabled and config.otel.config is not None:
+        observers.append(OtelLifecycleObserver(config=config.otel.config))
+    if config.prometheus.enabled:
+        observers.append(
+            PrometheusLifecycleAdapter(
+                pushgateway_url=config.prometheus.pushgateway_url,
+            )
+        )
+    return observers
 
 
 class ObservabilityRuntime:
@@ -34,12 +84,18 @@ class ObservabilityRuntime:
 
         runtime = ObservabilityRuntime.from_config(config.observability)
 
-        with runtime.span("use_case", "CreateOrder", trace_id=tid):
+        with runtime.span(Scope.USE_CASE, "CreateOrder", trace_id=tid):
             result = use_case.execute(command)
     """
 
     def __init__(self, observers: Sequence[LifecycleObserver]) -> None:
         self._observers = tuple(observers)
+        self._log = logging.getLogger(__name__)
+
+    @property
+    def observers(self) -> tuple[LifecycleObserver, ...]:
+        """Return the configured observer chain."""
+        return self._observers
 
     def emit(self, event: LifecycleEvent) -> None:
         """Emit one lifecycle event to all registered observers.
@@ -49,11 +105,15 @@ class ObservabilityRuntime:
         Args:
             event: Lifecycle event to dispatch.
         """
+        self._dispatch(event)
+
+    def _dispatch(self, event: LifecycleEvent) -> None:
+        """Forward one event to each observer with isolated failures."""
         for obs in self._observers:
             try:
                 obs.on_event(event)
             except Exception:
-                _logger.warning(
+                self._log.warning(
                     "observer_error",
                     extra={"observer": type(obs).__name__, "scope": event.scope},
                     exc_info=True,
@@ -62,7 +122,7 @@ class ObservabilityRuntime:
     @contextmanager
     def span(
         self,
-        scope: str,
+        scope: Scope,
         name: str,
         *,
         trace_id: str | None = None,
@@ -75,23 +135,23 @@ class ObservabilityRuntime:
         If the body raises, ``ERROR`` is emitted and the exception re-raised.
 
         Args:
-            scope: Logical unit of work (``"node"``, ``"use_case"``, …).
+            scope: Logical unit of work — one of the values in
+                :class:`~loom.core.observability.event.Scope`.
             name: Operation name within the scope.
             trace_id: Trace identifier propagated to both events.
             correlation_id: Business lineage identifier propagated to both events.
-            **meta: Additional key-value pairs forwarded in ``event.meta``.
+            **meta: Domain-specific fields forwarded as top-level keys in ``event.meta``.
 
         Example::
 
-            with runtime.span("node", "transform", trace_id=tid):
+            with runtime.span(Scope.NODE, "transform", trace_id=tid, flow="ingest"):
                 result = transform(message)
         """
         start = perf_counter()
         self.emit(
-            LifecycleEvent(
+            LifecycleEvent.start(
                 scope=scope,
                 name=name,
-                kind=EventKind.START,
                 trace_id=trace_id,
                 correlation_id=correlation_id,
                 meta=dict(meta),
@@ -101,10 +161,9 @@ class ObservabilityRuntime:
             yield
         except Exception as exc:
             self.emit(
-                LifecycleEvent(
+                LifecycleEvent.exception(
                     scope=scope,
                     name=name,
-                    kind=EventKind.ERROR,
                     trace_id=trace_id,
                     correlation_id=correlation_id,
                     duration_ms=(perf_counter() - start) * 1000,
@@ -115,14 +174,13 @@ class ObservabilityRuntime:
             raise
         else:
             self.emit(
-                LifecycleEvent(
+                LifecycleEvent.end(
                     scope=scope,
                     name=name,
-                    kind=EventKind.END,
                     trace_id=trace_id,
                     correlation_id=correlation_id,
                     duration_ms=(perf_counter() - start) * 1000,
-                    status="ok",
+                    status=LifecycleStatus.SUCCESS,
                     meta=dict(meta),
                 )
             )
@@ -147,51 +205,19 @@ class ObservabilityRuntime:
 
         Raises:
             ValueError: If OTEL config is invalid (wrong protocol, missing exporter).
+            ValueError: If OTEL log export is enabled without a logger config.
         """
-        from loom.core.observability.observer.noop import NoopObserver
-        from loom.core.observability.observer.structlog import StructlogLifecycleObserver
-
-        observers: list[LifecycleObserver] = []
-
-        if config.log.enabled:
-            extra_processors: tuple[object, ...] = ()
-            if config.otel.enabled and config.otel.export_logs:
-                from loom.core.observability.observer.otel import (
-                    build_log_correlation_processor,
-                )
-
-                extra_processors = (build_log_correlation_processor(),)
-            if config.log.config is not None:
-                from loom.core.logger.config import configure_logging_from_values
-
-                cfg = config.log.config
-                configure_logging_from_values(
-                    name=cfg.name,
-                    environment=cfg.environment,
-                    renderer=cfg.renderer,
-                    colors=cfg.colors,
-                    level=cfg.level,
-                    named_levels=cfg.named_levels,
-                    handlers=cfg.handlers,
-                    fields=cfg.fields,
-                    extra_processors=extra_processors,
-                )
-            observers.append(StructlogLifecycleObserver())
-
-        if config.otel.enabled and config.otel.config is not None:
-            from loom.core.observability.observer.otel import OtelLifecycleObserver
-
-            observers.append(OtelLifecycleObserver(config=config.otel.config))
-
-        if config.prometheus.enabled:
-            from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
-
-            observers.append(
-                PrometheusLifecycleAdapter(
-                    pushgateway_url=config.prometheus.pushgateway_url,
-                )
+        if (
+            config.otel.enabled
+            and config.otel.export_logs
+            and (not config.log.enabled or config.log.config is None)
+        ):
+            raise ValueError(
+                "observability.otel.export_logs requires observability.log.enabled=True "
+                "and observability.log.config to be provided."
             )
 
+        observers = _build_observers(config)
         return cls(observers or [NoopObserver()])
 
     @classmethod
@@ -201,8 +227,6 @@ class ObservabilityRuntime:
         Returns:
             ``ObservabilityRuntime`` backed by a single ``NoopObserver``.
         """
-        from loom.core.observability.observer.noop import NoopObserver
-
         return cls([NoopObserver()])
 
 

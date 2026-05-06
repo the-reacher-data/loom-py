@@ -19,6 +19,10 @@ from omegaconf import DictConfig, OmegaConf
 
 from loom.core.async_bridge import AsyncBridge
 from loom.core.config import load_config, section
+from loom.core.model import LoomFrozenStruct
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
     build_commit_tracker,
@@ -30,9 +34,6 @@ from loom.streaming.bytewax._runtime_io import (
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
-from loom.streaming.observability.config import StreamingObservabilityConfig
-from loom.streaming.observability.factory import make_flow_observers
-from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class _PreparedStreamingRun:
     shutdown: Callable[[], None]
 
 
-class BytewaxRecoverySettings(msgspec.Struct, frozen=True, kw_only=True):
+class BytewaxRecoverySettings(LoomFrozenStruct, frozen=True):
     """Recovery settings for the Bytewax runtime.
 
     Args:
@@ -62,7 +63,7 @@ class BytewaxRecoverySettings(msgspec.Struct, frozen=True, kw_only=True):
     backup_interval_ms: int | None = None
 
 
-class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
+class BytewaxRuntimeConfig(LoomFrozenStruct, frozen=True):
     """Runtime settings for executing a Bytewax dataflow.
 
     **Delivery guarantee:** By default Kafka offsets are committed by the
@@ -87,6 +88,8 @@ class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
             async tasks to finish during shutdown.  When exceeded, the portal
             thread is abandoned and a warning is logged.  ``None`` waits
             indefinitely (default).
+        observability: Unified observability config (log, OTEL, Prometheus).
+            Loaded from the ``streaming.runtime.observability`` YAML section.
     """
 
     workers_per_process: int = 1
@@ -97,6 +100,7 @@ class BytewaxRuntimeConfig(msgspec.Struct, frozen=True, kw_only=True):
     async_backend: str = "asyncio"
     use_uvloop: bool = False
     force_shutdown_timeout_ms: int | None = None
+    observability: ObservabilityConfig = msgspec.field(default_factory=ObservabilityConfig)
 
 
 class StreamingRunner:
@@ -107,7 +111,7 @@ class StreamingRunner:
         flow: User-declared streaming flow.
         plan: Compiled plan produced by the compiler.
         runtime: Resolved Bytewax runtime settings.
-        observer: Optional flow observer for lifecycle events.
+        observability_runtime: Optional observability runtime for lifecycle events.
     """
 
     def __init__(
@@ -115,12 +119,13 @@ class StreamingRunner:
         flow: StreamFlow[Any, Any],
         plan: CompiledPlan,
         runtime: BytewaxRuntimeConfig | None = None,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> None:
         self._flow = flow
         self._plan = plan
         self._runtime = runtime or BytewaxRuntimeConfig()
-        self._observer = observer
+        self._observability_runtime = observability_runtime or ObservabilityRuntime.noop()
+        self._log = logger
         self._shutdown: Callable[[], None] | None = None
 
     @classmethod
@@ -129,13 +134,13 @@ class StreamingRunner:
         flow: StreamFlow[Any, Any],
         *,
         runtime_config: DictConfig,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
         """Build a runner from a resolved OmegaConf config."""
         plan = compile_flow(flow, runtime_config=runtime_config)
         runtime = _load_runtime_config(runtime_config)
-        resolved_observer = observer or _load_observability_observer(runtime_config)
-        return cls(flow, plan, runtime, observer=resolved_observer)
+        obs = observability_runtime or ObservabilityRuntime.from_config(runtime.observability)
+        return cls(flow, plan, runtime, observability_runtime=obs)
 
     @classmethod
     def from_yaml(
@@ -143,10 +148,14 @@ class StreamingRunner:
         flow: StreamFlow[Any, Any],
         path: str,
         *,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
         """Load config from YAML and build a runner."""
-        return cls.from_config(flow, runtime_config=load_config(path), observer=observer)
+        return cls.from_config(
+            flow,
+            runtime_config=load_config(path),
+            observability_runtime=observability_runtime,
+        )
 
     @classmethod
     def from_dict(
@@ -154,10 +163,14 @@ class StreamingRunner:
         flow: StreamFlow[Any, Any],
         config: dict[str, Any],
         *,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
         """Build a runner from a plain Python config mapping."""
-        return cls.from_config(flow, runtime_config=_dict_config(config), observer=observer)
+        return cls.from_config(
+            flow,
+            runtime_config=_dict_config(config),
+            observability_runtime=observability_runtime,
+        )
 
     def build_dataflow(self) -> Dataflow:
         """Assemble the Bytewax Dataflow and keep shutdown state."""
@@ -166,7 +179,11 @@ class StreamingRunner:
 
     def prepare_run(self) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback."""
-        prepared = _prepare_run(self._plan, observer=self._observer, runtime=self._runtime)
+        prepared = _prepare_run(
+            self._plan,
+            observability_runtime=self._observability_runtime,
+            runtime=self._runtime,
+        )
         self._shutdown = prepared.shutdown
         return prepared
 
@@ -179,28 +196,38 @@ class StreamingRunner:
         """
 
         resolved_runtime = runtime or self._runtime
-        observer = self._observer
-        if observer is not None:
-            observer.on_flow_start(self._plan.name, node_count=len(self._plan.nodes))
+        self._observability_runtime.emit(
+            LifecycleEvent.start(
+                scope=Scope.POLL_CYCLE,
+                name=self._plan.name,
+                meta={"node_count": len(self._plan.nodes)},
+            )
+        )
         started_at = perf_counter()
-        status = "failed"
+        status = LifecycleStatus.FAILURE
         prepared = self.prepare_run()
         try:
             cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
-            status = "success"
+            status = LifecycleStatus.SUCCESS
         except Exception:
-            status = "failed"
+            status = LifecycleStatus.FAILURE
             raise
         finally:
-            if observer is not None:
-                duration_ms = int((perf_counter() - started_at) * 1000)
-                observer.on_flow_end(self._plan.name, status=status, duration_ms=duration_ms)
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            self._observability_runtime.emit(
+                LifecycleEvent.end(
+                    scope=Scope.POLL_CYCLE,
+                    name=self._plan.name,
+                    duration_ms=duration_ms,
+                    status=status,
+                )
+            )
             self.shutdown()
 
     def shutdown(self) -> None:
         """Release adapter resources after a run or failed build."""
         if self._shutdown is not None:
-            logger.debug("shutting_down")
+            self._log.debug("shutting_down")
             self._shutdown()
             self._shutdown = None
 
@@ -216,13 +243,6 @@ def _load_runtime_config(cfg: DictConfig) -> BytewaxRuntimeConfig:
     if not _has_section(cfg, "streaming.runtime"):
         return BytewaxRuntimeConfig()
     return section(cfg, "streaming.runtime", BytewaxRuntimeConfig)
-
-
-def _load_observability_observer(cfg: DictConfig) -> StreamingFlowObserver | None:
-    if not _has_section(cfg, "streaming.observability"):
-        return make_flow_observers()
-    observability = section(cfg, "streaming.observability", StreamingObservabilityConfig)
-    return make_flow_observers(observability)
 
 
 def _has_section(cfg: DictConfig, path: str) -> bool:
@@ -264,7 +284,7 @@ def _to_timedelta(value_ms: int | None) -> timedelta | None:
 def _prepare_run(
     plan: CompiledPlan,
     *,
-    observer: StreamingFlowObserver | None = None,
+    observability_runtime: ObservabilityRuntime | None = None,
     source: Any | None = None,
     sink: Any | None = None,
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
@@ -283,7 +303,7 @@ def _prepare_run(
     bridge = _create_bridge(plan, runtime or BytewaxRuntimeConfig())
     built = build_dataflow_with_shutdown(
         plan=plan,
-        flow_observer=observer,
+        observability_runtime=observability_runtime,
         source=source,
         sink=sink,
         terminal_sinks=terminal_sinks,
@@ -318,5 +338,4 @@ __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
     "StreamingRunner",
-    "make_flow_observers",
 ]

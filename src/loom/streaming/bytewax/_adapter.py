@@ -8,7 +8,6 @@ Requires ``bytewax`` to be installed.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -18,13 +17,14 @@ import bytewax.dataflow as _bytewax_dataflow
 from bytewax.operators import branch
 from bytewax.operators import input as bw_input
 from bytewax.operators import map as bw_map
-from bytewax.outputs import StatelessSinkPartition
+from bytewax.operators import output as bw_output
+from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.core.async_bridge import AsyncBridge
-from loom.streaming.bytewax._output_wiring import OutputWiringManager
+from loom.core.logger import get_logger
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._resource_manager import ResourceManager
 from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks
-from loom.streaming.bytewax.handlers._shared import _OutputWiringProtocol
 from loom.streaming.bytewax.handlers.dispatcher import (
     _NODE_HANDLERS,
     _wire_process,
@@ -43,10 +43,9 @@ from loom.streaming.kafka._wire import (
     try_decode_record,
 )
 from loom.streaming.nodes._with import With, WithAsync
-from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
-logger = logging.getLogger(__name__)
 Stream: TypeAlias = Any
+logger = get_logger(__name__)
 
 __all__ = ["build_dataflow", "build_dataflow_with_shutdown", "_NODE_HANDLERS"]
 
@@ -59,10 +58,27 @@ class _BuiltDataflow:
     shutdown: Callable[[], None]
 
 
+class _DropSinkPartition(StatelessSinkPartition[Any]):
+    """Discard items routed to an unrouted error branch."""
+
+    def write_batch(self, items: list[Any]) -> None:
+        del items
+
+
+class _DropSink(DynamicSink[Any]):
+    """Build a no-op sink for unrouted error branches."""
+
+    def build(
+        self, step_id: str, worker_index: int, worker_count: int
+    ) -> StatelessSinkPartition[Any]:
+        del step_id, worker_index, worker_count
+        return _DropSinkPartition()
+
+
 def build_dataflow(
     plan: CompiledPlan,
     *,
-    flow_observer: StreamingFlowObserver | None = None,
+    observability_runtime: ObservabilityRuntime | None = None,
     source: Any | None = None,
     sink: Any | None = None,
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
@@ -71,7 +87,7 @@ def build_dataflow(
     """Build a Bytewax Dataflow from a compiled plan."""
     return build_dataflow_with_shutdown(
         plan,
-        flow_observer=flow_observer,
+        observability_runtime=observability_runtime,
         source=source,
         sink=sink,
         terminal_sinks=terminal_sinks,
@@ -82,7 +98,7 @@ def build_dataflow(
 def build_dataflow_with_shutdown(
     plan: CompiledPlan,
     *,
-    flow_observer: StreamingFlowObserver | None = None,
+    observability_runtime: ObservabilityRuntime | None = None,
     source: Any | None = None,
     sink: Any | None = None,
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
@@ -94,7 +110,7 @@ def build_dataflow_with_shutdown(
 
     Args:
         plan: Compiled flow plan.
-        flow_observer: Optional observer for lifecycle events.
+        observability_runtime: Optional observability runtime for lifecycle events.
         source: Optional Bytewax source override (used in tests).
         sink: Optional Bytewax sink override (used in tests).
         terminal_sinks: Optional per-branch sink overrides.
@@ -105,6 +121,7 @@ def build_dataflow_with_shutdown(
     """
     if terminal_sinks is None:
         terminal_sinks = build_runtime_terminal_sinks(plan.terminal_sinks, commit_tracker)
+    resolved_runtime = observability_runtime or ObservabilityRuntime.noop()
     _bind_commit_tracker_object(source, commit_tracker)
     _bind_commit_tracker_object(sink, commit_tracker)
     _bind_commit_tracker_mapping(terminal_sinks, commit_tracker)
@@ -113,7 +130,7 @@ def build_dataflow_with_shutdown(
     ctx = _BuildContext(
         plan=plan,
         bridge=resolved_bridge,
-        flow_observer=flow_observer,
+        flow_runtime=resolved_runtime,
         source=source,
         sink=sink,
         terminal_sinks=terminal_sinks,
@@ -167,19 +184,20 @@ class _BuildContext:
         "plan",
         "bridge",
         "commit_tracker",
-        "flow_observer",
+        "flow_runtime",
         "source",
-        "outputs",
+        "sink",
+        "error_sinks",
+        "terminal_sinks",
         "resource_manager",
         "_path",
-        "_terminal_sinks",
     )
 
     def __init__(
         self,
         plan: CompiledPlan,
         bridge: AsyncBridge | None,
-        flow_observer: StreamingFlowObserver | None = None,
+        flow_runtime: ObservabilityRuntime,
         source: Any | None = None,
         sink: Any | None = None,
         terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
@@ -189,18 +207,54 @@ class _BuildContext:
         self.plan = plan
         self.bridge = bridge
         self.commit_tracker = commit_tracker
-        self.flow_observer = flow_observer
+        self.flow_runtime = flow_runtime
         self.source = source
-        self._terminal_sinks: Mapping[tuple[int, ...], Any] = terminal_sinks or {}
-        self.outputs: _OutputWiringProtocol = OutputWiringManager(
-            sink=sink,
-            terminal_sinks=self._terminal_sinks,
-            error_sinks=error_sinks or {},
-            observer=flow_observer,
-            flow_name=plan.name,
-        )
+        self.sink = sink
+        self.terminal_sinks = terminal_sinks or {}
+        self.error_sinks = error_sinks or {}
         self.resource_manager = ResourceManager(bridge)
         self._path: tuple[int, ...] = ()
+
+    def wire_terminal(self, step_id: str, stream: Any) -> None:
+        if self.sink is None:
+            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
+        bw_output(step_id, stream, self.sink)
+
+    def wire_branch_terminal(self, step_id: str, stream: Any, path: tuple[int, ...]) -> None:
+        sink = self.terminal_sinks.get(path)
+        if sink is None:
+            return
+        bw_output(_qualified_step_id(step_id, path), stream, sink)
+
+    def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Any) -> None:
+        sink = self.error_sinks.get(kind)
+        if sink is not None:
+            bw_output(f"{step_id}_{kind.value}_errors", stream, sink)
+            return
+        logger.warning(
+            "unrouted_error_drop_sink",
+            flow=self.plan.name,
+            kind=kind.value,
+            step_id=step_id,
+        )
+        bw_output(f"{step_id}_{kind.value}_dropped", stream, _DropSink())
+
+    def wire_flow_output(self, stream: Any, plan: CompiledPlan) -> None:
+        if self.sink is None and plan.output is not None:
+            raise RuntimeError("Bytewax sink is required for terminal output wiring.")
+        if self.sink is not None:
+            self.wire_terminal("output", stream)
+        for kind in plan.error_routes:
+            if kind not in self.error_sinks:
+                raise RuntimeError(f"Bytewax sink is required for error route {kind.value}.")
+
+    def wire_decode_error(self, stream: Any, plan: CompiledPlan) -> None:
+        del plan
+        if self.error_sinks.get(ErrorKind.WIRE) is not None:
+            self.wire_node_error(ErrorKind.WIRE, "decode", stream)
+            return
+        if ErrorKind.WIRE in self.plan.error_routes:
+            raise RuntimeError("Bytewax sink is required for WIRE error routing.")
 
     def inline_sink_partition_for(
         self,
@@ -219,7 +273,7 @@ class _BuildContext:
             A ready-to-write ``StatelessSinkPartition``, or ``None`` if no
             sink is registered for *path*.
         """
-        sink = self._terminal_sinks.get(path)
+        sink = self.terminal_sinks.get(path)
         if sink is None:
             return None
         step_id = "inline_" + "_".join(str(p) for p in path)
@@ -275,7 +329,7 @@ def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     stream: Stream = bw_input("source", flow, source)
     decoded = _decode_source_stream(stream, ctx, codec, step_id)
     decoded_branch = _split_decode_results(decoded, step_id)
-    ctx.outputs.wire_decode_error(decoded_branch.falses, ctx.plan)
+    ctx.wire_decode_error(decoded_branch.falses, ctx.plan)
     return bw_map(f"{step_id}_message", decoded_branch.trues, _decode_ok_message)
 
 
@@ -296,7 +350,13 @@ def _split_decode_results(stream: Stream, step_id: str) -> Any:
 
 def _wire_output(stream: Any, ctx: _BuildContext) -> None:
     """Wire the output sink and error routes."""
-    ctx.outputs.wire_flow_output(stream, ctx.plan)
+    ctx.wire_flow_output(stream, ctx.plan)
+
+
+def _qualified_step_id(step_id: str, path: tuple[int, ...]) -> str:
+    if not path:
+        return step_id
+    return "_".join((step_id, *map(str, path)))
 
 
 def _maybe_create_bridge(plan: CompiledPlan) -> AsyncBridge | None:

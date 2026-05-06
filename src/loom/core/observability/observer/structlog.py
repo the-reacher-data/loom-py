@@ -6,8 +6,6 @@ import structlog
 
 from loom.core.observability.event import EventKind, LifecycleEvent
 
-_log = structlog.get_logger("loom.observability")
-
 
 class StructlogLifecycleObserver:
     """Lifecycle observer that emits every event as a structured log entry.
@@ -16,12 +14,14 @@ class StructlogLifecycleObserver:
     - ``START``: ``debug`` — high-frequency, useful only in verbose mode.
     - ``END``: ``info`` — standard operational visibility.
     - ``ERROR``: ``error`` — always visible.
-    - ``COLLECT``: ``info`` with ``meta`` fields spread as top-level keys.
 
     The observer relies on the global structlog pipeline configured by
     :func:`~loom.core.logger.config.configure_logging`. It does not configure
     logging itself.
     """
+
+    def __init__(self) -> None:
+        self._log = structlog.get_logger("loom.observability")
 
     def on_event(self, event: LifecycleEvent) -> None:
         """Emit one lifecycle event as a structured log entry.
@@ -29,7 +29,7 @@ class StructlogLifecycleObserver:
         Args:
             event: Lifecycle event to log.
         """
-        bound = _log.bind(
+        bound = self._log.bind(
             scope=event.scope,
             name=event.name,
             trace_id=event.trace_id,
@@ -37,21 +37,21 @@ class StructlogLifecycleObserver:
         )
         match event.kind:
             case EventKind.START:
-                bound.debug(event.kind.value)
+                bound.debug(event.kind.value, **event.meta)
             case EventKind.END:
                 bound.info(
                     event.kind.value,
                     duration_ms=event.duration_ms,
-                    status=event.status,
+                    status=event.status.value if event.status is not None else None,
+                    **event.meta,
                 )
             case EventKind.ERROR:
                 bound.error(
                     event.kind.value,
                     duration_ms=event.duration_ms,
                     error=event.error,
+                    **event.meta,
                 )
-            case EventKind.COLLECT:
-                bound.info(event.kind.value, **event.meta)
 
 
 __all__ = ["StructlogLifecycleObserver"]

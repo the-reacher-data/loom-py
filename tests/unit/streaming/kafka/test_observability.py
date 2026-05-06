@@ -7,7 +7,6 @@ from prometheus_client import CollectorRegistry, generate_latest
 
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
-    CompositeKafkaObserver,
     KafkaStreamingObserver,
     NoopKafkaObserver,
     StructlogKafkaObserver,
@@ -53,7 +52,7 @@ def _patch_kafka_log(
     log: Mock,
 ) -> None:
     """Patch the shared Kafka structlog logger used by the observer."""
-    monkeypatch.setattr("loom.streaming.observability.observers.structlog._kafka_log", log)
+    monkeypatch.setattr("loom.streaming.kafka._observability._kafka_log", log)
 
 
 def test_kafka_prometheus_metrics_emit_counters_and_histograms(
@@ -72,28 +71,6 @@ def test_kafka_prometheus_metrics_emit_counters_and_histograms(
     assert "loom_streaming_kafka_consumed_total" in text
     assert "loom_streaming_kafka_encode_duration_seconds" in text
     assert "loom_streaming_kafka_decode_duration_seconds" in text
-
-
-def test_composite_kafka_observer_fans_out_and_isolates_errors() -> None:
-    first = _RecordingKafkaObserver()
-    second = _RecordingKafkaObserver()
-    composite = CompositeKafkaObserver([first, _FailingKafkaObserver(), second])
-
-    composite.on_produced("orders")
-    composite.on_consumed("orders", status="decode_error")
-    composite.observe_encode("application/x-loom-msgpack", 0.01)
-    composite.observe_decode("application/x-loom-msgpack", 0.02)
-
-    assert first.events == [
-        ("produced", "orders", "success"),
-        ("consumed", "orders", "decode_error"),
-    ]
-    assert second.events == first.events
-    assert first.durations == [
-        ("encode", "application/x-loom-msgpack", 0.01),
-        ("decode", "application/x-loom-msgpack", 0.02),
-    ]
-    assert second.durations == first.durations
 
 
 def test_noop_kafka_observer_matches_protocol() -> None:

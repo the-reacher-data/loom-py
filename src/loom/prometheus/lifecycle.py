@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from loom.core.observability.event import EventKind, LifecycleEvent
+
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry, Counter, Histogram
 
@@ -67,7 +69,7 @@ class PrometheusLifecycleAdapter:
         adapter = PrometheusLifecycleAdapter()
         runtime = ObservabilityRuntime([adapter])
 
-        with runtime.span("use_case", "CreateOrder"):
+        with runtime.span(Scope.USE_CASE, "CreateOrder"):
             ...
 
         # For ETL batch jobs:
@@ -84,14 +86,12 @@ class PrometheusLifecycleAdapter:
         self._pushgateway_url = pushgateway_url
         self._registry = registry
 
-    def on_event(self, event: Any) -> None:
+    def on_event(self, event: LifecycleEvent) -> None:
         """Record one lifecycle event on Prometheus instruments.
 
         Args:
             event: Lifecycle event from the runtime.
         """
-        from loom.core.observability.event import EventKind
-
         if event.kind is EventKind.END and event.duration_ms is not None:
             self._duration.labels(scope=event.scope, name=event.name).observe(
                 event.duration_ms / 1000

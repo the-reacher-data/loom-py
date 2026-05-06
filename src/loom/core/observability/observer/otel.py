@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 from collections.abc import Callable, MutableMapping
 from typing import Any
@@ -15,14 +14,7 @@ from opentelemetry.trace import StatusCode, set_span_in_context
 
 from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent
-
-_logger = logging.getLogger(__name__)
-
-# Scopes that represent root units of work — their spans are force-flushed on END
-# so short-lived runners (ETL jobs, test suites) don't lose spans at process exit.
-_ROOT_SCOPES: frozenset[str] = frozenset(
-    {"use_case", "job", "poll_cycle", "pipeline", "maintenance"}
-)
+from loom.core.observability.topology import ROOT_SCOPES, span_parent_key
 
 _grpc_exporter_cls: type[Any] | None
 try:
@@ -81,18 +73,13 @@ class OtelLifecycleObserver:
                 pass
 
     def _open_span(self, event: LifecycleEvent) -> None:
-        attrs: dict[str, Any] = {"loom.scope": event.scope}
-        if event.trace_id:
-            attrs["loom.trace_id"] = event.trace_id
-        if event.correlation_id:
-            attrs["loom.correlation_id"] = event.correlation_id
-        attrs.update({f"loom.meta.{k}": str(v) for k, v in event.meta.items()})
+        attrs = event.otel_attributes()
 
-        parent_span = self._spans.get(_parent_key(event.scope, event.trace_id))
+        parent_span = self._spans.get(span_parent_key(event.scope, event.trace_id))
         parent_ctx = set_span_in_context(parent_span) if parent_span is not None else None
 
         span = self._tracer.start_span(
-            f"loom.{event.scope}.{event.name}",
+            event.otel_span_name(),
             context=parent_ctx,
             attributes=attrs,
         )
@@ -103,14 +90,14 @@ class OtelLifecycleObserver:
         if span is None:
             return
         if event.duration_ms is not None:
-            span.set_attribute("loom.duration_ms", event.duration_ms)
+            span.set_attribute("duration_ms", event.duration_ms)
         if ok:
             span.set_status(StatusCode.OK)
         else:
             span.set_status(StatusCode.ERROR, event.error or "")
         span.end()
         if (
-            event.scope in _ROOT_SCOPES
+            event.scope in ROOT_SCOPES
             and self._provider is not None
             and hasattr(self._provider, "force_flush")
         ):
@@ -139,20 +126,6 @@ class _SpanRegistry:
 
 def _span_key(event: LifecycleEvent) -> str:
     return f"{event.scope}:{event.name}:{event.trace_id or ''}"
-
-
-def _parent_key(scope: str, trace_id: str | None) -> str:
-    """Return the key of the parent scope for ``scope``, if any."""
-    _PARENT: dict[str, str] = {
-        "node": "poll_cycle",
-        "batch_collect": "poll_cycle",
-        "batch_write": "poll_cycle",
-        "transport": "use_case",
-    }
-    parent_scope = _PARENT.get(scope)
-    if parent_scope is None:
-        return ""
-    return f"{parent_scope}::{trace_id or ''}"
 
 
 def _build_tracer(config: OtelConfig) -> tuple[Any, Any | None]:

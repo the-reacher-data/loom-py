@@ -14,7 +14,7 @@ from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
 from loom.streaming.kafka._record import KafkaRecord
 
 if TYPE_CHECKING:
-    from loom.streaming.observability.observers import KafkaStreamingObserver
+    from loom.streaming.kafka._observability import KafkaStreamingObserver
 
 
 class _CommitMethod(Protocol):

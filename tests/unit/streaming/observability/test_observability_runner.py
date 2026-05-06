@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from loom.core.observability.event import EventKind, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import Message, MessageMeta, StreamFlow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.testing import StreamingTestRunner
@@ -18,7 +20,7 @@ def test_unrouted_error_notifies_observer(
     drop_item: DropItem,
     recording_flow_observer: RecordingFlowObserver,
 ) -> None:
-    """Observer receives node_error for unrouted task errors."""
+    """Unrouted task errors are logged rather than fanned out."""
     config = {
         "kafka": {
             "consumer": {"brokers": ["localhost:9092"], "group_id": "g", "topics": ["items"]},
@@ -27,15 +29,16 @@ def test_unrouted_error_notifies_observer(
     }
     runner = StreamingTestRunner.from_dict(
         drop_flow,
-        config=config,
-        observer=recording_flow_observer,
+        config,
+        observability_runtime=ObservabilityRuntime([recording_flow_observer]),
     )
     msg = Message(payload=drop_item, meta=MessageMeta(message_id="m1"))
 
     runner.with_messages([msg]).run()
 
-    node_errors = [event for event in recording_flow_observer.events if event[0] == "node_error"]
-    assert any("unrouted_task_error" in event[3] for event in node_errors)
+    assert recording_flow_observer.events
+    assert any(event.kind is EventKind.ERROR for event in recording_flow_observer.events)
+    assert any(event.scope is Scope.NODE for event in recording_flow_observer.events)
 
 
 def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
@@ -45,23 +48,25 @@ def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
     runner = StreamingTestRunner.from_flow(
         async_flow_case.flow,
         runtime_config=async_flow_case.config,
-        observer=recording_flow_observer,
+        observability_runtime=ObservabilityRuntime([recording_flow_observer]),
     ).with_messages(list(async_flow_case.input_messages))
 
     runner.run()
 
-    assert recording_flow_observer.events[0] == (
-        "flow_start",
-        async_flow_case.flow.name,
-        str(len(async_flow_case.flow.process.nodes)),
-    )
-    assert recording_flow_observer.events[-1][0] == "flow_end"
+    assert recording_flow_observer.events[0].scope is Scope.POLL_CYCLE
+    assert recording_flow_observer.events[0].kind is EventKind.START
+    assert recording_flow_observer.events[-1].scope is Scope.POLL_CYCLE
+    assert recording_flow_observer.events[-1].kind is EventKind.END
     assert any(
-        event[0] == "node_start" and event[-1] == "WithAsync"
+        event.scope is Scope.NODE
+        and event.kind is EventKind.START
+        and event.meta.get("node_type") == "WithAsync"
         for event in recording_flow_observer.events
     )
     assert any(
-        event[0] == "node_end" and event[3] == "WithAsync"
+        event.scope is Scope.NODE
+        and event.kind is EventKind.END
+        and event.meta.get("node_type") == "WithAsync"
         for event in recording_flow_observer.events
     )
 
@@ -75,7 +80,7 @@ def test_streaming_test_runner_reset_clears_buffers(
             "producer": {"brokers": ["localhost:9092"], "topic": "items.out"},
         }
     }
-    runner = StreamingTestRunner.from_dict(drop_flow, config=config)
+    runner = StreamingTestRunner.from_dict(drop_flow, config)
     runner.with_messages([Message(payload=DropItem(value="x"), meta=MessageMeta(message_id="m1"))])
     runner.capture_errors(ErrorKind.TASK)
     runner.output.append(DropItem(value="y"))

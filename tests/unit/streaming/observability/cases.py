@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from loom.core.model import LoomStruct
+from loom.core.observability.event import LifecycleEvent
 from loom.streaming import FromTopic, IntoTopic, Message, Process, RecordStep, StreamFlow
 
 
@@ -23,110 +24,23 @@ class RecordingFlowObserver:
     """Observer that records every callback for assertions."""
 
     def __init__(self) -> None:
-        self.events: list[tuple[str, ...]] = []
+        self.events: list[LifecycleEvent] = []
 
-    def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
-        self.events.append(("flow_start", flow_name, str(node_count)))
+    def emit(self, event: LifecycleEvent) -> None:
+        self.events.append(event)
 
-    def on_flow_end(self, flow_name: str, *, status: str, duration_ms: int) -> None:
-        self.events.append(("flow_end", flow_name, status, str(duration_ms)))
-
-    def on_node_start(self, flow_name: str, node_idx: int, *, node_type: str) -> None:
-        self.events.append(("node_start", flow_name, str(node_idx), node_type))
-
-    def on_node_end(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        status: str,
-        duration_ms: int,
-    ) -> None:
-        self.events.append(
-            ("node_end", flow_name, str(node_idx), node_type, status, str(duration_ms))
-        )
-
-    def on_node_error(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        exc: Exception,
-    ) -> None:
-        self.events.append(("node_error", flow_name, str(node_idx), node_type, repr(exc)))
-
-    def on_collect_batch(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        batch_size: int,
-        max_records: int,
-        timeout_ms: int,
-        reason: str,
-    ) -> None:
-        self.events.append(
-            (
-                "collect_batch",
-                flow_name,
-                str(node_idx),
-                node_type,
-                str(batch_size),
-                str(max_records),
-                str(timeout_ms),
-                reason,
-            )
-        )
+    def on_event(self, event: LifecycleEvent) -> None:
+        self.emit(event)
 
 
 class FailingFlowObserver:
     """Observer that always raises to test error isolation."""
 
-    def on_flow_start(self, flow_name: str, *, node_count: int) -> None:
+    def emit(self, event: LifecycleEvent) -> None:
         raise RuntimeError("boom")
 
-    def on_flow_end(self, flow_name: str, *, status: str, duration_ms: int) -> None:
-        raise RuntimeError("boom")
-
-    def on_node_start(self, flow_name: str, node_idx: int, *, node_type: str) -> None:
-        raise RuntimeError("boom")
-
-    def on_node_end(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        status: str,
-        duration_ms: int,
-    ) -> None:
-        raise RuntimeError("boom")
-
-    def on_node_error(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        exc: Exception,
-    ) -> None:
-        raise RuntimeError("boom")
-
-    def on_collect_batch(
-        self,
-        flow_name: str,
-        node_idx: int,
-        *,
-        node_type: str,
-        batch_size: int,
-        max_records: int,
-        timeout_ms: int,
-        reason: str,
-    ) -> None:
-        raise RuntimeError("boom")
+    def on_event(self, event: LifecycleEvent) -> None:
+        self.emit(event)
 
 
 def build_drop_flow() -> StreamFlow[DropItem, DropItem]:

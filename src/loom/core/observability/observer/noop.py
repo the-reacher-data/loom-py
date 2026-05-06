@@ -19,5 +19,9 @@ class NoopObserver:
             event: Lifecycle event — ignored.
         """
 
+    def emit(self, event: LifecycleEvent) -> None:
+        """Discard the event via the runtime-facing method."""
+        self.on_event(event)
+
 
 __all__ = ["NoopObserver"]

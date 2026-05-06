@@ -9,6 +9,7 @@ import anyio
 from bytewax.operators import branch, flat_map
 from bytewax.operators import map as bw_map
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._error_boundary import (
     _build_error_envelope,
     _classify_task,
@@ -47,7 +48,7 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
     node = raw
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
     node_type = type(node).__name__
     tracker = ctx.commit_tracker
@@ -103,7 +104,7 @@ def _apply_with_async_process(
         raise MissingBridgeError("WithAsync requires an AsyncBridge but none was created.")
     manager = ctx.manager_for(idx, node)
     worker_resources = manager.open_worker()
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
     node_type = type(node).__name__
     tracker = ctx.commit_tracker
@@ -136,7 +137,7 @@ def _apply_with_async_process(
     mapped = bw_map(sid, stream, step_fn)
     flat = flat_map(f"{sid}_flat", mapped, _identity)
     split = branch(f"{sid}_split", flat, _is_message_result)
-    ctx.outputs.wire_node_error(ErrorKind.TASK, sid, split.falses)
+    ctx.wire_node_error(ErrorKind.TASK, sid, split.falses)
     return split.trues
 
 
@@ -245,7 +246,7 @@ def _is_message_result(item: Any) -> bool:
 
 
 def _execute_with_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     node_type: str,
