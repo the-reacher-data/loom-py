@@ -122,7 +122,7 @@ class TestKafkaProducerClient:
         producer.flush()
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_produced_total" in text
+        assert "streaming_kafka_produced_total" in text
 
     def test_raw_producer_context_manager_closes_on_exit(
         self,
@@ -299,7 +299,7 @@ class TestKafkaConsumerClient:
         consumer.poll(100)
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_consumed_total" in text
+        assert "streaming_kafka_consumed_total" in text
 
     def test_raw_consumer_context_manager_closes_on_exit(
         self,

@@ -46,6 +46,7 @@ class TestKafkaMessageProducer:
             payload=order_created_payload,
             descriptor=order_created_descriptor_v1,
             correlation_id="corr-1",
+            parent_trace_id="parent-1",
             causation_id="cause-1",
             trace_id="trace-1",
             produced_at_ms=99,
@@ -59,6 +60,7 @@ class TestKafkaMessageProducer:
         assert record.headers == {
             "h": b"1",
             "x-correlation-id": b"corr-1",
+            "x-parent-trace-id": b"parent-1",
             "x-causation-id": b"cause-1",
             "x-trace-id": b"trace-1",
         }
@@ -68,6 +70,7 @@ class TestKafkaMessageProducer:
         decoded = order_created_codec.decode(record.value, OrderCreated)
         assert decoded.payload == order_created_payload
         assert decoded.meta.trace_id == "trace-1"
+        assert decoded.meta.parent_trace_id == "parent-1"
         assert decoded.meta.correlation_id == "corr-1"
         assert decoded.meta.causation_id == "cause-1"
         assert decoded.meta.produced_at_ms == 99
@@ -177,7 +180,7 @@ class TestKafkaMessageProducer:
         )
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_encode_duration_seconds" in text
+        assert "streaming_kafka_encode_duration_seconds" in text
 
     def test_context_manager_closes_raw_on_exit(self) -> None:
         raw = RawProducerStub()
@@ -347,7 +350,7 @@ class TestKafkaMessageConsumer:
         consumer.poll(100)
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_decode_duration_seconds" in text
+        assert "streaming_kafka_decode_duration_seconds" in text
 
     def test_emits_error_metric_on_decode_failure(
         self,
@@ -368,7 +371,7 @@ class TestKafkaMessageConsumer:
             consumer.poll(100)
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_consumed_total" in text
+        assert "streaming_kafka_consumed_total" in text
 
     def test_context_manager_closes_raw_on_exit(self) -> None:
         codec = MsgspecCodec[OrderCreated]()
