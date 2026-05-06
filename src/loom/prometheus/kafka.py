@@ -41,10 +41,10 @@ class KafkaPrometheusMetrics:
     Listens for :class:`~loom.core.observability.event.LifecycleEvent` with
     ``scope=TRANSPORT`` and records four instruments:
 
-    - ``loom_streaming_kafka_produced_total`` — produce operations by topic/status.
-    - ``loom_streaming_kafka_consumed_total`` — consume operations by topic/status.
-    - ``loom_streaming_kafka_encode_duration_seconds`` — encode latency by content type.
-    - ``loom_streaming_kafka_decode_duration_seconds`` — decode latency by content type.
+    - ``streaming_kafka_produced_total`` — produce operations by topic/status.
+    - ``streaming_kafka_consumed_total`` — consume operations by topic/status.
+    - ``streaming_kafka_encode_duration_seconds`` — encode latency by content type.
+    - ``streaming_kafka_decode_duration_seconds`` — decode latency by content type.
 
     Wire this into an :class:`~loom.core.observability.runtime.ObservabilityRuntime`
     and pass the runtime to the Kafka client constructors via ``obs=``.
