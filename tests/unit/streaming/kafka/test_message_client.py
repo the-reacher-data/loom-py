@@ -6,6 +6,7 @@ import pytest
 from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
     KafkaDeserializationError,
@@ -166,7 +167,7 @@ class TestKafkaMessageProducer:
         producer = KafkaMessageProducer(
             raw=raw_producer_stub,
             codec=order_created_codec,
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         producer.send(
@@ -340,7 +341,7 @@ class TestKafkaMessageConsumer:
             raw=raw_consumer_stub,
             codec=order_created_codec,
             payload_type=OrderCreated,
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         consumer.poll(100)
@@ -360,7 +361,7 @@ class TestKafkaMessageConsumer:
             raw=raw_consumer_stub,
             codec=order_created_codec,
             payload_type=OrderCreated,
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         with pytest.raises(KafkaDeserializationError):

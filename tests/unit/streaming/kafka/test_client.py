@@ -6,6 +6,7 @@ import pytest
 from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
     ConsumerSettings,
@@ -111,7 +112,7 @@ class TestKafkaProducerClient:
         installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(
             ProducerSettings(brokers=("k1:9092",)),
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
@@ -292,7 +293,7 @@ class TestKafkaConsumerClient:
         fake.next_message = FakeKafkaMessage(value=b"data")
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         consumer.poll(100)

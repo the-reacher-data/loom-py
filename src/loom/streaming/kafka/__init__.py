@@ -31,11 +31,6 @@ from loom.streaming.kafka._message import (
     SchemaRef,
     build_message,
 )
-from loom.streaming.kafka._observability import (
-    KafkaStreamingObserver,
-    NoopKafkaObserver,
-    StructlogKafkaObserver,
-)
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import (
     DecodeError,
@@ -81,21 +76,18 @@ __all__ = [
     "KafkaSecuritySettings",
     "KafkaSettings",
     "KafkaSerializationError",
-    "KafkaStreamingObserver",
     "MessageConsumer",
     "MessageDescriptor",
     "MessageEnvelope",
     "MessageMetadata",
     "MessageProducer",
     "MsgspecCodec",
-    "NoopKafkaObserver",
     "PartitionKeyResolver",
     "PreserveKey",
     "ProducerSettings",
     "resolve_consumer_topics",
     "resolve_producer_topic",
     "SchemaRef",
-    "StructlogKafkaObserver",
     "build_message",
     "envelope_to_message",
     "load_kafka_settings",

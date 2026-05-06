@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from confluent_kafka import TopicPartition
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.core.observability.event import LifecycleEvent, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._codec import KafkaCodec
 from loom.streaming.kafka._errors import KafkaDeserializationError
 from loom.streaming.kafka._message import MessageEnvelope
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._protocol import KafkaConsumer
-
-if TYPE_CHECKING:
-    from loom.streaming.kafka._observability import KafkaStreamingObserver
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
@@ -39,12 +38,12 @@ class KafkaMessageConsumer(Generic[PayloadT]):
         raw: KafkaConsumer,
         codec: KafkaCodec[PayloadT],
         payload_type: type[PayloadT],
-        observer: KafkaStreamingObserver | None = None,
+        obs: ObservabilityRuntime | None = None,
     ) -> None:
         self._raw = raw
         self._codec = codec
         self._payload_type = payload_type
-        self._observer = observer
+        self._obs = obs
 
     def poll(self, timeout_ms: int) -> KafkaRecord[MessageEnvelope[PayloadT]] | None:
         """Read and decode one standard message envelope from Kafka.
@@ -67,13 +66,24 @@ class KafkaMessageConsumer(Generic[PayloadT]):
         try:
             message = self._codec.decode(record.value, self._payload_type)
         except Exception as exc:
-            if self._observer is not None:
-                self._observer.on_consumed(record.topic, status="decode_error")
+            if self._obs is not None:
+                self._obs.emit(
+                    LifecycleEvent.exception(
+                        scope=Scope.TRANSPORT,
+                        name="kafka_decode",
+                        error=str(exc),
+                        meta={"topic": record.topic},
+                    )
+                )
             raise KafkaDeserializationError(str(exc)) from exc
-        if self._observer is not None:
-            self._observer.observe_decode(
-                message.meta.descriptor.content_type.media_type,
-                perf_counter() - started,
+        if self._obs is not None:
+            self._obs.emit(
+                LifecycleEvent.end(
+                    scope=Scope.TRANSPORT,
+                    name="kafka_decode",
+                    duration_ms=(perf_counter() - started) * 1000,
+                    meta={"content_type": message.meta.descriptor.content_type.media_type},
+                )
             )
         return KafkaRecord(
             topic=record.topic,

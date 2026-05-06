@@ -8,37 +8,46 @@ Usage::
 
     from prometheus_client import CollectorRegistry
     from loom.prometheus import KafkaPrometheusMetrics
+    from loom.core.observability.runtime import ObservabilityRuntime
 
     registry = CollectorRegistry()
     metrics = KafkaPrometheusMetrics(registry=registry)
+    obs = ObservabilityRuntime([metrics])
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+
 if TYPE_CHECKING:
     from prometheus_client import CollectorRegistry, Counter, Histogram
 
 
 class KafkaPrometheusMetrics:
-    """Prometheus metrics recorder for Kafka transport operations.
+    """Prometheus metrics recorder for Kafka transport lifecycle events.
 
-    Records four instruments:
+    Listens for :class:`~loom.core.observability.event.LifecycleEvent` with
+    ``scope=TRANSPORT`` and records four instruments:
 
-    - ``loom_streaming_kafka_produced_total``
-    - ``loom_streaming_kafka_consumed_total``
-    - ``loom_streaming_kafka_encode_duration_seconds``
-    - ``loom_streaming_kafka_decode_duration_seconds``
+    - ``loom_streaming_kafka_produced_total`` — produce operations by topic/status.
+    - ``loom_streaming_kafka_consumed_total`` — consume operations by topic/status.
+    - ``loom_streaming_kafka_encode_duration_seconds`` — encode latency by content type.
+    - ``loom_streaming_kafka_decode_duration_seconds`` — decode latency by content type.
+
+    Wire this into an :class:`~loom.core.observability.runtime.ObservabilityRuntime`
+    and pass the runtime to the Kafka client constructors via ``obs=``.
 
     Args:
         registry: Optional ``CollectorRegistry``. Defaults to the global
             Prometheus registry when ``None``.
 
-    Note:
-        This class does not use any module-level mutable cache. When a custom
-        registry is required for test isolation or multi-app setups, pass it
-        explicitly.
+    Example::
+
+        metrics = KafkaPrometheusMetrics(registry=registry)
+        obs = ObservabilityRuntime([metrics])
+        consumer = KafkaConsumerClient(settings, obs=obs)
     """
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
@@ -47,45 +56,37 @@ class KafkaPrometheusMetrics:
         self._encode_duration = _build_encode_duration(registry)
         self._decode_duration = _build_decode_duration(registry)
 
-    def on_produced(self, topic: str, *, status: str = "success") -> None:
-        """Record one produce operation.
+    def on_event(self, event: LifecycleEvent) -> None:
+        """Record one Kafka transport lifecycle event on Prometheus instruments.
+
+        Only ``TRANSPORT`` scope events with names ``kafka_produce``,
+        ``kafka_consume``, ``kafka_encode``, and ``kafka_decode`` are handled.
+        All other events are ignored.
 
         Args:
-            topic: Kafka topic name.
-            status: Operation outcome.
+            event: Lifecycle event from the runtime.
         """
-
-        self._produced_total.labels(topic=topic, status=status).inc()
-
-    def on_consumed(self, topic: str, *, status: str = "success") -> None:
-        """Record one consume operation.
-
-        Args:
-            topic: Kafka topic name.
-            status: Operation outcome.
-        """
-
-        self._consumed_total.labels(topic=topic, status=status).inc()
-
-    def observe_encode(self, content_type: str, duration_seconds: float) -> None:
-        """Observe one encode duration.
-
-        Args:
-            content_type: Wire content type label.
-            duration_seconds: Encode duration in seconds.
-        """
-
-        self._encode_duration.labels(content_type=content_type).observe(duration_seconds)
-
-    def observe_decode(self, content_type: str, duration_seconds: float) -> None:
-        """Observe one decode duration.
-
-        Args:
-            content_type: Wire content type label.
-            duration_seconds: Decode duration in seconds.
-        """
-
-        self._decode_duration.labels(content_type=content_type).observe(duration_seconds)
+        if event.scope is not Scope.TRANSPORT:
+            return
+        match event.name:
+            case "kafka_produce":
+                topic = str(event.meta.get("topic", "unknown"))
+                status = "success" if event.kind is EventKind.END else "delivery_error"
+                self._produced_total.labels(topic=topic, status=status).inc()
+            case "kafka_consume":
+                topic = str(event.meta.get("topic", "unknown"))
+                self._consumed_total.labels(topic=topic, status="success").inc()
+            case "kafka_encode":
+                if event.duration_ms is not None:
+                    ct = str(event.meta.get("content_type", "unknown"))
+                    self._encode_duration.labels(content_type=ct).observe(event.duration_ms / 1000)
+            case "kafka_decode":
+                if event.kind is EventKind.ERROR:
+                    topic = str(event.meta.get("topic", "unknown"))
+                    self._consumed_total.labels(topic=topic, status="decode_error").inc()
+                elif event.duration_ms is not None:
+                    ct = str(event.meta.get("content_type", "unknown"))
+                    self._decode_duration.labels(content_type=ct).observe(event.duration_ms / 1000)
 
 
 def _build_produced_total(registry: CollectorRegistry | None) -> Counter:

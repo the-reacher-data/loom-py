@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeVar
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.core.observability.event import LifecycleEvent, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._codec import KafkaCodec
 from loom.streaming.kafka._key_resolver import PartitionKeyResolver
 from loom.streaming.kafka._message import (
@@ -18,9 +20,6 @@ from loom.streaming.kafka._message import (
 )
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._protocol import KafkaProducer
-
-if TYPE_CHECKING:
-    from loom.streaming.kafka._observability import KafkaStreamingObserver
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
@@ -64,13 +63,13 @@ class KafkaMessageProducer(Generic[PayloadT]):
         codec: KafkaCodec[PayloadT],
         key_resolver: PartitionKeyResolver[MessageEnvelope[PayloadT]] | None = None,
         use_message_timestamp: bool = True,
-        observer: KafkaStreamingObserver | None = None,
+        obs: ObservabilityRuntime | None = None,
     ) -> None:
         self._raw = raw
         self._codec = codec
         self._key_resolver = key_resolver
         self._use_message_timestamp = use_message_timestamp
-        self._observer = observer
+        self._obs = obs
 
     def send(
         self,
@@ -113,10 +112,14 @@ class KafkaMessageProducer(Generic[PayloadT]):
         record_headers = _build_record_headers(headers, correlation_id, causation_id, trace_id)
         encode_started = perf_counter()
         encoded = self._codec.encode(message)
-        if self._observer is not None:
-            self._observer.observe_encode(
-                descriptor.content_type.media_type,
-                perf_counter() - encode_started,
+        if self._obs is not None:
+            self._obs.emit(
+                LifecycleEvent.end(
+                    scope=Scope.TRANSPORT,
+                    name="kafka_encode",
+                    duration_ms=(perf_counter() - encode_started) * 1000,
+                    meta={"content_type": descriptor.content_type.media_type},
+                )
             )
         resolved_key: bytes | str | None = key
         if resolved_key is None and self._key_resolver is not None:
