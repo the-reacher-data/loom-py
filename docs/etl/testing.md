@@ -42,7 +42,8 @@ def test_double_amount(loom_polars_runner):
     result.assert_count(2)
 ```
 
-Pytest fixtures auto-registered: `loom_polars_runner`, `loom_spark_runner`.
+Pytest fixtures: `loom_polars_runner`. Import `loom.etl.testing.spark` or
+register it explicitly in Spark-enabled suites to use `loom_spark_runner`.
 
 ## Spark integration tests
 

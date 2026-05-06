@@ -11,11 +11,12 @@ Public API
 * :class:`ETLScenario` — backend-agnostic reusable seed dataset.
 * :class:`StepRunnerProto` — protocol satisfied by both runner types.
 
-Pytest fixtures (auto-registered)
+Pytest fixtures
 ----------------------------------
 * ``loom_polars_runner`` — fresh :class:`PolarsStepRunner` per test.
-* ``loom_spark_runner``  — fresh :class:`SparkStepRunner` per test (requires
-  ``loom_spark_session``, registered in :mod:`loom.etl.testing.spark`).
+* ``loom_spark_runner``  — fresh :class:`SparkStepRunner` per test when
+  :mod:`loom.etl.testing.spark` is explicitly imported or registered as a
+  pytest plugin in the consuming suite.
 
 Spark
 -----

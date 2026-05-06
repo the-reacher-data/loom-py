@@ -3,9 +3,10 @@
 Provides :class:`SparkTestSession` — a context manager that handles Spark
 configuration, Delta extension setup, and teardown.
 
-The ``loom_spark_session`` pytest fixture is registered automatically via the
-``pytest11`` entry point when ``loom-kernel[etl-spark]`` is installed — no
-explicit import or ``pytest_plugins`` declaration is needed.
+Import :mod:`loom.etl.testing.spark` explicitly from Spark-enabled test
+projects, or register it via ``pytest_plugins`` / ``pytest -p`` in the
+consuming suite. The module keeps Spark-only dependencies out of import time so
+non-Spark installations can remain lightweight.
 
 Usage in ``conftest.py``::
 
@@ -30,18 +31,19 @@ from collections.abc import Generator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import polars as pl
 import pytest
-from delta import configure_spark_with_delta_pip
-from pyspark.sql import SparkSession
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative.source import SourceSpec
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.executor import ETLExecutor
 from loom.etl.testing._result import StepResult
+
+if TYPE_CHECKING:
+    import polars as pl
+    from pyspark.sql import SparkSession
 
 
 class SparkTestSession:
@@ -84,6 +86,8 @@ class SparkTestSession:
         Returns:
             A :class:`SparkTestSession` wrapping the active session.
         """
+        from pyspark.sql import SparkSession
+
         builder = (
             SparkSession.builder.master("local[1]")
             .appName(app)
@@ -104,6 +108,8 @@ class SparkTestSession:
             builder = builder.config("spark.jars", ",".join(str(jar) for jar in local_delta_jars))
             session = builder.getOrCreate()
         else:
+            from delta import configure_spark_with_delta_pip
+
             session = configure_spark_with_delta_pip(builder).getOrCreate()
         session.sparkContext.setLogLevel("ERROR")
         return cls(session)
@@ -243,7 +249,7 @@ class SparkStepRunner:
 
 
 # ---------------------------------------------------------------------------
-# pytest fixture — auto-registered via pytest11 entry point
+# pytest fixture — opt-in via explicit import or pytest plugin registration
 # ---------------------------------------------------------------------------
 
 
@@ -316,6 +322,8 @@ def _pick_jar(jar_dir: Path, prefix: str, expected_version: str | None) -> Path 
 
 
 def _spark_frame_to_polars(frame: Any) -> pl.DataFrame:
+    import polars as pl
+
     columns = list(frame.columns)
     rows = frame.collect()
     records = [{col: row[col] for col in columns} for row in rows]
