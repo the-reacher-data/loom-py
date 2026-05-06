@@ -47,14 +47,9 @@ class TraceIdMiddleware:
 
     Example — FastAPI::
 
-        from loom.core.observability.runtime import ObservabilityRuntime
         from loom.rest.middleware import TraceIdMiddleware
 
-        app = create_fastapi_app(
-            result,
-            interfaces=[...],
-            observability_runtime=ObservabilityRuntime.noop(),
-        )
+        app = create_fastapi_app(result, interfaces=[...])
         app.add_middleware(TraceIdMiddleware)
 
     Example — plain ASGI composition::

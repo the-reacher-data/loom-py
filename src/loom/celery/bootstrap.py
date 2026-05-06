@@ -105,9 +105,6 @@ if TYPE_CHECKING:
 
 _T = TypeVar("_T")
 
-# Guard: signals must be connected exactly once per process.
-_SIGNALS_CONNECTED: bool = False
-
 
 # ---------------------------------------------------------------------------
 # Local config structs — private to this module
@@ -238,8 +235,7 @@ def _connect_worker_signals(
             on shutdown when present.
         async_runtime: Per-process async bridge runtime used for async jobs.
     """
-    global _SIGNALS_CONNECTED
-    if _SIGNALS_CONNECTED:
+    if _CeleryAsyncRuntime._signals_connected:
         return
 
     def _on_init(**kwargs: Any) -> None:
@@ -262,7 +258,7 @@ def _connect_worker_signals(
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
-    _SIGNALS_CONNECTED = True
+    _CeleryAsyncRuntime._signals_connected = True
 
 
 def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
@@ -742,6 +738,8 @@ def bootstrap_worker(
     Raises:
         ConfigError: If a required configuration section is missing or
             fails validation.
+        RuntimeError: If no ``app.discovery`` config is provided and no
+            ``jobs`` are declared, or if discovery finds no ``Job`` classes.
 
     Example::
 

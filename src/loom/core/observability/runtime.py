@@ -148,13 +148,14 @@ class ObservabilityRuntime:
                 result = transform(message)
         """
         start = perf_counter()
+        meta_dict = dict(meta)
         self.emit(
             LifecycleEvent.start(
                 scope=scope,
                 name=name,
                 trace_id=trace_id,
                 correlation_id=correlation_id,
-                meta=dict(meta),
+                meta=meta_dict,
             )
         )
         try:
@@ -168,7 +169,7 @@ class ObservabilityRuntime:
                     correlation_id=correlation_id,
                     duration_ms=(perf_counter() - start) * 1000,
                     error=str(exc),
-                    meta=dict(meta),
+                    meta={**meta_dict, "error_type": type(exc).__name__},
                 )
             )
             raise
@@ -181,7 +182,7 @@ class ObservabilityRuntime:
                     correlation_id=correlation_id,
                     duration_ms=(perf_counter() - start) * 1000,
                     status=LifecycleStatus.SUCCESS,
-                    meta=dict(meta),
+                    meta=meta_dict,
                 )
             )
 

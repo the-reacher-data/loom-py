@@ -25,7 +25,7 @@ import inspect
 import time
 from contextvars import Token
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.result import AsyncResult  # type: ignore[import-untyped]
@@ -46,6 +46,11 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class _CeleryAsyncRuntime:
     """Per-process async bridge for Celery worker coroutines."""
+
+    # Class-level guard: signals must be connected exactly once per process.
+    # Stored on the class (not the instance) because it reflects process state,
+    # not a property of any particular runtime object.
+    _signals_connected: ClassVar[bool] = False
 
     backend: str = "asyncio"
     backend_options: dict[str, Any] = field(default_factory=dict)

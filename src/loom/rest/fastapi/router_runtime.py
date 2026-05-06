@@ -307,6 +307,7 @@ def _make_handler(
         compiled_route: Fully resolved route from ``RestInterfaceCompiler``.
         factory: Factory used to construct the use-case instance per request.
         executor: Executor that drives the use-case pipeline.
+        observability_runtime: Shared runtime used to emit a span event per request.
 
     Returns:
         Async callable suitable for ``FastAPI.add_api_route``.
