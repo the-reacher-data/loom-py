@@ -118,7 +118,7 @@ _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 def _camel_to_snake(value: str) -> str:
     s = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", value)
-    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
     return s.lower()
 
 
