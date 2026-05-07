@@ -10,7 +10,14 @@ from opentelemetry import trace
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import StatusCode, set_span_in_context
+from opentelemetry.trace import (
+    NonRecordingSpan,
+    SpanContext,
+    StatusCode,
+    TraceFlags,
+    TraceState,
+    set_span_in_context,
+)
 
 from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent
@@ -74,7 +81,11 @@ class OtelLifecycleObserver:
         attrs = event.otel_attributes()
 
         parent_span = self._spans.get(span_parent_key(event.scope, event.trace_id))
-        parent_ctx = set_span_in_context(parent_span) if parent_span is not None else None
+        parent_ctx = (
+            set_span_in_context(parent_span)
+            if parent_span is not None
+            else _trace_parent_context(event.trace_id)
+        )
 
         span = self._tracer.start_span(
             event.otel_span_name(),
@@ -154,6 +165,27 @@ def _build_exporter(config: OtelConfig) -> Any:
             "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
         )
     return _http_exporter_cls(**kwargs)
+
+
+def _trace_parent_context(trace_id: str | None) -> Any | None:
+    if trace_id is None:
+        return None
+    try:
+        trace_id_int = int(trace_id, 16)
+    except ValueError:
+        return None
+    if trace_id_int == 0:
+        return None
+    parent = NonRecordingSpan(
+        SpanContext(
+            trace_id=trace_id_int,
+            span_id=1,
+            is_remote=True,
+            trace_flags=TraceFlags(TraceFlags.SAMPLED),
+            trace_state=TraceState(),
+        )
+    )
+    return set_span_in_context(parent)
 
 
 def build_log_correlation_processor() -> Callable[

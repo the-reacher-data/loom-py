@@ -13,6 +13,7 @@ from loom.core.observability.event import LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._config import ProducerSettings
 from loom.streaming.kafka._errors import KafkaDeliveryError
+from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._protocol import DeliveryCallback
 
@@ -81,6 +82,8 @@ class KafkaProducerClient:
                     LifecycleEvent.exception(
                         scope=Scope.TRANSPORT,
                         name="kafka_produce",
+                        trace_id=_header_trace_id(record.headers),
+                        correlation_id=_header_correlation_id(record.headers),
                         error=str(exc),
                         meta={"topic": record.topic},
                     )
@@ -144,6 +147,8 @@ class KafkaProducerClient:
                         LifecycleEvent.end(
                             scope=Scope.TRANSPORT,
                             name="kafka_produce",
+                            trace_id=_header_trace_id(record.headers),
+                            correlation_id=_header_correlation_id(record.headers),
                             meta={"topic": record.topic},
                         )
                     )
@@ -152,6 +157,8 @@ class KafkaProducerClient:
                         LifecycleEvent.exception(
                             scope=Scope.TRANSPORT,
                             name="kafka_produce",
+                            trace_id=_header_trace_id(record.headers),
+                            correlation_id=_header_correlation_id(record.headers),
                             error=str(delivery_error),
                             meta={"topic": record.topic},
                         )
@@ -184,3 +191,13 @@ def _serialize_key(key: bytes | str | None) -> bytes | None:
     if isinstance(key, bytes):
         return key
     return key.encode("utf-8")
+
+
+def _header_trace_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_TRACE_ID)
+    return raw.decode() if raw is not None else None
+
+
+def _header_correlation_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_CORRELATION_ID)
+    return raw.decode() if raw is not None else None

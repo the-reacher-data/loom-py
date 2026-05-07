@@ -13,6 +13,7 @@ from loom.core.observability.event import LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
+from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID
 from loom.streaming.kafka._record import KafkaRecord
 
 
@@ -72,6 +73,8 @@ class KafkaConsumerClient:
                 LifecycleEvent.end(
                     scope=Scope.TRANSPORT,
                     name="kafka_consume",
+                    trace_id=_header_trace_id(record.headers),
+                    correlation_id=_header_correlation_id(record.headers),
                     meta={"topic": record.topic},
                 )
             )
@@ -145,6 +148,16 @@ def _to_record(message: _RawMessage) -> KafkaRecord[bytes]:
         offset=message.offset(),
         timestamp_ms=timestamp_ms if timestamp_ms >= 0 else None,
     )
+
+
+def _header_trace_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_TRACE_ID)
+    return raw.decode() if raw is not None else None
+
+
+def _header_correlation_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_CORRELATION_ID)
+    return raw.decode() if raw is not None else None
 
 
 def _normalize_headers(

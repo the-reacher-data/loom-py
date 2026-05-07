@@ -12,7 +12,7 @@ from loom.core.observability.event import LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._codec import KafkaCodec
 from loom.streaming.kafka._errors import KafkaDeserializationError
-from loom.streaming.kafka._message import MessageEnvelope
+from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID, MessageEnvelope
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka.client._protocol import KafkaConsumer
 
@@ -71,6 +71,8 @@ class KafkaMessageConsumer(Generic[PayloadT]):
                     LifecycleEvent.exception(
                         scope=Scope.TRANSPORT,
                         name="kafka_decode",
+                        trace_id=_header_trace_id(record.headers),
+                        correlation_id=_header_correlation_id(record.headers),
                         error=str(exc),
                         meta={"topic": record.topic},
                     )
@@ -82,6 +84,8 @@ class KafkaMessageConsumer(Generic[PayloadT]):
                     scope=Scope.TRANSPORT,
                     name="kafka_decode",
                     duration_ms=(perf_counter() - started) * 1000,
+                    trace_id=message.meta.trace_id,
+                    correlation_id=message.meta.correlation_id,
                     meta={"content_type": message.meta.descriptor.content_type.media_type},
                 )
             )
@@ -127,3 +131,13 @@ class KafkaMessageConsumer(Generic[PayloadT]):
             if exc[0] is None:
                 raise
         return False
+
+
+def _header_trace_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_TRACE_ID)
+    return raw.decode() if raw is not None else None
+
+
+def _header_correlation_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_CORRELATION_ID)
+    return raw.decode() if raw is not None else None

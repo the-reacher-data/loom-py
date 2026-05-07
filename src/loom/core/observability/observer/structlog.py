@@ -38,6 +38,7 @@ class StructlogLifecycleObserver:
             name=event.name,
             trace_id=event.trace_id,
             correlation_id=event.correlation_id,
+            id=event.id,
         )
         if event.scope is Scope.TRANSPORT:
             _log_transport(bound, event)

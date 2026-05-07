@@ -131,6 +131,8 @@ class KafkaMessageProducer(Generic[PayloadT]):
                     scope=Scope.TRANSPORT,
                     name="kafka_encode",
                     duration_ms=(perf_counter() - encode_started) * 1000,
+                    trace_id=message.meta.trace_id,
+                    correlation_id=message.meta.correlation_id,
                     meta={"content_type": descriptor.content_type.media_type},
                 )
             )

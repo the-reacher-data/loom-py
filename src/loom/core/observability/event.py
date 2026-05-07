@@ -182,6 +182,8 @@ class LifecycleEvent(LoomFrozenStruct, frozen=True, kw_only=True):
             attrs["trace_id"] = self.trace_id
         if self.correlation_id:
             attrs["correlation_id"] = self.correlation_id
+        if self.id:
+            attrs["id"] = self.id
         attrs.update({k: str(v) for k, v in self.meta.items()})
         return attrs
 

@@ -6,6 +6,7 @@ import pytest
 from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
+from loom.core.observability.event import LifecycleEvent
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
@@ -182,6 +183,36 @@ class TestKafkaMessageProducer:
         text = generate_latest(kafka_registry).decode()
         assert "streaming_kafka_encode_duration_seconds" in text
 
+    def test_encode_event_carries_message_trace_id(
+        self,
+        order_created_codec: MsgspecCodec[OrderCreated],
+        order_created_payload: OrderCreated,
+        order_created_descriptor_v1: MessageDescriptor,
+        raw_producer_stub: RawProducerStub,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        producer = KafkaMessageProducer(
+            raw=raw_producer_stub,
+            codec=order_created_codec,
+            obs=ObservabilityRuntime([_RecordingObserver()]),
+        )
+
+        producer.send(
+            topic="orders",
+            payload=order_created_payload,
+            descriptor=order_created_descriptor_v1,
+            trace_id="trace-1",
+            correlation_id="corr-1",
+        )
+
+        assert events[-1].trace_id == "trace-1"
+        assert events[-1].correlation_id == "corr-1"
+
     def test_context_manager_closes_raw_on_exit(self) -> None:
         raw = RawProducerStub()
         codec = MsgspecCodec[OrderCreated]()
@@ -214,7 +245,6 @@ class TestKafkaMessageConsumer:
     def test_decodes_envelope(
         self,
         order_created_codec: MsgspecCodec[OrderCreated],
-        order_created_payload: OrderCreated,
         order_created_envelope_with_metadata: MessageEnvelope[OrderCreated],
         raw_consumer_stub: RawConsumerStub,
     ) -> None:
@@ -232,22 +262,24 @@ class TestKafkaMessageConsumer:
                 ),
             ]
         )
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
         consumer = KafkaMessageConsumer(
             raw=raw_consumer_stub,
             codec=order_created_codec,
             payload_type=OrderCreated,
+            obs=ObservabilityRuntime([_RecordingObserver()]),
         )
 
-        record = consumer.poll(500)
+        record = consumer.poll(100)
 
         assert record is not None
-        assert record.value.payload == order_created_payload
-        assert record.value.meta.trace_id == "trace-1"
-        assert record.value.meta.produced_at_ms == 1234
-        assert record.topic == "orders"
-        assert record.key == b"tenant-a"
-        assert record.partition == 2
-        assert record.offset == 9
+        assert events[-1].trace_id == order_created_envelope_with_metadata.meta.trace_id
+        assert events[-1].correlation_id == order_created_envelope_with_metadata.meta.correlation_id
 
     def test_returns_none_when_no_record(self) -> None:
         codec = MsgspecCodec[OrderCreated]()

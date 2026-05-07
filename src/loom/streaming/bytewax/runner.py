@@ -197,12 +197,12 @@ class StreamingRunner:
         """
 
         resolved_runtime = runtime or self._runtime
-        run_trace_id = generate_trace_id()
+        run_id = generate_trace_id()
         self._observability_runtime.emit(
             LifecycleEvent.start(
                 scope=Scope.POLL_CYCLE,
                 name=self._plan.name,
-                trace_id=run_trace_id,
+                id=run_id,
                 meta={"node_count": len(self._plan.nodes)},
             )
         )
@@ -221,7 +221,7 @@ class StreamingRunner:
                 LifecycleEvent.end(
                     scope=Scope.POLL_CYCLE,
                     name=self._plan.name,
-                    trace_id=run_trace_id,
+                    id=run_id,
                     duration_ms=duration_ms,
                     status=status,
                 )

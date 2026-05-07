@@ -24,7 +24,7 @@ pytestmark = pytest.mark.bytewax
 
 
 class TestStreamingRunner:
-    def test_run_generates_a_poll_cycle_trace_id(
+    def test_run_generates_a_poll_cycle_id(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
@@ -62,8 +62,10 @@ class TestStreamingRunner:
         runner.run()
 
         assert [event.kind for event in events[:2]] == [EventKind.START, EventKind.END]
-        assert events[0].trace_id == "poll-trace"
-        assert events[1].trace_id == "poll-trace"
+        assert events[0].id == "poll-trace"
+        assert events[1].id == "poll-trace"
+        assert events[0].trace_id is None
+        assert events[1].trace_id is None
 
     def test_run_uses_bytewax_cli_main_with_runtime_config(
         self,
