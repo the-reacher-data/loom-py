@@ -32,7 +32,7 @@ from loom.core.discovery import (
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.model import BaseModel
-from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -209,6 +209,12 @@ def _load_observability_config(raw: DictConfig) -> ObservabilityConfig:
         return section(raw, "observability", ObservabilityConfig)
     except ConfigError:
         return ObservabilityConfig()
+
+
+def _build_metrics_config(cfg: PrometheusObservabilityConfig) -> _MetricsConfig:
+    """Convert unified observability Prometheus settings to REST metrics config."""
+    path = cfg.config.path if cfg.config is not None else "/metrics"
+    return _MetricsConfig(enabled=cfg.enabled, path=path)
 
 
 def _build_bootstrap(
@@ -391,8 +397,8 @@ def create_app(
     app_cfg = section(raw, "app", _AppConfig)
     db_cfg = section(raw, "database", _DatabaseConfig)
     observability_cfg = _load_observability_config(raw)
-    metrics_cfg = section(raw, "metrics", _MetricsConfig)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
+    metrics_cfg = _build_metrics_config(observability_cfg.prometheus)
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)

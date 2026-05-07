@@ -41,8 +41,10 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         {
             "app": {"name": "demo"},
             "database": {"url": "sqlite+aiosqlite:///"},
-            "metrics": {"enabled": False},
-            "observability": {"log": {"enabled": False}},
+            "observability": {
+                "log": {"enabled": False},
+                "prometheus": {"enabled": False, "config": {"path": "/metrics"}},
+            },
         }
     )
     captured: dict[str, Any] = {}
