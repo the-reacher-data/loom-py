@@ -279,6 +279,7 @@ class TestKafkaMessageConsumer:
         record = consumer.poll(100)
 
         assert record is not None
+        assert events, "Expected at least one lifecycle event"
         assert events[-1].trace_id == order_created_envelope_with_metadata.meta.trace_id
         assert events[-1].correlation_id == order_created_envelope_with_metadata.meta.correlation_id
 

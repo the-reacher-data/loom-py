@@ -100,6 +100,11 @@ class ETLExecutor:
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
         self._checkpoint_store: CheckpointStore | None = checkpoint_store
 
+    @property
+    def observability(self) -> ObservabilityRuntime:
+        """Return the shared observability runtime."""
+        return self._observability
+
     def run_pipeline(
         self,
         plan: PipelinePlan,

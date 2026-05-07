@@ -53,6 +53,7 @@ def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
 
     runner.run()
 
+    assert recording_flow_observer.events, "Expected at least one lifecycle event"
     assert recording_flow_observer.events[0].scope is Scope.POLL_CYCLE
     assert recording_flow_observer.events[0].kind is EventKind.START
     assert recording_flow_observer.events[-1].scope is Scope.POLL_CYCLE
