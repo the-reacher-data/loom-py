@@ -27,6 +27,7 @@ from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import (
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
+    HEADER_PARENT_TRACE_ID,
     HEADER_TRACE_ID,
     MessageDescriptor,
 )
@@ -391,6 +392,7 @@ def _message_to_send_with_policy(
     message: Message[StreamPayload],
     partition_policy: PartitionPolicy[Any] | None,
 ) -> _KafkaSendRequest[StreamPayload]:
+    incoming_trace_id = message.meta.trace_id
     return _KafkaSendRequest(
         payload=message.payload,
         descriptor=MessageDescriptor(
@@ -400,7 +402,7 @@ def _message_to_send_with_policy(
         key=_resolve_partition_key(message, partition_policy),
         headers=message.meta.headers,
         correlation_id=message.meta.correlation_id,
-        parent_trace_id=message.meta.trace_id,
+        parent_trace_id=incoming_trace_id,
         causation_id=message.meta.causation_id,
         trace_id=generate_trace_id(),
         produced_at_ms=message.meta.produced_at_ms,
@@ -445,9 +447,9 @@ def _error_item_to_send(
         key=key,
         headers={**original.meta.headers, **headers},
         correlation_id=original.meta.correlation_id,
-        parent_trace_id=original.meta.trace_id,
+        parent_trace_id=original.meta.parent_trace_id,
         causation_id=original.meta.causation_id,
-        trace_id=generate_trace_id(),
+        trace_id=original.meta.trace_id,
         produced_at_ms=original.meta.produced_at_ms,
     )
 
@@ -483,9 +485,9 @@ def _decode_error_to_send(
             "x-error-reason": item.error.reason.encode("utf-8"),
         },
         correlation_id=_decode_str_header(item.headers, HEADER_CORRELATION_ID),
-        parent_trace_id=_decode_str_header(item.headers, HEADER_TRACE_ID),
+        parent_trace_id=_decode_str_header(item.headers, HEADER_PARENT_TRACE_ID),
         causation_id=_decode_str_header(item.headers, HEADER_CAUSATION_ID),
-        trace_id=generate_trace_id(),
+        trace_id=_decode_str_header(item.headers, HEADER_TRACE_ID),
         produced_at_ms=item.timestamp_ms,
     )
 

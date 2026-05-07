@@ -135,6 +135,7 @@ class TestRuntimeIOBuilders:
             meta=MessageMeta(
                 message_id="m-1",
                 trace_id="parent-trace",
+                parent_trace_id="grandparent-trace",
                 correlation_id="corr-1",
                 causation_id="cause-1",
                 topic="orders.in",
@@ -165,8 +166,8 @@ class TestRuntimeIOBuilders:
 
         assert decoded_message.meta.trace_id == "child-trace"
         assert decoded_message.meta.parent_trace_id == "parent-trace"
-        assert decoded_error.meta.trace_id == "child-trace"
-        assert decoded_error.meta.parent_trace_id == "parent-trace"
+        assert decoded_error.meta.trace_id == "parent-trace"
+        assert decoded_error.meta.parent_trace_id == "grandparent-trace"
 
     def test_build_runtime_error_sink_writes_error_envelope_payloads(
         self,

@@ -170,7 +170,14 @@ def _execute_record_step(
     record_step: _ExecutableRecordStep,
     message: Message[StreamPayload],
 ) -> Message[StreamPayload]:
-    with _observe_node(observer, flow_name, idx, name, trace_id=message.meta.trace_id):
+    with _observe_node(
+        observer,
+        flow_name,
+        idx,
+        name,
+        trace_id=message.meta.trace_id,
+        correlation_id=message.meta.correlation_id,
+    ):
         result = _resolve_record_result(record_step.execute(message), name)
         return _replace_payload(message, result)
 
@@ -184,7 +191,12 @@ def _execute_batch_step(
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
     with _observe_node(
-        observer, flow_name, idx, name, trace_id=messages[0].meta.trace_id if messages else None
+        observer,
+        flow_name,
+        idx,
+        name,
+        trace_id=messages[0].meta.trace_id if messages else None,
+        correlation_id=messages[0].meta.correlation_id if messages else None,
     ):
         result = _resolve_batch_result(batch_step.execute(messages), name)
         if not isinstance(result, list):
@@ -200,7 +212,14 @@ def _execute_expand_step(
     expand_step: _ExecutableExpandStep,
     message: Message[StreamPayload],
 ) -> list[Message[StreamPayload]]:
-    with _observe_node(observer, flow_name, idx, name, trace_id=message.meta.trace_id):
+    with _observe_node(
+        observer,
+        flow_name,
+        idx,
+        name,
+        trace_id=message.meta.trace_id,
+        correlation_id=message.meta.correlation_id,
+    ):
         result = _resolve_expand_result(expand_step.execute(message), name)
         if not isinstance(result, Iterable):
             raise TypeError(f"{name} must return an iterable of payloads.")
@@ -216,7 +235,12 @@ def _execute_batch_expand_step(
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
     with _observe_node(
-        observer, flow_name, idx, name, trace_id=messages[0].meta.trace_id if messages else None
+        observer,
+        flow_name,
+        idx,
+        name,
+        trace_id=messages[0].meta.trace_id if messages else None,
+        correlation_id=messages[0].meta.correlation_id if messages else None,
     ):
         result = _resolve_expand_result(batch_expand_step.execute(messages), name)
         if not isinstance(result, Iterable):

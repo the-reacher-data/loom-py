@@ -121,6 +121,7 @@ def _apply_with_async_process(
                     idx,
                     node_type,
                     trace_id=batch[0].meta.trace_id if batch else None,
+                    correlation_id=batch[0].meta.correlation_id if batch else None,
                 ),
                 _batch_dependencies(manager, worker_resources) as deps,
             ):
@@ -271,6 +272,7 @@ def _execute_with_step(
             idx,
             node_type,
             trace_id=messages[0].meta.trace_id if messages else None,
+            correlation_id=messages[0].meta.correlation_id if messages else None,
         ),
         _batch_dependencies(manager, worker_resources) as deps,
     ):

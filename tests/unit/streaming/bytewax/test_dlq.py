@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -13,6 +13,7 @@ from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import (
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
+    HEADER_PARENT_TRACE_ID,
     HEADER_TRACE_ID,
 )
 from loom.streaming.kafka._wire import DecodeError
@@ -39,12 +40,8 @@ def test_decode_str_header_handles_missing_and_present_values() -> None:
     assert _dlq._decode_str_header(headers, "missing") is None
 
 
-def test_send_batch_to_dlq_preserves_metadata_and_allocates_new_trace_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_send_batch_to_dlq_preserves_trace_lineage() -> None:
     producer = _RecordingProducer()
-    trace_ids = iter(["trace-new-1", "trace-new-2"])
-    monkeypatch.setattr(_dlq, "generate_trace_id", lambda: next(trace_ids))
 
     messages = [
         Message(
@@ -55,6 +52,7 @@ def test_send_batch_to_dlq_preserves_metadata_and_allocates_new_trace_id(
                 partition=2,
                 offset=9,
                 trace_id="trace-old-1",
+                parent_trace_id="grandparent-1",
                 correlation_id="corr-1",
                 causation_id="cause-1",
                 produced_at_ms=10,
@@ -68,6 +66,7 @@ def test_send_batch_to_dlq_preserves_metadata_and_allocates_new_trace_id(
                 partition=3,
                 offset=11,
                 trace_id="trace-old-2",
+                parent_trace_id="grandparent-2",
                 correlation_id="corr-2",
                 causation_id="cause-2",
                 produced_at_ms=20,
@@ -75,13 +74,18 @@ def test_send_batch_to_dlq_preserves_metadata_and_allocates_new_trace_id(
         ),
     ]
 
-    _dlq.send_batch_to_dlq(producer, "orders.dlq", messages, KafkaDeliveryError("broker down"))
+    _dlq.send_batch_to_dlq(
+        cast(Any, producer),
+        "orders.dlq",
+        cast(Any, messages),
+        KafkaDeliveryError("broker down"),
+    )
 
     assert [call["topic"] for call in producer.calls] == ["orders.dlq", "orders.dlq"]
-    assert producer.calls[0]["parent_trace_id"] == "trace-old-1"
-    assert producer.calls[1]["parent_trace_id"] == "trace-old-2"
-    assert producer.calls[0]["trace_id"] == "trace-new-1"
-    assert producer.calls[1]["trace_id"] == "trace-new-2"
+    assert producer.calls[0]["parent_trace_id"] == "grandparent-1"
+    assert producer.calls[1]["parent_trace_id"] == "grandparent-2"
+    assert producer.calls[0]["trace_id"] == "trace-old-1"
+    assert producer.calls[1]["trace_id"] == "trace-old-2"
     assert producer.calls[0]["headers"]["x-dlq-error"] == b"broker down"
 
 
@@ -93,23 +97,22 @@ def test_send_batch_to_dlq_swallows_per_item_errors(
     monkeypatch.setattr(_dlq.logger, "warning", lambda *args, **kwargs: warnings.append(kwargs))
 
     _dlq.send_batch_to_dlq(
-        producer,
+        cast(Any, producer),
         "orders.dlq",
-        [
-            build_message(Order(order_id="a")),
-        ],
+        cast(
+            Any,
+            [
+                build_message(Order(order_id="a")),
+            ],
+        ),
         KafkaDeliveryError("broker down"),
     )
 
     assert warnings and warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
 
 
-def test_send_error_batch_to_dlq_handles_original_and_missing_messages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_send_error_batch_to_dlq_handles_original_and_missing_messages() -> None:
     producer = _RecordingProducer()
-    trace_ids = iter(["trace-new-1", "trace-new-2"])
-    monkeypatch.setattr(_dlq, "generate_trace_id", lambda: next(trace_ids))
 
     original = Message(
         payload=Order(order_id="a"),
@@ -127,7 +130,7 @@ def test_send_error_batch_to_dlq_handles_original_and_missing_messages(
             key=b"tenant-a",
         ),
     )
-    with_original = ErrorEnvelope(
+    with_original: ErrorEnvelope[Order] = ErrorEnvelope(
         kind=ErrorKind.TASK,
         reason="boom",
         payload_type="order.created",
@@ -145,22 +148,25 @@ def test_send_error_batch_to_dlq_handles_original_and_missing_messages(
                 topic=original.meta.topic,
                 partition=original.meta.partition,
                 offset=original.meta.offset,
-                key=original.meta.key,
+                key=cast(bytes | None, original.meta.key),
                 headers=original.meta.headers,
             ),
         ),
     )
-    without_original = ErrorEnvelope(kind=ErrorKind.ROUTING, reason="missing route")
+    without_original: ErrorEnvelope[Order] = ErrorEnvelope(
+        kind=ErrorKind.ROUTING,
+        reason="missing route",
+    )
 
     _dlq.send_error_batch_to_dlq(
-        producer,
+        cast(Any, producer),
         "orders.dlq",
-        [with_original, without_original],
+        cast(Any, [with_original, without_original]),
         KafkaDeliveryError("broker down"),
     )
 
-    assert [call["trace_id"] for call in producer.calls] == ["trace-new-1", "trace-new-2"]
-    assert producer.calls[0]["parent_trace_id"] == "trace-old"
+    assert [call["trace_id"] for call in producer.calls] == ["trace-old", None]
+    assert producer.calls[0]["parent_trace_id"] == "parent-trace"
     assert producer.calls[0]["correlation_id"] == "corr-1"
     assert producer.calls[0]["key"] == b"tenant-a"
     assert producer.calls[0]["headers"]["x-error-kind"] == b"task"
@@ -176,23 +182,24 @@ def test_send_error_batch_to_dlq_swallows_per_item_errors(
     warnings: list[dict[str, Any]] = []
     monkeypatch.setattr(_dlq.logger, "warning", lambda *args, **kwargs: warnings.append(kwargs))
 
-    envelope = ErrorEnvelope(kind=ErrorKind.TASK, reason="boom", payload_type="order.created")
+    envelope: ErrorEnvelope[Order] = ErrorEnvelope(
+        kind=ErrorKind.TASK,
+        reason="boom",
+        payload_type="order.created",
+    )
 
     _dlq.send_error_batch_to_dlq(
-        producer,
+        cast(Any, producer),
         "orders.dlq",
-        [envelope],
+        cast(Any, [envelope]),
         KafkaDeliveryError("broker down"),
     )
 
     assert warnings and warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
 
 
-def test_send_decode_error_batch_to_dlq_uses_original_headers_and_new_trace_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_send_decode_error_batch_to_dlq_uses_original_headers_and_trace_id() -> None:
     producer = _RecordingProducer()
-    monkeypatch.setattr(_dlq, "generate_trace_id", lambda: "trace-new")
 
     decode_error = DecodeError(
         error=ErrorEnvelope(kind=ErrorKind.WIRE, reason="bad wire"),
@@ -202,6 +209,7 @@ def test_send_decode_error_batch_to_dlq_uses_original_headers_and_new_trace_id(
         headers={
             HEADER_CORRELATION_ID: b"corr-1",
             HEADER_TRACE_ID: b"trace-old",
+            HEADER_PARENT_TRACE_ID: b"parent-trace",
             HEADER_CAUSATION_ID: b"cause-1",
         },
         partition=2,
@@ -210,16 +218,16 @@ def test_send_decode_error_batch_to_dlq_uses_original_headers_and_new_trace_id(
     )
 
     _dlq.send_decode_error_batch_to_dlq(
-        producer,
+        cast(Any, producer),
         "orders.dlq",
-        [decode_error],
+        cast(Any, [decode_error]),
         KafkaDeliveryError("broker down"),
     )
 
     assert len(producer.calls) == 1
     call = producer.calls[0]
-    assert call["trace_id"] == "trace-new"
-    assert call["parent_trace_id"] == "trace-old"
+    assert call["trace_id"] == "trace-old"
+    assert call["parent_trace_id"] == "parent-trace"
     assert call["correlation_id"] == "corr-1"
     assert call["causation_id"] == "cause-1"
     assert call["headers"]["x-error-kind"] == b"wire"
@@ -242,9 +250,9 @@ def test_send_decode_error_batch_to_dlq_swallows_per_item_errors(
     )
 
     _dlq.send_decode_error_batch_to_dlq(
-        producer,
+        cast(Any, producer),
         "orders.dlq",
-        [decode_error],
+        cast(Any, [decode_error]),
         KafkaDeliveryError("broker down"),
     )
 

@@ -99,7 +99,11 @@ def test_apply_record_step_emits_trace_id_from_message(
         return fn(
             Message(
                 payload=Order(order_id="ab"),
-                meta=MessageMeta(message_id="test-1", trace_id="trace-step"),
+                meta=MessageMeta(
+                    message_id="test-1",
+                    trace_id="trace-step",
+                    correlation_id="corr-step",
+                ),
             )
         )
 
@@ -110,7 +114,9 @@ def test_apply_record_step_emits_trace_id_from_message(
 
     assert result.payload.value == "AB"
     assert events[0].trace_id == "trace-step"
+    assert events[0].correlation_id == "corr-step"
     assert events[1].trace_id == "trace-step"
+    assert events[1].correlation_id == "corr-step"
 
 
 def test_apply_batch_step_executes_and_splits(
