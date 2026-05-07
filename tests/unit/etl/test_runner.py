@@ -201,6 +201,78 @@ class TestRunnerRun:
         with pytest.raises(InvalidStageError):
             runner_factory().run(PipelineAll, params, include=["DoesNotExist"])
 
+    def test_runner_run_flushes_prometheus_observers_after_success(
+        self,
+        params: P,
+    ) -> None:
+        from loom.core.observability.event import LifecycleEvent
+
+        class _PrometheusSpy:
+            def __init__(self) -> None:
+                self.events: list[LifecycleEvent] = []
+                self.flush_count = 0
+
+            def on_event(self, event: LifecycleEvent) -> None:
+                self.events.append(event)
+
+            def flush(self) -> None:
+                self.flush_count += 1
+
+        spy = _PrometheusSpy()
+        runner = ETLRunner(
+            StubSourceReader({"raw.orders": object()}),
+            StubTargetWriter(),
+            observability=ObservabilityRuntime([spy]),
+        )
+
+        runner.run(PipelineAll, params)
+
+        assert spy.flush_count == 1
+        assert any(event.scope.name == "PIPELINE" for event in spy.events)
+
+    def test_runner_run_flushes_prometheus_observers_after_failure(
+        self,
+        params: P,
+    ) -> None:
+        from loom.core.observability.event import LifecycleEvent
+
+        class _PrometheusSpy:
+            def __init__(self) -> None:
+                self.events: list[LifecycleEvent] = []
+                self.flush_count = 0
+
+            def on_event(self, event: LifecycleEvent) -> None:
+                self.events.append(event)
+
+            def flush(self) -> None:
+                self.flush_count += 1
+
+        class FailingStep(ETLStep[P]):
+            orders = FromTable("raw.orders")
+            target = IntoTable("staging.fail").replace()
+
+            def execute(self, params: P, *, orders: Any) -> Any:  # type: ignore[override]
+                raise RuntimeError("boom")
+
+        class FailingProcess(ETLProcess[P]):
+            steps = [FailingStep]
+
+        class FailingPipeline(ETLPipeline[P]):
+            processes = [FailingProcess]
+
+        spy = _PrometheusSpy()
+        runner = ETLRunner(
+            StubSourceReader({"raw.orders": object()}),
+            StubTargetWriter(),
+            observability=ObservabilityRuntime([spy]),
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.run(FailingPipeline, params)
+
+        assert spy.flush_count == 1
+        assert any(event.scope.name == "PIPELINE" for event in spy.events)
+
 
 class TestRunnerFromConfig:
     def test_from_config_spark_engine_without_spark_raises(self) -> None:
