@@ -23,7 +23,7 @@ InT = TypeVar("InT", bound=StreamPayload)
 OutT = TypeVar("OutT", bound=StreamPayload)
 
 
-class BroadcastRoute(LoomFrozenStruct, Generic[OutT], frozen=True):
+class BroadcastRoute(LoomFrozenStruct, Generic[InT, OutT], frozen=True):
     """One branch of a :class:`Broadcast` node.
 
     Pattern:
@@ -44,7 +44,7 @@ class BroadcastRoute(LoomFrozenStruct, Generic[OutT], frozen=True):
         )
     """
 
-    process: Process[StreamPayload, OutT]
+    process: Process[InT, OutT]
     output: IntoTopic[OutT] | None = None
 
 
@@ -83,13 +83,13 @@ class Broadcast(Generic[InT]):
 
     __slots__ = ("_routes",)
 
-    def __init__(self, *routes: BroadcastRoute[Any]) -> None:
+    def __init__(self, *routes: BroadcastRoute[InT, Any]) -> None:
         if not routes:
             raise ValueError("Broadcast requires at least one route.")
         self._routes = routes
 
     @property
-    def routes(self) -> tuple[BroadcastRoute[Any], ...]:
+    def routes(self) -> tuple[BroadcastRoute[InT, Any], ...]:
         """Ordered fan-out branches."""
         return self._routes
 

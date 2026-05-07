@@ -18,13 +18,6 @@ NodeResult: TypeAlias = Message[StreamPayload] | ErrorEnvelope[StreamPayload]
 logger = get_logger(__name__)
 
 
-class _ErrorWireOutputs(Protocol):
-    """Wire node error branches to configured sinks."""
-
-    def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
-        """Wire one error branch to an output sink."""
-
-
 class _ErrorSplitContext(Protocol):
     """Context carrying error-output wiring for node boundaries."""
 
