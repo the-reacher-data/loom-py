@@ -277,7 +277,7 @@ class TestPrometheusLifecycleAdapter:
         )
 
         assert registry.get_sample_value(
-            "loom_lifecycle_duration_seconds_count",
+            "lifecycle_duration_seconds_count",
             {"scope": "use_case", "name": "CreateOrder"},
         ) == pytest.approx(1.0)
 
@@ -292,7 +292,7 @@ class TestPrometheusLifecycleAdapter:
         adapter.on_event(LifecycleEvent(scope=Scope.NODE, name="transform", kind=EventKind.ERROR))
 
         assert registry.get_sample_value(
-            "loom_lifecycle_errors_total",
+            "lifecycle_errors_total",
             {"scope": "node", "name": "transform"},
         ) == pytest.approx(1.0)
 

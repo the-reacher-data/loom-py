@@ -19,13 +19,13 @@ def _create_instruments(
 
     reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
     duration: Histogram = Histogram(
-        "loom_lifecycle_duration_seconds",
+        "lifecycle_duration_seconds",
         "Lifecycle span wall-clock duration in seconds.",
         ["scope", "name"],
         **reg,
     )
     errors: Counter = Counter(
-        "loom_lifecycle_errors_total",
+        "lifecycle_errors_total",
         "Total lifecycle span errors by scope and name.",
         ["scope", "name"],
         **reg,
@@ -49,9 +49,9 @@ class PrometheusLifecycleAdapter:
 
     Instruments:
 
-    - ``loom_lifecycle_duration_seconds`` — Histogram, labels: ``scope``, ``name``.
+    - ``lifecycle_duration_seconds`` — Histogram, labels: ``scope``, ``name``.
       Observed on ``END`` events when ``duration_ms`` is present.
-    - ``loom_lifecycle_errors_total`` — Counter, labels: ``scope``, ``name``.
+    - ``lifecycle_errors_total`` — Counter, labels: ``scope``, ``name``.
       Incremented on ``ERROR`` events.
 
     For long-running services (streaming, REST), metrics are served at ``/metrics``
