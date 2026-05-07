@@ -117,9 +117,7 @@ _FILTER_OP_VALUES = frozenset(item.value for item in FilterOp)
 
 
 def _camel_to_snake(value: str) -> str:
-    # Pass 1: lowercase/digit → uppercase boundary (camelCase → camel_Case)
     s = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", value)
-    # Pass 2: acronym boundary before a capitalised word (XMLParser → XML_Parser)
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
     return s.lower()
 

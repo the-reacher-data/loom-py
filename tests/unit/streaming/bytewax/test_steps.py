@@ -113,6 +113,7 @@ def test_apply_record_step_emits_trace_id_from_message(
     result = _steps._apply_record_step("input-stream", _RecordStep(), 3, ctx)
 
     assert result.payload.value == "AB"
+    assert len(events) >= 2, f"Expected >= 2 lifecycle events, got {len(events)}"
     assert events[0].trace_id == "trace-step"
     assert events[0].correlation_id == "corr-step"
     assert events[1].trace_id == "trace-step"

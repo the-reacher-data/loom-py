@@ -156,6 +156,7 @@ class TestKafkaProducerClient:
         assert fake is not None
         fake.produced[0]["on_delivery"](None, None)
 
+        assert events, "Expected at least one lifecycle event"
         assert events[-1].trace_id == "trace-1"
         assert events[-1].correlation_id == "corr-1"
 
@@ -257,6 +258,7 @@ class TestKafkaConsumerClient:
         record = consumer.poll(100)
 
         assert record is not None
+        assert events, "Expected at least one lifecycle event"
         assert events[-1].trace_id == "trace-1"
         assert events[-1].correlation_id == "corr-1"
 

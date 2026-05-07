@@ -210,6 +210,7 @@ class TestKafkaMessageProducer:
             correlation_id="corr-1",
         )
 
+        assert events, "Expected at least one lifecycle event"
         assert events[-1].trace_id == "trace-1"
         assert events[-1].correlation_id == "corr-1"
 
