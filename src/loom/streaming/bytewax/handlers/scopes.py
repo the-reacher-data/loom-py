@@ -115,7 +115,13 @@ def _apply_with_async_process(
         batch = _messages_from_batch(msg) if isinstance(msg, list) else [_require_message(msg)]
         try:
             with (
-                _observe_node(observer, flow_name, idx, node_type),
+                _observe_node(
+                    observer,
+                    flow_name,
+                    idx,
+                    node_type,
+                    trace_id=batch[0].meta.trace_id if batch else None,
+                ),
                 _batch_dependencies(manager, worker_resources) as deps,
             ):
                 results = bridge.run(
@@ -259,7 +265,13 @@ def _execute_with_step(
 ) -> list[Message[StreamPayload]]:
     del tracker
     with (
-        _observe_node(observer, flow_name, idx, node_type),
+        _observe_node(
+            observer,
+            flow_name,
+            idx,
+            node_type,
+            trace_id=messages[0].meta.trace_id if messages else None,
+        ),
         _batch_dependencies(manager, worker_resources) as deps,
     ):
         current_messages = messages

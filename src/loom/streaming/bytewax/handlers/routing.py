@@ -60,7 +60,7 @@ def _execute_router_step(
     router: Router[Any, Any],
     message: Any,
 ) -> Any:
-    with _observe_node(observer, flow_name, idx, "Router"):
+    with _observe_node(observer, flow_name, idx, "Router", trace_id=message.meta.trace_id):
         return _execute_router(router, message)
 
 

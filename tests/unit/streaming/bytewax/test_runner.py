@@ -9,7 +9,9 @@ import uvloop
 from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
+from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.observer.otel import OtelLifecycleObserver
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import StreamFlow
 from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
@@ -22,6 +24,47 @@ pytestmark = pytest.mark.bytewax
 
 
 class TestStreamingRunner:
+    def test_run_generates_a_poll_cycle_trace_id(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        runtime = ObservabilityRuntime([_RecordingObserver()])
+        runner = StreamingRunner.from_dict(
+            bytewax_stream_flow,
+            bytewax_runtime_config_dict,
+            observability_runtime=runtime,
+        )
+        dataflow = Dataflow("test")
+
+        def _fake_prepare() -> object:
+            def shutdown() -> None:
+                return None
+
+            return SimpleNamespace(
+                dataflow=dataflow,
+                shutdown=shutdown,
+            )
+
+        monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
+        monkeypatch.setattr(
+            "loom.streaming.bytewax.runner.cli_main", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr("loom.streaming.bytewax.runner.generate_trace_id", lambda: "poll-trace")
+
+        runner.run()
+
+        assert [event.kind for event in events[:2]] == [EventKind.START, EventKind.END]
+        assert events[0].trace_id == "poll-trace"
+        assert events[1].trace_id == "poll-trace"
+
     def test_run_uses_bytewax_cli_main_with_runtime_config(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],

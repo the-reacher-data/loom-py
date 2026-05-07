@@ -8,10 +8,11 @@ from typing import Any
 
 import pytest
 
+from loom.core.observability.event import LifecycleEvent
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax.handlers import steps as _steps
 from loom.streaming.core._exceptions import UnsupportedNodeError
-from loom.streaming.core._message import Message
+from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from tests.unit.streaming.bytewax.cases import Order, Result, build_message
 
@@ -75,6 +76,41 @@ def test_apply_record_step_executes_and_splits(
     assert isinstance(recorded["result"], Message)
     assert recorded["result"].payload.value == "AB"
     assert result.payload.value == "AB"
+
+
+def test_apply_record_step_emits_trace_id_from_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[LifecycleEvent] = []
+
+    class _RecordingObserver:
+        def on_event(self, event: LifecycleEvent) -> None:
+            events.append(event)
+
+    runtime = ObservabilityRuntime([_RecordingObserver()])
+    ctx = SimpleNamespace(
+        plan=SimpleNamespace(name="orders"),
+        current_path=(1, 2),
+        flow_runtime=runtime,
+    )
+
+    def _bw_map(step_id: str, stream: object, fn: Any) -> object:
+        del step_id, stream
+        return fn(
+            Message(
+                payload=Order(order_id="ab"),
+                meta=MessageMeta(message_id="test-1", trace_id="trace-step"),
+            )
+        )
+
+    monkeypatch.setattr(_steps, "bw_map", _bw_map)
+    monkeypatch.setattr(_steps, "_split_node_result", lambda stream, *_: stream)
+
+    result = _steps._apply_record_step("input-stream", _RecordStep(), 3, ctx)
+
+    assert result.payload.value == "AB"
+    assert events[0].trace_id == "trace-step"
+    assert events[1].trace_id == "trace-step"
 
 
 def test_apply_batch_step_executes_and_splits(

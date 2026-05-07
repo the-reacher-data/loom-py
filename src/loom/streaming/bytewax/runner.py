@@ -23,6 +23,7 @@ from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
     build_commit_tracker,
@@ -196,10 +197,12 @@ class StreamingRunner:
         """
 
         resolved_runtime = runtime or self._runtime
+        run_trace_id = generate_trace_id()
         self._observability_runtime.emit(
             LifecycleEvent.start(
                 scope=Scope.POLL_CYCLE,
                 name=self._plan.name,
+                trace_id=run_trace_id,
                 meta={"node_count": len(self._plan.nodes)},
             )
         )
@@ -218,6 +221,7 @@ class StreamingRunner:
                 LifecycleEvent.end(
                     scope=Scope.POLL_CYCLE,
                     name=self._plan.name,
+                    trace_id=run_trace_id,
                     duration_ms=duration_ms,
                     status=status,
                 )

@@ -28,6 +28,7 @@ from omegaconf import DictConfig, OmegaConf
 from loom.core.config import load_config
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.tracing import generate_trace_id
 from loom.streaming import Message, MessageMeta
 from loom.streaming.bytewax.runner import _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
@@ -167,10 +168,12 @@ class StreamingTestRunner:
             terminal_sinks=terminal_sinks,
             error_sinks=error_sinks,
         )
+        run_trace_id = generate_trace_id()
         self._observability_runtime.emit(
             LifecycleEvent.start(
                 scope=Scope.POLL_CYCLE,
                 name=self._plan.name,
+                trace_id=run_trace_id,
                 meta={"node_count": len(self._plan.nodes)},
             )
         )
@@ -191,6 +194,7 @@ class StreamingTestRunner:
                 LifecycleEvent.end(
                     scope=Scope.POLL_CYCLE,
                     name=self._plan.name,
+                    trace_id=run_trace_id,
                     duration_ms=duration_ms,
                     status=status,
                 )

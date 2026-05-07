@@ -58,6 +58,20 @@ class TestMessageEnvelope:
         assert message.meta.trace_id == "trace-explicit"
         assert message.payload.order_id == "o-2"
 
+    def test_build_message_generates_trace_when_context_is_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        order_created_descriptor_v1: MessageDescriptor,
+    ) -> None:
+        monkeypatch.setattr("loom.streaming.kafka._message.generate_trace_id", lambda: "trace-new")
+
+        message = build_message(
+            OrderCreated(order_id="o-3", amount=9),
+            order_created_descriptor_v1,
+        )
+
+        assert message.meta.trace_id == "trace-new"
+
 
 class TestMsgspecCodec:
     def test_roundtrip_message_envelope(

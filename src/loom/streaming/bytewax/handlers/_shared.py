@@ -182,6 +182,7 @@ def _observe_node(
     flow_name: str,
     idx: int,
     node_type: str,
+    trace_id: str | None = None,
 ) -> Iterator[None]:
     """Emit observability events around one node execution."""
     observer.emit(
@@ -189,6 +190,7 @@ def _observe_node(
             scope=Scope.NODE,
             name=f"{flow_name}:{idx}",
             kind=EventKind.START,
+            trace_id=trace_id,
             meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
         )
     )
@@ -209,6 +211,7 @@ def _observe_node(
                 scope=Scope.NODE,
                 name=f"{flow_name}:{idx}",
                 kind=EventKind.ERROR,
+                trace_id=trace_id,
                 error=repr(exc),
                 meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
             )
@@ -223,6 +226,7 @@ def _observe_node(
                     scope=Scope.NODE,
                     name=f"{flow_name}:{idx}",
                     kind=EventKind.END,
+                    trace_id=trace_id,
                     duration_ms=elapsed,
                     status=LifecycleStatus.SUCCESS,
                     meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},

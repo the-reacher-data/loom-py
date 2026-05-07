@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 import msgspec
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.core.tracing import get_trace_id
+from loom.core.tracing import generate_trace_id, get_trace_id
 
 PayloadT = TypeVar("PayloadT", bound=LoomStruct | LoomFrozenStruct)
 
@@ -128,7 +128,9 @@ def build_message(
     """Build the standard Kafka message envelope.
 
     The caller usually provides only the payload and descriptor. Trace context
-    is taken from the active Loom tracing context when not supplied.
+    is taken from the active Loom tracing context when not supplied; when
+    none is active, a fresh trace identifier is generated so the envelope
+    still participates in lineage.
 
     Args:
         payload: Typed message payload.
@@ -144,6 +146,8 @@ def build_message(
     """
 
     active_trace_id = trace_id if trace_id is not None else get_trace_id()
+    if active_trace_id is None:
+        active_trace_id = generate_trace_id()
     timestamp_ms = produced_at_ms if produced_at_ms is not None else int(time.time() * 1000)
     return MessageEnvelope(
         meta=MessageMetadata(
