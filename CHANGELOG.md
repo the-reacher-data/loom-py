@@ -1,3 +1,121 @@
+# 🚀 Release 0.6.0 ([#22](https://github.com/the-reacher-data/loom-py/pull/22)) ([`5146569`](https://github.com/the-reacher-data/loom-py/commit/51465697115036ed05f620a1099272e4fd216501))
+
+
+## ✨ Features
+### core
+- **core:** add unified ObservabilityRuntime<br>
+  > Introduces the core observability package: LifecycleEvent, LifecycleObserver
+  > protocol, ObservabilityConfig, and ObservabilityRuntime as a single fan-out
+  > engine replacing the fragmented per-module observer wiring. Adds
+  > StructlogLifecycleObserver, OtelLifecycleObserver, NoopObserver, and
+  > PrometheusLifecycleAdapter (with Pushgateway support for ETL batch jobs).
+  > Backward-compat re-exports (safe_observe, notify_observers) kept for the
+  > streaming composite observer until the legacy cleanup commit.
+
+
+
+## 🐛 Fixes
+### observability
+- **observability:** restore default bootstraps
+
+### rest
+- **rest:** correct camel-to-snake conversion for acronyms in filter fields
+
+### streaming
+- **streaming:** propagate trace ids through bytewax paths
+- **streaming:** keep input trace ids through the micro
+- **streaming:** bridge otel trace ids from messages
+
+
+## 📖 Documentation
+- align yaml config and dummy repo links
+- restore dummy repo urls
+- fix markdown links for streaming dummies
+
+### prometheus
+- **prometheus:** update KafkaPrometheusMetrics docstring metric names
+
+
+
+## ♻️ Refactor
+### observability
+- **observability:** simplify otel log correlation
+- **observability:** simplify otel exporter imports
+- **observability:** expose ObservabilityRuntime in public API and clean architecture debt<br>
+  > Export ObservabilityRuntime and LifecycleStatus from loom.core.observability package
+  > Compute dict(meta) once in span() instead of three separate allocations
+  > Replace _SIGNALS_CONNECTED module-level global with ClassVar on _CeleryAsyncRuntime
+  > Add RuntimeError to bootstrap_worker Raises docstring
+  > Fix TraceIdMiddleware docstring example (removed spurious ObservabilityRuntime reference)
+  > Add missing observability_runtime param to _make_handler docstring
+
+- **observability:** unify runtime across services
+- **observability:** clean up dead code and docs
+
+### streaming
+- **streaming:** migrate to unified ObservabilityRuntime<br>
+  > Replace StreamingObservabilityConfig and the manual observer construction
+  > in _load_observability_runtime() with ObservabilityRuntime.from_config().
+  > Observability config now lives under streaming.runtime.observability in YAML,
+  > eliminating the separate streaming.observability section.
+  > Delete src/loom/streaming/_observability.py (StreamingObservabilityConfig)
+  > Delete src/loom/streaming/observability/ directory (old observer stack)
+  > Add observability: ObservabilityConfig field to BytewaxRuntimeConfig
+  > StreamingRunner.from_config() calls ObservabilityRuntime.from_config() directly
+  > StreamingTestRunner defaults to ObservabilityRuntime.noop(); callers pass
+  > observability_runtime= explicitly when needed
+  > Update tests to use new config shape and ObservabilityRuntime([observer])
+
+- **streaming:** replace KafkaStreamingObserver with LifecycleEvent/TRANSPORT<br>
+  > Eliminates the parallel KafkaStreamingObserver protocol hierarchy (NoopKafkaObserver,
+  > StructlogKafkaObserver) and models all Kafka transport events as LifecycleEvent with
+  > Scope.TRANSPORT. KafkaPrometheusMetrics now implements the LifecycleObserver protocol
+  > via a single on_event() dispatcher instead of four typed callback methods.
+
+- **streaming:** preserve trace lineage across boundaries
+
+### prometheus
+- **prometheus:** add KafkaMetricName enum and drop loom_ prefix<br>
+  > Extracts Prometheus metric names into a public KafkaMetricName StrEnum so
+  > callers can reference metric names without magic strings. Removes the loom_
+  > namespace prefix from all four Kafka instruments (produced_total,
+  > consumed_total, encode_duration_seconds, decode_duration_seconds).
+
+- **prometheus:** drop loom prefix from lifecycle metrics
+
+### rest
+- **rest:** use core observability runtime
+- **rest:** read prometheus from observability config
+
+### celery
+- **celery:** adopt async bridge and runtime config
+
+### etl
+- **etl:** make spark pytest plugin opt-in
+
+
+
+## ✅ Tests
+### kafka
+- **kafka:** update metric name assertions after loom_ prefix removal
+
+### observability
+- **observability:** cover lineage and runtime branches
+
+### integration
+- **integration:** add in-memory REST, observability, and bootstrap integration tests
+
+### etl
+- **etl:** cover prometheus flush on runner shutdown
+
+
+## 🛠 Chores
+### deps
+- **deps:** bump click to 8.3.3
+
+
+
+
 # 🚀 Release 0.5.0 ([#20](https://github.com/the-reacher-data/loom-py/pull/20)) ([`70f7cf8`](https://github.com/the-reacher-data/loom-py/commit/70f7cf85275fcc1f590e06f980dfac91cad50893))
 
 
