@@ -1,6 +1,6 @@
 [project]
 name = "loom-kernel"
-version = "0.5.0"
+version = "0.6.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -220,7 +220,7 @@ markers = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.5.0"
+version = "0.6.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:project.version",
