@@ -47,17 +47,10 @@ from loom.streaming.kafka.client._protocol import KafkaConsumer, KafkaProducer
 from loom.streaming.kafka.message._consumer import KafkaMessageConsumer
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
 from loom.streaming.kafka.message._protocol import MessageConsumer, MessageProducer
-from loom.streaming.observability.observers import (
-    CompositeKafkaObserver,
-    KafkaStreamingObserver,
-    NoopKafkaObserver,
-    StructlogKafkaObserver,
-)
 
 __all__ = [
     "ContentType",
     "ConsumerSettings",
-    "CompositeKafkaObserver",
     "DecodeError",
     "DecodeOk",
     "DecodeResult",
@@ -83,21 +76,18 @@ __all__ = [
     "KafkaSecuritySettings",
     "KafkaSettings",
     "KafkaSerializationError",
-    "KafkaStreamingObserver",
     "MessageConsumer",
     "MessageDescriptor",
     "MessageEnvelope",
     "MessageMetadata",
     "MessageProducer",
     "MsgspecCodec",
-    "NoopKafkaObserver",
     "PartitionKeyResolver",
     "PreserveKey",
     "ProducerSettings",
     "resolve_consumer_topics",
     "resolve_producer_topic",
     "SchemaRef",
-    "StructlogKafkaObserver",
     "build_message",
     "envelope_to_message",
     "load_kafka_settings",

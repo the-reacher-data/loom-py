@@ -46,7 +46,7 @@ def _fresh_runner_cls() -> type[ETLRunner]:
     return ETLRunner
 
 
-class RunParams(ETLParams):
+class RunParams(ETLParams, frozen=True):
     run_date: date
 
 
@@ -117,7 +117,7 @@ def test_runner_from_dict_executes_end_to_end_pipeline(tmp_path: Path) -> None:
 
     runner = _fresh_runner_cls().from_dict(
         storage={"defaults": {"table_path": {"uri": str(root)}}},
-        observability={"log": False},
+        observability={"log": {"enabled": False}},
     )
     runner.run(DailyPipeline, RunParams(run_date=date(2024, 1, 5)))
 
@@ -144,12 +144,13 @@ storage:
     table_path:
       uri: {root}
 observability:
-  log: false
+  log:
+    enabled: false
 """.strip(),
         encoding="utf-8",
     )
 
-    runner = _fresh_runner_cls().from_yaml(config_path)
+    runner = _fresh_runner_cls().from_yaml(str(config_path))
     runner.run(IncludePipeline, RunParams(run_date=date(2024, 1, 5)), include=["CopyOrdersStep"])
 
     orders_target = _table_path(root, "staging.orders_only")
@@ -226,7 +227,7 @@ def test_runner_handles_json_string_source_and_final_csv_reporting(tmp_path: Pat
 
     runner = _fresh_runner_cls().from_dict(
         storage={"defaults": {"table_path": {"uri": str(root)}}},
-        observability={"log": False},
+        observability={"log": {"enabled": False}},
     )
     runner.run(ReportingPipeline, RunParams(run_date=date(2024, 1, 5)))
 

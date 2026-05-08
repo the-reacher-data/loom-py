@@ -6,6 +6,8 @@ import pytest
 from confluent_kafka import TopicPartition
 from prometheus_client import CollectorRegistry, generate_latest
 
+from loom.core.observability.event import LifecycleEvent
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus import KafkaPrometheusMetrics
 from loom.streaming.kafka import (
     ConsumerSettings,
@@ -111,7 +113,7 @@ class TestKafkaProducerClient:
         installer = install_raw_producer_stub(monkeypatch)
         producer = KafkaProducerClient(
             ProducerSettings(brokers=("k1:9092",)),
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         producer.send(KafkaRecord(topic="orders", key=b"k", value=b"payload"))
@@ -121,7 +123,42 @@ class TestKafkaProducerClient:
         producer.flush()
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_produced_total" in text
+        assert "streaming_kafka_produced_total" in text
+
+    def test_raw_producer_transport_event_carries_header_trace_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_producer_stub(monkeypatch)
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        producer = KafkaProducerClient(
+            ProducerSettings(brokers=("k1:9092",)),
+            obs=ObservabilityRuntime([_RecordingObserver()]),
+        )
+
+        producer.send(
+            KafkaRecord(
+                topic="orders",
+                key=b"k",
+                value=b"payload",
+                headers={
+                    "x-trace-id": b"trace-1",
+                    "x-correlation-id": b"corr-1",
+                },
+            )
+        )
+        fake = installer.stub
+        assert fake is not None
+        fake.produced[0]["on_delivery"](None, None)
+
+        assert events, "Expected at least one lifecycle event"
+        assert events[-1].trace_id == "trace-1"
+        assert events[-1].correlation_id == "corr-1"
 
     def test_raw_producer_context_manager_closes_on_exit(
         self,
@@ -193,6 +230,37 @@ class TestKafkaConsumerClient:
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
         assert consumer.poll(100) is None
+
+    def test_raw_consumer_transport_event_carries_header_trace_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        fake.next_message = FakeKafkaMessage(
+            headers=[
+                ("x-trace-id", b"trace-1"),
+                ("x-correlation-id", b"corr-1"),
+            ]
+        )
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+            obs=ObservabilityRuntime([_RecordingObserver()]),
+        )
+
+        record = consumer.poll(100)
+
+        assert record is not None
+        assert events, "Expected at least one lifecycle event"
+        assert events[-1].trace_id == "trace-1"
+        assert events[-1].correlation_id == "corr-1"
 
     def test_raw_consumer_raises_on_kafka_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         installer = install_raw_consumer_stub(monkeypatch)
@@ -292,13 +360,13 @@ class TestKafkaConsumerClient:
         fake.next_message = FakeKafkaMessage(value=b"data")
         consumer = KafkaConsumerClient(
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
-            observer=kafka_metrics,
+            obs=ObservabilityRuntime([kafka_metrics]),
         )
 
         consumer.poll(100)
 
         text = generate_latest(kafka_registry).decode()
-        assert "loom_streaming_kafka_consumed_total" in text
+        assert "streaming_kafka_consumed_total" in text
 
     def test_raw_consumer_context_manager_closes_on_exit(
         self,

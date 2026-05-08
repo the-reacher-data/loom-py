@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
-import yaml
+import yaml  # type: ignore[import-untyped]
 from celery import Celery  # type: ignore[import-untyped]
 
 import loom.celery.bootstrap as boot
@@ -17,6 +16,8 @@ import loom.celery.runner as _runner
 from loom.celery.bootstrap import WorkerBootstrapResult, bootstrap_worker
 from loom.celery.constants import TASK_JOB_PREFIX
 from loom.core.job.job import Job
+from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.runtime import ObservabilityRuntime
 
 # ---------------------------------------------------------------------------
 # Jobs used in tests
@@ -32,7 +33,7 @@ class _DoubleSyncJob(Job[int]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self, value: int = 0) -> int:  # type: ignore[override]
+    def execute(self, value: int = 0) -> int:
         return value * 2
 
 
@@ -45,7 +46,7 @@ class _UpperJob(Job[str]):
     __timeout__ = None
     __priority__ = 0
 
-    def execute(self, text: str = "") -> str:  # type: ignore[override]
+    def execute(self, text: str = "") -> str:
         return text.upper()
 
 
@@ -70,20 +71,6 @@ def worker_config(tmp_path: Path) -> str:
     return str(config_file)
 
 
-@pytest.fixture(autouse=True)
-def mock_worker_loop() -> Any:
-    """Replace WorkerEventLoop.run() with asyncio.run() for test isolation.
-
-    Integration tests verify bootstrap and task execution pipelines; the
-    WorkerEventLoop itself is covered by dedicated unit tests in
-    ``test_event_loop.py``.  Running the real loop in integration tests
-    adds thread lifecycle complexity without additional coverage benefit.
-    """
-    with patch("loom.celery.runner.WorkerEventLoop") as mock_loop:
-        mock_loop.run = lambda coro, timeout=None: asyncio.run(coro)
-        yield mock_loop
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -105,7 +92,10 @@ class TestBootstrapWorkerResult:
     def test_result_is_frozen(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-            result.container = None  # type: ignore[misc]
+            from typing import Any as _Any
+
+            cast_result: _Any = result
+            cast_result.container = None
 
     def test_job_task_registered(self, worker_config: str) -> None:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
@@ -121,6 +111,41 @@ class TestBootstrapWorkerResult:
         result = bootstrap_worker(worker_config, jobs=[_DoubleSyncJob])
         assert result.celery_app.conf.task_serializer == "json"
         assert result.celery_app.conf.result_serializer == "json"
+
+    def test_bootstrap_worker_uses_top_level_observability_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg: dict[str, Any] = {
+            "observability": {"log": {"enabled": False}},
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+            },
+            "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
+        }
+        config_file = tmp_path / "worker_observability.yaml"
+        config_file.write_text(yaml.dump(cfg))
+
+        captured: dict[str, Any] = {}
+        runtime = ObservabilityRuntime.noop()
+
+        def _fake_from_config(
+            cls: type[ObservabilityRuntime], config: ObservabilityConfig
+        ) -> ObservabilityRuntime:
+            captured["config"] = config
+            return runtime
+
+        boot_module = cast(Any, boot)
+        monkeypatch.setattr(
+            boot_module.ObservabilityRuntime,
+            "from_config",
+            classmethod(_fake_from_config),
+        )
+
+        result = bootstrap_worker(str(config_file), jobs=[_DoubleSyncJob])
+        assert isinstance(result, WorkerBootstrapResult)
+        assert captured["config"].log.enabled is False
 
 
 class TestBootstrapWorkerTaskExecution:
@@ -183,4 +208,4 @@ class TestBootstrapWorkerJobConfigOverride:
             )
             assert _DoubleSyncJob.__retries__ == 3
         finally:
-            _DoubleSyncJob.__retries__ = original_retries  # type: ignore[assignment]
+            _DoubleSyncJob.__retries__ = original_retries

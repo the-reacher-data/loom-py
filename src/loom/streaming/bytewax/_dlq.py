@@ -11,6 +11,7 @@ from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._message import (
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
+    HEADER_PARENT_TRACE_ID,
     HEADER_TRACE_ID,
     MessageDescriptor,
 )
@@ -56,6 +57,7 @@ def send_batch_to_dlq(
                 descriptor=descriptor,
                 headers=headers,
                 correlation_id=message.meta.correlation_id,
+                parent_trace_id=message.meta.parent_trace_id,
                 causation_id=message.meta.causation_id,
                 trace_id=message.meta.trace_id,
                 produced_at_ms=message.meta.produced_at_ms,
@@ -92,7 +94,6 @@ def send_error_batch_to_dlq(
             headers = {"x-dlq-error": error_bytes}
             correlation_id = None
             causation_id = None
-            trace_id = None
             produced_at_ms = None
             key = None
             if original is not None:
@@ -103,7 +104,6 @@ def send_error_batch_to_dlq(
                 }
                 correlation_id = original.meta.correlation_id
                 causation_id = original.meta.causation_id
-                trace_id = original.meta.trace_id
                 produced_at_ms = original.meta.produced_at_ms
                 key = original.meta.key
             producer.send(
@@ -113,8 +113,9 @@ def send_error_batch_to_dlq(
                 key=key,
                 headers=headers,
                 correlation_id=correlation_id,
+                parent_trace_id=original.meta.parent_trace_id if original is not None else None,
                 causation_id=causation_id,
-                trace_id=trace_id,
+                trace_id=original.meta.trace_id if original is not None else None,
                 produced_at_ms=produced_at_ms,
             )
         except Exception:
@@ -160,6 +161,7 @@ def send_decode_error_batch_to_dlq(
                 key=error.key,
                 headers=headers,
                 correlation_id=_decode_str_header(error.headers, HEADER_CORRELATION_ID),
+                parent_trace_id=_decode_str_header(error.headers, HEADER_PARENT_TRACE_ID),
                 causation_id=_decode_str_header(error.headers, HEADER_CAUSATION_ID),
                 trace_id=_decode_str_header(error.headers, HEADER_TRACE_ID),
                 produced_at_ms=error.timestamp_ms,

@@ -7,6 +7,7 @@ from typing import Any, cast
 from bytewax.operators import branch
 from bytewax.operators import map as bw_map
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._error_boundary import _classify_routing, _execute_in_boundary
 from loom.streaming.bytewax.handlers._shared import (
     _BuildContextProtocol,
@@ -33,7 +34,7 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
     if not isinstance(raw, Router):
         raise UnsupportedNodeError(f"Unsupported router node {type(raw).__name__}.")
     router = raw
-    observer = ctx.flow_observer
+    observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
     def step(msg: Any) -> Any:
@@ -53,13 +54,20 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
 
 
 def _execute_router_step(
-    observer: Any,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     router: Router[Any, Any],
     message: Any,
 ) -> Any:
-    with _observe_node(observer, flow_name, idx, "Router"):
+    with _observe_node(
+        observer,
+        flow_name,
+        idx,
+        "Router",
+        trace_id=message.meta.trace_id,
+        correlation_id=message.meta.correlation_id,
+    ):
         return _execute_router(router, message)
 
 
@@ -87,7 +95,7 @@ def _apply_broadcast(
             route.process.nodes,
             path_prefix=broadcast_path + (branch_idx,),
         )
-        ctx.outputs.wire_branch_terminal(
+        ctx.wire_branch_terminal(
             f"broadcast_{idx}_out_{branch_idx}",
             branch_stream,
             broadcast_path + (branch_idx,),

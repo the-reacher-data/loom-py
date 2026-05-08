@@ -79,9 +79,6 @@ celery = [
     "redis>=5.0,<6.0",
 ]
 
-[project.entry-points.pytest11]
-loom-spark = "loom.etl.testing.spark"
-
 [project.entry-points."loom.etl.backends"]
 polars = "loom.etl.backends.polars.provider:PolarsProvider"
 spark = "loom.etl.backends.spark.provider:SparkProvider"

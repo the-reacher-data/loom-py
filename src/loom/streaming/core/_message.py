@@ -22,6 +22,7 @@ class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         message_id: Stable event identifier.
         correlation_id: Optional correlation identifier.
         trace_id: Optional trace identifier.
+        parent_trace_id: Optional upstream trace identifier.
         causation_id: Optional upstream event identifier.
         produced_at_ms: Optional original producer timestamp in epoch
             milliseconds.
@@ -37,6 +38,7 @@ class MessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     message_id: str
     correlation_id: str | None = None
     trace_id: str | None = None
+    parent_trace_id: str | None = None
     causation_id: str | None = None
     produced_at_ms: int | None = None
     message_type: str | None = None

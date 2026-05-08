@@ -10,6 +10,7 @@ import msgspec
 
 from loom.core.logger import get_logger
 from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.core.tracing import generate_trace_id
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka._codec import KafkaCodec
@@ -130,7 +131,9 @@ def envelope_to_message(
 
     Returns:
         Transport-neutral streaming message with envelope metadata preserved
-        where it can influence DSL routing or user logic.
+        where it can influence DSL routing or user logic. If the envelope has
+        no trace identifier, a fresh one is generated so the message still
+        participates in lineage.
     """
 
     descriptor = envelope.meta.descriptor
@@ -139,7 +142,8 @@ def envelope_to_message(
         meta=MessageMeta(
             message_id=_message_id(record),
             correlation_id=envelope.meta.correlation_id,
-            trace_id=envelope.meta.trace_id,
+            trace_id=envelope.meta.trace_id or generate_trace_id(),
+            parent_trace_id=envelope.meta.parent_trace_id,
             causation_id=envelope.meta.causation_id,
             produced_at_ms=envelope.meta.produced_at_ms,
             message_type=descriptor.message_type,

@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 
 from loom.etl.backends.polars import PolarsTargetWriter
-from loom.etl.observability.records import (
+from loom.etl.lineage._records import (
     EventName,
     PipelineRunRecord,
     RunStatus,

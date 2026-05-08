@@ -9,19 +9,64 @@ import uvloop
 from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
+from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.core.observability.observer.otel import OtelLifecycleObserver
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import StreamFlow
 from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
     StreamingRunner,
     _build_backend_options,
 )
-from loom.streaming.observability import OtelFlowObserver
 from tests.unit.streaming.bytewax.cases import Order, Result
 
 pytestmark = pytest.mark.bytewax
 
 
 class TestStreamingRunner:
+    def test_run_generates_a_poll_cycle_id(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        runtime = ObservabilityRuntime([_RecordingObserver()])
+        runner = StreamingRunner.from_dict(
+            bytewax_stream_flow,
+            bytewax_runtime_config_dict,
+            observability_runtime=runtime,
+        )
+        dataflow = Dataflow("test")
+
+        def _fake_prepare() -> object:
+            def shutdown() -> None:
+                return None
+
+            return SimpleNamespace(
+                dataflow=dataflow,
+                shutdown=shutdown,
+            )
+
+        monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
+        monkeypatch.setattr(
+            "loom.streaming.bytewax.runner.cli_main", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr("loom.streaming.bytewax.runner.generate_trace_id", lambda: "poll-trace")
+
+        runner.run()
+
+        assert [event.kind for event in events[:2]] == [EventKind.START, EventKind.END]
+        assert events[0].id == "poll-trace"
+        assert events[1].id == "poll-trace"
+        assert events[0].trace_id is None
+        assert events[1].trace_id is None
+
     def test_run_uses_bytewax_cli_main_with_runtime_config(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
@@ -83,23 +128,26 @@ class TestStreamingRunner:
         config = dict(bytewax_runtime_config_dict)
         streaming = config["streaming"]
         assert isinstance(streaming, dict)
-        runtime = streaming["runtime"]
-        config["streaming"] = {
-            "runtime": runtime,
-            "observability": {
-                "log": False,
-                "otel": True,
-                "otel_config": {
+        runtime = dict(streaming["runtime"])
+        runtime["observability"] = {
+            "log": {"enabled": False},
+            "otel": {
+                "enabled": True,
+                "config": {
                     "service_name": "loom-streaming",
                     "tracer_name": "loom.streaming",
                     "endpoint": "",
                 },
             },
         }
+        config["streaming"] = {"runtime": runtime}
 
         runner = StreamingRunner.from_dict(bytewax_stream_flow, config)
 
-        assert isinstance(runner._observer, OtelFlowObserver)
+        assert any(
+            isinstance(obs, OtelLifecycleObserver)
+            for obs in runner._observability_runtime.observers
+        )
 
     def test_from_yaml_loads_runtime_section(
         self,

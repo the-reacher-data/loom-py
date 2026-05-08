@@ -11,13 +11,13 @@ from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from loom.core.async_bridge import AsyncBridge
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.streaming.bytewax._error_boundary import _ErrorWireOutputs
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
-from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 Stream: TypeAlias = Any
 AwaitT = TypeVar("AwaitT")
@@ -90,8 +90,13 @@ class _WithProcessNode(Protocol):
     process: Any
 
 
-class _OutputWiringProtocol(_ErrorWireOutputs, Protocol):
-    """Write node and terminal output branches during graph construction."""
+class _BuildContextProtocol(Protocol):
+    """Adapter build context required by node handlers."""
+
+    plan: CompiledPlan
+    bridge: AsyncBridge | None
+    commit_tracker: _CommitTrackerProtocol | None
+    flow_runtime: ObservabilityRuntime
 
     def wire_terminal(self, step_id: str, stream: Stream) -> None:
         """Wire one terminal output branch."""
@@ -107,16 +112,6 @@ class _OutputWiringProtocol(_ErrorWireOutputs, Protocol):
 
     def wire_decode_error(self, stream: Stream, plan: CompiledPlan) -> None:
         """Wire source decode errors."""
-
-
-class _BuildContextProtocol(Protocol):
-    """Adapter build context required by node handlers."""
-
-    plan: CompiledPlan
-    bridge: AsyncBridge | None
-    commit_tracker: _CommitTrackerProtocol | None
-    flow_observer: StreamingFlowObserver | None
-    outputs: _OutputWiringProtocol
 
     @property
     def current_path(self) -> tuple[int, ...]:
@@ -183,14 +178,24 @@ def _resolve_node_name(raw: object) -> str:
 
 @contextmanager
 def _observe_node(
-    observer: StreamingFlowObserver | None,
+    observer: ObservabilityRuntime,
     flow_name: str,
     idx: int,
     node_type: str,
+    trace_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> Iterator[None]:
     """Emit observability events around one node execution."""
-    if observer is not None:
-        observer.on_node_start(flow_name, idx, node_type=node_type)
+    observer.emit(
+        LifecycleEvent(
+            scope=Scope.NODE,
+            name=f"{flow_name}:{idx}",
+            kind=EventKind.START,
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
+        )
+    )
     t0 = time.monotonic()
     success = False
     context_tokens = bind_contextvars(
@@ -203,15 +208,33 @@ def _observe_node(
         yield
         success = True
     except Exception as exc:
-        if observer is not None:
-            observer.on_node_error(flow_name, idx, node_type=node_type, exc=exc)
+        observer.emit(
+            LifecycleEvent(
+                scope=Scope.NODE,
+                name=f"{flow_name}:{idx}",
+                kind=EventKind.ERROR,
+                trace_id=trace_id,
+                correlation_id=correlation_id,
+                error=repr(exc),
+                meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
+            )
+        )
         raise
     finally:
         reset_contextvars(**context_tokens)
-        if observer is not None and success:
+        if success:
             elapsed = int((time.monotonic() - t0) * 1000)
-            observer.on_node_end(
-                flow_name, idx, node_type=node_type, status="success", duration_ms=elapsed
+            observer.emit(
+                LifecycleEvent(
+                    scope=Scope.NODE,
+                    name=f"{flow_name}:{idx}",
+                    kind=EventKind.END,
+                    trace_id=trace_id,
+                    correlation_id=correlation_id,
+                    duration_ms=elapsed,
+                    status=LifecycleStatus.SUCCESS,
+                    meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
+                )
             )
 
 

@@ -26,11 +26,14 @@ from bytewax.outputs import Sink
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import load_config
-from loom.streaming.bytewax.runner import _load_observability_observer, _prepare_run
+from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.tracing import generate_trace_id
+from loom.streaming import Message, MessageMeta
+from loom.streaming.bytewax.runner import _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
-from loom.streaming.observability.observers.protocol import StreamingFlowObserver
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +54,10 @@ class StreamingTestRunner:
     def __init__(
         self,
         plan: CompiledPlan,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> None:
         self._plan = plan
-        self._observer = observer
+        self._observability_runtime = observability_runtime or ObservabilityRuntime.noop()
         self._input: list[Any] = []
         self._output: list[Any] = []
         self._errors: dict[ErrorKind, list[Any]] = {}
@@ -65,12 +68,11 @@ class StreamingTestRunner:
         flow: StreamFlow[Any, Any],
         *,
         runtime_config: DictConfig,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingTestRunner:
         """Compile a flow and build a test runner from resolved config."""
         plan = compile_flow(flow, runtime_config=runtime_config)
-        resolved_observer = observer or _load_observability_observer(runtime_config)
-        return cls(plan, observer=resolved_observer)
+        return cls(plan, observability_runtime=observability_runtime)
 
     @classmethod
     def from_yaml(
@@ -78,10 +80,14 @@ class StreamingTestRunner:
         flow: StreamFlow[Any, Any],
         path: str,
         *,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingTestRunner:
         """Load YAML config, compile the flow, and build a test runner."""
-        return cls.from_flow(flow, runtime_config=load_config(path), observer=observer)
+        return cls.from_flow(
+            flow,
+            runtime_config=load_config(path),
+            observability_runtime=observability_runtime,
+        )
 
     @classmethod
     def from_dict(
@@ -89,13 +95,17 @@ class StreamingTestRunner:
         flow: StreamFlow[Any, Any],
         config: dict[str, Any],
         *,
-        observer: StreamingFlowObserver | None = None,
+        observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingTestRunner:
         """Build a test runner from a plain Python config mapping."""
         runtime_config = OmegaConf.create(config)
         if not isinstance(runtime_config, DictConfig):
             raise TypeError("Streaming test config must resolve to a mapping")
-        return cls.from_flow(flow, runtime_config=runtime_config, observer=observer)
+        return cls.from_flow(
+            flow,
+            runtime_config=runtime_config,
+            observability_runtime=observability_runtime,
+        )
 
     def with_payloads(self, items: list[Any]) -> StreamingTestRunner:
         """Replace input with payload-derived test messages.
@@ -148,7 +158,7 @@ class StreamingTestRunner:
         }
         prepared = _prepare_run(
             plan=self._plan,
-            observer=self._observer,
+            observability_runtime=self._observability_runtime,
             source=bytewax_testing.TestingSource(list(self._input)),
             sink=(
                 bytewax_testing.TestingSink(self._output)
@@ -158,27 +168,37 @@ class StreamingTestRunner:
             terminal_sinks=terminal_sinks,
             error_sinks=error_sinks,
         )
-        if self._observer is not None:
-            self._observer.on_flow_start(self._plan.name, node_count=len(self._plan.nodes))
+        run_id = generate_trace_id()
+        self._observability_runtime.emit(
+            LifecycleEvent.start(
+                scope=Scope.POLL_CYCLE,
+                name=self._plan.name,
+                id=run_id,
+                meta={"node_count": len(self._plan.nodes)},
+            )
+        )
         started_at = perf_counter()
-        status = "failed"
+        status = LifecycleStatus.FAILURE
         try:
             bytewax_testing.run_main(
                 prepared.dataflow,
                 epoch_interval=timedelta(milliseconds=1),
             )  # type: ignore[no-untyped-call]
-            status = "success"
+            status = LifecycleStatus.SUCCESS
         except Exception:
-            status = "failed"
+            status = LifecycleStatus.FAILURE
             raise
         finally:
-            if self._observer is not None:
-                duration_ms = int((perf_counter() - started_at) * 1000)
-                self._observer.on_flow_end(
-                    self._plan.name,
-                    status=status,
+            duration_ms = int((perf_counter() - started_at) * 1000)
+            self._observability_runtime.emit(
+                LifecycleEvent.end(
+                    scope=Scope.POLL_CYCLE,
+                    name=self._plan.name,
+                    id=run_id,
                     duration_ms=duration_ms,
+                    status=status,
                 )
+            )
             logger.debug("shutting_down_test_runner")
             prepared.shutdown()
 
@@ -187,8 +207,6 @@ __all__ = ["StreamingTestRunner"]
 
 
 def _test_message(topic: str, idx: int, payload: Any) -> Any:
-    from loom.streaming import Message, MessageMeta
-
     return Message(
         payload=payload,
         meta=MessageMeta(

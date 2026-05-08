@@ -7,13 +7,17 @@ from typing import cast
 import pytest
 from confluent_kafka import TopicPartition
 
-from loom.streaming.bytewax import _output_wiring, _runtime_io
+from loom.core.observability.runtime import ObservabilityRuntime
+from loom.streaming.bytewax import _adapter, _runtime_io
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
+from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.kafka import MsgspecCodec
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeError
 from tests.unit.streaming.bytewax.cases import (
     Order,
+    build_compiled_plan,
     build_compiled_sink,
     build_compiled_source,
     build_order_message,
@@ -75,6 +79,7 @@ class TestRuntimeIOBuilders:
         partition = sink.build("step", 0, 1)
         assert isinstance(partition, _runtime_io._KafkaMessageSinkPartition)
         partition.write_batch([build_order_message("123", None)])
+        assert len(fake_raw.sent) >= 1
 
         error_partition = cast(
             _runtime_io._KafkaDecodeErrorSinkPartition,
@@ -111,6 +116,59 @@ class TestRuntimeIOBuilders:
             "orders.terminal",
         ]
 
+    def test_runtime_sinks_generate_child_traces_with_parent_lineage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fake_raw = RawProducerStub()
+        monkeypatch.setattr(_runtime_io, "KafkaProducerClient", lambda settings: fake_raw)
+        monkeypatch.setattr(_runtime_io, "generate_trace_id", lambda: "child-trace")
+
+        sink = _runtime_io.build_runtime_sink(build_compiled_sink(), None)
+        error_sinks = _runtime_io.build_runtime_error_sinks(
+            {ErrorKind.TASK: build_compiled_sink(topic="orders.errors")},
+            None,
+        )
+
+        message = Message(
+            payload=Order(order_id="123"),
+            meta=MessageMeta(
+                message_id="m-1",
+                trace_id="parent-trace",
+                parent_trace_id="grandparent-trace",
+                correlation_id="corr-1",
+                causation_id="cause-1",
+                topic="orders.in",
+                partition=2,
+                offset=9,
+            ),
+        )
+        sink.build("step", 0, 1).write_batch([message])
+
+        error_envelope = ErrorEnvelope[Order](
+            kind=ErrorKind.TASK,
+            reason="boom",
+            original_message=snapshot_message(message),
+        )
+        cast(
+            _runtime_io._KafkaErrorEnvelopeSinkPartition,
+            error_sinks[ErrorKind.TASK].build("step", 0, 1),
+        ).write_batch([error_envelope])
+
+        codec = MsgspecCodec[Order]()
+        assert len(fake_raw.sent) >= 2
+        first_record, second_record = fake_raw.sent[:2]
+        decoded_message = codec.decode(first_record.value, Order)
+        decoded_error = MsgspecCodec[ErrorEnvelope[Order]]().decode(
+            second_record.value,
+            ErrorEnvelope[Order],
+        )
+
+        assert decoded_message.meta.trace_id == "child-trace"
+        assert decoded_message.meta.parent_trace_id == "parent-trace"
+        assert decoded_error.meta.trace_id == "parent-trace"
+        assert decoded_error.meta.parent_trace_id == "grandparent-trace"
+
     def test_build_runtime_error_sink_writes_error_envelope_payloads(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -136,6 +194,7 @@ class TestRuntimeIOBuilders:
         partition.write_batch([envelope])
         partition.close()
 
+        assert len(fake_raw.sent) >= 1
         assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"task"
@@ -174,6 +233,7 @@ class TestRuntimeIOBuilders:
         partition.write_batch([envelope])
         partition.close()
 
+        assert len(fake_raw.sent) >= 1
         assert [record.topic for record in fake_raw.sent] == ["orders.errors"]
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"wire"
@@ -310,10 +370,13 @@ class TestRuntimeIOBuilders:
         assert "orders.dlq" in topics
 
     def test_branch_terminal_without_sink_is_discarded(self) -> None:
-        manager = _output_wiring.OutputWiringManager(
+        ctx = _adapter._BuildContext(
+            plan=build_compiled_plan(),
+            bridge=None,
+            flow_runtime=ObservabilityRuntime.noop(),
             sink=None,
-            error_sinks={},
             terminal_sinks={},
+            error_sinks={},
         )
 
-        manager.wire_branch_terminal("branch", object(), (0, 1))
+        ctx.wire_branch_terminal("branch", object(), (0, 1))

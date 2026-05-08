@@ -9,6 +9,9 @@ from loom.streaming.kafka import (
     DecodeError,
     DecodeOk,
     KafkaRecord,
+    MessageDescriptor,
+    MessageEnvelope,
+    MessageMetadata,
     MsgspecCodec,
     try_decode_record,
 )
@@ -40,6 +43,7 @@ class TestKafkaWireDecode:
         assert result.message.meta.message_id == "orders.events:3:9"
         assert result.message.meta.correlation_id == "corr-1"
         assert result.message.meta.trace_id == "trace-1"
+        assert result.message.meta.parent_trace_id == "parent-1"
         assert result.message.meta.causation_id == "cause-1"
         assert result.message.meta.produced_at_ms == 1234
         assert result.message.meta.message_type == "order.created"
@@ -49,6 +53,34 @@ class TestKafkaWireDecode:
         assert result.message.meta.offset == 9
         assert result.message.meta.key == b"tenant-a"
         assert result.message.meta.headers == {"content-type": b"application/x-loom-msgpack"}
+
+    def test_try_decode_record_generates_trace_when_envelope_is_missing_one(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        order_created_descriptor_v1: MessageDescriptor,
+    ) -> None:
+        monkeypatch.setattr("loom.streaming.kafka._wire.generate_trace_id", lambda: "trace-ingress")
+        codec = MsgspecCodec[OrderCreated]()
+        envelope = MessageEnvelope(
+            meta=MessageMetadata(
+                descriptor=order_created_descriptor_v1,
+            ),
+            payload=OrderCreated(order_id="o-1", amount=5),
+        )
+        record = KafkaRecord(
+            topic="orders.events",
+            key=b"tenant-a",
+            value=codec.encode(envelope),
+            headers={"content-type": b"application/x-loom-msgpack"},
+            partition=3,
+            offset=9,
+            timestamp_ms=1235,
+        )
+
+        result = try_decode_record(record, OrderCreated, codec)
+
+        assert isinstance(result, DecodeOk)
+        assert result.message.meta.trace_id == "trace-ingress"
 
     def test_try_decode_record_returns_wire_error_without_raising(self) -> None:
         codec = MsgspecCodec[OrderCreated]()

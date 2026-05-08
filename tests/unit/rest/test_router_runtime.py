@@ -17,6 +17,10 @@ from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.model import LoomStruct
+from loom.core.observability.event import EventKind as ObservabilityEventKind
+from loom.core.observability.event import LifecycleEvent as ObservabilityLifecycleEvent
+from loom.core.observability.event import Scope as ObservabilityScope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc.query import FilterOp, PaginationMode, QuerySpec
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.markers import Exists, Input
@@ -167,7 +171,11 @@ def _resolve_schema(schema_ref: dict[str, Any], openapi_doc: dict[str, Any]) -> 
     return schema_ref
 
 
-def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
+def _make_app(
+    *compiled_routes: CompiledRoute,
+    observability_runtime: ObservabilityRuntime | None = None,
+    **factory_types: Any,
+) -> FastAPI:
     """Build a minimal FastAPI app from pre-compiled routes."""
     # Extract use case types from compiled routes
     types = [cr.route.use_case for cr in compiled_routes]
@@ -175,7 +183,13 @@ def _make_app(*compiled_routes: CompiledRoute, **factory_types: Any) -> FastAPI:
     factory = _factory(uc_comp, *types)
     executor = RuntimeExecutor(uc_comp)
     app = FastAPI()
-    component_registry = bind_interfaces(app, list(compiled_routes), factory, executor)
+    component_registry = bind_interfaces(
+        app,
+        list(compiled_routes),
+        factory,
+        executor,
+        observability_runtime=observability_runtime or ObservabilityRuntime.noop(),
+    )
     if component_registry:
         _register_openapi_components(app, component_registry)
     return app
@@ -189,6 +203,14 @@ def _compile_routes(
     use_case_types = [r.use_case for r in interface.routes] + list(extra_use_cases)
     uc_comp = _uc_compiler(*use_case_types)
     return RestInterfaceCompiler(uc_comp).compile(interface)
+
+
+class _RecordingObserver:
+    def __init__(self) -> None:
+        self.events: list[ObservabilityLifecycleEvent] = []
+
+    def on_event(self, event: ObservabilityLifecycleEvent) -> None:
+        self.events.append(event)
 
 
 # ---------------------------------------------------------------------------
@@ -615,8 +637,39 @@ def test_create_fastapi_app_returns_fastapi_instance() -> None:
         routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
     result = _bootstrap(PingUseCase)
-    app = create_fastapi_app(result, interfaces=[IFace])
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+    )
     assert isinstance(app, FastAPI)
+
+
+def test_create_fastapi_app_emits_use_case_span() -> None:
+    class IFace(RestInterface[str]):
+        prefix = "/ping"
+        routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
+
+    observer = _RecordingObserver()
+    runtime = ObservabilityRuntime([observer])
+    result = _bootstrap(PingUseCase)
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=runtime,
+    )
+    client = TestClient(app)
+    response = client.get("/ping/")
+
+    assert response.status_code == 200
+    assert [event.kind for event in observer.events] == [
+        ObservabilityEventKind.START,
+        ObservabilityEventKind.END,
+    ]
+    assert observer.events[0].scope is ObservabilityScope.USE_CASE
+    assert observer.events[0].name == "PingUseCase"
+    assert observer.events[0].meta["route"] == "/ping/"
+    assert observer.events[1].meta["status_code"] == 200
 
 
 def test_create_fastapi_app_routes_work() -> None:
@@ -625,7 +678,11 @@ def test_create_fastapi_app_routes_work() -> None:
         routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
     result = _bootstrap(PingUseCase)
-    app = create_fastapi_app(result, interfaces=[IFace])
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+    )
     client = TestClient(app)
     assert client.get("/ping/").json() == "pong"
 
@@ -636,7 +693,13 @@ def test_create_fastapi_app_accepts_fastapi_kwargs() -> None:
         routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
 
     result = _bootstrap(PingUseCase)
-    app = create_fastapi_app(result, interfaces=[IFace], title="My API", version="2.0.0")
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+        title="My API",
+        version="2.0.0",
+    )
     assert app.title == "My API"
     assert app.version == "2.0.0"
 
@@ -651,7 +714,11 @@ def test_create_fastapi_app_multiple_interfaces() -> None:
         routes = (RestRoute(use_case=ItemUseCase, method="GET", path="/{item_id}"),)
 
     result = _bootstrap(PingUseCase, ItemUseCase)
-    app = create_fastapi_app(result, interfaces=[PingIFace, ItemIFace])
+    app = create_fastapi_app(
+        result,
+        interfaces=[PingIFace, ItemIFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+    )
     client = TestClient(app)
     assert client.get("/ping/").json() == "pong"
     assert client.get("/items/99").json()["item_id"] == "99"
@@ -665,7 +732,11 @@ def test_create_fastapi_app_uncompiled_use_case_raises() -> None:
     # bootstrap with NO use cases — PingUseCase not compiled
     result = _bootstrap()
     with pytest.raises(InterfaceCompilationError, match="not been compiled"):
-        create_fastapi_app(result, interfaces=[IFace])
+        create_fastapi_app(
+            result,
+            interfaces=[IFace],
+            observability_runtime=ObservabilityRuntime.noop(),
+        )
 
 
 def test_create_fastapi_app_accepts_defaults() -> None:
@@ -677,7 +748,12 @@ def test_create_fastapi_app_accepts_defaults() -> None:
 
     result = _bootstrap(PingUseCase)
     defaults = RestApiDefaults(pagination_mode=PaginationMode.CURSOR)
-    app = create_fastapi_app(result, interfaces=[IFace], defaults=defaults)
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+        defaults=defaults,
+    )
     assert isinstance(app, FastAPI)
 
 
@@ -705,7 +781,11 @@ def test_create_fastapi_app_exists_marker_uses_registered_repository() -> None:
         use_cases=[_ExistsCheckEmailUseCase],
         modules=[_register_repo],
     )
-    app = create_fastapi_app(result, interfaces=[_UsersIFace])
+    app = create_fastapi_app(
+        result,
+        interfaces=[_UsersIFace],
+        observability_runtime=ObservabilityRuntime.noop(),
+    )
     client = TestClient(app)
 
     response = client.post("/users/exists", json={"email": "taken@example.com"})

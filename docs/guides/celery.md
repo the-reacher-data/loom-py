@@ -282,6 +282,12 @@ celery:
 
   # For integration tests: run tasks synchronously in the calling process.
   task_always_eager: false
+
+  # Async bridge settings used by async jobs/callbacks.
+  runtime:
+    backend: asyncio          # asyncio or trio
+    use_uvloop: true          # only applies to asyncio on supported platforms
+    shutdown_timeout_ms: 10000
 ```
 
 (per-job-overrides-from-yaml)=
@@ -497,6 +503,9 @@ celery:
   broker_url: "redis://localhost:6379/15"
   result_backend: "redis://localhost:6379/15"
   task_always_eager: true
+  runtime:
+    backend: asyncio
+    use_uvloop: false
 ```
 
 Or patch it in a pytest fixture:

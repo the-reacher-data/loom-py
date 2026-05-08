@@ -10,5 +10,5 @@ Stream = Any
 
 
 def _apply_into_topic(stream: Stream, _raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
-    ctx.outputs.wire_branch_terminal(f"into_topic_{idx}", stream, ctx.current_path)
+    ctx.wire_branch_terminal(f"into_topic_{idx}", stream, ctx.current_path)
     return stream

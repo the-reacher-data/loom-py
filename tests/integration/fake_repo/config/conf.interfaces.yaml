@@ -10,5 +10,8 @@ app:
         - tests.integration.fake_repo.product.interface
       warn_recommended: true
 
-metrics:
-  enabled: true
+observability:
+  prometheus:
+    enabled: true
+    config:
+      path: /metrics

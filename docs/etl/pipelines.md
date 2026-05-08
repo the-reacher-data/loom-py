@@ -165,9 +165,15 @@ storage:
   tmp_root: /var/lib/loom/lake/_tmp
 
 observability:
-  log: true
-  slow_step_threshold_ms: 30000
-  run_sink:
+  log:
+    enabled: true
+  otel:
+    enabled: false
+  prometheus:
+    enabled: true
+    pushgateway_url: ${oc.env:PUSHGATEWAY_URL,http://127.0.0.1:9091}
+  lineage:
+    enabled: true
     # Choose exactly one destination:
     root: /var/lib/loom/lake/_runs
     # database: ops

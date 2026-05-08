@@ -42,6 +42,7 @@ Internal modules (``_*.py``) and ``loom.etl.compiler._*`` are not part of
 the public API and may change without notice.
 """
 
+from loom.core.observability.config import OtelConfig
 from loom.etl.checkpoint import (
     CheckpointCleaner,
     CheckpointScope,
@@ -77,7 +78,7 @@ from loom.etl.declarative import (
     SourceSet,
     WriteOptions,
 )
-from loom.etl.observability import ExecutionRecordStoreConfig, ObservabilityConfig, OtelConfig
+from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
 from loom.etl.pipeline import (
     ETLParams,
     ETLPipeline,
@@ -198,9 +199,9 @@ __all__ = [
     "FilePathConfig",
     "FileRoute",
     # observability config (YAML-loadable)
-    "ObservabilityConfig",
+    "ETLObservabilityConfig",
+    "LineageConfig",
     "OtelConfig",
-    "ExecutionRecordStoreConfig",
     # schema — primitive
     "SchemaMode",
     "ColumnSchema",

@@ -29,6 +29,7 @@ class ErrorMessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         message_id: Stable event identifier.
         correlation_id: Optional correlation identifier.
         trace_id: Optional trace identifier.
+        parent_trace_id: Optional upstream trace identifier.
         causation_id: Optional upstream event identifier.
         produced_at_ms: Optional original producer timestamp in epoch
             milliseconds.
@@ -45,6 +46,7 @@ class ErrorMessageMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     message_id: str
     correlation_id: str | None = None
     trace_id: str | None = None
+    parent_trace_id: str | None = None
     causation_id: str | None = None
     produced_at_ms: int | None = None
     message_type: str | None = None
@@ -103,6 +105,7 @@ def snapshot_message(message: Message[PayloadT]) -> ErrorMessage[PayloadT]:
             message_id=message.meta.message_id,
             correlation_id=message.meta.correlation_id,
             trace_id=message.meta.trace_id,
+            parent_trace_id=message.meta.parent_trace_id,
             causation_id=message.meta.causation_id,
             produced_at_ms=message.meta.produced_at_ms,
             message_type=message.meta.message_type,

@@ -578,12 +578,15 @@ app:
 database:
   url: ${oc.env:DATABASE_URL,sqlite+aiosqlite:///./store.db}
 
-trace:
-  enabled: ${oc.decode:${oc.env:TRACE_ENABLED,true}}
-
-metrics:
-  enabled: ${oc.decode:${oc.env:METRICS_ENABLED,true}}
-  path: /metrics
+observability:
+  log:
+    enabled: true
+  otel:
+    enabled: false
+  prometheus:
+    enabled: ${oc.decode:${oc.env:METRICS_ENABLED,true}}
+    config:
+      path: /metrics
 ```
 
 ### Manifest mode (explicit registry)

@@ -10,7 +10,7 @@ import pytest
 from pyspark.sql import types as T
 
 from loom.etl.backends.spark import SparkTargetWriter
-from loom.etl.observability.records import (
+from loom.etl.lineage._records import (
     EventName,
     PipelineRunRecord,
     RunStatus,

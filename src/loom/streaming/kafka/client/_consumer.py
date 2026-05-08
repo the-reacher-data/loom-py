@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 
 from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
 from confluent_kafka import TopicPartition
 
+from loom.core.observability.event import LifecycleEvent, Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
+from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID
 from loom.streaming.kafka._record import KafkaRecord
-
-if TYPE_CHECKING:
-    from loom.streaming.observability.observers import KafkaStreamingObserver
 
 
 class _CommitMethod(Protocol):
@@ -40,11 +40,11 @@ class KafkaConsumerClient:
     def __init__(
         self,
         settings: ConsumerSettings,
-        observer: KafkaStreamingObserver | None = None,
+        obs: ObservabilityRuntime | None = None,
     ) -> None:
         self._consumer = _Consumer(settings.to_confluent_config())
         self._consumer.subscribe(list(settings.topics))
-        self._observer = observer
+        self._obs = obs
 
     def poll(self, timeout_ms: int) -> KafkaRecord[bytes] | None:
         """Read one raw byte record from Kafka.
@@ -68,8 +68,16 @@ class KafkaConsumerClient:
         if message.error() is not None:
             raise KafkaPollError(str(message.error()))
         record = _to_record(message)
-        if self._observer is not None:
-            self._observer.on_consumed(record.topic)
+        if self._obs is not None:
+            self._obs.emit(
+                LifecycleEvent.end(
+                    scope=Scope.TRANSPORT,
+                    name="kafka_consume",
+                    trace_id=_header_trace_id(record.headers),
+                    correlation_id=_header_correlation_id(record.headers),
+                    meta={"topic": record.topic},
+                )
+            )
         return record
 
     def commit(self, *, asynchronous: bool = False) -> None:
@@ -140,6 +148,16 @@ def _to_record(message: _RawMessage) -> KafkaRecord[bytes]:
         offset=message.offset(),
         timestamp_ms=timestamp_ms if timestamp_ms >= 0 else None,
     )
+
+
+def _header_trace_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_TRACE_ID)
+    return raw.decode() if raw is not None else None
+
+
+def _header_correlation_id(headers: dict[str, bytes]) -> str | None:
+    raw = headers.get(HEADER_CORRELATION_ID)
+    return raw.decode() if raw is not None else None
 
 
 def _normalize_headers(

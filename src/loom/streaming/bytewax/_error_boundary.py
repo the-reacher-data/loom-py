@@ -18,17 +18,11 @@ NodeResult: TypeAlias = Message[StreamPayload] | ErrorEnvelope[StreamPayload]
 logger = get_logger(__name__)
 
 
-class _ErrorWireOutputs(Protocol):
-    """Wire node error branches to configured sinks."""
-
-    def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
-        """Wire one error branch to an output sink."""
-
-
 class _ErrorSplitContext(Protocol):
     """Context carrying error-output wiring for node boundaries."""
 
-    outputs: Any
+    def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Stream) -> None:
+        """Wire one error branch to an output sink."""
 
 
 def _classify_task(exc: Exception) -> ErrorKind:
@@ -96,7 +90,7 @@ def _split_node_result(
 ) -> Stream:
     """Split node results into success and error branches and wire errors."""
     split = branch(f"{step_id}_split", stream, _is_message)
-    ctx.outputs.wire_node_error(kind, step_id, split.falses)
+    ctx.wire_node_error(kind, step_id, split.falses)
     return split.trues
 
 
@@ -109,7 +103,7 @@ def _split_batch_node_result(
     """Split batch-shaped node results into success and error branches."""
     split = branch(f"{step_id}_split", stream, _is_message_batch)
     errors = flat_map(f"{step_id}_errors", split.falses, _identity)
-    ctx.outputs.wire_node_error(kind, step_id, errors)
+    ctx.wire_node_error(kind, step_id, errors)
     return split.trues
 
 

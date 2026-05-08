@@ -1,0 +1,196 @@
+"""Lifecycle event model for unified observability across Loom modules."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from enum import StrEnum
+from typing import Self
+
+import msgspec
+
+from loom.core.model import LoomFrozenStruct
+
+
+class EventKind(StrEnum):
+    """Lifecycle phase emitted by an ``ObservabilityRuntime`` span."""
+
+    START = "start"
+    END = "end"
+    ERROR = "error"
+
+
+class LifecycleStatus(StrEnum):
+    """Outcome label attached to closing lifecycle events."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+
+
+class Scope(StrEnum):
+    """Recognised unit-of-work scopes for all Loom observers.
+
+    Using a closed enum keeps scope names consistent across ETL, streaming,
+    REST, and Kafka transports, and makes parent-span relationships in OTEL
+    unambiguous.
+    """
+
+    # Application
+    USE_CASE = "use_case"
+    JOB = "job"
+
+    # ETL pipeline hierarchy
+    PIPELINE = "pipeline"
+    PROCESS = "process"
+    STEP = "step"
+
+    # Streaming flow hierarchy
+    FLOW = "flow"
+    NODE = "node"
+    POLL_CYCLE = "poll_cycle"
+    BATCH_COLLECT = "batch_collect"
+
+    # I/O operations
+    TRANSPORT = "transport"
+    READ = "read"
+    WRITE = "write"
+    DELETE = "delete"
+
+    # Admin
+    MAINTENANCE = "maintenance"
+
+
+class LifecycleEvent(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Immutable lifecycle event emitted to all registered observers.
+
+    All fields except ``scope``, ``name``, and ``kind`` are optional — observers
+    must tolerate ``None`` for any contextual field.
+
+    Args:
+        scope: Logical unit of work — one of the values in :class:`Scope`.
+        name: Human-readable label for the operation within the scope.
+        kind: Lifecycle phase — ``START``, ``END``, or ``ERROR``.
+        trace_id: Trace identifier for the current unit of work. Generated
+            once per root span and propagated to all child spans.
+        correlation_id: Business lineage identifier (saga, request, batch
+            group). Always propagated from the upstream context.
+        id: Optional stable identifier for the specific operation instance.
+        duration_ms: Wall-clock duration in milliseconds. Set on ``END``
+            and ``ERROR`` events only.
+        status: Short outcome label. Set on ``END`` and exposed as a stable enum.
+        error: Human-readable error description. Set on ``ERROR`` only.
+        meta: Domain-specific fields forwarded as top-level keys by all
+            observer backends. Adapters use this to carry rich context
+            (``flow``, ``node_idx``, ``run_id``, …) without coupling
+            ``LifecycleEvent`` to domain types.
+    """
+
+    scope: Scope
+    name: str
+    kind: EventKind
+    trace_id: str | None = None
+    correlation_id: str | None = None
+    id: str | None = None
+    duration_ms: float | None = None
+    status: LifecycleStatus | None = None
+    error: str | None = None
+    meta: dict[str, object] = msgspec.field(default_factory=dict)
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        scope: Scope,
+        name: str,
+        trace_id: str | None = None,
+        correlation_id: str | None = None,
+        id: str | None = None,
+        meta: Mapping[str, object] | None = None,
+    ) -> Self:
+        """Build a ``START`` lifecycle event."""
+        return cls(
+            scope=scope,
+            name=name,
+            kind=EventKind.START,
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            id=id,
+            meta=dict(meta or {}),
+        )
+
+    @classmethod
+    def end(
+        cls,
+        *,
+        scope: Scope,
+        name: str,
+        trace_id: str | None = None,
+        correlation_id: str | None = None,
+        id: str | None = None,
+        duration_ms: float | None = None,
+        status: LifecycleStatus = LifecycleStatus.SUCCESS,
+        meta: Mapping[str, object] | None = None,
+    ) -> Self:
+        """Build an ``END`` lifecycle event."""
+        return cls(
+            scope=scope,
+            name=name,
+            kind=EventKind.END,
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            id=id,
+            duration_ms=duration_ms,
+            status=status,
+            meta=dict(meta or {}),
+        )
+
+    @classmethod
+    def exception(
+        cls,
+        *,
+        scope: Scope,
+        name: str,
+        trace_id: str | None = None,
+        correlation_id: str | None = None,
+        id: str | None = None,
+        duration_ms: float | None = None,
+        error: str | None = None,
+        status: LifecycleStatus = LifecycleStatus.FAILURE,
+        meta: Mapping[str, object] | None = None,
+    ) -> Self:
+        """Build an ``ERROR`` lifecycle event."""
+        return cls(
+            scope=scope,
+            name=name,
+            kind=EventKind.ERROR,
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            id=id,
+            duration_ms=duration_ms,
+            status=status,
+            error=error,
+            meta=dict(meta or {}),
+        )
+
+    def otel_span_name(self) -> str:
+        """Return the canonical OTEL span name for this event."""
+        return f"{self.scope.value}:{self.name}"
+
+    def otel_attributes(self) -> dict[str, str]:
+        """Return OTEL span attributes derived from this event."""
+        attrs: dict[str, str] = {"scope": self.scope.value, "name": self.name}
+        if self.trace_id:
+            attrs["trace_id"] = self.trace_id
+        if self.correlation_id:
+            attrs["correlation_id"] = self.correlation_id
+        if self.id:
+            attrs["id"] = self.id
+        attrs.update({k: str(v) for k, v in self.meta.items()})
+        return attrs
+
+
+__all__ = [
+    "EventKind",
+    "LifecycleEvent",
+    "LifecycleStatus",
+    "Scope",
+]

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import msgspec
+from loom.core.model import LoomFrozenStruct
 
 
-class OtelConfig(msgspec.Struct, frozen=True):
+class OtelConfig(LoomFrozenStruct, frozen=True):
     """OpenTelemetry SDK/exporter configuration.
 
     Args:

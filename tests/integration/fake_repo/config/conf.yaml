@@ -13,6 +13,8 @@ database:
   echo: false
   pool_pre_ping: true
 
-metrics:
-  enabled: false
-  path: /metrics
+observability:
+  prometheus:
+    enabled: false
+    config:
+      path: /metrics

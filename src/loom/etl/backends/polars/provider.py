@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
-from loom.etl.observability.config import ExecutionRecordStoreConfig
-from loom.etl.observability.sinks import ExecutionRecordWriter, TargetExecutionRecordWriter
+from loom.etl.lineage._config import LineageConfig
+from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import CatalogConnection, StorageConfig
@@ -34,32 +34,32 @@ class PolarsProvider(BackendProvider):
             ),
         )
 
-    def create_execution_record_writer(
+    def create_lineage_writer(
         self,
         config: StorageConfig,
-        record_store: ExecutionRecordStoreConfig,
+        lineage: LineageConfig,
         spark: Any = None,
-    ) -> ExecutionRecordWriter:
+    ) -> TargetLineageWriter:
         _ = (config, spark)
-        if record_store.database:
+        if lineage.database:
             raise ValueError(
-                "observability.record_store.database is only supported "
+                "observability.lineage.database is only supported "
                 "with storage.engine='spark'. "
-                "For storage.engine='polars', configure observability.record_store.root."
+                "For storage.engine='polars', configure observability.lineage.root."
             )
 
         locator = PrefixLocator(
-            root=record_store.root,
-            storage_options=record_store.storage_options or None,
-            writer=record_store.writer or None,
-            delta_config=record_store.delta_config or None,
-            commit=record_store.commit or None,
+            root=lineage.root,
+            storage_options=lineage.storage_options or None,
+            writer=lineage.writer or None,
+            delta_config=lineage.delta_config or None,
+            commit=lineage.commit or None,
         )
         target_writer = PolarsTargetWriter(
             locator,
             missing_table_policy=config.missing_table_policy,
         )
-        return TargetExecutionRecordWriter(target_writer)
+        return TargetLineageWriter(cast(RecordFrameTargetWriter, target_writer))
 
 
 def _build_polars_locator(config: StorageConfig) -> TableLocator:

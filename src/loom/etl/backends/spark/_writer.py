@@ -37,7 +37,7 @@ from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
-from loom.etl.observability.records import ExecutionRecord, get_record_schema
+from loom.etl.lineage._records import LineageRecord, get_lineage_schema
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
@@ -92,8 +92,8 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         spec = AppendSpec(table_ref=table_ref, schema_mode=SchemaMode.EVOLVE)
         self.write(frame, spec, params_instance, streaming=streaming)
 
-    def to_frame(self, records: Sequence[ExecutionRecord], /) -> DataFrame:
-        """Convert execution records into a Spark DataFrame."""
+    def to_frame(self, records: Sequence[LineageRecord], /) -> DataFrame:
+        """Convert lineage records into a Spark DataFrame."""
         if not records:
             raise ValueError("SparkTargetWriter.to_frame requires at least one record.")
         first = records[0]
@@ -510,8 +510,8 @@ def _sql_literal(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _spark_record_schema(record: ExecutionRecord) -> T.StructType:
-    cols = get_record_schema(type(record))
+def _spark_record_schema(record: LineageRecord) -> T.StructType:
+    cols = get_lineage_schema(type(record))
     return T.StructType(
         [T.StructField(c.name, loom_type_to_spark(c.dtype), c.nullable) for c in cols]
     )

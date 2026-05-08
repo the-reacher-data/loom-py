@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from loom.etl.observability.config import ObservabilityConfig
+from loom.etl.lineage._config import ETLObservabilityConfig
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.storage._config import StorageConfig
 
@@ -22,8 +22,11 @@ storage:
     table_path:
       uri: /var/lib/loom/lake
 observability:
-  log: false
-  slow_step_threshold_ms: 1500
+  log:
+    enabled: false
+  lineage:
+    enabled: true
+    root: s3://bucket/runs
 """,
         encoding="utf-8",
     )
@@ -33,9 +36,10 @@ observability:
     assert isinstance(storage, StorageConfig)
     assert storage.defaults.table_path is not None
     assert storage.defaults.table_path.uri == "/var/lib/loom/lake"
-    assert isinstance(obs, ObservabilityConfig)
-    assert obs.log is False
-    assert obs.slow_step_threshold_ms == 1500
+    assert isinstance(obs, ETLObservabilityConfig)
+    assert obs.log.enabled is False
+    assert obs.lineage.enabled is True
+    assert obs.lineage.root == "s3://bucket/runs"
 
 
 def test_load_yaml_uses_default_observability_when_missing(tmp_path: Path) -> None:
@@ -50,12 +54,12 @@ def test_load_yaml_uses_default_observability_when_missing(tmp_path: Path) -> No
     assert isinstance(storage, StorageConfig)
     assert storage.defaults.table_path is not None
     assert storage.defaults.table_path.uri == "/var/lib/loom/lake"
-    assert obs == ObservabilityConfig()
+    assert obs == ETLObservabilityConfig()
 
 
 def test_load_yaml_raises_when_storage_key_missing(tmp_path: Path) -> None:
     path = tmp_path / "loom.yaml"
-    path.write_text("observability:\n  log: true\n", encoding="utf-8")
+    path.write_text("observability:\n  log:\n    enabled: true\n", encoding="utf-8")
 
     with pytest.raises(KeyError, match="storage"):
         _load_yaml(str(path))
@@ -68,7 +72,10 @@ def test_load_yaml_from_cloud_uri() -> None:
         "    table_path:\n"
         "      uri: s3://my-lake/delta\n"
         "observability:\n"
-        "  log: true\n"
+        "  log:\n"
+        "    enabled: true\n"
+        "  lineage:\n"
+        "    enabled: false\n"
     )
 
     mock_open = MagicMock()
@@ -81,5 +88,5 @@ def test_load_yaml_from_cloud_uri() -> None:
     assert isinstance(storage, StorageConfig)
     assert storage.defaults.table_path is not None
     assert storage.defaults.table_path.uri == "s3://my-lake/delta"
-    assert obs.log is True
+    assert obs.log.enabled is True
     mock_open.assert_called_once_with("s3://my-bucket/config/prod.yaml", mode="r", encoding="utf-8")

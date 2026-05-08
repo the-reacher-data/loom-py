@@ -1,4 +1,4 @@
-"""Tests for observability config structs and storage I/O protocols."""
+"""Tests for lineage config structs and storage I/O protocols."""
 
 from __future__ import annotations
 
@@ -9,90 +9,59 @@ import msgspec
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import SourceSpec, TableSourceSpec
 from loom.etl.declarative.target._table import ReplaceSpec
-from loom.etl.observability.config import (
-    ExecutionRecordStoreConfig,
-    ObservabilityConfig,
-    OtelConfig,
-)
+from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
 from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TableDiscovery, TargetWriter
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 
-def test_observability_config_defaults_and_conversion() -> None:
-    default = ObservabilityConfig()
-    assert default.log is True
-    assert default.otel_config is None
-    assert default.record_store is None
-    assert default.slow_step_threshold_ms is None
+def test_etl_observability_config_defaults_and_conversion() -> None:
+    default = ETLObservabilityConfig()
+    assert default.log.enabled is False
+    assert default.otel.enabled is False
+    assert default.prometheus.enabled is False
+    assert default.lineage.enabled is False
 
     cfg = msgspec.convert(
         {
-            "log": False,
-            "record_store": {
-                "root": "s3://lake/runs",
-                "storage_options": {"AWS_REGION": "eu-west-1"},
-                "writer": {"compression": "SNAPPY"},
-                "delta_config": {"delta.appendOnly": "true"},
-                "commit": {"userName": "loom"},
+            "log": {"enabled": True},
+            "otel": {
+                "enabled": True,
+                "config": {
+                    "service_name": "loom-etl",
+                    "protocol": "grpc",
+                    "endpoint": "https://collector:4317",
+                    "headers": {"x-api-key": "token"},
+                    "resource_attributes": {"env": "prod"},
+                    "span_attributes": {"team": "data-platform"},
+                    "exporter_kwargs": {"timeout": 10},
+                    "span_processor_kwargs": {"max_export_batch_size": 256},
+                },
             },
-            "slow_step_threshold_ms": 2500,
+            "lineage": {"enabled": True, "root": "s3://lake/runs"},
         },
-        ObservabilityConfig,
-    )
-    assert cfg.log is False
-    assert cfg.slow_step_threshold_ms == 2500
-    assert cfg.record_store == ExecutionRecordStoreConfig(
-        root="s3://lake/runs",
-        storage_options={"AWS_REGION": "eu-west-1"},
-        writer={"compression": "SNAPPY"},
-        delta_config={"delta.appendOnly": "true"},
-        commit={"userName": "loom"},
+        ETLObservabilityConfig,
     )
 
-
-def test_observability_config_supports_open_otel_config() -> None:
-    cfg = msgspec.convert(
-        {
-            "log": False,
-            "otel_config": {
-                "service_name": "loom-etl",
-                "protocol": "grpc",
-                "endpoint": "https://collector:4317",
-                "headers": {"x-api-key": "token"},
-                "resource_attributes": {"env": "prod"},
-                "span_attributes": {"team": "data-platform"},
-                "exporter_kwargs": {"timeout": 10},
-                "span_processor_kwargs": {"max_export_batch_size": 256},
-            },
-        },
-        ObservabilityConfig,
-    )
-
-    assert cfg.otel_config == OtelConfig(
-        service_name="loom-etl",
-        protocol="grpc",
-        endpoint="https://collector:4317",
-        headers={"x-api-key": "token"},
-        resource_attributes={"env": "prod"},
-        span_attributes={"team": "data-platform"},
-        exporter_kwargs={"timeout": 10},
-        span_processor_kwargs={"max_export_batch_size": 256},
-    )
+    assert cfg.log.enabled is True
+    assert cfg.otel.enabled is True
+    assert cfg.lineage.enabled is True
+    assert cfg.lineage.root == "s3://lake/runs"
 
 
-def test_record_store_config_validate_requires_exactly_one_destination() -> None:
-    ExecutionRecordStoreConfig(root="s3://lake/runs").validate()
-    ExecutionRecordStoreConfig(database="ops").validate()
+def test_lineage_config_validate_requires_exactly_one_destination() -> None:
+    LineageConfig().validate()
+    LineageConfig(enabled=True, root="s3://lake/runs").validate()
+    LineageConfig(enabled=True, database="ops").validate()
 
     try:
-        ExecutionRecordStoreConfig().validate()
+        LineageConfig(enabled=True).validate()
     except ValueError as exc:
         assert "exactly one destination" in str(exc)
     else:  # pragma: no cover - defensive branch
         raise AssertionError("Expected ValueError for empty destination")
 
     try:
-        ExecutionRecordStoreConfig(root="s3://lake/runs", database="ops").validate()
+        LineageConfig(enabled=True, root="s3://lake/runs", database="ops").validate()
     except ValueError as exc:
         assert "exactly one destination" in str(exc)
     else:  # pragma: no cover - defensive branch
@@ -104,13 +73,13 @@ def test_protocol_method_bodies_are_callable() -> None:
     target_spec = ReplaceSpec(table_ref=TableRef("staging.out"))
     schema = (ColumnSchema("id", LoomDtype.INT64),)
 
-    assert TableDiscovery.exists(object(), TableRef("raw.orders")) is None
-    assert TableDiscovery.columns(object(), TableRef("raw.orders")) is None
-    assert TableDiscovery.schema(object(), TableRef("raw.orders")) is None
-    assert TableDiscovery.update_schema(object(), TableRef("raw.orders"), schema) is None
-    assert SourceReader.read(object(), src_spec, None) is None
-    assert SQLExecutor.execute_sql(object(), {}, "SELECT 1") is None
-    assert TargetWriter.write(object(), object(), target_spec, None) is None
+    assert _CatalogImpl().exists(TableRef("raw.orders")) is True
+    assert _CatalogImpl().columns(TableRef("raw.orders")) == ("id",)
+    assert _CatalogImpl().schema(TableRef("raw.orders")) is not None
+    _CatalogImpl().update_schema(TableRef("raw.orders"), schema)
+    assert _ReaderImpl().read(src_spec, None) == {"alias": "orders", "params": None}
+    assert _ReaderImpl().execute_sql({}, "SELECT 1") == {"frames": {}, "query": "SELECT 1"}
+    _WriterImpl().write(object(), target_spec, None)
 
 
 class _CatalogImpl:
@@ -124,7 +93,7 @@ class _CatalogImpl:
         return (ColumnSchema("id", LoomDtype.INT64),)
 
     def update_schema(self, ref: TableRef, schema: tuple[ColumnSchema, ...]) -> None:
-        return None
+        _ = (ref, schema)
 
 
 class _ReaderImpl:
@@ -139,7 +108,7 @@ class _WriterImpl:
     def write(
         self, frame: Any, spec: object, params_instance: Any, /, *, streaming: bool = False
     ) -> None:
-        return None
+        _ = (frame, spec, params_instance, streaming)
 
 
 def test_runtime_protocol_checks_for_concrete_impls() -> None:

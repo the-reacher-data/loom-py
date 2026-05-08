@@ -1,78 +1,81 @@
-"""Protocol and composite observer tests for streaming observability."""
+"""Protocol tests for core lifecycle observers used by streaming."""
 
 from __future__ import annotations
 
-from loom.streaming.observability import (
-    CompositeFlowObserver,
-    NoopFlowObserver,
-    StreamingFlowObserver,
-    StructlogFlowObserver,
-)
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.observer.noop import NoopObserver
+from loom.core.observability.observer.structlog import StructlogLifecycleObserver
+from loom.core.observability.protocol import LifecycleObserver
+from loom.core.observability.runtime import ObservabilityRuntime
 from tests.unit.streaming.observability.cases import FailingFlowObserver, RecordingFlowObserver
 
 
 def test_noop_flow_observer_matches_protocol() -> None:
-    observer: StreamingFlowObserver = NoopFlowObserver()
+    observer: LifecycleObserver = NoopObserver()
 
-    observer.on_flow_start("test", node_count=3)
-    observer.on_flow_end("test", status="success", duration_ms=100)
-    observer.on_node_start("test", 0, node_type="Step")
-    observer.on_node_end("test", 0, node_type="Step", status="success", duration_ms=10)
-    observer.on_node_error("test", 0, node_type="Step", exc=RuntimeError("err"))
-    observer.on_collect_batch(
-        "test",
-        0,
-        node_type="CollectBatch",
-        batch_size=2,
-        max_records=4,
-        timeout_ms=1000,
-        reason="timeout_or_flush",
-    )
+    for kind in EventKind:
+        observer.on_event(LifecycleEvent(scope=Scope.NODE, name="test", kind=kind))
 
 
 def test_structlog_flow_observer_matches_protocol() -> None:
-    observer: StreamingFlowObserver = StructlogFlowObserver()
-    assert isinstance(observer, StreamingFlowObserver)
+    observer: LifecycleObserver = StructlogLifecycleObserver()
+    assert type(observer) is StructlogLifecycleObserver
+    observer.on_event(LifecycleEvent(scope=Scope.NODE, name="test", kind=EventKind.START))
 
 
-def test_composite_flow_observer_fans_out_events() -> None:
+def test_runtime_fans_out_events() -> None:
     first = RecordingFlowObserver()
     second = RecordingFlowObserver()
-    composite = CompositeFlowObserver([first, second])
+    runtime = ObservabilityRuntime([first, second])
 
-    composite.on_flow_start("my_flow", node_count=2)
-    composite.on_node_start("my_flow", 0, node_type="Step")
-    composite.on_node_end("my_flow", 0, node_type="Step", status="success", duration_ms=5)
-    composite.on_collect_batch(
-        "my_flow",
-        1,
-        node_type="CollectBatch",
-        batch_size=1,
-        max_records=2,
-        timeout_ms=100,
-        reason="size",
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="my_flow", kind=EventKind.START))
+    runtime.emit(
+        LifecycleEvent(
+            scope=Scope.NODE,
+            name="my_flow:0",
+            kind=EventKind.START,
+            meta={"flow": "my_flow", "node_idx": 0, "node_type": "Step"},
+        )
     )
-    composite.on_flow_end("my_flow", status="success", duration_ms=100)
+    runtime.emit(
+        LifecycleEvent(
+            scope=Scope.NODE,
+            name="my_flow:0",
+            kind=EventKind.END,
+            duration_ms=5,
+            status=LifecycleStatus.SUCCESS,
+            meta={"flow": "my_flow", "node_idx": 0, "node_type": "Step"},
+        )
+    )
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="my_flow", kind=EventKind.END))
 
     assert first.events == second.events
-    assert len(first.events) == 5
-    assert first.events[0] == ("flow_start", "my_flow", "2")
-    assert first.events[1] == ("node_start", "my_flow", "0", "Step")
+    assert len(first.events) == 4
+    assert first.events[0].kind is EventKind.START
+    assert first.events[1].scope is Scope.NODE
 
 
-def test_composite_flow_observer_isolates_errors() -> None:
+def test_runtime_isolates_errors() -> None:
     good = RecordingFlowObserver()
-    composite = CompositeFlowObserver([FailingFlowObserver(), good])
+    runtime = ObservabilityRuntime([FailingFlowObserver(), good])
 
-    composite.on_flow_start("test", node_count=1)
-    composite.on_node_start("test", 0, node_type="Step")
-    composite.on_node_error("test", 0, node_type="Step", exc=ValueError("bad"))
-    composite.on_flow_end("test", status="failed", duration_ms=50)
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="test", kind=EventKind.START))
+    runtime.emit(LifecycleEvent(scope=Scope.NODE, name="test:0", kind=EventKind.START, meta={}))
+    runtime.emit(
+        LifecycleEvent(
+            scope=Scope.NODE,
+            name="test:0",
+            kind=EventKind.ERROR,
+            error="ValueError('bad')",
+            meta={},
+        )
+    )
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="test", kind=EventKind.END))
 
     assert len(good.events) == 4
 
 
-def test_composite_flow_observer_empty_is_noop() -> None:
-    composite = CompositeFlowObserver([])
-    composite.on_flow_start("test", node_count=0)
-    composite.on_flow_end("test", status="success", duration_ms=0)
+def test_runtime_empty_is_noop() -> None:
+    runtime = ObservabilityRuntime([])
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="test", kind=EventKind.START))
+    runtime.emit(LifecycleEvent(scope=Scope.POLL_CYCLE, name="test", kind=EventKind.END))

@@ -28,7 +28,7 @@ Execution Infrastructure
 
    loom.etl.storage
    loom.etl.checkpoint
-   loom.etl.observability
+   loom.etl.lineage
 
 Backends
 --------

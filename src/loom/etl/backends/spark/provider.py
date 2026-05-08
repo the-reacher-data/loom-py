@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from loom.etl.backends.spark._reader import SparkSourceReader
 from loom.etl.backends.spark._writer import SparkTargetWriter
-from loom.etl.observability.config import ExecutionRecordStoreConfig
-from loom.etl.observability.sinks import ExecutionRecordWriter, TargetExecutionRecordWriter
+from loom.etl.lineage._config import LineageConfig
+from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
 from loom.etl.runtime.contracts import SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
@@ -41,39 +41,39 @@ class SparkProvider(BackendProvider):
             ),
         )
 
-    def create_execution_record_writer(
+    def create_lineage_writer(
         self,
         config: StorageConfig,
-        record_store: ExecutionRecordStoreConfig,
+        lineage: LineageConfig,
         spark: Any = None,
-    ) -> ExecutionRecordWriter:
+    ) -> TargetLineageWriter:
         _ = config
         if spark is None:
             raise ValueError(
-                "A SparkSession is required to configure observability.record_store "
+                "A SparkSession is required to configure observability.lineage "
                 "with storage.engine='spark'."
             )
-        if record_store.database:
+        if lineage.database:
             target_writer = SparkTargetWriter(
                 spark,
                 None,
                 missing_table_policy=config.missing_table_policy,
             )
-            return TargetExecutionRecordWriter(target_writer)
+            return TargetLineageWriter(cast(RecordFrameTargetWriter, target_writer))
 
         locator = PrefixLocator(
-            root=record_store.root,
-            storage_options=record_store.storage_options or None,
-            writer=record_store.writer or None,
-            delta_config=record_store.delta_config or None,
-            commit=record_store.commit or None,
+            root=lineage.root,
+            storage_options=lineage.storage_options or None,
+            writer=lineage.writer or None,
+            delta_config=lineage.delta_config or None,
+            commit=lineage.commit or None,
         )
         target_writer = SparkTargetWriter(
             spark,
             locator,
             missing_table_policy=config.missing_table_policy,
         )
-        return TargetExecutionRecordWriter(target_writer)
+        return TargetLineageWriter(cast(RecordFrameTargetWriter, target_writer))
 
 
 __all__ = ["SparkProvider"]

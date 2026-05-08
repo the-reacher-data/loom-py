@@ -34,6 +34,7 @@ class MessageProducer(Protocol[PayloadContraT]):
         key: bytes | str | None = None,
         headers: dict[str, bytes] | None = None,
         correlation_id: str | None = None,
+        parent_trace_id: str | None = None,
         causation_id: str | None = None,
         trace_id: str | None = None,
         produced_at_ms: int | None = None,
@@ -47,6 +48,7 @@ class MessageProducer(Protocol[PayloadContraT]):
             key: Optional Kafka partition key.
             headers: Optional Kafka headers.
             correlation_id: Optional correlation identifier.
+            parent_trace_id: Optional upstream trace identifier.
             causation_id: Optional upstream message identifier.
             trace_id: Optional explicit trace identifier.
             produced_at_ms: Optional producer timestamp in epoch milliseconds.
