@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import msgspec
+from loom.core.model import LoomFrozenStruct
 
 
-class ETLParams(msgspec.Struct, frozen=True):
+class ETLParams(LoomFrozenStruct, frozen=True):
     """Base class for all ETL step parameter types.
 
     Subclass and declare typed fields.  Instances are immutable and

@@ -6,6 +6,8 @@ from typing import Any, Generic, Literal, TypeVar
 
 import msgspec
 
+from loom.core.model import LoomFrozenStruct
+
 OutputT = TypeVar("OutputT", bound=msgspec.Struct, covariant=True)
 
 
@@ -152,7 +154,7 @@ class QuerySpec:
     cursor: str | None = None
 
 
-class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
+class CursorResult(LoomFrozenStruct, Generic[OutputT], frozen=True, kw_only=True, rename="camel"):
     """Result of a cursor-paginated query.
 
     Attributes:
@@ -167,7 +169,7 @@ class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel
     has_next: bool
 
 
-class PageParams(msgspec.Struct, kw_only=True):
+class PageParams(LoomFrozenStruct, frozen=True, kw_only=True):
     """Pagination parameters for list queries.
 
     Attributes:
@@ -190,7 +192,7 @@ class PageParams(msgspec.Struct, kw_only=True):
         return (self.page - 1) * self.limit
 
 
-class FilterParams(msgspec.Struct, kw_only=True):
+class FilterParams(LoomFrozenStruct, frozen=True, kw_only=True):
     """Generic filter container for list queries.
 
     Attributes:
@@ -200,7 +202,7 @@ class FilterParams(msgspec.Struct, kw_only=True):
     filters: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
-class PageResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
+class PageResult(LoomFrozenStruct, Generic[OutputT], frozen=True, kw_only=True, rename="camel"):
     """Paginated result set returned by list queries.
 
     Attributes:

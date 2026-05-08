@@ -13,6 +13,8 @@ from typing import Any, Literal
 import msgspec
 import structlog
 
+from loom.core.model import LoomFrozenStruct
+
 
 class Environment(StrEnum):
     """Known deployment environments.
@@ -74,7 +76,7 @@ class Renderer(StrEnum):
             raise ValueError(f"Unsupported renderer: {value!r}. Valid values: {valid}") from None
 
 
-class StreamHandlerConfig(msgspec.Struct, frozen=True, tag="stream", tag_field="type"):
+class StreamHandlerConfig(LoomFrozenStruct, frozen=True, tag="stream", tag_field="type"):
     """Configuration for a stdlib ``StreamHandler``.
 
     Attributes:
@@ -84,7 +86,7 @@ class StreamHandlerConfig(msgspec.Struct, frozen=True, tag="stream", tag_field="
     stream: Literal["stdout", "stderr"] = "stdout"
 
 
-class FileHandlerConfig(msgspec.Struct, frozen=True, tag="file", tag_field="type"):
+class FileHandlerConfig(LoomFrozenStruct, frozen=True, tag="file", tag_field="type"):
     """Configuration for a stdlib ``FileHandler``.
 
     Attributes:
@@ -96,7 +98,9 @@ class FileHandlerConfig(msgspec.Struct, frozen=True, tag="file", tag_field="type
     encoding: str = "utf-8"
 
 
-class RotatingFileHandlerConfig(msgspec.Struct, frozen=True, tag="rotating_file", tag_field="type"):
+class RotatingFileHandlerConfig(
+    LoomFrozenStruct, frozen=True, tag="rotating_file", tag_field="type"
+):
     """Configuration for a stdlib ``RotatingFileHandler``.
 
     Attributes:
@@ -115,7 +119,7 @@ class RotatingFileHandlerConfig(msgspec.Struct, frozen=True, tag="rotating_file"
 HandlerConfig = StreamHandlerConfig | FileHandlerConfig | RotatingFileHandlerConfig
 
 
-class LoggerConfig(msgspec.Struct, kw_only=True):
+class LoggerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """YAML configuration struct for the ``logger:`` section.
 
     Use with :func:`~loom.core.config.loader.section` to parse the

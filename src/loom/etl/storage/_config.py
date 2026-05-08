@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 import msgspec
 from deltalake import CommitProperties, WriterProperties
 
+from loom.core.model import LoomFrozenStruct
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 
 
@@ -35,7 +36,7 @@ class MissingTablePolicy(StrEnum):
     CREATE = "create"
 
 
-class CatalogConnection(msgspec.Struct, frozen=True):
+class CatalogConnection(LoomFrozenStruct, frozen=True):
     """Catalog connection settings.
 
     Args:
@@ -49,7 +50,7 @@ class CatalogConnection(msgspec.Struct, frozen=True):
     token: str = ""
 
 
-class TablePathConfig(msgspec.Struct, frozen=True):
+class TablePathConfig(LoomFrozenStruct, frozen=True):
     """Physical Delta path settings for table storage.
 
     Args:
@@ -84,7 +85,7 @@ class TablePathConfig(msgspec.Struct, frozen=True):
         )
 
 
-class FilePathConfig(msgspec.Struct, frozen=True):
+class FilePathConfig(LoomFrozenStruct, frozen=True):
     """Physical path settings for FILE sources/targets.
 
     Args:
@@ -101,13 +102,13 @@ class FilePathConfig(msgspec.Struct, frozen=True):
             raise ValueError(f"storage.{context}.uri must be a non-empty string")
 
 
-class StorageDefaults(msgspec.Struct, frozen=True):
+class StorageDefaults(LoomFrozenStruct, frozen=True):
     """Default resolution settings used when no per-name override is declared."""
 
     table_path: TablePathConfig | None = None
 
 
-class TableRoute(msgspec.Struct, frozen=True):
+class TableRoute(LoomFrozenStruct, frozen=True):
     """Route one logical table name to catalog ref or physical path.
 
     Args:
@@ -147,7 +148,7 @@ class TableRoute(msgspec.Struct, frozen=True):
             self.path.validate(context=f"{context}.path")
 
 
-class FileRoute(msgspec.Struct, frozen=True):
+class FileRoute(LoomFrozenStruct, frozen=True):
     """Route one logical file name to a physical file URI.
 
     Args:
@@ -165,7 +166,7 @@ class FileRoute(msgspec.Struct, frozen=True):
         self.path.validate(context=f"{context}.path")
 
 
-class StorageConfig(msgspec.Struct, frozen=True):
+class StorageConfig(LoomFrozenStruct, frozen=True):
     """Canonical storage configuration used by ETL runner/factory.
 
     Args:

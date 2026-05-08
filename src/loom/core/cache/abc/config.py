@@ -4,8 +4,10 @@ from typing import Any
 
 import msgspec
 
+from loom.core.model import LoomFrozenStruct
 
-class CacheConfig(msgspec.Struct, kw_only=True):
+
+class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Configuration for cache behaviour including TTLs and aiocache backend settings.
 
     Attributes:
