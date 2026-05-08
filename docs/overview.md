@@ -19,7 +19,7 @@ design rules:
 - prefer explicit contracts over reflection-heavy magic
 
 The companion demo repository for the streaming subsystem is
-`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
+[dummy-loom-streaming](https://github.com/the-reacher-data/dummy-loom-streaming).
 
 ## At a glance
 
