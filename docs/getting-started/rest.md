@@ -341,10 +341,10 @@ observability:
     enabled: true
   otel:
     enabled: false
-
-metrics:
-  enabled: true
-  path: /metrics
+  prometheus:
+    enabled: true
+    config:
+      path: /metrics
 ```
 
 ```python

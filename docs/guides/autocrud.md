@@ -155,12 +155,12 @@ See [Use-case DSL](use-case-dsl.md) for patterns that compose on top of auto-CRU
 
 ## Full working example
 
-The companion repository [`dummy-loom`](https://github.com/the-reacher-data/dummy-loom)
+The companion repository [`dummy-loom`](https://github.com/MassiveDataScope/dummy-loom)
 shows auto-CRUD alongside custom use cases, background jobs, and Celery workers in a
 runnable PostgreSQL application. Start it with:
 
 ```bash
-git clone https://github.com/the-reacher-data/dummy-loom
+git clone https://github.com/MassiveDataScope/dummy-loom
 cd dummy-loom
 make up      # starts postgres + redis + API + celery worker + flower
 ```

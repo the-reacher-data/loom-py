@@ -165,9 +165,15 @@ storage:
   tmp_root: /var/lib/loom/lake/_tmp
 
 observability:
-  log: true
-  slow_step_threshold_ms: 30000
-  run_sink:
+  log:
+    enabled: true
+  otel:
+    enabled: false
+  prometheus:
+    enabled: true
+    pushgateway_url: ${oc.env:PUSHGATEWAY_URL,http://127.0.0.1:9091}
+  lineage:
+    enabled: true
     # Choose exactly one destination:
     root: /var/lib/loom/lake/_runs
     # database: ops
@@ -415,7 +421,7 @@ without redeployment.
 
 A full working example with Polars and Spark pipelines, Delta Lake, and observability is
 available in the companion repository:
-[`dummy-loom-etl`](https://github.com/the-reacher-data/dummy-loom-etl).
+[`dummy-loom-etl`](https://github.com/MassiveDataScope/dummy-loom-etl).
 
 ---
 
