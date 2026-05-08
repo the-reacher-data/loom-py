@@ -4,7 +4,7 @@
 steps, batching, branching, and transport wiring.
 
 The companion demo repository for this subsystem is
-`dummy-loom-streaming <https://github.com/MassiveDataScope/dummy-loom-streaming>`_.
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.
 
 ## Install
 
@@ -94,4 +94,4 @@ Use `loom.streaming.nodes`, `loom.streaming.kafka`, and
 surface.
 
 For a runnable end-to-end example, see the companion repository:
-`dummy-loom-streaming <https://github.com/MassiveDataScope/dummy-loom-streaming>`_.
+`dummy-loom-streaming <https://github.com/the-reacher-data/dummy-loom-streaming>`_.

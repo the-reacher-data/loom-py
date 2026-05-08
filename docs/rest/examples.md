@@ -1,11 +1,11 @@
 # Examples repo
 
-The companion repository [`dummy-loom`](https://github.com/MassiveDataScope/dummy-loom)
+The companion repository [`dummy-loom`](https://github.com/the-reacher-data/dummy-loom)
 is a runnable full-stack demo that combines every major `loom-kernel` feature in a
 single PostgreSQL-backed application. The code below comes directly from its `src/` tree.
 
 ```bash
-git clone https://github.com/MassiveDataScope/dummy-loom
+git clone https://github.com/the-reacher-data/dummy-loom
 cd dummy-loom
 make up      # postgres + redis + API + celery worker + flower
 ```
@@ -629,7 +629,7 @@ app = create_app("config/api.yaml")
 ## Source files
 
 All examples above map directly to files in
-[`dummy-loom/src/app/`](https://github.com/MassiveDataScope/dummy-loom/tree/master/src/app):
+[`dummy-loom/src/app/`](https://github.com/the-reacher-data/dummy-loom/tree/master/src/app):
 
 | File | Content |
 | --- | --- |

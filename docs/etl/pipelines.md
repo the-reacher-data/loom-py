@@ -421,7 +421,7 @@ without redeployment.
 
 A full working example with Polars and Spark pipelines, Delta Lake, and observability is
 available in the companion repository:
-[`dummy-loom-etl`](https://github.com/MassiveDataScope/dummy-loom-etl).
+[`dummy-loom-etl`](https://github.com/the-reacher-data/dummy-loom-etl).
 
 ---
 

@@ -525,7 +525,7 @@ def celery_eager(monkeypatch):
 
 ## Docker-compose stack
 
-The companion [`dummy-loom`](https://github.com/MassiveDataScope/dummy-loom) ships a
+The companion [`dummy-loom`](https://github.com/the-reacher-data/dummy-loom) ships a
 full compose stack with postgres, redis, API, worker, and Flower:
 
 ```bash

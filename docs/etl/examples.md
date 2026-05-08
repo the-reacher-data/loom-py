@@ -1,6 +1,6 @@
 # ETL Examples
 
-The companion repository [`dummy-loom-etl`](https://github.com/MassiveDataScope/dummy-loom-etl)
+The companion repository [`dummy-loom-etl`](https://github.com/the-reacher-data/dummy-loom-etl)
 contains runnable end-to-end examples of `loom.etl` with both Polars and Spark
 backends.
 
@@ -16,7 +16,7 @@ backends.
 ## Quick start
 
 ```bash
-git clone https://github.com/MassiveDataScope/dummy-loom-etl
+git clone https://github.com/the-reacher-data/dummy-loom-etl
 cd dummy-loom-etl
 make test      # run Polars and Spark test suites
 make run       # run the sample pipeline locally
