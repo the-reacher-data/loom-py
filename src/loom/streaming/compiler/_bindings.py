@@ -105,32 +105,29 @@ def _resolve_binding(
         return binding
 
 
+_SKIP_KINDS = frozenset({inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD})
+
+
 def _instantiate_binding(
     target: type[object],
     raw_config: Mapping[str, object],
     overrides: Mapping[str, object],
 ) -> object:
-    resolved_kwargs = dict(raw_config)
-    resolved_kwargs.update(overrides)
-    signature = inspect.signature(target.__init__)
-    annotations = _get_type_hints(target)
-
-    for name, param in signature.parameters.items():
-        if name == "self" or param.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
+    kwargs: dict[str, object] = {**raw_config, **overrides}
+    hints = _get_type_hints(target)
+    sig = inspect.signature(target.__init__)
+    for name, param in sig.parameters.items():
+        if name == "self" or param.kind in _SKIP_KINDS:
             continue
-        annotation = annotations.get(name, param.annotation)
-        if not _is_struct_annotation(annotation):
+        annotation = hints.get(name)
+        if annotation is None or not _is_struct_annotation(annotation):
             continue
-        if name not in resolved_kwargs:
+        if name not in kwargs:
             if param.default is inspect.Parameter.empty:
-                raise TypeError(f"{target.__name__} requires config field {name!r}")
+                raise ConfigError(f"{target.__name__} requires config field {name!r}")
             continue
-        resolved_kwargs[name] = msgspec.convert(resolved_kwargs[name], annotation, strict=False)
-
-    return target(**resolved_kwargs)
+        kwargs[name] = msgspec.convert(kwargs[name], annotation, strict=False)
+    return target(**kwargs)
 
 
 def _get_type_hints(target: type[object]) -> dict[str, object]:
