@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import inspect
-import sys
 from collections.abc import Mapping
-from typing import Any, TypeGuard, get_type_hints
+from typing import Any, TypeGuard
 
-import msgspec
 from omegaconf import DictConfig
 
-from loom.core.config import ConfigBinding, ConfigError, section
-from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.core.config import ConfigBinding, ConfigError, StructBinder, section
 from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
@@ -90,6 +86,9 @@ def _resolve_process_node(
     return node
 
 
+_binder = StructBinder()
+
+
 def _resolve_binding(
     binding: ConfigBinding,
     runtime_config: DictConfig,
@@ -99,45 +98,10 @@ def _resolve_binding(
         raw_config = (
             section(runtime_config, binding.config_path, dict) if binding.config_path else {}
         )
-        return _instantiate_binding(binding.target, raw_config, binding.overrides)
-    except (ConfigError, TypeError, ValueError, msgspec.ValidationError) as exc:
+        return _binder.bind(binding.target, {**raw_config, **binding.overrides})
+    except (ConfigError, TypeError, ValueError) as exc:
         errors.append(f"binding {binding.config_path or binding.target.__name__}: {exc}")
         return binding
-
-
-_SKIP_KINDS = frozenset({inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD})
-
-
-def _instantiate_binding(
-    target: type[object],
-    raw_config: Mapping[str, object],
-    overrides: Mapping[str, object],
-) -> object:
-    kwargs: dict[str, object] = {**raw_config, **overrides}
-    hints = _get_type_hints(target)
-    sig = inspect.signature(target.__init__)
-    for name, param in sig.parameters.items():
-        if name == "self" or param.kind in _SKIP_KINDS:
-            continue
-        annotation = hints.get(name)
-        if annotation is None or not _is_struct_annotation(annotation):
-            continue
-        if name not in kwargs:
-            if param.default is inspect.Parameter.empty:
-                raise ConfigError(f"{target.__name__} requires config field {name!r}")
-            continue
-        kwargs[name] = msgspec.convert(kwargs[name], annotation, strict=False)
-    return target(**kwargs)
-
-
-def _get_type_hints(target: type[object]) -> dict[str, object]:
-    module = sys.modules.get(target.__module__)
-    globalns = getattr(module, "__dict__", {}) if module is not None else {}
-    return get_type_hints(target.__init__, globalns=globalns)
-
-
-def _is_struct_annotation(annotation: object) -> bool:
-    return isinstance(annotation, type) and issubclass(annotation, (LoomStruct, LoomFrozenStruct))
 
 
 def _resolve_with(

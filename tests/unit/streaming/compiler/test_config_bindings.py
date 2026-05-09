@@ -193,7 +193,7 @@ class TestConfigBindings:
 
         with pytest.raises(
             CompilationError,
-            match="missing 1 required keyword-only argument: 'prefix'",
+            match="requires config field 'prefix'",
         ):
             compile_flow(flow, runtime_config=runtime_config)
 
