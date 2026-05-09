@@ -14,6 +14,7 @@ Example::
 
 from loom.core.config.binder import StructBinder
 from loom.core.config.configurable import ConfigBinding, Configurable
+from loom.core.config.context import ConfigContext
 from loom.core.config.errors import ConfigError
 from loom.core.config.loader import load_config, section
 from loom.core.config.observability import OtelConfig
@@ -21,6 +22,7 @@ from loom.core.config.resolver import ConfigResolver
 
 __all__ = [
     "ConfigBinding",
+    "ConfigContext",
     "ConfigError",
     "ConfigResolver",
     "Configurable",
