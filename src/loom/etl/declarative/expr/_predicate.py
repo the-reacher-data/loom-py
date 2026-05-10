@@ -1,40 +1,48 @@
-"""Predicate node model for ETL filtering DSL.
+"""Predicate node aliases for the ETL declarative DSL.
 
-All nodes are immutable. Operator overloading on column and param references
-produces these nodes at class-definition time; the ETL compiler stores them
-in the compiled plan and the executor resolves them at runtime.
+The boolean AST is owned by :mod:`loom.core.expr.nodes` and re-exported here
+so ETL can share the same immutable expression language as streaming.
+Operator overloading on column and param references still lives in ETL, but
+the node types themselves are framework-common value objects.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
-PredicateNode = Union[
-    "EqPred",
-    "NePred",
-    "GtPred",
-    "GePred",
-    "LtPred",
-    "LePred",
-    "InPred",
-    "AndPred",
-    "OrPred",
-    "NotPred",
-]
-
-
-class _PredCompose:
-    """Compose predicate nodes with ``&``, ``|``, ``~`` operators."""
-
-    def __and__(self, other: PredicateNode) -> AndPred:
-        return AndPred(left=self, right=other)
-
-    def __or__(self, other: PredicateNode) -> OrPred:
-        return OrPred(left=self, right=other)
-
-    def __invert__(self) -> NotPred:
-        return NotPred(operand=self)
+from loom.core.expr.nodes import (
+    AndExpr as AndPred,
+)
+from loom.core.expr.nodes import (
+    EqExpr as EqPred,
+)
+from loom.core.expr.nodes import (
+    ExprNode as PredicateNode,
+)
+from loom.core.expr.nodes import (
+    GeExpr as GePred,
+)
+from loom.core.expr.nodes import (
+    GtExpr as GtPred,
+)
+from loom.core.expr.nodes import (
+    InExpr as InPred,
+)
+from loom.core.expr.nodes import (
+    LeExpr as LePred,
+)
+from loom.core.expr.nodes import (
+    LtExpr as LtPred,
+)
+from loom.core.expr.nodes import (
+    NeExpr as NePred,
+)
+from loom.core.expr.nodes import (
+    NotExpr as NotPred,
+)
+from loom.core.expr.nodes import (
+    OrExpr as OrPred,
+)
 
 
 class _ColOps:
@@ -77,85 +85,6 @@ class _ColOps:
 
     def __invert__(self) -> NotPred:
         return NotPred(operand=self)
-
-
-@dataclass(frozen=True)
-class EqPred(_PredCompose):
-    """Equality predicate ``left == right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class NePred(_PredCompose):
-    """Inequality predicate ``left != right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class GtPred(_PredCompose):
-    """Greater-than predicate ``left > right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class GePred(_PredCompose):
-    """Greater-or-equal predicate ``left >= right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class LtPred(_PredCompose):
-    """Less-than predicate ``left < right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class LePred(_PredCompose):
-    """Less-or-equal predicate ``left <= right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class InPred(_PredCompose):
-    """Membership predicate ``ref IN values``."""
-
-    ref: Any
-    values: Any
-
-
-@dataclass(frozen=True)
-class AndPred(_PredCompose):
-    """Conjunction predicate ``left AND right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class OrPred(_PredCompose):
-    """Disjunction predicate ``left OR right``."""
-
-    left: Any
-    right: Any
-
-
-@dataclass(frozen=True)
-class NotPred(_PredCompose):
-    """Negation predicate ``NOT operand``."""
-
-    operand: Any
 
 
 __all__ = [

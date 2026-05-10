@@ -6,7 +6,7 @@ registration:
 
 1. Load and merge YAML configuration.
 2. Create :class:`~loom.core.di.container.LoomContainer` and register the
-   raw config as an ``APPLICATION``-scope singleton.
+   resolved app config as an ``APPLICATION``-scope singleton.
 3. Execute user-supplied module callables.
 4. Compile all declared ``Job`` subclasses via
    :class:`~loom.core.engine.compiler.UseCaseCompiler`.
@@ -54,9 +54,9 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -82,12 +82,12 @@ from loom.celery.runner import (
 )
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.bootstrap import create_kernel
+from loom.core.config import ConfigContext, ConfigKey
 from loom.core.config.errors import ConfigError
-from loom.core.config.keys import ConfigKey
-from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.discovery._utils import collect_from_modules, import_modules
 from loom.core.engine.compilable import Compilable
+from loom.core.engine.metrics import MetricsAdapter
 from loom.core.job.job import Job
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig
@@ -98,11 +98,6 @@ from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.autocrud import build_auto_routes
-
-if TYPE_CHECKING:
-    from omegaconf import DictConfig
-
-    from loom.core.engine.metrics import MetricsAdapter
 
 _T = TypeVar("_T")
 
@@ -267,13 +262,16 @@ def _connect_worker_signals(
     _SIGNALS_CONNECTED = True
 
 
-def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
+def _resolve_uow_factory(
+    ctx: ConfigContext | Mapping[str, Any],
+) -> tuple[UnitOfWorkFactory | None, SessionManager | None]:
     """Return SQLAlchemy UoW factory when database config is present.
 
     This keeps worker bootstrap lightweight for pure jobs that do not use DB.
     """
+    config = _ensure_config_context(ctx)
     try:
-        db_cfg = section(raw, ConfigKey.DATABASE, _WorkerDbConfig)
+        db_cfg = config.section(ConfigKey.DATABASE, _WorkerDbConfig)
     except ConfigError:
         return None, None
 
@@ -291,19 +289,22 @@ def _resolve_uow_factory(raw: DictConfig) -> tuple[UnitOfWorkFactory | None, Ses
 # ---------------------------------------------------------------------------
 
 
-def _apply_job_config_if_present(raw: DictConfig, job_type: type[Job[Any]]) -> None:
+def _apply_job_config_if_present(
+    ctx: ConfigContext | Mapping[str, Any],
+    job_type: type[Job[Any]],
+) -> None:
     """Apply ``JobConfig`` overrides from YAML to ``job_type``'s ClassVars.
 
     Silently skips when the ``jobs.<JobTypeName>`` section is absent — the
     Job's ClassVar defaults remain unchanged.
 
     Args:
-        raw: Root :class:`omegaconf.DictConfig` returned by
-            :func:`~loom.core.config.loader.load_config`.
+        ctx: Resolved configuration context.
         job_type: Concrete ``Job`` subclass to configure.
     """
+    config = _ensure_config_context(ctx)
     try:
-        cfg = section(raw, f"{ConfigKey.JOBS}.{job_type.__name__}", JobConfig)
+        cfg = config.section(f"{ConfigKey.JOBS}.{job_type.__name__}", JobConfig)
         apply_job_config(job_type, cfg)
     except ConfigError:
         pass  # no override for this job — use ClassVar defaults
@@ -524,25 +525,27 @@ def _discover_compilables_from_config(
     return _discover_from_manifest(discovery_cfg)
 
 
-def _try_discover_components(raw: DictConfig) -> _WorkerResolved:
+def _try_discover_components(ctx: ConfigContext | Mapping[str, Any]) -> _WorkerResolved:
     """Best-effort discovery; returns empty _WorkerResolved if config is absent."""
+    config = _ensure_config_context(ctx)
     try:
-        app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
+        app_cfg = config.section(ConfigKey.APP, _WorkerAppConfig)
         return _discover_compilables_from_config(app_cfg.discovery)
     except (ConfigError, RuntimeError, ValueError, TypeError):
         return _WorkerResolved(compilables=(), jobs=(), models=(), callbacks=())
 
 
 def _resolve_compilables_and_jobs(
-    raw: DictConfig,
+    ctx: ConfigContext | Mapping[str, Any],
     explicit_jobs: Sequence[type[Job[Any]]],
     explicit_use_cases: Sequence[type[Compilable]],
 ) -> _WorkerResolved:
     """Resolve worker components from explicit args and/or discovery config."""
+    config = _ensure_config_context(ctx)
     if explicit_jobs or explicit_use_cases:
         jobs = tuple(explicit_jobs)
         compilables = _merge_unique(explicit_use_cases, jobs)
-        discovered = _try_discover_components(raw)
+        discovered = _try_discover_components(config)
         extra = tuple(c for c in discovered.compilables if c not in set(compilables))
         return _WorkerResolved(
             compilables=(*compilables, *extra),
@@ -552,7 +555,7 @@ def _resolve_compilables_and_jobs(
         )
 
     try:
-        app_cfg = section(raw, ConfigKey.APP, _WorkerAppConfig)
+        app_cfg = config.section(ConfigKey.APP, _WorkerAppConfig)
     except ConfigError as exc:
         raise RuntimeError(
             "No jobs provided and no app.discovery configured for worker bootstrap."
@@ -594,10 +597,13 @@ def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel],
 # ---------------------------------------------------------------------------
 
 
-def _build_observability_runtime(raw: DictConfig) -> ObservabilityRuntime:
+def _build_observability_runtime(
+    ctx: ConfigContext | Mapping[str, Any],
+) -> ObservabilityRuntime:
     """Build the shared observability runtime from top-level config."""
+    config = _ensure_config_context(ctx)
     try:
-        observability_cfg = section(raw, ConfigKey.OBSERVABILITY, ObservabilityConfig)
+        observability_cfg = config.section(ConfigKey.OBSERVABILITY, ObservabilityConfig)
     except ConfigError:
         observability_cfg = ObservabilityConfig()
     return ObservabilityRuntime.from_config(observability_cfg)
@@ -640,6 +646,13 @@ def _emit_worker_init_graph(components: _WorkerResolved) -> None:
         callbacks=len(components.callbacks),
         models=len(components.models),
     )
+
+
+def _ensure_config_context(source: ConfigContext | Mapping[str, Any]) -> ConfigContext:
+    """Return a :class:`ConfigContext` for any supported config input."""
+    if isinstance(source, ConfigContext):
+        return source
+    return ConfigContext.from_dict(source)
 
 
 # ---------------------------------------------------------------------------
@@ -750,21 +763,22 @@ def bootstrap_worker(
         )
         result.celery_app.start()
     """
-    raw = load_config(*config_paths)
-    celery_cfg = section(raw, ConfigKey.CELERY, CeleryConfig)
-    observability_runtime = _build_observability_runtime(raw)
+    ctx = ConfigContext.from_yaml(*config_paths)
+    app_cfg = ctx.section_optional(ConfigKey.APP, _WorkerAppConfig) or _WorkerAppConfig()
+    celery_cfg = ctx.section(ConfigKey.CELERY, CeleryConfig)
+    observability_runtime = _build_observability_runtime(ctx)
     async_runtime = _build_async_runtime(celery_cfg.runtime)
 
-    resolved = _resolve_compilables_and_jobs(raw, jobs, use_cases)
+    resolved = _resolve_compilables_and_jobs(ctx, jobs, use_cases)
     all_compilables = _merge_unique(
         resolved.compilables,
         _use_cases_from_interfaces(interfaces),
     )
 
     for job_type in resolved.jobs:
-        _apply_job_config_if_present(raw, job_type)
+        _apply_job_config_if_present(ctx, job_type)
 
-    uow_factory, session_manager = _resolve_uow_factory(raw)
+    uow_factory, session_manager = _resolve_uow_factory(ctx)
     final_models, runtime_modules = _compile_db_layer(session_manager, resolved.models, modules)
 
     resolved = _WorkerResolved(
@@ -776,7 +790,7 @@ def bootstrap_worker(
     _emit_worker_init_graph(resolved)
 
     kernel = create_kernel(
-        config=raw,
+        config=app_cfg,
         use_cases=resolved.compilables,
         modules=runtime_modules,
         metrics=metrics,

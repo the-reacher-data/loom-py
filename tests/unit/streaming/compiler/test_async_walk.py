@@ -47,7 +47,7 @@ class TestAsyncBridgeDetection:
         streaming_kafka_config: DictConfig,
     ) -> None:
         flow = _flow_with_async_inside_router()
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.needs_async_bridge is True
 
@@ -60,7 +60,7 @@ class TestAsyncBridgeDetection:
             source=FromTopic("in", payload=Order),
             process=Process(IntoTopic("out", payload=Result)),
         )
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.needs_async_bridge is False
 
@@ -86,6 +86,6 @@ class TestAsyncBridgeDetection:
                 )
             ),
         )
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.needs_async_bridge is True

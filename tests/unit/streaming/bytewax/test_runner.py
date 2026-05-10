@@ -9,6 +9,7 @@ import uvloop
 from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
+from loom.core.config import ConfigContext
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -105,12 +106,15 @@ class TestStreamingRunner:
         assert kwargs["addresses"] == ["127.0.0.1:2101", "127.0.0.1:2102"]
         assert shutdown_calls == ["done"]
 
-    def test_from_dict_loads_runtime_section(
+    def test_from_context_loads_runtime_section(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
     ) -> None:
-        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        runner = StreamingRunner.from_context(
+            bytewax_stream_flow,
+            config=ConfigContext.from_dict(bytewax_runtime_config_dict),
+        )
 
         assert runner._runtime.workers_per_process == 2
         assert runner._runtime.process_id == 1
@@ -125,24 +129,7 @@ class TestStreamingRunner:
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
     ) -> None:
-        config = dict(bytewax_runtime_config_dict)
-        streaming = config["streaming"]
-        assert isinstance(streaming, dict)
-        runtime = dict(streaming["runtime"])
-        runtime["observability"] = {
-            "log": {"enabled": False},
-            "otel": {
-                "enabled": True,
-                "config": {
-                    "service_name": "loom-streaming",
-                    "tracer_name": "loom.streaming",
-                    "endpoint": "",
-                },
-            },
-        }
-        config["streaming"] = {"runtime": runtime}
-
-        runner = StreamingRunner.from_dict(bytewax_stream_flow, config)
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
 
         assert any(
             isinstance(obs, OtelLifecycleObserver)

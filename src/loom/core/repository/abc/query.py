@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 
@@ -56,8 +55,7 @@ class FilterOp(StrEnum):
     NOT_EXISTS = "not_exists"
 
 
-@dataclass(frozen=True)
-class FilterSpec:
+class FilterSpec(LoomFrozenStruct, frozen=True):
     """A single field filter condition.
 
     Args:
@@ -77,8 +75,7 @@ class FilterSpec:
     value: Any = None
 
 
-@dataclass(frozen=True)
-class FilterGroup:
+class FilterGroup(LoomFrozenStruct, frozen=True):
     """A group of filter conditions combined with AND or OR logic.
 
     Args:
@@ -100,8 +97,7 @@ class FilterGroup:
     op: Literal["AND", "OR"] = "AND"
 
 
-@dataclass(frozen=True)
-class SortSpec:
+class SortSpec(LoomFrozenStruct, frozen=True):
     """A single sort directive applied to a query.
 
     Args:
@@ -117,8 +113,7 @@ class SortSpec:
     direction: Literal["ASC", "DESC"] = "ASC"
 
 
-@dataclass(frozen=True)
-class QuerySpec:
+class QuerySpec(LoomFrozenStruct, frozen=True):
     """Structured query contract for list operations.
 
     Replaces the flat ``FilterParams`` dict with an explicit, type-safe
@@ -147,7 +142,7 @@ class QuerySpec:
     """
 
     filters: FilterGroup | None = None
-    sort: tuple[SortSpec, ...] = field(default_factory=tuple)
+    sort: tuple[SortSpec, ...] = msgspec.field(default_factory=tuple)
     pagination: PaginationMode = PaginationMode.OFFSET
     limit: int = 50
     page: int = 1

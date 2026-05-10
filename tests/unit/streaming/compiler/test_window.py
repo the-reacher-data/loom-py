@@ -40,13 +40,13 @@ class TestWindowStrategyValidation:
         )
 
         if error_fragment is None:
-            plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+            plan = compile_flow(flow, config=streaming_kafka_config)
             batch_node = plan.nodes[0].node
             assert isinstance(batch_node, CollectBatch)
             assert batch_node.window is WindowStrategy.COLLECT
             return
 
         with pytest.raises(CompilationError) as exc_info:
-            compile_flow(flow, runtime_config=streaming_kafka_config)
+            compile_flow(flow, config=streaming_kafka_config)
 
         assert error_fragment in str(exc_info.value)

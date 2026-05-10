@@ -116,7 +116,7 @@ class TestForkCompiler:
         self,
         streaming_kafka_config: DictConfig,
     ) -> None:
-        plan = compile_flow(_fork_when_flow(), runtime_config=streaming_kafka_config)
+        plan = compile_flow(_fork_when_flow(), config=streaming_kafka_config)
 
         topics = {sink.topic for sink in plan.terminal_sinks.values()}
         assert topics == {"orders.a", "orders.b", "orders.default"}
@@ -125,7 +125,7 @@ class TestForkCompiler:
         self,
         streaming_kafka_config: DictConfig,
     ) -> None:
-        plan = compile_flow(_fork_by_flow(), runtime_config=streaming_kafka_config)
+        plan = compile_flow(_fork_by_flow(), config=streaming_kafka_config)
 
         topics = {sink.topic for sink in plan.terminal_sinks.values()}
         assert topics == {"orders.a", "orders.b", "orders.default"}

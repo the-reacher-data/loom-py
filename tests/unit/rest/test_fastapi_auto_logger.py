@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from omegaconf import OmegaConf
 
 import loom.rest.fastapi.auto as auto
+from loom.core.config import ConfigContext
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus.middleware import PrometheusMiddleware
@@ -50,9 +51,14 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
     captured: dict[str, Any] = {}
     runtime = ObservabilityRuntime.noop()
 
-    def _fake_load_config(*config_paths: str) -> Any:
-        del config_paths
-        return raw
+    def _fake_from_yaml(
+        cls: type[ConfigContext],
+        *config_paths: str,
+        resolvers: Any = (),
+        binder: Any = None,
+    ) -> ConfigContext:
+        del config_paths, resolvers, binder, cls
+        return ConfigContext.from_dict(cast(dict[str, Any], OmegaConf.to_container(raw)))
 
     def _fake_from_config(
         cls: type[ObservabilityRuntime], config: ObservabilityConfig
@@ -96,7 +102,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         captured["runtime"] = observability_runtime
         return FastAPI()
 
-    monkeypatch.setattr(auto, "load_config", _fake_load_config)
+    monkeypatch.setattr(ConfigContext, "from_yaml", classmethod(_fake_from_yaml))
     monkeypatch.setattr(
         _AUTO.ObservabilityRuntime,
         "from_config",

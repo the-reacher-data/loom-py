@@ -20,7 +20,7 @@ class TestCompilerFlowExamples:
         self,
         flow_case: StreamFlowCase,
     ) -> None:
-        plan = compile_flow(flow_case.flow, runtime_config=flow_case.config)
+        plan = compile_flow(flow_case.flow, config=flow_case.config)
 
         _ASSERTIONS[flow_case.flow.name](plan)
 

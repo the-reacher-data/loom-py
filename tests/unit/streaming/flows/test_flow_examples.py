@@ -58,7 +58,7 @@ class TestBytewaxFlowExamples:
         runner = (
             StreamingTestRunner.from_flow(
                 flow,
-                runtime_config=streaming_kafka_config,
+                config=streaming_kafka_config,
             )
             .with_messages([_message(_Order(order_id="o-1", amount=10))])
             .capture_errors(ErrorKind.TASK)
@@ -94,7 +94,7 @@ class TestBytewaxFlowExamples:
                 ),
             ),
         )
-        runner = StreamingTestRunner.from_flow(flow, runtime_config=streaming_kafka_config)
+        runner = StreamingTestRunner.from_flow(flow, config=streaming_kafka_config)
         runner.capture_errors(ErrorKind.TASK)
         msg = _message(_Order(order_id="ORD-1", amount=1))
 
@@ -126,7 +126,7 @@ class TestBytewaxFlowExamples:
             ),
             output=IntoTopic("orders.out", payload=_ValidatedOrder),
         )
-        runner = StreamingTestRunner.from_flow(flow, runtime_config=streaming_kafka_config)
+        runner = StreamingTestRunner.from_flow(flow, config=streaming_kafka_config)
         runner.with_messages([_message(_Order(order_id="ord-1", amount=10))]).run()
 
         assert len(runner.output) == 1
@@ -136,7 +136,7 @@ class TestBytewaxFlowExamples:
 def _run_flow_case(flow_case: StreamFlowCase) -> list[Message[Any]]:
     runner = StreamingTestRunner.from_flow(
         flow_case.flow,
-        runtime_config=flow_case.config,
+        config=flow_case.config,
     ).with_messages(list(flow_case.input_messages))
     runner.run()
     return runner.output

@@ -47,7 +47,7 @@ def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
 ) -> None:
     runner = StreamingTestRunner.from_flow(
         async_flow_case.flow,
-        runtime_config=async_flow_case.config,
+        config=async_flow_case.config,
         observability_runtime=ObservabilityRuntime([recording_flow_observer]),
     ).with_messages(list(async_flow_case.input_messages))
 

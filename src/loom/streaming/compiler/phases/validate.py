@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from omegaconf import DictConfig
-
-from loom.core.config import ConfigError, section
+from loom.core.config import ConfigContext, ConfigError
+from loom.core.config.keys import ConfigKey
 from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeError
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
@@ -22,12 +21,12 @@ from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, R
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
-def validate_kafka(flow: StreamFlow[Any, Any], cfg: DictConfig) -> list[str]:
+def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
     """Validate Kafka settings required by *flow*."""
     if not _uses_kafka(flow):
         return []
     try:
-        section(cfg, "kafka", KafkaSettings)
+        ctx.section(ConfigKey.KAFKA, KafkaSettings)
         return []
     except ConfigError as exc:
         return [f"kafka: {exc}"]

@@ -77,7 +77,18 @@ def bytewax_runtime_config_dict() -> dict[str, object]:
                     "db_dir": "/var/lib/loom/tests/bytewax-recovery",
                     "backup_interval_ms": 30000,
                 },
-            }
+            },
+        },
+        "observability": {
+            "log": {"enabled": False},
+            "otel": {
+                "enabled": True,
+                "config": {
+                    "service_name": "loom-streaming",
+                    "tracer_name": "loom.streaming",
+                    "endpoint": "",
+                },
+            },
         },
     }
 

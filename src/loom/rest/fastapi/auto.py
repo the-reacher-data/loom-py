@@ -7,21 +7,18 @@ import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from omegaconf import DictConfig
-    from prometheus_client import CollectorRegistry
+from typing import Any
 
 import msgspec
 import prometheus_client
 from fastapi import FastAPI
+from prometheus_client import CollectorRegistry
 from starlette.responses import Response
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap import KernelRuntime, create_kernel
+from loom.core.config import ConfigContext, ConfigKey
 from loom.core.config.errors import ConfigError
-from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.discovery import (
@@ -120,7 +117,7 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
 
 
 def _build_celery_service(
-    raw: DictConfig,
+    ctx: ConfigContext,
     result: KernelRuntime,
     observability_runtime: ObservabilityRuntime | None,
 ) -> Any | None:
@@ -131,7 +128,7 @@ def _build_celery_service(
     fall back to :func:`_build_inline_service`.
 
     Args:
-        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        ctx: Resolved configuration context.
         result: Kernel runtime carrying container, factory and executor.
 
     Returns:
@@ -148,7 +145,7 @@ def _build_celery_service(
             CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
         )
 
-        celery_cfg = section(raw, "celery", _CC)
+        celery_cfg = ctx.section(ConfigKey.CELERY, _CC)
         return CeleryJobService(
             create_celery_app(celery_cfg),
             metrics=result.metrics,
@@ -180,7 +177,7 @@ def _build_inline_service(result: KernelRuntime) -> InlineJobService:
 
 
 def _configure_job_service(
-    raw: DictConfig,
+    ctx: ConfigContext,
     result: KernelRuntime,
     observability_runtime: ObservabilityRuntime | None,
 ) -> None:
@@ -196,17 +193,17 @@ def _configure_job_service(
     once and shared across all requests.
 
     Args:
-        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        ctx: Resolved configuration context.
         result: Kernel runtime carrying container, factory and executor.
     """
-    svc = _build_celery_service(raw, result, observability_runtime) or _build_inline_service(result)
+    svc = _build_celery_service(ctx, result, observability_runtime) or _build_inline_service(result)
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
-def _load_observability_config(raw: DictConfig) -> ObservabilityConfig:
+def _load_observability_config(ctx: ConfigContext) -> ObservabilityConfig:
     """Load top-level observability config or fall back to defaults."""
     try:
-        return section(raw, "observability", ObservabilityConfig)
+        return ctx.section(ConfigKey.OBSERVABILITY, ObservabilityConfig)
     except ConfigError:
         return ObservabilityConfig()
 
@@ -355,11 +352,13 @@ def create_app(
 
     Config files are merged left-to-right — later files override earlier ones.
     Each file may also declare a top-level ``includes`` list to pull in
-    additional base files before its own values (see :func:`load_config`).
+    additional base files before its own values (resolved by
+    :meth:`loom.core.config.ConfigContext.from_yaml`).
 
     ``TraceIdMiddleware`` is mounted automatically. Structured logging and
     OTEL come from the top-level ``observability:`` section. Prometheus
-    middleware is mounted when ``metrics.enabled`` is ``true``.
+    middleware is mounted when ``observability.prometheus.enabled`` is
+    ``true``.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -369,7 +368,8 @@ def create_app(
             ``PrometheusMiddleware`` and the scrape endpoint.  Defaults to the
             global registry.  Pass a fresh ``CollectorRegistry()`` in tests to
             avoid ``ValueError: Duplicated timeseries`` when multiple apps with
-            ``metrics.enabled: true`` are created in the same process.
+            ``observability.prometheus.enabled: true`` are created in the same
+            process.
 
     Returns:
         Configured :class:`fastapi.FastAPI` application, ready to serve.
@@ -393,10 +393,10 @@ def create_app(
     if not config_paths:
         raise ConfigError("create_app requires at least one config file path.")
 
-    raw = load_config(*config_paths)
-    app_cfg = section(raw, "app", _AppConfig)
-    db_cfg = section(raw, "database", _DatabaseConfig)
-    observability_cfg = _load_observability_config(raw)
+    ctx = ConfigContext.from_yaml(*config_paths)
+    app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
+    db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
+    observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = _build_metrics_config(observability_cfg.prometheus)
 
@@ -415,7 +415,7 @@ def create_app(
         effective_echo,
         metrics=metrics_adapter,
     )
-    _configure_job_service(raw, result, observability_runtime)
+    _configure_job_service(ctx, result, observability_runtime)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

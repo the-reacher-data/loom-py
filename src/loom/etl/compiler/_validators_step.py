@@ -10,6 +10,7 @@ from typing import Any, Protocol, cast
 
 import msgspec
 
+from loom.core.model import LoomFrozenStruct
 from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
@@ -245,9 +246,9 @@ def _is_param_expr(value: Any) -> bool:
 
 
 def _predicate_shape(node: Any) -> _PredicateShape:
-    fields = getattr(type(node), "__dataclass_fields__", None)
-    if not isinstance(fields, dict):
+    if not isinstance(node, LoomFrozenStruct):
         return _PredicateShape.UNKNOWN
+    fields = {field.name for field in msgspec.structs.fields(type(node))}
     if _has_fields(fields, _PredicateField.LEFT, _PredicateField.RIGHT):
         return _PredicateShape.BINARY
     if _has_fields(fields, _PredicateField.REF, _PredicateField.VALUES):
@@ -261,7 +262,7 @@ def _is_predicate_node_like(value: Any) -> bool:
     return _predicate_shape(value) is not _PredicateShape.UNKNOWN
 
 
-def _has_fields(fields: dict[str, Any], *expected: _PredicateField) -> bool:
+def _has_fields(fields: set[str], *expected: _PredicateField) -> bool:
     if len(fields) != len(expected):
         return False
     return all(field.value in fields for field in expected)

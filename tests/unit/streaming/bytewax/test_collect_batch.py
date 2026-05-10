@@ -41,7 +41,7 @@ class TestCollectBatch:
         )
         runner = StreamingTestRunner.from_flow(
             flow,
-            runtime_config=streaming_kafka_config,
+            config=streaming_kafka_config,
         ).with_messages([build_message(Order(order_id="o-1"))])
 
         runner.run()

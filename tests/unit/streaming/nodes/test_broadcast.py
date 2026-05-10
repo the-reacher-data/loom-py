@@ -28,7 +28,7 @@ class TestBroadcast:
         broadcast_flow: Any,
         streaming_kafka_config: DictConfig,
     ) -> None:
-        plan = compile_flow(broadcast_flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(broadcast_flow, config=streaming_kafka_config)
 
         assert plan.name == "orders_broadcast"
         assert plan.output is None
@@ -42,7 +42,7 @@ class TestBroadcast:
         streaming_kafka_config: DictConfig,
     ) -> None:
         with pytest.raises(CompilationError, match="Broadcast"):
-            compile_flow(broadcast_bad_flow, runtime_config=streaming_kafka_config)
+            compile_flow(broadcast_bad_flow, config=streaming_kafka_config)
 
     def test_broadcast_delivers_one_output_per_branch_per_message(
         self,
@@ -109,7 +109,7 @@ class TestBroadcast:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.name == "orders_broadcast_discard"
         assert plan.terminal_sinks == {}
