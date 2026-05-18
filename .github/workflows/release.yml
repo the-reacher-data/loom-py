@@ -87,7 +87,7 @@ jobs:
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
 
-      - name: Open version bump PR
+      - name: Create or merge version bump PR
         if: ${{ steps.version.outputs.deploy == 'true' }}
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -99,22 +99,36 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           BRANCH="docs/release-v${VERSION}"
-          git checkout -B "${BRANCH}"
 
-          if [ -f CHANGELOG_RELEASE.md ]; then
-            HEADER=$(head -1 CHANGELOG_RELEASE.md)
-            if ! grep -qF "${HEADER}" CHANGELOG.md; then
-              cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
-              mv CHANGELOG_MERGED.md CHANGELOG.md
-            fi
+          if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+            echo "Release tag v${VERSION} already exists; skipping version bump PR."
+            exit 0
           fi
 
-          git add pyproject.toml CHANGELOG.md
-          git diff --staged --quiet && exit 0
-          git commit -m "chore(release): bump version to ${VERSION}"
-          git push origin "${BRANCH}" --force
+          open_pr_count=$(gh pr list --head "${BRANCH}" --state open --json number --jq 'length')
+          all_pr_count=$(gh pr list --head "${BRANCH}" --state all --json number --jq 'length')
 
-          if ! gh pr list --head "${BRANCH}" --state open --json number --jq '.[0].number' | grep -qE '^[0-9]+$'; then
+          if [ "${all_pr_count}" -gt 0 ] && [ "${open_pr_count}" -eq 0 ]; then
+            echo "Release PR ${BRANCH} already exists in a closed state; skipping duplicate creation."
+            exit 0
+          fi
+
+          if [ "${open_pr_count}" -eq 0 ]; then
+            git checkout -B "${BRANCH}"
+
+            if [ -f CHANGELOG_RELEASE.md ]; then
+              HEADER=$(head -1 CHANGELOG_RELEASE.md)
+              if ! grep -qF "${HEADER}" CHANGELOG.md; then
+                cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
+                mv CHANGELOG_MERGED.md CHANGELOG.md
+              fi
+            fi
+
+            git add pyproject.toml CHANGELOG.md
+            git diff --staged --quiet && exit 0
+            git commit -m "chore(release): bump version to ${VERSION}"
+            git push origin "${BRANCH}" --force
+
             gh pr create \
               --title "chore(release): bump version to ${VERSION}" \
               --body "Automated version bump and changelog update after release v${VERSION}." \
