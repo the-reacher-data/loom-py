@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import flush_runner
 from loom.etl.checkpoint import CheckpointStore, TempCleaner
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
@@ -161,7 +162,11 @@ class ETLRunner:
         try:
             self._executor.run_pipeline(plan, params, ctx)
         finally:
-            self._flush_prometheus()
+            flush_runner(self)
+
+    def flush(self) -> None:
+        """Flush buffered ETL observability sinks after a run."""
+        self._executor.flush()
 
     def cleanup_correlation(self, correlation_id: str) -> None:
         """Remove all CORRELATION-scope intermediates for *correlation_id*."""
@@ -171,13 +176,6 @@ class ETLRunner:
                 "to be configured in storage YAML."
             )
         self._checkpoint_store.cleanup_correlation(correlation_id)
-
-    def _flush_prometheus(self) -> None:
-        """Flush any configured Prometheus batch adapter after a run."""
-        for observer in self._executor.observability.observers:
-            flush = getattr(observer, "flush", None)
-            if callable(flush):
-                flush()
 
 
 __all__ = ["ETLRunner", "InvalidStageError"]

@@ -53,7 +53,7 @@ class TestCompileFlowWithMultiSource:
             process=Process(IntoTopic("out", payload=Result)),
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert isinstance(plan.source, CompiledMultiSource)
         assert plan.source.shape is StreamShape.BATCH
@@ -72,6 +72,6 @@ class TestCompileFlowWithMultiSource:
             process=Process(IntoTopic("out", payload=Result)),
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert isinstance(plan.source, CompiledSingleSource)

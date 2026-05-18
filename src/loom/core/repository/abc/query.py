@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, Literal, TypeVar
 
 import msgspec
+
+from loom.core.model import LoomFrozenStruct
 
 OutputT = TypeVar("OutputT", bound=msgspec.Struct, covariant=True)
 
@@ -54,8 +55,7 @@ class FilterOp(StrEnum):
     NOT_EXISTS = "not_exists"
 
 
-@dataclass(frozen=True)
-class FilterSpec:
+class FilterSpec(LoomFrozenStruct, frozen=True):
     """A single field filter condition.
 
     Args:
@@ -75,8 +75,7 @@ class FilterSpec:
     value: Any = None
 
 
-@dataclass(frozen=True)
-class FilterGroup:
+class FilterGroup(LoomFrozenStruct, frozen=True):
     """A group of filter conditions combined with AND or OR logic.
 
     Args:
@@ -98,8 +97,7 @@ class FilterGroup:
     op: Literal["AND", "OR"] = "AND"
 
 
-@dataclass(frozen=True)
-class SortSpec:
+class SortSpec(LoomFrozenStruct, frozen=True):
     """A single sort directive applied to a query.
 
     Args:
@@ -115,8 +113,7 @@ class SortSpec:
     direction: Literal["ASC", "DESC"] = "ASC"
 
 
-@dataclass(frozen=True)
-class QuerySpec:
+class QuerySpec(LoomFrozenStruct, frozen=True):
     """Structured query contract for list operations.
 
     Replaces the flat ``FilterParams`` dict with an explicit, type-safe
@@ -145,14 +142,14 @@ class QuerySpec:
     """
 
     filters: FilterGroup | None = None
-    sort: tuple[SortSpec, ...] = field(default_factory=tuple)
+    sort: tuple[SortSpec, ...] = msgspec.field(default_factory=tuple)
     pagination: PaginationMode = PaginationMode.OFFSET
     limit: int = 50
     page: int = 1
     cursor: str | None = None
 
 
-class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
+class CursorResult(LoomFrozenStruct, Generic[OutputT], frozen=True, kw_only=True, rename="camel"):
     """Result of a cursor-paginated query.
 
     Attributes:
@@ -167,7 +164,7 @@ class CursorResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel
     has_next: bool
 
 
-class PageParams(msgspec.Struct, kw_only=True):
+class PageParams(LoomFrozenStruct, frozen=True, kw_only=True):
     """Pagination parameters for list queries.
 
     Attributes:
@@ -190,7 +187,7 @@ class PageParams(msgspec.Struct, kw_only=True):
         return (self.page - 1) * self.limit
 
 
-class FilterParams(msgspec.Struct, kw_only=True):
+class FilterParams(LoomFrozenStruct, frozen=True, kw_only=True):
     """Generic filter container for list queries.
 
     Attributes:
@@ -200,7 +197,7 @@ class FilterParams(msgspec.Struct, kw_only=True):
     filters: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
-class PageResult(msgspec.Struct, Generic[OutputT], kw_only=True, rename="camel"):
+class PageResult(LoomFrozenStruct, Generic[OutputT], frozen=True, kw_only=True, rename="camel"):
     """Paginated result set returned by list queries.
 
     Attributes:

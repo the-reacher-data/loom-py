@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
-import sys
 from collections.abc import Mapping
-from typing import Any, TypeGuard, get_type_hints
+from typing import Any, TypeGuard
 
-import msgspec
-from omegaconf import DictConfig
-
-from loom.core.config import ConfigBinding, ConfigError, section
-from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.core.config import ConfigBinding, ConfigContext, ConfigError
 from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
@@ -24,7 +18,7 @@ from loom.streaming.nodes._with import With, WithAsync
 
 def resolve_flow_bindings(
     flow: StreamFlow[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
 ) -> tuple[StreamFlow[Any, Any], list[str]]:
     """Resolve every config binding reachable from a streaming flow.
 
@@ -33,13 +27,13 @@ def resolve_flow_bindings(
 
     Args:
         flow: User-declared streaming flow.
-        runtime_config: Resolved runtime configuration.
+        ctx: Runtime config context used for binding resolution.
 
     Returns:
         A resolved flow plus a list of binding-resolution errors.
     """
     errors: list[str] = []
-    resolved_process = _resolve_process(flow.process, runtime_config, errors)
+    resolved_process = _resolve_process(flow.process, ctx, errors)
     resolved_flow = StreamFlow(
         name=flow.name,
         source=flow.source,
@@ -52,16 +46,16 @@ def resolve_flow_bindings(
 
 def _resolve_process(
     process: Process[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> Process[Any, Any]:
-    nodes = tuple(_resolve_process_node(node, runtime_config, errors) for node in process.nodes)
+    nodes = tuple(_resolve_process_node(node, ctx, errors) for node in process.nodes)
     return Process(*nodes)
 
 
 def _resolve_process_node(
     node: ProcessNode,
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> ProcessNode:
     if _is_step_class(node):
@@ -71,99 +65,58 @@ def _resolve_process_node(
             errors.append(f"step {node.__qualname__}: {exc}")
             return node
     if isinstance(node, ConfigBinding):
-        resolved = _resolve_binding(node, runtime_config, errors)
+        resolved = _resolve_binding(node, ctx, errors)
         if _is_process_node(resolved):
             return resolved
         binding_name = node.config_path or node.target.__name__
         errors.append(f"binding {binding_name}: resolved object is not a process node")
         return node
     if isinstance(node, With):
-        return _resolve_with(node, runtime_config, errors)
+        return _resolve_with(node, ctx, errors)
     if isinstance(node, WithAsync):
-        return _resolve_with_async(node, runtime_config, errors)
+        return _resolve_with_async(node, ctx, errors)
     if isinstance(node, Router):
-        return _resolve_router(node, runtime_config, errors)
+        return _resolve_router(node, ctx, errors)
     if isinstance(node, Fork):
-        return _resolve_fork(node, runtime_config, errors)
+        return _resolve_fork(node, ctx, errors)
     if isinstance(node, Broadcast):
-        return _resolve_broadcast(node, runtime_config, errors)
+        return _resolve_broadcast(node, ctx, errors)
     return node
 
 
 def _resolve_binding(
     binding: ConfigBinding,
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> object:
     try:
-        raw_config = (
-            section(runtime_config, binding.config_path, dict) if binding.config_path else {}
-        )
-        return _instantiate_binding(binding.target, raw_config, binding.overrides)
-    except (ConfigError, TypeError, ValueError, msgspec.ValidationError) as exc:
+        return ctx.resolve(binding)
+    except (ConfigError, TypeError, ValueError) as exc:
         errors.append(f"binding {binding.config_path or binding.target.__name__}: {exc}")
         return binding
 
 
-def _instantiate_binding(
-    target: type[object],
-    raw_config: Mapping[str, object],
-    overrides: Mapping[str, object],
-) -> object:
-    resolved_kwargs = dict(raw_config)
-    resolved_kwargs.update(overrides)
-    signature = inspect.signature(target.__init__)
-    annotations = _get_type_hints(target)
-
-    for name, param in signature.parameters.items():
-        if name == "self" or param.kind in {
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        }:
-            continue
-        annotation = annotations.get(name, param.annotation)
-        if not _is_struct_annotation(annotation):
-            continue
-        if name not in resolved_kwargs:
-            if param.default is inspect.Parameter.empty:
-                raise TypeError(f"{target.__name__} requires config field {name!r}")
-            continue
-        resolved_kwargs[name] = msgspec.convert(resolved_kwargs[name], annotation, strict=False)
-
-    return target(**resolved_kwargs)
-
-
-def _get_type_hints(target: type[object]) -> dict[str, object]:
-    module = sys.modules.get(target.__module__)
-    globalns = getattr(module, "__dict__", {}) if module is not None else {}
-    return get_type_hints(target.__init__, globalns=globalns)
-
-
-def _is_struct_annotation(annotation: object) -> bool:
-    return isinstance(annotation, type) and issubclass(annotation, (LoomStruct, LoomFrozenStruct))
-
-
 def _resolve_with(
     node: With[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> With[Any, Any]:
-    resolved_process = _resolve_process(node.process, runtime_config, errors)
-    resolved_deps = _resolve_dependencies(node.sync_contexts, runtime_config, errors)
-    resolved_deps.update(_resolve_dependencies(node.context_factories, runtime_config, errors))
-    resolved_deps.update(_resolve_dependencies(node.plain_deps, runtime_config, errors))
+    resolved_process = _resolve_process(node.process, ctx, errors)
+    resolved_deps = _resolve_dependencies(node.sync_contexts, ctx, errors)
+    resolved_deps.update(_resolve_dependencies(node.context_factories, ctx, errors))
+    resolved_deps.update(_resolve_dependencies(node.plain_deps, ctx, errors))
     return With(scope=node.scope, process=resolved_process, **resolved_deps)
 
 
 def _resolve_with_async(
     node: WithAsync[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> WithAsync[Any, Any]:
-    resolved_process = _resolve_process(node.process, runtime_config, errors)
-    resolved_deps = _resolve_dependencies(node.async_contexts, runtime_config, errors)
-    resolved_deps.update(_resolve_dependencies(node.context_factories, runtime_config, errors))
-    resolved_deps.update(_resolve_dependencies(node.plain_deps, runtime_config, errors))
+    resolved_process = _resolve_process(node.process, ctx, errors)
+    resolved_deps = _resolve_dependencies(node.async_contexts, ctx, errors)
+    resolved_deps.update(_resolve_dependencies(node.context_factories, ctx, errors))
+    resolved_deps.update(_resolve_dependencies(node.plain_deps, ctx, errors))
     return WithAsync(
         scope=node.scope,
         max_concurrency=node.max_concurrency,
@@ -175,49 +128,42 @@ def _resolve_with_async(
 
 def _resolve_router(
     node: Router[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> Router[Any, Any]:
-    default = _resolve_process(node.default, runtime_config, errors) if node.default else None
-    routes = {
-        key: _resolve_process(process, runtime_config, errors)
-        for key, process in node.routes.items()
-    }
+    default = _resolve_process(node.default, ctx, errors) if node.default else None
+    routes = {key: _resolve_process(process, ctx, errors) for key, process in node.routes.items()}
     predicate_routes = tuple(
         Route(
             when=route.when,
-            process=_resolve_process(route.process, runtime_config, errors),
+            process=_resolve_process(route.process, ctx, errors),
         )
         for route in node.predicate_routes
     )
     return Router(
-        selector=node.selector,
-        routes=routes,
-        predicate_routes=predicate_routes,
-        default=default,
+        selector=node.selector, routes=routes, predicate_routes=predicate_routes, default=default
     )
 
 
 def _resolve_fork(
     node: Fork[Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> Fork[Any]:
-    default = _resolve_process(node.default, runtime_config, errors) if node.default else None
+    default = _resolve_process(node.default, ctx, errors) if node.default else None
     if node.kind is ForkKind.KEYED:
         selector = node.selector
         if selector is None:
             errors.append("fork selector missing for keyed fork")
             return node
         routes = {
-            key: _resolve_process(process, runtime_config, errors)
-            for key, process in node.routes.items()
+            key: _resolve_process(process, ctx, errors) for key, process in node.routes.items()
         }
         return Fork.by(selector, routes, default=default)
     predicate_routes = tuple(
         ForkRoute(
             when=route.when,
-            process=_resolve_process(route.process, runtime_config, errors),
+            process=_resolve_process(route.process, ctx, errors),
         )
         for route in node.predicate_routes
     )
@@ -226,12 +172,12 @@ def _resolve_fork(
 
 def _resolve_broadcast(
     node: Broadcast[Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> Broadcast[Any]:
     routes = tuple(
         BroadcastRoute(
-            process=_resolve_process(route.process, runtime_config, errors),
+            process=_resolve_process(route.process, ctx, errors),
             output=route.output,
         )
         for route in node.routes
@@ -241,18 +187,15 @@ def _resolve_broadcast(
 
 def _resolve_dependencies(
     dependencies: Mapping[str, object],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     errors: list[str],
 ) -> dict[str, object]:
-    resolved: dict[str, object] = {}
-    for name, value in dependencies.items():
-        resolved[name] = _resolve_dependency(value, runtime_config, errors)
-    return resolved
+    return {name: _resolve_dependency(value, ctx, errors) for name, value in dependencies.items()}
 
 
-def _resolve_dependency(value: object, runtime_config: DictConfig, errors: list[str]) -> object:
+def _resolve_dependency(value: object, ctx: ConfigContext, errors: list[str]) -> object:
     if isinstance(value, ConfigBinding):
-        return _resolve_binding(value, runtime_config, errors)
+        return _resolve_binding(value, ctx, errors)
     return value
 
 

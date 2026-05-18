@@ -47,7 +47,7 @@ class TestWithCompiler:
         )
 
         with pytest.raises(CompilationError, match="ContextFactory"):
-            compile_flow(flow, runtime_config=OmegaConf.create({}))
+            compile_flow(flow, config=OmegaConf.create({}))
 
     def test_compile_succeeds_on_batch_scope_with_context_factory(
         self,
@@ -74,7 +74,7 @@ class TestWithCompiler:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.name == "test"
 
@@ -100,4 +100,4 @@ class TestWithCompiler:
         with pytest.raises(
             CompilationError, match="WithAsync\\(process=\\.\\.\\.\\) only supports"
         ):
-            compile_flow(flow, runtime_config=streaming_kafka_config)
+            compile_flow(flow, config=streaming_kafka_config)

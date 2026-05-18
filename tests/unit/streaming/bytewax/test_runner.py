@@ -9,6 +9,8 @@ import uvloop
 from bytewax.dataflow import Dataflow
 from pytest import MonkeyPatch
 
+from loom.core.async_bridge import build_backend_options as _build_backend_options
+from loom.core.config import ConfigContext
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -16,7 +18,6 @@ from loom.streaming import StreamFlow
 from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
     StreamingRunner,
-    _build_backend_options,
 )
 from tests.unit.streaming.bytewax.cases import Order, Result
 
@@ -105,12 +106,43 @@ class TestStreamingRunner:
         assert kwargs["addresses"] == ["127.0.0.1:2101", "127.0.0.1:2102"]
         assert shutdown_calls == ["done"]
 
-    def test_from_dict_loads_runtime_section(
+    def test_run_calls_shutdown_when_cli_main_raises(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        dataflow = Dataflow("test")
+        shutdown_calls: list[str] = []
+
+        def _fake_prepare() -> object:
+            def shutdown() -> None:
+                shutdown_calls.append("done")
+
+            runner._shutdown = shutdown
+            return SimpleNamespace(dataflow=dataflow, shutdown=shutdown)
+
+        def _fake_cli_main(flow: Dataflow, **kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
+        monkeypatch.setattr("loom.streaming.bytewax.runner.cli_main", _fake_cli_main)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            runner.run()
+
+        assert shutdown_calls == ["done"]
+
+    def test_from_context_loads_runtime_section(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
     ) -> None:
-        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        runner = StreamingRunner.from_context(
+            bytewax_stream_flow,
+            config=ConfigContext.from_dict(bytewax_runtime_config_dict),
+        )
 
         assert runner._runtime.workers_per_process == 2
         assert runner._runtime.process_id == 1
@@ -125,24 +157,7 @@ class TestStreamingRunner:
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
     ) -> None:
-        config = dict(bytewax_runtime_config_dict)
-        streaming = config["streaming"]
-        assert isinstance(streaming, dict)
-        runtime = dict(streaming["runtime"])
-        runtime["observability"] = {
-            "log": {"enabled": False},
-            "otel": {
-                "enabled": True,
-                "config": {
-                    "service_name": "loom-streaming",
-                    "tracer_name": "loom.streaming",
-                    "endpoint": "",
-                },
-            },
-        }
-        config["streaming"] = {"runtime": runtime}
-
-        runner = StreamingRunner.from_dict(bytewax_stream_flow, config)
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
 
         assert any(
             isinstance(obs, OtelLifecycleObserver)
@@ -187,6 +202,41 @@ streaming:
         assert runner._runtime.recovery is not None
         assert runner._runtime.recovery.db_dir == "/var/lib/loom/tests/bytewax-runtime"
         assert runner._runtime.recovery.backup_interval_ms == 45000
+
+
+class TestPrepareRun:
+    def test_prepare_run_releases_previous_shutdown_before_rebuilding(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        shutdown_calls: list[str] = []
+        call_count = 0
+
+        def _fake_prepare_run(
+            plan: object,
+            *,
+            observability_runtime: object = None,
+            runtime: object = None,
+        ) -> object:
+            nonlocal call_count
+            call_count += 1
+            n = call_count
+
+            def shutdown() -> None:
+                shutdown_calls.append(f"run-{n}")
+
+            return SimpleNamespace(dataflow=Dataflow("test"), shutdown=shutdown)
+
+        monkeypatch.setattr("loom.streaming.bytewax.runner._prepare_run", _fake_prepare_run)
+
+        runner.prepare_run()
+        assert shutdown_calls == []
+
+        runner.prepare_run()
+        assert shutdown_calls == ["run-1"]
 
 
 class TestBytewaxRuntimeConfig:

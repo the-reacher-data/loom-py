@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-import msgspec
-
-from loom.core.config.loader import load_config
+from loom.core.config import ConfigContext, ConfigKey
 from loom.etl.lineage._config import ETLObservabilityConfig
-from loom.etl.storage._config import StorageConfig, convert_storage_config
+from loom.etl.storage._config import StorageConfig
 
 
 def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
@@ -26,20 +22,16 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
         :class:`~loom.etl.lineage.ETLObservabilityConfig`.
 
     Raises:
-        KeyError: When the ``storage:`` key is absent.
+        loom.core.config.ConfigError: When the ``storage:`` key is absent.
         msgspec.ValidationError: When the config shape is invalid.
         loom.core.config.ConfigError: When the file cannot be read or parsed.
     """
-    from omegaconf import OmegaConf
-
-    cfg = load_config(path)
-
-    storage_raw: Any = OmegaConf.to_container(cfg["storage"], resolve=True)
-    storage_config = convert_storage_config(storage_raw)
-
-    obs_config = ETLObservabilityConfig()
-    if "observability" in cfg:
-        obs_raw: Any = OmegaConf.to_container(cfg["observability"], resolve=True)
-        obs_config = msgspec.convert(obs_raw, ETLObservabilityConfig)
+    ctx = ConfigContext.from_yaml(path)
+    storage_config = ctx.section(ConfigKey.STORAGE, StorageConfig)
+    obs_config = ctx.section_or_default(
+        ConfigKey.OBSERVABILITY,
+        ETLObservabilityConfig,
+        ETLObservabilityConfig(),
+    )
 
     return storage_config, obs_config

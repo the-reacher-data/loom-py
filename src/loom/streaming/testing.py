@@ -7,7 +7,7 @@ Public API
 
 Typical usage::
 
-    runner = StreamingTestRunner.from_flow(flow, runtime_config=cfg)
+    runner = StreamingTestRunner.from_flow(flow, config=cfg)
     runner.with_payloads([OrderPlaced(order_id="o-1")])
     runner.capture_errors(ErrorKind.WIRE)
     runner.run()
@@ -17,15 +17,15 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import timedelta
 from time import perf_counter
 from typing import Any
 
 import bytewax.testing as bytewax_testing
 from bytewax.outputs import Sink
-from omegaconf import DictConfig, OmegaConf
 
-from loom.core.config import load_config
+from loom.core.config import ConfigContext
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import generate_trace_id
@@ -67,11 +67,11 @@ class StreamingTestRunner:
         cls,
         flow: StreamFlow[Any, Any],
         *,
-        runtime_config: DictConfig,
+        config: ConfigContext | Mapping[str, Any],
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingTestRunner:
         """Compile a flow and build a test runner from resolved config."""
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=_ensure_config_context(config))
         return cls(plan, observability_runtime=observability_runtime)
 
     @classmethod
@@ -85,7 +85,7 @@ class StreamingTestRunner:
         """Load YAML config, compile the flow, and build a test runner."""
         return cls.from_flow(
             flow,
-            runtime_config=load_config(path),
+            config=ConfigContext.from_yaml(path),
             observability_runtime=observability_runtime,
         )
 
@@ -98,12 +98,9 @@ class StreamingTestRunner:
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingTestRunner:
         """Build a test runner from a plain Python config mapping."""
-        runtime_config = OmegaConf.create(config)
-        if not isinstance(runtime_config, DictConfig):
-            raise TypeError("Streaming test config must resolve to a mapping")
         return cls.from_flow(
             flow,
-            runtime_config=runtime_config,
+            config=ConfigContext.from_dict(config),
             observability_runtime=observability_runtime,
         )
 
@@ -204,6 +201,13 @@ class StreamingTestRunner:
 
 
 __all__ = ["StreamingTestRunner"]
+
+
+def _ensure_config_context(source: ConfigContext | Mapping[str, Any]) -> ConfigContext:
+    """Normalize supported config inputs to a :class:`ConfigContext`."""
+    if isinstance(source, ConfigContext):
+        return source
+    return ConfigContext.from_dict(source)
 
 
 def _test_message(topic: str, idx: int, payload: Any) -> Any:

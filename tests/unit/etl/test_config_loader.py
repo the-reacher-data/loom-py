@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from loom.core.config.errors import ConfigError
 from loom.etl.lineage._config import ETLObservabilityConfig
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.storage._config import StorageConfig
@@ -61,7 +62,7 @@ def test_load_yaml_raises_when_storage_key_missing(tmp_path: Path) -> None:
     path = tmp_path / "loom.yaml"
     path.write_text("observability:\n  log:\n    enabled: true\n", encoding="utf-8")
 
-    with pytest.raises(KeyError, match="storage"):
+    with pytest.raises(ConfigError, match="storage"):
         _load_yaml(str(path))
 
 

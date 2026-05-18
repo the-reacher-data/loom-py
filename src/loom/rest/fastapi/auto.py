@@ -7,21 +7,18 @@ import warnings
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from omegaconf import DictConfig
-    from prometheus_client import CollectorRegistry
+from typing import Any
 
 import msgspec
 import prometheus_client
 from fastapi import FastAPI
+from prometheus_client import CollectorRegistry
 from starlette.responses import Response
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap import KernelRuntime, create_kernel
+from loom.core.config import ConfigContext, ConfigKey
 from loom.core.config.errors import ConfigError
-from loom.core.config.loader import load_config, section
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.discovery import (
@@ -84,11 +81,6 @@ class _DatabaseConfig(msgspec.Struct, kw_only=True):
     pool_pre_ping: bool = True
 
 
-class _MetricsConfig(msgspec.Struct, kw_only=True):
-    enabled: bool = False
-    path: str = "/metrics"
-
-
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
     "interfaces": lambda cfg: InterfacesDiscoveryEngine(
         cfg.interfaces.modules,
@@ -120,7 +112,7 @@ def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
 
 
 def _build_celery_service(
-    raw: DictConfig,
+    ctx: ConfigContext,
     result: KernelRuntime,
     observability_runtime: ObservabilityRuntime | None,
 ) -> Any | None:
@@ -131,7 +123,7 @@ def _build_celery_service(
     fall back to :func:`_build_inline_service`.
 
     Args:
-        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        ctx: Resolved configuration context.
         result: Kernel runtime carrying container, factory and executor.
 
     Returns:
@@ -148,7 +140,7 @@ def _build_celery_service(
             CeleryJobService,  # type: ignore[import-untyped,unused-ignore]
         )
 
-        celery_cfg = section(raw, "celery", _CC)
+        celery_cfg = ctx.section(ConfigKey.CELERY, _CC)
         return CeleryJobService(
             create_celery_app(celery_cfg),
             metrics=result.metrics,
@@ -180,7 +172,7 @@ def _build_inline_service(result: KernelRuntime) -> InlineJobService:
 
 
 def _configure_job_service(
-    raw: DictConfig,
+    ctx: ConfigContext,
     result: KernelRuntime,
     observability_runtime: ObservabilityRuntime | None,
 ) -> None:
@@ -196,25 +188,19 @@ def _configure_job_service(
     once and shared across all requests.
 
     Args:
-        raw: Root :class:`omegaconf.DictConfig` from :func:`load_config`.
+        ctx: Resolved configuration context.
         result: Kernel runtime carrying container, factory and executor.
     """
-    svc = _build_celery_service(raw, result, observability_runtime) or _build_inline_service(result)
+    svc = _build_celery_service(ctx, result, observability_runtime) or _build_inline_service(result)
     result.container.register(JobService, lambda: svc, scope=Scope.APPLICATION)
 
 
-def _load_observability_config(raw: DictConfig) -> ObservabilityConfig:
+def _load_observability_config(ctx: ConfigContext) -> ObservabilityConfig:
     """Load top-level observability config or fall back to defaults."""
     try:
-        return section(raw, "observability", ObservabilityConfig)
+        return ctx.section(ConfigKey.OBSERVABILITY, ObservabilityConfig)
     except ConfigError:
         return ObservabilityConfig()
-
-
-def _build_metrics_config(cfg: PrometheusObservabilityConfig) -> _MetricsConfig:
-    """Convert unified observability Prometheus settings to REST metrics config."""
-    path = cfg.config.path if cfg.config is not None else "/metrics"
-    return _MetricsConfig(enabled=cfg.enabled, path=path)
 
 
 def _build_bootstrap(
@@ -279,7 +265,7 @@ def _build_kernel_runtime(
 
 
 def _build_metrics_adapter(
-    cfg: _MetricsConfig,
+    cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> Any | None:
     """Return a ``PrometheusMetricsAdapter`` when metrics are enabled, else ``None``.
@@ -296,9 +282,14 @@ def _build_metrics_adapter(
     return PrometheusMetricsAdapter(registry=registry)
 
 
+def _metrics_path(cfg: PrometheusObservabilityConfig) -> str:
+    """Return the REST metrics path declared in the Prometheus config."""
+    return cfg.config.path if cfg.config is not None else "/metrics"
+
+
 def _mount_optional_middlewares(
     app: FastAPI,
-    metrics_cfg: _MetricsConfig,
+    metrics_cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> None:
     """Mount request tracing and metrics middlewares.
@@ -315,7 +306,7 @@ def _mount_optional_middlewares(
 
 def _mount_metrics(
     app: FastAPI,
-    cfg: _MetricsConfig,
+    cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> None:
     """Add Prometheus middleware and scrape endpoint to *app*.
@@ -325,8 +316,9 @@ def _mount_metrics(
         cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
-    if "{" in cfg.path:
-        raise ValueError(f"metrics.path must not contain path parameters, got: {cfg.path!r}")
+    path = _metrics_path(cfg)
+    if "{" in path:
+        raise ValueError(f"metrics.path must not contain path parameters, got: {path!r}")
     app.add_middleware(PrometheusMiddleware, registry=registry)
     scrape_registry = registry or prometheus_client.REGISTRY
 
@@ -340,10 +332,8 @@ def _mount_metrics(
         # Return 404 for trailing-slash variant to avoid ambiguous scrape targets.
         return Response(status_code=404)
 
-    app.add_api_route(cfg.path, _scrape, methods=["GET"], include_in_schema=False)
-    app.add_api_route(
-        f"{cfg.path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False
-    )
+    app.add_api_route(path, _scrape, methods=["GET"], include_in_schema=False)
+    app.add_api_route(f"{path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False)
 
 
 def create_app(
@@ -355,11 +345,13 @@ def create_app(
 
     Config files are merged left-to-right — later files override earlier ones.
     Each file may also declare a top-level ``includes`` list to pull in
-    additional base files before its own values (see :func:`load_config`).
+    additional base files before its own values (resolved by
+    :meth:`loom.core.config.ConfigContext.from_yaml`).
 
     ``TraceIdMiddleware`` is mounted automatically. Structured logging and
     OTEL come from the top-level ``observability:`` section. Prometheus
-    middleware is mounted when ``metrics.enabled`` is ``true``.
+    middleware is mounted when ``observability.prometheus.enabled`` is
+    ``true``.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -369,7 +361,8 @@ def create_app(
             ``PrometheusMiddleware`` and the scrape endpoint.  Defaults to the
             global registry.  Pass a fresh ``CollectorRegistry()`` in tests to
             avoid ``ValueError: Duplicated timeseries`` when multiple apps with
-            ``metrics.enabled: true`` are created in the same process.
+            ``observability.prometheus.enabled: true`` are created in the same
+            process.
 
     Returns:
         Configured :class:`fastapi.FastAPI` application, ready to serve.
@@ -393,12 +386,12 @@ def create_app(
     if not config_paths:
         raise ConfigError("create_app requires at least one config file path.")
 
-    raw = load_config(*config_paths)
-    app_cfg = section(raw, "app", _AppConfig)
-    db_cfg = section(raw, "database", _DatabaseConfig)
-    observability_cfg = _load_observability_config(raw)
+    ctx = ConfigContext.from_yaml(*config_paths)
+    app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
+    db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
+    observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
-    metrics_cfg = _build_metrics_config(observability_cfg.prometheus)
+    metrics_cfg = observability_cfg.prometheus
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
@@ -415,7 +408,7 @@ def create_app(
         effective_echo,
         metrics=metrics_adapter,
     )
-    _configure_job_service(raw, result, observability_runtime)
+    _configure_job_service(ctx, result, observability_runtime)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

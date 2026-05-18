@@ -11,10 +11,10 @@ from loom.celery.config import (
     CeleryConfig,
     CeleryRuntimeConfig,
     JobConfig,
-    _build_backend_options,
     apply_job_config,
     create_celery_app,
 )
+from loom.core.async_bridge import build_backend_options as _build_backend_options
 from loom.core.job.job import Job
 
 # ---------------------------------------------------------------------------

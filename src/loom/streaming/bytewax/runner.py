@@ -3,26 +3,24 @@
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
-import msgspec
 from bytewax.dataflow import Dataflow
 from bytewax.recovery import RecoveryConfig
 from bytewax.run import cli_main
-from omegaconf import DictConfig, OmegaConf
 
-from loom.core.async_bridge import AsyncBridge
-from loom.core.config import load_config, section
+from loom.core.async_bridge import AsyncBridge, build_backend_options
+from loom.core.config import ConfigContext, ConfigKey
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import shutdown_runner
 from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
@@ -89,8 +87,6 @@ class BytewaxRuntimeConfig(LoomFrozenStruct, frozen=True):
             async tasks to finish during shutdown.  When exceeded, the portal
             thread is abandoned and a warning is logged.  ``None`` waits
             indefinitely (default).
-        observability: Unified observability config (log, OTEL, Prometheus).
-            Loaded from the ``streaming.runtime.observability`` YAML section.
     """
 
     workers_per_process: int = 1
@@ -98,10 +94,9 @@ class BytewaxRuntimeConfig(LoomFrozenStruct, frozen=True):
     addresses: tuple[str, ...] | None = None
     epoch_interval_ms: int | None = None
     recovery: BytewaxRecoverySettings | None = None
-    async_backend: str = "asyncio"
+    async_backend: Literal["asyncio", "trio"] = "asyncio"
     use_uvloop: bool = False
     force_shutdown_timeout_ms: int | None = None
-    observability: ObservabilityConfig = msgspec.field(default_factory=ObservabilityConfig)
 
 
 class StreamingRunner:
@@ -130,17 +125,27 @@ class StreamingRunner:
         self._shutdown: Callable[[], None] | None = None
 
     @classmethod
-    def from_config(
+    def from_context(
         cls,
         flow: StreamFlow[Any, Any],
         *,
-        runtime_config: DictConfig,
+        config: ConfigContext,
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
-        """Build a runner from a resolved OmegaConf config."""
-        plan = compile_flow(flow, runtime_config=runtime_config)
-        runtime = _load_runtime_config(runtime_config)
-        obs = observability_runtime or ObservabilityRuntime.from_config(runtime.observability)
+        """Build a runner from a resolved config context."""
+        plan = compile_flow(flow, config=config)
+        runtime = config.section_or_default(
+            ConfigKey.STREAMING_RUNTIME,
+            BytewaxRuntimeConfig,
+            BytewaxRuntimeConfig(),
+        )
+        observability_cfg = config.section_optional(
+            ConfigKey.OBSERVABILITY,
+            ObservabilityConfig,
+        )
+        if observability_cfg is None:
+            observability_cfg = ObservabilityConfig()
+        obs = observability_runtime or ObservabilityRuntime.from_config(observability_cfg)
         return cls(flow, plan, runtime, observability_runtime=obs)
 
     @classmethod
@@ -152,9 +157,9 @@ class StreamingRunner:
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
         """Load config from YAML and build a runner."""
-        return cls.from_config(
+        return cls.from_context(
             flow,
-            runtime_config=load_config(path),
+            config=ConfigContext.from_yaml(path),
             observability_runtime=observability_runtime,
         )
 
@@ -167,9 +172,9 @@ class StreamingRunner:
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
         """Build a runner from a plain Python config mapping."""
-        return cls.from_config(
+        return cls.from_context(
             flow,
-            runtime_config=_dict_config(config),
+            config=ConfigContext.from_dict(config),
             observability_runtime=observability_runtime,
         )
 
@@ -179,7 +184,16 @@ class StreamingRunner:
         return prepared.dataflow
 
     def prepare_run(self) -> _PreparedStreamingRun:
-        """Prepare one executable dataflow and its shutdown callback."""
+        """Prepare one executable dataflow and its shutdown callback.
+
+        Releases any resources from a previous ``prepare_run()`` call before
+        building the new dataflow, so calling this method twice is safe.
+
+        Returns:
+            A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
+            and a shutdown callable that releases adapter-owned resources.
+        """
+        shutdown_runner(self)
         prepared = _prepare_run(
             self._plan,
             observability_runtime=self._observability_runtime,
@@ -226,7 +240,7 @@ class StreamingRunner:
                     status=status,
                 )
             )
-            self.shutdown()
+            shutdown_runner(self)
 
     def shutdown(self) -> None:
         """Release adapter resources after a run or failed build."""
@@ -234,29 +248,6 @@ class StreamingRunner:
             self._log.debug("shutting_down")
             self._shutdown()
             self._shutdown = None
-
-
-def _dict_config(raw: dict[str, Any]) -> DictConfig:
-    config = OmegaConf.create(raw)
-    if not isinstance(config, DictConfig):
-        raise TypeError("Streaming runner config must resolve to a mapping")
-    return config
-
-
-def _load_runtime_config(cfg: DictConfig) -> BytewaxRuntimeConfig:
-    if not _has_section(cfg, "streaming.runtime"):
-        return BytewaxRuntimeConfig()
-    return section(cfg, "streaming.runtime", BytewaxRuntimeConfig)
-
-
-def _has_section(cfg: DictConfig, path: str) -> bool:
-    node: Any = cfg
-    for part in path.split("."):
-        try:
-            node = node[part]
-        except Exception:
-            return False
-    return True
 
 
 def _runtime_kwargs(runtime: BytewaxRuntimeConfig) -> dict[str, Any]:
@@ -324,18 +315,9 @@ def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBr
         return None
     return AsyncBridge(
         backend=runtime.async_backend,
-        backend_options=_build_backend_options(runtime.async_backend, runtime.use_uvloop),
+        backend_options=build_backend_options(runtime.async_backend, runtime.use_uvloop),
         shutdown_timeout_ms=runtime.force_shutdown_timeout_ms,
     )
-
-
-def _build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
-    """Build anyio backend options dict from runtime config."""
-    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
-        import uvloop  # guarded by sys_platform marker in pyproject.toml
-
-        return {"loop_factory": uvloop.new_event_loop}
-    return {}
 
 
 __all__ = [

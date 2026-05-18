@@ -313,6 +313,30 @@ class TestRunPipeline:
         assert observer.pipeline_statuses == [LineageRunStatus.FAILED]
 
 
+class TestFlush:
+    def test_flush_calls_observer_capability(self) -> None:
+        class _FlushObserver:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def on_event(self, event: Any) -> None:
+                return None
+
+            def flush(self) -> None:
+                self.calls += 1
+
+        observer = _FlushObserver()
+        executor = ETLExecutor(
+            StubSourceReader({"raw.orders": object()}),
+            StubTargetWriter(),
+            observability=ObservabilityRuntime([observer]),
+        )
+
+        executor.flush()
+
+        assert observer.calls == 1
+
+
 class TestThreadDispatcher:
     @pytest.mark.parametrize(
         "max_workers,n",

@@ -46,7 +46,7 @@ class TestRouterCompiler:
         )
 
         with pytest.raises(CompilationError) as exc_info:
-            compile_flow(flow, runtime_config=streaming_kafka_config)
+            compile_flow(flow, config=streaming_kafka_config)
 
         assert "router branches produce different shapes" in str(exc_info.value)
 
@@ -66,7 +66,7 @@ class TestRouterCompiler:
             output=None,
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         assert plan.nodes[0].output_shape is StreamShape.RECORD
         assert plan.output is None
@@ -93,7 +93,7 @@ class TestRouterCompiler:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=streaming_kafka_config)
+        plan = compile_flow(flow, config=streaming_kafka_config)
 
         # Each branch must occupy a distinct path key — keyed branch at index 0,
         # predicate branch offset by len(keyed_routes) = 1, not restarting from 0.
@@ -128,4 +128,4 @@ class TestRouterCompiler:
         )
 
         with pytest.raises(CompilationError, match="not supported in Router branches"):
-            compile_flow(flow, runtime_config=OmegaConf.create({}))
+            compile_flow(flow, config=OmegaConf.create({}))

@@ -6,9 +6,8 @@ from collections.abc import Callable, Iterable
 from types import MappingProxyType
 from typing import Any, Literal, get_args, get_origin
 
-from omegaconf import DictConfig
-
-from loom.core.config import section
+from loom.core.config import ConfigContext
+from loom.core.config.keys import ConfigKey
 from loom.streaming.compiler._plan import (
     CompilationError,
     CompiledMultiSource,
@@ -37,21 +36,21 @@ from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._with import With, WithAsync
 
 
-def build_plan(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledPlan:
-    """Build a compiled plan from a validated flow and runtime config.
+def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
+    """Build a compiled plan from a validated flow and runtime config context.
 
     Args:
         flow: Validated stream flow.
-        runtime_config: Resolved OmegaConf runtime configuration.
+        ctx: Runtime config context providing Kafka settings and section access.
 
     Returns:
         Immutable compiled plan ready for adapter wiring.
     """
-    source = _build_source(flow, runtime_config)
+    source = _build_source(flow, ctx)
     nodes = _build_nodes(flow)
-    output = _build_sink(flow.output, runtime_config) if flow.output else None
-    terminal_sinks = _build_terminal_sinks(flow.process.nodes, runtime_config)
-    error_routes = {kind: _build_sink(topic, runtime_config) for kind, topic in flow.errors.items()}
+    output = _build_sink(flow.output, ctx) if flow.output else None
+    terminal_sinks = _build_terminal_sinks(flow.process.nodes, ctx)
+    error_routes = {kind: _build_sink(topic, ctx) for kind, topic in flow.errors.items()}
     needs_async = any(
         _node_needs_async_bridge(node) for node in _walk_all_process_nodes(flow.process.nodes)
     )
@@ -66,21 +65,19 @@ def build_plan(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> Compil
     )
 
 
-def _build_source(flow: StreamFlow[Any, Any], runtime_config: DictConfig) -> CompiledSource:
+def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
     if isinstance(flow.source, FromMultiTypeTopic):
-        return _build_multi_source(flow, runtime_config)
-    return _build_single_source(flow, runtime_config)
+        return _build_multi_source(flow, ctx)
+    return _build_single_source(flow, ctx)
 
 
-def _build_single_source(
-    flow: StreamFlow[Any, Any], runtime_config: DictConfig
-) -> CompiledSingleSource:
+def _build_single_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSingleSource:
     source: FromTopic[Any] = flow.source  # type: ignore[assignment]
-    kafka = section(runtime_config, "kafka", KafkaSettings)
+    kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
     consumer = kafka.consumer_for(source.logical_ref)
-    decode_strategy: Literal["record", "batch"] = "record"
-    if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
-        decode_strategy = "batch"
+    decode_strategy: Literal["record", "batch"] = (
+        "batch" if any(isinstance(n, CollectBatch) for n in flow.process.nodes) else "record"
+    )
     return CompiledSingleSource(
         settings=consumer,
         topics=consumer.topics,
@@ -90,15 +87,13 @@ def _build_single_source(
     )
 
 
-def _build_multi_source(
-    flow: StreamFlow[Any, Any], runtime_config: DictConfig
-) -> CompiledMultiSource:
+def _build_multi_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledMultiSource:
     source: FromMultiTypeTopic[Any] = flow.source  # type: ignore[assignment]
-    kafka = section(runtime_config, "kafka", KafkaSettings)
+    kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
     consumer = kafka.consumer_for(source.logical_ref)
-    decode_strategy: Literal["record", "batch"] = "record"
-    if any(isinstance(n, CollectBatch) for n in flow.process.nodes):
-        decode_strategy = "batch"
+    decode_strategy: Literal["record", "batch"] = (
+        "batch" if any(isinstance(n, CollectBatch) for n in flow.process.nodes) else "record"
+    )
     dispatch = _build_dispatch_table(source.payloads)
     return CompiledMultiSource(
         settings=consumer,
@@ -109,9 +104,7 @@ def _build_multi_source(
     )
 
 
-def _build_dispatch_table(
-    payloads: tuple[type[Any], ...],
-) -> DispatchTable:
+def _build_dispatch_table(payloads: tuple[type[Any], ...]) -> DispatchTable:
     plain: dict[str, Any] = {}
     error: dict[str, Any] = {}
     wire: dict[str, Any] = {}
@@ -162,7 +155,7 @@ def _build_nodes(flow: StreamFlow[Any, Any]) -> list[CompiledNode]:
 
 def _build_terminal_sinks(
     nodes: Iterable[object],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...] = (),
 ) -> dict[tuple[int, ...], CompiledSink]:
@@ -170,35 +163,31 @@ def _build_terminal_sinks(
     for idx, node in enumerate(tuple(nodes)):
         path = path_prefix + (idx,)
         if isinstance(node, IntoTopic):
-            sinks[path] = _build_sink(node, runtime_config)
+            sinks[path] = _build_sink(node, ctx)
             continue
         builder = _BRANCH_BUILDERS.get(type(node))
         if builder is not None:
-            sinks.update(builder(node, runtime_config, path_prefix=path))
+            sinks.update(builder(node, ctx, path_prefix=path))
             continue
         if isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
-            sinks.update(
-                _build_terminal_sinks(node.process.nodes, runtime_config, path_prefix=path)
-            )
+            sinks.update(_build_terminal_sinks(node.process.nodes, ctx, path_prefix=path))
     return sinks
 
 
 def _build_fork_terminal_sinks(
     fork: Fork[Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
 ) -> dict[tuple[int, ...], CompiledSink]:
     sinks: dict[tuple[int, ...], CompiledSink] = {}
     branch_count = _fork_branch_count(fork)
     for branch_idx, (_, nodes) in enumerate(_fork_branch_nodes(fork)):
-        sinks.update(
-            _build_terminal_sinks(nodes, runtime_config, path_prefix=path_prefix + (branch_idx,))
-        )
+        sinks.update(_build_terminal_sinks(nodes, ctx, path_prefix=path_prefix + (branch_idx,)))
     if fork.default is not None:
         sinks.update(
             _build_terminal_sinks(
-                fork.default.nodes, runtime_config, path_prefix=path_prefix + (branch_count,)
+                fork.default.nodes, ctx, path_prefix=path_prefix + (branch_count,)
             )
         )
     return sinks
@@ -206,7 +195,7 @@ def _build_fork_terminal_sinks(
 
 def _build_router_terminal_sinks(
     router: Router[Any, Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
 ) -> dict[tuple[int, ...], CompiledSink]:
@@ -214,24 +203,18 @@ def _build_router_terminal_sinks(
     keyed_count = len(router.routes)
     for branch_idx, process in enumerate(router.routes.values()):
         sinks.update(
-            _build_terminal_sinks(
-                process.nodes, runtime_config, path_prefix=path_prefix + (branch_idx,)
-            )
+            _build_terminal_sinks(process.nodes, ctx, path_prefix=path_prefix + (branch_idx,))
         )
     for i, route in enumerate(router.predicate_routes):
         sinks.update(
             _build_terminal_sinks(
-                route.process.nodes,
-                runtime_config,
-                path_prefix=path_prefix + (keyed_count + i,),
+                route.process.nodes, ctx, path_prefix=path_prefix + (keyed_count + i,)
             )
         )
     if router.default is not None:
         sinks.update(
             _build_terminal_sinks(
-                router.default.nodes,
-                runtime_config,
-                path_prefix=path_prefix + (len(router.routes),),
+                router.default.nodes, ctx, path_prefix=path_prefix + (len(router.routes),)
             )
         )
     return sinks
@@ -239,7 +222,7 @@ def _build_router_terminal_sinks(
 
 def _build_broadcast_terminal_sinks(
     broadcast: Broadcast[Any],
-    runtime_config: DictConfig,
+    ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
 ) -> dict[tuple[int, ...], CompiledSink]:
@@ -247,15 +230,13 @@ def _build_broadcast_terminal_sinks(
     for branch_idx, route in enumerate(broadcast.routes):
         branch_path = path_prefix + (branch_idx,)
         if route.output is not None:
-            sinks[branch_path] = _build_sink(route.output, runtime_config)
-        sinks.update(
-            _build_terminal_sinks(route.process.nodes, runtime_config, path_prefix=branch_path)
-        )
+            sinks[branch_path] = _build_sink(route.output, ctx)
+        sinks.update(_build_terminal_sinks(route.process.nodes, ctx, path_prefix=branch_path))
     return sinks
 
 
-def _build_sink(topic: IntoTopic[Any], runtime_config: DictConfig) -> CompiledSink:
-    kafka = section(runtime_config, "kafka", KafkaSettings)
+def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
+    kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
     producer = kafka.producer_for(topic.logical_ref)
     return CompiledSink(
         settings=producer,

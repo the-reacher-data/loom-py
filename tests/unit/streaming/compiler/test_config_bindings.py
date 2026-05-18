@@ -107,7 +107,7 @@ class TestConfigBindings:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=runtime_config)
 
         node = plan.nodes[0].node
         assert isinstance(node, _DeclaredStep)
@@ -155,7 +155,7 @@ class TestConfigBindings:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=runtime_config)
 
         scoped = plan.nodes[0].node
         assert isinstance(scoped, With)
@@ -193,9 +193,9 @@ class TestConfigBindings:
 
         with pytest.raises(
             CompilationError,
-            match="missing 1 required keyword-only argument: 'prefix'",
+            match="requires config field 'prefix'",
         ):
-            compile_flow(flow, runtime_config=runtime_config)
+            compile_flow(flow, config=runtime_config)
 
     def test_compile_flow_rejects_invalid_structured_binding_type(
         self,
@@ -237,7 +237,7 @@ class TestConfigBindings:
         )
 
         with pytest.raises(CompilationError, match="Expected `float`, got `str`"):
-            compile_flow(flow, runtime_config=runtime_config)
+            compile_flow(flow, config=runtime_config)
 
     def test_compile_flow_resolves_structured_constructor_bindings(
         self,
@@ -279,7 +279,7 @@ class TestConfigBindings:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=runtime_config)
 
         scoped = plan.nodes[0].node
         assert isinstance(scoped, With)
@@ -329,7 +329,7 @@ class TestConfigBindings:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=runtime_config)
         router = plan.nodes[0].node
         assert isinstance(router, Router)
         assert isinstance(router.routes["vip"].nodes[0], _ConfiguredStep)
@@ -364,7 +364,7 @@ class TestConfigBindings:
             ),
         )
 
-        plan = compile_flow(flow, runtime_config=runtime_config)
+        plan = compile_flow(flow, config=runtime_config)
         fork = plan.nodes[0].node
         assert isinstance(fork, Fork)
         assert isinstance(fork.routes["vip"].nodes[0], _ConfiguredStep)

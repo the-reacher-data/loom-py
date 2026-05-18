@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from loom.celery.config import CeleryRuntimeConfig, _build_backend_options
+from loom.celery.config import CeleryRuntimeConfig
 from loom.celery.runner import _CeleryAsyncRuntime
+from loom.core.async_bridge import build_backend_options as _build_backend_options
 
 
 class TestCeleryAsyncRuntime:

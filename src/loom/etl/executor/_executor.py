@@ -39,6 +39,7 @@ from typing import Any
 
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import SupportsFlush
 from loom.etl.checkpoint import CheckpointStore
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
@@ -104,6 +105,12 @@ class ETLExecutor:
     def observability(self) -> ObservabilityRuntime:
         """Return the shared observability runtime."""
         return self._observability
+
+    def flush(self) -> None:
+        """Flush any buffered executor state exposed by observers."""
+        for observer in self._observability.observers:
+            if isinstance(observer, SupportsFlush):
+                observer.flush()
 
     def run_pipeline(
         self,

@@ -8,10 +8,11 @@ from fastapi import FastAPI
 from omegaconf import OmegaConf
 
 import loom.rest.fastapi.auto as auto
-from loom.core.observability.config import ObservabilityConfig
+from loom.core.config import ConfigContext
+from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus.middleware import PrometheusMiddleware
-from loom.rest.fastapi.auto import _MetricsConfig, _mount_optional_middlewares, create_app
+from loom.rest.fastapi.auto import _mount_optional_middlewares, create_app
 from loom.rest.middleware import TraceIdMiddleware
 
 _AUTO = cast(Any, auto)
@@ -20,7 +21,11 @@ _AUTO = cast(Any, auto)
 def test_mount_optional_middlewares_always_adds_trace_middleware() -> None:
     app = FastAPI()
 
-    _mount_optional_middlewares(app, _MetricsConfig(enabled=False), None)
+    _mount_optional_middlewares(
+        app,
+        ObservabilityConfig().prometheus,
+        None,
+    )
 
     classes: list[Any] = [m.cls for m in app.user_middleware]
     assert TraceIdMiddleware in classes
@@ -29,7 +34,8 @@ def test_mount_optional_middlewares_always_adds_trace_middleware() -> None:
 def test_mount_optional_middlewares_adds_prometheus_when_enabled() -> None:
     app = FastAPI()
 
-    _mount_optional_middlewares(app, _MetricsConfig(enabled=True), None)
+    cfg = PrometheusObservabilityConfig(enabled=True, config=None)
+    _mount_optional_middlewares(app, cfg, None)
 
     classes: list[Any] = [m.cls for m in app.user_middleware]
     assert TraceIdMiddleware in classes
@@ -50,9 +56,14 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
     captured: dict[str, Any] = {}
     runtime = ObservabilityRuntime.noop()
 
-    def _fake_load_config(*config_paths: str) -> Any:
-        del config_paths
-        return raw
+    def _fake_from_yaml(
+        cls: type[ConfigContext],
+        *config_paths: str,
+        resolvers: Any = (),
+        binder: Any = None,
+    ) -> ConfigContext:
+        del config_paths, resolvers, binder, cls
+        return ConfigContext.from_dict(cast(dict[str, Any], OmegaConf.to_container(raw)))
 
     def _fake_from_config(
         cls: type[ObservabilityRuntime], config: ObservabilityConfig
@@ -96,7 +107,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         captured["runtime"] = observability_runtime
         return FastAPI()
 
-    monkeypatch.setattr(auto, "load_config", _fake_load_config)
+    monkeypatch.setattr(ConfigContext, "from_yaml", classmethod(_fake_from_yaml))
     monkeypatch.setattr(
         _AUTO.ObservabilityRuntime,
         "from_config",
