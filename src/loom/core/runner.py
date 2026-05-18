@@ -1,30 +1,16 @@
 """Runner contracts shared by Loom domains.
 
-The protocol in this module intentionally stays small. A runner is the
-already-built façade that executes a workload; it does not own YAML
-loading or compilation responsibilities. Optional lifecycle hooks are
-split into separate structural protocols so domains only implement what
-they actually need.
+The shared contract stays deliberately small. Runner shapes differ by
+domain, so this module only exposes optional lifecycle capabilities that
+can be checked structurally via ``isinstance``.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar, runtime_checkable
+import logging
+from typing import Protocol, runtime_checkable
 
-ResultT = TypeVar("ResultT", covariant=True)
-
-
-@runtime_checkable
-class RunnerProtocol(Protocol[ResultT]):
-    """Structural protocol for an already-constructed runner.
-
-    A runner executes work and returns a domain-specific result. It is the
-    public façade consumed by applications, tests, and orchestration layers.
-    """
-
-    def run(self) -> ResultT:
-        """Execute the underlying workload and return its result."""
-        ...
+_log = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -46,22 +32,54 @@ class SupportsFlush(Protocol):
 
 
 def shutdown_runner(runner: object) -> None:
-    """Call ``shutdown()`` when *runner* exposes the shutdown capability."""
-    shutdown = getattr(runner, "shutdown", None)
-    if callable(shutdown):
-        shutdown()
+    """Call ``shutdown()`` on *runner* when it implements :class:`SupportsShutdown`.
+
+    Designed for unconditional use in ``finally`` blocks: when ``shutdown()``
+    raises, the exception is logged at ``WARNING`` level and suppressed so
+    that the original exception propagating through the ``finally`` is
+    preserved.  A no-op when *runner* does not satisfy the protocol.
+
+    Args:
+        runner: Any object. Capability is tested structurally via
+            :class:`SupportsShutdown`; no base class is required.
+    """
+    if not isinstance(runner, SupportsShutdown):
+        return
+    try:
+        runner.shutdown()
+    except Exception:
+        _log.warning(
+            "shutdown() raised for %s — suppressed to preserve caller exception",
+            type(runner).__name__,
+            exc_info=True,
+        )
 
 
 def flush_runner(runner: object) -> None:
-    """Call ``flush()`` when *runner* exposes the flush capability."""
-    flush = getattr(runner, "flush", None)
-    if callable(flush):
-        flush()
+    """Call ``flush()`` on *runner* when it implements :class:`SupportsFlush`.
+
+    Designed for unconditional use in ``finally`` blocks: when ``flush()``
+    raises, the exception is logged at ``WARNING`` level and suppressed so
+    that the original exception propagating through the ``finally`` is
+    preserved.  A no-op when *runner* does not satisfy the protocol.
+
+    Args:
+        runner: Any object. Capability is tested structurally via
+            :class:`SupportsFlush`; no base class is required.
+    """
+    if not isinstance(runner, SupportsFlush):
+        return
+    try:
+        runner.flush()
+    except Exception:
+        _log.warning(
+            "flush() raised for %s — suppressed to preserve caller exception",
+            type(runner).__name__,
+            exc_info=True,
+        )
 
 
 __all__ = [
-    "ResultT",
-    "RunnerProtocol",
     "SupportsFlush",
     "SupportsShutdown",
     "flush_runner",

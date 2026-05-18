@@ -166,7 +166,7 @@ class ETLRunner:
 
     def flush(self) -> None:
         """Flush buffered ETL observability sinks after a run."""
-        self._flush_prometheus()
+        self._executor.flush()
 
     def cleanup_correlation(self, correlation_id: str) -> None:
         """Remove all CORRELATION-scope intermediates for *correlation_id*."""
@@ -176,13 +176,6 @@ class ETLRunner:
                 "to be configured in storage YAML."
             )
         self._checkpoint_store.cleanup_correlation(correlation_id)
-
-    def _flush_prometheus(self) -> None:
-        """Flush any configured Prometheus batch adapter after a run."""
-        for observer in self._executor.observability.observers:
-            flush = getattr(observer, "flush", None)
-            if callable(flush):
-                flush()
 
 
 __all__ = ["ETLRunner", "InvalidStageError"]

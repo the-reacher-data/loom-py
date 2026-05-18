@@ -28,6 +28,7 @@ Thread safety:
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar, cast
@@ -37,6 +38,23 @@ from anyio.from_thread import BlockingPortal, start_blocking_portal
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+def build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
+    """Build AnyIO backend options for the shared async bridge contract.
+
+    Args:
+        backend: AnyIO backend name.
+        use_uvloop: Whether asyncio should use uvloop when available.
+
+    Returns:
+        A backend-options mapping suitable for :class:`AsyncBridge`.
+    """
+    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
+        import uvloop  # guarded by sys_platform marker in pyproject.toml
+
+        return {"loop_factory": uvloop.new_event_loop}
+    return {}
 
 
 class AsyncBridge:
@@ -139,11 +157,11 @@ async def _await_coro(coro: Coroutine[Any, Any, T]) -> T:
     return await coro
 
 
-async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:  # noqa: S7483
+async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:
     with anyio.fail_after(timeout):
         return await coro
 
 
 AsyncWorker = AsyncBridge
 
-__all__ = ["AsyncBridge", "AsyncWorker"]
+__all__ = ["AsyncBridge", "AsyncWorker", "build_backend_options"]

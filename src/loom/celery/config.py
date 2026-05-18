@@ -30,7 +30,6 @@ Typical YAML layout::
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
@@ -170,15 +169,6 @@ def apply_job_config(job_type: type[Job[Any]], cfg: JobConfig) -> None:
         value = getattr(cfg, field_name)
         if value is not None:
             setattr(job_type, class_var, value)
-
-
-def _build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
-    """Return AnyIO backend options for an async bridge."""
-    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
-        import uvloop  # guarded by sys_platform marker in pyproject.toml
-
-        return {"loop_factory": uvloop.new_event_loop}
-    return {}
 
 
 def create_celery_app(cfg: CeleryConfig) -> Celery:

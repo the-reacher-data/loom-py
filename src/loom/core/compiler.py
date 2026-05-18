@@ -9,16 +9,16 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
-RequestT = TypeVar("RequestT", contravariant=True)
-PlanT = TypeVar("PlanT", covariant=True)
+_RequestT = TypeVar("_RequestT", contravariant=True)
+_PlanT = TypeVar("_PlanT", covariant=True)
 
 
-class CompilerProtocol(Protocol[RequestT, PlanT]):
+class CompilerProtocol(Protocol[_RequestT, _PlanT]):
     """Structural protocol for a compiler that materializes an execution plan."""
 
-    def compile(self, request: RequestT) -> PlanT:
+    def compile(self, request: _RequestT) -> _PlanT:
         """Transform *request* into an executable plan."""
         ...
 
 
-__all__ = ["CompilerProtocol", "PlanT", "RequestT"]
+__all__ = ["CompilerProtocol"]

@@ -383,16 +383,35 @@ def isolated_celery_signals() -> Any:
 
 
 class TestWorkerSignals:
+    class _RuntimeSpy:
+        def __init__(self) -> None:
+            self.initialize_calls = 0
+            self.run_calls: list[tuple[Any, bool]] = []
+            self.shutdown_calls = 0
+            self.run_side_effect: Exception | None = None
+
+        def initialize(self) -> None:
+            self.initialize_calls += 1
+
+        def run(self, coro: Any, *, eager_fallback: bool) -> Any:
+            self.run_calls.append((coro, eager_fallback))
+            if self.run_side_effect is not None:
+                raise self.run_side_effect
+            return None
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
     def test_on_init_calls_async_runtime_initialize(self, isolated_celery_signals: Any) -> None:
         from celery.signals import worker_process_init
 
         mock_sm = MagicMock()
-        mock_runtime = MagicMock()
+        mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)
+        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
         worker_process_init.send(sender=None)
 
-        mock_runtime.initialize.assert_called_once()
+        assert mock_runtime.initialize_calls == 1
 
     def test_on_shutdown_disposes_session_manager_via_runtime(
         self, isolated_celery_signals: Any
@@ -402,38 +421,38 @@ class TestWorkerSignals:
         mock_sm = MagicMock()
         dispose_coro = MagicMock()
         mock_sm.dispose.return_value = dispose_coro
-        mock_runtime = MagicMock()
+        mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)
+        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
         worker_process_init.send(sender=None)
         worker_process_shutdown.send(sender=None)
 
-        mock_runtime.run.assert_called_once_with(dispose_coro, eager_fallback=False)
+        assert mock_runtime.run_calls == [(dispose_coro, False)]
 
     def test_on_shutdown_calls_async_runtime_shutdown(self, isolated_celery_signals: Any) -> None:
         from celery.signals import worker_process_init, worker_process_shutdown
 
         mock_sm = MagicMock()
-        mock_runtime = MagicMock()
+        mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)
+        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
         worker_process_init.send(sender=None)
         worker_process_shutdown.send(sender=None)
 
-        mock_runtime.shutdown.assert_called_once()
+        assert mock_runtime.shutdown_calls == 1
 
     def test_on_shutdown_skips_dispose_when_session_manager_missing(
         self, isolated_celery_signals: Any
     ) -> None:
         from celery.signals import worker_process_shutdown
 
-        mock_runtime = MagicMock()
+        mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(None, mock_runtime)
+        _connect_worker_signals(None, mock_runtime)  # type: ignore[arg-type]
         worker_process_shutdown.send(sender=None)
 
-        mock_runtime.run.assert_not_called()
-        mock_runtime.shutdown.assert_called_once()
+        assert mock_runtime.run_calls == []
+        assert mock_runtime.shutdown_calls == 1
 
     def test_on_shutdown_always_calls_shutdown_when_dispose_fails(
         self, isolated_celery_signals: Any
@@ -443,12 +462,12 @@ class TestWorkerSignals:
         mock_sm = MagicMock()
         dispose_coro = MagicMock()
         mock_sm.dispose.return_value = dispose_coro
-        mock_runtime = MagicMock()
-        mock_runtime.run.side_effect = RuntimeError("loop stopped")
+        mock_runtime = self._RuntimeSpy()
+        mock_runtime.run_side_effect = RuntimeError("loop stopped")
 
-        _connect_worker_signals(mock_sm, mock_runtime)
+        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
         worker_process_shutdown.send(sender=None)
 
-        mock_runtime.run.assert_called_once_with(dispose_coro, eager_fallback=False)
+        assert mock_runtime.run_calls == [(dispose_coro, False)]
         dispose_coro.close.assert_called_once()
-        mock_runtime.shutdown.assert_called_once()
+        assert mock_runtime.shutdown_calls == 1

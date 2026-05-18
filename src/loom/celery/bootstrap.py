@@ -69,7 +69,6 @@ from loom.celery.config import (
     CeleryConfig,
     CeleryRuntimeConfig,
     JobConfig,
-    _build_backend_options,
     apply_job_config,
     create_celery_app,
 )
@@ -80,6 +79,7 @@ from loom.celery.runner import (
     _make_callback_task,
     _make_job_task,
 )
+from loom.core.async_bridge import build_backend_options
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.bootstrap import create_kernel
 from loom.core.config import ConfigContext, ConfigKey
@@ -207,7 +207,7 @@ def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntim
     """Build the per-process async runtime used by Celery worker tasks."""
     return _CeleryAsyncRuntime(
         backend=runtime_cfg.backend,
-        backend_options=_build_backend_options(runtime_cfg.backend, runtime_cfg.use_uvloop),
+        backend_options=build_backend_options(runtime_cfg.backend, runtime_cfg.use_uvloop),
         shutdown_timeout_ms=runtime_cfg.shutdown_timeout_ms,
     )
 
@@ -259,7 +259,6 @@ def _connect_worker_signals(
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)
-    _CeleryAsyncRuntime._signals_connected = True
     _SIGNALS_CONNECTED = True
 
 

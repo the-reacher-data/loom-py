@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 from bytewax.dataflow import Dataflow
 from bytewax.recovery import RecoveryConfig
 from bytewax.run import cli_main
 
-from loom.core.async_bridge import AsyncBridge
+from loom.core.async_bridge import AsyncBridge, build_backend_options
 from loom.core.config import ConfigContext, ConfigKey
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
@@ -95,7 +94,7 @@ class BytewaxRuntimeConfig(LoomFrozenStruct, frozen=True):
     addresses: tuple[str, ...] | None = None
     epoch_interval_ms: int | None = None
     recovery: BytewaxRecoverySettings | None = None
-    async_backend: str = "asyncio"
+    async_backend: Literal["asyncio", "trio"] = "asyncio"
     use_uvloop: bool = False
     force_shutdown_timeout_ms: int | None = None
 
@@ -185,7 +184,16 @@ class StreamingRunner:
         return prepared.dataflow
 
     def prepare_run(self) -> _PreparedStreamingRun:
-        """Prepare one executable dataflow and its shutdown callback."""
+        """Prepare one executable dataflow and its shutdown callback.
+
+        Releases any resources from a previous ``prepare_run()`` call before
+        building the new dataflow, so calling this method twice is safe.
+
+        Returns:
+            A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
+            and a shutdown callable that releases adapter-owned resources.
+        """
+        shutdown_runner(self)
         prepared = _prepare_run(
             self._plan,
             observability_runtime=self._observability_runtime,
@@ -307,18 +315,9 @@ def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBr
         return None
     return AsyncBridge(
         backend=runtime.async_backend,
-        backend_options=_build_backend_options(runtime.async_backend, runtime.use_uvloop),
+        backend_options=build_backend_options(runtime.async_backend, runtime.use_uvloop),
         shutdown_timeout_ms=runtime.force_shutdown_timeout_ms,
     )
-
-
-def _build_backend_options(backend: str, use_uvloop: bool) -> dict[str, Any]:
-    """Build anyio backend options dict from runtime config."""
-    if backend == "asyncio" and use_uvloop and sys.platform != "win32":
-        import uvloop  # guarded by sys_platform marker in pyproject.toml
-
-        return {"loop_factory": uvloop.new_event_loop}
-    return {}
 
 
 __all__ = [
