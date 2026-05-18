@@ -355,13 +355,11 @@ class TestBootstrapWorkerTaskRegistration:
 def isolated_celery_signals() -> Any:
     """Save and restore Celery worker signal receivers around each test.
 
-    ``_connect_worker_signals`` registers closures with ``weak=False``.
-    Without isolation, receivers accumulate across tests and assertions
-    like ``assert_called_once()`` see multiple calls (one per handler).
-
-    Also resets ``boot._SIGNALS_CONNECTED`` so the guard introduced for
-    production idempotency does not cause the function to no-op in tests
-    that call ``_connect_worker_signals`` directly.
+    ``_connect_worker_signals`` registers closures with ``dispatch_uid``,
+    which replaces rather than accumulates handlers on repeated calls.
+    This fixture ensures that handlers registered by previous tests do not
+    leak into the current one and that the signal state is restored cleanly
+    after each test regardless of what the test does.
     """
     from celery.signals import (  # type: ignore[import-untyped]
         worker_process_init,
@@ -370,16 +368,11 @@ def isolated_celery_signals() -> Any:
 
     saved_init = list(worker_process_init.receivers)
     saved_shutdown = list(worker_process_shutdown.receivers)
-    saved_connected = boot._SIGNALS_CONNECTED
-    # Start each test with a clean slate so accumulated handlers from prior
-    # bootstrap_worker() calls do not inflate assertion call counts.
     worker_process_init.receivers[:] = []
     worker_process_shutdown.receivers[:] = []
-    boot._SIGNALS_CONNECTED = False
     yield
     worker_process_init.receivers[:] = saved_init
     worker_process_shutdown.receivers[:] = saved_shutdown
-    boot._SIGNALS_CONNECTED = saved_connected
 
 
 class TestWorkerSignals:
@@ -471,3 +464,18 @@ class TestWorkerSignals:
         assert mock_runtime.run_calls == [(dispose_coro, False)]
         dispose_coro.close.assert_called_once()
         assert mock_runtime.shutdown_calls == 1
+
+    def test_second_connect_replaces_closure_not_accumulates(
+        self, isolated_celery_signals: Any
+    ) -> None:
+        from celery.signals import worker_process_shutdown
+
+        first_runtime = self._RuntimeSpy()
+        second_runtime = self._RuntimeSpy()
+
+        _connect_worker_signals(None, first_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(None, second_runtime)  # type: ignore[arg-type]
+        worker_process_shutdown.send(sender=None)
+
+        assert second_runtime.shutdown_calls == 1
+        assert first_runtime.shutdown_calls == 0

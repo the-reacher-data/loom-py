@@ -199,8 +199,8 @@ class _WorkerResolved:
 # Celery worker lifecycle signals
 # ---------------------------------------------------------------------------
 
-
-_SIGNALS_CONNECTED = False
+_WORKER_INIT_UID = "loom.celery.worker.init"
+_WORKER_SHUTDOWN_UID = "loom.celery.worker.shutdown"
 
 
 def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntime:
@@ -225,9 +225,12 @@ def _connect_worker_signals(
     * ``worker_process_shutdown`` — disposes the session manager through
       the bridge, then shuts it down.
 
-    Idempotent: subsequent calls within the same process are no-ops.
-    This prevents handler accumulation when :func:`bootstrap_worker` is
-    called more than once (e.g. in integration tests without full isolation).
+    Idempotency is guaranteed by ``dispatch_uid``: subsequent calls replace
+    the active closures rather than accumulating handlers.  This means that
+    when :func:`bootstrap_worker` is called more than once (e.g. in
+    integration tests), the most-recently registered ``session_manager`` and
+    ``async_runtime`` are always the ones used at shutdown — no stale
+    closures remain active.
 
     Args:
         session_manager: The shared :class:`~SessionManager` instance
@@ -235,9 +238,6 @@ def _connect_worker_signals(
             on shutdown when present.
         async_runtime: Per-process async bridge runtime used for async jobs.
     """
-    global _SIGNALS_CONNECTED
-    if _SIGNALS_CONNECTED:
-        return
 
     def _on_init(**kwargs: Any) -> None:
         async_runtime.initialize()
@@ -257,9 +257,10 @@ def _connect_worker_signals(
         finally:
             shutdown_runner(async_runtime)
 
-    worker_process_init.connect(_on_init, weak=False)
-    worker_process_shutdown.connect(_on_shutdown, weak=False)
-    _SIGNALS_CONNECTED = True
+    worker_process_init.disconnect(dispatch_uid=_WORKER_INIT_UID)
+    worker_process_init.connect(_on_init, weak=False, dispatch_uid=_WORKER_INIT_UID)
+    worker_process_shutdown.disconnect(dispatch_uid=_WORKER_SHUTDOWN_UID)
+    worker_process_shutdown.connect(_on_shutdown, weak=False, dispatch_uid=_WORKER_SHUTDOWN_UID)
 
 
 def _resolve_uow_factory(
