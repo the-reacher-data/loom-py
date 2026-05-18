@@ -1,3 +1,101 @@
+# 🚀 Release 0.7.0 ([#25](https://github.com/the-reacher-data/loom-py/pull/25)) ([`0d8941a`](https://github.com/the-reacher-data/loom-py/commit/0d8941a724ec768b162a07e756bac3d53157ec85))
+
+
+## ✨ Features
+### config
+- **config:** add StructBinder and migrate streaming binding resolution<br>
+  > Introduces StructBinder in core/config/binder.py — a Strategy that
+  > injects constructor arguments from a config mapping via msgspec.convert,
+  > covering primitives, Literal constraints, and LoomFrozenStruct subclasses.
+  > Migrates streaming _instantiate_binding to use it, removing ~30 lines of
+  > private helpers and adding typed ConfigError on resolution failures.
+
+- **config:** add ConfigContext for typed section extraction and binding resolution<br>
+  > Single entry-point for runner and bootstrap code to read config:
+  > section() extracts typed sub-trees, bind() injects constructor args
+  > from a config path + overrides, resolve() materializes ConfigBinding
+  > declarations. Accepts an optional StructBinder for strict-mode control.
+
+
+
+## 🐛 Fixes
+### core
+- **core:** clean async bridge timeout and celery typing
+
+### etl
+- **etl:** align missing storage error with config contract
+
+
+
+
+## ♻️ Refactor
+### model
+- **model:** migrate public config structs to LoomFrozenStruct
+
+### streaming
+- **streaming:** clean up _instantiate_binding before extraction<br>
+  > Replace mutable dict() + .update() with a single dict unpacking
+  > Remove the dead param.annotation fallback (get_type_hints already
+  > resolves all forward refs; the fallback silently passed strings to
+  > _is_struct_annotation which always returned False)
+  > Extract _SKIP_KINDS constant to name the variadic-parameter guard
+  > Raise ConfigError instead of TypeError for missing required struct
+  > params (semantically a config error, not a type error; both are
+  > caught by the enclosing _resolve_binding handler so no behaviour
+  > change in streaming)
+  > All 7 binding tests pass.
+
+
+### core
+- **core:** homogenize config and runner boundaries
+- **core:** add runner and compiler protocols
+- **core:** apply runner lifecycle protocols
+- **core:** harden runner lifecycle abstraction<br>
+  > shutdown_runner/flush_runner now catch and log exceptions instead of
+  > propagating, preserving the original exception when called from finally
+  > blocks; contract updated in docstrings and covered by new tests
+  > CompilerProtocol drops @runtime_checkable — no production isinstance
+  > usage existed; Protocol remains valid for static typing
+  > StreamingRunner.prepare_run() calls shutdown_runner(self) before
+  > overwriting self._shutdown, preventing resource leaks on double calls
+  > _build_backend_options extracted from loom.celery.config into
+  > loom.core.async_bridge.build_backend_options, eliminating duplication
+  > between the Celery and streaming domains
+  > _CeleryAsyncRuntime._signals_connected ClassVar removed; the
+  > module-level _SIGNALS_CONNECTED flag is the single source of truth
+  > for the process-level signal guard
+  > ETLRunner.flush() delegates to ETLExecutor.flush(), which checks
+  > SupportsFlush via isinstance instead of getattr duck-typing
+  > TypeVars in compiler.py renamed to _RequestT/_PlanT to signal they
+  > are implementation details of the Protocol, not public API
+
+
+### etl
+- **etl:** make flush an optional runner capability
+
+### celery
+- **celery:** adopt runner shutdown helper
+- **celery:** replace _SIGNALS_CONNECTED sentinel with dispatch_uid<br>
+  > Eliminates the module-level mutable boolean that violated the no-global-
+  > mutable-state architecture rule. Idempotency is now handled by Celery's
+  > dispatch_uid mechanism: disconnect+connect on each call ensures the most-
+  > recently registered closure is always active, so a second bootstrap_worker
+  > call wires up fresh dependencies rather than leaving stale closures from
+  > the first call.
+  > This is strictly better than the sentinel: no global state, no race
+  > condition between threads calling bootstrap_worker concurrently, and
+  > correct closure replacement when called multiple times in tests.
+
+
+### rest
+- **rest:** use observability config directly
+
+
+
+
+
+
+
 # 🚀 Release 0.6.0 ([#22](https://github.com/the-reacher-data/loom-py/pull/22)) ([`5146569`](https://github.com/the-reacher-data/loom-py/commit/51465697115036ed05f620a1099272e4fd216501))
 
 
