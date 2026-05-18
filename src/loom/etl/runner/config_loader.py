@@ -22,7 +22,7 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
         :class:`~loom.etl.lineage.ETLObservabilityConfig`.
 
     Raises:
-        KeyError: When the ``storage:`` key is absent.
+        loom.core.config.ConfigError: When the ``storage:`` key is absent.
         msgspec.ValidationError: When the config shape is invalid.
         loom.core.config.ConfigError: When the file cannot be read or parsed.
     """
