@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import flush_runner
 from loom.etl.checkpoint import CheckpointStore, TempCleaner
 from loom.etl.compiler import ETLCompiler
 from loom.etl.executor import ETLExecutor, ParallelDispatcher
@@ -161,7 +162,7 @@ class ETLRunner:
         try:
             self._executor.run_pipeline(plan, params, ctx)
         finally:
-            self.flush()
+            flush_runner(self)
 
     def flush(self) -> None:
         """Flush buffered ETL observability sinks after a run."""

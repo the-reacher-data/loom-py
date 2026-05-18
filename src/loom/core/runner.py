@@ -45,4 +45,23 @@ class SupportsFlush(Protocol):
         ...
 
 
-__all__ = ["ResultT", "RunnerProtocol", "SupportsFlush", "SupportsShutdown"]
+def shutdown_runner(runner: object) -> None:
+    """Call ``shutdown()`` when *runner* exposes the shutdown capability."""
+    if isinstance(runner, SupportsShutdown):
+        runner.shutdown()
+
+
+def flush_runner(runner: object) -> None:
+    """Call ``flush()`` when *runner* exposes the flush capability."""
+    if isinstance(runner, SupportsFlush):
+        runner.flush()
+
+
+__all__ = [
+    "ResultT",
+    "RunnerProtocol",
+    "SupportsFlush",
+    "SupportsShutdown",
+    "flush_runner",
+    "shutdown_runner",
+]

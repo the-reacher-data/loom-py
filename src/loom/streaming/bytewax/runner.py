@@ -21,6 +21,7 @@ from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import shutdown_runner
 from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
 from loom.streaming.bytewax._runtime_io import (
@@ -231,7 +232,7 @@ class StreamingRunner:
                     status=status,
                 )
             )
-            self.shutdown()
+            shutdown_runner(self)
 
     def shutdown(self) -> None:
         """Release adapter resources after a run or failed build."""
