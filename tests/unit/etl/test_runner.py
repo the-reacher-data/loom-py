@@ -11,6 +11,7 @@ import msgspec
 import pytest
 
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.runner import SupportsFlush
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.etl.compiler import ETLCompiler
 from loom.etl.compiler._plan import (
@@ -225,6 +226,7 @@ class TestRunnerRun:
             observability=ObservabilityRuntime([spy]),
         )
 
+        assert isinstance(runner, SupportsFlush)
         runner.run(PipelineAll, params)
 
         assert spy.flush_count == 1

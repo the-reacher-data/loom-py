@@ -161,7 +161,11 @@ class ETLRunner:
         try:
             self._executor.run_pipeline(plan, params, ctx)
         finally:
-            self._flush_prometheus()
+            self.flush()
+
+    def flush(self) -> None:
+        """Flush buffered ETL observability sinks after a run."""
+        self._flush_prometheus()
 
     def cleanup_correlation(self, correlation_id: str) -> None:
         """Remove all CORRELATION-scope intermediates for *correlation_id*."""

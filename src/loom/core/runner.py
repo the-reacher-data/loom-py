@@ -36,4 +36,13 @@ class SupportsShutdown(Protocol):
         ...
 
 
-__all__ = ["ResultT", "RunnerProtocol", "SupportsShutdown"]
+@runtime_checkable
+class SupportsFlush(Protocol):
+    """Structural protocol for runners that can flush buffered state."""
+
+    def flush(self) -> None:
+        """Flush buffered metrics, events, or other deferred state."""
+        ...
+
+
+__all__ = ["ResultT", "RunnerProtocol", "SupportsFlush", "SupportsShutdown"]
