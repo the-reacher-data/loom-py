@@ -112,8 +112,13 @@ class AsyncBridge:
         if self._closed:
             coro.close()
             raise RuntimeError("AsyncBridge has been shut down.")
+
+        async def _await_coro_with_timeout() -> T:
+            with anyio.fail_after(timeout):
+                return await coro
+
         if timeout is not None:
-            return cast(T, self._portal.call(_await_with_timeout, coro, timeout))
+            return self._portal.call(_await_coro_with_timeout)
         return cast(T, self._portal.call(_await_coro, coro))
 
     @property
@@ -155,11 +160,6 @@ def _exit_portal_with_timeout(portal_cm: Any, timeout_ms: int) -> None:
 
 async def _await_coro(coro: Coroutine[Any, Any, T]) -> T:
     return await coro
-
-
-async def _await_with_timeout(coro: Coroutine[Any, Any, T], timeout: float) -> T:
-    with anyio.fail_after(timeout):
-        return await coro
 
 
 AsyncWorker = AsyncBridge

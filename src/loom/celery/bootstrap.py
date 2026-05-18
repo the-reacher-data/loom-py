@@ -56,7 +56,7 @@ import importlib
 import inspect
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -203,6 +203,14 @@ _WORKER_INIT_UID = "loom.celery.worker.init"
 _WORKER_SHUTDOWN_UID = "loom.celery.worker.shutdown"
 
 
+class _AsyncRuntimeProtocol(Protocol):
+    def initialize(self) -> None: ...
+
+    def run(self, coro: Any, *, eager_fallback: bool) -> Any: ...
+
+    def shutdown(self) -> None: ...
+
+
 def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntime:
     """Build the per-process async runtime used by Celery worker tasks."""
     return _CeleryAsyncRuntime(
@@ -214,7 +222,7 @@ def _build_async_runtime(runtime_cfg: CeleryRuntimeConfig) -> _CeleryAsyncRuntim
 
 def _connect_worker_signals(
     session_manager: SessionManager | None,
-    async_runtime: _CeleryAsyncRuntime,
+    async_runtime: _AsyncRuntimeProtocol,
 ) -> None:
     """Connect Celery worker lifecycle signals for per-process bridge management.
 

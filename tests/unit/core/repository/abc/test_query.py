@@ -70,7 +70,7 @@ class TestQueryContracts:
 
         assert filter_spec.field == "price"
         assert filter_spec.op is FilterOp.GTE
-        assert filter_spec.value == 10.0
+        assert filter_spec.value == pytest.approx(10.0)
         assert filter_group.filters == (filter_spec,)
         assert filter_group.op == "OR"
         assert sort_spec.field == "name"

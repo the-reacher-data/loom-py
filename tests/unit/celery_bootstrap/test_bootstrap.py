@@ -259,7 +259,8 @@ class TestBootstrapWorkerTaskRegistration:
     def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
         module_name = "tests.unit.celery_bootstrap._manifest_jobs_for_test"
         module = types.ModuleType(module_name)
-        module.MANIFEST = WorkerManifest(jobs=[_SyncJob])
+        module_any = cast(Any, module)
+        module_any.MANIFEST = WorkerManifest(jobs=[_SyncJob])
         sys.modules[module_name] = module
 
         cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
@@ -276,8 +277,9 @@ class TestBootstrapWorkerTaskRegistration:
     ) -> None:
         module_name = "tests.unit.celery_bootstrap._manifest_lists_for_test"
         module = types.ModuleType(module_name)
-        module.JOBS = [_SyncJob]
-        module.CALLBACKS = [_ObservedCallback]
+        module_any = cast(Any, module)
+        module_any.JOBS = [_SyncJob]
+        module_any.CALLBACKS = [_ObservedCallback]
         sys.modules[module_name] = module
 
         cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
@@ -401,7 +403,7 @@ class TestWorkerSignals:
         mock_sm = MagicMock()
         mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(mock_sm, mock_runtime)
         worker_process_init.send(sender=None)
 
         assert mock_runtime.initialize_calls == 1
@@ -416,7 +418,7 @@ class TestWorkerSignals:
         mock_sm.dispose.return_value = dispose_coro
         mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(mock_sm, mock_runtime)
         worker_process_init.send(sender=None)
         worker_process_shutdown.send(sender=None)
 
@@ -428,7 +430,7 @@ class TestWorkerSignals:
         mock_sm = MagicMock()
         mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(mock_sm, mock_runtime)
         worker_process_init.send(sender=None)
         worker_process_shutdown.send(sender=None)
 
@@ -441,7 +443,7 @@ class TestWorkerSignals:
 
         mock_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(None, mock_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(None, mock_runtime)
         worker_process_shutdown.send(sender=None)
 
         assert mock_runtime.run_calls == []
@@ -458,7 +460,7 @@ class TestWorkerSignals:
         mock_runtime = self._RuntimeSpy()
         mock_runtime.run_side_effect = RuntimeError("loop stopped")
 
-        _connect_worker_signals(mock_sm, mock_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(mock_sm, mock_runtime)
         worker_process_shutdown.send(sender=None)
 
         assert mock_runtime.run_calls == [(dispose_coro, False)]
@@ -473,8 +475,8 @@ class TestWorkerSignals:
         first_runtime = self._RuntimeSpy()
         second_runtime = self._RuntimeSpy()
 
-        _connect_worker_signals(None, first_runtime)  # type: ignore[arg-type]
-        _connect_worker_signals(None, second_runtime)  # type: ignore[arg-type]
+        _connect_worker_signals(None, first_runtime)
+        _connect_worker_signals(None, second_runtime)
         worker_process_shutdown.send(sender=None)
 
         assert second_runtime.shutdown_calls == 1
