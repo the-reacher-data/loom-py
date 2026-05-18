@@ -95,6 +95,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.runner import shutdown_runner
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.autocrud import build_auto_routes
@@ -254,7 +255,7 @@ def _connect_worker_signals(
                     close()
             raise
         finally:
-            async_runtime.shutdown()
+            shutdown_runner(async_runtime)
 
     worker_process_init.connect(_on_init, weak=False)
     worker_process_shutdown.connect(_on_shutdown, weak=False)

@@ -47,14 +47,16 @@ class SupportsFlush(Protocol):
 
 def shutdown_runner(runner: object) -> None:
     """Call ``shutdown()`` when *runner* exposes the shutdown capability."""
-    if isinstance(runner, SupportsShutdown):
-        runner.shutdown()
+    shutdown = getattr(runner, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
 
 
 def flush_runner(runner: object) -> None:
     """Call ``flush()`` when *runner* exposes the flush capability."""
-    if isinstance(runner, SupportsFlush):
-        runner.flush()
+    flush = getattr(runner, "flush", None)
+    if callable(flush):
+        flush()
 
 
 __all__ = [
