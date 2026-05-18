@@ -9,10 +9,10 @@ from omegaconf import OmegaConf
 
 import loom.rest.fastapi.auto as auto
 from loom.core.config import ConfigContext
-from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.prometheus.middleware import PrometheusMiddleware
-from loom.rest.fastapi.auto import _MetricsConfig, _mount_optional_middlewares, create_app
+from loom.rest.fastapi.auto import _mount_optional_middlewares, create_app
 from loom.rest.middleware import TraceIdMiddleware
 
 _AUTO = cast(Any, auto)
@@ -21,7 +21,11 @@ _AUTO = cast(Any, auto)
 def test_mount_optional_middlewares_always_adds_trace_middleware() -> None:
     app = FastAPI()
 
-    _mount_optional_middlewares(app, _MetricsConfig(enabled=False), None)
+    _mount_optional_middlewares(
+        app,
+        ObservabilityConfig().prometheus,
+        None,
+    )
 
     classes: list[Any] = [m.cls for m in app.user_middleware]
     assert TraceIdMiddleware in classes
@@ -30,7 +34,8 @@ def test_mount_optional_middlewares_always_adds_trace_middleware() -> None:
 def test_mount_optional_middlewares_adds_prometheus_when_enabled() -> None:
     app = FastAPI()
 
-    _mount_optional_middlewares(app, _MetricsConfig(enabled=True), None)
+    cfg = PrometheusObservabilityConfig(enabled=True, config=None)
+    _mount_optional_middlewares(app, cfg, None)
 
     classes: list[Any] = [m.cls for m in app.user_middleware]
     assert TraceIdMiddleware in classes

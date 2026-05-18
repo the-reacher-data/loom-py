@@ -81,11 +81,6 @@ class _DatabaseConfig(msgspec.Struct, kw_only=True):
     pool_pre_ping: bool = True
 
 
-class _MetricsConfig(msgspec.Struct, kw_only=True):
-    enabled: bool = False
-    path: str = "/metrics"
-
-
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
     "interfaces": lambda cfg: InterfacesDiscoveryEngine(
         cfg.interfaces.modules,
@@ -208,12 +203,6 @@ def _load_observability_config(ctx: ConfigContext) -> ObservabilityConfig:
         return ObservabilityConfig()
 
 
-def _build_metrics_config(cfg: PrometheusObservabilityConfig) -> _MetricsConfig:
-    """Convert unified observability Prometheus settings to REST metrics config."""
-    path = cfg.config.path if cfg.config is not None else "/metrics"
-    return _MetricsConfig(enabled=cfg.enabled, path=path)
-
-
 def _build_bootstrap(
     app_cfg: _AppConfig,
     db_cfg: _DatabaseConfig,
@@ -276,7 +265,7 @@ def _build_kernel_runtime(
 
 
 def _build_metrics_adapter(
-    cfg: _MetricsConfig,
+    cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> Any | None:
     """Return a ``PrometheusMetricsAdapter`` when metrics are enabled, else ``None``.
@@ -293,9 +282,14 @@ def _build_metrics_adapter(
     return PrometheusMetricsAdapter(registry=registry)
 
 
+def _metrics_path(cfg: PrometheusObservabilityConfig) -> str:
+    """Return the REST metrics path declared in the Prometheus config."""
+    return cfg.config.path if cfg.config is not None else "/metrics"
+
+
 def _mount_optional_middlewares(
     app: FastAPI,
-    metrics_cfg: _MetricsConfig,
+    metrics_cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> None:
     """Mount request tracing and metrics middlewares.
@@ -312,7 +306,7 @@ def _mount_optional_middlewares(
 
 def _mount_metrics(
     app: FastAPI,
-    cfg: _MetricsConfig,
+    cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> None:
     """Add Prometheus middleware and scrape endpoint to *app*.
@@ -322,8 +316,9 @@ def _mount_metrics(
         cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
-    if "{" in cfg.path:
-        raise ValueError(f"metrics.path must not contain path parameters, got: {cfg.path!r}")
+    path = _metrics_path(cfg)
+    if "{" in path:
+        raise ValueError(f"metrics.path must not contain path parameters, got: {path!r}")
     app.add_middleware(PrometheusMiddleware, registry=registry)
     scrape_registry = registry or prometheus_client.REGISTRY
 
@@ -337,10 +332,8 @@ def _mount_metrics(
         # Return 404 for trailing-slash variant to avoid ambiguous scrape targets.
         return Response(status_code=404)
 
-    app.add_api_route(cfg.path, _scrape, methods=["GET"], include_in_schema=False)
-    app.add_api_route(
-        f"{cfg.path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False
-    )
+    app.add_api_route(path, _scrape, methods=["GET"], include_in_schema=False)
+    app.add_api_route(f"{path}/", _scrape_trailing_slash, methods=["GET"], include_in_schema=False)
 
 
 def create_app(
@@ -398,7 +391,7 @@ def create_app(
     db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
-    metrics_cfg = _build_metrics_config(observability_cfg.prometheus)
+    metrics_cfg = observability_cfg.prometheus
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
