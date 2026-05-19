@@ -14,6 +14,7 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
+from loom.streaming.nodes._decompose import Decompose
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
@@ -209,6 +210,14 @@ def _validate_shape_sequence(
             current_shape = StreamShape.NONE
             break
 
+        if isinstance(node, Decompose):
+            next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
+            if not isinstance(next_node, Router):
+                got = type(next_node).__name__ if next_node is not None else "nothing"
+                errors.append(f"Decompose must be immediately followed by a Router; got {got}")
+            current_shape = _node_output_shape(node, current_shape)
+            continue
+
         if isinstance(node, Router):
             router_errors, current_shape = _validate_router_shapes(node, current_shape)
             errors.extend(router_errors)
@@ -375,6 +384,8 @@ def _node_input_shape(node: object) -> StreamShape | None:
         return StreamShape.RECORD
     if isinstance(node, BatchExpandStep):
         return StreamShape.BATCH
+    if isinstance(node, Decompose):
+        return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
         return None
     if isinstance(node, ForEach):
@@ -422,6 +433,7 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
 
 _FIXED_OUTPUT_SHAPES: dict[type, StreamShape] = {
     CollectBatch: StreamShape.BATCH,
+    Decompose: StreamShape.RECORD,
     ForEach: StreamShape.RECORD,
     RecordStep: StreamShape.RECORD,
     BatchStep: StreamShape.BATCH,
