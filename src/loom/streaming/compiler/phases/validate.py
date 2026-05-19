@@ -17,6 +17,7 @@ from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
+from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
@@ -58,10 +59,7 @@ def validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
 def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
     """Validate terminal outputs and branch terminality."""
     errors: list[str] = []
-    has_terminal = flow.output is not None
-
-    if _has_terminal_output(flow.process.nodes):
-        has_terminal = True
+    has_terminal = flow.output is not None or _has_terminal_output(flow.process.nodes)
 
     if flow.output is not None and _contains_fork(flow.process.nodes):
         errors.append(
@@ -83,7 +81,11 @@ def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
 
     if not has_terminal:
         errors.append(
-            str(MissingSinkError("no terminal output found: add IntoTopic or flow.output"))
+            str(
+                MissingSinkError(
+                    "no terminal output found: add IntoTopic, a storage sink node, or flow.output"
+                )
+            )
         )
 
     return errors
@@ -156,7 +158,7 @@ def _validate_shape_sequence(
     for idx, node in enumerate(node_list):
         _check_input_shape(node, current_shape, errors)
 
-        if isinstance(node, (IntoTopic, Drain)):
+        if _is_leaf_terminal(node):
             errors.extend(
                 _must_be_last_errors(
                     idx, node_list, f"{type(node).__name__} must be the last node in a process"
@@ -245,7 +247,7 @@ def _validate_router_branch_shape_sequence(
                 f"shape mismatch: expected {expected.value} but got {current_shape.value} "
                 f"before {type(node).__name__}"
             )
-        if isinstance(node, (IntoTopic, Drain)) and idx != len(node_list) - 1:
+        if _is_leaf_terminal(node) and idx != len(node_list) - 1:
             errors.append(f"{type(node).__name__} must be the last node in a process")
             break
         current_shape = _node_output_shape(node, current_shape)
@@ -311,18 +313,19 @@ def _fork_branch_count(fork: Fork[StreamPayload]) -> int:
     return len(fork.predicate_routes)
 
 
+def _is_leaf_terminal(node: object) -> bool:
+    """Return True for nodes that are themselves terminal with no children to recurse into."""
+    return isinstance(node, (IntoTopic, Drain, IntoSink, Broadcast))
+
+
 def _node_has_terminal_output(node: object) -> bool:
-    if isinstance(node, (IntoTopic, Drain)):
+    if _is_leaf_terminal(node):
         return True
     if isinstance(node, Router):
         return _router_has_terminal_output(node)
     if isinstance(node, Fork):
         return _fork_has_terminal_output(node)
-    if isinstance(node, Broadcast):
-        return True
-    if isinstance(node, WithAsync):
-        return _has_terminal_output(node.process.nodes)
-    if isinstance(node, With):
+    if isinstance(node, (WithAsync, With)):
         return _has_terminal_output(node.process.nodes)
     return False
 
@@ -401,31 +404,28 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
     return errors
 
 
+_FIXED_OUTPUT_SHAPES: dict[type, StreamShape] = {
+    CollectBatch: StreamShape.BATCH,
+    ForEach: StreamShape.RECORD,
+    RecordStep: StreamShape.RECORD,
+    BatchStep: StreamShape.BATCH,
+    ExpandStep: StreamShape.RECORD,
+    BatchExpandStep: StreamShape.RECORD,
+    WithAsync: StreamShape.NONE,
+    Drain: StreamShape.NONE,
+    Fork: StreamShape.NONE,
+    Broadcast: StreamShape.NONE,
+}
+
+
 def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
-    if isinstance(node, CollectBatch):
-        return StreamShape.BATCH
-    if isinstance(node, ForEach):
-        return StreamShape.RECORD
-    if isinstance(node, RecordStep):
-        return StreamShape.RECORD
-    if isinstance(node, BatchStep):
-        return StreamShape.BATCH
-    if isinstance(node, ExpandStep):
-        return StreamShape.RECORD
-    if isinstance(node, BatchExpandStep):
-        return StreamShape.RECORD
-    if isinstance(node, WithAsync):
+    fixed = _FIXED_OUTPUT_SHAPES.get(type(node))
+    if fixed is not None:
+        return fixed
+    if isinstance(node, IntoSink):
         return StreamShape.NONE
-    if isinstance(node, With):
-        if node.process is not None:
-            return StreamShape.NONE
-        return StreamShape.MANY
     if isinstance(node, IntoTopic):
         return node.shape
-    if isinstance(node, Drain):
-        return StreamShape.NONE
-    if isinstance(node, Fork):
-        return StreamShape.NONE
-    if isinstance(node, Broadcast):
-        return StreamShape.NONE
+    if isinstance(node, With):
+        return StreamShape.NONE if node.process is not None else StreamShape.MANY
     return current
