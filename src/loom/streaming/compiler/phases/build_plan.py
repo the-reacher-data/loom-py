@@ -16,6 +16,7 @@ from loom.streaming.compiler._plan import (
     CompiledSingleSource,
     CompiledSink,
     CompiledSource,
+    CompiledStorageSink,
 )
 from loom.streaming.compiler.phases.validate import (
     _fork_branch_count,
@@ -33,6 +34,7 @@ from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch
+from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._with import With, WithAsync
 
 
@@ -49,7 +51,7 @@ def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
     source = _build_source(flow, ctx)
     nodes = _build_nodes(flow)
     output = _build_sink(flow.output, ctx) if flow.output else None
-    terminal_sinks = _build_terminal_sinks(flow.process.nodes, ctx)
+    terminal_sinks, terminal_storage_sinks = _build_terminal_sinks(flow.process.nodes, ctx)
     error_routes = {kind: _build_sink(topic, ctx) for kind, topic in flow.errors.items()}
     needs_async = any(
         _node_needs_async_bridge(node) for node in _walk_all_process_nodes(flow.process.nodes)
@@ -60,6 +62,7 @@ def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
         nodes=tuple(nodes),
         output=output,
         terminal_sinks=terminal_sinks,
+        terminal_storage_sinks=terminal_storage_sinks,
         error_routes=error_routes,
         needs_async_bridge=needs_async,
     )
@@ -153,25 +156,40 @@ def _build_nodes(flow: StreamFlow[Any, Any]) -> list[CompiledNode]:
     return nodes
 
 
+_TerminalSinks = tuple[
+    dict[tuple[int, ...], CompiledSink], dict[tuple[int, ...], CompiledStorageSink]
+]
+
+
 def _build_terminal_sinks(
     nodes: Iterable[object],
     ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...] = (),
-) -> dict[tuple[int, ...], CompiledSink]:
+) -> _TerminalSinks:
     sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
     for idx, node in enumerate(tuple(nodes)):
         path = path_prefix + (idx,)
         if isinstance(node, IntoTopic):
             sinks[path] = _build_sink(node, ctx)
             continue
+        if isinstance(node, IntoSink):
+            storage_sinks[path] = _build_storage_sink(node, ctx)
+            continue
         builder = _BRANCH_BUILDERS.get(type(node))
         if builder is not None:
-            sinks.update(builder(node, ctx, path_prefix=path))
+            sub_sinks, sub_storage = builder(node, ctx, path_prefix=path)
+            sinks.update(sub_sinks)
+            storage_sinks.update(sub_storage)
             continue
         if isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
-            sinks.update(_build_terminal_sinks(node.process.nodes, ctx, path_prefix=path))
-    return sinks
+            sub_sinks, sub_storage = _build_terminal_sinks(
+                node.process.nodes, ctx, path_prefix=path
+            )
+            sinks.update(sub_sinks)
+            storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
 
 
 def _build_fork_terminal_sinks(
@@ -179,18 +197,23 @@ def _build_fork_terminal_sinks(
     ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
-) -> dict[tuple[int, ...], CompiledSink]:
+) -> _TerminalSinks:
     sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
     branch_count = _fork_branch_count(fork)
     for branch_idx, (_, nodes) in enumerate(_fork_branch_nodes(fork)):
-        sinks.update(_build_terminal_sinks(nodes, ctx, path_prefix=path_prefix + (branch_idx,)))
-    if fork.default is not None:
-        sinks.update(
-            _build_terminal_sinks(
-                fork.default.nodes, ctx, path_prefix=path_prefix + (branch_count,)
-            )
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            nodes, ctx, path_prefix=path_prefix + (branch_idx,)
         )
-    return sinks
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    if fork.default is not None:
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            fork.default.nodes, ctx, path_prefix=path_prefix + (branch_count,)
+        )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
 
 
 def _build_router_terminal_sinks(
@@ -198,26 +221,29 @@ def _build_router_terminal_sinks(
     ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
-) -> dict[tuple[int, ...], CompiledSink]:
+) -> _TerminalSinks:
     sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
     keyed_count = len(router.routes)
     for branch_idx, process in enumerate(router.routes.values()):
-        sinks.update(
-            _build_terminal_sinks(process.nodes, ctx, path_prefix=path_prefix + (branch_idx,))
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            process.nodes, ctx, path_prefix=path_prefix + (branch_idx,)
         )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
     for i, route in enumerate(router.predicate_routes):
-        sinks.update(
-            _build_terminal_sinks(
-                route.process.nodes, ctx, path_prefix=path_prefix + (keyed_count + i,)
-            )
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            route.process.nodes, ctx, path_prefix=path_prefix + (keyed_count + i,)
         )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
     if router.default is not None:
-        sinks.update(
-            _build_terminal_sinks(
-                router.default.nodes, ctx, path_prefix=path_prefix + (len(router.routes),)
-            )
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            router.default.nodes, ctx, path_prefix=path_prefix + (len(router.routes),)
         )
-    return sinks
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
 
 
 def _build_broadcast_terminal_sinks(
@@ -225,14 +251,19 @@ def _build_broadcast_terminal_sinks(
     ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
-) -> dict[tuple[int, ...], CompiledSink]:
+) -> _TerminalSinks:
     sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
     for branch_idx, route in enumerate(broadcast.routes):
         branch_path = path_prefix + (branch_idx,)
         if route.output is not None:
             sinks[branch_path] = _build_sink(route.output, ctx)
-        sinks.update(_build_terminal_sinks(route.process.nodes, ctx, path_prefix=branch_path))
-    return sinks
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            route.process.nodes, ctx, path_prefix=branch_path
+        )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
 
 
 def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
@@ -246,12 +277,17 @@ def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
     )
 
 
-_BRANCH_BUILDERS: MappingProxyType[type, Callable[..., dict[tuple[int, ...], CompiledSink]]] = (
-    MappingProxyType(
-        {
-            Fork: _build_fork_terminal_sinks,
-            Router: _build_router_terminal_sinks,
-            Broadcast: _build_broadcast_terminal_sinks,
-        }
-    )
+def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStorageSink:
+    config: dict[str, Any] = {}
+    if node.name:
+        config = ctx.section_or_default(f"streaming.sinks.{node.name}", dict, {})
+    return CompiledStorageSink(node=node, config=config)
+
+
+_BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = MappingProxyType(
+    {
+        Fork: _build_fork_terminal_sinks,
+        Router: _build_router_terminal_sinks,
+        Broadcast: _build_broadcast_terminal_sinks,
+    }
 )

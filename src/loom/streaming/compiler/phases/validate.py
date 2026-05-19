@@ -22,6 +22,22 @@ from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, R
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
+def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+    """Validate that every named IntoSink node has a config section at streaming.sinks.<name>."""
+    errors: list[str] = []
+    seen: set[str] = set()
+    for node in _walk_all_process_nodes(flow.process.nodes):
+        if not isinstance(node, IntoSink) or not node.name or node.name in seen:
+            continue
+        seen.add(node.name)
+        if not ctx.has(f"streaming.sinks.{node.name}"):
+            errors.append(
+                f"storage sink '{node.name}': no config section found at "
+                f"streaming.sinks.{node.name}"
+            )
+    return errors
+
+
 def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
     """Validate Kafka settings required by *flow*."""
     if not _uses_kafka(flow):

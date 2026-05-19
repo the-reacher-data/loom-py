@@ -9,15 +9,17 @@ from loom.streaming.compiler._plan import (
     CompiledSingleSource,
     CompiledSink,
     CompiledSource,
+    CompiledStorageSink,
 )
 
 __all__ = [
     "compile_flow",
     "CompilationError",
     "CompiledMultiSource",
-    "CompiledPlan",
     "CompiledNode",
+    "CompiledPlan",
     "CompiledSingleSource",
-    "CompiledSource",
     "CompiledSink",
+    "CompiledSource",
+    "CompiledStorageSink",
 ]
