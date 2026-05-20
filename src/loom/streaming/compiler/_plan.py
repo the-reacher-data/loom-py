@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -12,6 +11,11 @@ from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
+from loom.streaming.nodes._table.common import (
+    DeltaSinkConfig,
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
+)
 
 
 @dataclass(frozen=True)
@@ -67,15 +71,13 @@ class CompiledStorageSink:
 
     Args:
         node:   The :class:`~loom.streaming.nodes.IntoSink` node as declared in the DSL.
-        config: Resolved ``streaming.sinks.<name>`` config section, or an empty
-                mapping when ``node.name`` is the empty string.
-        database_config: Resolved ``database.<name>`` config section used by
-                SQLAlchemy sinks. Empty when the sink does not reference a DB.
+        config: Resolved storage sink config for the selected backend.
+        database_config: Resolved shared SQLAlchemy database config, if needed.
     """
 
     node: Any
-    config: Mapping[str, Any]
-    database_config: Mapping[str, Any] = field(default_factory=dict)
+    config: SqlAlchemySinkConfig | DeltaSinkConfig
+    database_config: SqlAlchemyDatabaseConfig | None = None
 
 
 @dataclass(frozen=True)

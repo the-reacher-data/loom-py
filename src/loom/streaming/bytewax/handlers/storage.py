@@ -2,7 +2,7 @@
 
 Bridges the loom SinkPartition protocol to the Bytewax DynamicSink API.
 One _StorageDynamicSink per IntoSink node; one _StorageSinkPartition per
-Bytewax worker, built via node.build_partition(config, worker_index, worker_count).
+Bytewax worker, built via node.build_partition(config, worker_index, worker_count, bridge).
 
 Observability
 -------------
@@ -25,6 +25,7 @@ from loom.streaming.compiler._plan import CompiledStorageSink
 from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.nodes._sink import IntoSink, SinkPartition
+from loom.streaming.nodes._table import Backend, IntoTable
 
 Stream = Any
 
@@ -94,12 +95,10 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
     def __init__(
         self,
         compiled: CompiledStorageSink,
-        observer: ObservabilityRuntime,
-        flow_name: str,
+        ctx: _BuildContextProtocol,
     ) -> None:
         self._compiled = compiled
-        self._observer = observer
-        self._flow_name = flow_name
+        self._ctx = ctx
 
     def build(
         self,
@@ -119,13 +118,39 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
         """
         del step_id
         node = self._compiled.node
-        partition = node.build_partition(self._compiled.config, worker_index, worker_count)
+        if isinstance(node, IntoTable):
+            session_manager = None
+            if node.backend is Backend.SQLALCHEMY:
+                if self._ctx.bridge is None:
+                    raise RuntimeError(
+                        "IntoTable backend=sqlalchemy requires an AsyncBridge "
+                        "from the Bytewax runtime."
+                    )
+                if self._compiled.database_config is None:
+                    raise RuntimeError(
+                        "IntoTable backend=sqlalchemy requires a resolved database config."
+                    )
+                session_manager = self._ctx.session_manager_for(self._compiled.database_config)
+            partition = node.build_partition(
+                self._compiled.config,
+                worker_index,
+                worker_count,
+                bridge=self._ctx.bridge,
+                session_manager=session_manager,
+            )
+        else:
+            partition = node.build_partition(
+                self._compiled.config,
+                worker_index,
+                worker_count,
+                bridge=self._ctx.bridge,
+            )
         node_name = node.name or type(node).__name__
         return _StorageSinkPartition(
             partition,
             node_name=node_name,
-            flow_name=self._flow_name,
-            observer=self._observer,
+            flow_name=self._ctx.plan.name,
+            observer=self._ctx.flow_runtime,
         )
 
 
@@ -167,5 +192,5 @@ def _apply_into_sink(
             "ensure compile_flow ran before building the dataflow."
         )
     sid = _step_id(f"storage_sink_{idx}", ctx)
-    bw_output(sid, stream, _StorageDynamicSink(compiled, ctx.flow_runtime, ctx.plan.name))
+    bw_output(sid, stream, _StorageDynamicSink(compiled, ctx))
     return stream

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -18,6 +18,46 @@ from loom.core.tracing import get_trace_id
 
 class SessionManager:
     """Async SQLAlchemy session manager with pooling support."""
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Mapping[str, Any],
+        *,
+        inject_trace_id: bool = True,
+        **engine_kwargs: object,
+    ) -> SessionManager:
+        """Build a session manager from a resolved SQLAlchemy config mapping.
+
+        Args:
+            config: Resolved config mapping containing a ``url`` entry and
+                optional pool tuning keys.
+            inject_trace_id: When ``True``, prefixes SQL statements with the
+                active trace id when available.
+            **engine_kwargs: Additional keyword arguments forwarded to the
+                async engine constructor.
+
+        Returns:
+            A configured :class:`SessionManager`.
+
+        Raises:
+            ValueError: If ``url`` is missing or empty.
+        """
+        url = config.get("url")
+        if not url:
+            raise ValueError("SQLAlchemy sink config requires a 'url'.")
+        return cls(
+            str(url),
+            echo=bool(config.get("echo", False)),
+            pool_pre_ping=bool(config.get("pool_pre_ping", True)),
+            pool_size=_optional_int(config.get("pool_size"), 10),
+            max_overflow=_optional_int(config.get("max_overflow"), 20),
+            pool_timeout=_optional_int(config.get("pool_timeout"), 30),
+            pool_recycle=_optional_int(config.get("pool_recycle"), 1800),
+            connect_args=dict(config.get("connect_args") or {}),
+            inject_trace_id=inject_trace_id,
+            **engine_kwargs,
+        )
 
     def __init__(
         self,
@@ -139,3 +179,9 @@ def _register_trace_id_listener(async_engine: AsyncEngine) -> None:
         if tid:
             statement = f"/* trace_id={tid} */ " + statement
         return statement, parameters
+
+
+def _optional_int(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    return int(value)

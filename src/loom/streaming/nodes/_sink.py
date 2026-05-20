@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
+from loom.core.async_bridge import AsyncBridge
 from loom.streaming.core._message import StreamPayload
 
 EventT_contra = TypeVar("EventT_contra", bound=StreamPayload, contravariant=True)
@@ -72,7 +73,14 @@ class IntoSink(Protocol[EventT]):
             name: str = ""
             router_branch_safe: ClassVar[bool] = True
 
-            def build_partition(self, config, worker_index, worker_count):
+            def build_partition(
+                self,
+                config,
+                worker_index,
+                worker_count,
+                bridge=None,
+                session_manager=None,
+            ):
                 return MongoPartition(url=config["url"], collection=self.collection)
 
     Args:
@@ -88,6 +96,8 @@ class IntoSink(Protocol[EventT]):
         config: Mapping[str, Any],
         worker_index: int,
         worker_count: int,
+        bridge: AsyncBridge | None = None,
+        session_manager: object | None = None,
     ) -> SinkPartition[EventT]:
         """Build the per-worker partition for this sink.
 
@@ -98,6 +108,8 @@ class IntoSink(Protocol[EventT]):
             config:       Resolved streaming.sinks.<name> config section.
             worker_index: Zero-based index of the worker calling this method.
             worker_count: Total number of workers in this run.
+            bridge:       Optional async bridge provided by the Bytewax runtime.
+            session_manager: Optional adapter-owned backend resource for async SQLAlchemy sinks.
 
         Returns:
             A SinkPartition that will handle write_batch() and close() calls.

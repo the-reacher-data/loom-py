@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from tests.unit.streaming.flows.cases import (
     StreamFlowCase,
     build_async_flow_case,
+    build_explode_flow_case,
     build_fork_flow_case,
     build_fork_when_flow_case,
     build_fork_with_flow_case,
@@ -25,6 +26,7 @@ FlowCaseBuilder = Callable[[DictConfig], StreamFlowCase]
 _FLOW_CASE_BUILDERS: Sequence[tuple[str, FlowCaseBuilder]] = (
     ("simple", build_simple_validation_flow_case),
     ("router", build_router_flow_case),
+    ("explode", build_explode_flow_case),
     ("with_batch", build_with_batch_flow_case),
     ("with_batch_scope", build_with_batch_scope_flow_case),
     ("async", build_async_flow_case),

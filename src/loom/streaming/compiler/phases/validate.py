@@ -20,12 +20,10 @@ from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
-from loom.streaming.nodes._table import (
-    Backend,
-    DeltaSinkConfig,
-    IntoTable,
-    SqlAlchemyDatabaseConfig,
-    SqlAlchemySinkConfig,
+from loom.streaming.nodes._table import Backend, IntoTable
+from loom.streaming.nodes._table.config import (
+    resolve_delta_table_config,
+    resolve_sqlalchemy_table_config,
 )
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
@@ -39,65 +37,14 @@ def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> li
             continue
         if node.name:
             seen.add(node.name)
-            sink_key = f"streaming.sinks.{node.name}"
-            if not ctx.has(sink_key):
-                errors.append(f"storage sink '{node.name}': no config section found at {sink_key}")
-                continue
-            sink_cfg = ctx.section_or_default(sink_key, dict, {})
-        else:
-            sink_key = "streaming.sinks.<inline>"
-            sink_cfg = {}
-        effective_cfg = dict(sink_cfg)
-        if isinstance(node, IntoTable) and node.table:
-            effective_cfg["table"] = node.table
         if isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY:
-            if not node.name:
-                errors.append(
-                    "storage sink '<inline>': SQLAlchemy IntoTable requires a name "
-                    "so it can resolve streaming.sinks.<name>"
-                )
-                continue
             try:
-                resolved = SqlAlchemySinkConfig.from_config(
-                    effective_cfg,
-                    default_table=node.table,
-                )
+                resolve_sqlalchemy_table_config(node, ctx)
             except ValueError as exc:
                 errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
-                continue
-            if resolved.database:
-                if not ctx.has(f"database.{resolved.database}"):
-                    errors.append(
-                        f"storage sink '{node.name or type(node).__name__}': missing shared "
-                        f"config section at database.{resolved.database}"
-                    )
-                    continue
-                try:
-                    SqlAlchemyDatabaseConfig.from_config(
-                        ctx.section_or_default(f"database.{resolved.database}", dict, {})
-                    )
-                except ValueError as exc:
-                    errors.append(
-                        f"storage sink '{node.name or type(node).__name__}': database."
-                        f"{resolved.database}: {exc}"
-                    )
-            elif resolved.url:
-                try:
-                    SqlAlchemyDatabaseConfig.from_config(sink_cfg)
-                except ValueError as exc:
-                    errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
         elif isinstance(node, IntoTable) and node.backend is Backend.DELTA:
-            if not node.name:
-                errors.append(
-                    "storage sink '<inline>': Delta IntoTable requires a name "
-                    "so it can resolve streaming.sinks.<name>"
-                )
-                continue
             try:
-                DeltaSinkConfig.from_config(
-                    effective_cfg,
-                    default_table=node.table,
-                )
+                resolve_delta_table_config(node, ctx)
             except ValueError as exc:
                 errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
     return errors

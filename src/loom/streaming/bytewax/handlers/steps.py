@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from bytewax.operators import flat_map
 from bytewax.operators import map as bw_map
 
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -37,6 +38,7 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
+from loom.streaming.nodes._decompose import Explode
 
 Stream = Any
 
@@ -156,9 +158,36 @@ def _apply_batch_expand_step(
 
     sid = _step_id(f"batch_expand_{idx}_{name}", ctx)
     mapped = bw_map(sid, stream, step_fn)
-    from bytewax.operators import flat_map
-
     flattened = flat_map(_step_id(f"flatten_batch_expand_{idx}", ctx), mapped, _identity)
+    return _split_node_result(flattened, sid, ctx, ErrorKind.TASK)
+
+
+def _apply_explode(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
+    if not isinstance(raw, Explode):
+        raise UnsupportedNodeError(f"Unsupported explode node {type(raw).__name__}.")
+    explode_node = raw
+    name = _resolve_node_name(explode_node.exploder)
+    observer = ctx.flow_runtime
+    flow_name = ctx.plan.name
+
+    def step_fn(msg: Any) -> list[NodeResult]:
+        message = _require_message(msg)
+        return _execute_batch_in_boundary(
+            _classify_task,
+            [message],
+            lambda: _execute_explode_step(
+                observer,
+                flow_name,
+                idx,
+                name,
+                explode_node,
+                message,
+            ),
+        )
+
+    sid = _step_id(f"explode_{idx}_{name}", ctx)
+    mapped = bw_map(sid, stream, step_fn)
+    flattened = flat_map(_step_id(f"flatten_explode_{idx}", ctx), mapped, _identity)
     return _split_node_result(flattened, sid, ctx, ErrorKind.TASK)
 
 
@@ -246,3 +275,31 @@ def _execute_batch_expand_step(
         if not isinstance(result, Iterable):
             raise TypeError(f"{name} must return an iterable of payloads.")
         return _replace_payloads(messages, list(result))
+
+
+def _execute_explode_step(
+    observer: ObservabilityRuntime,
+    flow_name: str,
+    idx: int,
+    name: str,
+    explode_node: Explode[Any],
+    message: Message[StreamPayload],
+) -> list[Message[StreamPayload]]:
+    with _observe_node(
+        observer,
+        flow_name,
+        idx,
+        name,
+        trace_id=message.meta.trace_id,
+        correlation_id=message.meta.correlation_id,
+    ):
+        result = explode_node.exploder.expand(message.payload)
+        if not isinstance(result, dict):
+            raise TypeError(f"{name} must return a mapping of output types to payload lists.")
+        outputs: list[Message[StreamPayload]] = []
+        for payloads in result.values():
+            if not isinstance(payloads, Iterable):
+                raise TypeError(f"{name} must return iterables of payloads.")
+            for payload in payloads:
+                outputs.append(_replace_payload(message, payload))
+        return outputs

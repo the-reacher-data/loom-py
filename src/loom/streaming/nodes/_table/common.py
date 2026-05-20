@@ -245,7 +245,7 @@ class IntoTable(Generic[EventT]):
 
     def build_partition(
         self,
-        config: Mapping[str, Any],
+        config: Mapping[str, Any] | SqlAlchemySinkConfig | DeltaSinkConfig,
         worker_index: int,
         worker_count: int,
         bridge: AsyncBridge | None = None,
@@ -269,7 +269,18 @@ class IntoTable(Generic[EventT]):
         """
         del worker_index, worker_count
         if self.backend is Backend.SQLALCHEMY:
-            sql_settings = SqlAlchemySinkConfig.from_config(config, default_table=self.table)
+            if isinstance(config, SqlAlchemySinkConfig):
+                sql_settings = config
+            elif isinstance(config, Mapping):
+                sql_settings = SqlAlchemySinkConfig.from_config(
+                    config,
+                    default_table=self.table,
+                )
+            else:
+                raise TypeError(
+                    "IntoTable backend=sqlalchemy requires a SQLAlchemySinkConfig "
+                    "or a mapping of sink settings."
+                )
             if bridge is None:
                 raise RuntimeError(
                     "IntoTable backend=sqlalchemy requires an AsyncBridge from the Bytewax runtime."
@@ -289,7 +300,18 @@ class IntoTable(Generic[EventT]):
                 ),
             )
         if self.backend is Backend.DELTA:
-            delta_settings = DeltaSinkConfig.from_config(config, default_table=self.table)
+            if isinstance(config, DeltaSinkConfig):
+                delta_settings = config
+            elif isinstance(config, Mapping):
+                delta_settings = DeltaSinkConfig.from_config(
+                    config,
+                    default_table=self.table,
+                )
+            else:
+                raise TypeError(
+                    "IntoTable backend=delta requires a DeltaSinkConfig "
+                    "or a mapping of sink settings."
+                )
             return cast(
                 SinkPartition[EventT],
                 _DeltaTablePartition(delta_settings),

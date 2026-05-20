@@ -35,7 +35,11 @@ from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._sink import IntoSink
-from loom.streaming.nodes._table import IntoTable
+from loom.streaming.nodes._table import Backend, IntoTable
+from loom.streaming.nodes._table.config import (
+    resolve_delta_table_config,
+    resolve_sqlalchemy_table_config,
+)
 from loom.streaming.nodes._with import With, WithAsync
 
 
@@ -279,18 +283,22 @@ def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
 
 
 def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStorageSink:
-    config: dict[str, Any] = {}
-    database_config: dict[str, Any] = {}
-    if node.name:
-        config = ctx.section_or_default(f"streaming.sinks.{node.name}", dict, {})
-        database_name = config.get("database")
-        if isinstance(database_name, str) and database_name:
-            database_config = ctx.section_or_default(f"database.{database_name}", dict, {})
-        elif "url" in config:
-            database_config = dict(config)
-    if isinstance(node, IntoTable) and node.table:
-        config = {**config, "table": node.table}
-    return CompiledStorageSink(node=node, config=config, database_config=database_config)
+    if isinstance(node, IntoTable):
+        if node.backend is Backend.SQLALCHEMY:
+            sql_resolved = resolve_sqlalchemy_table_config(node, ctx)
+            return CompiledStorageSink(
+                node=node,
+                config=sql_resolved.sink,
+                database_config=sql_resolved.database,
+            )
+        if node.backend is Backend.DELTA:
+            delta_resolved = resolve_delta_table_config(node, ctx)
+            return CompiledStorageSink(
+                node=node,
+                config=delta_resolved.sink,
+                database_config=None,
+            )
+    raise ValueError(f"Unsupported storage sink: {type(node).__name__}")
 
 
 _BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = MappingProxyType(
