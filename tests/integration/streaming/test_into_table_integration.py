@@ -18,7 +18,7 @@ from loom.core.config import ConfigContext
 from loom.core.model import LoomStruct
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming import Backend, FromTopic, IntoTable, Process, StreamFlow
-from loom.streaming.nodes import _table as _table_module
+from loom.streaming.nodes._table import common as _table_common
 from loom.streaming.testing import StreamingTestRunner
 
 
@@ -246,13 +246,13 @@ class TestIntoTableSQLAlchemyIntegration:
 
         uri = str(tmp_path / "events_delta")
         write_calls: list[int] = []
-        original_write_deltalake = cast(Any, _table_module).write_deltalake
+        original_write_deltalake = cast(Any, _table_common).write_deltalake
 
         def _counted_write_deltalake(*args: Any, **kwargs: Any) -> Any:
             write_calls.append(1)
             return original_write_deltalake(*args, **kwargs)
 
-        monkeypatch.setattr(cast(Any, _table_module), "write_deltalake", _counted_write_deltalake)
+        monkeypatch.setattr(cast(Any, _table_common), "write_deltalake", _counted_write_deltalake)
 
         flow: StreamFlow[_OrderRow, _OrderRow] = StreamFlow(
             name="events_delta_sink_flow",
