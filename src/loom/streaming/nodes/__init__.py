@@ -19,7 +19,7 @@ from loom.streaming.nodes._boundary import (
     PartitionPolicy,
     PartitionStrategy,
 )
-from loom.streaming.nodes._decompose import Decompose, EntityDecomposer
+from loom.streaming.nodes._decompose import Decompose, PayloadExpander
 from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router, evaluate_predicate, select_value
@@ -34,6 +34,7 @@ from loom.streaming.nodes._step import (
     Step,
     StepContext,
 )
+from loom.streaming.nodes._table import Backend, IntoTable
 from loom.streaming.nodes._with import (
     AsyncContextDependency,
     ContextDependency,
@@ -48,6 +49,7 @@ from loom.streaming.nodes.refs import payload as payload
 
 __all__ = [
     "AsyncContextDependency",
+    "Backend",
     "BatchExpandStep",
     "BatchStep",
     "CollectBatch",
@@ -55,13 +57,14 @@ __all__ = [
     "ContextFactory",
     "Decompose",
     "Drain",
-    "EntityDecomposer",
+    "PayloadExpander",
     "ExpandStep",
     "ForEach",
     "Fork",
     "ForkRoute",
     "FromTopic",
     "IntoSink",
+    "IntoTable",
     "IntoTopic",
     "PartitionGuarantee",
     "PartitionPolicy",
