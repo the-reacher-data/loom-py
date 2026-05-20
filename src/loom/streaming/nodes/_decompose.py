@@ -1,4 +1,4 @@
-"""Decompose DSL node for typed multi-target event transformation."""
+"""Explode DSL node for typed multi-target event transformation."""
 
 from __future__ import annotations
 
@@ -30,9 +30,10 @@ class PayloadExpander(Protocol[PayloadT_contra]):
             @classmethod
             def expand(cls, event: StoreEvent) -> dict[type, list[Any]]:
                 return {
-                    StoreRow:    [StoreRow(id=s.id, name=s.name) for s in event.stores],
-                    LanguageRow: [LanguageRow(code=l.code) for s in event.stores
-                                  for l in s.languages],
+                    StoreRow: [StoreRow(id=event.store_id, name=event.name)],
+                    LanguageRow: [
+                        LanguageRow(code=code) for code in event.language_codes
+                    ],
                 }
 
     Args:
@@ -56,10 +57,10 @@ class PayloadExpander(Protocol[PayloadT_contra]):
 
 
 @dataclass(frozen=True)
-class Decompose(Generic[InT]):
+class Explode(Generic[InT]):
     """Transformation step that fans one typed event into N typed sub-events.
 
-    Decompose sits upstream of a Router and has no knowledge of downstream
+    Explode sits upstream of a Router and has no knowledge of downstream
     sinks. The Router dispatches each emitted type to the matching branch —
     the same mechanism used for any multi-type stream. This keeps expanders
     and sinks fully decoupled.
@@ -68,21 +69,21 @@ class Decompose(Generic[InT]):
     (e.g. OrderEvent → OrderLineEvent → OrderLineRow).
 
     Args:
-        expander: Class implementing PayloadExpander[InT].
+        exploder: Class implementing PayloadExpander[InT].
 
     Example::
 
         Process(
-            Decompose(StoreEventExpander),
+            Explode(StoreEventExpander),
             Router({
-                StoreRow:    Process(IntoTable(payload=StoreRow, ...)),
-                LanguageRow: Process(IntoTable(payload=LanguageRow, ...)),
+                StoreRow: Process(IntoTopic("stores.rows", payload=StoreRow)),
+                LanguageRow: Process(IntoTopic("stores.languages", payload=LanguageRow)),
             }),
         )
     """
 
-    expander: type[PayloadExpander[InT]]
+    exploder: type[PayloadExpander[InT]]
     router_branch_safe: ClassVar[bool] = True
 
 
-__all__ = ["Decompose", "PayloadExpander"]
+__all__ = ["Explode", "PayloadExpander"]

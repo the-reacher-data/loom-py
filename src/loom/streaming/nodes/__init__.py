@@ -19,7 +19,7 @@ from loom.streaming.nodes._boundary import (
     PartitionPolicy,
     PartitionStrategy,
 )
-from loom.streaming.nodes._decompose import Decompose, PayloadExpander
+from loom.streaming.nodes._decompose import Explode, PayloadExpander
 from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router, evaluate_predicate, select_value
@@ -34,7 +34,13 @@ from loom.streaming.nodes._step import (
     Step,
     StepContext,
 )
-from loom.streaming.nodes._table import Backend, IntoTable
+from loom.streaming.nodes._table import (
+    Backend,
+    DeltaSinkConfig,
+    IntoTable,
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
+)
 from loom.streaming.nodes._with import (
     AsyncContextDependency,
     ContextDependency,
@@ -55,7 +61,8 @@ __all__ = [
     "CollectBatch",
     "ContextDependency",
     "ContextFactory",
-    "Decompose",
+    "DeltaSinkConfig",
+    "Explode",
     "Drain",
     "PayloadExpander",
     "ExpandStep",
@@ -81,6 +88,8 @@ __all__ = [
     "SyncContextDependency",
     "Step",
     "StepContext",
+    "SqlAlchemyDatabaseConfig",
+    "SqlAlchemySinkConfig",
     "WindowStrategy",
     "With",
     "WithAsync",

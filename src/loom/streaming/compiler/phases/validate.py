@@ -14,12 +14,19 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
-from loom.streaming.nodes._decompose import Decompose
+from loom.streaming.nodes._decompose import Explode
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
+from loom.streaming.nodes._table import (
+    Backend,
+    DeltaSinkConfig,
+    IntoTable,
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
+)
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
@@ -28,14 +35,71 @@ def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> li
     errors: list[str] = []
     seen: set[str] = set()
     for node in _walk_all_process_nodes(flow.process.nodes):
-        if not isinstance(node, IntoSink) or not node.name or node.name in seen:
+        if not isinstance(node, IntoSink) or (node.name and node.name in seen):
             continue
-        seen.add(node.name)
-        if not ctx.has(f"streaming.sinks.{node.name}"):
-            errors.append(
-                f"storage sink '{node.name}': no config section found at "
-                f"streaming.sinks.{node.name}"
-            )
+        if node.name:
+            seen.add(node.name)
+            sink_key = f"streaming.sinks.{node.name}"
+            if not ctx.has(sink_key):
+                errors.append(f"storage sink '{node.name}': no config section found at {sink_key}")
+                continue
+            sink_cfg = ctx.section_or_default(sink_key, dict, {})
+        else:
+            sink_key = "streaming.sinks.<inline>"
+            sink_cfg = {}
+        effective_cfg = dict(sink_cfg)
+        if isinstance(node, IntoTable) and node.table:
+            effective_cfg["table"] = node.table
+        if isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY:
+            if not node.name:
+                errors.append(
+                    "storage sink '<inline>': SQLAlchemy IntoTable requires a name "
+                    "so it can resolve streaming.sinks.<name>"
+                )
+                continue
+            try:
+                resolved = SqlAlchemySinkConfig.from_config(
+                    effective_cfg,
+                    default_table=node.table,
+                )
+            except ValueError as exc:
+                errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
+                continue
+            if resolved.database:
+                if not ctx.has(f"database.{resolved.database}"):
+                    errors.append(
+                        f"storage sink '{node.name or type(node).__name__}': missing shared "
+                        f"config section at database.{resolved.database}"
+                    )
+                    continue
+                try:
+                    SqlAlchemyDatabaseConfig.from_config(
+                        ctx.section_or_default(f"database.{resolved.database}", dict, {})
+                    )
+                except ValueError as exc:
+                    errors.append(
+                        f"storage sink '{node.name or type(node).__name__}': database."
+                        f"{resolved.database}: {exc}"
+                    )
+            elif resolved.url:
+                try:
+                    SqlAlchemyDatabaseConfig.from_config(sink_cfg)
+                except ValueError as exc:
+                    errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
+        elif isinstance(node, IntoTable) and node.backend is Backend.DELTA:
+            if not node.name:
+                errors.append(
+                    "storage sink '<inline>': Delta IntoTable requires a name "
+                    "so it can resolve streaming.sinks.<name>"
+                )
+                continue
+            try:
+                DeltaSinkConfig.from_config(
+                    effective_cfg,
+                    default_table=node.table,
+                )
+            except ValueError as exc:
+                errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
     return errors
 
 
@@ -138,7 +202,9 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
 
 
 def _node_needs_async_bridge(node: object) -> bool:
-    return isinstance(node, WithAsync)
+    return isinstance(node, WithAsync) or (
+        isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY
+    )
 
 
 def _check_input_shape(
@@ -210,11 +276,11 @@ def _validate_shape_sequence(
             current_shape = StreamShape.NONE
             break
 
-        if isinstance(node, Decompose):
+        if isinstance(node, Explode):
             next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
             if not isinstance(next_node, Router):
                 got = type(next_node).__name__ if next_node is not None else "nothing"
-                errors.append(f"Decompose must be immediately followed by a Router; got {got}")
+                errors.append(f"Explode must be immediately followed by a Router; got {got}")
             current_shape = _node_output_shape(node, current_shape)
             continue
 
@@ -384,7 +450,7 @@ def _node_input_shape(node: object) -> StreamShape | None:
         return StreamShape.RECORD
     if isinstance(node, BatchExpandStep):
         return StreamShape.BATCH
-    if isinstance(node, Decompose):
+    if isinstance(node, Explode):
         return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
         return None
@@ -433,7 +499,7 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
 
 _FIXED_OUTPUT_SHAPES: dict[type, StreamShape] = {
     CollectBatch: StreamShape.BATCH,
-    Decompose: StreamShape.RECORD,
+    Explode: StreamShape.RECORD,
     ForEach: StreamShape.RECORD,
     RecordStep: StreamShape.RECORD,
     BatchStep: StreamShape.BATCH,

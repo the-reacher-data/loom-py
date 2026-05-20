@@ -12,7 +12,6 @@ from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
-from loom.streaming.nodes._sink import IntoSink
 
 
 @dataclass(frozen=True)
@@ -61,18 +60,22 @@ class CompiledSink:
 class CompiledStorageSink:
     """Resolved storage sink with its DSL node and pre-fetched config section.
 
-    The adapter calls ``node.build_partition(config, worker_index, worker_count)``
+    The adapter calls ``node.build_partition(config, worker_index, worker_count, bridge)``
     at startup once per Bytewax worker to obtain the :class:`SinkPartition` that
-    handles epoch writes and shutdown.
+    handles epoch writes and shutdown.  Storage backends that require async
+    execution receive the adapter-managed :class:`~loom.core.async_bridge.AsyncBridge`.
 
     Args:
         node:   The :class:`~loom.streaming.nodes.IntoSink` node as declared in the DSL.
         config: Resolved ``streaming.sinks.<name>`` config section, or an empty
                 mapping when ``node.name`` is the empty string.
+        database_config: Resolved ``database.<name>`` config section used by
+                SQLAlchemy sinks. Empty when the sink does not reference a DB.
     """
 
-    node: IntoSink[Any]
+    node: Any
     config: Mapping[str, Any]
+    database_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
