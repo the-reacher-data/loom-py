@@ -11,8 +11,8 @@ first-class terminal node without registration or inheritance.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, TypeVar, runtime_checkable
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.core._message import StreamPayload
@@ -93,7 +93,7 @@ class IntoSink(Protocol[EventT]):
 
     def build_partition(
         self,
-        config: Mapping[str, Any],
+        config: object,
         worker_index: int,
         worker_count: int,
         bridge: AsyncBridge | None = None,

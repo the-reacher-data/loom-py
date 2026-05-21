@@ -18,6 +18,7 @@ from loom.core.config import ConfigContext
 from loom.core.model import LoomStruct
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming import Backend, FromTopic, IntoTable, Process, StreamFlow
+from loom.streaming.nodes._table import SqlAlchemySinkConfig
 from loom.streaming.nodes._table import common as _table_common
 from loom.streaming.testing import StreamingTestRunner
 
@@ -54,8 +55,12 @@ class TestIntoTableSQLAlchemyIntegration:
         bridge = AsyncBridge()
         session_manager = SessionManager.from_config({"url": _async_url(path)})
         node = IntoTable(payload=_OrderRow, table="orders", backend=Backend.SQLALCHEMY)
+        sink_config = SqlAlchemySinkConfig.from_config(
+            {"chunk_size": 500, "table": "orders"},
+            default_table="orders",
+        )
         partition = node.build_partition(
-            {"chunk_size": 500},
+            sink_config,
             worker_index=0,
             worker_count=1,
             bridge=bridge,
@@ -93,8 +98,12 @@ class TestIntoTableSQLAlchemyIntegration:
         bridge = AsyncBridge()
         session_manager = SessionManager.from_config({"url": _async_url(path)})
         node = IntoTable(payload=_OrderRow, table="orders")
+        sink_config = SqlAlchemySinkConfig.from_config(
+            {"chunk_size": 500, "table": "orders"},
+            default_table="orders",
+        )
         partition = node.build_partition(
-            {"chunk_size": 500},
+            sink_config,
             worker_index=0,
             worker_count=1,
             bridge=bridge,
@@ -122,8 +131,12 @@ class TestIntoTableSQLAlchemyIntegration:
         bridge = AsyncBridge()
         session_manager = SessionManager.from_config({"url": _async_url(path)})
         node = IntoTable(payload=_OrderRow, table="orders")
-        partition = node.build_partition(
+        sink_config = SqlAlchemySinkConfig.from_config(
             {"table": "sink_orders", "chunk_size": 500},
+            default_table="orders",
+        )
+        partition = node.build_partition(
+            sink_config,
             worker_index=0,
             worker_count=1,
             bridge=bridge,

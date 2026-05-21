@@ -213,12 +213,11 @@ class IntoTable(Generic[EventT]):
 
     Args:
         payload: Concrete event type written by this sink.
-        table:   Target table name.  May be overridden by a ``table`` key in
-                 the resolved config section.
+        table:   Target table name.  May be overridden by the resolved config
+                 section or left empty when the config supplies it.
         backend: Storage backend.  Defaults to :attr:`Backend.SQLALCHEMY`.
-        name:    Config section key (``streaming.sinks.<name>``).  When
-                 empty, the node is self-configured from its DSL fields and
-                 receives an empty config dict.
+        name:    Config section key (``streaming.sinks.<name>``).  Required
+                 when the sink is resolved from ``ConfigContext``.
         router_branch_safe: Always ``True`` — IntoTable may appear inside
                  Router branches.
 
@@ -245,7 +244,7 @@ class IntoTable(Generic[EventT]):
 
     def build_partition(
         self,
-        config: Mapping[str, Any] | SqlAlchemySinkConfig | DeltaSinkConfig,
+        config: SqlAlchemySinkConfig | DeltaSinkConfig,
         worker_index: int,
         worker_count: int,
         bridge: AsyncBridge | None = None,
@@ -265,22 +264,14 @@ class IntoTable(Generic[EventT]):
             ``write_batch`` and ``close`` calls.
 
         Raises:
+            TypeError: If the provided config does not match the selected backend.
+            RuntimeError: If required runtime resources are missing.
             ValueError: If the resolved backend is not supported.
         """
         del worker_index, worker_count
         if self.backend is Backend.SQLALCHEMY:
-            if isinstance(config, SqlAlchemySinkConfig):
-                sql_settings = config
-            elif isinstance(config, Mapping):
-                sql_settings = SqlAlchemySinkConfig.from_config(
-                    config,
-                    default_table=self.table,
-                )
-            else:
-                raise TypeError(
-                    "IntoTable backend=sqlalchemy requires a SQLAlchemySinkConfig "
-                    "or a mapping of sink settings."
-                )
+            if not isinstance(config, SqlAlchemySinkConfig):
+                raise TypeError("IntoTable backend=sqlalchemy requires a SqlAlchemySinkConfig.")
             if bridge is None:
                 raise RuntimeError(
                     "IntoTable backend=sqlalchemy requires an AsyncBridge from the Bytewax runtime."
@@ -293,28 +284,18 @@ class IntoTable(Generic[EventT]):
             return cast(
                 SinkPartition[EventT],
                 _SQLAlchemyTablePartition(
-                    sql_settings,
+                    config,
                     self.payload,
                     bridge,
                     session_manager,
                 ),
             )
         if self.backend is Backend.DELTA:
-            if isinstance(config, DeltaSinkConfig):
-                delta_settings = config
-            elif isinstance(config, Mapping):
-                delta_settings = DeltaSinkConfig.from_config(
-                    config,
-                    default_table=self.table,
-                )
-            else:
-                raise TypeError(
-                    "IntoTable backend=delta requires a DeltaSinkConfig "
-                    "or a mapping of sink settings."
-                )
+            if not isinstance(config, DeltaSinkConfig):
+                raise TypeError("IntoTable backend=delta requires a DeltaSinkConfig.")
             return cast(
                 SinkPartition[EventT],
-                _DeltaTablePartition(delta_settings),
+                _DeltaTablePartition(config),
             )
         raise ValueError(f"Unsupported backend: {self.backend!r}")
 

@@ -33,10 +33,14 @@ def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> li
     errors: list[str] = []
     seen: set[str] = set()
     for node in _walk_all_process_nodes(flow.process.nodes):
-        if not isinstance(node, IntoSink) or (node.name and node.name in seen):
+        if not isinstance(node, IntoSink):
             continue
-        if node.name:
-            seen.add(node.name)
+        if not node.name:
+            errors.append(f"storage sink '{type(node).__name__}': missing name")
+            continue
+        if node.name in seen:
+            continue
+        seen.add(node.name)
         if isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY:
             try:
                 resolve_sqlalchemy_table_config(node, ctx)
