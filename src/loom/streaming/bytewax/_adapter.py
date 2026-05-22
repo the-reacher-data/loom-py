@@ -329,7 +329,8 @@ def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     if not ctx.plan.source.needs_decode:
         return bw_input("source", flow, source)
     codec: MsgspecCodec[Any] = MsgspecCodec()
-    assert isinstance(ctx.plan.source, (CompiledSingleSource, CompiledMultiSource))
+    if not isinstance(ctx.plan.source, (CompiledSingleSource, CompiledMultiSource)):
+        raise TypeError(f"Expected a Kafka compiled source, got {type(ctx.plan.source).__name__}.")
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
 
@@ -395,7 +396,8 @@ def _decode_source_record(
             raise TypeError("Mongo CDC sources must emit Message values, not KafkaRecord items.")
         if isinstance(source, CompiledMultiSource):
             return try_decode_multi_record(record, source.dispatch, codec)
-        assert isinstance(source, (CompiledSingleSource, CompiledMultiSource))
+        if not isinstance(source, CompiledSingleSource):
+            raise TypeError(f"Expected CompiledSingleSource, got {type(source).__name__}.")
         return try_decode_record(record, source.payload_type, codec)
     raise TypeError(f"Expected Message or KafkaRecord, got {type(payload).__name__}.")
 
