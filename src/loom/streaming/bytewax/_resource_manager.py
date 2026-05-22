@@ -92,8 +92,7 @@ class ResourceManager:
             resolved = config
         key = _session_manager_key(resolved)
         if key not in self._session_managers:
-            factory: _SessionManagerFactoryProtocol = SessionManager
-            self._session_managers[key] = factory.from_config(resolved)
+            self._session_managers[key] = SessionManager.from_config(resolved)
         return self._session_managers[key]
 
     def shutdown_all(self) -> None:

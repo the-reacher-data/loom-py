@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 
 import pytest
@@ -13,6 +14,7 @@ from loom.streaming.bytewax._resource_manager import ResourceManager
 
 class _FakeManager:
     async def dispose(self) -> None:
+        await asyncio.sleep(0)
         return None
 
 

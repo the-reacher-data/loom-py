@@ -31,26 +31,8 @@ from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
     """Validate that every named IntoSink node has a config section at streaming.sinks.<name>."""
     errors: list[str] = []
-    seen: set[str] = set()
-    for node in _walk_all_process_nodes(flow.process.nodes):
-        if not isinstance(node, IntoSink):
-            continue
-        if not node.name:
-            errors.append(f"storage sink '{type(node).__name__}': missing name")
-            continue
-        if node.name in seen:
-            continue
-        seen.add(node.name)
-        if isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY:
-            try:
-                resolve_sqlalchemy_table_config(node, ctx)
-            except ValueError as exc:
-                errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
-        elif isinstance(node, IntoTable) and node.backend is Backend.DELTA:
-            try:
-                resolve_delta_table_config(node, ctx)
-            except ValueError as exc:
-                errors.append(f"storage sink '{node.name or type(node).__name__}': {exc}")
+    for node in _iter_unique_storage_sinks(flow.process.nodes, errors):
+        errors.extend(_validate_storage_sink_node(node, ctx))
     return errors
 
 
@@ -191,58 +173,151 @@ def _validate_shape_sequence(
 
     for idx, node in enumerate(node_list):
         _check_input_shape(node, current_shape, errors)
-
-        if _is_leaf_terminal(node):
-            errors.extend(
-                _must_be_last_errors(
-                    idx, node_list, f"{type(node).__name__} must be the last node in a process"
-                )
-            )
+        node_errors, next_shape, should_stop = _validate_shape_node(
+            node,
+            idx,
+            node_list,
+            current_shape,
+        )
+        errors.extend(node_errors)
+        current_shape = next_shape
+        if should_stop:
             break
-
-        if isinstance(node, Fork):
-            fork_errors, current_shape = _validate_fork_shapes(node, current_shape)
-            errors.extend(fork_errors)
-            errors.extend(
-                _must_be_last_errors(idx, node_list, "fork must be the last node in a process")
-            )
-            break
-
-        if isinstance(node, Broadcast):
-            broadcast_errors, current_shape = _validate_broadcast_shapes(node, current_shape)
-            errors.extend(broadcast_errors)
-            errors.extend(
-                _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
-            )
-            break
-
-        if _is_scoped_process(node):
-            errors.extend(
-                _must_be_last_errors(
-                    idx,
-                    node_list,
-                    f"{type(node).__name__}(process=...) must be the last node in a process",
-                )
-            )
-            current_shape = StreamShape.NONE
-            break
-
-        if isinstance(node, Explode):
-            next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
-            if not isinstance(next_node, Router):
-                got = type(next_node).__name__ if next_node is not None else "nothing"
-                errors.append(f"Explode must be immediately followed by a Router; got {got}")
-            current_shape = _node_output_shape(node, current_shape)
-            continue
-
-        if isinstance(node, Router):
-            router_errors, current_shape = _validate_router_shapes(node, current_shape)
-            errors.extend(router_errors)
-            continue
-
-        current_shape = _node_output_shape(node, current_shape)
 
     return errors, current_shape
+
+
+def _iter_unique_storage_sinks(
+    nodes: Iterable[object],
+    errors: list[str],
+) -> Iterable[IntoSink[Any]]:
+    """Yield named storage sinks once while recording missing-name errors."""
+    seen: set[str] = set()
+    for node in _walk_all_process_nodes(nodes):
+        if not isinstance(node, IntoSink):
+            continue
+        if not node.name:
+            errors.append(f"storage sink '{type(node).__name__}': missing name")
+            continue
+        if node.name in seen:
+            continue
+        seen.add(node.name)
+        yield node
+
+
+def _validate_storage_sink_node(node: IntoSink[Any], ctx: ConfigContext) -> list[str]:
+    """Validate backend-specific config for one storage sink."""
+    if not isinstance(node, IntoTable):
+        return []
+    if node.backend is Backend.SQLALCHEMY:
+        return _validate_storage_sink_resolution(node, ctx, resolve_sqlalchemy_table_config)
+    if node.backend is Backend.DELTA:
+        return _validate_storage_sink_resolution(node, ctx, resolve_delta_table_config)
+    return []
+
+
+def _validate_storage_sink_resolution(
+    node: IntoTable[Any],
+    ctx: ConfigContext,
+    resolver: Any,
+) -> list[str]:
+    """Resolve one IntoTable config and return validation errors."""
+    try:
+        resolver(node, ctx)
+    except ValueError as exc:
+        return [f"storage sink '{node.name or type(node).__name__}': {exc}"]
+    return []
+
+
+def _validate_shape_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate one node inside a process shape sequence."""
+    if _is_leaf_terminal(node):
+        return _validate_leaf_terminal_node(node, idx, node_list, current_shape)
+    if isinstance(node, Fork):
+        return _validate_fork_node(node, idx, node_list, current_shape)
+    if isinstance(node, Broadcast):
+        return _validate_broadcast_node(node, idx, node_list, current_shape)
+    if _is_scoped_process(node):
+        return _validate_scoped_process_node(node, idx, node_list)
+    if isinstance(node, Explode):
+        return _validate_explode_node(node, idx, node_list, current_shape)
+    if isinstance(node, Router):
+        router_errors, next_shape = _validate_router_shapes(node, current_shape)
+        return router_errors, next_shape, False
+    return [], _node_output_shape(node, current_shape), False
+
+
+def _validate_leaf_terminal_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a terminal leaf node."""
+    errors = _must_be_last_errors(
+        idx, node_list, f"{type(node).__name__} must be the last node in a process"
+    )
+    return errors, current_shape, True
+
+
+def _validate_fork_node(
+    node: Fork[StreamPayload],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a fork node and stop the enclosing process."""
+    errors, next_shape = _validate_fork_shapes(node, current_shape)
+    errors.extend(_must_be_last_errors(idx, node_list, "fork must be the last node in a process"))
+    return errors, next_shape, True
+
+
+def _validate_broadcast_node(
+    node: Broadcast[Any],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a broadcast node and stop the enclosing process."""
+    errors, next_shape = _validate_broadcast_shapes(node, current_shape)
+    errors.extend(
+        _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
+    )
+    return errors, next_shape, True
+
+
+def _validate_scoped_process_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a scoped process node and stop the enclosing process."""
+    errors = _must_be_last_errors(
+        idx,
+        node_list,
+        f"{type(node).__name__}(process=...) must be the last node in a process",
+    )
+    return errors, StreamShape.NONE, True
+
+
+def _validate_explode_node(
+    node: Explode[Any],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate that Explode is followed immediately by Router."""
+    next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
+    errors: list[str] = []
+    if not isinstance(next_node, Router):
+        got = type(next_node).__name__ if next_node is not None else "nothing"
+        errors.append(f"Explode must be immediately followed by a Router; got {got}")
+    return errors, _node_output_shape(node, current_shape), False
 
 
 def _validate_fork_shapes(
