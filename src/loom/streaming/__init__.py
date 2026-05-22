@@ -22,6 +22,16 @@ from loom.streaming.compiler import compile_flow
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, ErrorMessage, ErrorMessageMeta
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.graph._flow import ErrorRoute, Process, ProcessNode, StreamFlow
+from loom.streaming.mongo import (
+    MongoBsonTimestamp,
+    MongoCDCEvent,
+    MongoCDCNamespace,
+    MongoConfig,
+    MongoSourceConfig,
+    build_mongo_cdc_event,
+    build_mongo_cdc_message,
+    normalize_bson_value,
+)
 from loom.streaming.nodes._boundary import (
     FromMultiTypeTopic,
     FromTopic,
@@ -33,6 +43,7 @@ from loom.streaming.nodes._boundary import (
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
 from loom.streaming.nodes._decompose import Explode, PayloadExpander
 from loom.streaming.nodes._fork import Fork, ForkRoute
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
@@ -86,6 +97,7 @@ __all__ = [
     "ForEach",
     "Fork",
     "ForkRoute",
+    "FromMongoCDC",
     "FromMultiTypeTopic",
     "FromTopic",
     "IntoSink",
@@ -93,6 +105,14 @@ __all__ = [
     "IntoTopic",
     "Message",
     "MessageMeta",
+    "MongoConfig",
+    "MongoBsonTimestamp",
+    "MongoCDCEvent",
+    "MongoCDCNamespace",
+    "MongoSourceConfig",
+    "build_mongo_cdc_event",
+    "build_mongo_cdc_message",
+    "normalize_bson_value",
     "PartitionGuarantee",
     "PartitionPolicy",
     "PartitionStrategy",

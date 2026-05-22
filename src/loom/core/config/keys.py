@@ -20,6 +20,7 @@ class ConfigKey(StrEnum):
     DATABASE = "database"
     CELERY = "celery"
     KAFKA = "kafka"
+    MONGO = "mongo"
     STORAGE = "storage"
     STREAMING = "streaming"
     STREAMING_RUNTIME = "streaming.runtime"

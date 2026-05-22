@@ -11,11 +11,13 @@ from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeErr
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
+from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._decompose import Explode
 from loom.streaming.nodes._fork import Fork, ForkKind
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
 from loom.streaming.nodes._sink import IntoSink
@@ -45,6 +47,18 @@ def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
         return []
     except ConfigError as exc:
         return [f"kafka: {exc}"]
+
+
+def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+    """Validate Mongo settings required by *flow*."""
+    if not isinstance(flow.source, FromMongoCDC):
+        return []
+    try:
+        mongo = ctx.section(ConfigKey.MONGO, MongoConfig)
+        mongo.source_for(flow.source.logical_ref)
+        return []
+    except (ConfigError, KeyError) as exc:
+        return [f"mongo source '{flow.source.name}': {exc}"]
 
 
 def validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
@@ -110,7 +124,7 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
         return True
     if flow.output is not None:
         return True
-    return _has_terminal_output(flow.process.nodes)
+    return _has_kafka_topic_output(flow.process.nodes)
 
 
 def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
@@ -457,6 +471,26 @@ def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) ->
 
 def _fork_has_terminal_output(fork: Fork[StreamPayload]) -> bool:
     return any(_has_terminal_output(nodes) for _, nodes in _fork_branch_nodes(fork))
+
+
+def _node_has_kafka_topic_output(node: object) -> bool:
+    if isinstance(node, IntoTopic):
+        return True
+    if isinstance(node, Router):
+        return any(_has_kafka_topic_output(nodes) for _, nodes in _router_branch_nodes(node))
+    if isinstance(node, Fork):
+        return any(_has_kafka_topic_output(nodes) for _, nodes in _fork_branch_nodes(node))
+    if isinstance(node, Broadcast):
+        return any(_has_kafka_topic_output(route.process.nodes) for route in node.routes)
+    if isinstance(node, (WithAsync, With)):
+        return _has_kafka_topic_output(node.process.nodes)
+    return False
+
+
+def _has_kafka_topic_output(nodes: Iterable[object]) -> bool:
+    if isinstance(nodes, tuple):
+        return any(_node_has_kafka_topic_output(node) for node in nodes)
+    return any(_node_has_kafka_topic_output(node) for node in nodes)
 
 
 def _contains_fork(nodes: Iterable[object]) -> bool:

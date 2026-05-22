@@ -13,6 +13,7 @@ from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
 from loom.streaming.nodes._step import Step
@@ -102,7 +103,7 @@ class StreamFlow(Generic[InT, OutT]):
     def __init__(
         self,
         name: str,
-        source: FromTopic[InT] | FromMultiTypeTopic[InT],
+        source: FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC,
         process: Process[InT, OutT],
         output: IntoTopic[OutT] | None = None,
         errors: ErrorRoutes = None,
@@ -136,7 +137,7 @@ class StreamFlow(Generic[InT, OutT]):
         return self._process
 
     @property
-    def source(self) -> FromTopic[InT] | FromMultiTypeTopic[InT]:
+    def source(self) -> FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC:
         """Input topic declaration."""
         return self._source
 

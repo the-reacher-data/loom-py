@@ -4,7 +4,7 @@ These are the building blocks used to declare a
 :class:`~loom.streaming.graph.Process`.
 
 Families:
-    * Boundary nodes: ``FromTopic`` and ``IntoTopic``.
+    * Boundary nodes: ``FromTopic``, ``FromMongoCDC`` and ``IntoTopic``.
     * Shape adapters: ``CollectBatch``, ``ForEach`` and ``Drain``.
     * Record steps: ``Step`` subclasses declared declaratively.
     * Wrappers: ``With`` and ``WithAsync``.
@@ -21,6 +21,7 @@ from loom.streaming.nodes._boundary import (
 )
 from loom.streaming.nodes._decompose import Explode, PayloadExpander
 from loom.streaming.nodes._fork import Fork, ForkRoute
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
@@ -69,6 +70,7 @@ __all__ = [
     "ForEach",
     "Fork",
     "ForkRoute",
+    "FromMongoCDC",
     "FromTopic",
     "IntoSink",
     "IntoTable",

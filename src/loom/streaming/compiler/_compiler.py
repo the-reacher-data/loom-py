@@ -11,6 +11,7 @@ from loom.streaming.compiler._plan import CompilationError, CompiledPlan
 from loom.streaming.compiler.phases.build_plan import build_plan
 from loom.streaming.compiler.phases.validate import (
     validate_kafka,
+    validate_mongo,
     validate_outputs,
     validate_resources,
     validate_shapes,
@@ -56,6 +57,7 @@ class _Compiler:
             raise CompilationError(errors)
 
         errors.extend(validate_kafka(resolved_flow, ctx))
+        errors.extend(validate_mongo(resolved_flow, ctx))
         errors.extend(validate_storage_sinks(resolved_flow, ctx))
         errors.extend(validate_resources(resolved_flow))
         errors.extend(validate_shapes(resolved_flow))

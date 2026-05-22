@@ -10,6 +10,7 @@ from loom.core.config import ConfigContext
 from loom.core.config.keys import ConfigKey
 from loom.streaming.compiler._plan import (
     CompilationError,
+    CompiledMongoCDCSource,
     CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
@@ -29,9 +30,11 @@ from loom.streaming.core._errors import ErrorEnvelope
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.kafka._wire import DecodeError, DispatchTable
+from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._sink import IntoSink
@@ -74,9 +77,26 @@ def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
 
 
 def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
+    if isinstance(flow.source, FromMongoCDC):
+        return _build_mongo_source(flow, ctx)
     if isinstance(flow.source, FromMultiTypeTopic):
         return _build_multi_source(flow, ctx)
     return _build_single_source(flow, ctx)
+
+
+def _build_mongo_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledMongoCDCSource:
+    source = flow.source
+    if not isinstance(source, FromMongoCDC):
+        raise TypeError(f"Expected FromMongoCDC source, got {type(source).__name__}.")
+    mongo = ctx.section(ConfigKey.MONGO, MongoConfig)
+    settings = mongo.source_for(source.logical_ref)
+    watch_options = {**settings.watch_options, **source.watch_options}
+    return CompiledMongoCDCSource(
+        settings=settings,
+        collections=source.collections,
+        watch_options=watch_options,
+        shape=source.shape,
+    )
 
 
 def _build_single_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSingleSource:

@@ -14,11 +14,12 @@ from loom.core.config import ConfigContext
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming import StreamFlow
+from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow
 from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
     StreamingRunner,
 )
+from loom.streaming.mongo import MongoCDCEvent
 from tests.unit.streaming.bytewax.cases import Order, Result
 
 pytestmark = pytest.mark.bytewax
@@ -205,6 +206,21 @@ streaming:
 
 
 class TestPrepareRun:
+    def test_build_dataflow_supports_mongo_cdc_source_without_runtime_import(
+        self,
+    ) -> None:
+        flow: StreamFlow[MongoCDCEvent, MongoCDCEvent] = StreamFlow(
+            name="mongo_runner_build",
+            source=FromMongoCDC("domain_events", collections=("orders",)),
+            process=Process(Drain()),
+        )
+        runner = StreamingRunner.from_dict(flow, _mongo_runner_config())
+
+        dataflow = runner.build_dataflow()
+
+        assert isinstance(dataflow, Dataflow)
+        runner.shutdown()
+
     def test_prepare_run_releases_previous_shutdown_before_rebuilding(
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
@@ -273,3 +289,16 @@ class TestBuildBackendOptions:
         opts = _build_backend_options("asyncio", use_uvloop=True)
 
         assert opts.get("loop_factory") is uvloop.new_event_loop
+
+
+def _mongo_runner_config() -> dict[str, object]:
+    return {
+        "mongo": {
+            "sources": {
+                "domain_events": {
+                    "uri": "mongodb://localhost:27017",
+                    "database": "app",
+                }
+            }
+        }
+    }

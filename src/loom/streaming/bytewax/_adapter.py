@@ -30,7 +30,7 @@ from loom.streaming.bytewax.handlers.dispatcher import (
     _wire_process,
 )
 from loom.streaming.compiler import CompiledPlan
-from loom.streaming.compiler._plan import CompiledMultiSource
+from loom.streaming.compiler._plan import CompiledMongoCDCSource, CompiledMultiSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -326,6 +326,8 @@ def _build_source_pipeline(flow: Any, ctx: _BuildContext) -> Stream:
     if ctx.source is None:
         raise RuntimeError("Bytewax source is required to build a runtime dataflow.")
     source = ctx.source
+    if isinstance(ctx.plan.source, CompiledMongoCDCSource):
+        return bw_input("source", flow, source)
     codec: MsgspecCodec[Any] = MsgspecCodec()
     strategy = ctx.plan.source.decode_strategy
     step_id = f"decode_{strategy}"
@@ -388,6 +390,8 @@ def _decode_source_record(
     if isinstance(payload, KafkaRecord):
         record = cast(KafkaRecord[bytes], payload)
         source = ctx.plan.source
+        if isinstance(source, CompiledMongoCDCSource):
+            raise TypeError("Mongo CDC sources must emit Message values, not KafkaRecord items.")
         if isinstance(source, CompiledMultiSource):
             return try_decode_multi_record(record, source.dispatch, codec)
         return try_decode_record(record, source.payload_type, codec)

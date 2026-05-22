@@ -1,0 +1,221 @@
+"""BSON-to-Loom normalization helpers for MongoDB CDC."""
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Protocol, cast
+
+import msgspec
+
+from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.mongo._event import MongoBsonTimestamp, MongoCDCEvent, MongoCDCNamespace
+
+_MONGO_MESSAGE_TYPE = "loom.mongo.cdc"
+
+
+class _SupportsBytes(Protocol):
+    def __bytes__(self) -> bytes:
+        """Return a bytes representation."""
+        ...
+
+
+def normalize_bson_value(value: object) -> object:
+    """Normalize one MongoDB/BSON runtime value into Loom-safe builtins."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, datetime):
+        return _datetime_to_epoch_ms(value)
+    if isinstance(value, Mapping):
+        return {str(key): normalize_bson_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [normalize_bson_value(item) for item in value]
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, memoryview, str)):
+        return [normalize_bson_value(item) for item in value]
+
+    type_name = type(value).__name__
+    if type_name == "ObjectId":
+        return str(value)
+    if type_name == "Timestamp":
+        return _normalize_timestamp_mapping(value)
+    if type_name == "Decimal128":
+        return _normalize_decimal128(value)
+    if type_name == "Binary":
+        return _normalize_binary(value)
+    if type_name == "DBRef":
+        return _normalize_dbref(value)
+
+    return value
+
+
+def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
+    """Build a Loom-safe Mongo CDC event from one raw change-stream document."""
+    resume_token = _normalize_resume_token(change.get("_id"))
+    event_id = _resume_token_event_id(resume_token)
+    operation_type = _required_str(change.get("operationType"), "operationType")
+    namespace = _build_namespace(change.get("ns"))
+    cluster_time = _build_cluster_time(change.get("clusterTime"))
+    wall_time_ms = _build_wall_time_ms(change.get("wallTime"), cluster_time)
+    full_document = _normalize_optional_mapping(change.get("fullDocument"))
+    update_description = _normalize_optional_mapping(change.get("updateDescription"))
+    raw_payload = normalize_bson_value(change)
+    if not isinstance(raw_payload, dict):
+        raise TypeError("Normalized Mongo change event must be a mapping.")
+
+    return MongoCDCEvent(
+        event_id=event_id,
+        operation_type=operation_type,
+        namespace=namespace,
+        resume_token=resume_token,
+        document_id=_document_id(change.get("documentKey")),
+        cluster_time=cluster_time,
+        wall_time_ms=wall_time_ms,
+        full_document=full_document,
+        update_description=update_description,
+        raw_json=msgspec.json.encode(raw_payload).decode("utf-8"),
+    )
+
+
+def build_mongo_cdc_message(change: Mapping[str, object]) -> Message[MongoCDCEvent]:
+    """Build a transport-neutral Loom message for one Mongo change event."""
+    event = build_mongo_cdc_event(change)
+    meta = MessageMeta(
+        message_id=event.event_id,
+        produced_at_ms=event.wall_time_ms
+        if event.wall_time_ms is not None
+        else event.cluster_time.seconds * 1000
+        if event.cluster_time is not None
+        else None,
+        message_type=_MONGO_MESSAGE_TYPE,
+        key=event.document_id,
+    )
+    return Message(payload=event, meta=meta)
+
+
+def _normalize_resume_token(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Mongo change event '_id' must be a mapping resume token.")
+    normalized = normalize_bson_value(value)
+    if not isinstance(normalized, dict):
+        raise TypeError("Normalized Mongo resume token must remain a mapping.")
+    return normalized
+
+
+def _resume_token_event_id(resume_token: Mapping[str, object]) -> str:
+    token_data = resume_token.get("_data")
+    if isinstance(token_data, str) and token_data:
+        return token_data
+    return msgspec.json.encode(dict(resume_token)).decode("utf-8")
+
+
+def _required_str(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"Mongo change event field '{field}' must be a non-empty string.")
+    return value
+
+
+def _build_namespace(value: object) -> MongoCDCNamespace:
+    if not isinstance(value, Mapping):
+        raise TypeError("Mongo change event field 'ns' must be a mapping.")
+    db = _required_str(value.get("db"), "ns.db")
+    coll = value.get("coll")
+    if coll is not None and not isinstance(coll, str):
+        raise TypeError("Mongo change event field 'ns.coll' must be a string when present.")
+    return MongoCDCNamespace(db=db, coll=coll)
+
+
+def _build_cluster_time(value: object) -> MongoBsonTimestamp | None:
+    if value is None:
+        return None
+    if isinstance(value, MongoBsonTimestamp):
+        return value
+    if type(value).__name__ == "Timestamp":
+        normalized = _normalize_timestamp_mapping(value)
+        return MongoBsonTimestamp(
+            seconds=_required_int(normalized.get("seconds"), "clusterTime.seconds"),
+            increment=_required_int(normalized.get("increment"), "clusterTime.increment"),
+        )
+    raise TypeError("Mongo change event field 'clusterTime' must be a BSON Timestamp.")
+
+
+def _build_wall_time_ms(
+    value: object,
+    cluster_time: MongoBsonTimestamp | None,
+) -> int | None:
+    if value is None:
+        return cluster_time.seconds * 1000 if cluster_time is not None else None
+    if isinstance(value, datetime):
+        return _datetime_to_epoch_ms(value)
+    normalized = normalize_bson_value(value)
+    if isinstance(normalized, int):
+        return normalized
+    raise TypeError("Mongo change event field 'wallTime' must be a datetime when present.")
+
+
+def _normalize_optional_mapping(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    normalized = normalize_bson_value(value)
+    if not isinstance(normalized, dict):
+        raise TypeError("Normalized Mongo nested document must remain a mapping.")
+    return normalized
+
+
+def _document_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("Mongo change event field 'documentKey' must be a mapping when present.")
+    normalized = normalize_bson_value(value.get("_id"))
+    return normalized if isinstance(normalized, str) else None
+
+
+def _normalize_timestamp_mapping(value: object) -> dict[str, object]:
+    seconds = getattr(value, "time", None)
+    increment = getattr(value, "inc", None)
+    if not isinstance(seconds, int) or not isinstance(increment, int):
+        raise TypeError("BSON Timestamp must expose integer 'time' and 'inc' attributes.")
+    return {"seconds": seconds, "increment": increment}
+
+
+def _normalize_decimal128(value: object) -> str:
+    to_decimal = getattr(value, "to_decimal", None)
+    if callable(to_decimal):
+        return str(to_decimal())
+    return str(value)
+
+
+def _normalize_binary(value: object) -> str:
+    raw = bytes(cast(_SupportsBytes, value))
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _normalize_dbref(value: object) -> dict[str, object]:
+    collection = getattr(value, "collection", None)
+    database = getattr(value, "database", None)
+    identifier = getattr(value, "id", None)
+    if not isinstance(collection, str):
+        raise TypeError("BSON DBRef must expose a string 'collection' attribute.")
+    if database is not None and not isinstance(database, str):
+        raise TypeError("BSON DBRef attribute 'database' must be a string when present.")
+    return {
+        "collection": collection,
+        "database": database,
+        "id": normalize_bson_value(identifier),
+    }
+
+
+def _required_int(value: object, field: str) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"Mongo change event field '{field}' must be an integer.")
+    return value
+
+
+def _datetime_to_epoch_ms(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return int(value.astimezone(UTC).timestamp() * 1000)
+
+
+__all__ = ["build_mongo_cdc_event", "build_mongo_cdc_message", "normalize_bson_value"]

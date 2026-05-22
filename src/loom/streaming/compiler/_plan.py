@@ -9,6 +9,7 @@ from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
+from loom.streaming.mongo import MongoSourceConfig
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from loom.streaming.nodes._table.common import (
@@ -48,6 +49,16 @@ class CompiledMultiSource:
     dispatch: DispatchTable
     shape: StreamShape
     decode_strategy: Literal["record", "batch"]
+
+
+@dataclass(frozen=True)
+class CompiledMongoCDCSource:
+    """Resolved MongoDB CDC source configuration."""
+
+    settings: MongoSourceConfig
+    collections: tuple[str, ...]
+    watch_options: dict[str, Any]
+    shape: StreamShape
 
 
 @dataclass(frozen=True)
@@ -102,7 +113,7 @@ class CompilationError(Exception):
         super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
 
 
-CompiledSource = CompiledSingleSource | CompiledMultiSource
+CompiledSource = CompiledSingleSource | CompiledMultiSource | CompiledMongoCDCSource
 """Union of all compiled source variants accepted by a :class:`CompiledPlan`."""
 
 

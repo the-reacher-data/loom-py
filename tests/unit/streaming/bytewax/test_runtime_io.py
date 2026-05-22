@@ -9,12 +9,15 @@ from confluent_kafka import TopicPartition
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _adapter, _runtime_io
+from loom.streaming.compiler._plan import CompiledMongoCDCSource
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka import MsgspecCodec
 from loom.streaming.kafka._errors import KafkaDeliveryError
 from loom.streaming.kafka._record import KafkaRecord
 from loom.streaming.kafka._wire import DecodeError
+from loom.streaming.mongo import MongoSourceConfig
+from loom.streaming.mongo._bytewax_source import MongoCDCSource
 from tests.unit.streaming.bytewax.cases import (
     Order,
     build_compiled_plan,
@@ -28,6 +31,19 @@ pytestmark = pytest.mark.bytewax
 
 
 class TestRuntimeIOBuilders:
+    def test_build_runtime_source_returns_mongo_source_without_commit_tracker(self) -> None:
+        source = CompiledMongoCDCSource(
+            settings=MongoSourceConfig(uri="mongodb://localhost:27017", database="app"),
+            collections=("orders",),
+            watch_options={"full_document": "updateLookup"},
+            shape=build_compiled_source().shape,
+        )
+
+        runtime_source = _runtime_io.build_runtime_source(source)
+
+        assert isinstance(runtime_source, MongoCDCSource)
+        assert _runtime_io.build_commit_tracker(source) is None
+
     def test_build_runtime_source_returns_polling_source(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -265,6 +281,7 @@ class TestRuntimeIOBuilders:
 
         source = _runtime_io.build_runtime_source(source_cfg, tracker)
         sink = _runtime_io.build_runtime_sink(build_compiled_sink(), tracker)
+        assert isinstance(source, _runtime_io._KafkaPollingSource)
 
         record = source.next_item()
         assert isinstance(record, KafkaRecord)
