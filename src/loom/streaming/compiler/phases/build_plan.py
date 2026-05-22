@@ -76,14 +76,6 @@ def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
     )
 
 
-def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
-    if isinstance(flow.source, FromMongoCDC):
-        return _build_mongo_source(flow, ctx)
-    if isinstance(flow.source, FromMultiTypeTopic):
-        return _build_multi_source(flow, ctx)
-    return _build_single_source(flow, ctx)
-
-
 def _build_mongo_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledMongoCDCSource:
     source = flow.source
     if not isinstance(source, FromMongoCDC):
@@ -130,6 +122,23 @@ def _build_multi_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> Compi
         shape=source.shape,
         decode_strategy=decode_strategy,
     )
+
+
+_SOURCE_BUILDERS: MappingProxyType[
+    type, Callable[[StreamFlow[Any, Any], ConfigContext], CompiledSource]
+] = MappingProxyType(
+    {
+        FromMongoCDC: _build_mongo_source,
+        FromMultiTypeTopic: _build_multi_source,
+    }
+)
+
+
+def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
+    builder = _SOURCE_BUILDERS.get(type(flow.source))
+    if builder is not None:
+        return builder(flow, ctx)
+    return _build_single_source(flow, ctx)
 
 
 def _build_dispatch_table(payloads: tuple[type[Any], ...]) -> DispatchTable:

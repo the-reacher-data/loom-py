@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._errors import ErrorKind
@@ -22,6 +23,8 @@ from loom.streaming.nodes._table.common import (
 @dataclass(frozen=True)
 class CompiledSingleSource:
     """Resolved Kafka source with a single payload type and decode strategy."""
+
+    needs_decode: ClassVar[bool] = True
 
     settings: ConsumerSettings
     topics: tuple[str, ...]
@@ -44,6 +47,8 @@ class CompiledMultiSource:
         decode_strategy: Whether to decode records individually or in batches.
     """
 
+    needs_decode: ClassVar[bool] = True
+
     settings: ConsumerSettings
     topics: tuple[str, ...]
     dispatch: DispatchTable
@@ -55,9 +60,11 @@ class CompiledMultiSource:
 class CompiledMongoCDCSource:
     """Resolved MongoDB CDC source configuration."""
 
+    needs_decode: ClassVar[bool] = False
+
     settings: MongoSourceConfig
     collections: tuple[str, ...]
-    watch_options: dict[str, Any]
+    watch_options: Mapping[str, object]
     shape: StreamShape
 
 

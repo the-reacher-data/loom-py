@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Literal
 
 import msgspec
 
@@ -15,7 +16,7 @@ class MongoSourceConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 
     uri: str
     database: str
-    watch_options: dict[str, Any] = msgspec.field(default_factory=dict)
+    watch_options: Mapping[str, object] = msgspec.field(default_factory=dict)
     server_api_version: str | None = None
     on_oplog_expired: Literal["fail", "restart_from_now"] = "fail"
 

@@ -61,6 +61,23 @@ class TestMongoBoundaryContracts:
         assert source.watch_options == {}
         assert source.shape is StreamShape.RECORD
 
+    def test_from_mongo_cdc_unparametrized_is_instantiable(self) -> None:
+        source = FromMongoCDC("events")
+
+        assert isinstance(source, FromMongoCDC)
+        assert source.name == "events"
+
+    def test_from_mongo_cdc_parametrized_with_default_type_is_instantiable(self) -> None:
+        source = FromMongoCDC[MongoCDCEvent]("events")
+
+        assert isinstance(source, FromMongoCDC)
+        assert source.name == "events"
+
+    def test_from_mongo_cdc_generic_parametrization_does_not_raise(self) -> None:
+        parametrized = FromMongoCDC[MongoCDCEvent]
+
+        assert parametrized is not None
+
 
 class TestMongoPayloadContracts:
     def test_mongo_cdc_payload_contracts_are_loom_structs(self) -> None:

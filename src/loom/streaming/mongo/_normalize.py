@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Protocol, cast
 
@@ -35,18 +35,7 @@ def normalize_bson_value(value: object) -> object:
         return [normalize_bson_value(item) for item in value]
 
     type_name = type(value).__name__
-    if type_name == "ObjectId":
-        return str(value)
-    if type_name == "Timestamp":
-        return _normalize_timestamp_mapping(value)
-    if type_name == "Decimal128":
-        return _normalize_decimal128(value)
-    if type_name == "Binary":
-        return _normalize_binary(value)
-    if type_name == "DBRef":
-        return _normalize_dbref(value)
-
-    return value
+    return _BSON_NORMALIZERS.get(type_name, _identity)(value)
 
 
 def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
@@ -216,6 +205,23 @@ def _datetime_to_epoch_ms(value: datetime) -> int:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return int(value.astimezone(UTC).timestamp() * 1000)
+
+
+def _normalize_objectid(value: object) -> object:
+    return str(value)
+
+
+def _identity(value: object) -> object:
+    return value
+
+
+_BSON_NORMALIZERS: dict[str, Callable[[object], object]] = {
+    "ObjectId": _normalize_objectid,
+    "Timestamp": _normalize_timestamp_mapping,
+    "Decimal128": _normalize_decimal128,
+    "Binary": _normalize_binary,
+    "DBRef": _normalize_dbref,
+}
 
 
 __all__ = ["build_mongo_cdc_event", "build_mongo_cdc_message", "normalize_bson_value"]

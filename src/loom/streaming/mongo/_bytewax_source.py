@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from bytewax.inputs import FixedPartitionedSource, StatefulSourcePartition
 
@@ -11,6 +11,44 @@ from loom.streaming.compiler._plan import CompiledMongoCDCSource
 from loom.streaming.core._message import Message
 from loom.streaming.mongo._event import MongoCDCEvent
 from loom.streaming.mongo._normalize import build_mongo_cdc_message
+
+
+class _ChangeStream(Protocol):
+    """Minimal interface for a PyMongo change stream cursor."""
+
+    def try_next(self) -> object | None:
+        """Return the next available change document, or None if none is ready."""
+        ...
+
+    def close(self) -> None:
+        """Release resources held by the change stream."""
+        ...
+
+
+class _DatabaseLike(Protocol):
+    """Minimal interface for a PyMongo client, database, or collection.
+
+    Covers the subset of the PyMongo API used at runtime:
+    - ``__getitem__`` to access databases or collections by name.
+    - ``watch`` to open a change stream.
+    - ``close`` to release the underlying connection.
+    """
+
+    def __getitem__(self, name: str) -> _DatabaseLike:
+        """Return a child database or collection by name."""
+        ...
+
+    def watch(
+        self,
+        pipeline: list[dict[str, object]] | None = None,
+        **kwargs: object,
+    ) -> _ChangeStream:
+        """Open and return a change stream on this client, database, or collection."""
+        ...
+
+    def close(self) -> None:
+        """Close the underlying connection."""
+        ...
 
 
 class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str, object] | None]):
@@ -23,14 +61,14 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
     ) -> None:
         self._source = source
         self._resume_token = resume_state
-        self._client = _build_mongo_client(source)
-        self._stream = _open_change_stream(self._client, source, resume_state)
+        self._client: _DatabaseLike = _build_mongo_client(source)
+        self._stream: _ChangeStream = _open_change_stream(self._client, source, resume_state)
 
     def next_batch(self) -> list[Message[MongoCDCEvent]]:
         """Poll one change event when available."""
         try:
             change = self._stream.try_next()
-        except Exception as exc:
+        except _operation_failure_type() as exc:
             if not _should_restart_from_now(self._source, exc):
                 raise
             change = self._restart_from_now()
@@ -54,7 +92,7 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
         self._stream.close()
         self._resume_token = None
         self._stream = _open_change_stream(self._client, self._source, None)
-        return cast(object | None, self._stream.try_next())
+        return self._stream.try_next()
 
 
 class MongoCDCSource(FixedPartitionedSource[Message[MongoCDCEvent], dict[str, object] | None]):
@@ -82,7 +120,7 @@ class MongoCDCSource(FixedPartitionedSource[Message[MongoCDCEvent], dict[str, ob
         return MongoCDCPartition(self._source, resume_state)
 
 
-def _build_mongo_client(source: CompiledMongoCDCSource) -> Any:
+def _build_mongo_client(source: CompiledMongoCDCSource) -> _DatabaseLike:
     """Build a PyMongo client for one compiled Mongo source."""
     try:
         from pymongo import MongoClient
@@ -95,14 +133,15 @@ def _build_mongo_client(source: CompiledMongoCDCSource) -> Any:
     kwargs: dict[str, Any] = {}
     if source.settings.server_api_version is not None:
         kwargs["server_api"] = ServerApi(source.settings.server_api_version)
-    return MongoClient(source.settings.uri, **kwargs)
+    client: MongoClient[Any] = MongoClient(source.settings.uri, **kwargs)
+    return cast(_DatabaseLike, client)
 
 
 def _open_change_stream(
-    client: Any,
+    client: _DatabaseLike,
     source: CompiledMongoCDCSource,
     resume_state: dict[str, object] | None,
-) -> Any:
+) -> _ChangeStream:
     """Open a Mongo change stream for one compiled source."""
     database = client[source.settings.database]
     watch_options = _resolve_watch_options(source.watch_options, resume_state)
@@ -145,8 +184,19 @@ def _should_restart_from_now(source: CompiledMongoCDCSource, exc: Exception) -> 
     return _is_oplog_expired_error(exc)
 
 
+def _operation_failure_type() -> type[Exception]:
+    """Return ``pymongo.errors.OperationFailure``, importing lazily."""
+    try:
+        from pymongo.errors import OperationFailure
+    except ImportError as exc:
+        raise ImportError(
+            "MongoDB CDC support requires the optional 'pymongo' dependency."
+        ) from exc
+    return OperationFailure
+
+
 def _is_oplog_expired_error(exc: Exception) -> bool:
-    if type(exc).__name__ != "OperationFailure":
+    if not isinstance(exc, _operation_failure_type()):
         return False
     code = getattr(exc, "code", None)
     details = getattr(exc, "details", None)

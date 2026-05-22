@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from types import MappingProxyType
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from bytewax.inputs import SimplePollingSource
@@ -118,6 +119,31 @@ def _commit_runtime_items(
 
 
 _CompiledKafkaSource = CompiledSingleSource | CompiledMultiSource
+
+
+def _build_kafka_source(
+    source: CompiledSource,
+    commit_tracker: KafkaCommitTracker | None,
+) -> _KafkaPollingSource:
+    return _KafkaPollingSource(source, commit_tracker)  # type: ignore[arg-type]
+
+
+def _build_mongo_cdc_source(
+    source: CompiledSource,
+    commit_tracker: KafkaCommitTracker | None,
+) -> MongoCDCSource:
+    del commit_tracker
+    return MongoCDCSource(source)  # type: ignore[arg-type]
+
+
+_RUNTIME_SOURCE_BUILDERS: MappingProxyType[
+    type,
+    Callable[[CompiledSource, KafkaCommitTracker | None], _KafkaPollingSource | MongoCDCSource],
+] = MappingProxyType(
+    {
+        CompiledMongoCDCSource: _build_mongo_cdc_source,
+    }
+)
 
 
 class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
@@ -294,9 +320,8 @@ def build_runtime_source(
     commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaPollingSource | MongoCDCSource:
     """Build the runtime source for one compiled input."""
-    if isinstance(source, CompiledMongoCDCSource):
-        return MongoCDCSource(source)
-    return _KafkaPollingSource(source, commit_tracker)
+    builder = _RUNTIME_SOURCE_BUILDERS.get(type(source), _build_kafka_source)
+    return builder(source, commit_tracker)
 
 
 def build_runtime_sink(
@@ -361,9 +386,9 @@ def build_inline_sink_partition(
 
 def build_commit_tracker(source: CompiledSource) -> KafkaCommitTracker | None:
     """Build a commit tracker when explicit source commits are required."""
-    if isinstance(source, CompiledMongoCDCSource):
+    if not source.needs_decode:
         return None
-    if source.settings.enable_auto_commit:
+    if source.settings.enable_auto_commit:  # type: ignore[union-attr]
         return None
     return KafkaCommitTracker()
 

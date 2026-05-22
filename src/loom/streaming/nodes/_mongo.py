@@ -2,17 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Generic
 
 import msgspec
+from typing_extensions import TypeVar
 
-from loom.core.model import LoomFrozenStruct
+from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.routing import LogicalRef, as_logical_ref
+from loom.streaming.mongo._event import MongoCDCEvent
 from loom.streaming.nodes._shape import StreamShape
 
+MongoCDCPayloadT = TypeVar(
+    "MongoCDCPayloadT",
+    bound=LoomStruct | LoomFrozenStruct,
+    default=MongoCDCEvent,
+    covariant=True,
+)
 
-class FromMongoCDC(LoomFrozenStruct, frozen=True):
+
+class FromMongoCDC(LoomFrozenStruct, Generic[MongoCDCPayloadT], frozen=True):
     """Declare a MongoDB CDC stream as a streaming input boundary.
+
+    The type parameter ``MongoCDCPayloadT`` identifies the payload type
+    produced by this source.  It defaults to ``MongoCDCEvent`` so callers
+    that do not need to override the payload type can omit it.
 
     Args:
         name: Logical input reference used to resolve Mongo source config.
@@ -24,7 +38,7 @@ class FromMongoCDC(LoomFrozenStruct, frozen=True):
 
     name: str
     collections: tuple[str, ...] = ()
-    watch_options: dict[str, Any] = msgspec.field(default_factory=dict)
+    watch_options: Mapping[str, object] = msgspec.field(default_factory=dict)
     shape: StreamShape = StreamShape.RECORD
 
     @property

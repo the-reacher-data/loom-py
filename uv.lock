@@ -985,6 +985,7 @@ dependencies = [
     { name = "omegaconf" },
     { name = "prometheus-client" },
     { name = "structlog" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -1141,6 +1142,7 @@ requires-dist = [
     { name = "redis", marker = "extra == 'celery'", specifier = ">=5.0,<6.0" },
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0,<3.0" },
     { name = "structlog", specifier = ">=24.4,<26.0" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", marker = "extra == 'rest'", specifier = ">=0.30,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },

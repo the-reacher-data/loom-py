@@ -103,7 +103,7 @@ class StreamFlow(Generic[InT, OutT]):
     def __init__(
         self,
         name: str,
-        source: FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC,
+        source: FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC[InT],
         process: Process[InT, OutT],
         output: IntoTopic[OutT] | None = None,
         errors: ErrorRoutes = None,
@@ -137,7 +137,7 @@ class StreamFlow(Generic[InT, OutT]):
         return self._process
 
     @property
-    def source(self) -> FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC:
+    def source(self) -> FromTopic[InT] | FromMultiTypeTopic[InT] | FromMongoCDC[InT]:
         """Input topic declaration."""
         return self._source
 
