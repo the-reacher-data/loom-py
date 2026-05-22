@@ -20,6 +20,8 @@ from loom.streaming import (
     MongoBsonTimestamp,
     MongoCDCEvent,
     MongoCDCNamespace,
+    MongoDBRef,
+    MongoObjectId,
     build_mongo_cdc_event,
     build_mongo_cdc_message,
     normalize_bson_value,
@@ -117,36 +119,29 @@ class TestMongoPayloadContracts:
 
 class TestMongoNormalizationContracts:
     def test_normalize_bson_value_converts_core_scalar_types(self) -> None:
-        normalized = {
-            "object_id": normalize_bson_value(ObjectId("507f1f77bcf86cd799439011")),
-            "timestamp": normalize_bson_value(Timestamp(1716400000, 7)),
-            "decimal": normalize_bson_value(Decimal128("428.79")),
-            "when": normalize_bson_value(datetime(2024, 5, 22, 12, 0, tzinfo=UTC)),
-        }
+        object_id = normalize_bson_value(ObjectId("507f1f77bcf86cd799439011"))
+        timestamp = normalize_bson_value(Timestamp(1716400000, 7))
+        decimal = normalize_bson_value(Decimal128("428.79"))
+        when = normalize_bson_value(datetime(2024, 5, 22, 12, 0, tzinfo=UTC))
 
-        assert normalized == {
-            "object_id": "507f1f77bcf86cd799439011",
-            "timestamp": {"seconds": 1716400000, "increment": 7},
-            "decimal": "428.79",
-            "when": 1716379200000,
-        }
+        assert isinstance(object_id, MongoObjectId)
+        assert object_id.id == "507f1f77bcf86cd799439011"
+        assert object_id.created_at_ms is None or isinstance(object_id.created_at_ms, int)
+        assert timestamp == {"seconds": 1716400000, "increment": 7}
+        assert decimal == "428.79"
+        assert when == 1716379200000
 
     def test_normalize_bson_value_converts_binary_and_dbref(self) -> None:
-        normalized = {
-            "binary": normalize_bson_value(Binary(b"mongo")),
-            "dbref": normalize_bson_value(
-                DBRef("orders", ObjectId("507f1f77bcf86cd799439011"), database="app")
-            ),
-        }
+        binary = normalize_bson_value(Binary(b"mongo"))
+        dbref = normalize_bson_value(
+            DBRef("orders", ObjectId("507f1f77bcf86cd799439011"), database="app")
+        )
 
-        assert normalized == {
-            "binary": "bW9uZ28=",
-            "dbref": {
-                "collection": "orders",
-                "database": "app",
-                "id": "507f1f77bcf86cd799439011",
-            },
-        }
+        assert binary == "bW9uZ28="
+        assert isinstance(dbref, MongoDBRef)
+        assert dbref.id == "507f1f77bcf86cd799439011"
+        assert dbref.collection == "orders"
+        assert dbref.database == "app"
 
     def test_build_mongo_cdc_event_preserves_core_metadata(self) -> None:
         change = {
@@ -168,12 +163,56 @@ class TestMongoNormalizationContracts:
         assert event.event_id == "825E"
         assert event.operation_type == "update"
         assert event.namespace == MongoCDCNamespace(db="app", coll="orders")
-        assert event.document_id == "507f1f77bcf86cd799439011"
+        assert isinstance(event.document_id, MongoObjectId)
+        assert event.document_id.id == "507f1f77bcf86cd799439011"
+        assert event.document_id.created_at_ms is None or isinstance(
+            event.document_id.created_at_ms, int
+        )
         assert event.cluster_time == MongoBsonTimestamp(seconds=1716400000, increment=7)
         assert event.wall_time_ms == 1716379200000
         assert event.resume_token == {"_data": "825E"}
-        assert event.full_document == {"_id": "507f1f77bcf86cd799439011", "amount": "428.79"}
+        assert event.full_document is not None
+        full_doc_id = event.full_document["_id"]
+        assert isinstance(full_doc_id, MongoObjectId)
+        assert full_doc_id.id == "507f1f77bcf86cd799439011"
+        assert event.full_document["amount"] == "428.79"
         assert event.raw_json
+
+    def test_normalize_dbref_without_database_field_sets_database_to_none(self) -> None:
+        dbref = normalize_bson_value(DBRef("products", ObjectId("507f1f77bcf86cd799439011")))
+
+        assert isinstance(dbref, MongoDBRef)
+        assert dbref.collection == "products"
+        assert dbref.id == "507f1f77bcf86cd799439011"
+        assert dbref.database is None
+
+    def test_normalize_dbref_with_non_objectid_identifier_converts_to_string(self) -> None:
+        dbref = normalize_bson_value(DBRef("products", 42))
+
+        assert isinstance(dbref, MongoDBRef)
+        assert dbref.id == "42"
+
+    def test_normalize_dbref_with_none_identifier_raises_type_error(self) -> None:
+        # Class must be named "DBRef" so the type-name dispatch in normalize_bson_value routes it.
+        class DBRef:  # noqa: N801
+            collection = "products"
+            database = None
+            id = None
+
+        with pytest.raises(TypeError, match="non-None 'id'"):
+            normalize_bson_value(DBRef())
+
+    def test_normalize_objectid_without_generation_time_sets_created_at_ms_to_none(self) -> None:
+        # Class must be named "ObjectId" so the type-name dispatch routes it to _normalize_objectid.
+        class ObjectId:  # noqa: N801
+            def __str__(self) -> str:
+                return "507f1f77bcf86cd799439011"
+
+        result = normalize_bson_value(ObjectId())
+
+        assert isinstance(result, MongoObjectId)
+        assert result.id == "507f1f77bcf86cd799439011"
+        assert result.created_at_ms is None
 
     def test_build_mongo_cdc_message_maps_neutral_message_meta_fields(self) -> None:
         message = build_mongo_cdc_message(

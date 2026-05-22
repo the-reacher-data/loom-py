@@ -10,7 +10,13 @@ from typing import Protocol, cast
 import msgspec
 
 from loom.streaming.core._message import Message, MessageMeta
-from loom.streaming.mongo._event import MongoBsonTimestamp, MongoCDCEvent, MongoCDCNamespace
+from loom.streaming.mongo._event import (
+    MongoBsonTimestamp,
+    MongoCDCEvent,
+    MongoCDCNamespace,
+    MongoDBRef,
+    MongoObjectId,
+)
 
 _MONGO_MESSAGE_TYPE = "loom.mongo.cdc"
 
@@ -66,6 +72,11 @@ def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
     )
 
 
+def _message_key(document_id: MongoObjectId | str | None) -> str | None:
+    """Extract a partition key string from a normalized document identifier."""
+    return document_id.id if isinstance(document_id, MongoObjectId) else document_id
+
+
 def build_mongo_cdc_message(change: Mapping[str, object]) -> Message[MongoCDCEvent]:
     """Build a transport-neutral Loom message for one Mongo change event."""
     event = build_mongo_cdc_event(change)
@@ -77,7 +88,7 @@ def build_mongo_cdc_message(change: Mapping[str, object]) -> Message[MongoCDCEve
         if event.cluster_time is not None
         else None,
         message_type=_MONGO_MESSAGE_TYPE,
-        key=event.document_id,
+        key=_message_key(event.document_id),
     )
     return Message(payload=event, meta=meta)
 
@@ -151,13 +162,13 @@ def _normalize_optional_mapping(value: object) -> dict[str, object] | None:
     return normalized
 
 
-def _document_id(value: object) -> str | None:
+def _document_id(value: object) -> MongoObjectId | str | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise TypeError("Mongo change event field 'documentKey' must be a mapping when present.")
-    normalized = normalize_bson_value(value.get("_id"))
-    return normalized if isinstance(normalized, str) else None
+    raw = normalize_bson_value(value.get("_id"))
+    return raw if isinstance(raw, (MongoObjectId, str)) else None
 
 
 def _normalize_timestamp_mapping(value: object) -> dict[str, object]:
@@ -180,7 +191,7 @@ def _normalize_binary(value: object) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-def _normalize_dbref(value: object) -> dict[str, object]:
+def _normalize_dbref(value: object) -> object:
     collection = getattr(value, "collection", None)
     database = getattr(value, "database", None)
     identifier = getattr(value, "id", None)
@@ -188,11 +199,11 @@ def _normalize_dbref(value: object) -> dict[str, object]:
         raise TypeError("BSON DBRef must expose a string 'collection' attribute.")
     if database is not None and not isinstance(database, str):
         raise TypeError("BSON DBRef attribute 'database' must be a string when present.")
-    return {
-        "collection": collection,
-        "database": database,
-        "id": normalize_bson_value(identifier),
-    }
+    if identifier is None:
+        raise TypeError("BSON DBRef must have a non-None 'id' attribute.")
+    normalized_id = normalize_bson_value(identifier)
+    id_str = normalized_id.id if isinstance(normalized_id, MongoObjectId) else str(normalized_id)
+    return MongoDBRef(id=id_str, collection=collection, database=database)
 
 
 def _required_int(value: object, field: str) -> int:
@@ -208,7 +219,11 @@ def _datetime_to_epoch_ms(value: datetime) -> int:
 
 
 def _normalize_objectid(value: object) -> object:
-    return str(value)
+    generation_time = getattr(value, "generation_time", None)
+    created_at_ms = (
+        _datetime_to_epoch_ms(generation_time) if isinstance(generation_time, datetime) else None
+    )
+    return MongoObjectId(id=str(value), created_at_ms=created_at_ms)
 
 
 def _identity(value: object) -> object:
