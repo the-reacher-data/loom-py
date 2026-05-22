@@ -1,3 +1,112 @@
+# 🚀 Release 0.8.0 ([#30](https://github.com/the-reacher-data/loom-py/pull/30)) ([`702b99e`](https://github.com/the-reacher-data/loom-py/commit/702b99ec75a4130f273322f8eb488637a2f98a14))
+
+
+## ✨ Features
+### streaming
+- **streaming:** add IntoSink/SinkPartition protocols and Decompose node<br>
+  > Introduces the two-level contract that makes storage sinks extensible at
+  > the node level. Any frozen dataclass satisfying IntoSink is a first-class
+  > terminal node — no registration, no inheritance, no framework coupling.
+  > core/schema/: new shared module; SchemaMode promoted from ETL (ETL re-exports for backwards compat)
+  > nodes/_sink.py: SinkPartition (contravariant per-worker protocol) and IntoSink (runtime-checkable terminal protocol)
+  > nodes/_decompose.py: EntityDecomposer protocol and Decompose transformation node
+  > validate.py: _is_leaf_terminal() helper unifies all terminal checks; IntoSink recognised as terminal in shape and output validation; _node_output_shape refactored to dispatch map
+  > exports: IntoSink, SinkPartition, Decompose, EntityDecomposer in public API
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **streaming:** add IntoTable sink node and rename EntityDecomposer to PayloadExpander<br>
+  > IntoTable: frozen dataclass implementing IntoSink for SQLAlchemy and Delta backends
+  > Backend enum: SQLALCHEMY and DELTA variants
+  > _SQLAlchemyTablePartition: bulk-insert via engine.begin() per epoch batch
+  > _DeltaTablePartition: write via deltalake + polars with validated write mode
+  > Rename EntityDecomposer -> PayloadExpander, decompose() -> expand(), targets -> outputs
+  > Update both streaming.__init__ and streaming.nodes.__init__ public exports
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+### streaming/compiler
+- **streaming/compiler:** teach compiler to resolve IntoSink nodes<br>
+  > Add CompiledStorageSink to _plan: holds the IntoSink node and its
+  > pre-fetched streaming.sinks.<name> config section
+  > Add terminal_storage_sinks field to CompiledPlan (default empty dict
+  > keeps all existing tests green)
+  > Refactor _build_terminal_sinks and all branch builders to return
+  > (kafka_sinks, storage_sinks) tuple in a single walk — no duplicate
+  > traversal
+  > Add _build_storage_sink: resolves config by node.name or passes {}
+  > when name is empty (self-configured sinks)
+  > Add validate_storage_sinks phase: reports a clear error for every
+  > named IntoSink whose streaming.sinks.<name> section is absent
+  > Wire validate_storage_sinks into the compiler pipeline
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **streaming/compiler:** add Decompose shape and structural validation<br>
+  > Import Decompose in validate.py
+  > Add RECORD to _node_input_shape for Decompose — enforces that it
+  > receives individual events, not batches
+  > Add Decompose: StreamShape.RECORD to _FIXED_OUTPUT_SHAPES — its
+  > output feeds the Router as per-type records
+  > Add structural check in _validate_shape_sequence: Decompose must be
+  > immediately followed by a Router; clear error message when it is not
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+### streaming/bytewax
+- **streaming/bytewax:** wire IntoSink nodes to Bytewax output operators<br>
+  > Add handlers/storage.py: _StorageSinkPartition wraps loom SinkPartition,
+  > extracting payload from Message envelopes; _StorageDynamicSink calls
+  > node.build_partition(config, worker_index, worker_count) once per
+  > Bytewax worker at startup; _apply_into_sink registers the DynamicSink
+  > via bw_output for any IntoSink node found in the compiled plan
+  > Register IntoSink in _NODE_HANDLERS dispatch map (dispatcher.py) so
+  > _wire_process routes any IntoSink node to _apply_into_sink
+  > Add IntoSink pass-through in _execute_router_node (routing.py)
+  > consistent with the IntoTopic/Drain pattern for inline Router execution
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+
+
+
+## ♻️ Refactor
+### streaming
+- **streaming:** improve _SQLAlchemyTablePartition with typed columns and pool config<br>
+  > Extract _require_sa_url, _sa_engine_kwargs, _sa_type_for, _sa_table_from_struct,
+  > _structs_to_rows helpers for readability and single responsibility
+  > Map Python types to SA column types (_sa_type_for) with Optional unwrapping
+  > and collection → JSON fallback; mirrors _SCALAR_TYPE_MAP from introspection.py
+  > Mirror SessionManager pool defaults: pool_pre_ping, echo, pool_size,
+  > max_overflow, pool_timeout, pool_recycle, connect_args from config
+  > Replace msgspec.structs.asdict cast hack with direct call via _structs_to_rows
+  > Drop connection_string fallback — config contract is url only
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **streaming:** merge sink config from dsl and yaml
+- **streaming:** move table sink into package
+- **streaming:** resolve table sink config via context
+- **streaming:** enforce typed table sink config
+
+
+
+## ✅ Tests
+### streaming
+- **streaming:** add IntoTable SQLAlchemy integration tests against SQLite<br>
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **streaming:** cover resource manager session cache
+
+
+
+## 🔖 Other
+- Fix Bytewax step flat_map tests
+- Refactor streaming validation helpers<br>
+  > --------
+  > Co-authored-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+
 # 🚀 Release 0.7.0 ([#25](https://github.com/the-reacher-data/loom-py/pull/25)) ([`0d8941a`](https://github.com/the-reacher-data/loom-py/commit/0d8941a724ec768b162a07e756bac3d53157ec85))
 
 
