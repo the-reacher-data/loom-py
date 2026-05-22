@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._errors import ErrorKind
@@ -11,6 +11,11 @@ from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
+from loom.streaming.nodes._table.common import (
+    DeltaSinkConfig,
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,26 @@ class CompiledSink:
 
 
 @dataclass(frozen=True)
+class CompiledStorageSink:
+    """Resolved storage sink with its DSL node and pre-fetched config section.
+
+    The adapter calls ``node.build_partition(config, worker_index, worker_count, bridge)``
+    at startup once per Bytewax worker to obtain the :class:`SinkPartition` that
+    handles epoch writes and shutdown.  Storage backends that require async
+    execution receive the adapter-managed :class:`~loom.core.async_bridge.AsyncBridge`.
+
+    Args:
+        node:   The :class:`~loom.streaming.nodes.IntoSink` node as declared in the DSL.
+        config: Resolved storage sink config for the selected backend.
+        database_config: Resolved shared SQLAlchemy database config, if needed.
+    """
+
+    node: Any
+    config: SqlAlchemySinkConfig | DeltaSinkConfig
+    database_config: SqlAlchemyDatabaseConfig | None = None
+
+
+@dataclass(frozen=True)
 class CompiledNode:
     """DSL node annotated with input/output shapes."""
 
@@ -92,3 +117,4 @@ class CompiledPlan:
     error_routes: dict[ErrorKind, CompiledSink]
     needs_async_bridge: bool
     terminal_sinks: dict[tuple[int, ...], CompiledSink] = field(default_factory=dict)
+    terminal_storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = field(default_factory=dict)

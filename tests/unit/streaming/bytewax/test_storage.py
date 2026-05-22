@@ -1,0 +1,145 @@
+"""Tests for storage sink wiring in the Bytewax adapter."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any, cast
+
+import pytest
+
+from loom.core.async_bridge import AsyncBridge
+from loom.core.observability.runtime import ObservabilityRuntime
+from loom.streaming.bytewax.handlers import storage as _storage
+from loom.streaming.compiler._plan import CompiledStorageSink
+from loom.streaming.nodes._table import Backend, IntoTable
+from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig, SqlAlchemySinkConfig
+from tests.unit.streaming.compiler.cases import Result
+
+pytestmark = pytest.mark.bytewax
+
+
+class _Partition:
+    def write_batch(self, items: Sequence[Any]) -> None:
+        del items
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeCtx:
+    def __init__(self, *, bridge: AsyncBridge | None) -> None:
+        self.plan = type("_Plan", (), {"name": "test_flow"})()
+        self.bridge = bridge
+        self.flow_runtime = ObservabilityRuntime.noop()
+        self._session_manager = object()
+        self.session_manager_calls: list[dict[str, Any]] = []
+
+    def session_manager_for(self, config: Any) -> object:
+        if hasattr(config, "to_session_manager_config"):
+            resolved = config.to_session_manager_config()
+        else:
+            resolved = dict(config)
+        self.session_manager_calls.append(dict(resolved))
+        return self._session_manager
+
+
+class TestStorageDynamicSink:
+    def test_sqlalchemy_table_partition_receives_async_bridge(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _build_partition(
+            self: IntoTable[Any],
+            config: Any,
+            worker_index: int,
+            worker_count: int,
+            bridge: AsyncBridge | None = None,
+            session_manager: object | None = None,
+        ) -> _Partition:
+            captured["config"] = config
+            captured["worker_index"] = worker_index
+            captured["worker_count"] = worker_count
+            captured["bridge"] = bridge
+            captured["session_manager"] = session_manager
+            return _Partition()
+
+        monkeypatch.setattr(IntoTable, "build_partition", _build_partition)
+
+        node = IntoTable(
+            payload=Result,
+            table="results",
+            backend=Backend.SQLALCHEMY,
+            name="results_sink",
+        )
+        compiled = CompiledStorageSink(
+            node=cast(Any, node),
+            config=SqlAlchemySinkConfig.from_config(
+                {"url": "sqlite:///:memory:", "table": "results", "chunk_size": 500},
+                default_table="results",
+            ),
+            database_config=SqlAlchemyDatabaseConfig(url="sqlite:///:memory:", pool_pre_ping=True),
+        )
+        bridge = cast(AsyncBridge, object())
+        fake_ctx = cast(Any, _FakeCtx(bridge=bridge))
+        dynamic_sink = cast(Any, _storage._StorageDynamicSink(compiled, fake_ctx))
+
+        partition = dynamic_sink.build("step", 2, 3)
+
+        assert isinstance(partition, _storage._StorageSinkPartition)
+        assert isinstance(captured["config"], SqlAlchemySinkConfig)
+        assert captured["config"].table == "results"
+        assert captured["worker_index"] == 2
+        assert captured["worker_count"] == 3
+        assert captured["bridge"] is bridge
+        fake_ctx = cast(Any, dynamic_sink._ctx)
+        assert captured["session_manager"] is fake_ctx._session_manager
+        assert fake_ctx.session_manager_calls == [
+            {
+                "url": "sqlite:///:memory:",
+                "echo": False,
+                "pool_pre_ping": True,
+                "pool_size": 10,
+                "max_overflow": 20,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,
+                "connect_args": {},
+            }
+        ]
+
+    def test_sqlalchemy_table_partition_requires_async_bridge(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def _build_partition(
+            self: IntoTable[Any],
+            config: Any,
+            worker_index: int,
+            worker_count: int,
+            bridge: AsyncBridge | None = None,
+            session_manager: object | None = None,
+        ) -> _Partition:
+            del self, config, worker_index, worker_count, bridge, session_manager
+            return _Partition()
+
+        monkeypatch.setattr(IntoTable, "build_partition", _build_partition)
+
+        node = IntoTable(
+            payload=Result,
+            table="results",
+            backend=Backend.SQLALCHEMY,
+            name="results_sink",
+        )
+        compiled = CompiledStorageSink(
+            node=cast(Any, node),
+            config=SqlAlchemySinkConfig.from_config(
+                {"url": "sqlite:///:memory:", "table": "results", "chunk_size": 500},
+                default_table="results",
+            ),
+            database_config=SqlAlchemyDatabaseConfig(url="sqlite:///:memory:"),
+        )
+        dynamic_sink = _storage._StorageDynamicSink(compiled, cast(Any, _FakeCtx(bridge=None)))
+
+        with pytest.raises(RuntimeError, match="requires an AsyncBridge"):
+            dynamic_sink.build("step", 0, 1)

@@ -1,23 +1,5 @@
-"""Schema evolution mode enum for TABLE targets."""
+"""Schema evolution mode — re-exported from loom.core.schema for backwards compatibility."""
 
-from __future__ import annotations
-
-from enum import StrEnum
-
-
-class SchemaMode(StrEnum):
-    """Schema evolution strategy applied by the target writer before each write.
-
-    Values:
-
-    * ``STRICT``    — fail on incompatible schema changes.
-    * ``EVOLVE``    — allow additive evolution where supported.
-    * ``OVERWRITE`` — replace table schema with incoming schema.
-    """
-
-    STRICT = "strict"
-    EVOLVE = "evolve"
-    OVERWRITE = "overwrite"
-
+from loom.core.schema.schema_mode import SchemaMode
 
 __all__ = ["SchemaMode"]

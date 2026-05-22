@@ -287,6 +287,10 @@ class _BuildContext:
         """Get or create a resource manager for *node* at position *idx*."""
         return self.resource_manager.manager_for(idx, node)
 
+    def session_manager_for(self, config: Any) -> Any:
+        """Get or create a shared SQLAlchemy session manager for one config."""
+        return self.resource_manager.session_manager_for(config)
+
     @property
     def current_path(self) -> tuple[int, ...]:
         """Return the current wiring path inside the process tree."""

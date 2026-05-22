@@ -31,10 +31,12 @@ from loom.streaming.nodes._boundary import (
     PartitionStrategy,
 )
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
+from loom.streaming.nodes._decompose import Explode, PayloadExpander
 from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._protocols import Predicate, Selector
 from loom.streaming.nodes._router import Route, Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
+from loom.streaming.nodes._sink import IntoSink, SinkPartition
 from loom.streaming.nodes._step import (
     BatchExpandStep,
     BatchStep,
@@ -43,6 +45,13 @@ from loom.streaming.nodes._step import (
     ResourceFactory,
     Step,
     StepContext,
+)
+from loom.streaming.nodes._table import (
+    Backend,
+    DeltaSinkConfig,
+    IntoTable,
+    SqlAlchemyDatabaseConfig,
+    SqlAlchemySinkConfig,
 )
 from loom.streaming.nodes._with import (
     AsyncContextDependency,
@@ -57,45 +66,54 @@ from loom.streaming.nodes.refs import payload as payload
 
 __all__ = [
     "AsyncContextDependency",
+    "Backend",
     "BatchExpandStep",
     "BatchStep",
     "Broadcast",
     "BroadcastRoute",
     "CollectBatch",
     "ContextFactory",
+    "DeltaSinkConfig",
+    "Explode",
     "Drain",
+    "PayloadExpander",
     "ErrorEnvelope",
     "ErrorKind",
     "ErrorMessage",
     "ErrorMessageMeta",
     "ErrorRoute",
+    "ExpandStep",
     "ForEach",
-    "FromMultiTypeTopic",
-    "FromTopic",
     "Fork",
     "ForkRoute",
-    "ExpandStep",
+    "FromMultiTypeTopic",
+    "FromTopic",
+    "IntoSink",
+    "IntoTable",
     "IntoTopic",
     "Message",
     "MessageMeta",
     "PartitionGuarantee",
     "PartitionPolicy",
     "PartitionStrategy",
+    "Predicate",
     "Process",
     "ProcessNode",
-    "Predicate",
     "RecordStep",
     "ResourceFactory",
     "ResourceScope",
     "Route",
     "Router",
     "Selector",
+    "SinkPartition",
     "StreamFlow",
     "StreamShape",
-    "WindowStrategy",
     "Step",
     "StepContext",
     "SyncContextDependency",
+    "SqlAlchemyDatabaseConfig",
+    "SqlAlchemySinkConfig",
+    "WindowStrategy",
     "With",
     "WithAsync",
     "compile_flow",

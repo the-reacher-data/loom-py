@@ -13,11 +13,13 @@ from loom.core.async_bridge import AsyncBridge
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
+from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig
 
 Stream: TypeAlias = Any
 AwaitT = TypeVar("AwaitT")
@@ -123,6 +125,13 @@ class _BuildContextProtocol(Protocol):
         path: tuple[int, ...],
     ) -> Any:
         """Return a ready-to-write sink partition for an inline (non-graph) write."""
+        ...
+
+    def session_manager_for(
+        self,
+        config: SqlAlchemyDatabaseConfig | Mapping[str, Any],
+    ) -> SessionManager:
+        """Return a shared SQLAlchemy session manager for one sink config."""
         ...
 
     def manager_for(

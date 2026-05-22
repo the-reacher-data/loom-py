@@ -25,6 +25,7 @@ from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import Drain
+from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchStep, RecordStep
 
 Stream = Any
@@ -225,7 +226,7 @@ def _execute_router_node(node: object, message: Any) -> Any:
             message,
             _resolve_record_result(record_node.execute(message), "Router"),
         )
-    if isinstance(node, RouterBranchSafe) and isinstance(node, (IntoTopic, Drain)):
+    if isinstance(node, RouterBranchSafe) and isinstance(node, (IntoTopic, Drain, IntoSink)):
         return message
     raise TypeError(
         f"Router branch node {type(node).__name__} is not supported by Bytewax adapter."

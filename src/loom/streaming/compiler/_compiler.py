@@ -14,6 +14,7 @@ from loom.streaming.compiler.phases.validate import (
     validate_outputs,
     validate_resources,
     validate_shapes,
+    validate_storage_sinks,
 )
 from loom.streaming.graph._flow import StreamFlow
 
@@ -55,6 +56,7 @@ class _Compiler:
             raise CompilationError(errors)
 
         errors.extend(validate_kafka(resolved_flow, ctx))
+        errors.extend(validate_storage_sinks(resolved_flow, ctx))
         errors.extend(validate_resources(resolved_flow))
         errors.extend(validate_shapes(resolved_flow))
         errors.extend(validate_outputs(resolved_flow))

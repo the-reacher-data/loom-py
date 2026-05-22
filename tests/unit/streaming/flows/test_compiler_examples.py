@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from loom.streaming import StreamShape, compile_flow
+from loom.streaming import Explode, Router, StreamShape, compile_flow
 from loom.streaming.compiler._plan import CompiledPlan
 from tests.unit.streaming.flows.cases import StreamFlowCase
 
@@ -60,6 +60,17 @@ def _assert_async_case(plan: CompiledPlan) -> None:
     assert [node.output_shape for node in plan.nodes] == [StreamShape.NONE]
 
 
+def _assert_explode_case(plan: CompiledPlan) -> None:
+    assert plan.output is not None
+    assert plan.output.topic == "events.analytics"
+    assert len(plan.nodes) == 2
+    assert isinstance(plan.nodes[0].node, Explode)
+    assert isinstance(plan.nodes[1].node, Router)
+    assert plan.nodes[0].input_shape is StreamShape.RECORD
+    assert plan.nodes[0].output_shape is StreamShape.RECORD
+    assert plan.terminal_sinks == {}
+
+
 def _assert_fork_case(plan: CompiledPlan) -> None:
     assert plan.output is None
     assert plan.nodes[0].output_shape is StreamShape.NONE
@@ -88,6 +99,7 @@ _ASSERTIONS: dict[str, Callable[[CompiledPlan], None]] = {
     "orders_price_batch": _assert_batch_case,
     "orders_price_batch_scope": _assert_batch_case,
     "orders_score_async_each": _assert_async_case,
+    "stores_explode": _assert_explode_case,
     "orders_fork": _assert_fork_case,
     "orders_fork_with": _assert_fork_with_case,
     "orders_fork_when": _assert_fork_when_case,

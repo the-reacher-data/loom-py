@@ -14,11 +14,26 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
+from loom.streaming.nodes._decompose import Explode
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
+from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
+from loom.streaming.nodes._table import Backend, IntoTable
+from loom.streaming.nodes._table.config import (
+    resolve_delta_table_config,
+    resolve_sqlalchemy_table_config,
+)
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
+
+
+def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+    """Validate that every named IntoSink node has a config section at streaming.sinks.<name>."""
+    errors: list[str] = []
+    for node in _iter_unique_storage_sinks(flow.process.nodes, errors):
+        errors.extend(_validate_storage_sink_node(node, ctx))
+    return errors
 
 
 def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
@@ -58,10 +73,7 @@ def validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
 def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
     """Validate terminal outputs and branch terminality."""
     errors: list[str] = []
-    has_terminal = flow.output is not None
-
-    if _has_terminal_output(flow.process.nodes):
-        has_terminal = True
+    has_terminal = flow.output is not None or _has_terminal_output(flow.process.nodes)
 
     if flow.output is not None and _contains_fork(flow.process.nodes):
         errors.append(
@@ -83,7 +95,11 @@ def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
 
     if not has_terminal:
         errors.append(
-            str(MissingSinkError("no terminal output found: add IntoTopic or flow.output"))
+            str(
+                MissingSinkError(
+                    "no terminal output found: add IntoTopic, a storage sink node, or flow.output"
+                )
+            )
         )
 
     return errors
@@ -119,7 +135,9 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
 
 
 def _node_needs_async_bridge(node: object) -> bool:
-    return isinstance(node, WithAsync)
+    return isinstance(node, WithAsync) or (
+        isinstance(node, IntoTable) and node.backend is Backend.SQLALCHEMY
+    )
 
 
 def _check_input_shape(
@@ -155,50 +173,151 @@ def _validate_shape_sequence(
 
     for idx, node in enumerate(node_list):
         _check_input_shape(node, current_shape, errors)
-
-        if isinstance(node, (IntoTopic, Drain)):
-            errors.extend(
-                _must_be_last_errors(
-                    idx, node_list, f"{type(node).__name__} must be the last node in a process"
-                )
-            )
+        node_errors, next_shape, should_stop = _validate_shape_node(
+            node,
+            idx,
+            node_list,
+            current_shape,
+        )
+        errors.extend(node_errors)
+        current_shape = next_shape
+        if should_stop:
             break
-
-        if isinstance(node, Fork):
-            fork_errors, current_shape = _validate_fork_shapes(node, current_shape)
-            errors.extend(fork_errors)
-            errors.extend(
-                _must_be_last_errors(idx, node_list, "fork must be the last node in a process")
-            )
-            break
-
-        if isinstance(node, Broadcast):
-            broadcast_errors, current_shape = _validate_broadcast_shapes(node, current_shape)
-            errors.extend(broadcast_errors)
-            errors.extend(
-                _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
-            )
-            break
-
-        if _is_scoped_process(node):
-            errors.extend(
-                _must_be_last_errors(
-                    idx,
-                    node_list,
-                    f"{type(node).__name__}(process=...) must be the last node in a process",
-                )
-            )
-            current_shape = StreamShape.NONE
-            break
-
-        if isinstance(node, Router):
-            router_errors, current_shape = _validate_router_shapes(node, current_shape)
-            errors.extend(router_errors)
-            continue
-
-        current_shape = _node_output_shape(node, current_shape)
 
     return errors, current_shape
+
+
+def _iter_unique_storage_sinks(
+    nodes: Iterable[object],
+    errors: list[str],
+) -> Iterable[IntoSink[Any]]:
+    """Yield named storage sinks once while recording missing-name errors."""
+    seen: set[str] = set()
+    for node in _walk_all_process_nodes(nodes):
+        if not isinstance(node, IntoSink):
+            continue
+        if not node.name:
+            errors.append(f"storage sink '{type(node).__name__}': missing name")
+            continue
+        if node.name in seen:
+            continue
+        seen.add(node.name)
+        yield node
+
+
+def _validate_storage_sink_node(node: IntoSink[Any], ctx: ConfigContext) -> list[str]:
+    """Validate backend-specific config for one storage sink."""
+    if not isinstance(node, IntoTable):
+        return []
+    if node.backend is Backend.SQLALCHEMY:
+        return _validate_storage_sink_resolution(node, ctx, resolve_sqlalchemy_table_config)
+    if node.backend is Backend.DELTA:
+        return _validate_storage_sink_resolution(node, ctx, resolve_delta_table_config)
+    return []
+
+
+def _validate_storage_sink_resolution(
+    node: IntoTable[Any],
+    ctx: ConfigContext,
+    resolver: Any,
+) -> list[str]:
+    """Resolve one IntoTable config and return validation errors."""
+    try:
+        resolver(node, ctx)
+    except ValueError as exc:
+        return [f"storage sink '{node.name or type(node).__name__}': {exc}"]
+    return []
+
+
+def _validate_shape_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate one node inside a process shape sequence."""
+    if _is_leaf_terminal(node):
+        return _validate_leaf_terminal_node(node, idx, node_list, current_shape)
+    if isinstance(node, Fork):
+        return _validate_fork_node(node, idx, node_list, current_shape)
+    if isinstance(node, Broadcast):
+        return _validate_broadcast_node(node, idx, node_list, current_shape)
+    if _is_scoped_process(node):
+        return _validate_scoped_process_node(node, idx, node_list)
+    if isinstance(node, Explode):
+        return _validate_explode_node(node, idx, node_list, current_shape)
+    if isinstance(node, Router):
+        router_errors, next_shape = _validate_router_shapes(node, current_shape)
+        return router_errors, next_shape, False
+    return [], _node_output_shape(node, current_shape), False
+
+
+def _validate_leaf_terminal_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a terminal leaf node."""
+    errors = _must_be_last_errors(
+        idx, node_list, f"{type(node).__name__} must be the last node in a process"
+    )
+    return errors, current_shape, True
+
+
+def _validate_fork_node(
+    node: Fork[StreamPayload],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a fork node and stop the enclosing process."""
+    errors, next_shape = _validate_fork_shapes(node, current_shape)
+    errors.extend(_must_be_last_errors(idx, node_list, "fork must be the last node in a process"))
+    return errors, next_shape, True
+
+
+def _validate_broadcast_node(
+    node: Broadcast[Any],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a broadcast node and stop the enclosing process."""
+    errors, next_shape = _validate_broadcast_shapes(node, current_shape)
+    errors.extend(
+        _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
+    )
+    return errors, next_shape, True
+
+
+def _validate_scoped_process_node(
+    node: object,
+    idx: int,
+    node_list: tuple[object, ...],
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate a scoped process node and stop the enclosing process."""
+    errors = _must_be_last_errors(
+        idx,
+        node_list,
+        f"{type(node).__name__}(process=...) must be the last node in a process",
+    )
+    return errors, StreamShape.NONE, True
+
+
+def _validate_explode_node(
+    node: Explode[Any],
+    idx: int,
+    node_list: tuple[object, ...],
+    current_shape: StreamShape,
+) -> tuple[list[str], StreamShape, bool]:
+    """Validate that Explode is followed immediately by Router."""
+    next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
+    errors: list[str] = []
+    if not isinstance(next_node, Router):
+        got = type(next_node).__name__ if next_node is not None else "nothing"
+        errors.append(f"Explode must be immediately followed by a Router; got {got}")
+    return errors, _node_output_shape(node, current_shape), False
 
 
 def _validate_fork_shapes(
@@ -245,7 +364,7 @@ def _validate_router_branch_shape_sequence(
                 f"shape mismatch: expected {expected.value} but got {current_shape.value} "
                 f"before {type(node).__name__}"
             )
-        if isinstance(node, (IntoTopic, Drain)) and idx != len(node_list) - 1:
+        if _is_leaf_terminal(node) and idx != len(node_list) - 1:
             errors.append(f"{type(node).__name__} must be the last node in a process")
             break
         current_shape = _node_output_shape(node, current_shape)
@@ -311,18 +430,19 @@ def _fork_branch_count(fork: Fork[StreamPayload]) -> int:
     return len(fork.predicate_routes)
 
 
+def _is_leaf_terminal(node: object) -> bool:
+    """Return True for nodes that are themselves terminal with no children to recurse into."""
+    return isinstance(node, (IntoTopic, Drain, IntoSink, Broadcast))
+
+
 def _node_has_terminal_output(node: object) -> bool:
-    if isinstance(node, (IntoTopic, Drain)):
+    if _is_leaf_terminal(node):
         return True
     if isinstance(node, Router):
         return _router_has_terminal_output(node)
     if isinstance(node, Fork):
         return _fork_has_terminal_output(node)
-    if isinstance(node, Broadcast):
-        return True
-    if isinstance(node, WithAsync):
-        return _has_terminal_output(node.process.nodes)
-    if isinstance(node, With):
+    if isinstance(node, (WithAsync, With)):
         return _has_terminal_output(node.process.nodes)
     return False
 
@@ -356,6 +476,8 @@ def _node_input_shape(node: object) -> StreamShape | None:
         return StreamShape.RECORD
     if isinstance(node, BatchExpandStep):
         return StreamShape.BATCH
+    if isinstance(node, Explode):
+        return StreamShape.RECORD
     if isinstance(node, (With, WithAsync)):
         return None
     if isinstance(node, ForEach):
@@ -401,31 +523,29 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
     return errors
 
 
+_FIXED_OUTPUT_SHAPES: dict[type, StreamShape] = {
+    CollectBatch: StreamShape.BATCH,
+    Explode: StreamShape.RECORD,
+    ForEach: StreamShape.RECORD,
+    RecordStep: StreamShape.RECORD,
+    BatchStep: StreamShape.BATCH,
+    ExpandStep: StreamShape.RECORD,
+    BatchExpandStep: StreamShape.RECORD,
+    WithAsync: StreamShape.NONE,
+    Drain: StreamShape.NONE,
+    Fork: StreamShape.NONE,
+    Broadcast: StreamShape.NONE,
+}
+
+
 def _node_output_shape(node: object, current: StreamShape) -> StreamShape:
-    if isinstance(node, CollectBatch):
-        return StreamShape.BATCH
-    if isinstance(node, ForEach):
-        return StreamShape.RECORD
-    if isinstance(node, RecordStep):
-        return StreamShape.RECORD
-    if isinstance(node, BatchStep):
-        return StreamShape.BATCH
-    if isinstance(node, ExpandStep):
-        return StreamShape.RECORD
-    if isinstance(node, BatchExpandStep):
-        return StreamShape.RECORD
-    if isinstance(node, WithAsync):
+    fixed = _FIXED_OUTPUT_SHAPES.get(type(node))
+    if fixed is not None:
+        return fixed
+    if isinstance(node, IntoSink):
         return StreamShape.NONE
-    if isinstance(node, With):
-        if node.process is not None:
-            return StreamShape.NONE
-        return StreamShape.MANY
     if isinstance(node, IntoTopic):
         return node.shape
-    if isinstance(node, Drain):
-        return StreamShape.NONE
-    if isinstance(node, Fork):
-        return StreamShape.NONE
-    if isinstance(node, Broadcast):
-        return StreamShape.NONE
+    if isinstance(node, With):
+        return StreamShape.NONE if node.process is not None else StreamShape.MANY
     return current

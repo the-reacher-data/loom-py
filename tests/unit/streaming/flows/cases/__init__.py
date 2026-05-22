@@ -7,6 +7,7 @@ from tests.unit.streaming.flows.cases.batch import (
     build_with_batch_flow_case,
     build_with_batch_scope_flow_case,
 )
+from tests.unit.streaming.flows.cases.explode import build_explode_flow_case
 from tests.unit.streaming.flows.cases.fork import (
     build_fork_flow_case,
     build_fork_when_flow_case,
@@ -71,6 +72,7 @@ __all__ = [
     "_message",
     "_routed_order_message",
     "build_async_flow_case",
+    "build_explode_flow_case",
     "build_fork_flow_case",
     "build_fork_when_flow_case",
     "build_fork_with_flow_case",

@@ -25,14 +25,18 @@ from loom.streaming.bytewax.handlers.steps import (
     _apply_batch_expand_step,
     _apply_batch_step,
     _apply_expand_step,
+    _apply_explode,
     _apply_record_step,
 )
+from loom.streaming.bytewax.handlers.storage import _apply_into_sink
 from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
+from loom.streaming.nodes._decompose import Explode
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
+from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._with import With, WithAsync
 
@@ -69,6 +73,7 @@ _NODE_HANDLERS: MappingProxyType[type[object], NodeHandler] = MappingProxyType(
         BatchStep: _apply_batch_step,
         ExpandStep: _apply_expand_step,
         BatchExpandStep: _apply_batch_expand_step,
+        Explode: _apply_explode,
         With: _apply_with,
         WithAsync: _apply_with_async,
         CollectBatch: _apply_collect_batch,
@@ -78,5 +83,6 @@ _NODE_HANDLERS: MappingProxyType[type[object], NodeHandler] = MappingProxyType(
         Broadcast: _apply_broadcast,
         Drain: _apply_drain,
         IntoTopic: _apply_into_topic,
+        IntoSink: _apply_into_sink,
     }
 )
