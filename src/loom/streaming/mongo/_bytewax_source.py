@@ -12,6 +12,13 @@ from loom.streaming.core._message import Message
 from loom.streaming.mongo._event import MongoCDCEvent
 from loom.streaming.mongo._normalize import build_mongo_cdc_message
 
+try:
+    from pymongo.errors import OperationFailure as _OperationFailure
+
+    _OPERATION_FAILURE: type[Exception] = _OperationFailure
+except ImportError:
+    _OPERATION_FAILURE = Exception
+
 
 class _ChangeStream(Protocol):
     """Minimal interface for a PyMongo change stream cursor."""
@@ -68,7 +75,7 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
         """Poll one change event when available."""
         try:
             change = self._stream.try_next()
-        except _operation_failure_type() as exc:
+        except _OPERATION_FAILURE as exc:
             if not _should_restart_from_now(self._source, exc):
                 raise
             change = self._restart_from_now()
@@ -146,8 +153,6 @@ def _open_change_stream(
     database = client[source.settings.database]
     watch_options = _resolve_watch_options(source.watch_options, resume_state)
     pipeline = _build_pipeline(source.collections, source.watch_options)
-    if not source.collections:
-        return database.watch(pipeline, **watch_options)
     if len(source.collections) == 1:
         return database[source.collections[0]].watch(pipeline, **watch_options)
     return database.watch(pipeline, **watch_options)
@@ -184,20 +189,7 @@ def _should_restart_from_now(source: CompiledMongoCDCSource, exc: Exception) -> 
     return _is_oplog_expired_error(exc)
 
 
-def _operation_failure_type() -> type[Exception]:
-    """Return ``pymongo.errors.OperationFailure``, importing lazily."""
-    try:
-        from pymongo.errors import OperationFailure
-    except ImportError as exc:
-        raise ImportError(
-            "MongoDB CDC support requires the optional 'pymongo' dependency."
-        ) from exc
-    return OperationFailure
-
-
 def _is_oplog_expired_error(exc: Exception) -> bool:
-    if not isinstance(exc, _operation_failure_type()):
-        return False
     code = getattr(exc, "code", None)
     details = getattr(exc, "details", None)
     code_name = details.get("codeName") if isinstance(details, Mapping) else None

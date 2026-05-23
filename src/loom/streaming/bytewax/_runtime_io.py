@@ -6,7 +6,6 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from types import MappingProxyType
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from bytewax.inputs import SimplePollingSource
@@ -49,6 +48,7 @@ from loom.streaming.nodes._boundary import PartitionPolicy
 logger = logging.getLogger(__name__)
 ItemT = TypeVar("ItemT")
 PayloadT = TypeVar("PayloadT", bound=StreamPayload)
+_CompiledKafkaSource: TypeAlias = CompiledSingleSource | CompiledMultiSource
 
 
 @dataclass(frozen=True)
@@ -116,34 +116,6 @@ def _commit_runtime_items(
         topic, partition, offset = item_to_commit(item)
         if topic is not None and partition is not None and offset is not None:
             commit_tracker.complete(topic, partition, offset)
-
-
-_CompiledKafkaSource = CompiledSingleSource | CompiledMultiSource
-
-
-def _build_kafka_source(
-    source: CompiledSource,
-    commit_tracker: KafkaCommitTracker | None,
-) -> _KafkaPollingSource:
-    return _KafkaPollingSource(source, commit_tracker)  # type: ignore[arg-type]
-
-
-def _build_mongo_cdc_source(
-    source: CompiledSource,
-    commit_tracker: KafkaCommitTracker | None,
-) -> MongoCDCSource:
-    del commit_tracker
-    return MongoCDCSource(source)  # type: ignore[arg-type]
-
-
-_RUNTIME_SOURCE_BUILDERS: MappingProxyType[
-    type,
-    Callable[[CompiledSource, KafkaCommitTracker | None], _KafkaPollingSource | MongoCDCSource],
-] = MappingProxyType(
-    {
-        CompiledMongoCDCSource: _build_mongo_cdc_source,
-    }
-)
 
 
 class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
@@ -320,8 +292,9 @@ def build_runtime_source(
     commit_tracker: KafkaCommitTracker | None = None,
 ) -> _KafkaPollingSource | MongoCDCSource:
     """Build the runtime source for one compiled input."""
-    builder = _RUNTIME_SOURCE_BUILDERS.get(type(source), _build_kafka_source)
-    return builder(source, commit_tracker)
+    if isinstance(source, CompiledMongoCDCSource):
+        return MongoCDCSource(source)
+    return _KafkaPollingSource(source, commit_tracker)
 
 
 def build_runtime_sink(

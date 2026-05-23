@@ -32,6 +32,7 @@ from loom.core.tracing import generate_trace_id
 from loom.streaming import Message, MessageMeta
 from loom.streaming.bytewax.runner import _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
+from loom.streaming.compiler._plan import CompiledMultiSource, CompiledSingleSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 
@@ -222,7 +223,6 @@ def _test_message(topic: str | None, idx: int, payload: Any) -> Any:
 
 def _source_topic_or_none(plan: CompiledPlan) -> str | None:
     """Return the first source topic when the compiled source exposes one."""
-    topics = getattr(plan.source, "topics", ())
-    if not isinstance(topics, tuple):
-        return None
-    return next(iter(topics), None)
+    if isinstance(plan.source, (CompiledSingleSource, CompiledMultiSource)):
+        return next(iter(plan.source.topics), None)
+    return None
