@@ -16,6 +16,7 @@ from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTo
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._decompose import Explode
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
@@ -137,6 +138,11 @@ def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
     elif isinstance(node, Broadcast):
         for route in node.routes:
             yield route.process.nodes
+    elif isinstance(node, ExpandRoutes):
+        for process in node.routes.values():
+            yield process.nodes
+        if node.default is not None:
+            yield node.default.nodes
     elif isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
         yield node.process.nodes
 
@@ -456,6 +462,8 @@ def _node_has_terminal_output(node: object) -> bool:
         return _router_has_terminal_output(node)
     if isinstance(node, Fork):
         return _fork_has_terminal_output(node)
+    if isinstance(node, ExpandRoutes):
+        return _expand_routes_has_terminal_output(node)
     if isinstance(node, (WithAsync, With)):
         return _has_terminal_output(node.process.nodes)
     return False
@@ -471,6 +479,13 @@ def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) ->
 
 def _fork_has_terminal_output(fork: Fork[StreamPayload]) -> bool:
     return any(_has_terminal_output(nodes) for _, nodes in _fork_branch_nodes(fork))
+
+
+def _expand_routes_has_terminal_output(node: ExpandRoutes[Any]) -> bool:
+    all_processes = list(node.routes.values())
+    if node.default is not None:
+        all_processes.append(node.default)
+    return any(_has_terminal_output(p.nodes) for p in all_processes)
 
 
 def _node_has_kafka_topic_output(node: object) -> bool:
