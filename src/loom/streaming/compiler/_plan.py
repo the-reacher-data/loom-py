@@ -14,6 +14,7 @@ from loom.streaming.mongo import MongoSourceConfig
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from loom.streaming.nodes._table.common import (
+    ClickHouseSinkConfig,
     DeltaSinkConfig,
     SqlAlchemyDatabaseConfig,
     SqlAlchemySinkConfig,
@@ -94,7 +95,7 @@ class CompiledStorageSink:
     """
 
     node: Any
-    config: SqlAlchemySinkConfig | DeltaSinkConfig
+    config: SqlAlchemySinkConfig | DeltaSinkConfig | ClickHouseSinkConfig
     database_config: SqlAlchemyDatabaseConfig | None = None
 
 

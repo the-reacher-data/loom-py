@@ -40,6 +40,7 @@ from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._table import Backend, IntoTable
 from loom.streaming.nodes._table.config import (
+    resolve_clickhouse_table_config,
     resolve_delta_table_config,
     resolve_sqlalchemy_table_config,
 )
@@ -325,6 +326,13 @@ def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStor
             return CompiledStorageSink(
                 node=node,
                 config=delta_resolved.sink,
+                database_config=None,
+            )
+        if node.backend is Backend.CLICKHOUSE:
+            ch_resolved = resolve_clickhouse_table_config(node, ctx)
+            return CompiledStorageSink(
+                node=node,
+                config=ch_resolved.sink,
                 database_config=None,
             )
     raise ValueError(f"Unsupported storage sink: {type(node).__name__}")
