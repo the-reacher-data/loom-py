@@ -436,6 +436,7 @@ class DeltaSinkConfig:
         table: Final target table name.
         mode: delta-rs write mode.
         storage_options: Object-store credentials/options.
+        partition_by: Column names used to partition the Delta table.
         spool_max_bytes: Maximum in-memory bytes before spooling to disk.
         part_max_records: Maximum records per staged parquet part.
         buffer_policy: Common flush policy shared with other backends.
@@ -445,6 +446,7 @@ class DeltaSinkConfig:
     table: str
     mode: Literal["error", "append", "ignore"]
     storage_options: dict[str, str]
+    partition_by: tuple[str, ...]
     spool_max_bytes: int
     part_max_records: int
     buffer_policy: _TableBufferPolicy
@@ -456,11 +458,13 @@ class DeltaSinkConfig:
         uri = str(config.get("uri") or "").strip()
         if not uri:
             raise ValueError("Delta sink config requires a non-empty 'uri'.")
+        raw_partition_by = config.get("partition_by") or []
         return cls(
             uri=uri,
             table=table,
             mode=_validate_delta_mode(config.get("mode", "append")),
             storage_options={k: str(v) for k, v in (config.get("storage_options") or {}).items()},
+            partition_by=tuple(str(c) for c in raw_partition_by),
             spool_max_bytes=_optional_int(config.get("spool_max_bytes"), 32 * 1024 * 1024),
             part_max_records=_optional_int(config.get("part_max_records"), 10_000),
             buffer_policy=_TableBufferPolicy.from_config(config),
@@ -718,6 +722,7 @@ class _DeltaTablePartition:
         self._uri = settings.uri
         self._mode = settings.mode
         self._storage_options = dict(settings.storage_options)
+        self._partition_by = settings.partition_by
         self._buffer_policy = settings.buffer_policy
         self._spool_max_bytes = settings.spool_max_bytes
         self._part_max_records = settings.part_max_records
@@ -798,12 +803,13 @@ class _DeltaTablePartition:
                 frames.append(pl.read_parquet(part))
             frame = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
             write_deltalake_any = cast(Any, write_deltalake)
-            write_deltalake_any(
-                self._uri,
-                frame,
-                mode=self._mode,
-                storage_options=self._storage_options or None,
-            )
+            kwargs: dict[str, Any] = {
+                "mode": self._mode,
+                "storage_options": self._storage_options or None,
+            }
+            if self._partition_by:
+                kwargs["partition_by"] = list(self._partition_by)
+            write_deltalake_any(self._uri, frame, **kwargs)
         finally:
             for part in parts:
                 part.close()
