@@ -149,7 +149,7 @@ class TestFromConfig:
         with pytest.raises(ValueError, match="export_logs requires observability.log.enabled"):
             ObservabilityRuntime.from_config(config)
 
-    def test_export_logs_passes_extra_processor_when_logger_config_present(
+    def test_export_logs_installs_otel_log_export_when_logger_config_present(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict[str, object] = {}
@@ -157,9 +157,17 @@ class TestFromConfig:
         def _fake_configure_logging_from_values(**kwargs: object) -> None:
             captured.update(kwargs)
 
+        def _fake_install_otel_log_export(_: OtelConfig) -> object:
+            captured["otel_log_export_installed"] = True
+            return object()
+
         monkeypatch.setattr(
             "loom.core.observability.runtime.configure_logging_from_values",
             _fake_configure_logging_from_values,
+        )
+        monkeypatch.setattr(
+            "loom.core.observability.runtime.install_otel_log_export",
+            _fake_install_otel_log_export,
         )
 
         config = ObservabilityConfig(
@@ -177,3 +185,4 @@ class TestFromConfig:
         assert "extra_processors" in captured
         extra_processors = cast(tuple[object, ...], captured["extra_processors"])
         assert len(extra_processors) == 1
+        assert captured["otel_log_export_installed"] is True

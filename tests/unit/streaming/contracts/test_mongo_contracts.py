@@ -91,6 +91,7 @@ class TestMongoPayloadContracts:
             document_id="507f1f77bcf86cd799439011",
             cluster_time=MongoBsonTimestamp(seconds=1716400000, increment=7),
             wall_time_ms=1716400000123,
+            lag_ms=321,
             full_document={"_id": "507f1f77bcf86cd799439011", "status": "open"},
             update_description=None,
             raw_json='{"operationType":"insert"}',
@@ -103,6 +104,7 @@ class TestMongoPayloadContracts:
         assert event.cluster_time is not None
         assert event.cluster_time.increment == 7
         assert event.resume_token == {"_data": "825E"}
+        assert event.lag_ms == 321
 
     def test_mongo_cdc_value_contracts_are_immutable(self) -> None:
         event = MongoCDCEvent(
@@ -143,7 +145,13 @@ class TestMongoNormalizationContracts:
         assert dbref.collection == "orders"
         assert dbref.database == "app"
 
-    def test_build_mongo_cdc_event_preserves_core_metadata(self) -> None:
+    def test_build_mongo_cdc_event_preserves_core_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from loom.streaming.mongo import _normalize as mongo_normalize
+
+        monkeypatch.setattr(mongo_normalize, "_current_time_ms", lambda: 1716379200123)
         change = {
             "_id": {"_data": "825E"},
             "operationType": "update",
@@ -170,6 +178,7 @@ class TestMongoNormalizationContracts:
         )
         assert event.cluster_time == MongoBsonTimestamp(seconds=1716400000, increment=7)
         assert event.wall_time_ms == 1716379200000
+        assert event.lag_ms == 123
         assert event.resume_token == {"_data": "825E"}
         assert event.full_document is not None
         full_doc_id = event.full_document["_id"]

@@ -22,7 +22,7 @@ from loom.core.config import ConfigContext
 from loom.core.model import LoomStruct
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming import Backend, FromTopic, IntoTable, Process, StreamFlow
-from loom.streaming.nodes._table import SqlAlchemySinkConfig
+from loom.streaming.nodes._table import DeltaSinkConfig, SqlAlchemySinkConfig
 from loom.streaming.nodes._table import common as _table_common
 from loom.streaming.nodes._table.common import ClickHouseSinkConfig
 from loom.streaming.testing import StreamingTestRunner
@@ -291,13 +291,22 @@ class TestIntoTableSQLAlchemyIntegration:
 
         uri = str(tmp_path / "events_delta")
         write_calls: list[int] = []
+        ipc_write_calls: list[int] = []
         original_write_deltalake = cast(Any, _table_common).write_deltalake
+        original_write_ipc_stream = pl.DataFrame.write_ipc_stream
 
         def _counted_write_deltalake(*args: Any, **kwargs: Any) -> Any:
             write_calls.append(1)
+            assert kwargs["writer_properties"].compression == "SNAPPY"
+            assert kwargs["target_file_size"] == 134_217_728
             return original_write_deltalake(*args, **kwargs)
 
+        def _counted_write_ipc_stream(self: pl.DataFrame, file: object, *args: Any, **kwargs: Any):
+            ipc_write_calls.append(len(self))
+            return original_write_ipc_stream(self, file, *args, **kwargs)
+
         monkeypatch.setattr(cast(Any, _table_common), "write_deltalake", _counted_write_deltalake)
+        monkeypatch.setattr(pl.DataFrame, "write_ipc_stream", _counted_write_ipc_stream)
 
         flow: StreamFlow[_OrderRow, _OrderRow] = StreamFlow(
             name="events_delta_sink_flow",
@@ -331,6 +340,9 @@ class TestIntoTableSQLAlchemyIntegration:
                             "buffer_max_bytes": 10_000_000,
                             "buffer_max_age_s": 9999.0,
                             "spool_max_bytes": 1024,
+                            "staging": {"compression": "zstd"},
+                            "writer_properties": {"compression": "SNAPPY"},
+                            "target_file_size": 134_217_728,
                         }
                     }
                 },
@@ -354,6 +366,27 @@ class TestIntoTableSQLAlchemyIntegration:
             {"order_id": 3, "amount": 30.0, "status": "sent"},
         ]
         assert len(write_calls) == 1
+        assert ipc_write_calls == [1, 1, 1]
+
+    def test_delta_sink_config_parses_writer_properties_and_staging(
+        self,
+    ) -> None:
+        config = DeltaSinkConfig.from_config(
+            {
+                "uri": "s3://data/events",
+                "partition_by": ["year", "month"],
+                "target_file_size": 134_217_728,
+                "spool_max_bytes": 4096,
+                "part_max_records": 256,
+                "staging": {"compression": "zstd"},
+                "writer_properties": {"compression": "SNAPPY"},
+            },
+            default_table="events",
+        )
+
+        assert config.staging_compression == "zstd"
+        assert config.writer_properties.compression == "SNAPPY"
+        assert config.target_file_size == 134_217_728
 
 
 class TestIntoTableClickHouseUnit:

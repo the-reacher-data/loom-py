@@ -19,6 +19,7 @@ from loom.core.observability.observer.noop import NoopObserver
 from loom.core.observability.observer.otel import (
     OtelLifecycleObserver,
     build_log_correlation_processor,
+    install_otel_log_export,
 )
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 from loom.core.observability.protocol import LifecycleObserver
@@ -44,6 +45,12 @@ def _configure_structlog_logging(config: ObservabilityConfig) -> None:
         fields=logger_config.fields,
         extra_processors=extra_processors,
     )
+    if config.otel.enabled and config.otel.export_logs:
+        if config.otel.config is None:
+            raise ValueError(
+                "observability.otel.export_logs requires observability.otel.config to be provided."
+            )
+        install_otel_log_export(config.otel.config)
 
 
 def _build_observers(config: ObservabilityConfig) -> list[LifecycleObserver]:
@@ -212,6 +219,10 @@ class ObservabilityRuntime:
             raise ValueError(
                 "observability.otel.export_logs requires observability.log.enabled=True "
                 "and observability.log.config to be provided."
+            )
+        if config.otel.enabled and config.otel.export_logs and config.otel.config is None:
+            raise ValueError(
+                "observability.otel.export_logs requires observability.otel.config to be provided."
             )
 
         observers = _build_observers(config)

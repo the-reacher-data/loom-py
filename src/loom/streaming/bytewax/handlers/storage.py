@@ -14,10 +14,12 @@ framework dependencies — observability lives entirely in the adapter layer.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from bytewax.operators import output as bw_output
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
+from loom.core.logger import get_logger
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax.handlers._shared import _BuildContextProtocol, _step_id
@@ -62,16 +64,25 @@ class _StorageSinkPartition(StatelessSinkPartition[Message[Any]]):
         """Extract payloads and forward to the underlying partition.
 
         Emits ``Scope.WRITE`` START / END (or ERROR) events so that every
-        epoch flush appears in logs, OTEL traces, and Prometheus metrics
-        alongside regular node lifecycle events.
+        non-empty epoch flush appears in logs, OTEL traces, and Prometheus
+        metrics alongside regular node lifecycle events.  Empty epochs are
+        forwarded without a span to keep logs quiet during idle periods.
 
         Args:
             items: Loom messages delivered by Bytewax for the current epoch.
         """
         payloads = [item.payload for item in items]
+        if not payloads:
+            self._partition.write_batch(payloads)
+            return
+        first_meta = items[0].meta
+        trace_id = first_meta.trace_id or uuid4().hex
+        correlation_id = first_meta.correlation_id or first_meta.message_id
         with self._observer.span(
             Scope.WRITE,
             f"{self._flow_name}:{self._node_name}",
+            trace_id=trace_id,
+            correlation_id=correlation_id,
             flow=self._flow_name,
             sink=self._node_name,
             batch_size=len(payloads),
@@ -118,6 +129,11 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
         """
         del step_id
         node = self._compiled.node
+        node_name = node.name or type(node).__name__
+        bound_logger = get_logger(__name__).bind(
+            flow=self._ctx.plan.name,
+            sink=node_name,
+        )
         if isinstance(node, IntoTable):
             session_manager = None
             if node.backend is Backend.SQLALCHEMY:
@@ -137,6 +153,7 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
                 worker_count,
                 bridge=self._ctx.bridge,
                 session_manager=session_manager,
+                logger=bound_logger,
             )
         else:
             partition = node.build_partition(
@@ -145,7 +162,6 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
                 worker_count,
                 bridge=self._ctx.bridge,
             )
-        node_name = node.name or type(node).__name__
         return _StorageSinkPartition(
             partition,
             node_name=node_name,

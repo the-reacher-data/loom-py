@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 import pytest
 import structlog
 from opentelemetry import trace
 from opentelemetry.context import Context
+from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 
 from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
@@ -15,6 +17,7 @@ from loom.core.observability.observer.noop import NoopObserver
 from loom.core.observability.observer.otel import (
     OtelLifecycleObserver,
     build_log_correlation_processor,
+    install_otel_log_export,
 )
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 from loom.core.observability.topology import ROOT_SCOPES, parent_scope, span_parent_key
@@ -120,6 +123,46 @@ class TestOtelLifecycleObserver:
             "id": "run-1",
             "flow": "ingest",
         }
+
+
+class TestOtelLogExport:
+    def test_installs_root_handler_and_exports_stdlib_logs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        exporter = InMemoryLogRecordExporter()
+
+        monkeypatch.setattr(
+            "loom.core.observability.observer.otel.atexit.register",
+            lambda *_: None,
+        )
+        monkeypatch.setattr(
+            "loom.core.observability.observer.otel._LOG_EXPORT_STATE",
+            None,
+        )
+
+        handler = install_otel_log_export(
+            OtelConfig(endpoint="", service_name="loom-test", tracer_name="loom.test"),
+            exporter=exporter,
+        )
+        try:
+            assert handler is not None
+            assert handler in root.handlers
+            root.setLevel(logging.INFO)
+            root.info("loom otel log export works")
+
+            finished = exporter.get_finished_logs()
+            assert len(finished) == 1
+            assert finished[0].log_record.body == "loom otel log export works"
+            assert finished[0].resource.attributes["service.name"] == "loom-test"
+        finally:
+            for existing in list(root.handlers):
+                if existing not in original_handlers:
+                    root.removeHandler(existing)
+                    existing.close()
+            root.setLevel(original_level)
 
 
 class TestStructlogLifecycleObserver:

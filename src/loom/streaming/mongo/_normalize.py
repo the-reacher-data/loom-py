@@ -52,6 +52,7 @@ def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
     namespace = _build_namespace(change.get("ns"))
     cluster_time = _build_cluster_time(change.get("clusterTime"))
     wall_time_ms = _build_wall_time_ms(change.get("wallTime"), cluster_time)
+    lag_ms = _event_lag_ms(wall_time_ms, cluster_time)
     full_document = _normalize_optional_mapping(change.get("fullDocument"))
     update_description = _normalize_optional_mapping(change.get("updateDescription"))
     raw_payload = normalize_bson_value(change)
@@ -66,6 +67,7 @@ def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
         document_id=_document_id(change.get("documentKey")),
         cluster_time=cluster_time,
         wall_time_ms=wall_time_ms,
+        lag_ms=lag_ms,
         full_document=full_document,
         update_description=update_description,
         raw_json=msgspec.json.encode(raw_payload).decode("utf-8"),
@@ -82,6 +84,7 @@ def build_mongo_cdc_message(change: Mapping[str, object]) -> Message[MongoCDCEve
     event = build_mongo_cdc_event(change)
     meta = MessageMeta(
         message_id=event.event_id,
+        trace_id=event.event_id,
         produced_at_ms=event.wall_time_ms
         if event.wall_time_ms is not None
         else event.cluster_time.seconds * 1000
@@ -216,6 +219,31 @@ def _datetime_to_epoch_ms(value: datetime) -> int:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return int(value.astimezone(UTC).timestamp() * 1000)
+
+
+def _current_time_ms() -> int:
+    return _datetime_to_epoch_ms(datetime.now(UTC))
+
+
+def _event_time_ms(
+    wall_time_ms: int | None,
+    cluster_time: MongoBsonTimestamp | None,
+) -> int | None:
+    if wall_time_ms is not None:
+        return wall_time_ms
+    if cluster_time is not None:
+        return cluster_time.seconds * 1000
+    return None
+
+
+def _event_lag_ms(
+    wall_time_ms: int | None,
+    cluster_time: MongoBsonTimestamp | None,
+) -> int | None:
+    event_time_ms = _event_time_ms(wall_time_ms, cluster_time)
+    if event_time_ms is None:
+        return None
+    return max(0, _current_time_ms() - event_time_ms)
 
 
 def _normalize_objectid(value: object) -> object:

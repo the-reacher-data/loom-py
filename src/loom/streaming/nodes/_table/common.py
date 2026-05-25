@@ -90,6 +90,7 @@ from typing import (
     get_origin,
     get_type_hints,
 )
+from uuid import uuid4
 
 import msgspec
 import msgspec.structs
@@ -142,11 +143,13 @@ except ImportError:
 # removing pyright's "possibly unbound" diagnostic on write_batch call sites.
 try:
     import polars as pl
-    from deltalake.writer import write_deltalake
+    from deltalake.writer import WriterProperties, write_deltalake
 
+    _writer_properties_factory = WriterProperties
     _DELTA_AVAILABLE = True
 except ImportError:
     pl = cast(Any, None)
+    _writer_properties_factory = cast(Any, None)
     write_deltalake = cast(Any, None)
     _DELTA_AVAILABLE = False
 
@@ -266,6 +269,7 @@ class IntoTable(Generic[EventT]):
         worker_count: int,
         bridge: AsyncBridge | None = None,
         session_manager: _SessionManagerLike | None = None,
+        logger: Any = None,
     ) -> SinkPartition[EventT]:
         """Build the per-worker partition for this sink.
 
@@ -305,6 +309,7 @@ class IntoTable(Generic[EventT]):
                     self.payload,
                     bridge,
                     session_manager,
+                    logger=logger,
                 ),
             )
         if self.backend is Backend.DELTA:
@@ -312,14 +317,14 @@ class IntoTable(Generic[EventT]):
                 raise TypeError("IntoTable backend=delta requires a DeltaSinkConfig.")
             return cast(
                 SinkPartition[EventT],
-                _DeltaTablePartition(config),
+                _DeltaTablePartition(config, logger=logger),
             )
         if self.backend is Backend.CLICKHOUSE:
             if not isinstance(config, ClickHouseSinkConfig):
                 raise TypeError("IntoTable backend=clickhouse requires a ClickHouseSinkConfig.")
             return cast(
                 SinkPartition[EventT],
-                _ClickHouseTablePartition(config, self.payload),
+                _ClickHouseTablePartition(config, self.payload, logger=logger),
             )
         raise ValueError(f"Unsupported backend: {self.backend!r}")
 
@@ -437,8 +442,11 @@ class DeltaSinkConfig:
         mode: delta-rs write mode.
         storage_options: Object-store credentials/options.
         partition_by: Column names used to partition the Delta table.
-        spool_max_bytes: Maximum in-memory bytes before spooling to disk.
-        part_max_records: Maximum records per staged parquet part.
+        target_file_size: Optional delta-rs target file size in bytes.
+        staging_compression: Compression codec for the IPC staging stream.
+        spool_max_bytes: Maximum in-memory bytes before spooling the staging file to disk.
+        part_max_records: Backward-compatible row-group hint for the final Delta write.
+        writer_properties: Final Delta writer properties passed to delta-rs.
         buffer_policy: Common flush policy shared with other backends.
     """
 
@@ -447,8 +455,11 @@ class DeltaSinkConfig:
     mode: Literal["error", "append", "ignore"]
     storage_options: dict[str, str]
     partition_by: tuple[str, ...]
+    target_file_size: int | None
+    staging_compression: Literal["uncompressed", "lz4", "zstd"]
     spool_max_bytes: int
     part_max_records: int
+    writer_properties: Any | None
     buffer_policy: _TableBufferPolicy
 
     @classmethod
@@ -459,14 +470,35 @@ class DeltaSinkConfig:
         if not uri:
             raise ValueError("Delta sink config requires a non-empty 'uri'.")
         raw_partition_by = config.get("partition_by") or []
+        staging_config = config.get("staging") if isinstance(config.get("staging"), Mapping) else {}
+        staging_compression = _validate_ipc_compression(
+            staging_config.get("compression")
+            if isinstance(staging_config, Mapping)
+            else config.get("staging_compression", "uncompressed")
+        )
+        writer_properties = _build_writer_properties(
+            config.get("writer_properties")
+            if isinstance(config.get("writer_properties"), Mapping)
+            else {}
+        )
+        if writer_properties is None:
+            writer_properties = _writer_properties_factory(
+                max_row_group_size=_optional_int(config.get("part_max_records"), 10_000)
+            )
+        target_file_size_raw = config.get("target_file_size")
         return cls(
             uri=uri,
             table=table,
             mode=_validate_delta_mode(config.get("mode", "append")),
             storage_options={k: str(v) for k, v in (config.get("storage_options") or {}).items()},
             partition_by=tuple(str(c) for c in raw_partition_by),
+            target_file_size=int(target_file_size_raw)
+            if target_file_size_raw is not None
+            else None,
+            staging_compression=staging_compression,
             spool_max_bytes=_optional_int(config.get("spool_max_bytes"), 32 * 1024 * 1024),
             part_max_records=_optional_int(config.get("part_max_records"), 10_000),
+            writer_properties=writer_properties,
             buffer_policy=_TableBufferPolicy.from_config(config),
         )
 
@@ -510,6 +542,26 @@ class ClickHouseSinkConfig:
             buffer_policy=_TableBufferPolicy.from_config(config),
             insert_timeout=float(timeout_raw) if timeout_raw is not None else None,
         )
+
+
+def _validate_ipc_compression(value: object) -> Literal["uncompressed", "lz4", "zstd"]:
+    compression = str(value or "uncompressed").strip().lower()
+    if compression not in {"uncompressed", "lz4", "zstd"}:
+        raise ValueError(
+            "Invalid IPC compression "
+            f"{compression!r}. Must be one of: ['lz4', 'uncompressed', 'zstd']"
+        )
+    return cast(Literal["uncompressed", "lz4", "zstd"], compression)
+
+
+def _build_writer_properties(config: Mapping[str, Any] | None) -> Any | None:
+    if not config:
+        return None
+    kwargs = dict(config)
+    compression = kwargs.get("compression")
+    if isinstance(compression, str):
+        kwargs["compression"] = compression.upper()
+    return _writer_properties_factory(**kwargs)
 
 
 def _sa_type_for(annotation: Any) -> Any:
@@ -596,6 +648,7 @@ class _SQLAlchemyTablePartition:
         payload_type: type[Any],
         bridge: AsyncBridge,
         session_manager: _SessionManagerLike,
+        logger: Any = None,
     ) -> None:
         if not _SA_AVAILABLE:
             raise ImportError(
@@ -603,6 +656,7 @@ class _SQLAlchemyTablePartition:
             )
         self._bridge = bridge
         self._session_manager = session_manager
+        self._logger = logger
         self._table = _sa_table_from_struct(settings.table, payload_type)
         self._chunk_size = settings.chunk_size
         self._buffer_policy = settings.buffer_policy
@@ -659,8 +713,12 @@ class _SQLAlchemyTablePartition:
 
     async def _flush_async(self) -> None:
         statement = _sa_insert(self._table)
+        trace_id = uuid4().hex
+        correlation_id = uuid4().hex
         async with self._session_manager.session() as session:
             try:
+                n = 0
+                t0 = monotonic()
                 while self._buffer:
                     rows: list[dict[str, Any]] = []
                     while self._buffer and len(rows) < self._chunk_size:
@@ -670,7 +728,18 @@ class _SQLAlchemyTablePartition:
                         self._buffer_bytes -= row_bytes
                     if rows:
                         await session.execute(statement, rows)
+                        n += len(rows)
                 await session.commit()
+                if self._logger is not None:
+                    self._logger.info(
+                        "sink_flush",
+                        trace_id=trace_id,
+                        correlation_id=correlation_id,
+                        backend="sqlalchemy",
+                        table=self._table.name,
+                        records=n,
+                        duration_ms=round((monotonic() - t0) * 1000, 1),
+                    )
             except Exception:
                 await session.rollback()
                 raise
@@ -695,13 +764,13 @@ def _validate_delta_mode(value: object) -> Literal["error", "append", "ignore"]:
 
 
 class _DeltaTablePartition:
-    """Stage rows as parquet parts and append them to Delta.
+    """Stage rows as one Arrow IPC stream and append them to Delta.
 
-    The partition keeps a per-worker ``SpooledTemporaryFile`` per staged
-    event.  Each incoming row is serialized immediately into its own parquet
-    part, which stays in RAM until ``spool_max_bytes`` and then spills
-    transparently to disk.  Flushes append the staged parquet parts to the
-    configured Delta table and then close their spools.
+    The partition keeps one spooled IPC stream per worker.  Each incoming row
+    is serialized into a one-row IPC batch and appended to that stream.  The
+    backing file stays in RAM until ``spool_max_bytes`` and then spills
+    transparently to disk.  Flushes reopen the staged IPC batches and append
+    them to the configured Delta table in one ``write_deltalake`` call.
 
     Args:
         settings: Resolved Delta sink config.
@@ -713,73 +782,77 @@ class _DeltaTablePartition:
     def __init__(
         self,
         settings: DeltaSinkConfig,
+        logger: Any = None,
     ) -> None:
         if not _DELTA_AVAILABLE:
             raise ImportError(
                 "Delta backend requires 'deltalake' and 'polars'. "
                 "Install them with: pip install deltalake polars"
             )
+        self._logger = logger
         self._uri = settings.uri
         self._mode = settings.mode
         self._storage_options = dict(settings.storage_options)
         self._partition_by = settings.partition_by
         self._buffer_policy = settings.buffer_policy
         self._spool_max_bytes = settings.spool_max_bytes
-        self._part_max_records = settings.part_max_records
-        self._staged_parts: list[SpooledTemporaryFile[bytes]] = []
+        self._target_file_size = settings.target_file_size
+        self._staging_compression = settings.staging_compression
+        self._writer_properties = settings.writer_properties
+        self._staging = self._new_staging()
+        self._staging_starts: list[int] = []
         self._staged_records = 0
         self._staged_bytes = 0
         self._buffer_started_at: float | None = None
         self._closed = False
 
     def write_batch(self, items: Sequence[Any]) -> None:
-        """Convert structs to parquet parts and stage them for Delta flush.
+        """Append structs to the IPC staging stream and flush when needed.
 
         Args:
             items: Struct instances to write.  Empty batches still check
                 for age-based flushes so stale buffers drain on quiet epochs.
         """
         if not items:
-            if self._staged_parts and self._should_flush():
+            if self._staging_starts and self._should_flush():
                 self._flush()
             return
         for item in items:
-            if not self._staged_parts:
+            if not self._staging_starts:
                 self._buffer_started_at = monotonic()
             self._stage_item(item)
             if self._should_flush():
                 self._flush()
 
     def close(self) -> None:
-        """Flush any staged parquet parts and release their backing spools."""
+        """Flush any staged IPC batches and release their backing spool."""
         if self._closed:
             return
         self._closed = True
         try:
-            if self._staged_parts and self._buffer_policy.flush_on_shutdown:
+            if self._staging_starts and self._buffer_policy.flush_on_shutdown:
                 self._flush()
         finally:
-            for part in self._staged_parts:
-                part.close()
-            self._staged_parts = []
+            self._staging.close()
 
     def _stage_item(self, item: Any) -> None:
         row = msgspec.structs.asdict(cast(msgspec.Struct, item))
         if not row:
             return
         frame = pl.DataFrame([row])
-        part: SpooledTemporaryFile[bytes] = SpooledTemporaryFile(  # noqa: SIM115
-            max_size=self._spool_max_bytes
+        start = self._staging.tell()
+        frame.write_ipc_stream(
+            self._staging,
+            compression=cast(Any, self._staging_compression),
         )
-        frame.write_parquet(part, row_group_size=self._part_max_records)
-        part_size = part.tell()
-        part.seek(0)
-        self._staged_parts.append(part)
+        self._staging.flush()
+        part_size = self._staging.tell() - start
+        self._staging_starts.append(start)
         self._staged_records += 1
         self._staged_bytes += part_size
 
     def _should_flush(self) -> bool:
-        if self._closed or not self._staged_parts:
+        if self._closed or not self._staging_starts:
             return False
         if self._staged_records >= self._buffer_policy.max_records:
             return True
@@ -790,17 +863,24 @@ class _DeltaTablePartition:
         return monotonic() - self._buffer_started_at >= self._buffer_policy.max_age_s
 
     def _flush(self) -> None:
-        parts = self._staged_parts
-        if not parts:
+        starts = self._staging_starts
+        if not starts:
             return
-        self._staged_parts = []
+        n = len(starts)
+        staging = self._staging
+        self._staging = self._new_staging()
+        self._staging_starts = []
         self._staged_records = 0
         self._staged_bytes = 0
+        self._buffer_started_at = None
+        trace_id = uuid4().hex
+        correlation_id = uuid4().hex
+        t0 = monotonic()
         try:
             frames: list[Any] = []
-            for part in parts:
-                part.seek(0)
-                frames.append(pl.read_parquet(part))
+            for start in starts:
+                staging.seek(start)
+                frames.append(pl.read_ipc_stream(staging))
             frame = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
             write_deltalake_any = cast(Any, write_deltalake)
             kwargs: dict[str, Any] = {
@@ -809,11 +889,26 @@ class _DeltaTablePartition:
             }
             if self._partition_by:
                 kwargs["partition_by"] = list(self._partition_by)
+            if self._target_file_size is not None:
+                kwargs["target_file_size"] = self._target_file_size
+            if self._writer_properties is not None:
+                kwargs["writer_properties"] = self._writer_properties
             write_deltalake_any(self._uri, frame, **kwargs)
+            if self._logger is not None:
+                self._logger.info(
+                    "sink_flush",
+                    trace_id=trace_id,
+                    correlation_id=correlation_id,
+                    backend="delta",
+                    uri=self._uri,
+                    records=n,
+                    duration_ms=round((monotonic() - t0) * 1000, 1),
+                )
         finally:
-            for part in parts:
-                part.close()
-        self._buffer_started_at = None
+            staging.close()
+
+    def _new_staging(self) -> SpooledTemporaryFile[bytes]:
+        return SpooledTemporaryFile(max_size=self._spool_max_bytes)  # noqa: SIM115
 
 
 # ── ClickHouse helpers ────────────────────────────────────────────────────────
@@ -886,6 +981,7 @@ class _ClickHouseTablePartition:
         self,
         settings: ClickHouseSinkConfig,
         payload_type: type[Any],
+        logger: Any = None,
     ) -> None:
         if not _CC_AVAILABLE:
             raise ImportError(
@@ -897,6 +993,7 @@ class _ClickHouseTablePartition:
             t = int(settings.insert_timeout)
             kwargs = {"connect_timeout": t, "send_receive_timeout": t}
         self._client = _cc.get_client(dsn=settings.url, **kwargs)
+        self._logger = logger
         self._table = settings.table
         self._column_names = _column_names_from_struct(payload_type)
         self._buffer_policy = settings.buffer_policy
@@ -955,16 +1052,30 @@ class _ClickHouseTablePartition:
     def _flush(self) -> None:
         if not self._buffer_records:
             return
+        n = self._buffer_records
         columns = self._buffer
         self._buffer = [[] for _ in self._column_names]
         self._buffer_records = 0
         self._buffer_bytes = 0
+        trace_id = uuid4().hex
+        correlation_id = uuid4().hex
+        t0 = monotonic()
         self._client.insert(
             self._table,
             columns,
             column_names=self._column_names,
             column_oriented=True,
         )
+        if self._logger is not None:
+            self._logger.info(
+                "sink_flush",
+                trace_id=trace_id,
+                correlation_id=correlation_id,
+                backend="clickhouse",
+                table=self._table,
+                records=n,
+                duration_ms=round((monotonic() - t0) * 1000, 1),
+            )
         self._buffer_started_at = None
 
 

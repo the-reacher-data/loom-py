@@ -64,6 +64,7 @@ class MongoCDCEvent(LoomFrozenStruct, frozen=True, kw_only=True):
     document_id: MongoObjectId | str | None = None
     cluster_time: MongoBsonTimestamp | None = None
     wall_time_ms: int | None = None
+    lag_ms: int | None = None
     full_document: dict[str, object] | None = None
     update_description: dict[str, object] | None = None
     raw_json: str
