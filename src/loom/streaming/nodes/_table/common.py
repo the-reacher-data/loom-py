@@ -76,6 +76,7 @@ from tempfile import SpooledTemporaryFile
 from time import monotonic
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     ClassVar,
     Generic,
@@ -94,6 +95,7 @@ import msgspec
 import msgspec.structs
 
 from loom.core.async_bridge import AsyncBridge
+from loom.core.model.types import _JsonMarker
 from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._sink import SinkPartition
 
@@ -520,6 +522,11 @@ def _sa_type_for(annotation: Any) -> Any:
         A SQLAlchemy column type instance.
     """
     origin = get_origin(annotation)
+    if origin is Annotated:
+        base_type, *metadata = get_args(annotation)
+        if any(isinstance(m, _JsonMarker) for m in metadata):
+            return Text()
+        return _sa_type_for(base_type)
     if origin in (Union, UnionType):
         non_none = [a for a in get_args(annotation) if a is not type(None)]
         return _sa_type_for(non_none[0]) if len(non_none) == 1 else SAJSON()

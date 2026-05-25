@@ -9,6 +9,7 @@ from loom.core.config import ConfigBinding, ConfigContext, ConfigError
 from loom.streaming.graph._flow import Process, ProcessNode, StreamFlow
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast, BroadcastRoute
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork, ForkKind, ForkRoute
 from loom.streaming.nodes._router import Route, Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
@@ -81,6 +82,8 @@ def _resolve_process_node(
         return _resolve_fork(node, ctx, errors)
     if isinstance(node, Broadcast):
         return _resolve_broadcast(node, ctx, errors)
+    if isinstance(node, ExpandRoutes):
+        return _resolve_expand_routes(node, ctx, errors)
     return node
 
 
@@ -185,6 +188,19 @@ def _resolve_broadcast(
     return Broadcast(*routes)
 
 
+def _resolve_expand_routes(
+    node: ExpandRoutes[Any],
+    ctx: ConfigContext,
+    errors: list[str],
+) -> ExpandRoutes[Any]:
+    routes = {
+        output_type: _resolve_process(process, ctx, errors)
+        for output_type, process in node.routes.items()
+    }
+    default = _resolve_process(node.default, ctx, errors) if node.default else None
+    return ExpandRoutes(expander=node.expander, routes=routes, default=default)
+
+
 def _resolve_dependencies(
     dependencies: Mapping[str, object],
     ctx: ConfigContext,
@@ -217,6 +233,7 @@ def _is_process_node(value: object) -> TypeGuard[ProcessNode]:
             Fork,
             Router,
             Broadcast,
+            ExpandRoutes,
         ),
     )
 

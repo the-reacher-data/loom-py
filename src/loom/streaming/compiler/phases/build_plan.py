@@ -33,6 +33,7 @@ from loom.streaming.kafka._wire import DecodeError, DispatchTable
 from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
@@ -301,6 +302,26 @@ def _build_broadcast_terminal_sinks(
     return sinks, storage_sinks
 
 
+def _build_expand_routes_terminal_sinks(
+    node: ExpandRoutes[Any],
+    ctx: ConfigContext,
+    *,
+    path_prefix: tuple[int, ...],
+) -> _TerminalSinks:
+    sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
+    all_processes = list(node.routes.values())
+    if node.default is not None:
+        all_processes.append(node.default)
+    for branch_idx, process in enumerate(all_processes):
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            process.nodes, ctx, path_prefix=path_prefix + (branch_idx,)
+        )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
+
+
 def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
     kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
     producer = kafka.producer_for(topic.logical_ref)
@@ -343,5 +364,6 @@ _BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = Mappin
         Fork: _build_fork_terminal_sinks,
         Router: _build_router_terminal_sinks,
         Broadcast: _build_broadcast_terminal_sinks,
+        ExpandRoutes: _build_expand_routes_terminal_sinks,
     }
 )

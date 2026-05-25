@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from bytewax.operators import branch
+from bytewax.operators import flat_map as bw_flat_map
 from bytewax.operators import map as bw_map
 
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -15,6 +16,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _ExecutableRecordStep,
     _observe_node,
     _register_broadcast_fanout,
+    _replace_payload,
     _require_message,
     _step_id,
 )
@@ -22,6 +24,7 @@ from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork, ForkKind
 from loom.streaming.nodes._router import Router, evaluate_predicate, select_value
 from loom.streaming.nodes._shape import Drain
@@ -103,6 +106,74 @@ def _apply_broadcast(
         )
 
     return stream
+
+
+def _apply_expand_routes(
+    stream: Stream,
+    raw: object,
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    if not isinstance(raw, ExpandRoutes):
+        raise UnsupportedNodeError(f"Unsupported expand_routes node {type(raw).__name__}.")
+    node = raw
+    expand_path = ctx.current_path
+    tracker = ctx.commit_tracker
+    all_processes: list[tuple[type | None, Any]] = list(node.routes.items())
+    if node.default is not None:
+        all_processes.append((None, node.default))
+    route_count = len(all_processes)
+
+    # Step 1: expand once — payload becomes dict[type, list[rows]]
+    def do_expand(msg: Any) -> Any:
+        message = _require_message(msg)
+        return _replace_payload(message, node.expander.expand(message.payload))
+
+    expanded_stream = bw_map(
+        _step_id(f"expand_routes_{idx}_expand", ctx),
+        stream,
+        do_expand,
+    )
+
+    # Step 2: fanout tracking for Kafka offset commits (same as Broadcast)
+    if tracker is not None and route_count > 1:
+        expanded_stream = bw_map(
+            _step_id(f"expand_routes_{idx}_fanout", ctx),
+            expanded_stream,
+            lambda item: _register_broadcast_fanout(item, tracker, route_count),
+        )
+
+    # Step 3: for each route, flat_map to extract rows of its type, then wire process
+    for branch_idx, (output_type, process) in enumerate(all_processes):
+
+        def extract_rows(msg: Any, t: type | None = output_type) -> list[Any]:
+            message = _require_message(msg)
+            expanded = cast(dict[type, list[Any]], message.payload)
+            if t is None:
+                # default route: collect rows for types not in declared routes
+                declared = set(node.routes.keys())
+                rows = [r for tp, rs in expanded.items() if tp not in declared for r in rs]
+            else:
+                rows = expanded.get(t) or []
+            return [_replace_payload(message, row) for row in rows]
+
+        route_stream = bw_flat_map(
+            _step_id(f"expand_routes_{idx}_extract_{branch_idx}", ctx),
+            expanded_stream,
+            extract_rows,
+        )
+        ctx.wire_process(
+            route_stream,
+            process.nodes,
+            path_prefix=expand_path + (branch_idx,),
+        )
+        ctx.wire_branch_terminal(
+            f"expand_routes_{idx}_out_{branch_idx}",
+            route_stream,
+            expand_path + (branch_idx,),
+        )
+
+    return expanded_stream
 
 
 def _apply_fork(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:

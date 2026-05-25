@@ -20,6 +20,7 @@ from loom.streaming.nodes._boundary import (
     PartitionStrategy,
 )
 from loom.streaming.nodes._decompose import Explode, PayloadExpander
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork, ForkRoute
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._protocols import Predicate, Selector
@@ -63,6 +64,7 @@ __all__ = [
     "ContextDependency",
     "ContextFactory",
     "DeltaSinkConfig",
+    "ExpandRoutes",
     "Explode",
     "Drain",
     "PayloadExpander",

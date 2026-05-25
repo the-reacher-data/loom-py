@@ -12,6 +12,7 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import StreamPayload
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
@@ -32,6 +33,7 @@ ProcessNode: TypeAlias = (
     | Fork[Any]
     | Router[Any, Any]
     | Broadcast[Any]
+    | ExpandRoutes[Any]
 )
 
 InT = TypeVar("InT", bound=StreamPayload, contravariant=True)
