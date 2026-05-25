@@ -535,24 +535,28 @@ class _SQLAlchemyTablePartition:
         self._buffer: deque[tuple[dict[str, Any], int]] = deque()
         self._buffer_records = 0
         self._buffer_bytes = 0
-        self._last_append_at = monotonic()
+        self._buffer_started_at: float | None = None
         self._closed = False
 
     def write_batch(self, items: Sequence[Any]) -> None:
         """Bulk-insert one epoch batch.
 
         Args:
-            items: Struct instances to insert.  Empty batches are skipped.
+            items: Struct instances to insert.  Empty batches still check
+                for age-based flushes so stale buffers drain on quiet epochs.
         """
         if not items:
+            if self._buffer and self._should_flush():
+                self._bridge.run(self._flush_async())
             return
         for item in items:
             row = _to_row_dict(item)
             row_bytes = _row_size_bytes(row)
+            if not self._buffer:
+                self._buffer_started_at = monotonic()
             self._buffer.append((row, row_bytes))
             self._buffer_records += 1
             self._buffer_bytes += row_bytes
-            self._last_append_at = monotonic()
             if self._should_flush():
                 self._bridge.run(self._flush_async())
 
@@ -575,7 +579,9 @@ class _SQLAlchemyTablePartition:
             return True
         if self._buffer_bytes >= self._buffer_policy.max_bytes:
             return True
-        return monotonic() - self._last_append_at >= self._buffer_policy.max_age_s
+        if self._buffer_started_at is None:
+            return False
+        return monotonic() - self._buffer_started_at >= self._buffer_policy.max_age_s
 
     async def _flush_async(self) -> None:
         statement = _sa_insert(self._table)
@@ -594,6 +600,7 @@ class _SQLAlchemyTablePartition:
             except Exception:
                 await session.rollback()
                 raise
+        self._buffer_started_at = None
 
 
 def _to_row_dict(item: Any) -> dict[str, Any]:
@@ -647,19 +654,23 @@ class _DeltaTablePartition:
         self._staged_parts: list[SpooledTemporaryFile[bytes]] = []
         self._staged_records = 0
         self._staged_bytes = 0
-        self._last_flush_at = monotonic()
-        self._last_append_at = self._last_flush_at
+        self._buffer_started_at: float | None = None
         self._closed = False
 
     def write_batch(self, items: Sequence[Any]) -> None:
         """Convert structs to parquet parts and stage them for Delta flush.
 
         Args:
-            items: Struct instances to write.  Empty batches are skipped.
+            items: Struct instances to write.  Empty batches still check
+                for age-based flushes so stale buffers drain on quiet epochs.
         """
         if not items:
+            if self._staged_parts and self._should_flush():
+                self._flush()
             return
         for item in items:
+            if not self._staged_parts:
+                self._buffer_started_at = monotonic()
             self._stage_item(item)
             if self._should_flush():
                 self._flush()
@@ -691,7 +702,6 @@ class _DeltaTablePartition:
         self._staged_parts.append(part)
         self._staged_records += 1
         self._staged_bytes += part_size
-        self._last_append_at = monotonic()
 
     def _should_flush(self) -> bool:
         if self._closed or not self._staged_parts:
@@ -700,7 +710,9 @@ class _DeltaTablePartition:
             return True
         if self._staged_bytes >= self._buffer_policy.max_bytes:
             return True
-        return monotonic() - self._last_append_at >= self._buffer_policy.max_age_s
+        if self._buffer_started_at is None:
+            return False
+        return monotonic() - self._buffer_started_at >= self._buffer_policy.max_age_s
 
     def _flush(self) -> None:
         parts = self._staged_parts
@@ -725,7 +737,7 @@ class _DeltaTablePartition:
         finally:
             for part in parts:
                 part.close()
-            self._last_flush_at = monotonic()
+        self._buffer_started_at = None
 
 
 __all__ = [
