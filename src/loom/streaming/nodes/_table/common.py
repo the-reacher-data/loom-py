@@ -64,6 +64,7 @@ Delta example::
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -147,6 +148,15 @@ except ImportError:
     write_deltalake = cast(Any, None)
     _DELTA_AVAILABLE = False
 
+# ── optional ClickHouse dependency ────────────────────────────────────────────
+try:
+    import clickhouse_connect as _cc  # type: ignore[import-untyped]
+
+    _CC_AVAILABLE = True
+except ImportError:
+    _cc = cast(Any, None)
+    _CC_AVAILABLE = False
+
 EventT = TypeVar("EventT", bound=StreamPayload)
 
 
@@ -169,14 +179,19 @@ class Backend(StrEnum):
     """Storage backend used by :class:`IntoTable` to write epoch batches.
 
     Args:
-        SQLALCHEMY: Bulk-insert rows via SQLAlchemy Core. Transport-agnostic —
+        SQLALCHEMY:  Bulk-insert rows via SQLAlchemy Core. Transport-agnostic —
             works with any SA-supported database.
-        DELTA:      Stage parquet parts and append them to a Delta Lake table.
+        DELTA:       Stage parquet parts and append them to a Delta Lake table.
             Requires ``deltalake`` and ``polars`` to be installed.
+        CLICKHOUSE:  Bulk-insert rows via ``clickhouse-connect`` (native HTTP/2
+            protocol, no SQLAlchemy). Requires ``clickhouse-connect`` to be
+            installed. Supports ``Array``, ``Nullable`` and all ClickHouse-native
+            types without JSON serialisation workarounds.
     """
 
     SQLALCHEMY = "sqlalchemy"
     DELTA = "delta"
+    CLICKHOUSE = "clickhouse"
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +259,7 @@ class IntoTable(Generic[EventT]):
 
     def build_partition(
         self,
-        config: SqlAlchemySinkConfig | DeltaSinkConfig,
+        config: SqlAlchemySinkConfig | DeltaSinkConfig | ClickHouseSinkConfig,
         worker_index: int,
         worker_count: int,
         bridge: AsyncBridge | None = None,
@@ -296,6 +311,13 @@ class IntoTable(Generic[EventT]):
             return cast(
                 SinkPartition[EventT],
                 _DeltaTablePartition(config),
+            )
+        if self.backend is Backend.CLICKHOUSE:
+            if not isinstance(config, ClickHouseSinkConfig):
+                raise TypeError("IntoTable backend=clickhouse requires a ClickHouseSinkConfig.")
+            return cast(
+                SinkPartition[EventT],
+                _ClickHouseTablePartition(config, self.payload),
             )
         raise ValueError(f"Unsupported backend: {self.backend!r}")
 
@@ -440,6 +462,47 @@ class DeltaSinkConfig:
             spool_max_bytes=_optional_int(config.get("spool_max_bytes"), 32 * 1024 * 1024),
             part_max_records=_optional_int(config.get("part_max_records"), 10_000),
             buffer_policy=_TableBufferPolicy.from_config(config),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ClickHouseSinkConfig:
+    """Resolved ``IntoTable`` settings for the ClickHouse backend.
+
+    Connection is established via ``clickhouse-connect`` using a standard
+    ``clickhouse://`` DSN derived from the ``database.<name>.url`` entry in
+    ``config.yaml``.  The ``clickhouse+asynch://`` scheme used by
+    ``clickhouse-sqlalchemy`` is normalised automatically — no config changes
+    are required.
+
+    Args:
+        url:            Normalised ``clickhouse://`` DSN for ``clickhouse-connect``.
+        table:          Target table name.
+        buffer_policy:  Common flush policy (max_records, max_bytes, max_age_s).
+        insert_timeout: Seconds before a single insert call is aborted.
+            ``None`` disables the timeout (default).
+    """
+
+    url: str
+    table: str
+    buffer_policy: _TableBufferPolicy
+    insert_timeout: float | None = None
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any], *, default_table: str) -> Self:
+        """Build ClickHouse sink settings from a resolved sink + database config."""
+        table = str(config.get("table") or default_table).strip()
+        url = str(config.get("url") or "").strip()
+        if not table:
+            raise ValueError("ClickHouse sink config requires a non-empty table name.")
+        if not url:
+            raise ValueError("ClickHouse sink config requires a 'url' in the database section.")
+        timeout_raw = config.get("insert_timeout")
+        return cls(
+            url=url,
+            table=table,
+            buffer_policy=_TableBufferPolicy.from_config(config),
+            insert_timeout=float(timeout_raw) if timeout_raw is not None else None,
         )
 
 
@@ -740,8 +803,161 @@ class _DeltaTablePartition:
         self._buffer_started_at = None
 
 
+# ── ClickHouse helpers ────────────────────────────────────────────────────────
+
+
+def _column_names_from_struct(payload_type: type[Any]) -> list[str]:
+    """Return field names for a msgspec Struct in declaration order."""
+    return [f.name for f in msgspec.structs.fields(payload_type)]
+
+
+def _to_ch_row(row: Mapping[str, Any], column_names: list[str]) -> list[Any]:
+    """Coerce one row dict to an ordered list for ``clickhouse-connect`` insert.
+
+    Applies the minimal coercions that ClickHouse native types require:
+
+    - ``bool``      → ``int`` (ClickHouse ``UInt8`` expects 0/1, not ``True``/``False``)
+    - ``date``      → ISO-8601 string (``clickhouse-connect`` handles ``datetime`` natively)
+    - ``dict`` / ``frozenset`` → ``json.dumps`` (no universal Map type in CH)
+
+    All other Python types (``str``, ``int``, ``float``, ``datetime``,
+    ``list``, ``None``) are passed through unchanged.
+    """
+    result: list[Any] = []
+    for name in column_names:
+        value = row[name]
+        if isinstance(value, bool):
+            result.append(int(value))
+        elif isinstance(value, date) and not isinstance(value, datetime):
+            result.append(value.isoformat())
+        elif isinstance(value, (dict, frozenset)):
+            result.append(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        else:
+            result.append(value)
+    return result
+
+
+class _ClickHouseTablePartition:
+    """Bulk-insert epoch batches into ClickHouse via ``clickhouse-connect``.
+
+    Uses the native HTTP/2 client — no SQLAlchemy, no async bridge required.
+    The buffer and flush policy mirror :class:`_DeltaTablePartition`: data
+    accumulates in memory and is flushed as a single ``INSERT`` when any
+    of the configured thresholds is reached.
+
+    **Column-oriented buffer layout** — the internal buffer is a list of
+    *column* lists rather than a list of *row* lists::
+
+        buffer = [
+            [col0_row0, col0_row1, ...],   # one list per column
+            [col1_row0, col1_row1, ...],
+            ...
+        ]
+
+    This matches the ``column_oriented=True`` path in ``clickhouse-connect``,
+    which skips the internal ``pivot()`` transposition and sends the data
+    directly when the batch fits in a single network block (the common case).
+
+    ``list[str]`` and other collection fields are handled by the native
+    ClickHouse protocol without JSON serialisation workarounds.
+
+    Args:
+        settings:     Resolved ClickHouse sink config.
+        payload_type: Struct type whose fields define the column layout.
+
+    Raises:
+        ImportError: If ``clickhouse-connect`` is not installed.
+    """
+
+    def __init__(
+        self,
+        settings: ClickHouseSinkConfig,
+        payload_type: type[Any],
+    ) -> None:
+        if not _CC_AVAILABLE:
+            raise ImportError(
+                "ClickHouse backend requires 'clickhouse-connect'. "
+                "Install it with: pip install clickhouse-connect"
+            )
+        kwargs: dict[str, Any] = {}
+        if settings.insert_timeout is not None:
+            t = int(settings.insert_timeout)
+            kwargs = {"connect_timeout": t, "send_receive_timeout": t}
+        self._client = _cc.get_client(dsn=settings.url, **kwargs)
+        self._table = settings.table
+        self._column_names = _column_names_from_struct(payload_type)
+        self._buffer_policy = settings.buffer_policy
+        # Column-oriented: one inner list per column, grows with each row.
+        self._buffer: list[list[Any]] = [[] for _ in self._column_names]
+        self._buffer_records = 0
+        self._buffer_bytes = 0
+        self._buffer_started_at: float | None = None
+        self._closed = False
+
+    def write_batch(self, items: Sequence[Any]) -> None:
+        """Buffer items and flush to ClickHouse when a threshold is reached.
+
+        Args:
+            items: Struct instances to write.  Empty batches still check
+                for age-based flushes so stale buffers drain on quiet epochs.
+        """
+        if not items:
+            if self._buffer_records and self._should_flush():
+                self._flush()
+            return
+        for item in items:
+            if not self._buffer_records:
+                self._buffer_started_at = monotonic()
+            row = _to_ch_row(_to_row_dict(item), self._column_names)
+            row_bytes = len(json.dumps(row).encode())
+            for col_idx, value in enumerate(row):
+                self._buffer[col_idx].append(value)
+            self._buffer_records += 1
+            self._buffer_bytes += row_bytes
+            if self._should_flush():
+                self._flush()
+
+    def close(self) -> None:
+        """Flush remaining buffer and close the ClickHouse client."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._buffer_records and self._buffer_policy.flush_on_shutdown:
+                self._flush()
+        finally:
+            self._client.close()
+
+    def _should_flush(self) -> bool:
+        if self._closed or not self._buffer_records:
+            return False
+        if self._buffer_records >= self._buffer_policy.max_records:
+            return True
+        if self._buffer_bytes >= self._buffer_policy.max_bytes:
+            return True
+        if self._buffer_started_at is None:
+            return False
+        return monotonic() - self._buffer_started_at >= self._buffer_policy.max_age_s
+
+    def _flush(self) -> None:
+        if not self._buffer_records:
+            return
+        columns = self._buffer
+        self._buffer = [[] for _ in self._column_names]
+        self._buffer_records = 0
+        self._buffer_bytes = 0
+        self._client.insert(
+            self._table,
+            columns,
+            column_names=self._column_names,
+            column_oriented=True,
+        )
+        self._buffer_started_at = None
+
+
 __all__ = [
     "Backend",
+    "ClickHouseSinkConfig",
     "DeltaSinkConfig",
     "IntoTable",
     "SqlAlchemyDatabaseConfig",
