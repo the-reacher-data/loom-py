@@ -126,7 +126,7 @@ def resolve_clickhouse_table_config(
             f"IntoTable '{node.name}': missing shared config section at {database_key}"
         )
     db_cfg = ctx.section_or_default(database_key, dict, {})
-    effective_cfg["url"] = str(db_cfg.get("url") or "").strip()
+    effective_cfg["url"] = str(db_cfg.get("http_url") or db_cfg.get("url") or "").strip()
     sink = ClickHouseSinkConfig.from_config(effective_cfg, default_table=node.table)
     return ResolvedClickHouseTableConfig(sink=sink)
 

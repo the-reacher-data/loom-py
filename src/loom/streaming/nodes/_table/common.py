@@ -916,7 +916,7 @@ class _ClickHouseTablePartition:
             if not self._buffer_records:
                 self._buffer_started_at = monotonic()
             row = _to_ch_row(_to_row_dict(item), self._column_names)
-            row_bytes = len(json.dumps(row).encode())
+            row_bytes = len(json.dumps(row, default=str).encode())
             for col_idx, value in enumerate(row):
                 self._buffer[col_idx].append(value)
             self._buffer_records += 1

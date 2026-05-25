@@ -21,6 +21,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _step_id,
 )
 from loom.streaming.core._exceptions import UnsupportedNodeError
+from loom.streaming.core._message import Message
 from loom.streaming.nodes._boundary import IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
@@ -124,10 +125,12 @@ def _apply_expand_routes(
         all_processes.append((None, node.default))
     route_count = len(all_processes)
 
-    # Step 1: expand once — payload becomes dict[type, list[rows]]
+    # Step 1: expand once — payload becomes dict[type, list[rows]].
+    # Use Message() directly: _replace_payload rejects non-LoomStruct payloads.
     def do_expand(msg: Any) -> Any:
         message = _require_message(msg)
-        return _replace_payload(message, node.expander.expand(message.payload))
+        expanded: Any = node.expander.expand(message.payload)
+        return Message(payload=cast(Any, expanded), meta=message.meta)
 
     expanded_stream = bw_map(
         _step_id(f"expand_routes_{idx}_expand", ctx),
