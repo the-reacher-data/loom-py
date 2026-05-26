@@ -67,7 +67,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -143,12 +143,16 @@ except ImportError:
 # removing pyright's "possibly unbound" diagnostic on write_batch call sites.
 try:
     import polars as pl
+    import pyarrow as _pa
+    import pyarrow.ipc as _pa_ipc
     from deltalake.writer import WriterProperties, write_deltalake
 
     _writer_properties_factory = WriterProperties
     _DELTA_AVAILABLE = True
 except ImportError:
     pl = cast(Any, None)
+    _pa = cast(Any, None)
+    _pa_ipc = cast(Any, None)
     _writer_properties_factory = cast(Any, None)
     write_deltalake = cast(Any, None)
     _DELTA_AVAILABLE = False
@@ -461,6 +465,7 @@ class DeltaSinkConfig:
     part_max_records: int
     writer_properties: Any | None
     buffer_policy: _TableBufferPolicy
+    mini_batch_size: int = 500
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], *, default_table: str) -> Self:
@@ -500,6 +505,12 @@ class DeltaSinkConfig:
             part_max_records=_optional_int(config.get("part_max_records"), 10_000),
             writer_properties=writer_properties,
             buffer_policy=_TableBufferPolicy.from_config(config),
+            mini_batch_size=_optional_int(
+                staging_config.get("mini_batch_size")
+                if isinstance(staging_config, Mapping)
+                else config.get("mini_batch_size"),
+                500,
+            ),
         )
 
 
@@ -764,19 +775,20 @@ def _validate_delta_mode(value: object) -> Literal["error", "append", "ignore"]:
 
 
 class _DeltaTablePartition:
-    """Stage rows as one Arrow IPC stream and append them to Delta.
+    """Stage rows as a PyArrow IPC stream and append them to Delta.
 
-    The partition keeps one spooled IPC stream per worker.  Each incoming row
-    is serialized into a one-row IPC batch and appended to that stream.  The
-    backing file stays in RAM until ``spool_max_bytes`` and then spills
-    transparently to disk.  Flushes reopen the staged IPC batches and append
-    them to the configured Delta table in one ``write_deltalake`` call.
+    Rows accumulate in a plain ``list[dict]``; every ``mini_batch_size`` rows
+    they are converted to a single ``pa.RecordBatch`` and written to a
+    ``SpooledTemporaryFile``-backed IPC stream.  At flush the stream is closed,
+    rewound, and passed directly to ``write_deltalake`` as a
+    ``RecordBatchReader`` — delta-rs iterates the batches without collecting
+    them into a single in-memory frame.
 
     Args:
         settings: Resolved Delta sink config.
 
     Raises:
-        ImportError: If ``deltalake`` or ``polars`` are not installed.
+        ImportError: If ``deltalake``, ``polars``, or ``pyarrow`` are not installed.
     """
 
     def __init__(
@@ -786,8 +798,8 @@ class _DeltaTablePartition:
     ) -> None:
         if not _DELTA_AVAILABLE:
             raise ImportError(
-                "Delta backend requires 'deltalake' and 'polars'. "
-                "Install them with: pip install deltalake polars"
+                "Delta backend requires 'deltalake', 'polars' and 'pyarrow'. "
+                "Install them with: pip install deltalake polars pyarrow"
             )
         self._logger = logger
         self._uri = settings.uri
@@ -799,77 +811,103 @@ class _DeltaTablePartition:
         self._target_file_size = settings.target_file_size
         self._staging_compression = settings.staging_compression
         self._writer_properties = settings.writer_properties
-        self._staging = self._new_staging()
-        self._staging_starts: list[int] = []
+        self._mini_batch_size = settings.mini_batch_size
+        self._mini_batch: list[dict[str, Any]] = []
+        self._ipc_writer: Any = None  # pa.ipc.RecordBatchStreamWriter | None
+        self._spool: Any = self._new_spool()
         self._staged_records = 0
         self._staged_bytes = 0
         self._buffer_started_at: float | None = None
         self._closed = False
 
+    def _new_spool(self) -> Any:
+        return SpooledTemporaryFile(max_size=self._spool_max_bytes)  # noqa: SIM115
+
+    def _ipc_compression(self) -> Any:
+        if self._staging_compression == "uncompressed":
+            return None
+        return self._staging_compression  # "lz4" | "zstd"
+
     def write_batch(self, items: Sequence[Any]) -> None:
-        """Append structs to the IPC staging stream and flush when needed.
+        """Accumulate items into mini-batches and flush when a threshold is reached.
 
         Args:
             items: Struct instances to write.  Empty batches still check
                 for age-based flushes so stale buffers drain on quiet epochs.
         """
         if not items:
-            if self._staging_starts and self._should_flush():
+            if self._staged_records and self._should_flush():
                 self._flush()
             return
         for item in items:
-            if not self._staging_starts:
+            if self._staged_records == 0:
                 self._buffer_started_at = monotonic()
             self._stage_item(item)
             if self._should_flush():
                 self._flush()
 
-    def close(self) -> None:
-        """Flush any staged IPC batches and release their backing spool."""
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            if self._staging_starts and self._buffer_policy.flush_on_shutdown:
-                self._flush()
-        finally:
-            self._staging.close()
-
     def _stage_item(self, item: Any) -> None:
         row = msgspec.structs.asdict(cast(msgspec.Struct, item))
         if not row:
             return
-        frame = pl.DataFrame([row])
-        start = self._staging.tell()
-        frame.write_ipc_stream(
-            self._staging,
-            compression=cast(Any, self._staging_compression),
-        )
-        self._staging.flush()
-        part_size = self._staging.tell() - start
-        self._staging_starts.append(start)
+        self._mini_batch.append(row)
         self._staged_records += 1
-        self._staged_bytes += part_size
+        if len(self._mini_batch) >= self._mini_batch_size:
+            self._commit_mini_batch()
+
+    def _commit_mini_batch(self) -> None:
+        if not self._mini_batch:
+            return
+        batch = _pa.RecordBatch.from_pylist(self._mini_batch)
+        if self._ipc_writer is None:
+            options = _pa_ipc.IpcWriteOptions(compression=self._ipc_compression())
+            self._ipc_writer = _pa_ipc.new_stream(self._spool, batch.schema, options=options)
+            if self._logger is not None:
+                self._logger.debug(
+                    "delta_staging_stream_opened",
+                    uri=self._uri,
+                    schema_fields=len(batch.schema),
+                    compression=self._staging_compression,
+                )
+        self._ipc_writer.write_batch(batch)
+        pos = self._spool.tell()
+        self._staged_bytes = pos
+        if self._logger is not None:
+            self._logger.debug(
+                "delta_mini_batch_written",
+                uri=self._uri,
+                batch_rows=len(self._mini_batch),
+                spool_bytes=pos,
+            )
+        self._mini_batch.clear()
 
     def _should_flush(self) -> bool:
-        if self._closed or not self._staging_starts:
+        if self._closed or not self._staged_records:
             return False
         if self._staged_records >= self._buffer_policy.max_records:
             return True
         if self._staged_bytes >= self._buffer_policy.max_bytes:
+            if self._logger is not None:
+                self._logger.warning(
+                    "delta_staging_max_bytes_reached",
+                    uri=self._uri,
+                    staged_bytes=self._staged_bytes,
+                    max_bytes=self._buffer_policy.max_bytes,
+                )
             return True
         if self._buffer_started_at is None:
             return False
         return monotonic() - self._buffer_started_at >= self._buffer_policy.max_age_s
 
     def _flush(self) -> None:
-        starts = self._staging_starts
-        if not starts:
+        self._commit_mini_batch()
+        writer = self._ipc_writer
+        if writer is None:
             return
-        n = len(starts)
-        staging = self._staging
-        self._staging = self._new_staging()
-        self._staging_starts = []
+        n = self._staged_records
+        spool = self._spool
+        self._spool = self._new_spool()
+        self._ipc_writer = None
         self._staged_records = 0
         self._staged_bytes = 0
         self._buffer_started_at = None
@@ -877,38 +915,78 @@ class _DeltaTablePartition:
         correlation_id = uuid4().hex
         t0 = monotonic()
         try:
-            frames: list[Any] = []
-            for start in starts:
-                staging.seek(start)
-                frames.append(pl.read_ipc_stream(staging))
-            frame = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
-            write_deltalake_any = cast(Any, write_deltalake)
-            kwargs: dict[str, Any] = {
-                "mode": self._mode,
-                "storage_options": self._storage_options or None,
-            }
-            if self._partition_by:
-                kwargs["partition_by"] = list(self._partition_by)
-            if self._target_file_size is not None:
-                kwargs["target_file_size"] = self._target_file_size
-            if self._writer_properties is not None:
-                kwargs["writer_properties"] = self._writer_properties
-            write_deltalake_any(self._uri, frame, **kwargs)
+            writer.close()
+            spool.seek(0)
+            reader = _pa_ipc.open_stream(spool)
+            self._write_to_delta(reader, n, trace_id, correlation_id, t0)
+        except Exception:
             if self._logger is not None:
-                self._logger.info(
-                    "sink_flush",
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
+                self._logger.error(
+                    "sink_flush_error",
                     backend="delta",
                     uri=self._uri,
                     records=n,
-                    duration_ms=round((monotonic() - t0) * 1000, 1),
+                )
+            raise
+        finally:
+            spool.close()
+
+    def _write_to_delta(
+        self,
+        reader: Any,
+        n: int,
+        trace_id: str,
+        correlation_id: str,
+        t0: float,
+    ) -> None:
+        kwargs: dict[str, Any] = {
+            "mode": self._mode,
+            "storage_options": self._storage_options or None,
+        }
+        if self._partition_by:
+            kwargs["partition_by"] = list(self._partition_by)
+        if self._target_file_size is not None:
+            kwargs["target_file_size"] = self._target_file_size
+        if self._writer_properties is not None:
+            kwargs["writer_properties"] = self._writer_properties
+        if self._logger is not None:
+            self._logger.debug(
+                "delta_write_start",
+                uri=self._uri,
+                records=n,
+                mode=self._mode,
+            )
+        write_deltalake(self._uri, reader, **kwargs)
+        if self._logger is not None:
+            self._logger.info(
+                "sink_flush",
+                trace_id=trace_id,
+                correlation_id=correlation_id,
+                backend="delta",
+                uri=self._uri,
+                records=n,
+                duration_ms=round((monotonic() - t0) * 1000, 1),
+            )
+
+    def close(self) -> None:
+        """Flush staged records if configured and release all resources."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self._staged_records and self._buffer_policy.flush_on_shutdown:
+                self._flush()
+            elif self._staged_records and self._logger is not None:
+                self._logger.warning(
+                    "delta_staged_records_discarded_on_close",
+                    uri=self._uri,
+                    records=self._staged_records,
                 )
         finally:
-            staging.close()
-
-    def _new_staging(self) -> SpooledTemporaryFile[bytes]:
-        return SpooledTemporaryFile(max_size=self._spool_max_bytes)  # noqa: SIM115
+            if self._ipc_writer is not None:
+                with suppress(Exception):
+                    self._ipc_writer.close()
+            self._spool.close()
 
 
 # ── ClickHouse helpers ────────────────────────────────────────────────────────
@@ -1019,7 +1097,7 @@ class _ClickHouseTablePartition:
             if not self._buffer_records:
                 self._buffer_started_at = monotonic()
             row = _to_ch_row(_to_row_dict(item), self._column_names)
-            row_bytes = len(json.dumps(row, default=str).encode())
+            row_bytes = sum(len(str(v)) for v in row)
             for col_idx, value in enumerate(row):
                 self._buffer[col_idx].append(value)
             self._buffer_records += 1
@@ -1054,18 +1132,29 @@ class _ClickHouseTablePartition:
             return
         n = self._buffer_records
         columns = self._buffer
-        self._buffer = [[] for _ in self._column_names]
-        self._buffer_records = 0
-        self._buffer_bytes = 0
         trace_id = uuid4().hex
         correlation_id = uuid4().hex
         t0 = monotonic()
-        self._client.insert(
-            self._table,
-            columns,
-            column_names=self._column_names,
-            column_oriented=True,
-        )
+        try:
+            self._client.insert(
+                self._table,
+                columns,
+                column_names=self._column_names,
+                column_oriented=True,
+            )
+        except Exception:
+            if self._logger is not None:
+                self._logger.error(
+                    "sink_flush_error",
+                    backend="clickhouse",
+                    table=self._table,
+                    records=n,
+                )
+            raise
+        self._buffer = [[] for _ in self._column_names]
+        self._buffer_records = 0
+        self._buffer_bytes = 0
+        self._buffer_started_at = None
         if self._logger is not None:
             self._logger.info(
                 "sink_flush",
@@ -1076,7 +1165,6 @@ class _ClickHouseTablePartition:
                 records=n,
                 duration_ms=round((monotonic() - t0) * 1000, 1),
             )
-        self._buffer_started_at = None
 
 
 __all__ = [
