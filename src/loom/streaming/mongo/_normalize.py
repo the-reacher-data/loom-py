@@ -89,14 +89,16 @@ def _message_key(document_id: MongoObjectId | str | None) -> str | None:
 def build_mongo_cdc_message(change: Mapping[str, object]) -> Message[MongoCDCEvent]:
     """Build a transport-neutral Loom message for one Mongo change event."""
     event = build_mongo_cdc_event(change)
+    if event.wall_time_ms is not None:
+        produced_at_ms: int | None = event.wall_time_ms
+    elif event.cluster_time is not None:
+        produced_at_ms = event.cluster_time.seconds * 1000
+    else:
+        produced_at_ms = None
     meta = MessageMeta(
         message_id=event.event_id,
         trace_id=event.event_id,
-        produced_at_ms=event.wall_time_ms
-        if event.wall_time_ms is not None
-        else event.cluster_time.seconds * 1000
-        if event.cluster_time is not None
-        else None,
+        produced_at_ms=produced_at_ms,
         message_type=_MONGO_MESSAGE_TYPE,
         key=_message_key(event.document_id),
     )

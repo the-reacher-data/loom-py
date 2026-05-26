@@ -14,6 +14,8 @@ from loom.streaming.nodes._table.common import (
     SqlAlchemySinkConfig,
 )
 
+_ERR_EMPTY_NAME = "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedSqlAlchemyTableConfig:
@@ -43,9 +45,7 @@ def resolve_sqlalchemy_table_config(
 ) -> ResolvedSqlAlchemyTableConfig:
     """Resolve one SQLAlchemy IntoTable node against ``ConfigContext``."""
     if not node.name:
-        raise ValueError(
-            "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
-        )
+        raise ValueError(_ERR_EMPTY_NAME)
     sink_key = f"streaming.sinks.{node.name}"
     if not ctx.has(sink_key):
         raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")
@@ -82,9 +82,7 @@ def resolve_delta_table_config(
 ) -> ResolvedDeltaTableConfig:
     """Resolve one Delta IntoTable node against ``ConfigContext``."""
     if not node.name:
-        raise ValueError(
-            "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
-        )
+        raise ValueError(_ERR_EMPTY_NAME)
     sink_key = f"streaming.sinks.{node.name}"
     if not ctx.has(sink_key):
         raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")
@@ -105,9 +103,7 @@ def resolve_clickhouse_table_config(
 ) -> ResolvedClickHouseTableConfig:
     """Resolve one ClickHouse IntoTable node against ``ConfigContext``."""
     if not node.name:
-        raise ValueError(
-            "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
-        )
+        raise ValueError(_ERR_EMPTY_NAME)
     sink_key = f"streaming.sinks.{node.name}"
     if not ctx.has(sink_key):
         raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")

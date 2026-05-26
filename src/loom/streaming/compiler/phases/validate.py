@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 from loom.core.config import ConfigContext, ConfigError
 from loom.core.config.keys import ConfigKey
@@ -128,6 +128,17 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     return _has_kafka_topic_output(flow.process.nodes)
 
 
+def _iter_expand_routes_groups(node: ExpandRoutes[Any]) -> Iterable[Iterable[object]]:
+    for process in node.routes.values():
+        yield process.nodes
+    if node.default is not None:
+        yield node.default.nodes
+
+
+def _is_scoped_node_with_process(node: object) -> bool:
+    return isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None)
+
+
 def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
     if isinstance(node, Router):
         for _, branch_nodes in _router_branch_nodes(node):
@@ -139,12 +150,9 @@ def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
         for route in node.routes:
             yield route.process.nodes
     elif isinstance(node, ExpandRoutes):
-        for process in node.routes.values():
-            yield process.nodes
-        if node.default is not None:
-            yield node.default.nodes
-    elif isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None):
-        yield node.process.nodes
+        yield from _iter_expand_routes_groups(node)
+    elif _is_scoped_node_with_process(node):
+        yield cast(Any, node).process.nodes
 
 
 def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:

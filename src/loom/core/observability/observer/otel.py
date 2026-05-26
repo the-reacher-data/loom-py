@@ -29,6 +29,12 @@ from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.topology import ROOT_SCOPES, span_parent_key
 
+_ERR_MISSING_GRPC = "OTel protocol='grpc' requires 'opentelemetry-exporter-otlp-proto-grpc'."
+_ERR_MISSING_HTTP = (
+    "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
+)
+_V1_LOGS_SUFFIX = "/v1/logs"
+
 _grpc_exporter_cls: type[Any] | None
 try:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
@@ -181,15 +187,11 @@ def _build_exporter(config: OtelConfig) -> Any:
         kwargs["headers"] = dict(config.headers)
     if config.protocol == "grpc":
         if _grpc_exporter_cls is None:
-            raise ValueError(
-                "OTel protocol='grpc' requires 'opentelemetry-exporter-otlp-proto-grpc'."
-            )
+            raise ValueError(_ERR_MISSING_GRPC)
         kwargs["insecure"] = config.insecure
         return _grpc_exporter_cls(**kwargs)
     if _http_exporter_cls is None:
-        raise ValueError(
-            "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
-        )
+        raise ValueError(_ERR_MISSING_HTTP)
     return _http_exporter_cls(**kwargs)
 
 
@@ -287,19 +289,13 @@ def _build_log_exporter(config: OtelConfig) -> LogRecordExporter:
     protocol = _resolve_log_protocol(config)
     if protocol == "grpc":
         if _grpc_log_exporter_cls is None:
-            raise ValueError(
-                "OTel protocol='grpc' requires 'opentelemetry-exporter-otlp-proto-grpc'."
-            )
+            raise ValueError(_ERR_MISSING_GRPC)
         kwargs["insecure"] = config.insecure
         return cast(LogRecordExporter, _grpc_log_exporter_cls(**kwargs))
     if protocol != "http/protobuf":
-        raise ValueError(
-            "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
-        )
+        raise ValueError(_ERR_MISSING_HTTP)
     if _http_log_exporter_cls is None:
-        raise ValueError(
-            "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
-        )
+        raise ValueError(_ERR_MISSING_HTTP)
     return cast(LogRecordExporter, _http_log_exporter_cls(**kwargs))
 
 
@@ -312,10 +308,10 @@ def _resolve_log_endpoint(config: OtelConfig) -> str | None:
     if not endpoint:
         return None
     if endpoint.endswith("/v1/traces"):
-        return endpoint[: -len("/v1/traces")] + "/v1/logs"
-    if endpoint.endswith("/v1/logs"):
+        return endpoint[: -len("/v1/traces")] + _V1_LOGS_SUFFIX
+    if endpoint.endswith(_V1_LOGS_SUFFIX):
         return endpoint
-    return endpoint.rstrip("/") + "/v1/logs"
+    return endpoint.rstrip("/") + _V1_LOGS_SUFFIX
 
 
 def _resolve_log_protocol(config: OtelConfig) -> str:

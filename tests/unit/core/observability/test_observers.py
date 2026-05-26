@@ -161,7 +161,8 @@ class TestOtelLogExport:
             assert finished[0].log_record.body == "loom otel log export works"
             assert finished[0].resource.attributes["service.name"] == "loom-test"
         finally:
-            for existing in list(root.handlers):
+            current_handlers = list(root.handlers)
+            for existing in current_handlers:
                 if existing not in original_handlers:
                     root.removeHandler(existing)
                     existing.close()
