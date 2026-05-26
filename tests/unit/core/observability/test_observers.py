@@ -13,6 +13,7 @@ from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 
 from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+from loom.core.observability.observer import otel as _otel_module
 from loom.core.observability.observer.noop import NoopObserver
 from loom.core.observability.observer.otel import (
     OtelLifecycleObserver,
@@ -153,6 +154,8 @@ class TestOtelLogExport:
             root.setLevel(logging.INFO)
             root.info("loom otel log export works")
 
+            if _otel_module._LOG_EXPORT_STATE is not None:
+                _otel_module._LOG_EXPORT_STATE[0].force_flush()
             finished = exporter.get_finished_logs()
             assert len(finished) == 1
             assert finished[0].log_record.body == "loom otel log export works"

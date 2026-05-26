@@ -6,6 +6,7 @@ implementation details live in :mod:`loom.streaming.nodes._table.common`.
 
 from loom.streaming.nodes._table.common import (
     Backend,
+    ClickHouseSinkConfig,
     DeltaSinkConfig,
     IntoTable,
     SqlAlchemyDatabaseConfig,
@@ -14,6 +15,7 @@ from loom.streaming.nodes._table.common import (
 
 __all__ = [
     "Backend",
+    "ClickHouseSinkConfig",
     "DeltaSinkConfig",
     "IntoTable",
     "SqlAlchemyDatabaseConfig",

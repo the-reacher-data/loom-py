@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
+from urllib.parse import urlparse
 
 from loom.core.model import LoomFrozenStruct
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _is_local_endpoint(endpoint: str) -> bool:
+    return (urlparse(endpoint).hostname or "") in _LOCAL_HOSTS
 
 
 class OtelConfig(LoomFrozenStruct, frozen=True):
@@ -29,7 +37,7 @@ class OtelConfig(LoomFrozenStruct, frozen=True):
     tracer_version: str = ""
     protocol: str = "http/protobuf"
     endpoint: str = ""
-    insecure: bool = True
+    insecure: bool = False
     headers: dict[str, str] = {}
     resource_attributes: dict[str, str] = {}
     span_attributes: dict[str, str] = {}
@@ -45,6 +53,13 @@ class OtelConfig(LoomFrozenStruct, frozen=True):
         if self.protocol not in {"http/protobuf", "grpc"}:
             raise ValueError(
                 "observability.otel_config.protocol must be either 'http/protobuf' or 'grpc'."
+            )
+        if self.insecure and self.endpoint and not _is_local_endpoint(self.endpoint):
+            warnings.warn(
+                f"OtelConfig.insecure=True on non-local endpoint {self.endpoint!r}."
+                " Set insecure=False for production deployments.",
+                UserWarning,
+                stacklevel=2,
             )
 
 

@@ -57,6 +57,7 @@ class TestStorageDynamicSink:
             worker_count: int,
             bridge: AsyncBridge | None = None,
             session_manager: object | None = None,
+            logger: object | None = None,
         ) -> _Partition:
             captured["config"] = config
             captured["worker_index"] = worker_index
@@ -119,8 +120,9 @@ class TestStorageDynamicSink:
             worker_count: int,
             bridge: AsyncBridge | None = None,
             session_manager: object | None = None,
+            logger: object | None = None,
         ) -> _Partition:
-            del self, config, worker_index, worker_count, bridge, session_manager
+            del self, config, worker_index, worker_count, bridge, session_manager, logger
             return _Partition()
 
         monkeypatch.setattr(IntoTable, "build_partition", _build_partition)

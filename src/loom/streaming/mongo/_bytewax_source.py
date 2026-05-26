@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any, Protocol, cast
 
@@ -18,6 +19,10 @@ try:
     _OPERATION_FAILURE: type[Exception] = _OperationFailure
 except ImportError:
     _OPERATION_FAILURE = Exception
+
+_logger = logging.getLogger(__name__)
+_MAX_BATCH_SIZE = 500
+_MAX_RESTART_ATTEMPTS = 5
 
 
 class _ChangeStream(Protocol):
@@ -68,24 +73,28 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
     ) -> None:
         self._source = source
         self._resume_token = resume_state
+        self._restart_count: int = 0
         self._client: _DatabaseLike = _build_mongo_client(source)
         self._stream: _ChangeStream = _open_change_stream(self._client, source, resume_state)
 
     def next_batch(self) -> list[Message[MongoCDCEvent]]:
-        """Poll one change event when available."""
-        try:
-            change = self._stream.try_next()
-        except _OPERATION_FAILURE as exc:
-            if not _should_restart_from_now(self._source, exc):
-                raise
-            change = self._restart_from_now()
-        if change is None:
-            return []
-        if not isinstance(change, Mapping):
-            raise TypeError("Mongo change stream yielded a non-mapping event.")
-        message = build_mongo_cdc_message(change)
-        self._resume_token = message.payload.resume_token
-        return [message]
+        """Poll up to _MAX_BATCH_SIZE change events when available."""
+        messages: list[Message[MongoCDCEvent]] = []
+        while len(messages) < _MAX_BATCH_SIZE:
+            try:
+                change = self._stream.try_next()
+            except _OPERATION_FAILURE as exc:
+                if not _should_restart_from_now(self._source, exc):
+                    raise
+                change = self._restart_from_now()
+            if change is None:
+                break
+            if not isinstance(change, Mapping):
+                raise TypeError("Mongo change stream yielded a non-mapping event.")
+            message = build_mongo_cdc_message(change)
+            self._resume_token = message.payload.resume_token
+            messages.append(message)
+        return messages
 
     def snapshot(self) -> dict[str, object] | None:
         """Return the current Mongo resume token."""
@@ -96,6 +105,17 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
         self._client.close()
 
     def _restart_from_now(self) -> object | None:
+        self._restart_count += 1
+        _logger.error(
+            "Mongo CDC oplog expired; restarting from now (attempt %d/%d)",
+            self._restart_count,
+            _MAX_RESTART_ATTEMPTS,
+        )
+        if self._restart_count > _MAX_RESTART_ATTEMPTS:
+            raise RuntimeError(
+                f"MongoCDC stream restarted {self._restart_count} times due to oplog expiry;"
+                " manual intervention required"
+            )
         self._stream.close()
         self._resume_token = None
         self._stream = _open_change_stream(self._client, self._source, None)

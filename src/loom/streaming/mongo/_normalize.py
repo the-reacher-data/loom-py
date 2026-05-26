@@ -19,6 +19,7 @@ from loom.streaming.mongo._event import (
 )
 
 _MONGO_MESSAGE_TYPE = "loom.mongo.cdc"
+_MAX_BSON_DEPTH = 64
 
 
 class _SupportsBytes(Protocol):
@@ -27,18 +28,20 @@ class _SupportsBytes(Protocol):
         ...
 
 
-def normalize_bson_value(value: object) -> object:
+def normalize_bson_value(value: object, _depth: int = 0) -> object:
     """Normalize one MongoDB/BSON runtime value into Loom-safe builtins."""
+    if _depth > _MAX_BSON_DEPTH:
+        raise ValueError(f"BSON document exceeds maximum nesting depth of {_MAX_BSON_DEPTH}.")
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, datetime):
         return _datetime_to_epoch_ms(value)
     if isinstance(value, Mapping):
-        return {str(key): normalize_bson_value(item) for key, item in value.items()}
+        return {str(key): normalize_bson_value(item, _depth + 1) for key, item in value.items()}
     if isinstance(value, tuple):
-        return [normalize_bson_value(item) for item in value]
+        return [normalize_bson_value(item, _depth + 1) for item in value]
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, memoryview, str)):
-        return [normalize_bson_value(item) for item in value]
+        return [normalize_bson_value(item, _depth + 1) for item in value]
 
     type_name = type(value).__name__
     return _BSON_NORMALIZERS.get(type_name, _identity)(value)
@@ -53,11 +56,15 @@ def build_mongo_cdc_event(change: Mapping[str, object]) -> MongoCDCEvent:
     cluster_time = _build_cluster_time(change.get("clusterTime"))
     wall_time_ms = _build_wall_time_ms(change.get("wallTime"), cluster_time)
     lag_ms = _event_lag_ms(wall_time_ms, cluster_time)
-    full_document = _normalize_optional_mapping(change.get("fullDocument"))
-    update_description = _normalize_optional_mapping(change.get("updateDescription"))
     raw_payload = normalize_bson_value(change)
     if not isinstance(raw_payload, dict):
         raise TypeError("Normalized Mongo change event must be a mapping.")
+    full_document_raw = raw_payload.get("fullDocument")
+    full_document = full_document_raw if isinstance(full_document_raw, dict) else None
+    update_description_raw = raw_payload.get("updateDescription")
+    update_description = (
+        update_description_raw if isinstance(update_description_raw, dict) else None
+    )
 
     return MongoCDCEvent(
         event_id=event_id,

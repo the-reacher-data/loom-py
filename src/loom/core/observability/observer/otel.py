@@ -12,7 +12,7 @@ from typing import Any, cast
 from opentelemetry import _logs as otel_logs
 from opentelemetry import trace
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import LogRecordExporter, SimpleLogRecordProcessor
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, LogRecordExporter
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -266,7 +266,7 @@ def install_otel_log_export(
             }
         )
     )
-    provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
+    provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
     otel_logs.set_logger_provider(provider)
 
     handler = LoggingHandler(level=logging.NOTSET, logger_provider=provider)
