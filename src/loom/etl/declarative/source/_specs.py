@@ -176,7 +176,7 @@ class MongoSourceSpec:
     filter: ExprNode | None = None
     projection: tuple[str, ...] | None = None
     schema_type: type | None = None
-    extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "error"
+    extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
     batch_size: int = 10_000
     limit: int | None = None
 

@@ -30,7 +30,7 @@ class TestConstruction:
         assert spec.filter is None
         assert spec.projection is None
         assert spec.schema_type is None
-        assert spec.extra_fields_mode == "error"
+        assert spec.extra_fields_mode == "ignore"
         assert spec.batch_size == 10_000
         assert spec.limit is None
 

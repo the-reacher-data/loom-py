@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from typing import Any
@@ -76,7 +77,7 @@ class MongoSourceReader:
         if not batches:
             return _empty_frame(spec)
 
-        df = pl.concat(batches, rechunk=False) if len(batches) > 1 else batches[0]
+        df = pl.concat(batches, how="diagonal", rechunk=False) if len(batches) > 1 else batches[0]
         if spec.schema_type is not None:
             df = _apply_schema(df, spec.schema_type, spec.extra_fields_mode)
         return df
@@ -87,24 +88,30 @@ class MongoSourceReader:
 # ---------------------------------------------------------------------------
 
 
+def _json_default(obj: object) -> str:
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    if isinstance(obj, bytes):
+        return obj.hex()
+    return str(obj)
+
+
 def _empty_frame(spec: Any) -> pl.DataFrame:
     if spec.schema_type is None:
         return pl.DataFrame()
-    try:
-        fields = msgspec.structs.fields(spec.schema_type)
-        return pl.DataFrame(schema={f.name: pl.String for f in fields})
-    except Exception:
-        return pl.DataFrame()
+    # schema_type is validated at with_schema() call time — safe to call fields() directly
+    fields = msgspec.structs.fields(spec.schema_type)
+    return pl.DataFrame(schema={f.name: pl.String for f in fields})
+
+
+def _extra_columns(df: pl.DataFrame, schema_type: type) -> list[str]:
+    declared = {f.name for f in msgspec.structs.fields(schema_type)}
+    return [c for c in df.columns if c not in declared]
 
 
 def _apply_schema(df: pl.DataFrame, schema_type: type, mode: str) -> pl.DataFrame:
     """Drop or capture document fields not declared in *schema_type*."""
-    try:
-        declared = {f.name for f in msgspec.structs.fields(schema_type)}
-    except Exception:
-        return df
-
-    extra_cols = [c for c in df.columns if c not in declared]
+    extra_cols = _extra_columns(df, schema_type)
     if not extra_cols:
         return df
 
@@ -123,10 +130,16 @@ def _apply_schema(df: pl.DataFrame, schema_type: type, mode: str) -> pl.DataFram
         )
         return df.drop(extra_cols)
     if mode == "capture":
-        extra_series = df.select(extra_cols).map_rows(
-            lambda row: json.dumps(dict(zip(extra_cols, row, strict=False))),
-            return_dtype=pl.String,
-        )["map"]
+        extra_series = (
+            df.select(extra_cols)
+            .map_rows(
+                lambda row: json.dumps(
+                    dict(zip(extra_cols, row, strict=False)), default=_json_default
+                ),
+                return_dtype=pl.String,
+            )
+            .to_series()
+        )
         return df.drop(extra_cols).with_columns(extra_series.alias("_extra"))
     # "ignore"
     return df.drop(extra_cols)

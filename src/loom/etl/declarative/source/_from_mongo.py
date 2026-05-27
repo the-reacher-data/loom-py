@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import msgspec
+
 from loom.core.expr.nodes import AndExpr, ExprNode
 from loom.etl.declarative.source._specs import MongoSourceSpec
 
@@ -78,7 +80,7 @@ class FromMongo:
         self._filter: ExprNode | None = None
         self._projection: tuple[str, ...] | None = None
         self._schema_type: type | None = None
-        self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "error"
+        self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
         self._batch_size: int = 10_000
         self._limit: int | None = None
 
@@ -107,7 +109,22 @@ class FromMongo:
         return self._clone(_projection=fields)
 
     def with_schema(self, schema_type: type) -> FromMongo:
-        """Attach a msgspec.Struct schema for document field validation."""
+        """Attach a msgspec.Struct schema for document field validation.
+
+        Args:
+            schema_type: A ``msgspec.Struct`` subclass whose fields define the
+                         document contract.
+
+        Raises:
+            TypeError: When *schema_type* is not a ``msgspec.Struct`` subclass.
+        """
+        try:
+            msgspec.structs.fields(schema_type)
+        except TypeError:
+            raise TypeError(
+                f"with_schema() requires a msgspec.Struct subclass, got {schema_type!r}. "
+                "Define your schema as: class MyDoc(msgspec.Struct): ..."
+            ) from None
         return self._clone(_schema_type=schema_type)
 
     def on_extra_fields(self, mode: Literal["ignore", "warn", "capture", "error"]) -> FromMongo:
