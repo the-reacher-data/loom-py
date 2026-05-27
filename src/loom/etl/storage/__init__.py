@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from loom.etl.storage._config import (
     CatalogConnection,
+    ClickHouseConfig,
     FilePathConfig,
     FileRoute,
     MissingTablePolicy,
@@ -37,6 +38,7 @@ __all__ = [
     "StorageConfig",
     "StorageDefaults",
     "CatalogConnection",
+    "ClickHouseConfig",
     "TablePathConfig",
     "TableRoute",
     "FilePathConfig",

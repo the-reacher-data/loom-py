@@ -1,8 +1,4 @@
-"""TDD Red — tests for ReaderRegistry dispatch logic.
-
-All tests in this file MUST FAIL with ImportError / ModuleNotFoundError until
-loom/etl/io/_registry.py is implemented.
-"""
+"""Tests for ReaderRegistry and WriterRegistry dispatch logic."""
 
 from __future__ import annotations
 
@@ -14,6 +10,7 @@ import pytest
 from loom.etl.io._registry import (
     ConfigurationError,  # noqa: F401
     ReaderRegistry,  # noqa: F401
+    WriterRegistry,  # noqa: F401
 )
 
 # ---------------------------------------------------------------------------
@@ -77,6 +74,52 @@ class TestRegistryRaisesOnUnknownKindWithoutBaseFallback:
         spec = _FakeSpec(kind="mongo_lookup")
         with pytest.raises(ConfigurationError):
             registry.read(spec, _PARAMS)
+
+
+class TestWriterRegistryDispatchesToRegisteredWriter:
+    def test_writer_registry_dispatches_to_registered_writer(self) -> None:
+        """A writer registered for 'clickhouse' kind is called when that spec arrives."""
+        ch_writer = MagicMock()
+        base_writer = MagicMock()
+
+        class _CHSpec:
+            kind = "clickhouse"
+
+        registry = WriterRegistry(base_writer, extra={"clickhouse": ch_writer})
+        frame = object()
+        spec = _CHSpec()
+        registry.write(frame, spec, _PARAMS)
+
+        ch_writer.write.assert_called_once_with(frame, spec, _PARAMS, streaming=False)
+        base_writer.write.assert_not_called()
+
+    def test_writer_registry_falls_back_to_base_writer(self) -> None:
+        """A spec without a matching kind falls back to the base writer."""
+        base_writer = MagicMock()
+
+        class _DeltaSpec:
+            pass  # no .kind attribute
+
+        registry = WriterRegistry(base_writer, extra={"clickhouse": MagicMock()})
+        frame = object()
+        spec = _DeltaSpec()
+        registry.write(frame, spec, _PARAMS)
+
+        base_writer.write.assert_called_once_with(frame, spec, _PARAMS, streaming=False)
+
+    def test_writer_registry_forwards_streaming_flag(self) -> None:
+        """The streaming keyword argument is forwarded to the chosen handler."""
+        ch_writer = MagicMock()
+
+        class _CHSpec:
+            kind = "clickhouse"
+
+        registry = WriterRegistry(MagicMock(), extra={"clickhouse": ch_writer})
+        registry.write(object(), _CHSpec(), _PARAMS, streaming=True)
+
+        ch_writer.write.assert_called_once()
+        _, call_kwargs = ch_writer.write.call_args
+        assert call_kwargs["streaming"] is True
 
 
 class TestRegistryValidatesPresenceAtConstruction:

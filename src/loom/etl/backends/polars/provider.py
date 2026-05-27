@@ -6,9 +6,10 @@ from typing import Any, cast
 
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
-from loom.etl.io._registry import ReaderRegistry
+from loom.etl.io._registry import ReaderRegistry, WriterRegistry
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
 from loom.etl.io.sources._mongo import MongoSourceReader
+from loom.etl.io.targets._clickhouse import ClickHouseTargetWriter
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
@@ -36,14 +37,20 @@ class PolarsProvider(BackendProvider):
                 "mongo_lookup": MongoSourceReader(),
             },
         )
-        return (
-            reader,
-            PolarsTargetWriter(
-                locator,
-                missing_table_policy=config.missing_table_policy,
-                file_locator=file_locator,
-            ),
+        polars_writer = PolarsTargetWriter(
+            locator,
+            missing_table_policy=config.missing_table_policy,
+            file_locator=file_locator,
         )
+        writer: TargetWriter
+        if config.clickhouse.url:
+            writer = WriterRegistry(
+                polars_writer,
+                extra={"clickhouse": ClickHouseTargetWriter(config.clickhouse.url)},
+            )
+        else:
+            writer = polars_writer
+        return (reader, writer)
 
     def create_lineage_writer(
         self,

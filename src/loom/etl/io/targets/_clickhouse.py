@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Literal
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,11 +77,79 @@ class IntoClickHouse:
 class ClickHouseTargetWriter:
     """Writes a Polars DataFrame to ClickHouse via clickhouse-connect.
 
-    Stub implementation — full columnar insert will be wired in T4.
+    Uses the native HTTP/2 columnar insert protocol — no SQLAlchemy required.
+
+    Args:
+        url: ClickHouse DSN, e.g. ``clickhouse://user:pass@host:8123/default``.
+
+    Raises:
+        ImportError: If ``clickhouse-connect`` is not installed.
     """
 
-    def write(self, spec: ClickHouseTableSpec, frame: Any) -> None:
-        raise NotImplementedError("ClickHouseTargetWriter not yet implemented")
+    def __init__(self, url: str) -> None:
+        try:
+            import clickhouse_connect as _cc  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "ClickHouseTargetWriter requires 'clickhouse-connect'. "
+                "Install it with: pip install 'loom-py[clickhouse]'"
+            ) from exc
+        self._client = _cc.get_client(dsn=url)
+
+    def write(
+        self,
+        frame: Any,
+        spec: ClickHouseTableSpec,
+        params: Any,
+        /,
+        *,
+        streaming: bool = False,
+    ) -> None:
+        """Write *frame* to the ClickHouse table described by *spec*.
+
+        For ``replace`` mode the table is truncated before the insert so the
+        operation is idempotent (same semantics as ``dbt full_refresh``).
+        The truncation window is typically 3–15 s; plan accordingly.
+
+        Args:
+            frame:     Polars ``LazyFrame`` or ``DataFrame``.
+            spec:      Compiled ClickHouse target spec.
+            params:    ETL step params (unused — reserved for future predicate
+                       parametrization).
+            streaming: Ignored — ClickHouse inserts are always materialised
+                       before the network call.
+        """
+        import polars as pl
+
+        df: pl.DataFrame = (
+            frame.collect(engine="streaming" if streaming else "auto")
+            if isinstance(frame, pl.LazyFrame)
+            else frame
+        )
+        if df.is_empty():
+            _log.debug("clickhouse write skipped — empty frame table=%s", spec.table)
+            return
+
+        qualified = f"{spec.database}.{spec.table}" if spec.database else spec.table
+
+        if spec.write_mode == "replace":
+            _log.debug("clickhouse TRUNCATE TABLE IF EXISTS %s", qualified)
+            self._client.command(f"TRUNCATE TABLE IF EXISTS {qualified}")
+
+        column_names = df.columns
+        data = [df[col].to_list() for col in column_names]
+        _log.debug(
+            "clickhouse INSERT rows=%d cols=%d table=%s",
+            len(df),
+            len(column_names),
+            qualified,
+        )
+        self._client.insert(
+            qualified,
+            data,
+            column_names=column_names,
+            column_oriented=True,
+        )
 
 
 __all__ = ["ClickHouseTableSpec", "ClickHouseTargetWriter", "IntoClickHouse"]
