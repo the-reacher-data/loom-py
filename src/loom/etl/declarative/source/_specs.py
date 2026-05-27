@@ -11,12 +11,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import ReadOptions
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.schema._schema import ColumnSchema, LoomType
+
+if TYPE_CHECKING:
+    from loom.core.expr.nodes import ExprNode
 
 
 class SourceKind(StrEnum):
@@ -26,7 +29,7 @@ class SourceKind(StrEnum):
     FILE = "file"
     TEMP = "temp"
     CLICKHOUSE = "clickhouse"
-    MONGO_LOOKUP = "mongo_lookup"
+    MONGO = "mongo"
 
 
 @dataclass(frozen=True)
@@ -147,5 +150,47 @@ class TempSourceSpec:
         return SourceKind.TEMP
 
 
+@dataclass(frozen=True)
+class MongoSourceSpec:
+    """Normalized internal representation of a MongoDB ETL source.
+
+    Produced by :meth:`~loom.etl.io.sources.FromMongo._to_spec`.
+    Consumed by the executor and :class:`~loom.etl.io.sources.MongoSourceReader`.
+
+    Args:
+        alias:             Name matching the ``execute()`` parameter.
+        collection:        MongoDB collection name.
+        filter:            Optional predicate built with the col()/params DSL.
+                           May contain :class:`~loom.etl.io.sources.SourceRef`
+                           nodes inside ``InPred.values`` — these are resolved
+                           by the executor before ``read()`` is called.
+        projection:        Tuple of field names to include (server-side projection).
+        schema_type:       Optional msgspec.Struct for document decoding.
+        extra_fields_mode: How to handle fields not covered by the schema.
+        batch_size:        Pymongo cursor batch size.
+        limit:             Hard limit on documents returned (dev/CI only).
+    """
+
+    alias: str
+    collection: str
+    filter: ExprNode | None = None
+    projection: tuple[str, ...] | None = None
+    schema_type: type | None = None
+    extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "error"
+    batch_size: int = 10_000
+    limit: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.batch_size <= 50_000:
+            raise ValueError(
+                f"MongoSourceSpec.batch_size must be between 1 and 50000, got {self.batch_size}"
+            )
+
+    @property
+    def kind(self) -> SourceKind:
+        """Physical kind — always :attr:`SourceKind.MONGO`."""
+        return SourceKind.MONGO
+
+
 # Type alias — the union of all typed source spec variants.
-SourceSpec = TableSourceSpec | FileSourceSpec | TempSourceSpec
+SourceSpec = TableSourceSpec | FileSourceSpec | TempSourceSpec | MongoSourceSpec

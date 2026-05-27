@@ -1,11 +1,12 @@
 """ETL external I/O connectors."""
 
+from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._clickhouse import (
     ClickHouseSourceReader,
     ClickHouseSourceSpec,
     FromClickHouse,
 )
-from loom.etl.io.sources._mongo import FromMongo, MongoLookupSourceSpec, MongoSourceReader
+from loom.etl.io.sources._mongo import FromMongo, MongoSourceReader, SourceRef
 from loom.etl.io.targets._clickhouse import (
     ClickHouseTableSpec,
     ClickHouseTargetWriter,
@@ -20,6 +21,7 @@ __all__ = [
     "FromClickHouse",
     "FromMongo",
     "IntoClickHouse",
-    "MongoLookupSourceSpec",
     "MongoSourceReader",
+    "MongoSourceSpec",
+    "SourceRef",
 ]

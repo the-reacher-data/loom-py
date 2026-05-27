@@ -36,9 +36,6 @@ _RESERVED_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_SOURCE_TYPES = (FromTable, FromFile, FromTemp)
-_TARGET_TYPES = (IntoTable, IntoFile, IntoTemp)
-
 
 class _SourceForm(Enum):
     INLINE = "inline"  # Form 1: class-level FromTable / FromFile attributes
@@ -126,7 +123,7 @@ def _validate_and_classify_sources(cls: type[Any]) -> None:
     inline = {
         name: val
         for name, val in cls.__dict__.items()
-        if isinstance(val, _SOURCE_TYPES) and name not in _RESERVED_NAMES
+        if hasattr(val, "_to_spec") and name not in _RESERVED_NAMES
     }
     has_grouped = isinstance(cls.__dict__.get("sources"), (Sources, SourceSet))
 

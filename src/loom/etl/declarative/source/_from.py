@@ -463,7 +463,7 @@ class FromTemp:
         return f"FromTemp({self._name!r})"
 
 
-_SourceEntryType = FromTable | FromFile | FromTemp
+_SourceEntryType = FromTable | FromFile | FromTemp  # FromMongo added via isinstance at runtime
 
 
 class Sources:
@@ -535,11 +535,7 @@ class SourceSet(Generic[ParamsT]):
                     "SourceSet. Subclassing a concrete SourceSet is not supported — use "
                     f"{base.__name__}.extended(...) to add sources."
                 )
-        cls._sources = {
-            name: val
-            for name, val in cls.__dict__.items()
-            if isinstance(val, (FromTable, FromFile, FromTemp))
-        }
+        cls._sources = {name: val for name, val in cls.__dict__.items() if hasattr(val, "_to_spec")}
 
     @classmethod
     def extended(cls, **extra: _SourceEntryType) -> SourceSet[ParamsT]:

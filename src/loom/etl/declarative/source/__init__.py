@@ -22,6 +22,7 @@ from loom.etl.declarative.source._from import FromFile, FromTable, FromTemp, Sou
 from loom.etl.declarative.source._specs import (
     FileSourceSpec,
     JsonColumnSpec,
+    MongoSourceSpec,
     SourceKind,
     SourceSpec,
     TableSourceSpec,
@@ -39,5 +40,6 @@ __all__ = [
     "TableSourceSpec",
     "FileSourceSpec",
     "TempSourceSpec",
+    "MongoSourceSpec",
     "JsonColumnSpec",
 ]

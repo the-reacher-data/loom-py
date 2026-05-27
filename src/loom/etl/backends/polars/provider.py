@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from pymongo import MongoClient
+
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
 from loom.etl.io._registry import ReaderRegistry, WriterRegistry
@@ -30,11 +32,16 @@ class PolarsProvider(BackendProvider):
         locator = _build_polars_locator(config)
         file_locator = config.to_file_locator()
         polars_reader = PolarsSourceReader(locator, file_locator=file_locator)
+        mongo_reader = (
+            MongoSourceReader(MongoClient(config.mongo.uri), config.mongo.database)
+            if config.mongo.uri
+            else MongoSourceReader()
+        )
         reader = ReaderRegistry(
             polars_reader,
             extra={
                 "clickhouse": ClickHouseSourceReader(),
-                "mongo_lookup": MongoSourceReader(),
+                "mongo": mongo_reader,
             },
         )
         polars_writer = PolarsTargetWriter(

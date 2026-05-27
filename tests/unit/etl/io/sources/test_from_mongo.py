@@ -1,107 +1,220 @@
-"""TDD Red — tests for FromMongo builder and MongoLookupSourceSpec.
-
-All tests in this file MUST FAIL with ImportError / ModuleNotFoundError until
-loom/etl/io/sources/_mongo.py is implemented.
-"""
+"""Tests for the unified FromMongo builder and MongoSourceSpec."""
 
 from __future__ import annotations
 
 import msgspec
 import pytest
 
-from loom.etl.declarative.source._from import FromTemp
-from loom.etl.declarative.source._specs import SourceKind, TempSourceSpec
-from loom.etl.io.sources._mongo import FromMongo, MongoLookupSourceSpec  # noqa: F401
-
-# ---------------------------------------------------------------------------
-# Minimal schema for tests that require a msgspec.Struct schema
-# ---------------------------------------------------------------------------
+from loom.core.expr.nodes import AndExpr, EqExpr, InExpr
+from loom.etl.declarative.expr import col
+from loom.etl.declarative.source._specs import MongoSourceSpec, SourceKind
+from loom.etl.io.sources._mongo import FromMongo, SourceRef
 
 
-class SomeSchema(msgspec.Struct):
+class OrderDoc(msgspec.Struct):
     id: str
-    name: str | None = None
+    status: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Test classes
+# Construction
 # ---------------------------------------------------------------------------
 
 
-class TestWhereIdInFromTemp:
-    def test_where_id_in_fromtemp_produces_spec(self) -> None:
-        """where_id_in(FromTemp('ids')) yields MongoLookupSourceSpec.
+class TestConstruction:
+    def test_basic_spec(self) -> None:
+        spec = FromMongo("orders")._to_spec("orders")
+        assert isinstance(spec, MongoSourceSpec)
+        assert spec.alias == "orders"
+        assert spec.collection == "orders"
+        assert spec.filter is None
+        assert spec.projection is None
+        assert spec.schema_type is None
+        assert spec.extra_fields_mode == "error"
+        assert spec.batch_size == 10_000
+        assert spec.limit is None
 
-        Verifies id_source is a TempSourceSpec with the correct temp_name.
-        """
-        builder = FromMongo("motos").where_id_in(FromTemp("ids"), id_col="document_id")
-        spec = builder._to_spec("motos")
+    def test_kind_is_mongo(self) -> None:
+        spec = FromMongo("events")._to_spec("events")
+        assert spec.kind == SourceKind.MONGO
 
-        assert isinstance(spec, MongoLookupSourceSpec)
-        assert isinstance(spec.id_source, TempSourceSpec)
-        assert spec.id_source.temp_name == "ids"
-        assert spec.id_col == "document_id"
+    def test_invalid_collection_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="Invalid MongoDB collection"):
+            FromMongo("bad name!")
 
-
-class TestSpecKind:
-    def test_spec_kind_is_mongo_lookup(self) -> None:
-        """spec.kind must equal SourceKind.MONGO_LOOKUP."""
-        spec = FromMongo("motos").where_id_in(FromTemp("ids"))._to_spec("motos")
-        assert spec.kind == SourceKind.MONGO_LOOKUP
+    def test_collection_with_hyphen_and_underscore_is_valid(self) -> None:
+        spec = FromMongo("order-items_v2")._to_spec("src")
+        assert spec.collection == "order-items_v2"
 
 
-class TestSchemaStoredInSpec:
-    def test_schema_stored_in_spec(self) -> None:
-        """.with_schema(SomeSchema) stores the class on spec.schema_type."""
+# ---------------------------------------------------------------------------
+# .where()
+# ---------------------------------------------------------------------------
+
+
+class TestWhere:
+    def test_where_sets_filter(self) -> None:
+        spec = FromMongo("orders").where(col("status") == "active")._to_spec("orders")
+        assert isinstance(spec.filter, EqExpr)
+
+    def test_multiple_where_calls_and_predicates(self) -> None:
         spec = (
-            FromMongo("motos")
-            .where_id_in(FromTemp("ids"))
-            .with_schema(SomeSchema)
-            ._to_spec("motos")
+            FromMongo("orders")
+            .where(col("status") == "active")
+            .where(col("year") == 2024)
+            ._to_spec("orders")
         )
-        assert spec.schema_type is SomeSchema
+        assert isinstance(spec.filter, AndExpr)
+
+    def test_where_with_source_ref_isin(self) -> None:
+        from loom.etl.declarative.source._from import FromTemp
+
+        ref = SourceRef(FromTemp("order_ids"), col="order_id")
+        spec = FromMongo("orders").where(col("_id").isin(ref))._to_spec("orders")
+        assert isinstance(spec.filter, InExpr)
+        assert isinstance(spec.filter.values, SourceRef)
+
+    def test_where_is_immutable(self) -> None:
+        base = FromMongo("orders")
+        filtered = base.where(col("status") == "active")
+        assert base._filter is None
+        assert filtered._filter is not None
+
+
+# ---------------------------------------------------------------------------
+# .project()
+# ---------------------------------------------------------------------------
+
+
+class TestProject:
+    def test_project_sets_projection(self) -> None:
+        spec = FromMongo("orders").project("_id", "status", "total")._to_spec("orders")
+        assert spec.projection == ("_id", "status", "total")
+
+    def test_project_rejects_dollar_operators(self) -> None:
+        with pytest.raises(ValueError, match=r"\$"):
+            FromMongo("orders").project("$elemMatch")
+
+    def test_project_is_immutable(self) -> None:
+        base = FromMongo("orders")
+        projected = base.project("_id")
+        assert base._projection is None
+        assert projected._projection == ("_id",)
+
+
+# ---------------------------------------------------------------------------
+# .with_schema()
+# ---------------------------------------------------------------------------
+
+
+class TestWithSchema:
+    def test_schema_stored_in_spec(self) -> None:
+        spec = FromMongo("orders").with_schema(OrderDoc)._to_spec("orders")
+        assert spec.schema_type is OrderDoc
+
+
+# ---------------------------------------------------------------------------
+# .on_extra_fields()
+# ---------------------------------------------------------------------------
 
 
 class TestOnExtraFields:
-    def test_on_extra_fields_stored_in_spec(self) -> None:
-        """.on_extra_fields('capture') sets spec.extra_fields_mode to 'capture'."""
-        spec = (
-            FromMongo("motos")
-            .where_id_in(FromTemp("ids"))
-            .on_extra_fields("capture")
-            ._to_spec("motos")
-        )
-        assert spec.extra_fields_mode == "capture"
+    @pytest.mark.parametrize("mode", ["ignore", "warn", "capture", "error"])
+    def test_valid_modes(self, mode: str) -> None:
+        spec = FromMongo("orders").on_extra_fields(mode)._to_spec("orders")  # type: ignore[arg-type]
+        assert spec.extra_fields_mode == mode
+
+    def test_invalid_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="not valid"):
+            FromMongo("orders").on_extra_fields("bad")  # type: ignore[arg-type]
 
 
-class TestIdSourceCannotBeMongoLookupSpec:
-    def test_id_source_cannot_be_mongo_lookup_spec(self) -> None:
-        """Passing a MongoLookupSourceSpec as where_id_in source must raise TypeError.
-
-        This enforces the C2 constraint: id_source type excludes MongoLookupSourceSpec
-        to prevent unbounded recursion.  The builder must reject it at call time.
-        """
-        # Build a real MongoLookupSourceSpec to attempt as the id_source
-        inner_spec = FromMongo("inner").where_id_in(FromTemp("some_ids"))._to_spec("inner")
-        assert isinstance(inner_spec, MongoLookupSourceSpec)
-
-        with pytest.raises(TypeError):
-            FromMongo("outer").where_id_in(inner_spec)
+# ---------------------------------------------------------------------------
+# .batch_size()
+# ---------------------------------------------------------------------------
 
 
 class TestBatchSize:
-    def test_batch_size_default_is_1000(self) -> None:
-        """Default batch_size on MongoLookupSourceSpec must be 1000."""
-        spec = FromMongo("motos").where_id_in(FromTemp("ids"))._to_spec("motos")
-        assert spec.batch_size == 1000
+    def test_default_batch_size(self) -> None:
+        spec = FromMongo("orders")._to_spec("orders")
+        assert spec.batch_size == 10_000
 
-    def test_batch_size_configurable(self) -> None:
-        """.batch_size(500) sets spec.batch_size to 500."""
-        spec = FromMongo("motos").where_id_in(FromTemp("ids")).batch_size(500)._to_spec("motos")
+    def test_custom_batch_size(self) -> None:
+        spec = FromMongo("orders").batch_size(500)._to_spec("orders")
         assert spec.batch_size == 500
+
+    def test_batch_size_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match="between 1 and 50000"):
+            FromMongo("orders").batch_size(0)
+
+    def test_batch_size_too_high_raises(self) -> None:
+        with pytest.raises(ValueError, match="between 1 and 50000"):
+            FromMongo("orders").batch_size(50_001)
+
+    def test_batch_size_boundary_values(self) -> None:
+        assert FromMongo("orders").batch_size(1)._batch_size == 1
+        assert FromMongo("orders").batch_size(50_000)._batch_size == 50_000
+
+
+# ---------------------------------------------------------------------------
+# .limit()
+# ---------------------------------------------------------------------------
+
+
+class TestLimit:
+    def test_limit_stored_in_spec(self) -> None:
+        spec = FromMongo("orders").limit(100)._to_spec("orders")
+        assert spec.limit == 100
+
+    def test_limit_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match=">= 1"):
+            FromMongo("orders").limit(0)
+
+
+# ---------------------------------------------------------------------------
+# Repr
+# ---------------------------------------------------------------------------
 
 
 class TestRepr:
     def test_repr_includes_collection(self) -> None:
-        """repr(FromMongo('motos')) must contain the collection name."""
-        assert "motos" in repr(FromMongo("motos"))
+        assert "orders" in repr(FromMongo("orders"))
+
+
+# ---------------------------------------------------------------------------
+# MongoSourceSpec direct validation
+# ---------------------------------------------------------------------------
+
+
+class TestMongoSourceSpecValidation:
+    def test_batch_size_out_of_range_raises(self) -> None:
+        with pytest.raises(ValueError, match="batch_size"):
+            MongoSourceSpec(alias="orders", collection="orders", batch_size=0)
+
+
+# ---------------------------------------------------------------------------
+# ETLStep integration — inline FromMongo recognised via duck typing
+# ---------------------------------------------------------------------------
+
+
+class TestETLStepIntegration:
+    def test_from_mongo_recognised_as_inline_source(self) -> None:
+        from loom.etl.declarative.target import IntoTemp
+        from loom.etl.pipeline._step import ETLStep, _SourceForm
+
+        class BuildOrdersStep(ETLStep):
+            orders = FromMongo("orders")
+            target = IntoTemp("raw_orders")
+
+            def execute(self, params, *, orders): ...
+
+        assert BuildOrdersStep._source_form == _SourceForm.INLINE
+        assert "orders" in BuildOrdersStep._inline_sources
+
+    def test_source_set_with_from_mongo(self) -> None:
+        from loom.etl.declarative.source._from import SourceSet
+
+        class OrderSources(SourceSet):
+            orders = FromMongo("orders")
+
+        assert "orders" in OrderSources._sources
