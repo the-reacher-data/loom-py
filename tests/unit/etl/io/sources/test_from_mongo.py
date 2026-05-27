@@ -7,8 +7,8 @@ import pytest
 
 from loom.core.expr.nodes import AndExpr, EqExpr, InExpr
 from loom.etl.declarative.expr import col
+from loom.etl.declarative.source import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import MongoSourceSpec, SourceKind
-from loom.etl.io.sources._mongo import FromMongo, SourceRef
 
 
 class OrderDoc(msgspec.Struct):

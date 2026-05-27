@@ -29,11 +29,11 @@ from loom.core.expr.nodes import (
 )
 from loom.etl.declarative.expr._params import ParamExpr, resolve_param_expr
 from loom.etl.declarative.expr._refs import UnboundColumnRef
+from loom.etl.declarative.source._from_mongo import SourceRef
 
 
 def _is_source_ref(value: object) -> bool:
-    """Duck-typing check for SourceRef — avoids a circular import at module level."""
-    return hasattr(value, "source") and isinstance(getattr(value, "col", None), str)
+    return isinstance(value, SourceRef)
 
 
 # ---------------------------------------------------------------------------

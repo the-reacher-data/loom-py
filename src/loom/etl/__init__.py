@@ -78,7 +78,7 @@ from loom.etl.declarative import (
     SourceSet,
     WriteOptions,
 )
-from loom.etl.io import FromClickHouse, FromMongo, IntoClickHouse
+from loom.etl.io import FromClickHouse, FromMongo, IntoClickHouse, SourceRef
 from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
 from loom.etl.pipeline import (
     ETLParams,
@@ -143,6 +143,7 @@ __all__ = [
     "FromTemp",
     "FromClickHouse",
     "FromMongo",
+    "SourceRef",
     # targets
     "IntoTable",
     "IntoFile",

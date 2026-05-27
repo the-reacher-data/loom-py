@@ -15,8 +15,8 @@ from loom.core.expr.nodes import (
     OrExpr,
 )
 from loom.etl.declarative.expr import col
+from loom.etl.declarative.source import SourceRef
 from loom.etl.declarative.source._from import FromTemp
-from loom.etl.io.sources._mongo import SourceRef
 from loom.etl.io.sources._mongo_predicate import materialize_filter, predicate_to_mongo
 
 # ---------------------------------------------------------------------------
