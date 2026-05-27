@@ -78,6 +78,7 @@ from loom.etl.declarative import (
     SourceSet,
     WriteOptions,
 )
+from loom.etl.io import FromClickHouse, FromMongo, IntoClickHouse
 from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
 from loom.etl.pipeline import (
     ETLParams,
@@ -140,10 +141,13 @@ __all__ = [
     "FromTable",
     "FromFile",
     "FromTemp",
+    "FromClickHouse",
+    "FromMongo",
     # targets
     "IntoTable",
     "IntoFile",
     "IntoTemp",
+    "IntoClickHouse",
     "IntoHistory",
     # SCD2 enums
     "HistorifyInputMode",

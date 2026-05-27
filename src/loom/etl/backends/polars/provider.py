@@ -6,6 +6,9 @@ from typing import Any, cast
 
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
+from loom.etl.io._registry import ReaderRegistry
+from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
+from loom.etl.io.sources._mongo import MongoSourceReader
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
@@ -25,8 +28,16 @@ class PolarsProvider(BackendProvider):
         _ = spark
         locator = _build_polars_locator(config)
         file_locator = config.to_file_locator()
+        polars_reader = PolarsSourceReader(locator, file_locator=file_locator)
+        reader = ReaderRegistry(
+            polars_reader,
+            extra={
+                "clickhouse": ClickHouseSourceReader(),
+                "mongo_lookup": MongoSourceReader(),
+            },
+        )
         return (
-            PolarsSourceReader(locator, file_locator=file_locator),
+            reader,
             PolarsTargetWriter(
                 locator,
                 missing_table_policy=config.missing_table_policy,

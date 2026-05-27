@@ -25,6 +25,8 @@ class SourceKind(StrEnum):
     TABLE = "table"
     FILE = "file"
     TEMP = "temp"
+    CLICKHOUSE = "clickhouse"
+    MONGO_LOOKUP = "mongo_lookup"
 
 
 @dataclass(frozen=True)

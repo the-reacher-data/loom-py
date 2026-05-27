@@ -308,6 +308,7 @@ class TestRunnerFromConfig:
         has_checkpoint_store: bool,
     ) -> None:
         from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+        from loom.etl.io._registry import ReaderRegistry
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
@@ -315,7 +316,8 @@ class TestRunnerFromConfig:
         )
         runner = ETLRunner.from_config(config)
 
-        assert isinstance(runner._executor._reader, PolarsSourceReader)
+        assert isinstance(runner._executor._reader, ReaderRegistry)
+        assert isinstance(runner._executor._reader._base, PolarsSourceReader)
         assert isinstance(runner._executor._writer, PolarsTargetWriter)
         assert (runner._checkpoint_store is not None) is has_checkpoint_store
 
@@ -323,9 +325,11 @@ class TestRunnerFromConfig:
 class TestRunnerFromDict:
     def test_from_dict_polars_path_builds_polars_backends(self, tmp_path: Path) -> None:
         from loom.etl.backends.polars import PolarsSourceReader
+        from loom.etl.io._registry import ReaderRegistry
 
         runner = ETLRunner.from_dict({"defaults": {"table_path": {"uri": str(tmp_path)}}})
-        assert isinstance(runner._executor._reader, PolarsSourceReader)
+        assert isinstance(runner._executor._reader, ReaderRegistry)
+        assert isinstance(runner._executor._reader._base, PolarsSourceReader)
 
     @pytest.mark.parametrize(
         "storage,error,match",
