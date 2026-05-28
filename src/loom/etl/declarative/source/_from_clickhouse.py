@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from loom.core.routing import LogicalRef
-from loom.etl.declarative._utils import _clone_slots
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.schema._contract import SchemaContract, resolve_schema
@@ -53,23 +52,17 @@ class FromClickHouse:
 
     def with_schema(self, schema: SchemaContract) -> FromClickHouse:
         """Return a new source with a Loom schema contract attached."""
-        new = _clone_slots(self, FromClickHouse, FromClickHouse.__slots__)
-        object.__setattr__(new, "_schema", resolve_schema(schema))
-        return new
+        return self._clone(_schema=resolve_schema(schema))
 
     def where(self, *predicates: Any) -> FromClickHouse:
         """Return a new source with the given predicates appended."""
-        new = _clone_slots(self, FromClickHouse, FromClickHouse.__slots__)
-        object.__setattr__(new, "_predicates", self._predicates + predicates)
-        return new
+        return self._clone(_predicates=self._predicates + predicates)
 
     def columns(self, *cols: str) -> FromClickHouse:
         """Return a new source projecting only the listed columns."""
         if not cols:
             raise ValueError("FromClickHouse.columns() requires at least one column name.")
-        new = _clone_slots(self, FromClickHouse, FromClickHouse.__slots__)
-        object.__setattr__(new, "_columns", cols)
-        return new
+        return self._clone(_columns=cols)
 
     def select(self, columns: list[str]) -> FromClickHouse:
         """Compatibility alias for :meth:`columns`."""

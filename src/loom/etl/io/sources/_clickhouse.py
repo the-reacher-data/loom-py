@@ -31,8 +31,6 @@ class ClickHouseSourceReader(SourceReader):
         client = self._client or self._get_client()
         query = self._build_query(spec, params_instance)
         frame = self._query_to_frame(client, query)
-        if spec.columns:
-            frame = frame.select(list(spec.columns))
         if spec.schema:
             frame = self._apply_source_schema(frame, spec.schema)
         return frame
@@ -58,7 +56,7 @@ class ClickHouseSourceReader(SourceReader):
             ", ".join(self._quote_identifier(col) for col in spec.columns) if spec.columns else "*"
         )
         distinct = "DISTINCT " if spec.distinct else ""
-        query = f"SELECT {distinct}{columns} FROM {self._quote_table_ref(spec.table_ref.ref)}"
+        query = f"SELECT {distinct}{columns} FROM {self._quote_identifier(spec.table_ref.ref)}"
 
         predicates = tuple(predicate_to_sql(pred, params_instance) for pred in spec.predicates)
         if predicates:
@@ -71,10 +69,6 @@ class ClickHouseSourceReader(SourceReader):
         if not parts:
             raise ValueError("ClickHouse identifiers must not be empty.")
         return ".".join(f"`{part.replace('`', '``')}`" for part in parts)
-
-    @staticmethod
-    def _quote_table_ref(ref: str) -> str:
-        return ClickHouseSourceReader._quote_identifier(ref)
 
     @staticmethod
     def _query_to_frame(client: Any, query: str) -> pl.LazyFrame:
