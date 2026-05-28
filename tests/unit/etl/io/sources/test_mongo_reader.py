@@ -1051,3 +1051,114 @@ class TestNullTypeSafeguard:
 
         assert df["task"].dtype == task_dtype
         assert "Null" not in str(df["task"].dtype)
+
+
+# ---------------------------------------------------------------------------
+# Schema drift detection (between batches)
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaDrift:
+    """MongoBatchProcessor._check_schema_drift warns when fields appear or disappear."""
+
+    def test_new_field_in_second_batch_emits_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from loom.etl.io.sources._mongo_batch import MongoBatchProcessor
+
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        batch1 = [{"id": 1, "name": "a"}]
+        batch2 = [{"id": 2, "name": "b", "extra": "new"}]
+
+        processor.build_frame(batch1)
+        with caplog.at_level(logging.WARNING):
+            processor.build_frame(batch2)
+
+        assert any("schema drift" in m and "extra" in m for m in caplog.messages)
+
+    def test_dropped_field_in_second_batch_emits_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from loom.etl.io.sources._mongo_batch import MongoBatchProcessor
+
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        batch1 = [{"id": 1, "name": "a", "score": 10}]
+        batch2 = [{"id": 2, "name": "b"}]
+
+        processor.build_frame(batch1)
+        with caplog.at_level(logging.WARNING):
+            processor.build_frame(batch2)
+
+        assert any("schema drift" in m and "score" in m for m in caplog.messages)
+
+    def test_dropped_field_warning_persists_in_subsequent_batches(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from loom.etl.io.sources._mongo_batch import MongoBatchProcessor
+
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        processor.build_frame([{"id": 1, "score": 10}])
+        processor.build_frame([{"id": 2}])  # score disappears
+
+        with caplog.at_level(logging.WARNING):
+            processor.build_frame([{"id": 3}])  # still no score
+
+        assert any("schema drift" in m and "score" in m for m in caplog.messages)
+
+    def test_stable_schema_emits_no_drift_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        from loom.etl.io.sources._mongo_batch import MongoBatchProcessor
+
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        with caplog.at_level(logging.WARNING):
+            processor.build_frame([{"id": 1, "name": "a"}])
+            processor.build_frame([{"id": 2, "name": "b"}])
+            processor.build_frame([{"id": 3, "name": "c"}])
+
+        assert not any("schema drift" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# _value_risk_notes — scalar check regression
+# ---------------------------------------------------------------------------
+
+
+class TestValueRiskNotes:
+    """_value_risk_notes must not produce false positives for native Python types."""
+
+    def test_int_for_int64_no_false_positive(self) -> None:
+        from loom.etl.io.sources._mongo_batch import (
+            _CanonicalValuePlan,
+            _value_risk_notes,
+        )
+
+        plan = _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)
+        assert _value_risk_notes(42, plan, "$.id") == []
+
+    def test_float_for_float64_no_false_positive(self) -> None:
+        from loom.etl.io.sources._mongo_batch import (
+            _CanonicalValuePlan,
+            _value_risk_notes,
+        )
+
+        plan = _CanonicalValuePlan(kind="scalar", dtype=pl.Float64)
+        assert _value_risk_notes(3.14, plan, "$.price") == []
+
+    def test_unconvertible_str_for_int64_emits_note(self) -> None:
+        from loom.etl.io.sources._mongo_batch import (
+            _CanonicalValuePlan,
+            _value_risk_notes,
+        )
+
+        plan = _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)
+        notes = _value_risk_notes("not-a-number", plan, "$.id")
+        assert len(notes) == 1
+        assert "unconvertible str" in notes[0]
+
+    def test_convertible_str_for_int64_no_note(self) -> None:
+        from loom.etl.io.sources._mongo_batch import (
+            _CanonicalValuePlan,
+            _value_risk_notes,
+        )
+
+        plan = _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)
+        assert _value_risk_notes("123", plan, "$.id") == []

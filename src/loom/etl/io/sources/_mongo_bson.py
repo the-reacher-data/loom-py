@@ -120,7 +120,11 @@ _NORMALIZERS: dict[str, Callable[[object], object]] = {
 
 
 def deep_normalize_for_json(value: Any, *, _depth: int = 0) -> Any:
-    """Normalize BSON types recursively in an arbitrary value for JSON serialization."""
+    """Normalize BSON types recursively in an arbitrary value for JSON serialization.
+
+    For full documents, prefer :func:`normalize_bson_doc`. This function is intended
+    for single-value normalization before JSON serialization (e.g., str-declared fields).
+    """
     return _normalize(value, _depth)
 
 

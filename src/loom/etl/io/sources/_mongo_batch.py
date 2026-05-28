@@ -24,6 +24,7 @@ _MAX_NESTED_DEPTH = 64
 
 
 def _json_default(obj: object) -> str:
+    # datetime/bytes pass through _normalize unchanged; handled at JSON-encode time.
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
     if isinstance(obj, bytes):
@@ -115,35 +116,48 @@ def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
     return conflicted
 
 
+def _has_type_conflict(non_null: list[Any]) -> bool:
+    """True if values mix container and scalar types, or have incompatible scalar types."""
+    has_dict = any(isinstance(v, dict) for v in non_null)
+    has_list = any(isinstance(v, list) for v in non_null)
+    has_scalar = any(not isinstance(v, (dict, list)) for v in non_null)
+    if (has_dict and has_scalar) or (has_dict and has_list):
+        return True
+    return (
+        has_scalar
+        and not has_dict
+        and not has_list
+        and len({_classify_value(v) for v in non_null}) > 1
+    )
+
+
+def _dict_children_conflict(non_null: list[Any], depth: int) -> bool:
+    """True if any sub-key has a type conflict across the dicts in the batch."""
+    sub: dict[str, list[Any]] = {}
+    for v in non_null:
+        if isinstance(v, dict):
+            for sk, sv in v.items():
+                sub.setdefault(sk, []).append(sv)
+    return any(_nested_has_conflict(sv, depth + 1) for sv in sub.values())
+
+
+def _list_children_conflict(non_null: list[Any], depth: int) -> bool:
+    """True if the flattened items of all lists have a type conflict."""
+    flat: list[Any] = [item for v in non_null if isinstance(v, list) for item in v]
+    return bool(flat) and _nested_has_conflict(flat, depth + 1)
+
+
 def _nested_has_conflict(values: list[Any], _depth: int = 0) -> bool:
     if _depth >= _MAX_NESTED_DEPTH:
         return True
     non_null = [v for v in values if v is not None]
     if not non_null:
         return False
-
-    has_dict = any(isinstance(v, dict) for v in non_null)
-    has_list = any(isinstance(v, list) for v in non_null)
-    has_scalar = any(not isinstance(v, (dict, list)) for v in non_null)
-
-    if (has_dict and has_scalar) or (has_dict and has_list):
+    if _has_type_conflict(non_null):
         return True
-    scalars_conflict = has_scalar and not has_dict and not has_list
-    if scalars_conflict and len({_classify_value(v) for v in non_null}) > 1:
+    if any(isinstance(v, dict) for v in non_null) and _dict_children_conflict(non_null, _depth):
         return True
-    if has_dict:
-        sub_keys: dict[str, list[Any]] = {}
-        for v in non_null:
-            if isinstance(v, dict):
-                for sk, sv in v.items():
-                    sub_keys.setdefault(sk, []).append(sv)
-        if any(_nested_has_conflict(sv, _depth + 1) for sv in sub_keys.values()):
-            return True
-    if has_list:
-        flat: list[Any] = [item for v in non_null if isinstance(v, list) for item in v]
-        if _nested_has_conflict(flat, _depth + 1):
-            return True
-    return False
+    return any(isinstance(v, list) for v in non_null) and _list_children_conflict(non_null, _depth)
 
 
 def _complex_root_keys(batch: list[dict[str, Any]]) -> set[str]:
@@ -165,7 +179,10 @@ def _pre_serialize_value(v: Any) -> Any:
         return None
     if isinstance(v, str):
         return v
-    return _json_dumps(deep_normalize_for_json(v))  # P4: recursive BSON normalization
+    # Contract: normalize_bson_doc() already ran in _mongo.py's cursor loop, converting
+    # all BSON types to Python builtins. deep_normalize_for_json() is a defensive guard
+    # for callers that invoke build_frame() directly without going through the cursor.
+    return _json_dumps(deep_normalize_for_json(v))
 
 
 def _pre_serialize_fields(
@@ -271,9 +288,10 @@ def _value_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[
         if isinstance(value, (dict, list)):
             notes.append(f"{path}: expected scalar got {type(value).__name__}")
             return notes
-        coerced = _coerce_scalar_value(value, plan.dtype)
-        if coerced is value and plan.dtype not in (None, pl.String):
-            notes.append(f"{path}: expected {plan.dtype} got {type(value).__name__}")
+        if isinstance(value, str):
+            coerced = _coerce_string_to_dtype(value, plan.dtype)
+            if isinstance(coerced, str) and plan.dtype not in (None, pl.String):
+                notes.append(f"{path}: unconvertible str for {plan.dtype}")
         return notes
 
     if value is None:
@@ -378,7 +396,8 @@ def _plan_from_dtype(dtype: pl.DataType) -> _CanonicalValuePlan:
     return _CanonicalValuePlan(kind="scalar", dtype=dtype)
 
 
-def _coerce_scalar_value(value: Any, dtype: pl.DataType | None) -> Any:
+def _coerce_string_to_dtype(value: Any, dtype: pl.DataType | None) -> Any:
+    """Coerce a str value to the target Polars dtype. Non-str values are returned unchanged."""
     if value is None or dtype is None:
         return value
     if isinstance(value, str):
@@ -454,34 +473,34 @@ def _declared_complex_fields(schema_overrides: dict[str, pl.DataType] | None) ->
     )
 
 
+def _coerce_list_items(value: list[Any], inner: _CanonicalValuePlan) -> list[Any]:
+    return [_canonicalize_value(item, inner) for item in value]
+
+
+def _coerce_struct_fields(
+    value: dict[str, Any], fields: tuple[_CanonicalFieldPlan, ...]
+) -> dict[str, Any]:
+    declared = {f.name for f in fields}
+    extra = sorted(k for k in value if k not in declared)
+    if extra:
+        _log.warning(
+            "MongoSourceReader: dropping undeclared sub-field(s) %s from declared struct",
+            extra,
+        )
+    return {f.name: _canonicalize_value(value.get(f.name), f.plan) for f in fields}
+
+
 def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
     if plan.kind == "scalar":
-        return _coerce_scalar_value(value, plan.dtype)
+        return _coerce_string_to_dtype(value, plan.dtype)
     if value is None:
         return None
-
     if plan.kind == "list":
         if not isinstance(value, list):
-            return None  # non-list where List is declared → null
-        if plan.inner is None:
-            return value
-        return [_canonicalize_value(item, plan.inner) for item in value]
-
+            return None
+        return value if plan.inner is None else _coerce_list_items(value, plan.inner)
     if plan.kind == "struct":
-        if not isinstance(value, dict):
-            return None  # non-dict where Struct is declared → null
-        declared_names = {field.name for field in plan.fields}
-        extra_keys = sorted(key for key in value if key not in declared_names)
-        if extra_keys:
-            _log.warning(
-                "MongoSourceReader: dropping undeclared sub-field(s) %s from declared struct",
-                extra_keys,
-            )
-        return {
-            field.name: _canonicalize_value(value.get(field.name), field.plan)
-            for field in plan.fields
-        }
-
+        return _coerce_struct_fields(value, plan.fields) if isinstance(value, dict) else None
     return value
 
 
@@ -567,7 +586,7 @@ def align_to_schema(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.Data
     new_cols = [c for c in df.columns if c not in schema]
     if new_cols:
         _log.warning(
-            "MongoSourceReader: batch columns %s absent from schema — dropping",
+            "MongoSourceReader: schema drift — field(s) %s not in registered schema, dropping",
             sorted(new_cols),
         )
         df = df.drop(new_cols)
@@ -627,31 +646,64 @@ class MongoBatchProcessor:
     Handles pre-serialization of declared/explicit JSON fields, type-conflict
     detection and serialization, and DataFrame construction with schema hints.
     Schema alignment and extra-field handling are delegated to the caller.
+
+    Not thread-safe: designed for single-threaded use inside a Polars scan plugin.
+
+    Args:
+        schema_str_fields: Field names explicitly declared as String in the user schema.
+            These are pre-serialised to JSON before conflict detection.
+        declared_schema: The schema explicitly declared by the user (not inferred).
+            Used only for risky-row logging to avoid false positives on inferred types.
     """
 
     def __init__(
         self,
         *,
         schema_str_fields: frozenset[str],
+        declared_schema: dict[str, pl.DataType] | None = None,
     ) -> None:
         self._schema_str_fields = schema_str_fields
+        self._declared_schema = declared_schema
         self._str_coercion_warned = False
         # Lazily built on first batch; safe as a singleton because schema_overrides
         # is the same dict object across all build_frame() calls within a single scan.
         self._canonical_plan: dict[str, _CanonicalValuePlan] | None = None
+        # None until the first batch is seen; updated as new fields appear.
+        self._observed_fields: frozenset[str] | None = None
+
+    def _check_schema_drift(self, batch: list[dict[str, Any]]) -> None:
+        """Warn when fields appear or disappear relative to the first batch seen."""
+        current_fields = frozenset(k for doc in batch for k in doc)
+        if self._observed_fields is None:
+            self._observed_fields = current_fields
+            return
+        new_fields = current_fields - self._observed_fields
+        dropped_fields = self._observed_fields - current_fields
+        if new_fields:
+            _log.warning(
+                "MongoSourceReader: schema drift — new field(s) %s appeared after first batch",
+                sorted(new_fields),
+            )
+            self._observed_fields = self._observed_fields | new_fields
+        if dropped_fields:
+            _log.warning(
+                "MongoSourceReader: schema drift — field(s) %s absent in this batch",
+                sorted(dropped_fields),
+            )
+            # Do not update _observed_fields for dropped fields so the warning persists.
 
     def build_frame(
         self,
         batch: list[dict[str, Any]],
         schema_overrides: dict[str, pl.DataType] | None = None,
-        declared_schema: dict[str, pl.DataType] | None = None,
     ) -> pl.DataFrame:
         if not batch:
             return pl.DataFrame()
+        self._check_schema_drift(batch)
         batch = self._pre_serialize(batch)
         batch = self._resolve_conflicts(batch, schema_overrides)
-        batch = self._serialize_extra_complex_fields(batch, schema_overrides)
-        _log_risky_rows(batch, declared_schema)
+        batch = _serialize_extra_complex_fields(batch, schema_overrides)
+        _log_risky_rows(batch, self._declared_schema)
         batch = self._canonicalize_declared_structs(batch, schema_overrides)
         return self._to_dataframe(batch, schema_overrides)
 
@@ -708,13 +760,6 @@ class MongoBatchProcessor:
                 sorted(skipped),
             )
         return _serialize_conflicted(batch, to_serialize)
-
-    def _serialize_extra_complex_fields(
-        self,
-        batch: list[dict[str, Any]],
-        schema_overrides: dict[str, pl.DataType] | None,
-    ) -> list[dict[str, Any]]:
-        return _serialize_extra_complex_fields(batch, schema_overrides)
 
     def _canonicalize_declared_structs(
         self,

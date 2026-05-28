@@ -63,6 +63,7 @@ class MongoSourceReader:
 
         batch_processor = MongoBatchProcessor(
             schema_str_fields=schema_str_fields,
+            declared_schema=declared_schema or None,
         )
 
         def _io_source(
@@ -219,9 +220,7 @@ def _scan(
     for doc in cursor:
         batch.append(normalize_bson_doc(doc))
         if len(batch) >= spec.batch_size:
-            frame = batch_processor.build_frame(
-                batch, schema_overrides=schema_overrides, declared_schema=declared_schema or None
-            )
+            frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
             frame = _finalize_batch(
                 frame,
                 declared_schema,
