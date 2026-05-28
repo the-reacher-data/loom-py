@@ -88,7 +88,10 @@ class MongoSourceReader:
         return register_io_source(
             _io_source,
             schema=registered_schema,
-            # validate_schema=False: batch alignment already handles type coercion per batch.
+            # validate_schema=False: MongoDB documents are schema-free — field types can vary
+            # across batches (schema drift, sparse fields, type widening). Per-batch alignment
+            # in _finalize_batch normalises each batch to registered_schema before yielding,
+            # so Polars sees a consistent type stream without needing to validate.
             validate_schema=False,
             is_pure=False,
         )
