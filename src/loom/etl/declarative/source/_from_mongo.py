@@ -6,10 +6,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import msgspec
-
 from loom.core.expr.nodes import AndExpr, ExprNode
 from loom.etl.declarative.source._specs import MongoSourceSpec
+from loom.etl.schema._contract import SchemaContract, resolve_schema
+from loom.etl.schema._schema import ColumnSchema
 
 _COLLECTION_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 _EXTRA_FIELDS_MODES = frozenset({"ignore", "warn", "capture", "error"})
@@ -54,21 +54,29 @@ class FromMongo:
         # Id-based lookup from another step's output
         FromMongo("orders").where(col("_id").isin(SourceRef(FromTemp("order_ids"), col="id")))
 
-        # Snapshot with schema
-        class BuildOrders(ETLStep[P]):
-            orders = FromMongo("orders").with_schema(OrderDoc)
-            target = IntoTable("landing.orders").replace_partitions("year", "month")
+        # Snapshot with schema — same contract as FromTable / FromFile
+        FromMongo("orders").with_schema((
+            ColumnSchema("order_id", LoomDtype.UTF8, nullable=False),
+            ColumnSchema("status",   LoomDtype.UTF8),
+            ColumnSchema("amount",   LoomDtype.FLOAT64),
+        ))
+
+        # Or pass an annotated class (plain Python, dataclass, msgspec.Struct)
+        class OrderDoc:
+            order_id: str
+            status: str
+
+        FromMongo("orders").with_schema(OrderDoc)
     """
 
     __slots__ = (
         "_collection",
         "_filter",
         "_projection",
-        "_schema_type",
+        "_schema",
         "_extra_fields_mode",
         "_batch_size",
         "_limit",
-        "_json_fields",
     )
 
     def __init__(self, collection: str) -> None:
@@ -80,11 +88,10 @@ class FromMongo:
         self._collection: str = collection
         self._filter: ExprNode | None = None
         self._projection: tuple[str, ...] | None = None
-        self._schema_type: type | None = None
+        self._schema: tuple[ColumnSchema, ...] = ()
         self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
         self._batch_size: int = 10_000
         self._limit: int | None = None
-        self._json_fields: frozenset[str] = frozenset()
 
     def where(self, filter: ExprNode) -> FromMongo:
         """Filter documents using the col()/params DSL.
@@ -110,24 +117,20 @@ class FromMongo:
                 )
         return self._clone(_projection=fields)
 
-    def with_schema(self, schema_type: type) -> FromMongo:
-        """Attach a msgspec.Struct schema for document field validation.
+    def with_schema(self, schema: SchemaContract) -> FromMongo:
+        """Attach a Loom schema contract — same form as ``FromTable.with_schema()``.
+
+        Fields declared as :attr:`~loom.etl.schema.LoomDtype.UTF8` are
+        pre-serialized to a JSON string when the MongoDB value is a complex
+        type (dict / list).  All other declared types are enforced via
+        ``schema_overrides`` before Polars builds the DataFrame.
 
         Args:
-            schema_type: A ``msgspec.Struct`` subclass whose fields define the
-                         document contract.
-
-        Raises:
-            TypeError: When *schema_type* is not a ``msgspec.Struct`` subclass.
+            schema: Either a ``tuple[ColumnSchema, ...]`` or an annotated class
+                    (plain Python, ``dataclass``, or ``msgspec.Struct``) whose
+                    fields define the document contract.
         """
-        try:
-            msgspec.structs.fields(schema_type)
-        except TypeError:
-            raise TypeError(
-                f"with_schema() requires a msgspec.Struct subclass, got {schema_type!r}. "
-                "Define your schema as: class MyDoc(msgspec.Struct): ..."
-            ) from None
-        return self._clone(_schema_type=schema_type)
+        return self._clone(_schema=resolve_schema(schema))
 
     def on_extra_fields(self, mode: Literal["ignore", "warn", "capture", "error"]) -> FromMongo:
         """Control how document fields absent from the schema are handled."""
@@ -144,18 +147,6 @@ class FromMongo:
             raise ValueError(f"batch_size must be between 1 and 50000, got {n}")
         return self._clone(_batch_size=n)
 
-    def serialize_as_json(self, *names: str) -> FromMongo:
-        """Declare fields to be pre-serialized as JSON strings before DataFrame construction.
-
-        Use this when a sub-object should be stored as a JSON string column rather
-        than expanded into a Polars Struct.  Fields declared in the schema as ``str``
-        are pre-serialized automatically; this method is for fields outside the schema.
-
-        Args:
-            names: Field names to serialize as JSON strings.
-        """
-        return self._clone(_json_fields=self._json_fields | frozenset(names))
-
     def limit(self, n: int) -> FromMongo:
         """Limit the number of documents returned — for dev/CI only."""
         if n < 1:
@@ -168,11 +159,10 @@ class FromMongo:
             collection=self._collection,
             filter=self._filter,
             projection=self._projection,
-            schema_type=self._schema_type,
+            schema=self._schema,
             extra_fields_mode=self._extra_fields_mode,
             batch_size=self._batch_size,
             limit=self._limit,
-            json_fields=self._json_fields,
         )
 
     def _clone(self, **overrides: Any) -> FromMongo:

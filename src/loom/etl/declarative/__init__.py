@@ -12,7 +12,9 @@ from ._read_options import (
 )
 from ._write_options import CsvWriteOptions, JsonWriteOptions, ParquetWriteOptions, WriteOptions
 from .source import (
+    ClickHouseSourceSpec,
     FileSourceSpec,
+    FromClickHouse,
     FromFile,
     FromMongo,
     FromTable,
@@ -59,10 +61,12 @@ __all__ = [
     "FileSourceSpec",
     "TempSourceSpec",
     "MongoSourceSpec",
+    "ClickHouseSourceSpec",
     "FromTable",
     "FromFile",
     "FromTemp",
     "FromMongo",
+    "FromClickHouse",
     "SourceRef",
     "Sources",
     "SourceSet",

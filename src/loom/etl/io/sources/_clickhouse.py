@@ -1,118 +1,100 @@
-"""ClickHouse source — FromClickHouse builder and ClickHouseSourceSpec."""
+"""ClickHouse source reader and compatibility re-exports."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
-from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode  # noqa: F401
-from loom.etl.declarative.source._specs import SourceKind
+import polars as pl
+
+from loom.etl.backends._predicate import predicate_to_sql
+from loom.etl.backends.polars._dtype import loom_type_to_polars
+from loom.etl.declarative.source._from_clickhouse import FromClickHouse
+from loom.etl.declarative.source._specs import ClickHouseSourceSpec
+from loom.etl.runtime.contracts import SourceReader
+from loom.etl.schema._schema import ColumnSchema
 
 
-@dataclass(frozen=True)
-class ClickHouseSourceSpec:
-    """Compiled spec for a ClickHouse read source.
+class ClickHouseSourceReader(SourceReader):
+    """Read ClickHouse sources through the native clickhouse-connect client."""
 
-    Produced by :meth:`FromClickHouse._to_spec`. Consumed by the executor
-    and :class:`ClickHouseSourceReader` — never constructed directly in user code.
-    """
+    def __init__(
+        self,
+        url: str | None = None,
+        *,
+        client: Any | None = None,
+    ) -> None:
+        self._url = url
+        self._client = client
 
-    alias: str
-    table: str
-    predicates: tuple[Any, ...] = field(default_factory=tuple)
-    columns: tuple[str, ...] = field(default_factory=tuple)
-    distinct: bool = False
-    allow_full_scan: bool = False
+    def read(self, spec: Any, params_instance: Any, /) -> pl.LazyFrame:
+        """Execute the ClickHouse source query and return a lazy Polars frame."""
+        client = self._client or self._get_client()
+        query = self._build_query(spec, params_instance)
+        frame = self._query_to_frame(client, query)
+        if spec.columns:
+            frame = frame.select(list(spec.columns))
+        if spec.schema:
+            frame = self._apply_source_schema(frame, spec.schema)
+        return frame
 
-    @property
-    def kind(self) -> SourceKind:
-        """Source kind — always :attr:`SourceKind.CLICKHOUSE`."""
-        return SourceKind.CLICKHOUSE
-
-
-class FromClickHouse:
-    """Declare a ClickHouse table as an ETL source.
-
-    Predicates are required unless :meth:`unbounded` is called explicitly,
-    guarding against accidental full-table scans on large tables.
-
-    Args:
-        table: ClickHouse table name.
-
-    Example::
-
-        cdc = FromClickHouse("cdc_events")
-            .where(
-                (col("source_collection") == params.collection)
-                & (col("source_time").date() == params.run_date)
+    def _get_client(self) -> Any:
+        if not self._url:
+            raise ValueError(
+                "ClickHouseSourceReader requires storage.clickhouse.url to be configured "
+                "or an explicit client injected at construction time."
             )
-            .select(["document_id"])
-            .distinct()
-    """
+        try:
+            import clickhouse_connect as _cc  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "ClickHouseSourceReader requires 'clickhouse-connect'. "
+                "Install it with: pip install 'loom-py[clickhouse]'"
+            ) from exc
+        self._client = _cc.get_client(dsn=self._url)
+        return self._client
 
-    __slots__ = ("_table", "_predicates", "_columns", "_distinct", "_allow_full_scan")
+    def _build_query(self, spec: ClickHouseSourceSpec, params_instance: Any) -> str:
+        columns = (
+            ", ".join(self._quote_identifier(col) for col in spec.columns) if spec.columns else "*"
+        )
+        distinct = "DISTINCT " if spec.distinct else ""
+        query = f"SELECT {distinct}{columns} FROM {self._quote_table_ref(spec.table_ref.ref)}"
 
-    def __init__(self, table: str) -> None:
-        self._table: str = table
-        self._predicates: tuple[Any, ...] = ()
-        self._columns: tuple[str, ...] = ()
-        self._distinct: bool = False
-        self._allow_full_scan: bool = False
+        predicates = tuple(predicate_to_sql(pred, params_instance) for pred in spec.predicates)
+        if predicates:
+            query += " WHERE " + " AND ".join(f"({pred})" for pred in predicates)
+        return query
 
-    def where(self, *predicates: Any) -> FromClickHouse:
-        """Add filter predicates (AND-combined at query time)."""
-        return self._clone(_predicates=self._predicates + predicates)
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        parts = [part for part in name.split(".") if part]
+        if not parts:
+            raise ValueError("ClickHouse identifiers must not be empty.")
+        return ".".join(f"`{part.replace('`', '``')}`" for part in parts)
 
-    def select(self, columns: list[str]) -> FromClickHouse:
-        """Project to a subset of columns at scan time."""
-        return self._clone(_columns=tuple(columns))
+    @staticmethod
+    def _quote_table_ref(ref: str) -> str:
+        return ClickHouseSourceReader._quote_identifier(ref)
 
-    def distinct(self) -> FromClickHouse:
-        """Add DISTINCT to the generated query."""
-        return self._clone(_distinct=True)
-
-    def unbounded(self) -> FromClickHouse:
-        """Opt-in to a full-table scan — required when no predicates are used."""
-        return self._clone(_allow_full_scan=True)
-
-    def _to_spec(self, alias: str) -> ClickHouseSourceSpec:
-        """Compile to a frozen spec for the executor."""
-        if not self._predicates and not self._allow_full_scan:
-            raise ETLCompilationError(
-                code=ETLErrorCode.MISSING_SOURCE_PARAMS,
-                component=f"FromClickHouse({self._table!r})",
-                message=(
-                    f"FromClickHouse({self._table!r}) has no predicates. "
-                    "Use .where() to filter rows or .unbounded() for an explicit full scan."
-                ),
-            )
-        return ClickHouseSourceSpec(
-            alias=alias,
-            table=self._table,
-            predicates=self._predicates,
-            columns=self._columns,
-            distinct=self._distinct,
-            allow_full_scan=self._allow_full_scan,
+    @staticmethod
+    def _query_to_frame(client: Any, query: str) -> pl.LazyFrame:
+        if hasattr(client, "query_arrow"):
+            result = pl.from_arrow(client.query_arrow(query))
+            if not isinstance(result, pl.DataFrame):
+                raise TypeError("Expected a PyArrow Table from query_arrow(), not a scalar array.")
+            return result.lazy()
+        if hasattr(client, "query_df"):
+            return pl.from_pandas(client.query_df(query)).lazy()
+        raise TypeError(
+            "ClickHouse client must expose query_arrow() or query_df() to read sources."
         )
 
-    def _clone(self, **overrides: Any) -> FromClickHouse:
-        new = object.__new__(FromClickHouse)
-        for slot in self.__slots__:
-            object.__setattr__(new, slot, overrides.get(slot, getattr(self, slot)))
-        return new
-
-    def __repr__(self) -> str:
-        return f"FromClickHouse({self._table!r})"
-
-
-class ClickHouseSourceReader:
-    """Reads a ClickHouseSourceSpec into a Polars LazyFrame via clickhouse-connect.
-
-    Stub implementation — full SQL generation and execution will be wired in T4.
-    """
-
-    def read(self, spec: Any, params_instance: Any, /) -> Any:
-        raise NotImplementedError("ClickHouseSourceReader not yet implemented")
+    @staticmethod
+    def _apply_source_schema(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) -> pl.LazyFrame:
+        if not schema:
+            return frame
+        exprs = [pl.col(col.name).cast(loom_type_to_polars(col.dtype)) for col in schema]
+        return frame.with_columns(exprs)
 
 
 __all__ = ["ClickHouseSourceReader", "ClickHouseSourceSpec", "FromClickHouse"]

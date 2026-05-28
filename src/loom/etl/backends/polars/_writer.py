@@ -148,10 +148,17 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
                 frame,
                 mode="overwrite",
                 partition_by=list(partition_cols),
+                schema_mode="overwrite",
                 **kwargs,
             )
         else:
-            write_deltalake(location.uri, frame, mode="overwrite", **kwargs)
+            write_deltalake(
+                location.uri,
+                frame,
+                mode="overwrite",
+                schema_mode="overwrite",
+                **kwargs,
+            )
 
     def _append(
         self,

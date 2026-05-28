@@ -118,4 +118,10 @@ _NORMALIZERS: dict[str, Callable[[object], object]] = {
     "DBRef": _normalize_dbref,
 }
 
-__all__ = ["normalize_bson_doc"]
+
+def deep_normalize_for_json(value: Any, *, _depth: int = 0) -> Any:
+    """Normalize BSON types recursively in an arbitrary value for JSON serialization."""
+    return _normalize(value, _depth)
+
+
+__all__ = ["normalize_bson_doc", "deep_normalize_for_json"]

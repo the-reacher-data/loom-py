@@ -9,6 +9,7 @@ from loom.core.expr.nodes import AndExpr, EqExpr, InExpr
 from loom.etl.declarative.expr import col
 from loom.etl.declarative.source import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import MongoSourceSpec, SourceKind
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 
 class OrderDoc(msgspec.Struct):
@@ -29,7 +30,7 @@ class TestConstruction:
         assert spec.collection == "orders"
         assert spec.filter is None
         assert spec.projection is None
-        assert spec.schema_type is None
+        assert spec.schema == ()
         assert spec.extra_fields_mode == "ignore"
         assert spec.batch_size == 10_000
         assert spec.limit is None
@@ -110,7 +111,10 @@ class TestProject:
 class TestWithSchema:
     def test_schema_stored_in_spec(self) -> None:
         spec = FromMongo("orders").with_schema(OrderDoc)._to_spec("orders")
-        assert spec.schema_type is OrderDoc
+        assert spec.schema == (
+            ColumnSchema("id", LoomDtype.UTF8, nullable=True),
+            ColumnSchema("status", LoomDtype.UTF8, nullable=True),
+        )
 
 
 # ---------------------------------------------------------------------------

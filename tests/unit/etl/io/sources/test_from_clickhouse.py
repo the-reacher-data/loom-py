@@ -1,27 +1,27 @@
-"""TDD Red — tests for FromClickHouse builder and ClickHouseSourceSpec.
-
-All tests in this file MUST FAIL with ImportError / ModuleNotFoundError until
-loom/etl/io/sources/_clickhouse.py is implemented.
-"""
+"""Tests for FromClickHouse builder and ClickHouseSourceSpec."""
 
 from __future__ import annotations
 
 import pytest
 
-from loom.etl.compiler._errors import ETLCompilationError
 from loom.etl.declarative.source._specs import SourceKind
 from loom.etl.io.sources._clickhouse import ClickHouseSourceSpec, FromClickHouse  # noqa: F401
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 # A minimal predicate stand-in — just a truthy object that can be stored in a
 # tuple, equivalent to how the existing FromTable tests pass col() expressions.
 _PRED = object()
+_SCHEMA = (
+    ColumnSchema("id", LoomDtype.INT64, nullable=False),
+    ColumnSchema("amount", LoomDtype.FLOAT64),
+)
 
 
 class TestToSpecRequiresPredicateOrUnbounded:
     def test_to_spec_requires_predicate_or_unbounded(self) -> None:
-        """FromClickHouse without .where() or .unbounded() must raise ETLCompilationError."""
+        """FromClickHouse without .where() or .unbounded() must raise ValueError."""
         builder = FromClickHouse("cdc_events")
-        with pytest.raises(ETLCompilationError):
+        with pytest.raises(ValueError):
             builder._to_spec("cdc")
 
 
@@ -36,6 +36,7 @@ class TestToSpecWithWhere:
         assert spec.table == "cdc_events"
         assert len(spec.predicates) == 1
         assert spec.predicates[0] is _PRED
+        assert spec.table_ref.ref == "cdc_events"
 
 
 class TestToSpecUnbounded:
@@ -50,10 +51,26 @@ class TestToSpecUnbounded:
 class TestSelectColumns:
     def test_select_columns_stored_in_spec(self) -> None:
         """Selected columns are stored as a tuple on the spec."""
-        builder = FromClickHouse("cdc_events").where(_PRED).select(["a", "b"])
+        builder = FromClickHouse("cdc_events").where(_PRED).columns("a", "b")
         spec = builder._to_spec("cdc")
 
         assert spec.columns == ("a", "b")
+
+    def test_select_is_compatibility_alias(self) -> None:
+        builder = FromClickHouse("cdc_events").where(_PRED).select(["a", "b"])
+        spec = builder._to_spec("cdc")
+        assert spec.columns == ("a", "b")
+
+
+class TestWithSchema:
+    def test_with_schema_stored_in_spec(self) -> None:
+        spec = FromClickHouse("cdc_events").where(_PRED).with_schema(_SCHEMA)._to_spec("cdc")
+        assert spec.schema == _SCHEMA
+
+    def test_with_schema_is_immutable(self) -> None:
+        original = FromClickHouse("cdc_events").where(_PRED)
+        _ = original.with_schema(_SCHEMA)
+        assert original._to_spec("cdc").schema == ()
 
 
 class TestDistinctFlag:
@@ -75,6 +92,12 @@ class TestSpecKind:
         """spec.kind must equal SourceKind.CLICKHOUSE."""
         spec = FromClickHouse("cdc_events").where(_PRED)._to_spec("cdc")
         assert spec.kind == SourceKind.CLICKHOUSE
+
+
+class TestColumnsValidation:
+    def test_columns_empty_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one"):
+            FromClickHouse("cdc_events").columns()
 
 
 class TestRepr:

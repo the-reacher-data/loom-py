@@ -31,19 +31,19 @@ class PolarsProvider(BackendProvider):
         _ = spark
         locator = _build_polars_locator(config)
         file_locator = config.to_file_locator()
-        polars_reader = PolarsSourceReader(locator, file_locator=file_locator)
         mongo_reader = (
             MongoSourceReader(MongoClient(config.mongo.uri), config.mongo.database)
             if config.mongo.uri
             else MongoSourceReader()
         )
-        reader = ReaderRegistry(
-            polars_reader,
-            extra={
-                "clickhouse": ClickHouseSourceReader(),
-                "mongo": mongo_reader,
-            },
+        clickhouse_reader = ClickHouseSourceReader(config.clickhouse.url or None)
+        polars_reader = PolarsSourceReader(
+            locator,
+            file_locator=file_locator,
+            mongo_reader=mongo_reader,
+            clickhouse_reader=clickhouse_reader,
         )
+        reader = ReaderRegistry(polars_reader)
         polars_writer = PolarsTargetWriter(
             locator,
             missing_table_policy=config.missing_table_policy,

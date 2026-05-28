@@ -41,6 +41,7 @@ from loom.etl.declarative._read_options import ReadOptions
 from loom.etl.declarative._utils import _clone_slots
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source._from_clickhouse import FromClickHouse
 from loom.etl.declarative.source._from_mongo import FromMongo
 from loom.etl.declarative.source._specs import (
     FileSourceSpec,
@@ -59,7 +60,7 @@ from loom.etl.schema._schema import ColumnSchema
 
 ParamsT = TypeVar("ParamsT")
 
-_SourceEntry = "FromTable | FromFile | FromTemp | FromMongo"
+_SourceEntry = "FromTable | FromFile | FromTemp | FromMongo | FromClickHouse"
 
 
 class FromTable:
@@ -464,7 +465,7 @@ class FromTemp:
         return f"FromTemp({self._name!r})"
 
 
-_SourceEntryType = FromTable | FromFile | FromTemp | FromMongo
+_SourceEntryType = FromTable | FromFile | FromTemp | FromMongo | FromClickHouse
 
 
 class Sources:

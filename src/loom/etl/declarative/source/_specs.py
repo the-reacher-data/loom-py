@@ -151,6 +151,33 @@ class TempSourceSpec:
 
 
 @dataclass(frozen=True)
+class ClickHouseSourceSpec:
+    """Normalized internal representation of a ClickHouse ETL source.
+
+    Produced by :meth:`~loom.etl.declarative.source.FromClickHouse._to_spec`.
+    Consumed by the executor and ClickHouse reader.
+    """
+
+    alias: str
+    table_ref: TableRef
+    predicates: tuple[Any, ...] = field(default_factory=tuple)
+    columns: tuple[str, ...] = field(default_factory=tuple)
+    schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
+    distinct: bool = False
+    allow_full_scan: bool = False
+
+    @property
+    def kind(self) -> SourceKind:
+        """Physical kind — always :attr:`SourceKind.CLICKHOUSE`."""
+        return SourceKind.CLICKHOUSE
+
+    @property
+    def table(self) -> str:
+        """Compatibility alias for the ClickHouse table/view name."""
+        return self.table_ref.ref
+
+
+@dataclass(frozen=True)
 class MongoSourceSpec:
     """Normalized internal representation of a MongoDB ETL source.
 
@@ -165,7 +192,11 @@ class MongoSourceSpec:
                            nodes inside ``InPred.values`` — these are resolved
                            by the executor before ``read()`` is called.
         projection:        Tuple of field names to include (server-side projection).
-        schema_type:       Optional msgspec.Struct for document decoding.
+        schema:            Optional column schema — same contract as
+                           :class:`~loom.etl.declarative.source.FromTable`.
+                           Fields declared as :attr:`~loom.etl.schema.LoomDtype.UTF8`
+                           are pre-serialized to JSON string when the MongoDB value
+                           is a complex type (dict / list).
         extra_fields_mode: How to handle fields not covered by the schema.
         batch_size:        Pymongo cursor batch size.
         limit:             Hard limit on documents returned (dev/CI only).
@@ -175,11 +206,10 @@ class MongoSourceSpec:
     collection: str
     filter: ExprNode | None = None
     projection: tuple[str, ...] | None = None
-    schema_type: type | None = None
+    schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
     extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
     batch_size: int = 10_000
     limit: int | None = None
-    json_fields: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not 1 <= self.batch_size <= 50_000:
@@ -194,4 +224,6 @@ class MongoSourceSpec:
 
 
 # Type alias — the union of all typed source spec variants.
-SourceSpec = TableSourceSpec | FileSourceSpec | TempSourceSpec | MongoSourceSpec
+SourceSpec = (
+    TableSourceSpec | FileSourceSpec | TempSourceSpec | MongoSourceSpec | ClickHouseSourceSpec
+)

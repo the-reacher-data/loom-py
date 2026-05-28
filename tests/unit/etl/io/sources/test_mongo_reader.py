@@ -8,18 +8,21 @@ documents correctly to Polars DataFrames.
 from __future__ import annotations
 
 import logging
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
-import msgspec
 import polars as pl
 import pytest
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 
+from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.expr import col
 from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._mongo import MongoSourceReader
+from loom.etl.io.sources._mongo_batch import _canonicalize_batch
+from loom.etl.schema._contract import resolve_schema
+from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
 # ---------------------------------------------------------------------------
 # Fake pymongo client stack
@@ -37,6 +40,9 @@ class _FakeCursor:
     def limit(self, n: int) -> _FakeCursor:
         self._limit = n
         return self
+
+    def close(self) -> None:
+        pass
 
     def __iter__(self):
         docs = self._docs if self._limit is None else self._docs[: self._limit]
@@ -89,13 +95,52 @@ class _FakeClient:
 
 
 # ---------------------------------------------------------------------------
-# Schema for schema-related tests
+# Schema classes — plain Python, no msgspec
 # ---------------------------------------------------------------------------
 
 
-class OrderDoc(msgspec.Struct):
+class OrderDoc:
     order_id: str
     status: str
+
+
+class ProductDoc:
+    label: str
+
+
+class DeepLeaf:
+    refs: list[str] | None = None
+
+
+class DeepNode:
+    leaves: list[DeepLeaf] | None = None
+    tags: list[str] | None = None
+
+
+class DeepEnvelope:
+    payload: DeepNode | None = None
+
+
+class MetaDoc:
+    name: str
+    score: float
+
+
+class ArchiveAsset:
+    url: str
+    name: str
+    s3_url: str
+    _id: str
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class ArchiveBundle:
+    assets: list[ArchiveAsset] | None = None
+
+
+class ArchiveEnvelope:
+    bundle: ArchiveBundle | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +152,11 @@ _ORDERS = [
     {"order_id": "o2", "status": "pending"},
 ]
 
+_ORDER_SCHEMA = (
+    ColumnSchema("order_id", LoomDtype.UTF8),
+    ColumnSchema("status", LoomDtype.UTF8),
+)
+
 
 def _reader(
     docs: list[dict], *, db: str = "app", collection: str = "orders"
@@ -115,8 +165,8 @@ def _reader(
     return MongoSourceReader(client, db), client
 
 
-def _spec(**kwargs: Any) -> MongoSourceSpec:
-    return MongoSourceSpec(alias="orders", collection="orders", **kwargs)
+def _spec(*, collection: str = "orders", **kwargs: Any) -> MongoSourceSpec:
+    return MongoSourceSpec(alias=collection, collection=collection, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -216,13 +266,13 @@ class TestEmptyCollection:
 
     def test_empty_with_schema_returns_correct_columns(self) -> None:
         reader, _ = _reader([])
-        df = reader.read(_spec(schema_type=OrderDoc), None).collect()
+        df = reader.read(_spec(schema=_ORDER_SCHEMA), None).collect()
         assert set(df.columns) == {"order_id", "status"}
         assert df.shape[0] == 0
 
     def test_empty_with_recursive_schema_keeps_nested_types(self) -> None:
         reader, _ = _reader([])
-        df = reader.read(_spec(schema_type=DeepEnvelope), None).collect()
+        df = reader.read(_spec(schema=resolve_schema(DeepEnvelope)), None).collect()
         assert df.shape == (0, 1)
         assert df["payload"].dtype == pl.Struct(
             {
@@ -286,15 +336,13 @@ class TestExtraFieldsMode:
     def test_error_mode_raises_on_extra_field(self) -> None:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
-        # The ValueError raised inside the io_source generator is wrapped by Polars
-        # in a ComputeError when .collect() materialises the LazyFrame.
         with pytest.raises((ValueError, pl.exceptions.ComputeError), match="extra_col"):
-            reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None).collect()
+            reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="error"), None).collect()
 
     def test_ignore_mode_drops_extra_field(self) -> None:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="ignore"), None).collect()
+        df = reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="ignore"), None).collect()
         assert "extra_col" not in df.columns
         assert set(df.columns) == {"order_id", "status"}
 
@@ -302,14 +350,14 @@ class TestExtraFieldsMode:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
         with caplog.at_level(logging.WARNING):
-            df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="warn"), None).collect()
+            df = reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="warn"), None).collect()
         assert "extra_col" not in df.columns
         assert any("extra_col" in msg for msg in caplog.messages)
 
     def test_no_extra_fields_no_error(self) -> None:
         docs = [{"order_id": "o1", "status": "active"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None).collect()
+        df = reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="error"), None).collect()
         assert df.shape == (1, 2)
 
     def test_capture_mode_stores_extra_in_column(self) -> None:
@@ -317,7 +365,7 @@ class TestExtraFieldsMode:
 
         docs = [{"order_id": "o1", "status": "active", "extra_col": "val"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="capture"), None).collect()
+        df = reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="capture"), None).collect()
         assert "_extra" in df.columns
         assert "extra_col" not in df.columns
         extra = json.loads(df["_extra"][0])
@@ -374,8 +422,6 @@ class TestHeterogeneousTypesWithinBatch:
         assert parsed == ["sport"]
 
     def test_null_does_not_create_conflict(self, caplog: pytest.LogCaptureFixture) -> None:
-        # null must be excluded from conflict detection; attributes column stays Struct
-        # and no warning about "attributes" must be emitted.
         docs = [
             {"id": 1, "attributes": {"weight": 12}},
             {"id": 2, "attributes": None},
@@ -389,8 +435,6 @@ class TestHeterogeneousTypesWithinBatch:
         assert not any("attributes" in msg for msg in caplog.messages)
 
     def test_uniform_field_not_serialized(self) -> None:
-        # A uniform int field must not be touched; it must remain Int64
-        # and its values must NOT be JSON strings.
         docs = [{"id": i, "price": 5000} for i in range(4)]
         reader, _ = _reader(docs)
         df = reader.read(_spec(), None).collect()
@@ -445,29 +489,12 @@ class TestHeterogeneousTypesAcrossBatches:
 
 
 # ---------------------------------------------------------------------------
-# Schema-guided coercion of Struct/List fields declared as str
+# Schema-guided coercion of fields declared as UTF8
 # ---------------------------------------------------------------------------
 
 
-class ProductDoc(msgspec.Struct):
-    label: str
-
-
-class DeepLeaf(msgspec.Struct):
-    refs: list[str] | None = None
-
-
-class DeepNode(msgspec.Struct):
-    leaves: list[DeepLeaf] | None = None
-    tags: list[str] | None = None
-
-
-class DeepEnvelope(msgspec.Struct):
-    payload: DeepNode | None = None
-
-
 class TestSchemaGuidedCoercion:
-    def test_struct_coerced_to_str_when_schema_declares_str(self) -> None:
+    def test_struct_coerced_to_str_when_schema_declares_utf8(self) -> None:
         import json
 
         docs = [
@@ -475,7 +502,8 @@ class TestSchemaGuidedCoercion:
             {"label": {"short": "B2", "long": "Beta Two"}},
         ]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=ProductDoc), None).collect()
+        schema = (ColumnSchema("label", LoomDtype.UTF8),)
+        df = reader.read(_spec(schema=schema), None).collect()
         assert df["label"].dtype == pl.String
         parsed = json.loads(df["label"][0])
         assert parsed == {"short": "A1", "long": "Alpha One"}
@@ -486,8 +514,9 @@ class TestSchemaGuidedCoercion:
             {"label": {"short": "B2", "long": "Beta Two"}},
         ]
         reader, _ = _reader(docs)
+        schema = (ColumnSchema("label", LoomDtype.UTF8),)
         with caplog.at_level(logging.WARNING):
-            reader.read(_spec(schema_type=ProductDoc), None).collect()
+            reader.read(_spec(schema=schema), None).collect()
         assert any("label" in msg for msg in caplog.messages)
 
     def test_recursive_schema_materialises_nested_empty_lists(self) -> None:
@@ -496,7 +525,7 @@ class TestSchemaGuidedCoercion:
             {"payload": {"leaves": [{"refs": []}], "tags": []}},
         ]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=DeepEnvelope), None).collect()
+        df = reader.read(_spec(schema=resolve_schema(DeepEnvelope)), None).collect()
         assert df["payload"].dtype == pl.Struct(
             {
                 "leaves": pl.List(pl.Struct({"refs": pl.List(pl.String)})),
@@ -505,6 +534,161 @@ class TestSchemaGuidedCoercion:
         )
         assert "Null" not in str(df["payload"].dtype)
 
+    def test_recursive_schema_canonicalizes_nested_struct_key_order(self) -> None:
+        docs = [
+            {
+                "bundle": {
+                    "assets": [
+                        {
+                            "_id": "asset-1",
+                            "name": "scan",
+                            "url": "https://example.invalid/a",
+                            "s3_url": "s3://bucket/a",
+                            "updatedAt": datetime(2024, 5, 1, tzinfo=UTC),
+                            "createdAt": datetime(2024, 5, 1, tzinfo=UTC),
+                        }
+                    ]
+                }
+            },
+            {
+                "bundle": {
+                    "assets": [
+                        {
+                            "url": "https://example.invalid/b",
+                            "name": "scan-b",
+                            "s3_url": "s3://bucket/b",
+                            "_id": "asset-2",
+                            "createdAt": datetime(2024, 5, 2, tzinfo=UTC),
+                            "updatedAt": datetime(2024, 5, 2, tzinfo=UTC),
+                        }
+                    ]
+                }
+            },
+        ]
+        reader, _ = _reader(docs, collection="archives")
+        df = reader.read(
+            _spec(collection="archives", schema=resolve_schema(ArchiveEnvelope)), None
+        ).collect()
+        assets = df["bundle"][0]["assets"]
+        assert isinstance(assets, list)
+        first = assets[0]
+        assert list(first.keys()) == [
+            "url",
+            "name",
+            "s3_url",
+            "_id",
+            "createdAt",
+            "updatedAt",
+        ]
+        assert first["url"] == "https://example.invalid/a"
+
+    def test_canonicalize_batch_reorders_nested_structs_without_ordered_dict(self) -> None:
+        schema = resolve_schema(ArchiveEnvelope)
+        declared = {"bundle": loom_type_to_polars(schema[0].dtype)}
+        batch = [
+            {
+                "bundle": {
+                    "assets": [
+                        {
+                            "_id": "asset-1",
+                            "name": "scan",
+                            "url": "https://example.invalid/a",
+                            "s3_url": "s3://bucket/a",
+                            "updatedAt": datetime(2024, 5, 1, tzinfo=UTC),
+                            "createdAt": datetime(2024, 5, 1, tzinfo=UTC),
+                        }
+                    ]
+                }
+            }
+        ]
+
+        canonicalized = _canonicalize_batch(batch, declared)
+
+        assets = canonicalized[0]["bundle"]["assets"]
+        assert isinstance(assets, list)
+        assert list(assets[0].keys()) == [
+            "url",
+            "name",
+            "s3_url",
+            "_id",
+            "createdAt",
+            "updatedAt",
+        ]
+
+    def test_canonicalize_batch_sorts_extra_nested_dict_fields(self) -> None:
+        docs = [
+            {
+                "bundle": {
+                    "assets": [
+                        {
+                            "_id": "asset-1",
+                            "name": "scan",
+                            "url": "https://example.invalid/a",
+                            "s3_url": "s3://bucket/a",
+                            "updatedAt": datetime(2024, 5, 1, tzinfo=UTC),
+                            "createdAt": datetime(2024, 5, 1, tzinfo=UTC),
+                        }
+                    ],
+                    "metadata": {"beta": 2, "alpha": 1},
+                }
+            },
+            {
+                "bundle": {
+                    "assets": [
+                        {
+                            "url": "https://example.invalid/b",
+                            "name": "scan-b",
+                            "s3_url": "s3://bucket/b",
+                            "_id": "asset-2",
+                            "createdAt": datetime(2024, 5, 2, tzinfo=UTC),
+                            "updatedAt": datetime(2024, 5, 2, tzinfo=UTC),
+                        }
+                    ],
+                    "metadata": {"alpha": 3, "beta": 4},
+                }
+            },
+        ]
+        reader, _ = _reader(docs, collection="archives")
+        df = reader.read(
+            _spec(collection="archives", schema=resolve_schema(ArchiveEnvelope)), None
+        ).collect()
+        assert "metadata" not in df["bundle"][0]
+
+    def test_extra_complex_fields_are_serialized_before_inference(self) -> None:
+        docs = [
+            {
+                "bundle": {"assets": []},
+                "attachments": [
+                    {
+                        "_id": "asset-1",
+                        "name": "scan",
+                        "url": "https://example.invalid/a",
+                        "s3_url": "s3://bucket/a",
+                        "updatedAt": datetime(2024, 5, 1, tzinfo=UTC),
+                        "createdAt": datetime(2024, 5, 1, tzinfo=UTC),
+                    }
+                ],
+            },
+            {
+                "bundle": {"assets": []},
+                "attachments": [
+                    {
+                        "url": "https://example.invalid/b",
+                        "name": "scan-b",
+                        "s3_url": "s3://bucket/b",
+                        "_id": "asset-2",
+                        "createdAt": datetime(2024, 5, 2, tzinfo=UTC),
+                        "updatedAt": datetime(2024, 5, 2, tzinfo=UTC),
+                    }
+                ],
+            },
+        ]
+        reader, _ = _reader(docs, collection="archives")
+        df = reader.read(
+            _spec(collection="archives", schema=resolve_schema(ArchiveEnvelope)), None
+        ).collect()
+        assert "attachments" not in df.columns
+
 
 # ---------------------------------------------------------------------------
 # Nested / deep heterogeneous types
@@ -512,15 +696,9 @@ class TestSchemaGuidedCoercion:
 
 
 class TestNestedHeterogeneousTypes:
-    """Conflicts inside nested dicts/lists that are invisible at root level.
-
-    At root level every doc has the same type (e.g. "ad" is always a dict),
-    so _detect_conflicted_keys returns an empty set.  pl.from_dicts still fails
-    because the nested substructure is heterogeneous.
-    """
+    """Conflicts inside nested dicts/lists that are invisible at root level."""
 
     def test_list_of_dicts_with_mixed_nested_field(self) -> None:
-        """leads[*].origin alternates between dict and str across documents."""
         import json
 
         docs = [
@@ -531,13 +709,11 @@ class TestNestedHeterogeneousTypes:
         reader, _ = _reader(docs)
         df = reader.read(_spec(), None).collect()
         assert df.shape[0] == 3
-        # ad must come back as String (JSON) since the nested conflict forced serialisation
         assert df["ad"].dtype == pl.String
         parsed = json.loads(df["ad"][0])
         assert parsed["leads"][0]["origin"]["channel"] == "search"
 
     def test_nested_dict_field_with_scalar_type_conflict(self) -> None:
-        """pricing.amount alternates int / float / str across documents."""
         import json
 
         docs = [
@@ -553,7 +729,6 @@ class TestNestedHeterogeneousTypes:
         assert row["amount"] == "consult"
 
     def test_list_of_scalars_not_serialised_when_uniform(self) -> None:
-        """A uniform list[str] field must NOT be serialised to JSON string."""
         docs = [
             {"id": 1, "tags": ["news", "featured"], "ad": {"leads": [{"origin": {"ch": "a"}}]}},
             {"id": 2, "tags": ["sale"], "ad": {"leads": [{"origin": "direct"}]}},
@@ -561,9 +736,7 @@ class TestNestedHeterogeneousTypes:
         reader, _ = _reader(docs)
         df = reader.read(_spec(), None).collect()
         assert df.shape[0] == 2
-        # tags is list[str] in every doc — must stay as List(String), not be stringified
         assert df["tags"].dtype == pl.List(pl.String)
-        # ad triggered the nested conflict and must be String
         assert df["ad"].dtype == pl.String
 
     def test_warning_emitted_for_nested_conflict(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -574,12 +747,10 @@ class TestNestedHeterogeneousTypes:
         reader, _ = _reader(docs)
         with caplog.at_level(logging.WARNING):
             reader.read(_spec(), None)
-        # Warning must mention the parent field name and indicate a nested conflict
         assert any("ad" in msg for msg in caplog.messages)
         assert any("nested" in msg.lower() for msg in caplog.messages)
 
     def test_non_conflicting_nested_dict_stays_as_struct(self) -> None:
-        """A nested dict that is structurally uniform must remain a Polars Struct."""
         docs = [
             {"id": 1, "location": {"city": "Madrid", "zip": "28001"}},
             {"id": 2, "location": {"city": "BCN", "zip": "08001"}},
@@ -590,19 +761,14 @@ class TestNestedHeterogeneousTypes:
 
 
 # ---------------------------------------------------------------------------
-# serialize_as_json builder API
+# UTF8 schema fields — pre-serialization to JSON string
 # ---------------------------------------------------------------------------
 
 
-class MetaDoc(msgspec.Struct):
-    name: str
-    score: float
+class TestSchemaStrFields:
+    """Fields declared LoomDtype.UTF8 are pre-serialized when the value is complex."""
 
-
-class TestSerializeAsJson:
-    """Tests for MongoSourceSpec.json_fields / FromMongo.serialize_as_json()."""
-
-    def test_explicit_json_field_dict_becomes_string(self) -> None:
+    def test_utf8_field_dict_becomes_json_string(self) -> None:
         import json
 
         docs = [
@@ -610,47 +776,94 @@ class TestSerializeAsJson:
             {"id": 2, "meta": {"key": "other", "count": 7}},
         ]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        schema = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("meta", LoomDtype.UTF8))
+        df = reader.read(_spec(schema=schema), None).collect()
         assert df["meta"].dtype == pl.String
         parsed = json.loads(df["meta"][0])
         assert parsed == {"key": "val", "count": 3}
 
-    def test_explicit_json_field_preserves_plain_string(self) -> None:
-        docs = [
-            {"id": 1, "meta": "already a string"},
-        ]
+    def test_utf8_field_preserves_plain_string(self) -> None:
+        docs = [{"id": 1, "meta": "already a string"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        schema = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("meta", LoomDtype.UTF8))
+        df = reader.read(_spec(schema=schema), None).collect()
         assert df["meta"].dtype == pl.String
         assert df["meta"][0] == "already a string"
 
-    def test_explicit_json_field_null_stays_null(self) -> None:
+    def test_utf8_field_null_stays_null(self) -> None:
         docs = [
             {"id": 1, "meta": None},
             {"id": 2, "meta": {"k": "v"}},
         ]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        schema = (ColumnSchema("id", LoomDtype.INT64), ColumnSchema("meta", LoomDtype.UTF8))
+        df = reader.read(_spec(schema=schema), None).collect()
         assert df["meta"].dtype == pl.String
         assert df["meta"][0] is None
 
-    def test_schema_str_field_auto_pre_serialized(self) -> None:
+    def test_non_utf8_field_unaffected(self) -> None:
+        docs = [{"id": 1, "price": 42, "meta": {"k": "v"}}]
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema("price", LoomDtype.INT64),
+            ColumnSchema("meta", LoomDtype.UTF8),
+        )
+        df = reader.read(_spec(schema=schema), None).collect()
+        assert df["price"].dtype == pl.Int64
+        assert df["price"][0] == 42
+
+    def test_class_annotation_str_auto_pre_serialized(self) -> None:
         import json
 
-        docs = [
-            {"name": {"first": "Alpha", "last": "One"}, "score": 9.5},
-        ]
+        docs = [{"name": {"first": "Alpha", "last": "One"}, "score": 9.5}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=MetaDoc), None).collect()
+        df = reader.read(_spec(schema=resolve_schema(MetaDoc)), None).collect()
         assert df["name"].dtype == pl.String
         parsed = json.loads(df["name"][0])
         assert parsed == {"first": "Alpha", "last": "One"}
 
-    def test_non_json_field_unaffected_by_json_fields(self) -> None:
-        docs = [
-            {"id": 1, "price": 42, "meta": {"k": "v"}},
-        ]
+
+# ---------------------------------------------------------------------------
+# Schemaless null/empty-list safeguard
+# ---------------------------------------------------------------------------
+
+
+class TestNullTypeSafeguard:
+    """Without schema, Null and List(Null) dtypes are promoted to String / List(String)."""
+
+    def test_all_null_field_promoted_to_string(self) -> None:
+        docs = [{"id": i, "notes": None} for i in range(5)]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
-        assert df["price"].dtype == pl.Int64
-        assert df["price"][0] == 42
+        df = reader.read(_spec(), None).collect()
+        assert df["notes"].dtype == pl.String
+
+    def test_all_empty_list_promoted_to_list_string(self) -> None:
+        docs = [{"id": i, "tags": []} for i in range(5)]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["tags"].dtype == pl.List(pl.String)
+
+    def test_fallback_preserves_declared_struct_field_types(self) -> None:
+        """When fallback fires, schema_overrides are forwarded so nested Null→declared type.
+
+        Reproduces: declared task.user:str|None, all docs have user=None,
+        _resolve_conflicts serialises 'ad' to string → pl.from_dicts fails with
+        schema mismatch → fallback used → without fix, task.user ends up Null.
+        """
+        from loom.etl.io.sources._mongo_batch import _build_frame_fallback
+
+        task_dtype = pl.List(
+            pl.Struct({"name": pl.String, "status": pl.Boolean, "user": pl.String})
+        )
+        batch = [
+            {"id": 1, "task": [{"name": "A", "status": False, "user": None}]},
+            {"id": 2, "task": []},
+            {"id": 3, "task": [{"name": "B", "status": True, "user": None}]},
+        ]
+        schema_overrides = {"id": pl.Int64, "task": task_dtype}
+
+        df = _build_frame_fallback(batch, schema_overrides)
+
+        assert df["task"].dtype == task_dtype
+        assert "Null" not in str(df["task"].dtype)
