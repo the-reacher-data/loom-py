@@ -39,11 +39,7 @@ class _SqlPredicateDialect(PredicateDialect[str]):
         return name
 
     def literal(self, value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, bool):
-            return "TRUE" if value else "FALSE"
-        return str(value)
+        return sql_literal(value)
 
     def eq(self, left: str, right: str) -> str:
         return f"{left} = {right}"
@@ -77,12 +73,7 @@ class _SqlPredicateDialect(PredicateDialect[str]):
         return f"NOT ({operand})"
 
     def _in_literal(self, value: Any) -> str:
-        if isinstance(value, str):
-            escaped = value.replace("'", "''")
-            return f"'{escaped}'"
-        if isinstance(value, bool):
-            return "TRUE" if value else "FALSE"
-        return str(value)
+        return sql_literal(value)
 
 
 class _PolarsPredicateDialect(PredicateDialect["pl.Expr"]):

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
 import polars as pl
 import pyarrow as pa
 import pytest
@@ -10,6 +13,11 @@ from loom.etl.declarative.expr import col
 from loom.etl.declarative.source import FromClickHouse
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
+
+
+@dataclass(frozen=True)
+class _Params:
+    updated_at_from: datetime
 
 
 class _FakeArrowClient:
@@ -50,6 +58,28 @@ class TestClickHouseReaderArrowPath:
         assert result.schema == {"id": pl.Int64, "amount": pl.Float64}
         assert result["id"].to_list() == [1]
         assert result["amount"].to_list() == [1.0]
+
+    def test_quotes_datetime_predicates_in_query(self) -> None:
+        table = pa.table({"id": ["1"]})
+        client = _FakeArrowClient(table)
+        reader = ClickHouseSourceReader(client=client)
+
+        spec = (
+            FromClickHouse("analytics.cdc_events")
+            .where(
+                col("source_time")
+                >= _Params(updated_at_from=datetime(2026, 5, 25, tzinfo=UTC)).updated_at_from
+            )
+            .unbounded()
+            ._to_spec("events")
+        )
+
+        reader.read(spec, object()).collect()
+
+        assert client.queries == [
+            "SELECT * FROM `analytics`.`cdc_events`"
+            " WHERE (source_time >= toDateTime64('2026-05-25 00:00:00', 3, 'UTC'))"
+        ]
 
     def test_select_star_when_no_columns(self) -> None:
         table = pa.table({"x": [1], "y": [2]})

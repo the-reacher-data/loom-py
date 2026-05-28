@@ -2,16 +2,72 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import Any
 
 import polars as pl
 
-from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends.polars._dtype import loom_type_to_polars
+from loom.etl.declarative.expr._predicate_dialect import PredicateDialect, fold_predicate
 from loom.etl.declarative.source._from_clickhouse import FromClickHouse
 from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
+
+
+class _ClickHousePredicateDialect(PredicateDialect[str]):
+    """Render predicate nodes as ClickHouse SQL fragments."""
+
+    def column(self, name: str) -> str:
+        return name
+
+    def literal(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, datetime):
+            value_utc = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+            timestamp = value_utc.strftime("%Y-%m-%d %H:%M:%S")
+            return f"toDateTime64('{timestamp}', 3, 'UTC')"
+        if isinstance(value, date):
+            return f"toDate('{value.isoformat()}')"
+        if isinstance(value, str):
+            escaped = value.replace("'", "''")
+            return f"'{escaped}'"
+        return str(value)
+
+    def eq(self, left: str, right: str) -> str:
+        return f"{left} = {right}"
+
+    def ne(self, left: str, right: str) -> str:
+        return f"{left} != {right}"
+
+    def gt(self, left: str, right: str) -> str:
+        return f"{left} > {right}"
+
+    def ge(self, left: str, right: str) -> str:
+        return f"{left} >= {right}"
+
+    def lt(self, left: str, right: str) -> str:
+        return f"{left} < {right}"
+
+    def le(self, left: str, right: str) -> str:
+        return f"{left} <= {right}"
+
+    def in_(self, ref: str, values: tuple[Any, ...]) -> str:
+        formatted = ", ".join(self.literal(value) for value in values)
+        return f"{ref} IN ({formatted})"
+
+    def and_(self, left: str, right: str) -> str:
+        return f"({left}) AND ({right})"
+
+    def or_(self, left: str, right: str) -> str:
+        return f"({left}) OR ({right})"
+
+    def not_(self, operand: str) -> str:
+        return f"NOT ({operand})"
+
+
+_CLICKHOUSE_PREDICATE_DIALECT = _ClickHousePredicateDialect()
 
 
 class ClickHouseSourceReader(SourceReader):
@@ -58,7 +114,10 @@ class ClickHouseSourceReader(SourceReader):
         distinct = "DISTINCT " if spec.distinct else ""
         query = f"SELECT {distinct}{columns} FROM {self._quote_identifier(spec.table_ref.ref)}"
 
-        predicates = tuple(predicate_to_sql(pred, params_instance) for pred in spec.predicates)
+        predicates = tuple(
+            fold_predicate(pred, params_instance, _CLICKHOUSE_PREDICATE_DIALECT)
+            for pred in spec.predicates
+        )
         if predicates:
             query += " WHERE " + " AND ".join(f"({pred})" for pred in predicates)
         return query
