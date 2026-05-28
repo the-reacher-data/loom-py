@@ -785,7 +785,7 @@ class TestNestedHeterogeneousTypes:
         )
         df = reader.read(_spec(schema=schema), None).collect()
         assert df["km"].dtype == pl.Float64
-        assert df["km"][0] == 50000.0
+        assert df["km"][0] == pytest.approx(50000.0)
 
     def test_int_string_mix_still_serialised(self) -> None:
         """int+string IS a real conflict and must still be serialised."""
@@ -826,8 +826,8 @@ class TestNestedHeterogeneousTypes:
         df = reader.read(_spec(schema=schema), None).collect()
 
         assert df["pricing"].dtype == pl.Struct({"amount": pl.Float64, "currency": pl.String})
-        assert df["pricing"][0]["amount"] == 1500.0
-        assert df["pricing"][1]["amount"] == 1499.99
+        assert df["pricing"][0]["amount"] == pytest.approx(1500.0)
+        assert df["pricing"][1]["amount"] == pytest.approx(1499.99)
         assert df["pricing"][2]["amount"] is None  # "consult" cannot parse as Float64
 
     def test_undeclared_struct_with_nested_conflict_still_serialises(self) -> None:
@@ -840,6 +840,38 @@ class TestNestedHeterogeneousTypes:
         reader, _ = _reader(docs)
         df = reader.read(_spec(), None).collect()
         assert df["pricing"].dtype == pl.String
+
+    def test_declared_struct_drops_extra_sub_fields_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Extra sub-fields not in the declared Struct schema are dropped and a warning
+        is emitted — strict projection: only declared fields survive."""
+        docs = [
+            {"id": 1, "pricing": {"amount": 100.0, "currency": "EUR", "extra_fee": 5.0}},
+            {"id": 2, "pricing": {"amount": 200.0, "currency": "USD"}},
+        ]
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema(
+                "pricing",
+                StructType(
+                    fields=(
+                        StructField("amount", LoomDtype.FLOAT64),
+                        StructField("currency", LoomDtype.UTF8),
+                    )
+                ),
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            df = reader.read(_spec(schema=schema), None).collect()
+
+        assert df["pricing"].dtype == pl.Struct({"amount": pl.Float64, "currency": pl.String})
+        row0 = df["pricing"][0]
+        assert row0["amount"] == pytest.approx(100.0)
+        assert row0["currency"] == "EUR"
+        assert "extra_fee" not in row0
+        assert any("extra_fee" in msg for msg in caplog.messages)
 
     def test_declared_list_of_struct_with_nested_conflict_stays_list(
         self, caplog: pytest.LogCaptureFixture
@@ -933,6 +965,47 @@ class TestSchemaStrFields:
         assert df["name"].dtype == pl.String
         parsed = json.loads(df["name"][0])
         assert parsed == {"first": "Alpha", "last": "One"}
+
+
+# ---------------------------------------------------------------------------
+# _json_default fallback for non-serializable types
+# ---------------------------------------------------------------------------
+
+
+class TestJsonDefaultFallback:
+    """_json_default must serialise BSON types that bypass normalize_bson_doc."""
+
+    def test_objectid_in_conflicted_field_serializes_as_hex(self) -> None:
+        """An ObjectId inside a conflicted field (dict vs string) must appear as
+        its 24-char hex string in the JSON output, not as '<ObjectId>'."""
+        import json
+
+        from loom.etl.io.sources._mongo_batch import MongoBatchProcessor
+
+        oid = ObjectId("507f1f77bcf86cd799439011")
+        batch = [
+            {"id": 1, "ref": {"_id": oid, "name": "foo"}},  # dict — conflict with row below
+            {"id": 2, "ref": "plain-string"},
+        ]
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        df = processor.build_frame(batch)
+
+        assert df["ref"].dtype == pl.String
+        parsed = json.loads(df["ref"][0])
+        assert parsed["_id"] == "507f1f77bcf86cd799439011"
+        assert parsed["name"] == "foo"
+
+    def test_unknown_bson_type_in_safe_dumps_uses_str(self) -> None:
+        """_safe_dumps must not produce '<ClassName>' placeholders for BSON types."""
+        import json
+
+        from loom.etl.io.sources._mongo_batch import _safe_dumps
+
+        oid = ObjectId("507f1f77bcf86cd799439011")
+        result = _safe_dumps({"_id": oid})
+        assert result is not None
+        parsed = json.loads(result)
+        assert parsed["_id"] == "507f1f77bcf86cd799439011"
 
 
 # ---------------------------------------------------------------------------

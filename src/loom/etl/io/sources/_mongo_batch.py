@@ -29,10 +29,10 @@ def _json_default(obj: object) -> str:
     if isinstance(obj, bytes):
         return obj.hex()
     _log.warning(
-        "MongoSourceReader: unexpected type %s in document field — using type name",
+        "MongoSourceReader: unexpected type %s in document field — using str()",
         type(obj).__name__,
     )
-    return f"<{type(obj).__name__}>"
+    return str(obj)
 
 
 def _json_dumps(obj: Any) -> str:
@@ -256,6 +256,95 @@ def _summarize_nested_shapes(
     return lines
 
 
+def _row_id(doc: dict[str, Any]) -> Any:
+    for key in ("_id", "id", "event_id", "root_id"):
+        if key in doc:
+            return doc[key]
+    return None
+
+
+def _value_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
+    notes: list[str] = []
+    if plan.kind == "scalar":
+        if value is None:
+            return notes
+        if isinstance(value, (dict, list)):
+            notes.append(f"{path}: expected scalar got {type(value).__name__}")
+            return notes
+        coerced = _coerce_scalar_value(value, plan.dtype)
+        if coerced is value and plan.dtype not in (None, pl.String):
+            notes.append(f"{path}: expected {plan.dtype} got {type(value).__name__}")
+        return notes
+
+    if value is None:
+        return notes
+
+    if plan.kind == "list":
+        if not isinstance(value, list):
+            notes.append(f"{path}: expected list got {type(value).__name__}")
+            return notes
+        if plan.inner is None:
+            return notes
+        for idx, item in enumerate(value[:5]):
+            notes.extend(_value_risk_notes(item, plan.inner, f"{path}[{idx}]"))
+        return notes
+
+    if plan.kind == "struct":
+        if not isinstance(value, dict):
+            notes.append(f"{path}: expected struct got {type(value).__name__}")
+            return notes
+        expected = {field.name for field in plan.fields}
+        extra = [key for key in value if key not in expected]
+        if extra:
+            notes.append(f"{path}: extra key(s) {sorted(extra)!r}")
+        for field in plan.fields:
+            if field.name in value:
+                notes.extend(
+                    _value_risk_notes(value[field.name], field.plan, f"{path}.{field.name}")
+                )
+        return notes
+
+    return notes
+
+
+def _row_risk_notes(
+    doc: dict[str, Any], schema_overrides: dict[str, pl.DataType] | None
+) -> list[str]:
+    if not schema_overrides:
+        return []
+    compiled_plan = _build_schema_plan(schema_overrides)
+    notes: list[str] = []
+    declared = set(compiled_plan)
+    for key, value in doc.items():
+        if key not in declared:
+            if isinstance(value, (dict, list)):
+                notes.append(f"$.{key}: undeclared complex {type(value).__name__}")
+            continue
+        notes.extend(_value_risk_notes(value, compiled_plan[key], f"$.{key}"))
+    return notes
+
+
+def _log_risky_rows(
+    batch: list[dict[str, Any]], schema_overrides: dict[str, pl.DataType] | None
+) -> None:
+    if not batch or not schema_overrides:
+        return
+    reported = 0
+    for row_index, doc in enumerate(batch):
+        notes = _row_risk_notes(doc, schema_overrides)
+        if not notes:
+            continue
+        reported += 1
+        _log.warning(
+            "MongoSourceReader: risky row sample row=%d id=%r issues=%s",
+            row_index,
+            _row_id(doc),
+            notes[:8],
+        )
+        if reported >= 5:
+            break
+
+
 # ---------------------------------------------------------------------------
 # Schema canonicalization
 # ---------------------------------------------------------------------------
@@ -381,19 +470,17 @@ def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
     if plan.kind == "struct":
         if not isinstance(value, dict):
             return None  # non-dict where Struct is declared → null
-        canonical: dict[str, Any] = {}
-        seen: set[str] = set()
-        for field in plan.fields:
-            if field.name in value:
-                canonical[field.name] = _canonicalize_value(value[field.name], field.plan)
-                seen.add(field.name)
-            else:
-                canonical[field.name] = None
-        for key, item in value.items():
-            if key in seen:
-                continue
-            canonical[key] = item
-        return canonical
+        declared_names = {field.name for field in plan.fields}
+        extra_keys = sorted(key for key in value if key not in declared_names)
+        if extra_keys:
+            _log.warning(
+                "MongoSourceReader: dropping undeclared sub-field(s) %s from declared struct",
+                extra_keys,
+            )
+        return {
+            field.name: _canonicalize_value(value.get(field.name), field.plan)
+            for field in plan.fields
+        }
 
     return value
 
@@ -557,12 +644,14 @@ class MongoBatchProcessor:
         self,
         batch: list[dict[str, Any]],
         schema_overrides: dict[str, pl.DataType] | None = None,
+        declared_schema: dict[str, pl.DataType] | None = None,
     ) -> pl.DataFrame:
         if not batch:
             return pl.DataFrame()
         batch = self._pre_serialize(batch)
         batch = self._resolve_conflicts(batch, schema_overrides)
         batch = self._serialize_extra_complex_fields(batch, schema_overrides)
+        _log_risky_rows(batch, declared_schema)
         batch = self._canonicalize_declared_structs(batch, schema_overrides)
         return self._to_dataframe(batch, schema_overrides)
 
