@@ -16,6 +16,7 @@ from loom.etl.declarative._format import Format
 from loom.etl.declarative.expr._params import params as p
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import FileSourceSpec, TableSourceSpec
+from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.declarative.target import IntoTable, SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
@@ -73,6 +74,33 @@ def test_reader_reads_correct_data(tmp_path: Path) -> None:
     result = PolarsSourceReader(tmp_path).read(_source_spec("raw.events"), None).collect()
     assert result["id"].to_list() == [1, 2, 3]
     assert result["v"].to_list() == [10, 20, 30]
+
+
+def test_reader_dispatches_clickhouse_source_through_base_reader(tmp_path: Path) -> None:
+    class _FakeClickHouseReader:
+        def __init__(self) -> None:
+            self.calls: list[tuple[ClickHouseSourceSpec, object]] = []
+
+        def read(self, spec: ClickHouseSourceSpec, params_instance: object) -> pl.LazyFrame:
+            self.calls.append((spec, params_instance))
+            return pl.DataFrame({"id": [1], "amount": [9.5]}).lazy()
+
+    reader_impl = _FakeClickHouseReader()
+    spec = ClickHouseSourceSpec(
+        alias="clickhouse",
+        table_ref=TableRef("analytics.cdc_events"),
+        predicates=(),
+        columns=("id", "amount"),
+        schema=(),
+        distinct=False,
+        allow_full_scan=True,
+    )
+
+    reader = PolarsSourceReader(tmp_path, clickhouse_reader=reader_impl)
+    result = reader.read(spec, None).collect()
+
+    assert reader_impl.calls and reader_impl.calls[0][0] == spec
+    assert result.columns == ["id", "amount"]
 
 
 def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:

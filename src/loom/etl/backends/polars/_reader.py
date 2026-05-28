@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
+    from loom.etl.io.sources._mongo import MongoSourceReader
 
 import polars as pl
 
@@ -11,6 +15,7 @@ from loom.etl.backends._format_registry import resolve_format_handler
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
+from loom.etl.declarative.source._specs import ClickHouseSourceSpec, MongoSourceSpec
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
 from loom.etl.storage._file_locator import FileLocator
@@ -22,7 +27,7 @@ from ._predicate import predicate_to_polars
 
 
 class PolarsSourceReader(SourceReader):
-    """Read table and file sources using Polars."""
+    """Read table, file, and MongoDB sources using Polars."""
 
     def __init__(
         self,
@@ -30,23 +35,48 @@ class PolarsSourceReader(SourceReader):
         *,
         route_resolver: TableRouteResolver | None = None,
         file_locator: FileLocator | None = None,
+        mongo_reader: MongoSourceReader | None = None,
+        clickhouse_reader: ClickHouseSourceReader | None = None,
     ) -> None:
         self._locator = _as_locator(locator)
         self._resolver = route_resolver or PathRouteResolver(self._locator)
         self._file_locator = file_locator
+        self._mongo_reader: MongoSourceReader | None = mongo_reader
+        self._clickhouse_reader: ClickHouseSourceReader | None = clickhouse_reader
 
     def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
         """Read source spec and return lazy frame."""
         if isinstance(spec, TableSourceSpec):
             return self._read_table(spec, params_instance)
-
         if isinstance(spec, FileSourceSpec):
             return self._read_file(spec)
-
+        if isinstance(spec, MongoSourceSpec):
+            return self._read_mongo(spec, params_instance)
+        if isinstance(spec, ClickHouseSourceSpec):
+            return self._read_clickhouse(spec, params_instance)
         raise TypeError(
             f"PolarsSourceReader does not support source kind {spec.kind!r}. "
             "TEMP sources are handled by CheckpointStore."
         )
+
+    def _read_mongo(self, spec: MongoSourceSpec, params_instance: Any) -> pl.LazyFrame:
+        if self._mongo_reader is None:
+            raise TypeError(
+                "MongoSourceSpec requires a MongoSourceReader injected at construction time. "
+                "Set mongo_reader= when constructing PolarsSourceReader."
+            )
+        frame: pl.LazyFrame = self._mongo_reader.read(spec, params_instance)
+        return frame
+
+    def _read_clickhouse(self, spec: ClickHouseSourceSpec, params_instance: Any) -> pl.LazyFrame:
+        if self._clickhouse_reader is None:
+            raise TypeError(
+                "ClickHouseSourceSpec requires a ClickHouseSourceReader "
+                "injected at construction time. "
+                "Set clickhouse_reader= when constructing PolarsSourceReader."
+            )
+        frame: pl.LazyFrame = self._clickhouse_reader.read(spec, params_instance)
+        return frame
 
     def execute_sql(self, frames: dict[str, Any], query: str) -> pl.LazyFrame:
         """Execute SQL query against backend frames."""

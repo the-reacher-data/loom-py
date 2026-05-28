@@ -180,6 +180,7 @@ include = [
 typeCheckingMode = "standard"
 reportMissingModuleSource = "none"
 reportMissingImports = "none"
+reportPrivateImportUsage = "none"
 ignore = [
     "src/loom/etl/testing/spark.py",
 ]
