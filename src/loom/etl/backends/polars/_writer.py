@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
@@ -148,10 +148,32 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
                 frame,
                 mode="overwrite",
                 partition_by=list(partition_cols),
+                schema_mode="overwrite",
                 **kwargs,
             )
         else:
-            write_deltalake(location.uri, frame, mode="overwrite", **kwargs)
+            write_deltalake(
+                location.uri,
+                frame,
+                mode="overwrite",
+                schema_mode="overwrite",
+                **kwargs,
+            )
+
+    @staticmethod
+    def _delta_schema_mode(
+        schema_mode: SchemaMode,
+    ) -> Literal["merge", "overwrite"] | None:
+        """Map Loom SchemaMode to the delta-rs schema_mode string.
+
+        Returns None for STRICT so delta-rs applies its default behaviour
+        (reject writes that change the schema).
+        """
+        if schema_mode is SchemaMode.OVERWRITE:
+            return "overwrite"
+        if schema_mode is SchemaMode.EVOLVE:
+            return "merge"
+        return None  # STRICT — let delta-rs reject schema changes
 
     def _append(
         self,
@@ -162,9 +184,14 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Append to existing Delta table."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
-        write_deltalake(location.uri, frame, mode="append", **self._write_kwargs(location))
+        write_deltalake(
+            location.uri,
+            frame,
+            mode="append",
+            schema_mode=self._delta_schema_mode(schema_mode),
+            **self._write_kwargs(location),
+        )
 
     def _replace(
         self,
@@ -175,9 +202,14 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite existing Delta table."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
-        write_deltalake(location.uri, frame, mode="overwrite", **self._write_kwargs(location))
+        write_deltalake(
+            location.uri,
+            frame,
+            mode="overwrite",
+            schema_mode=self._delta_schema_mode(schema_mode),
+            **self._write_kwargs(location),
+        )
 
     def _replace_partitions(
         self,
@@ -189,7 +221,6 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite partitions present in frame."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         if frame.is_empty():
             _log.warning("replace_partitions table=%s has 0 rows — nothing written", path_target)
             return
@@ -204,6 +235,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             frame,
             mode="overwrite",
             predicate=predicate,
+            schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
 
@@ -217,13 +249,13 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite rows matching SQL predicate."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
         write_deltalake(
             location.uri,
             frame,
             mode="overwrite",
             predicate=predicate,
+            schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
 

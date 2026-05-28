@@ -179,6 +179,7 @@ include = [
 typeCheckingMode = "standard"
 reportMissingModuleSource = "none"
 reportMissingImports = "none"
+reportPrivateImportUsage = "none"
 ignore = [
     "src/loom/etl/testing/spark.py",
 ]
@@ -200,9 +201,13 @@ module = [
     "findspark",
     "fsspec.*",
     "chispa.*",
-    "pyarrow.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 minversion = "8.0"

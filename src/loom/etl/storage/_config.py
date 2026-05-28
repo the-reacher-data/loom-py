@@ -166,6 +166,30 @@ class FileRoute(LoomFrozenStruct, frozen=True):
         self.path.validate(context=f"{context}.path")
 
 
+class ClickHouseConfig(LoomFrozenStruct, frozen=True):
+    """Connection settings for ClickHouse targets.
+
+    Args:
+        url: ClickHouse DSN, e.g. ``clickhouse://user:pass@host:8123/default``.
+             When empty, ClickHouse write targets are not available.
+    """
+
+    url: str = ""
+
+
+class MongoConfig(LoomFrozenStruct, frozen=True):
+    """Connection settings for MongoDB sources.
+
+    Args:
+        uri:      pymongo connection string, e.g. ``mongodb://user:pass@host:27017``.
+                  When empty, MongoDB read sources are not available.
+        database: Database name to read from.
+    """
+
+    uri: str = ""
+    database: str = ""
+
+
 class StorageConfig(LoomFrozenStruct, frozen=True):
     """Canonical storage configuration used by ETL runner/factory.
 
@@ -188,6 +212,8 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
     files: tuple[FileRoute, ...] = ()
     tmp_root: str = ""
     tmp_storage_options: dict[str, str] = {}
+    clickhouse: ClickHouseConfig = ClickHouseConfig()
+    mongo: MongoConfig = MongoConfig()
 
     def validate(self) -> None:
         """Validate structural constraints and option dictionaries."""

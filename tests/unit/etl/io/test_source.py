@@ -11,6 +11,7 @@ from loom.etl.declarative._format import Format
 from loom.etl.declarative.expr._params import params
 from loom.etl.declarative.expr._refs import TableRef, col
 from loom.etl.declarative.source import (
+    FromClickHouse,
     FromFile,
     FromTable,
     FromTemp,
@@ -215,6 +216,12 @@ class TestSources:
         specs = sources._to_specs()
         assert [spec.alias for spec in specs] == ["orders", "customers"]
 
+    def test_clickhouse_source_is_supported(self) -> None:
+        sources = Sources(events=FromClickHouse("analytics.cdc_events").unbounded())
+        specs = sources._to_specs()
+        assert specs[0].kind is SourceKind.CLICKHOUSE
+        assert specs[0].table == "analytics.cdc_events"
+
     def test_repr_lists_aliases(self) -> None:
         sources = Sources(orders=FromTable("raw.orders"), customers=FromTable("raw.customers"))
         assert repr(sources) == "Sources(orders, customers)"
@@ -238,6 +245,13 @@ class TestSourceSet:
         assert aliases == {"orders", "customers"}
         assert isinstance(extended, SourceSet)
         assert extended._sources is not Base._sources
+
+    def test_clickhouse_sources_are_collected(self) -> None:
+        class Base(SourceSet[object]):
+            events = FromClickHouse("analytics.cdc_events").unbounded()
+
+        aliases = {spec.alias for spec in Base()._to_specs()}
+        assert aliases == {"events"}
 
     def test_extended_conflict_raises(self) -> None:
         class Base(SourceSet[object]):
