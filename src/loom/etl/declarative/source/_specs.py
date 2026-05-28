@@ -179,6 +179,7 @@ class MongoSourceSpec:
     extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
     batch_size: int = 10_000
     limit: int | None = None
+    json_fields: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not 1 <= self.batch_size <= 50_000:

@@ -68,6 +68,7 @@ class FromMongo:
         "_extra_fields_mode",
         "_batch_size",
         "_limit",
+        "_json_fields",
     )
 
     def __init__(self, collection: str) -> None:
@@ -83,6 +84,7 @@ class FromMongo:
         self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
         self._batch_size: int = 10_000
         self._limit: int | None = None
+        self._json_fields: frozenset[str] = frozenset()
 
     def where(self, filter: ExprNode) -> FromMongo:
         """Filter documents using the col()/params DSL.
@@ -142,6 +144,18 @@ class FromMongo:
             raise ValueError(f"batch_size must be between 1 and 50000, got {n}")
         return self._clone(_batch_size=n)
 
+    def serialize_as_json(self, *names: str) -> FromMongo:
+        """Declare fields to be pre-serialized as JSON strings before DataFrame construction.
+
+        Use this when a sub-object should be stored as a JSON string column rather
+        than expanded into a Polars Struct.  Fields declared in the schema as ``str``
+        are pre-serialized automatically; this method is for fields outside the schema.
+
+        Args:
+            names: Field names to serialize as JSON strings.
+        """
+        return self._clone(_json_fields=self._json_fields | frozenset(names))
+
     def limit(self, n: int) -> FromMongo:
         """Limit the number of documents returned — for dev/CI only."""
         if n < 1:
@@ -158,6 +172,7 @@ class FromMongo:
             extra_fields_mode=self._extra_fields_mode,
             batch_size=self._batch_size,
             limit=self._limit,
+            json_fields=self._json_fields,
         )
 
     def _clone(self, **overrides: Any) -> FromMongo:

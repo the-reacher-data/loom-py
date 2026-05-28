@@ -125,16 +125,17 @@ def _spec(**kwargs: Any) -> MongoSourceSpec:
 
 
 class TestHappyPath:
-    def test_returns_dataframe(self) -> None:
+    def test_returns_lazy_frame(self) -> None:
         reader, _ = _reader(_ORDERS)
-        df = reader.read(_spec(), None)
-        assert isinstance(df, pl.DataFrame)
+        result = reader.read(_spec(), None)
+        assert isinstance(result, pl.LazyFrame)
+        df = result.collect()
         assert df.shape == (2, 2)
         assert set(df.columns) == {"order_id", "status"}
 
     def test_values_preserved(self) -> None:
         reader, _ = _reader(_ORDERS)
-        df = reader.read(_spec(), None)
+        df = reader.read(_spec(), None).collect()
         assert df["order_id"].to_list() == ["o1", "o2"]
         assert df["status"].to_list() == ["active", "pending"]
 
@@ -190,13 +191,13 @@ class TestLimit:
     def test_limit_applied(self) -> None:
         docs = [{"n": i} for i in range(10)]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(limit=3), None)
+        df = reader.read(_spec(limit=3), None).collect()
         assert df.shape[0] == 3
 
     def test_no_limit_returns_all(self) -> None:
         docs = [{"n": i} for i in range(5)]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(limit=None), None)
+        df = reader.read(_spec(limit=None), None).collect()
         assert df.shape[0] == 5
 
 
@@ -208,15 +209,27 @@ class TestLimit:
 class TestEmptyCollection:
     def test_empty_returns_empty_dataframe(self) -> None:
         reader, _ = _reader([])
-        df = reader.read(_spec(), None)
-        assert isinstance(df, pl.DataFrame)
+        result = reader.read(_spec(), None)
+        assert isinstance(result, pl.LazyFrame)
+        df = result.collect()
         assert df.shape[0] == 0
 
     def test_empty_with_schema_returns_correct_columns(self) -> None:
         reader, _ = _reader([])
-        df = reader.read(_spec(schema_type=OrderDoc), None)
+        df = reader.read(_spec(schema_type=OrderDoc), None).collect()
         assert set(df.columns) == {"order_id", "status"}
         assert df.shape[0] == 0
+
+    def test_empty_with_recursive_schema_keeps_nested_types(self) -> None:
+        reader, _ = _reader([])
+        df = reader.read(_spec(schema_type=DeepEnvelope), None).collect()
+        assert df.shape == (0, 1)
+        assert df["payload"].dtype == pl.Struct(
+            {
+                "leaves": pl.List(pl.Struct({"refs": pl.List(pl.String)})),
+                "tags": pl.List(pl.String),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -228,20 +241,20 @@ class TestBsonTypes:
     def test_objectid_normalized_to_str(self) -> None:
         oid = ObjectId("507f1f77bcf86cd799439011")
         reader, _ = _reader([{"_id": oid, "name": "foo"}])
-        df = reader.read(_spec(), None)
+        df = reader.read(_spec(), None).collect()
         assert df["_id"].dtype == pl.String
         assert df["_id"][0] == "507f1f77bcf86cd799439011"
 
     def test_decimal128_normalized_to_float(self) -> None:
         reader, _ = _reader([{"amount": Decimal128("3.14"), "n": 1}])
-        df = reader.read(_spec(), None)
+        df = reader.read(_spec(), None).collect()
         assert df["amount"].dtype == pl.Float64
         assert abs(df["amount"][0] - 3.14) < 1e-10
 
     def test_nested_objectid_in_subdoc(self) -> None:
         oid = ObjectId("507f1f77bcf86cd799439011")
         reader, _ = _reader([{"meta": {"ref_id": oid}, "n": 1}])
-        df = reader.read(_spec(), None)
+        df = reader.read(_spec(), None).collect()
         assert isinstance(df["meta"][0], dict)
         assert df["meta"][0]["ref_id"] == "507f1f77bcf86cd799439011"
 
@@ -258,7 +271,7 @@ class TestBsonTypes:
                 }
             ]
         )
-        df = reader.read(_spec(), None)
+        df = reader.read(_spec(), None).collect()
         assert df.shape[0] == 1
         assert df["_id"].dtype == pl.String
         assert df["amount"].dtype == pl.Float64
@@ -273,13 +286,15 @@ class TestExtraFieldsMode:
     def test_error_mode_raises_on_extra_field(self) -> None:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
-        with pytest.raises(ValueError, match="extra_col"):
-            reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None)
+        # The ValueError raised inside the io_source generator is wrapped by Polars
+        # in a ComputeError when .collect() materialises the LazyFrame.
+        with pytest.raises((ValueError, pl.exceptions.ComputeError), match="extra_col"):
+            reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None).collect()
 
     def test_ignore_mode_drops_extra_field(self) -> None:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="ignore"), None)
+        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="ignore"), None).collect()
         assert "extra_col" not in df.columns
         assert set(df.columns) == {"order_id", "status"}
 
@@ -287,14 +302,14 @@ class TestExtraFieldsMode:
         docs = [{"order_id": "o1", "status": "active", "extra_col": "surprise"}]
         reader, _ = _reader(docs)
         with caplog.at_level(logging.WARNING):
-            df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="warn"), None)
+            df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="warn"), None).collect()
         assert "extra_col" not in df.columns
         assert any("extra_col" in msg for msg in caplog.messages)
 
     def test_no_extra_fields_no_error(self) -> None:
         docs = [{"order_id": "o1", "status": "active"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None)
+        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="error"), None).collect()
         assert df.shape == (1, 2)
 
     def test_capture_mode_stores_extra_in_column(self) -> None:
@@ -302,8 +317,340 @@ class TestExtraFieldsMode:
 
         docs = [{"order_id": "o1", "status": "active", "extra_col": "val"}]
         reader, _ = _reader(docs)
-        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="capture"), None)
+        df = reader.read(_spec(schema_type=OrderDoc, extra_fields_mode="capture"), None).collect()
         assert "_extra" in df.columns
         assert "extra_col" not in df.columns
         extra = json.loads(df["_extra"][0])
         assert extra["extra_col"] == "val"
+
+
+# ---------------------------------------------------------------------------
+# Heterogeneous types within a single batch
+# ---------------------------------------------------------------------------
+
+
+class TestHeterogeneousTypesWithinBatch:
+    def test_dict_vs_string_same_field(self) -> None:
+        import json
+
+        docs = [
+            {"id": 1, "attributes": {"weight": 12, "color": "red"}},
+            {"id": 2, "attributes": "see label"},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["attributes"].dtype == pl.String
+        first = df.filter(pl.col("id") == 1)["attributes"][0]
+        parsed = json.loads(first)
+        assert parsed == {"weight": 12, "color": "red"}
+
+    def test_int_vs_string_same_field(self, caplog: pytest.LogCaptureFixture) -> None:
+        import json
+
+        docs = [
+            {"id": 1, "year": 2020},
+            {"id": 2, "year": "unknown"},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            df = reader.read(_spec(), None).collect()
+        assert df["year"].dtype == pl.String
+        int_row = df.filter(pl.col("id") == 1)["year"][0]
+        assert json.loads(int_row) == 2020
+        assert any("year" in msg for msg in caplog.messages)
+
+    def test_list_of_strings_vs_list_of_dicts(self) -> None:
+        import json
+
+        docs = [
+            {"id": 1, "tags": ["sport"]},
+            {"id": 2, "tags": [{"name": "sport"}]},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["tags"].dtype == pl.String
+        first = df.filter(pl.col("id") == 1)["tags"][0]
+        parsed = json.loads(first)
+        assert parsed == ["sport"]
+
+    def test_null_does_not_create_conflict(self, caplog: pytest.LogCaptureFixture) -> None:
+        # null must be excluded from conflict detection; attributes column stays Struct
+        # and no warning about "attributes" must be emitted.
+        docs = [
+            {"id": 1, "attributes": {"weight": 12}},
+            {"id": 2, "attributes": None},
+            {"id": 3, "attributes": {"weight": 30}},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            df = reader.read(_spec(), None).collect()
+        assert df["attributes"].dtype == pl.Struct
+        assert df["attributes"][1] is None
+        assert not any("attributes" in msg for msg in caplog.messages)
+
+    def test_uniform_field_not_serialized(self) -> None:
+        # A uniform int field must not be touched; it must remain Int64
+        # and its values must NOT be JSON strings.
+        docs = [{"id": i, "price": 5000} for i in range(4)]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["price"].dtype == pl.Int64
+        assert df["price"][0] == 5000
+
+    def test_warning_emitted_on_conflict(self, caplog: pytest.LogCaptureFixture) -> None:
+        docs = [
+            {"id": 1, "attributes": {"weight": 12}},
+            {"id": 2, "attributes": "see label"},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            reader.read(_spec(), None)
+        assert any("attributes" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# Heterogeneous types across batches
+# ---------------------------------------------------------------------------
+
+
+class TestHeterogeneousTypesAcrossBatches:
+    def test_struct_in_batch1_string_in_batch2(self) -> None:
+        import json
+
+        docs = [
+            {"id": 1, "attributes": {"weight": 10}},
+            {"id": 2, "attributes": {"weight": 20}},
+            {"id": 3, "attributes": "n/a"},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(batch_size=2), None).collect()
+        assert df.shape[0] == 3
+        assert df["attributes"].dtype == pl.String
+        first = df.filter(pl.col("id") == 1)["attributes"][0]
+        parsed = json.loads(first)
+        assert parsed == {"weight": 10}
+
+    def test_warning_emitted_on_cross_batch_conflict(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        docs = [
+            {"id": 1, "attributes": {"weight": 10}},
+            {"id": 2, "attributes": {"weight": 20}},
+            {"id": 3, "attributes": "n/a"},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            reader.read(_spec(batch_size=2), None)
+        assert any("attributes" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# Schema-guided coercion of Struct/List fields declared as str
+# ---------------------------------------------------------------------------
+
+
+class ProductDoc(msgspec.Struct):
+    label: str
+
+
+class DeepLeaf(msgspec.Struct):
+    refs: list[str] | None = None
+
+
+class DeepNode(msgspec.Struct):
+    leaves: list[DeepLeaf] | None = None
+    tags: list[str] | None = None
+
+
+class DeepEnvelope(msgspec.Struct):
+    payload: DeepNode | None = None
+
+
+class TestSchemaGuidedCoercion:
+    def test_struct_coerced_to_str_when_schema_declares_str(self) -> None:
+        import json
+
+        docs = [
+            {"label": {"short": "A1", "long": "Alpha One"}},
+            {"label": {"short": "B2", "long": "Beta Two"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(schema_type=ProductDoc), None).collect()
+        assert df["label"].dtype == pl.String
+        parsed = json.loads(df["label"][0])
+        assert parsed == {"short": "A1", "long": "Alpha One"}
+
+    def test_warning_emitted_on_schema_coercion(self, caplog: pytest.LogCaptureFixture) -> None:
+        docs = [
+            {"label": {"short": "A1", "long": "Alpha One"}},
+            {"label": {"short": "B2", "long": "Beta Two"}},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            reader.read(_spec(schema_type=ProductDoc), None).collect()
+        assert any("label" in msg for msg in caplog.messages)
+
+    def test_recursive_schema_materialises_nested_empty_lists(self) -> None:
+        docs = [
+            {"payload": {"leaves": [{"refs": []}], "tags": []}},
+            {"payload": {"leaves": [{"refs": []}], "tags": []}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(schema_type=DeepEnvelope), None).collect()
+        assert df["payload"].dtype == pl.Struct(
+            {
+                "leaves": pl.List(pl.Struct({"refs": pl.List(pl.String)})),
+                "tags": pl.List(pl.String),
+            }
+        )
+        assert "Null" not in str(df["payload"].dtype)
+
+
+# ---------------------------------------------------------------------------
+# Nested / deep heterogeneous types
+# ---------------------------------------------------------------------------
+
+
+class TestNestedHeterogeneousTypes:
+    """Conflicts inside nested dicts/lists that are invisible at root level.
+
+    At root level every doc has the same type (e.g. "ad" is always a dict),
+    so _detect_conflicted_keys returns an empty set.  pl.from_dicts still fails
+    because the nested substructure is heterogeneous.
+    """
+
+    def test_list_of_dicts_with_mixed_nested_field(self) -> None:
+        """leads[*].origin alternates between dict and str across documents."""
+        import json
+
+        docs = [
+            {"id": 1, "ad": {"leads": [{"origin": {"channel": "search", "paid": True}}]}},
+            {"id": 2, "ad": {"leads": [{"origin": "direct"}]}},
+            {"id": 3, "ad": {"leads": [{"origin": {"channel": "email", "paid": False}}]}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df.shape[0] == 3
+        # ad must come back as String (JSON) since the nested conflict forced serialisation
+        assert df["ad"].dtype == pl.String
+        parsed = json.loads(df["ad"][0])
+        assert parsed["leads"][0]["origin"]["channel"] == "search"
+
+    def test_nested_dict_field_with_scalar_type_conflict(self) -> None:
+        """pricing.amount alternates int / float / str across documents."""
+        import json
+
+        docs = [
+            {"id": 1, "pricing": {"amount": 1500, "currency": "EUR"}},
+            {"id": 2, "pricing": {"amount": 1499.99, "currency": "EUR"}},
+            {"id": 3, "pricing": {"amount": "consult", "currency": "EUR"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df.shape[0] == 3
+        assert df["pricing"].dtype == pl.String
+        row = json.loads(df["pricing"][2])
+        assert row["amount"] == "consult"
+
+    def test_list_of_scalars_not_serialised_when_uniform(self) -> None:
+        """A uniform list[str] field must NOT be serialised to JSON string."""
+        docs = [
+            {"id": 1, "tags": ["news", "featured"], "ad": {"leads": [{"origin": {"ch": "a"}}]}},
+            {"id": 2, "tags": ["sale"], "ad": {"leads": [{"origin": "direct"}]}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df.shape[0] == 2
+        # tags is list[str] in every doc — must stay as List(String), not be stringified
+        assert df["tags"].dtype == pl.List(pl.String)
+        # ad triggered the nested conflict and must be String
+        assert df["ad"].dtype == pl.String
+
+    def test_warning_emitted_for_nested_conflict(self, caplog: pytest.LogCaptureFixture) -> None:
+        docs = [
+            {"id": 1, "ad": {"leads": [{"origin": {"channel": "search"}}]}},
+            {"id": 2, "ad": {"leads": [{"origin": "direct"}]}},
+        ]
+        reader, _ = _reader(docs)
+        with caplog.at_level(logging.WARNING):
+            reader.read(_spec(), None)
+        # Warning must mention the parent field name and indicate a nested conflict
+        assert any("ad" in msg for msg in caplog.messages)
+        assert any("nested" in msg.lower() for msg in caplog.messages)
+
+    def test_non_conflicting_nested_dict_stays_as_struct(self) -> None:
+        """A nested dict that is structurally uniform must remain a Polars Struct."""
+        docs = [
+            {"id": 1, "location": {"city": "Madrid", "zip": "28001"}},
+            {"id": 2, "location": {"city": "BCN", "zip": "08001"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["location"].dtype == pl.Struct({"city": pl.String, "zip": pl.String})
+
+
+# ---------------------------------------------------------------------------
+# serialize_as_json builder API
+# ---------------------------------------------------------------------------
+
+
+class MetaDoc(msgspec.Struct):
+    name: str
+    score: float
+
+
+class TestSerializeAsJson:
+    """Tests for MongoSourceSpec.json_fields / FromMongo.serialize_as_json()."""
+
+    def test_explicit_json_field_dict_becomes_string(self) -> None:
+        import json
+
+        docs = [
+            {"id": 1, "meta": {"key": "val", "count": 3}},
+            {"id": 2, "meta": {"key": "other", "count": 7}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        assert df["meta"].dtype == pl.String
+        parsed = json.loads(df["meta"][0])
+        assert parsed == {"key": "val", "count": 3}
+
+    def test_explicit_json_field_preserves_plain_string(self) -> None:
+        docs = [
+            {"id": 1, "meta": "already a string"},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        assert df["meta"].dtype == pl.String
+        assert df["meta"][0] == "already a string"
+
+    def test_explicit_json_field_null_stays_null(self) -> None:
+        docs = [
+            {"id": 1, "meta": None},
+            {"id": 2, "meta": {"k": "v"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        assert df["meta"].dtype == pl.String
+        assert df["meta"][0] is None
+
+    def test_schema_str_field_auto_pre_serialized(self) -> None:
+        import json
+
+        docs = [
+            {"name": {"first": "Alpha", "last": "One"}, "score": 9.5},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(schema_type=MetaDoc), None).collect()
+        assert df["name"].dtype == pl.String
+        parsed = json.loads(df["name"][0])
+        assert parsed == {"first": "Alpha", "last": "One"}
+
+    def test_non_json_field_unaffected_by_json_fields(self) -> None:
+        docs = [
+            {"id": 1, "price": 42, "meta": {"k": "v"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(json_fields=frozenset({"meta"})), None).collect()
+        assert df["price"].dtype == pl.Int64
+        assert df["price"][0] == 42
