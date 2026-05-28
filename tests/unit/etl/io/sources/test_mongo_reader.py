@@ -20,7 +20,7 @@ from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.expr import col
 from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._mongo import MongoSourceReader
-from loom.etl.io.sources._mongo_batch import _canonicalize_batch
+from loom.etl.io.sources._mongo_batch import _build_schema_plan, _canonicalize_batch
 from loom.etl.schema._contract import resolve_schema
 from loom.etl.schema._schema import ColumnSchema, ListType, LoomDtype, StructField, StructType
 
@@ -602,7 +602,7 @@ class TestSchemaGuidedCoercion:
             }
         ]
 
-        canonicalized = _canonicalize_batch(batch, declared)
+        canonicalized = _canonicalize_batch(batch, _build_schema_plan(declared))
 
         assets = canonicalized[0]["bundle"]["assets"]
         assert isinstance(assets, list)
@@ -1162,3 +1162,129 @@ class TestValueRiskNotes:
 
         plan = _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)
         assert _value_risk_notes("123", plan, "$.id") == []
+
+
+class TestPhase2Improvements:
+    """Regression and unit tests for Phase 2 refactoring (T10–T14)."""
+
+    # ------------------------------------------------------------------
+    # T10 — _log_risky_rows builds schema plan once per batch
+    # ------------------------------------------------------------------
+
+    def test_log_risky_rows_plan_built_once(self) -> None:
+        """_build_schema_plan must be called exactly once regardless of batch size."""
+        from unittest.mock import patch
+
+        from loom.etl.io.sources._mongo_batch import _log_risky_rows
+
+        schema: dict[str, pl.DataType] = {"x": pl.Int64}
+        batch = [{"x": "not-a-number"}] * 50
+
+        with patch(
+            "loom.etl.io.sources._mongo_batch._build_schema_plan",
+            wraps=__import__(
+                "loom.etl.io.sources._mongo_batch", fromlist=["_build_schema_plan"]
+            )._build_schema_plan,
+        ) as mock_plan:
+            _log_risky_rows(batch, schema)
+
+        mock_plan.assert_called_once_with(schema)
+
+    # ------------------------------------------------------------------
+    # T11 — _classify_batch_keys detects both conflict types in one pass
+    # ------------------------------------------------------------------
+
+    def test_classify_batch_keys_returns_conflicted_and_complex_root(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _classify_batch_keys
+
+        batch = [
+            {"a": 1, "b": {"x": 1}},
+            {"a": "string", "b": {"x": "string"}},
+        ]
+        conflicted, complex_root = _classify_batch_keys(batch)
+
+        assert "a" in conflicted, "int/str mix must be conflicted"
+        assert "b" in complex_root, "nested type conflict must be in complex_root"
+        assert "b" not in conflicted, "root type (dict) is uniform — not conflicted at root"
+
+    def test_classify_batch_keys_stable_schema_returns_empty_sets(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _classify_batch_keys
+
+        batch = [{"x": 1, "y": "hello"}, {"x": 2, "y": "world"}]
+        conflicted, complex_root = _classify_batch_keys(batch)
+
+        assert not conflicted
+        assert not complex_root
+
+    # ------------------------------------------------------------------
+    # T12 — _build_frame_fallback logs cast failures at DEBUG
+    # ------------------------------------------------------------------
+
+    def test_build_frame_fallback_logs_debug_on_cast_failure(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from unittest.mock import patch
+
+        from loom.etl.io.sources._mongo_batch import _build_frame_fallback
+
+        original_cast = pl.Series.cast
+
+        def _failing_cast(self: pl.Series, dtype: pl.DataType, **kwargs: Any) -> pl.Series:
+            if dtype == pl.Int64:
+                raise pl.exceptions.ComputeError("forced test failure")
+            return original_cast(self, dtype, **kwargs)
+
+        batch = [{"score": 3.14}]
+        with (
+            patch.object(pl.Series, "cast", _failing_cast),
+            caplog.at_level(logging.DEBUG, logger="loom.etl.io.sources._mongo_batch"),
+        ):
+            _build_frame_fallback(batch, {"score": pl.Int64})
+
+        debug_messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("could not cast" in m for m in debug_messages)
+        assert any("score" in m for m in debug_messages)
+
+    # ------------------------------------------------------------------
+    # T14 — BatchProcessorProtocol structural compatibility
+    # ------------------------------------------------------------------
+
+    def test_batch_processor_satisfies_protocol(self) -> None:
+        from loom.etl.io.sources._mongo_batch import BatchProcessorProtocol, MongoBatchProcessor
+
+        processor = MongoBatchProcessor(schema_str_fields=frozenset())
+        assert isinstance(processor, BatchProcessorProtocol)
+
+    def test_custom_object_satisfies_protocol_structurally(self) -> None:
+        from loom.etl.io.sources._mongo_batch import BatchProcessorProtocol
+
+        class _FakeProcessor:
+            def build_frame(
+                self,
+                batch: list[dict[str, Any]],
+                schema_overrides: dict[str, pl.DataType] | None = None,
+            ) -> pl.DataFrame:
+                return pl.DataFrame()
+
+        assert isinstance(_FakeProcessor(), BatchProcessorProtocol)
+
+    # ------------------------------------------------------------------
+    # T15 — _canonicalize_batch takes plan directly (no schema_overrides)
+    # ------------------------------------------------------------------
+
+    def test_canonicalize_batch_uses_plan_directly(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _canonicalize_batch, _CanonicalValuePlan
+
+        plan = {"x": _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)}
+        batch = [{"x": "42", "y": "untouched"}]
+        result = _canonicalize_batch(batch, plan)
+
+        assert result[0]["x"] == 42
+        assert result[0]["y"] == "untouched"
+
+    def test_canonicalize_batch_empty_plan_returns_batch_unchanged(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _canonicalize_batch
+
+        batch = [{"x": "hello"}]
+        result = _canonicalize_batch(batch, {})
+        assert result == batch

@@ -10,6 +10,7 @@ from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.source._from_mongo import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._mongo_batch import (
+    BatchProcessorProtocol,
     MongoBatchProcessor,
     align_to_schema,
     apply_declared_schema,
@@ -61,7 +62,7 @@ class MongoSourceReader:
             spec, declared_schema, collection, filter_dict, projection, schema_str_fields
         )
 
-        batch_processor = MongoBatchProcessor(
+        batch_processor: BatchProcessorProtocol = MongoBatchProcessor(
             schema_str_fields=schema_str_fields,
             declared_schema=declared_schema or None,
         )
@@ -205,7 +206,7 @@ def _scan(
     filter_dict: dict[str, Any],
     projection: dict[str, Any] | None,
     spec: Any,
-    batch_processor: MongoBatchProcessor,
+    batch_processor: BatchProcessorProtocol,
     declared_schema: dict[str, pl.DataType],
     registered_schema: dict[str, pl.DataType],
     with_columns: list[str] | None,

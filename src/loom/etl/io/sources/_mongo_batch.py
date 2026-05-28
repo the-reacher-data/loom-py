@@ -6,7 +6,7 @@ import datetime
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
@@ -16,6 +16,10 @@ _log = logging.getLogger(__name__)
 
 _LIST_CLASSIFY_SAMPLE = 20
 _MAX_NESTED_DEPTH = 64
+_MAX_RISKY_ROWS_REPORTED = 5
+_MAX_RISKY_NOTES_PER_ROW = 8
+_SHAPE_SUMMARY_DEPTH = 8
+_SHAPE_SUMMARY_LIMIT = 24
 
 
 # ---------------------------------------------------------------------------
@@ -101,19 +105,30 @@ def _classify_list(v: list[Any]) -> str:
 
 
 def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
+    conflicted, _ = _classify_batch_keys(batch)
+    return conflicted
+
+
+def _classify_batch_keys(
+    batch: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Return (conflicted_keys, complex_root_keys) in a single pass over the batch."""
     key_types: dict[str, set[str]] = {}
+    key_values: dict[str, list[Any]] = {}
     for doc in batch:
         for k, v in doc.items():
             t = _classify_value(v)
-            if t == "null":
-                continue
-            key_types.setdefault(k, set()).add(t)
+            if t != "null":
+                key_types.setdefault(k, set()).add(t)
+            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
+                key_values.setdefault(k, []).append(v)
     conflicted: set[str] = set()
     for k, ts in key_types.items():
         effective = ts - {"int", "float"} | ({"numeric"} if ts & {"int", "float"} else set())
         if len(effective) > 1:
             conflicted.add(k)
-    return conflicted
+    complex_root = {k for k, vals in key_values.items() if _nested_has_conflict(vals)}
+    return conflicted, complex_root
 
 
 def _has_type_conflict(non_null: list[Any]) -> bool:
@@ -161,12 +176,8 @@ def _nested_has_conflict(values: list[Any], _depth: int = 0) -> bool:
 
 
 def _complex_root_keys(batch: list[dict[str, Any]]) -> set[str]:
-    key_values: dict[str, list[Any]] = {}
-    for doc in batch:
-        for k, v in doc.items():
-            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
-                key_values.setdefault(k, []).append(v)
-    return {k for k, vals in key_values.items() if _nested_has_conflict(vals)}
+    _, complex_root = _classify_batch_keys(batch)
+    return complex_root
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +255,9 @@ def _series_to_json_string(s: pl.Series) -> pl.Series:
 
 
 def _summarize_nested_shapes(
-    value: Any, path: str = "$", depth: int = 0, limit: int = 24
+    value: Any, path: str = "$", depth: int = 0, limit: int = _SHAPE_SUMMARY_LIMIT
 ) -> list[str]:
-    if depth >= 8 or limit <= 0:
+    if depth >= _SHAPE_SUMMARY_DEPTH or limit <= 0:
         return []
     lines: list[str] = []
     if isinstance(value, dict):
@@ -326,11 +337,8 @@ def _value_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[
 
 
 def _row_risk_notes(
-    doc: dict[str, Any], schema_overrides: dict[str, pl.DataType] | None
+    doc: dict[str, Any], compiled_plan: dict[str, _CanonicalValuePlan]
 ) -> list[str]:
-    if not schema_overrides:
-        return []
-    compiled_plan = _build_schema_plan(schema_overrides)
     notes: list[str] = []
     declared = set(compiled_plan)
     for key, value in doc.items():
@@ -347,9 +355,10 @@ def _log_risky_rows(
 ) -> None:
     if not batch or not schema_overrides:
         return
+    compiled_plan = _build_schema_plan(schema_overrides)
     reported = 0
     for row_index, doc in enumerate(batch):
-        notes = _row_risk_notes(doc, schema_overrides)
+        notes = _row_risk_notes(doc, compiled_plan)
         if not notes:
             continue
         reported += 1
@@ -357,9 +366,9 @@ def _log_risky_rows(
             "MongoSourceReader: risky row sample row=%d id=%r issues=%s",
             row_index,
             _row_id(doc),
-            notes[:8],
+            notes[:_MAX_RISKY_NOTES_PER_ROW],
         )
-        if reported >= 5:
+        if reported >= _MAX_RISKY_ROWS_REPORTED:
             break
 
 
@@ -506,19 +515,14 @@ def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
 
 def _canonicalize_batch(
     batch: list[dict[str, Any]],
-    schema_overrides: dict[str, pl.DataType] | None,
-    *,
-    plan: dict[str, _CanonicalValuePlan] | None = None,
+    plan: dict[str, _CanonicalValuePlan],
 ) -> list[dict[str, Any]]:
-    if not batch or not schema_overrides:
-        return batch
-    compiled_plan = plan if plan is not None else _build_schema_plan(schema_overrides)
-    if not compiled_plan:
+    if not batch or not plan:
         return batch
     result: list[dict[str, Any]] = []
     for doc in batch:
         new_doc = dict(doc)
-        for field_name, field_plan in compiled_plan.items():
+        for field_name, field_plan in plan.items():
             if field_name in new_doc:
                 new_doc[field_name] = _canonicalize_value(new_doc[field_name], field_plan)
         result.append(new_doc)
@@ -552,8 +556,13 @@ def _build_frame_fallback(
                     s = pl.Series(name=k, values=[_safe_dumps(v) for v in cols[k]], dtype=pl.String)
                 else:
                     s = s.cast(override, strict=False)
-            except Exception:
-                pass  # leave inferred type; _finalize_batch aligns types later
+            except Exception as exc:
+                _log.debug(
+                    "MongoSourceReader: could not cast %r to %s — leaving inferred type (%s)",
+                    k,
+                    override,
+                    type(exc).__name__,
+                )
         series_list.append(s)
     return pl.DataFrame(series_list)
 
@@ -735,8 +744,8 @@ class MongoBatchProcessor:
         schema_overrides: dict[str, pl.DataType] | None = None,
     ) -> list[dict[str, Any]]:
         protected = _declared_complex_fields(schema_overrides)
-        all_conflicted = _detect_conflicted_keys(batch)
-        all_nested = _complex_root_keys(batch) - all_conflicted
+        all_conflicted, complex_root = _classify_batch_keys(batch)
+        all_nested = complex_root - all_conflicted
 
         to_serialize = (all_conflicted | all_nested) - protected
         skipped = (all_conflicted | all_nested) & protected
@@ -770,7 +779,7 @@ class MongoBatchProcessor:
             return batch
         if self._canonical_plan is None:
             self._canonical_plan = _build_schema_plan(schema_overrides)
-        return _canonicalize_batch(batch, schema_overrides, plan=self._canonical_plan)
+        return _canonicalize_batch(batch, self._canonical_plan)
 
     def _to_dataframe(
         self, batch: list[dict[str, Any]], schema_overrides: dict[str, pl.DataType] | None
@@ -791,7 +800,30 @@ class MongoBatchProcessor:
             return _build_frame_fallback(batch, schema_overrides)
 
 
+@runtime_checkable
+class BatchProcessorProtocol(Protocol):
+    """Structural interface for batch processors used by MongoSourceReader.
+
+    Any object implementing ``build_frame`` is compatible, enabling injection of
+    alternative processors (e.g., mocks, instrumented versions) without subclassing.
+
+    Args:
+        batch: Raw normalised documents (output of ``normalize_bson_doc``).
+        schema_overrides: Polars dtype hints, either declared or inferred.
+
+    Returns:
+        A ``pl.DataFrame`` with one row per document.
+    """
+
+    def build_frame(
+        self,
+        batch: list[dict[str, Any]],
+        schema_overrides: dict[str, pl.DataType] | None = None,
+    ) -> pl.DataFrame: ...
+
+
 __all__ = [
+    "BatchProcessorProtocol",
     "MongoBatchProcessor",
     "align_to_schema",
     "apply_declared_schema",
