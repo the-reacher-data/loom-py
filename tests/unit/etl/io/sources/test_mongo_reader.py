@@ -22,7 +22,7 @@ from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._mongo import MongoSourceReader
 from loom.etl.io.sources._mongo_batch import _canonicalize_batch
 from loom.etl.schema._contract import resolve_schema
-from loom.etl.schema._schema import ColumnSchema, LoomDtype
+from loom.etl.schema._schema import ColumnSchema, ListType, LoomDtype, StructField, StructType
 
 # ---------------------------------------------------------------------------
 # Fake pymongo client stack
@@ -758,6 +758,117 @@ class TestNestedHeterogeneousTypes:
         reader, _ = _reader(docs)
         df = reader.read(_spec(), None).collect()
         assert df["location"].dtype == pl.Struct({"city": pl.String, "zip": pl.String})
+
+    def test_int_and_float_mix_not_treated_as_conflict(self) -> None:
+        """int+float in the same field is NOT a conflict — both are numeric and
+        Polars resolves them as Float64 without serialisation to JSON string."""
+        docs = [
+            {"id": 1, "km": 50000, "price": 14999.99},
+            {"id": 2, "km": 49500.5, "price": 16000},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["km"].dtype == pl.Float64
+        assert df["price"].dtype == pl.Float64
+        assert df["km"].to_list() == [50000.0, 49500.5]
+
+    def test_int_float_with_declared_float64_schema_not_serialised(self) -> None:
+        """int+float field declared as Float64 — no conflict serialisation, stays numeric."""
+        docs = [
+            {"id": 1, "km": 50000},
+            {"id": 2, "km": 49500.5},
+        ]
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema("km", LoomDtype.FLOAT64),
+        )
+        df = reader.read(_spec(schema=schema), None).collect()
+        assert df["km"].dtype == pl.Float64
+        assert df["km"][0] == 50000.0
+
+    def test_int_string_mix_still_serialised(self) -> None:
+        """int+string IS a real conflict and must still be serialised."""
+        import json
+
+        docs = [
+            {"id": 1, "status": 0},
+            {"id": 2, "status": "active"},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["status"].dtype == pl.String
+        # The int value ends up serialised as a JSON number string
+        assert json.loads(df["status"][0]) == 0
+
+    def test_declared_struct_with_nested_scalar_conflict_stays_struct(self) -> None:
+        """A schema-declared Struct field is not serialised even when a sub-field
+        has mixed types across documents.  The conflicted sub-value is coerced or
+        nulled by the canonicalization step instead of flattening the whole field."""
+        docs = [
+            {"id": 1, "pricing": {"amount": 1500, "currency": "EUR"}},
+            {"id": 2, "pricing": {"amount": 1499.99, "currency": "EUR"}},
+            {"id": 3, "pricing": {"amount": "consult", "currency": "EUR"}},
+        ]
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema(
+                "pricing",
+                StructType(
+                    fields=(
+                        StructField("amount", LoomDtype.FLOAT64),
+                        StructField("currency", LoomDtype.UTF8),
+                    )
+                ),
+            ),
+        )
+        df = reader.read(_spec(schema=schema), None).collect()
+
+        assert df["pricing"].dtype == pl.Struct({"amount": pl.Float64, "currency": pl.String})
+        assert df["pricing"][0]["amount"] == 1500.0
+        assert df["pricing"][1]["amount"] == 1499.99
+        assert df["pricing"][2]["amount"] is None  # "consult" cannot parse as Float64
+
+    def test_undeclared_struct_with_nested_conflict_still_serialises(self) -> None:
+        """Without a declared schema the existing behaviour is preserved:
+        a nested type conflict → JSON string."""
+        docs = [
+            {"id": 1, "pricing": {"amount": 1500, "currency": "EUR"}},
+            {"id": 2, "pricing": {"amount": "consult", "currency": "EUR"}},
+        ]
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(), None).collect()
+        assert df["pricing"].dtype == pl.String
+
+    def test_declared_list_of_struct_with_nested_conflict_stays_list(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Same protection extends to List[Struct] fields."""
+        docs = [
+            {"id": 1, "tags": [{"name": "sale", "weight": 1}]},
+            {"id": 2, "tags": [{"name": "new", "weight": "high"}]},
+        ]
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema(
+                "tags",
+                ListType(
+                    inner=StructType(
+                        fields=(
+                            StructField("name", LoomDtype.UTF8),
+                            StructField("weight", LoomDtype.INT64),
+                        )
+                    )
+                ),
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            df = reader.read(_spec(schema=schema), None).collect()
+
+        assert df["tags"].dtype == pl.List(pl.Struct({"name": pl.String, "weight": pl.Int64}))
+        assert any("deferring" in msg.lower() for msg in caplog.messages)
 
 
 # ---------------------------------------------------------------------------

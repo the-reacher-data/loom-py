@@ -107,7 +107,12 @@ def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
             if t == "null":
                 continue
             key_types.setdefault(k, set()).add(t)
-    return {k for k, ts in key_types.items() if len(ts) > 1}
+    conflicted: set[str] = set()
+    for k, ts in key_types.items():
+        effective = ts - {"int", "float"} | ({"numeric"} if ts & {"int", "float"} else set())
+        if len(effective) > 1:
+            conflicted.add(k)
+    return conflicted
 
 
 def _nested_has_conflict(values: list[Any], _depth: int = 0) -> bool:
@@ -344,6 +349,22 @@ def _build_schema_plan(schema_overrides: dict[str, pl.DataType]) -> dict[str, _C
     return {name: _plan_from_dtype(dtype) for name, dtype in schema_overrides.items()}
 
 
+def _declared_complex_fields(schema_overrides: dict[str, pl.DataType] | None) -> frozenset[str]:
+    """Return the names of fields explicitly declared as Struct, List, or Array.
+
+    These fields are excluded from conflict-serialisation so that the schema
+    canonicalisation step can coerce their sub-values instead of flattening the
+    whole field to a JSON string.
+    """
+    if not schema_overrides:
+        return frozenset()
+    return frozenset(
+        name
+        for name, dtype in schema_overrides.items()
+        if isinstance(dtype, (pl.Struct, pl.List, pl.Array))
+    )
+
+
 def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
     if plan.kind == "scalar":
         return _coerce_scalar_value(value, plan.dtype)
@@ -351,13 +372,15 @@ def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
         return None
 
     if plan.kind == "list":
-        if not isinstance(value, list) or plan.inner is None:
+        if not isinstance(value, list):
+            return None  # non-list where List is declared → null
+        if plan.inner is None:
             return value
         return [_canonicalize_value(item, plan.inner) for item in value]
 
     if plan.kind == "struct":
         if not isinstance(value, dict):
-            return value
+            return None  # non-dict where Struct is declared → null
         canonical: dict[str, Any] = {}
         seen: set[str] = set()
         for field in plan.fields:
@@ -413,7 +436,7 @@ def _build_frame_fallback(
     for k in all_keys:
         try:
             s = pl.Series(name=k, values=cols[k])
-        except (pl.exceptions.ComputeError, pl.exceptions.SchemaError):
+        except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, TypeError):
             s = pl.Series(name=k, values=[_safe_dumps(v) for v in cols[k]], dtype=pl.String)
         override = (schema_overrides or {}).get(k)
         if override is not None and s.dtype != override:
@@ -538,7 +561,7 @@ class MongoBatchProcessor:
         if not batch:
             return pl.DataFrame()
         batch = self._pre_serialize(batch)
-        batch = self._resolve_conflicts(batch)
+        batch = self._resolve_conflicts(batch, schema_overrides)
         batch = self._serialize_extra_complex_fields(batch, schema_overrides)
         batch = self._canonicalize_declared_structs(batch, schema_overrides)
         return self._to_dataframe(batch, schema_overrides)
@@ -565,22 +588,37 @@ class MongoBatchProcessor:
             )
             self._str_coercion_warned = True
 
-    def _resolve_conflicts(self, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        conflicted = _detect_conflicted_keys(batch)
-        nested = _complex_root_keys(batch) - conflicted
-        if conflicted:
+    def _resolve_conflicts(
+        self,
+        batch: list[dict[str, Any]],
+        schema_overrides: dict[str, pl.DataType] | None = None,
+    ) -> list[dict[str, Any]]:
+        protected = _declared_complex_fields(schema_overrides)
+        all_conflicted = _detect_conflicted_keys(batch)
+        all_nested = _complex_root_keys(batch) - all_conflicted
+
+        to_serialize = (all_conflicted | all_nested) - protected
+        skipped = (all_conflicted | all_nested) & protected
+
+        if to_serialize & all_conflicted:
             _log.warning(
                 "MongoSourceReader: heterogeneous types detected in fields %s"
                 " — serialising to JSON string",
-                sorted(conflicted),
+                sorted(to_serialize & all_conflicted),
             )
-        if nested:
+        if to_serialize & all_nested:
             _log.warning(
                 "MongoSourceReader: nested type conflict — serialising parent field(s) %s"
                 " to JSON string",
-                sorted(nested),
+                sorted(to_serialize & all_nested),
             )
-        return _serialize_conflicted(batch, conflicted | nested)
+        if skipped:
+            _log.warning(
+                "MongoSourceReader: type conflict in declared complex field(s) %s"
+                " — deferring to schema canonicalization",
+                sorted(skipped),
+            )
+        return _serialize_conflicted(batch, to_serialize)
 
     def _serialize_extra_complex_fields(
         self,
@@ -609,7 +647,7 @@ class MongoBatchProcessor:
                 schema_overrides=schema_overrides or None,
                 strict=False,
             )
-        except (pl.exceptions.ComputeError, pl.exceptions.SchemaError):
+        except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, TypeError):
             if batch:
                 _log.warning(
                     "MongoSourceReader: pl.from_dicts() failed — "
