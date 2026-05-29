@@ -13,10 +13,19 @@ class PrometheusConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """Prometheus scrape endpoint configuration.
 
     Args:
-        path: HTTP path where ``/metrics`` is served.
+        path: HTTP path where ``/metrics`` is served. Used by REST services
+            that mount the scrape endpoint on an existing FastAPI app.
+        port: Port for the standalone HTTP scrape server. Used by long-running
+            streaming processes that have no existing HTTP server.
+            ``None`` disables the standalone server (default).
+        bind_address: Network interface the standalone scrape server binds to.
+            Defaults to ``"127.0.0.1"`` (loopback only). Set to ``"0.0.0.0"``
+            only when the Prometheus scraper cannot reach the pod via loopback.
     """
 
     path: str = "/metrics"
+    port: int | None = None
+    bind_address: str = "127.0.0.1"
 
 
 class LogObservabilityConfig(LoomFrozenStruct, frozen=True, kw_only=True):

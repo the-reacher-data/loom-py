@@ -12,6 +12,8 @@ from loom.core.observability.config import (
     LogObservabilityConfig,
     ObservabilityConfig,
     OtelObservabilityConfig,
+    PrometheusConfig,
+    PrometheusObservabilityConfig,
 )
 from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -186,3 +188,99 @@ class TestFromConfig:
         extra_processors = cast(tuple[object, ...], captured["extra_processors"])
         assert len(extra_processors) == 1
         assert captured["otel_log_export_installed"] is True
+
+
+class TestStartScrapeServer:
+    def test_noop_when_port_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        runtime = ObservabilityRuntime([], _scrape_port=None)
+        called: list[int] = []
+        monkeypatch.setattr(
+            "loom.core.observability.runtime._start_http_server", lambda p: called.append(p)
+        )
+
+        runtime.start_scrape_server()
+
+        assert called == []
+
+    def test_calls_start_http_server_with_port_and_addr(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runtime = ObservabilityRuntime([], _scrape_port=9090, _scrape_addr="127.0.0.1")
+        calls: list[tuple[int, str]] = []
+        monkeypatch.setattr(
+            "loom.core.observability.runtime._start_http_server",
+            lambda p, addr="": calls.append((p, addr)),
+        )
+
+        runtime.start_scrape_server()
+
+        assert calls == [(9090, "127.0.0.1")]
+
+    def test_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        runtime = ObservabilityRuntime([], _scrape_port=9090)
+        called: list[int] = []
+        monkeypatch.setattr(
+            "loom.core.observability.runtime._start_http_server",
+            lambda p, addr="": called.append(p),
+        )
+
+        runtime.start_scrape_server()
+        runtime.start_scrape_server()
+
+        assert len(called) == 1
+
+    def test_raises_import_error_when_prometheus_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runtime = ObservabilityRuntime([], _scrape_port=9090)
+        monkeypatch.setattr("loom.core.observability.runtime._start_http_server", None)
+
+        with pytest.raises(ImportError, match="prometheus-client"):
+            runtime.start_scrape_server()
+
+    def test_noop_runtime_start_scrape_server_is_safe(self) -> None:
+        runtime = ObservabilityRuntime.noop()
+        runtime.start_scrape_server()  # must not raise
+
+    def test_from_config_resolves_scrape_port_and_addr(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = ObservabilityConfig(
+            prometheus=PrometheusObservabilityConfig(
+                enabled=True,
+                config=PrometheusConfig(port=8080, bind_address="0.0.0.0"),
+            )
+        )
+        monkeypatch.setattr(
+            "loom.core.observability.runtime._start_http_server", lambda p, addr="": None
+        )
+
+        runtime = ObservabilityRuntime.from_config(config)
+
+        assert runtime._scrape_port == 8080
+        assert runtime._scrape_addr == "0.0.0.0"
+
+    def test_from_config_no_port_when_pushgateway_configured(self) -> None:
+        config = ObservabilityConfig(
+            prometheus=PrometheusObservabilityConfig(
+                enabled=True,
+                pushgateway_url="http://pushgateway:9091",
+                config=PrometheusConfig(port=8080),
+            )
+        )
+
+        runtime = ObservabilityRuntime.from_config(config)
+
+        assert runtime._scrape_port is None
+
+    def test_from_config_no_port_when_prometheus_disabled(self) -> None:
+        config = ObservabilityConfig(
+            prometheus=PrometheusObservabilityConfig(
+                enabled=False,
+                config=PrometheusConfig(port=8080),
+            )
+        )
+
+        runtime = ObservabilityRuntime.from_config(config)
+
+        assert runtime._scrape_port is None

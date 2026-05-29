@@ -11,7 +11,7 @@ from pytest import MonkeyPatch
 
 from loom.core.async_bridge import build_backend_options as _build_backend_options
 from loom.core.config import ConfigContext
-from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow
@@ -63,11 +63,12 @@ class TestStreamingRunner:
 
         runner.run()
 
-        assert [event.kind for event in events[:2]] == [EventKind.START, EventKind.END]
-        assert events[0].id == "poll-trace"
-        assert events[1].id == "poll-trace"
-        assert events[0].trace_id is None
-        assert events[1].trace_id is None
+        poll_cycle = [e for e in events if e.scope == Scope.POLL_CYCLE]
+        assert [e.kind for e in poll_cycle] == [EventKind.START, EventKind.END]
+        assert poll_cycle[0].id == "poll-trace"
+        assert poll_cycle[1].id == "poll-trace"
+        assert poll_cycle[0].trace_id is None
+        assert poll_cycle[1].trace_id is None
 
     def test_run_uses_bytewax_cli_main_with_runtime_config(
         self,
@@ -289,6 +290,108 @@ class TestBuildBackendOptions:
         opts = _build_backend_options("asyncio", use_uvloop=True)
 
         assert opts.get("loop_factory") is uvloop.new_event_loop
+
+
+class TestRunFlowSpan:
+    def test_run_emits_flow_start_and_end(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        runtime = ObservabilityRuntime([_RecordingObserver()])
+        runner = StreamingRunner.from_dict(
+            bytewax_stream_flow,
+            bytewax_runtime_config_dict,
+            observability_runtime=runtime,
+        )
+        dataflow = Dataflow("test")
+
+        def _fake_prepare() -> object:
+            return SimpleNamespace(dataflow=dataflow, shutdown=lambda: None)
+
+        monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
+        monkeypatch.setattr("loom.streaming.bytewax.runner.cli_main", lambda *_a, **_kw: None)
+
+        runner.run()
+
+        flow_events = [e for e in events if e.scope == Scope.FLOW]
+        assert [e.kind for e in flow_events] == [EventKind.START, EventKind.END]
+        assert flow_events[1].duration_ms is not None
+        assert "node_count" in flow_events[0].meta
+        assert flow_events[0].meta["node_count"] == flow_events[1].meta["node_count"]
+
+    def test_run_emits_flow_error_when_cli_main_raises(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        runtime = ObservabilityRuntime([_RecordingObserver()])
+        runner = StreamingRunner.from_dict(
+            bytewax_stream_flow,
+            bytewax_runtime_config_dict,
+            observability_runtime=runtime,
+        )
+        dataflow = Dataflow("test")
+
+        def _fake_prepare() -> object:
+            return SimpleNamespace(dataflow=dataflow, shutdown=lambda: None)
+
+        monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
+        monkeypatch.setattr(
+            "loom.streaming.bytewax.runner.cli_main",
+            lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("stream failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="stream failure"):
+            runner.run()
+
+        flow_events = [e for e in events if e.scope == Scope.FLOW]
+        assert flow_events[0].kind is EventKind.START
+        assert flow_events[1].kind is EventKind.ERROR
+
+    def test_run_emits_poll_cycle_end_when_prepare_run_fails(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        runtime = ObservabilityRuntime([_RecordingObserver()])
+        runner = StreamingRunner.from_dict(
+            bytewax_stream_flow,
+            bytewax_runtime_config_dict,
+            observability_runtime=runtime,
+        )
+
+        monkeypatch.setattr(
+            runner, "prepare_run", lambda: (_ for _ in ()).throw(RuntimeError("prep failed"))
+        )
+
+        with pytest.raises(RuntimeError, match="prep failed"):
+            runner.run()
+
+        poll_cycle = [e for e in events if e.scope == Scope.POLL_CYCLE]
+        assert poll_cycle[0].kind is EventKind.START
+        assert poll_cycle[1].kind is EventKind.END
 
 
 def _mongo_runner_config() -> dict[str, object]:

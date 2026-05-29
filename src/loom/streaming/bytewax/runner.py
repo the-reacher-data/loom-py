@@ -205,11 +205,14 @@ class StreamingRunner:
     def run(self, *, runtime: BytewaxRuntimeConfig | None = None) -> None:
         """Execute the compiled dataflow with the real Bytewax runtime.
 
+        Emits ``Scope.POLL_CYCLE`` around the full invocation (including
+        preparation) and ``Scope.FLOW`` around the blocking ``cli_main`` call.
+        Starts the Prometheus scrape server before execution when configured.
+
         Args:
             runtime: Optional runtime override. When omitted, uses the runner's
                 config-loaded runtime settings.
         """
-
         resolved_runtime = runtime or self._runtime
         run_id = generate_trace_id()
         self._observability_runtime.emit(
@@ -222,9 +225,15 @@ class StreamingRunner:
         )
         started_at = perf_counter()
         status = LifecycleStatus.FAILURE
-        prepared = self.prepare_run()
         try:
-            cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
+            self._observability_runtime.start_scrape_server()
+            prepared = self.prepare_run()
+            with self._observability_runtime.span(
+                Scope.FLOW,
+                self._plan.name,
+                node_count=len(self._plan.nodes),
+            ):
+                cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
             status = LifecycleStatus.SUCCESS
         except Exception:
             status = LifecycleStatus.FAILURE

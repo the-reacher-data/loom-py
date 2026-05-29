@@ -9,7 +9,7 @@ from time import perf_counter
 from typing import Self
 
 from loom.core.logger.config import configure_logging_from_values
-from loom.core.observability.config import ObservabilityConfig
+from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.event import (
     LifecycleEvent,
     LifecycleStatus,
@@ -24,6 +24,33 @@ from loom.core.observability.observer.otel import (
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 from loom.core.observability.protocol import LifecycleObserver
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
+
+try:
+    from prometheus_client import start_http_server as _start_http_server
+except ImportError:
+    _start_http_server = None  # type: ignore[assignment]
+
+
+def _resolve_scrape_port(cfg: PrometheusObservabilityConfig) -> int | None:
+    """Return the scrape server port for streaming processes, or None.
+
+    Returns None when Prometheus is disabled, a Pushgateway is configured
+    (batch/ETL mode), or no port is declared in the config.
+    """
+    if not cfg.enabled:
+        return None
+    if cfg.pushgateway_url is not None:
+        return None
+    if cfg.config is None:
+        return None
+    return cfg.config.port
+
+
+def _resolve_scrape_addr(cfg: PrometheusObservabilityConfig) -> str:
+    """Return the bind address for the standalone scrape server."""
+    if cfg.config is None:
+        return "127.0.0.1"
+    return cfg.config.bind_address
 
 
 def _configure_structlog_logging(config: ObservabilityConfig) -> None:
@@ -91,14 +118,44 @@ class ObservabilityRuntime:
             result = use_case.execute(command)
     """
 
-    def __init__(self, observers: Sequence[LifecycleObserver]) -> None:
+    def __init__(
+        self,
+        observers: Sequence[LifecycleObserver],
+        *,
+        _scrape_port: int | None = None,
+        _scrape_addr: str = "127.0.0.1",
+    ) -> None:
         self._observers = tuple(observers)
+        self._scrape_port = _scrape_port
+        self._scrape_addr = _scrape_addr
+        self._scrape_server_started = False
         self._log = logging.getLogger(__name__)
 
     @property
     def observers(self) -> tuple[LifecycleObserver, ...]:
         """Return the configured observer chain."""
         return self._observers
+
+    def start_scrape_server(self) -> None:
+        """Start a standalone Prometheus HTTP scrape server on the configured port.
+
+        No-op when no port is configured or the server is already running.
+        Intended for long-running streaming processes that have no existing
+        HTTP server to mount ``/metrics`` on. Safe to call multiple times.
+
+        Raises:
+            ImportError: If ``prometheus-client`` is not installed.
+            OSError: If the port is already in use by another process.
+        """
+        if self._scrape_port is None or self._scrape_server_started:
+            return
+        if _start_http_server is None:
+            raise ImportError(
+                "Prometheus scrape server requires 'prometheus-client'. "
+                "Install it with: pip install 'loom-py[prometheus]'"
+            )
+        _start_http_server(self._scrape_port, addr=self._scrape_addr)
+        self._scrape_server_started = True
 
     def emit(self, event: LifecycleEvent) -> None:
         """Emit one lifecycle event to all registered observers.
@@ -226,7 +283,11 @@ class ObservabilityRuntime:
             )
 
         observers = _build_observers(config)
-        return cls(observers or [NoopObserver()])
+        scrape_port = _resolve_scrape_port(config.prometheus)
+        scrape_addr = _resolve_scrape_addr(config.prometheus)
+        return cls(
+            observers or [NoopObserver()], _scrape_port=scrape_port, _scrape_addr=scrape_addr
+        )
 
     @classmethod
     def noop(cls) -> Self:
