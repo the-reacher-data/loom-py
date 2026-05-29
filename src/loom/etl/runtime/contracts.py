@@ -11,12 +11,15 @@ Dependency direction
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import SourceSpec
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.schema._schema import ColumnSchema
+
+if TYPE_CHECKING:
+    from loom.etl.lineage._records import WriteContext
 
 
 @runtime_checkable
@@ -112,7 +115,14 @@ class TargetWriter(Protocol):
     """Protocol for writing one frame into one ETL target specification."""
 
     def write(
-        self, frame: Any, spec: TargetSpec, params_instance: Any, /, *, streaming: bool = False
+        self,
+        frame: Any,
+        spec: TargetSpec,
+        params_instance: Any,
+        /,
+        *,
+        streaming: bool = False,
+        write_ctx: WriteContext | None = None,
     ) -> None:
         """Write frame to target.
 
@@ -121,6 +131,8 @@ class TargetWriter(Protocol):
             spec: Compiled target specification.
             params_instance: Concrete params for current run.
             streaming: Hint for lazy backends to use streaming materialization.
+            write_ctx: Execution context for audit-column injection.
+                       ``None`` disables audit columns regardless of config.
         """
         ...
 

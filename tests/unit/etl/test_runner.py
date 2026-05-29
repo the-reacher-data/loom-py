@@ -23,7 +23,7 @@ from loom.etl.compiler._plan import (
 )
 from loom.etl.runner import ETLRunner, InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
-from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig
+from loom.etl.storage._config import StorageConfig, StorageDefaults, TablePathConfig, TempConfig
 from loom.etl.testing import StubSourceReader, StubTargetWriter
 
 RunnerFactory = Callable[..., ETLRunner]
@@ -312,7 +312,7 @@ class TestRunnerFromConfig:
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
-            tmp_root="s3://bucket/checkpoints" if checkpoint_enabled else "",
+            temp=TempConfig(root="s3://bucket/checkpoints" if checkpoint_enabled else ""),
         )
         runner = ETLRunner.from_config(config)
 
@@ -360,6 +360,99 @@ class TestRunnerFromDict:
         assert runner is not None
 
 
+class TestAuditColumnsEndToEnd:
+    """When audit.enabled=True the written frame carries _loom_* columns."""
+
+    def test_audit_columns_written_when_enabled(self, tmp_path: Path) -> None:
+        import polars as pl
+        from deltalake import write_deltalake
+
+        from loom.etl.storage._config import (
+            AuditConfig,
+            MissingTablePolicy,
+            StorageDefaults,
+            TablePathConfig,
+        )
+
+        # Seed source table
+        src_path = tmp_path / "raw" / "orders"
+        src_path.mkdir(parents=True)
+        write_deltalake(str(src_path), pl.DataFrame({"id": [1, 2]}), mode="overwrite")
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            missing_table_policy=MissingTablePolicy.CREATE,
+            audit=AuditConfig(enabled=True),
+        )
+        runner = ETLRunner.from_config(config)
+
+        class _P(ETLParams):
+            pass
+
+        class _Step(ETLStep[_P]):
+            orders = FromTable("raw.orders")
+            target = IntoTable("staging.out").replace()
+
+            def execute(self, params: _P, *, orders: Any) -> Any:  # type: ignore[override]
+                return orders
+
+        class _Proc(ETLProcess[_P]):
+            steps = [_Step]
+
+        class _Pipeline(ETLPipeline[_P]):
+            processes = [_Proc]
+
+        runner.run(_Pipeline, _P())
+
+        result = pl.scan_delta(str(tmp_path / "staging" / "out")).collect()
+        assert "_loom_run_id" in result.columns
+        assert "_loom_step" in result.columns
+        assert "_loom_attempt" in result.columns
+
+    def test_audit_columns_not_written_when_disabled(self, tmp_path: Path) -> None:
+        import polars as pl
+        from deltalake import write_deltalake
+
+        from loom.etl.storage._config import (
+            AuditConfig,
+            MissingTablePolicy,
+            StorageDefaults,
+            TablePathConfig,
+        )
+
+        src_path = tmp_path / "raw" / "orders"
+        src_path.mkdir(parents=True)
+        write_deltalake(str(src_path), pl.DataFrame({"id": [1]}), mode="overwrite")
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            missing_table_policy=MissingTablePolicy.CREATE,
+            audit=AuditConfig(enabled=False),
+        )
+        runner = ETLRunner.from_config(config)
+
+        class _P(ETLParams):
+            pass
+
+        class _Step(ETLStep[_P]):
+            orders = FromTable("raw.orders")
+            target = IntoTable("staging.no_audit").replace()
+
+            def execute(self, params: _P, *, orders: Any) -> Any:  # type: ignore[override]
+                return orders
+
+        class _Proc(ETLProcess[_P]):
+            steps = [_Step]
+
+        class _Pipeline(ETLPipeline[_P]):
+            processes = [_Proc]
+
+        runner.run(_Pipeline, _P())
+
+        result = pl.scan_delta(str(tmp_path / "staging" / "no_audit")).collect()
+        assert "_loom_run_id" not in result.columns
+
+
 class TestRunnerCleaner:
     def test_from_config_with_injected_cleaner(self, tmp_path: Path) -> None:
         deleted: list[str] = []
@@ -370,7 +463,7 @@ class TestRunnerCleaner:
 
         config = StorageConfig(
             defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
-            tmp_root="s3://bucket/checkpoints",
+            temp=TempConfig(root="s3://bucket/checkpoints"),
         )
         runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
 

@@ -172,7 +172,7 @@ class ETLRunner:
         """Remove all CORRELATION-scope intermediates for *correlation_id*."""
         if self._checkpoint_store is None:
             raise RuntimeError(
-                "cleanup_correlation() requires checkpoint_root (storage.tmp_root) "
+                "cleanup_correlation() requires checkpoint_root (storage.temp.root) "
                 "to be configured in storage YAML."
             )
         self._checkpoint_store.cleanup_correlation(correlation_id)

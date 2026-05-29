@@ -200,7 +200,7 @@ class TestRunnerTempCleanup:
         from loom.etl.runner import ETLRunner
 
         runner = ETLRunner(StubSourceReader({}), StubTargetWriter())
-        with pytest.raises(RuntimeError, match="tmp_root"):
+        with pytest.raises(RuntimeError, match="storage.temp.root"):
             runner.cleanup_correlation("job-123")
 
 

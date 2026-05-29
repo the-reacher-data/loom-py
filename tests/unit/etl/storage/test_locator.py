@@ -21,6 +21,7 @@ def test_prefix_locator_resolves_dotted_refs_and_preserves_defaults() -> None:
         root="/var/lib/loom/lake/",
         storage_options={"AWS_REGION": "eu-west-1"},
         writer={"compression": "SNAPPY"},
+        target_file_size=268435456,
         delta_config={"delta.appendOnly": "true"},
         commit={"userName": "etl"},
     )
@@ -30,6 +31,7 @@ def test_prefix_locator_resolves_dotted_refs_and_preserves_defaults() -> None:
     assert location.uri == "/var/lib/loom/lake/raw/orders"
     assert location.storage_options == {"AWS_REGION": "eu-west-1"}
     assert location.writer == {"compression": "SNAPPY"}
+    assert location.target_file_size == 268435456
     assert location.delta_config == {"delta.appendOnly": "true"}
     assert location.commit == {"userName": "etl"}
 
@@ -48,6 +50,7 @@ def test_mapping_locator_uses_default_for_unmapped_refs() -> None:
         uri="s3://default-lake/",
         storage_options={"AWS_REGION": "eu-west-1"},
         writer={"compression": "ZSTD"},
+        target_file_size=134217728,
     )
     locator = MappingLocator(mapping={}, default=default)
 
@@ -56,6 +59,7 @@ def test_mapping_locator_uses_default_for_unmapped_refs() -> None:
     assert resolved.uri == "s3://default-lake/staging/daily"
     assert resolved.storage_options == {"AWS_REGION": "eu-west-1"}
     assert resolved.writer == {"compression": "ZSTD"}
+    assert resolved.target_file_size == 134217728
 
 
 def test_mapping_locator_raises_when_ref_is_missing_and_no_default() -> None:

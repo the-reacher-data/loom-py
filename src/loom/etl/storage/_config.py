@@ -57,6 +57,7 @@ class TablePathConfig(LoomFrozenStruct, frozen=True):
         uri: Root Delta path/URI.
         storage_options: Object-store credentials/options.
         writer: Delta writer properties.
+        target_file_size: Optional target output file size in bytes.
         delta_config: Delta table properties.
         commit: Delta commit metadata.
     """
@@ -64,6 +65,7 @@ class TablePathConfig(LoomFrozenStruct, frozen=True):
     uri: str = ""
     storage_options: dict[str, str] = {}
     writer: dict[str, Any] = {}
+    target_file_size: int | None = None
     delta_config: dict[str, str | None] = {}
     commit: dict[str, Any] = {}
 
@@ -72,6 +74,7 @@ class TablePathConfig(LoomFrozenStruct, frozen=True):
         if not self.uri.strip():
             raise ValueError(f"storage.{context}.uri must be a non-empty string")
         _validate_writer(self.writer, context=f"{context}.writer")
+        _validate_target_file_size(self.target_file_size, context=f"{context}.target_file_size")
         _validate_commit(self.commit, context=f"{context}.commit")
 
     def to_location(self) -> TableLocation:
@@ -80,6 +83,7 @@ class TablePathConfig(LoomFrozenStruct, frozen=True):
             uri=self.uri,
             storage_options=self.storage_options,
             writer=self.writer,
+            target_file_size=self.target_file_size,
             delta_config=self.delta_config,
             commit=self.commit,
         )
@@ -106,6 +110,20 @@ class StorageDefaults(LoomFrozenStruct, frozen=True):
     """Default resolution settings used when no per-name override is declared."""
 
     table_path: TablePathConfig | None = None
+
+
+class TempConfig(LoomFrozenStruct, frozen=True):
+    """Checkpoint / temporary storage settings."""
+
+    root: str = ""
+    storage_options: dict[str, str] = {}
+
+    def validate(self) -> None:
+        if self.root and not _is_cloud_uri(self.root):
+            raise ValueError(
+                "storage.temp.root must be a cloud URI (s3://, gs://, abfss://, ...). "
+                "Local checkpoint roots are not supported."
+            )
 
 
 class TableRoute(LoomFrozenStruct, frozen=True):
@@ -190,6 +208,44 @@ class MongoConfig(LoomFrozenStruct, frozen=True):
     database: str = ""
 
 
+class CustomColumnDef(LoomFrozenStruct, frozen=True):
+    """Definition of one custom audit column injected at write time.
+
+    Exactly one of ``value`` or ``from_param`` must be set.
+
+    Args:
+        name:       Column name to add to the written frame.
+        value:      Literal string value (static, same for every row/run).
+        from_param: Attribute name on the params instance; resolved at
+                    runtime via ``str(getattr(params, from_param))``.
+    """
+
+    name: str
+    value: str | None = None
+    from_param: str | None = None
+
+
+class AuditConfig(LoomFrozenStruct, frozen=True):
+    """Configuration for automatic audit columns injected at write time.
+
+    When ``enabled=True`` the writer stamps each written frame with
+    ``{prefix}run_id``, ``{prefix}step``, ``{prefix}attempt``, and
+    ``{prefix}process_run_id`` (only when not ``None``).  Additional
+    custom columns are appended afterwards.
+
+    Args:
+        enabled: Activate audit-column injection.  Defaults to ``False``.
+        prefix:  Column name prefix for the standard loom columns.
+                 Defaults to ``"_loom_"``.
+        custom:  Extra columns to append, resolved from a literal value or
+                 a params attribute at runtime.
+    """
+
+    enabled: bool = False
+    prefix: str = "_loom_"
+    custom: tuple[CustomColumnDef, ...] = ()
+
+
 class StorageConfig(LoomFrozenStruct, frozen=True):
     """Canonical storage configuration used by ETL runner/factory.
 
@@ -198,22 +254,22 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
         missing_table_policy: First-run policy for missing destination tables.
         catalogs: Catalog connection map.
         defaults: Default path settings.
+        temp: Checkpoint / temporary storage settings.
         tables: Per-logical-table routes.
         files: Per-logical-file routes.
-        tmp_root: Root URI for intermediate storage.
-        tmp_storage_options: Credentials/options for intermediate storage.
+        audit: Audit-column injection settings.
     """
 
     engine: Literal["polars", "spark"] = "polars"
     missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE
     catalogs: dict[str, CatalogConnection] = {}
     defaults: StorageDefaults = StorageDefaults()
+    temp: TempConfig = TempConfig()
     tables: tuple[TableRoute, ...] = ()
     files: tuple[FileRoute, ...] = ()
-    tmp_root: str = ""
-    tmp_storage_options: dict[str, str] = {}
     clickhouse: ClickHouseConfig = ClickHouseConfig()
     mongo: MongoConfig = MongoConfig()
+    audit: AuditConfig = AuditConfig()
 
     def validate(self) -> None:
         """Validate structural constraints and option dictionaries."""
@@ -228,27 +284,23 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
 
         if self.defaults.table_path is not None:
             self.defaults.table_path.validate(context="defaults.table_path")
+        self.temp.validate()
 
         for idx, table_route in enumerate(self.tables):
             table_route.validate(catalogs=self.catalogs, context=f"tables[{idx}]")
         for idx, file_route in enumerate(self.files):
             file_route.validate(context=f"files[{idx}]")
-        if self.tmp_root and not _is_cloud_uri(self.tmp_root):
-            raise ValueError(
-                "storage.tmp_root must be a cloud URI (s3://, gs://, abfss://, ...). "
-                "Local checkpoint roots are not supported."
-            )
         self._validate_polars_uc_credentials()
 
     @property
     def checkpoint_root(self) -> str:
-        """Checkpoint root URI (canonical alias of ``tmp_root``)."""
-        return self.tmp_root
+        """Checkpoint root URI."""
+        return self.temp.root
 
     @property
     def checkpoint_storage_options(self) -> dict[str, str]:
-        """Checkpoint storage options (canonical alias of ``tmp_storage_options``)."""
-        return self.tmp_storage_options
+        """Checkpoint storage options."""
+        return self.temp.storage_options
 
     def has_catalog_routes(self) -> bool:
         """Return ``True`` when at least one table route uses ``ref``."""
@@ -389,6 +441,13 @@ def _validate_writer(writer: dict[str, Any], *, context: str) -> None:
         WriterProperties(**writer)
     except TypeError as exc:
         raise TypeError(f"Invalid key in storage.{context}: {exc}") from exc
+
+
+def _validate_target_file_size(target_file_size: int | None, *, context: str) -> None:
+    if target_file_size is None:
+        return
+    if target_file_size <= 0:
+        raise ValueError(f"storage.{context} must be a positive integer when set")
 
 
 def _validate_commit(commit: dict[str, Any], *, context: str) -> None:

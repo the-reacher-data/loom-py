@@ -90,7 +90,9 @@ class TestWriterRegistryDispatchesToRegisteredWriter:
         spec = _CHSpec()
         registry.write(frame, spec, _PARAMS)
 
-        ch_writer.write.assert_called_once_with(frame, spec, _PARAMS, streaming=False)
+        ch_writer.write.assert_called_once_with(
+            frame, spec, _PARAMS, streaming=False, write_ctx=None
+        )
         base_writer.write.assert_not_called()
 
     def test_writer_registry_falls_back_to_base_writer(self) -> None:
@@ -105,7 +107,9 @@ class TestWriterRegistryDispatchesToRegisteredWriter:
         spec = _DeltaSpec()
         registry.write(frame, spec, _PARAMS)
 
-        base_writer.write.assert_called_once_with(frame, spec, _PARAMS, streaming=False)
+        base_writer.write.assert_called_once_with(
+            frame, spec, _PARAMS, streaming=False, write_ctx=None
+        )
 
     def test_writer_registry_forwards_streaming_flag(self) -> None:
         """The streaming keyword argument is forwarded to the chosen handler."""

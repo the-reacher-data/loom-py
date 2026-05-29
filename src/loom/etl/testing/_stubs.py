@@ -135,7 +135,13 @@ class StubTargetWriter:
         self.streaming_flags: list[bool] = []
 
     def write(
-        self, frame: Any, spec: TargetSpec, _params_instance: Any, *, streaming: bool = False
+        self,
+        frame: Any,
+        spec: TargetSpec,
+        _params_instance: Any,
+        *,
+        streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
         """Capture the ``(frame, spec)`` pair for later assertion."""
         self.written.append((frame, spec))

@@ -22,9 +22,15 @@ class _PolarsCapturingWriter:
         self._last_params: Any = None
 
     def write(
-        self, frame: Any, spec: TargetSpec, params_instance: Any, *, streaming: bool = False
+        self,
+        frame: Any,
+        spec: TargetSpec,
+        params_instance: Any,
+        *,
+        streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
-        _ = streaming
+        _ = (streaming, write_ctx)
         self.frame = frame
         self.spec = spec
         self._last_params = params_instance

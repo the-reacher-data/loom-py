@@ -24,7 +24,7 @@ column-level cast after reading.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 _MAX_DEPTH = 64
@@ -61,9 +61,9 @@ def _normalize(value: object, depth: int) -> object:
     if value is None or isinstance(value, (bool, int, float, str, bytes)):
         return value
     if isinstance(value, datetime):
-        # Keep as datetime — Polars infers Datetime(time_unit='us') natively.
-        # Do NOT convert to epoch_ms (that's the streaming contract, not ETL).
-        return value
+        # Normalize all ETL datetimes to UTC so downstream filters and Delta
+        # pushdown compare consistent tz-aware values.
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
     # Recursive containers
     if isinstance(value, Mapping):
         return {str(k): _normalize(v, depth + 1) for k, v in value.items()}

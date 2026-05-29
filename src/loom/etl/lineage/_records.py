@@ -67,6 +67,28 @@ class RunContext:
 
 
 @dataclass(frozen=True)
+class WriteContext:
+    """Execution context passed to target writers to inject audit columns.
+
+    Carries the minimal identifiers generated at step execution time so
+    backend writers can stamp each written row without coupling to the
+    executor internals.
+
+    Args:
+        run_id:         Pipeline-level run identifier (UUID4 string).
+        step:           Step class name.
+        attempt:        Pipeline attempt number (≥ 1).
+        process_run_id: Process-level run identifier, or ``None`` when the
+                        step runs outside a process context.
+    """
+
+    run_id: str
+    step: str
+    attempt: int
+    process_run_id: str | None = None
+
+
+@dataclass(frozen=True)
 class PipelineRunRecord:
     """Snapshot of a completed pipeline run."""
 
@@ -225,6 +247,7 @@ __all__ = [
     "RunContext",
     "RunStatus",
     "StepRunRecord",
+    "WriteContext",
     "get_lineage_schema",
     "get_lineage_table_name",
 ]

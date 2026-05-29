@@ -45,6 +45,9 @@ class TableLocation:
                          See https://delta-io.github.io/delta-rs/api/delta_writer/
         writer:          Parquet writer settings → ``WriterProperties(**writer)``.
                          See https://delta-io.github.io/delta-rs/api/delta_writer/#deltalake.WriterProperties
+        target_file_size:
+                         Optional target output file size in bytes forwarded to
+                         ``write_deltalake(..., target_file_size=...)``.
         delta_config:    Delta table properties written to the transaction log.
                          See https://docs.delta.io/latest/table-properties.html
         commit:          Commit metadata → ``CommitProperties(**commit)``.
@@ -54,6 +57,7 @@ class TableLocation:
     uri: str
     storage_options: dict[str, str] = field(default_factory=dict)
     writer: dict[str, Any] = field(default_factory=dict)
+    target_file_size: int | None = None
     delta_config: dict[str, str | None] = field(default_factory=dict)
     commit: dict[str, Any] = field(default_factory=dict)
 
@@ -104,6 +108,9 @@ class PrefixLocator:
                          See https://delta-io.github.io/delta-rs/api/delta_writer/
         writer:          Parquet writer settings → ``WriterProperties(**writer)``.
                          See https://delta-io.github.io/delta-rs/api/delta_writer/#deltalake.WriterProperties
+        target_file_size:
+                         Optional target output file size in bytes forwarded to
+                         ``write_deltalake(..., target_file_size=...)``.
         delta_config:    Delta table properties.
                          See https://docs.delta.io/latest/table-properties.html
         commit:          Commit metadata → ``CommitProperties(**commit)``.
@@ -130,6 +137,7 @@ class PrefixLocator:
         root: str,
         storage_options: dict[str, str] | None = None,
         writer: dict[str, Any] | None = None,
+        target_file_size: int | None = None,
         delta_config: dict[str, str | None] | None = None,
         commit: dict[str, Any] | None = None,
     ) -> None:
@@ -138,6 +146,7 @@ class PrefixLocator:
             uri="",  # filled per-call in locate()
             storage_options=storage_options or {},
             writer=writer or {},
+            target_file_size=target_file_size,
             delta_config=delta_config or {},
             commit=commit or {},
         )
@@ -156,6 +165,7 @@ class PrefixLocator:
             uri=uri,
             storage_options=self._location_defaults.storage_options,
             writer=self._location_defaults.writer,
+            target_file_size=self._location_defaults.target_file_size,
             delta_config=self._location_defaults.delta_config,
             commit=self._location_defaults.commit,
         )
@@ -225,6 +235,7 @@ class MappingLocator:
             uri=f"{self._default.uri.rstrip('/')}/{suffix}",
             storage_options=self._default.storage_options,
             writer=self._default.writer,
+            target_file_size=self._default.target_file_size,
             delta_config=self._default.delta_config,
             commit=self._default.commit,
         )

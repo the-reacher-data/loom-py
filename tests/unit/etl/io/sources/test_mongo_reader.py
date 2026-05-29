@@ -21,6 +21,7 @@ from loom.etl.declarative.expr import col
 from loom.etl.declarative.source._specs import MongoSourceSpec
 from loom.etl.io.sources._mongo import MongoSourceReader
 from loom.etl.io.sources._mongo_batch import _build_schema_plan, _canonicalize_batch
+from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.schema._contract import resolve_schema
 from loom.etl.schema._schema import ColumnSchema, ListType, LoomDtype, StructField, StructType
 
@@ -974,6 +975,16 @@ class TestSchemaStrFields:
 
 class TestJsonDefaultFallback:
     """_json_default must serialise BSON types that bypass normalize_bson_doc."""
+
+    def test_normalize_bson_doc_promotes_naive_and_aware_datetimes_to_utc(self) -> None:
+        naive = datetime(2024, 1, 1, 12, 0)
+        aware = datetime(2024, 1, 1, 12, 0, tzinfo=UTC)
+        normalized = normalize_bson_doc({"naive": naive, "aware": aware})
+
+        assert normalized["naive"].tzinfo == UTC
+        assert normalized["naive"].isoformat() == "2024-01-01T12:00:00+00:00"
+        assert normalized["aware"].tzinfo == UTC
+        assert normalized["aware"].isoformat() == "2024-01-01T12:00:00+00:00"
 
     def test_objectid_in_conflicted_field_serializes_as_hex(self) -> None:
         """An ObjectId inside a conflicted field (dict vs string) must appear as

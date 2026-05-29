@@ -151,9 +151,10 @@ class MinimalPolarsTargetWriter:
         params_instance: Any,
         *,
         streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
         """Collect *frame* and write it to the Delta table referenced by *spec*."""
-        _ = params_instance
+        _ = (params_instance, write_ctx)
         assert hasattr(spec, "table_ref") and spec.table_ref is not None, (
             f"expected TABLE target, got {spec}"
         )  # type: ignore[union-attr]

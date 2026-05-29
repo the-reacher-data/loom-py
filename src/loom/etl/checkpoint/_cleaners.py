@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import fsspec.core
 
@@ -35,7 +35,7 @@ class FsspecTempCleaner:
     """Delete checkpoint trees via fsspec (s3, gs, abfss, etc)."""
 
     def __init__(self, storage_options: Mapping[str, str] | None = None) -> None:
-        self._storage_options = dict(storage_options or {})
+        self._storage_options = _checkpoint_storage_options(dict(storage_options or {}))
 
     def delete_tree(self, path: str) -> None:
         """Remove *path* and its contents from cloud storage.
@@ -62,3 +62,23 @@ def _join_path(base: str, *parts: str) -> str:
     if not root:
         return f"/{suffix}" if suffix else "/"
     return f"{root}/{suffix}" if suffix else root
+
+
+def _checkpoint_storage_options(storage_options: Mapping[str, str]) -> dict[str, Any]:
+    """Return fsspec-compatible options for checkpoint cleanup/write paths."""
+    endpoint = storage_options.get("endpoint_url") or storage_options.get("AWS_ENDPOINT_URL", "")
+    if not endpoint:
+        return {}
+
+    options: dict[str, Any] = {
+        "endpoint_url": endpoint,
+    }
+    key = storage_options.get("access_key_id") or storage_options.get("AWS_ACCESS_KEY_ID", "")
+    secret = storage_options.get("secret_access_key") or storage_options.get(
+        "AWS_SECRET_ACCESS_KEY", ""
+    )
+    if key:
+        options["key"] = key
+    if secret:
+        options["secret"] = secret
+    return options

@@ -48,6 +48,7 @@ class PolarsProvider(BackendProvider):
             locator,
             missing_table_policy=config.missing_table_policy,
             file_locator=file_locator,
+            audit_config=config.audit,
         )
         writer: TargetWriter
         if config.clickhouse.url:

@@ -46,10 +46,20 @@ class WriterRegistry:
         self._base = base
         self._extra: dict[str, Any] = extra or {}
 
-    def write(self, frame: Any, spec: Any, params: Any, /, *, streaming: bool = False) -> None:
+    def write(
+        self,
+        frame: Any,
+        spec: Any,
+        params: Any,
+        /,
+        *,
+        streaming: bool = False,
+        write_ctx: Any = None,
+    ) -> None:
+        """Dispatch write to the matching extra handler or fall back to base."""
         kind = getattr(spec, "kind", None)
         handler = self._extra.get(kind) if kind is not None else None
         if handler is not None:
-            handler.write(frame, spec, params, streaming=streaming)
+            handler.write(frame, spec, params, streaming=streaming, write_ctx=write_ctx)
             return
-        self._base.write(frame, spec, params, streaming=streaming)
+        self._base.write(frame, spec, params, streaming=streaming, write_ctx=write_ctx)

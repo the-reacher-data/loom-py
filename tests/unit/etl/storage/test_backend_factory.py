@@ -27,6 +27,7 @@ from loom.etl.storage._config import (
     StorageDefaults,
     TablePathConfig,
     TableRoute,
+    TempConfig,
 )
 
 
@@ -334,7 +335,7 @@ def test_make_checkpoint_store_no_root_returns_none() -> None:
 def test_make_checkpoint_store_with_root_returns_store() -> None:
     from loom.etl.checkpoint import CheckpointStore
 
-    config = StorageConfig(tmp_root="s3://bucket/checkpoints")
+    config = StorageConfig(temp=TempConfig(root="s3://bucket/checkpoints"))
     result = make_checkpoint_store(config)
 
     assert isinstance(result, CheckpointStore)

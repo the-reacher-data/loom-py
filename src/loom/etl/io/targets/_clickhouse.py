@@ -104,6 +104,7 @@ class ClickHouseTargetWriter:
         /,
         *,
         streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
         """Write *frame* to the ClickHouse table described by *spec*.
 
@@ -118,7 +119,10 @@ class ClickHouseTargetWriter:
                        parametrization).
             streaming: Ignored — ClickHouse inserts are always materialised
                        before the network call.
+            write_ctx: Execution context for audit-column injection (unused
+                       in ClickHouse targets).
         """
+        _ = write_ctx
         import polars as pl
 
         df: pl.DataFrame = (

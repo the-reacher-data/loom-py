@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Callable
-from typing import Any, Generic, TypeAlias, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
 
 from loom.etl.declarative.target import (
     AppendSpec,
@@ -26,8 +26,11 @@ from loom.etl.declarative.target import (
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.runtime.contracts import TargetWriter
 from loom.etl.schema._schema import SchemaNotFoundError
-from loom.etl.storage._config import MissingTablePolicy
+from loom.etl.storage._config import AuditConfig, MissingTablePolicy
 from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
+
+if TYPE_CHECKING:
+    from loom.etl.lineage._records import WriteContext
 
 InputFrameT = TypeVar("InputFrameT")
 WriteFrameT = TypeVar("WriteFrameT")
@@ -78,9 +81,11 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         *,
         resolver: TableRouteResolver,
         missing_table_policy: MissingTablePolicy,
+        audit_config: AuditConfig | None = None,
     ) -> None:
         self._resolver = resolver
         self._missing_table_policy = missing_table_policy
+        self._audit_config: AuditConfig = audit_config or AuditConfig()
 
     # ========================================================================
     # Public API (from TargetWriter)
@@ -94,8 +99,18 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         /,
         *,
         streaming: bool = False,
+        write_ctx: WriteContext | None = None,
     ) -> None:
-        """Write frame according to spec."""
+        """Write frame according to spec.
+
+        Args:
+            frame:           Input frame from the step execute() result.
+            spec:            Compiled target specification.
+            params_instance: Concrete params for the current run.
+            streaming:       Hint for lazy backends to use streaming collect.
+            write_ctx:       Execution context for audit-column injection.
+                             ``None`` disables audit columns for this write.
+        """
         if isinstance(spec, FileSpec):
             self._write_file(frame, spec, streaming=streaming)
             return
@@ -105,6 +120,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 "TEMP writes are handled by CheckpointStore in ETLExecutor."
             )
 
+        frame = self._apply_audit_columns(frame, write_ctx, params_instance, self._audit_config)
         target = self._resolver.resolve(spec.table_ref)
         self._dispatch_table_write(frame, target, spec, params_instance, streaming)
 
@@ -371,6 +387,34 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         return self._historify(
             materialized, existing, target, spec=spec, params_instance=params_instance
         )
+
+    # ========================================================================
+    # Audit Hook (overrideable — default is a no-op)
+    # ========================================================================
+
+    def _apply_audit_columns(
+        self,
+        frame: InputFrameT,
+        write_ctx: WriteContext | None,
+        params_instance: Any,
+        audit: AuditConfig,
+    ) -> InputFrameT:
+        """Inject audit columns into *frame* before the write.
+
+        The default implementation is a no-op so that non-Polars backends
+        (Spark) are not broken.  Override in backend subclasses to apply
+        engine-specific column injection.
+
+        Args:
+            frame:           Input frame before write.
+            write_ctx:       Step execution context carrying run identifiers.
+            params_instance: Concrete params; used to resolve ``from_param``.
+            audit:           Audit config from the storage configuration.
+
+        Returns:
+            Frame with audit columns added (or the original frame unchanged).
+        """
+        return frame
 
     # ========================================================================
     # Abstract Hooks (backend-specific implementations)

@@ -20,8 +20,9 @@ from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.declarative.target import IntoTable, SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
+from loom.etl.lineage._records import WriteContext
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.storage._config import MissingTablePolicy
+from loom.etl.storage._config import AuditConfig, CustomColumnDef, MissingTablePolicy
 from loom.etl.storage._locator import MappingLocator, TableLocation
 
 from .conftest import table_path
@@ -288,6 +289,24 @@ def test_writer_warns_on_polars_uc_first_create(
     assert "catalog registration is not guaranteed" in caplog.text
 
 
+def test_write_kwargs_include_target_file_size() -> None:
+    loc = TableLocation(
+        uri="s3://lake/raw/orders",
+        storage_options={"AWS_REGION": "eu-west-1"},
+        writer={"compression": "ZSTD"},
+        target_file_size=268435456,
+        delta_config={"delta.appendOnly": "true"},
+        commit={"custom_metadata": {"pipeline": "motos"}},
+    )
+
+    kwargs = PolarsTargetWriter._write_kwargs(loc)
+
+    assert kwargs["target_file_size"] == 268435456
+    assert kwargs["storage_options"] == {"AWS_REGION": "eu-west-1"}
+    assert kwargs["writer_properties"] is not None
+    assert kwargs["commit_properties"] is not None
+
+
 def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.facts", initial)
@@ -416,3 +435,95 @@ class TestFileLocatorAliasResolution:
         spec = FileSpec(path="exports_daily", format=Format.CSV, is_alias=True)
         with pytest.raises(ValueError, match="storage.files"):
             writer.write(frame, spec, None)
+
+
+class TestApplyAuditColumns:
+    """Unit tests for PolarsTargetWriter._apply_audit_columns hook."""
+
+    def _write_ctx(self, *, process_run_id: str | None = "proc-1") -> WriteContext:
+        return WriteContext(
+            run_id="run-abc",
+            step="StepA",
+            attempt=1,
+            process_run_id=process_run_id,
+        )
+
+    def test_disabled_audit_returns_frame_unchanged(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=False)
+        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit)
+        assert result.collect().columns == ["id"]
+
+    def test_none_write_ctx_returns_frame_unchanged(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        result = writer._apply_audit_columns(frame, None, None, audit)
+        assert result.collect().columns == ["id"]
+
+    def test_enabled_audit_injects_loom_columns(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        ctx = self._write_ctx()
+        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        assert "_loom_run_id" in result.columns
+        assert "_loom_step" in result.columns
+        assert "_loom_attempt" in result.columns
+        assert result["_loom_run_id"][0] == "run-abc"
+        assert result["_loom_step"][0] == "StepA"
+        assert result["_loom_attempt"][0] == 1
+        assert result["_loom_attempt"].dtype == pl.Int32
+
+    def test_enabled_audit_injects_process_run_id_when_present(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        ctx = self._write_ctx(process_run_id="proc-xyz")
+        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        assert "_loom_process_run_id" in result.columns
+        assert result["_loom_process_run_id"][0] == "proc-xyz"
+
+    def test_enabled_audit_skips_process_run_id_when_none(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        ctx = self._write_ctx(process_run_id=None)
+        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        assert "_loom_process_run_id" not in result.columns
+
+    def test_custom_literal_column_is_added(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(
+            enabled=True,
+            custom=(CustomColumnDef(name="env", value="prod"),),
+        )
+        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit).collect()
+        assert "env" in result.columns
+        assert result["env"][0] == "prod"
+
+    def test_custom_from_param_column_reads_param_attribute(self) -> None:
+        from datetime import date
+
+        class _Params:
+            run_date = date(2024, 1, 15)
+
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(
+            enabled=True,
+            custom=(CustomColumnDef(name="run_date", from_param="run_date"),),
+        )
+        result = writer._apply_audit_columns(frame, self._write_ctx(), _Params(), audit).collect()
+        assert "run_date" in result.columns
+        assert result["run_date"][0] == "2024-01-15"
+
+    def test_custom_prefix_is_used(self) -> None:
+        writer = PolarsTargetWriter("/tmp")
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True, prefix="_etl_")
+        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit).collect()
+        assert "_etl_run_id" in result.columns
+        assert "_loom_run_id" not in result.columns

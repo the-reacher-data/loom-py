@@ -10,7 +10,7 @@ from typing import Any, TypeGuard
 import fsspec.core
 import polars as pl
 
-from loom.etl.checkpoint._cleaners import _join_path
+from loom.etl.checkpoint._cleaners import _checkpoint_storage_options, _join_path
 
 _log = logging.getLogger(__name__)
 _WRITING = ".writing"
@@ -26,7 +26,7 @@ class _PolarsCheckpointBackend:
     """Polars Arrow IPC backend with atomic write-then-rename."""
 
     def __init__(self, storage_options: dict[str, str]) -> None:
-        self._storage_options = storage_options
+        self._storage_options = _checkpoint_storage_options(storage_options)
         self._schemas: dict[str, pl.Schema] = {}
         self._lock = threading.Lock()
 

@@ -134,11 +134,19 @@ class _ExecWriter:
         self.written: Any = None
 
     def write(
-        self, frame: Any, spec: Any, params_instance: Any, /, *, streaming: bool = False
+        self,
+        frame: Any,
+        spec: Any,
+        params_instance: Any,
+        /,
+        *,
+        streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
         _ = spec
         _ = params_instance
         _ = streaming
+        _ = write_ctx
         self.written = frame
 
 
