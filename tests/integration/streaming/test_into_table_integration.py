@@ -291,9 +291,9 @@ class TestIntoTableSQLAlchemyIntegration:
 
         uri = str(tmp_path / "events_delta")
         write_calls: list[int] = []
-        ipc_write_calls: list[int] = []
+        ipc_batch_calls: list[int] = []
         original_write_deltalake = cast(Any, _table_common).write_deltalake
-        original_write_ipc_stream = pl.DataFrame.write_ipc_stream
+        original_new_stream = cast(Any, _table_common)._pa_ipc.new_stream
 
         def _counted_write_deltalake(*args: Any, **kwargs: Any) -> Any:
             write_calls.append(1)
@@ -301,12 +301,22 @@ class TestIntoTableSQLAlchemyIntegration:
             assert kwargs["target_file_size"] == 134_217_728
             return original_write_deltalake(*args, **kwargs)
 
-        def _counted_write_ipc_stream(self: pl.DataFrame, file: object, *args: Any, **kwargs: Any):
-            ipc_write_calls.append(len(self))
-            return original_write_ipc_stream(self, file, *args, **kwargs)
+        class _CountingRecordBatchWriter:
+            def __init__(self, wrapped: Any) -> None:
+                self._wrapped = wrapped
+
+            def write_batch(self, batch: Any) -> None:
+                ipc_batch_calls.append(batch.num_rows)
+                self._wrapped.write_batch(batch)
+
+            def close(self) -> None:
+                self._wrapped.close()
+
+        def _counted_new_stream(*args: Any, **kwargs: Any) -> _CountingRecordBatchWriter:
+            return _CountingRecordBatchWriter(original_new_stream(*args, **kwargs))
 
         monkeypatch.setattr(cast(Any, _table_common), "write_deltalake", _counted_write_deltalake)
-        monkeypatch.setattr(pl.DataFrame, "write_ipc_stream", _counted_write_ipc_stream)
+        monkeypatch.setattr(cast(Any, _table_common)._pa_ipc, "new_stream", _counted_new_stream)
 
         flow: StreamFlow[_OrderRow, _OrderRow] = StreamFlow(
             name="events_delta_sink_flow",
@@ -366,7 +376,7 @@ class TestIntoTableSQLAlchemyIntegration:
             {"order_id": 3, "amount": 30.0, "status": "sent"},
         ]
         assert len(write_calls) == 1
-        assert ipc_write_calls == [1, 1, 1]
+        assert ipc_batch_calls == [3]
 
     def test_delta_sink_config_parses_writer_properties_and_staging(
         self,
@@ -385,6 +395,7 @@ class TestIntoTableSQLAlchemyIntegration:
         )
 
         assert config.staging_compression == "zstd"
+        assert config.writer_properties is not None
         assert config.writer_properties.compression == "SNAPPY"
         assert config.target_file_size == 134_217_728
 
