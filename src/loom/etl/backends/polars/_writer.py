@@ -31,6 +31,7 @@ from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
 from loom.etl.lineage._records import LineageRecord, WriteContext, get_lineage_schema
+from loom.etl.schema._schema import SchemaError
 from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
@@ -47,6 +48,32 @@ from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
 
 _log = logging.getLogger(__name__)
+
+
+def _check_null_dtype_columns(frame: pl.DataFrame) -> None:
+    """Raise :exc:`~loom.etl.schema.SchemaError` if any column has dtype ``Null``.
+
+    Delta Lake rejects ``Null``-typed columns.  This check surfaces the
+    offending column names before the write attempt so the error is
+    actionable rather than an opaque external exception.
+
+    Args:
+        frame: Collected DataFrame about to be written to Delta.
+
+    Raises:
+        SchemaError: When one or more columns carry ``pl.Null`` dtype.
+    """
+    null_cols = [name for name, dtype in frame.schema.items() if isinstance(dtype, pl.Null)]
+    if not null_cols:
+        return
+    schema_repr = "\n".join(f"  {n}: {d}" for n, d in frame.schema.items())
+    raise SchemaError(
+        f"Delta Lake does not support the Null dtype. "
+        f"Column(s) with Null dtype: {null_cols}.\n"
+        f"Cast each column to its intended type before writing "
+        f"(use an explicit schema declaration or .cast() in the pipeline step).\n"
+        f"Full frame schema:\n{schema_repr}"
+    )
 
 
 class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysicalSchema]):
@@ -120,7 +147,9 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
     def _materialize_for_write(self, frame: pl.LazyFrame, streaming: bool) -> pl.DataFrame:
         """Collect lazy frame to DataFrame before Delta write."""
-        return frame.collect(engine="streaming" if streaming else "auto")
+        df = frame.collect(engine="streaming" if streaming else "auto")
+        _check_null_dtype_columns(df)
+        return df
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
         """Convert predicate to SQL (Polars uses internal SQL representation)."""

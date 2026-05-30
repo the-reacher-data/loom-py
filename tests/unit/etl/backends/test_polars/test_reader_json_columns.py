@@ -376,3 +376,56 @@ class TestPolymorphicJsonNormalization:
         assert result["product"][0]["price"] == pytest.approx(9.99)
         assert result["product"][1]["product_id"] == 20
         assert result["product"][1]["name"] == "Gadget"
+
+
+# ---------------------------------------------------------------------------
+# Null-dtype and all-null column handling — must always emit the declared dtype.
+# Prevents "Invalid data type for Delta Lake: Null" downstream.
+# ---------------------------------------------------------------------------
+
+
+class TestNullColumnTypeSafety:
+    """json_decode must produce the declared dtype even when all values are null."""
+
+    def test_all_null_string_column_struct_has_declared_dtype(self) -> None:
+        struct_type = StructType(fields=(StructField("user_id", LoomDtype.INT64),))
+        jc = JsonColumnSpec(column="payload", loom_type=struct_type)
+        frame = pl.DataFrame({"payload": pl.Series([None, None], dtype=pl.String)}).lazy()
+        result = _apply_json_decode(frame, (jc,)).collect()
+
+        assert result["payload"].dtype == pl.Struct([pl.Field("user_id", pl.Int64)])
+        assert result["payload"][0] is None
+        assert result["payload"][1] is None
+
+    def test_null_dtype_column_struct_has_declared_dtype(self) -> None:
+        struct_type = StructType(fields=(StructField("amount", LoomDtype.FLOAT64),))
+        jc = JsonColumnSpec(column="data", loom_type=struct_type)
+        # Null dtype — simulates optional_col()/pl.lit(None) columns from pipelines
+        frame = pl.DataFrame({"data": pl.Series([None, None], dtype=pl.Null)}).lazy()
+        result = _apply_json_decode(frame, (jc,)).collect()
+
+        assert result["data"].dtype == pl.Struct([pl.Field("amount", pl.Float64)])
+
+    def test_all_null_string_column_list_has_declared_dtype(self) -> None:
+        jc = JsonColumnSpec(column="tags", loom_type=ListType(inner=LoomDtype.UTF8))
+        frame = pl.DataFrame({"tags": pl.Series([None, None], dtype=pl.String)}).lazy()
+        result = _apply_json_decode(frame, (jc,)).collect()
+
+        assert result["tags"].dtype == pl.List(pl.String)
+
+    def test_null_dtype_column_primitive_has_declared_dtype(self) -> None:
+        jc = JsonColumnSpec(column="label", loom_type=LoomDtype.UTF8)
+        frame = pl.DataFrame({"label": pl.Series([None], dtype=pl.Null)}).lazy()
+        result = _apply_json_decode(frame, (jc,)).collect()
+
+        assert result["label"].dtype == pl.String
+
+    def test_mixed_null_and_valid_rows_declared_dtype_preserved(self) -> None:
+        jc = JsonColumnSpec(column="payload", loom_type=LoomDtype.UTF8)
+        rows = [{"payload": None}, {"payload": '"active"'}, {"payload": None}]
+        result = _apply_json_decode(pl.DataFrame(rows).lazy(), (jc,)).collect()
+
+        assert result["payload"].dtype == pl.String
+        assert result["payload"][0] is None
+        assert result["payload"][1] == "active"
+        assert result["payload"][2] is None
