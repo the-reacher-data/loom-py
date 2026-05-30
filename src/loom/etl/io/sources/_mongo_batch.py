@@ -599,7 +599,7 @@ def align_to_schema(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.Data
             sorted(new_cols),
         )
         df = df.drop(new_cols)
-    return df.select([c for c in schema if c in df.columns])
+    return df.select(list(schema.keys()))
 
 
 def apply_declared_schema(
@@ -618,30 +618,34 @@ def apply_declared_schema(
         df = df.with_columns(missing)
 
     extra_cols = [c for c in df.columns if c not in declared]
-    if not extra_cols:
-        return df
+    if extra_cols:
+        if mode == "error":
+            raise ValueError(
+                f"MongoSourceReader: documents contain fields not declared in "
+                f"{schema_name}: {extra_cols}. "
+                "Use on_extra_fields('ignore'), ('warn'), or ('capture') to suppress."
+            )
+        if mode == "warn":
+            _log.warning(
+                "MongoSourceReader: dropping %d undeclared field(s) from %s: %s",
+                len(extra_cols),
+                schema_name,
+                extra_cols,
+            )
+        if mode == "capture":
+            extra_struct = pl.struct([df[c] for c in extra_cols])
+            extra_series = extra_struct.map_elements(_safe_dumps, return_dtype=pl.String).alias(
+                "_extra"
+            )
+            df = df.drop(extra_cols).with_columns(extra_series)
+        else:
+            df = df.drop(extra_cols)
 
-    if mode == "error":
-        raise ValueError(
-            f"MongoSourceReader: documents contain fields not declared in "
-            f"{schema_name}: {extra_cols}. "
-            "Use on_extra_fields('ignore'), ('warn'), or ('capture') to suppress."
-        )
-    if mode == "warn":
-        _log.warning(
-            "MongoSourceReader: dropping %d undeclared field(s) from %s: %s",
-            len(extra_cols),
-            schema_name,
-            extra_cols,
-        )
-        return df.drop(extra_cols)
-    if mode == "capture":
-        extra_struct = pl.struct([df[c] for c in extra_cols])
-        extra_series = extra_struct.map_elements(_safe_dumps, return_dtype=pl.String).alias(
-            "_extra"
-        )
-        return df.drop(extra_cols).with_columns(extra_series)
-    return df.drop(extra_cols)
+    if mode == "capture" and "_extra" not in df.columns:
+        df = df.with_columns(pl.lit(None, pl.String()).alias("_extra"))
+
+    output_cols = list(declared.keys()) + (["_extra"] if mode == "capture" else [])
+    return df if df.columns == output_cols else df.select(output_cols)
 
 
 # ---------------------------------------------------------------------------

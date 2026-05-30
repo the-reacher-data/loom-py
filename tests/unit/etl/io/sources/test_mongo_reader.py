@@ -1299,3 +1299,192 @@ class TestPhase2Improvements:
         batch = [{"x": "hello"}]
         result = _canonicalize_batch(batch, {})
         assert result == batch
+
+
+# ---------------------------------------------------------------------------
+# Stable batch schema — column order invariants (TDD Red phase)
+# ---------------------------------------------------------------------------
+
+
+class TestStableBatchSchema:
+    """Column order must be stable across batches with different field presence.
+
+    These tests are written against the *fixed* contract:
+      - apply_declared_schema always returns columns in declared key order.
+      - apply_declared_schema in capture mode always includes _extra (null when absent).
+      - align_to_schema always returns columns in schema key order, raising if a key
+        is absent from the DataFrame rather than silently dropping it.
+
+    All five tests FAIL against the current (buggy) implementations and PASS after
+    the fix is applied.
+    """
+
+    # ------------------------------------------------------------------
+    # T1 — apply_declared_schema: different field presence → stable order
+    # ------------------------------------------------------------------
+
+    def test_apply_declared_schema_different_field_presence_stable_column_order(self) -> None:
+        """Two sparse batches with the same declared schema must produce identical
+        column order so pl.concat (vstack) succeeds."""
+        from loom.etl.io.sources._mongo_batch import apply_declared_schema
+
+        declared: dict[str, pl.DataType] = {
+            "brand": pl.String(),
+            "name": pl.String(),
+            "info": pl.String(),
+        }
+
+        batch1 = pl.DataFrame([{"brand": "X", "name": "Y"}])
+        batch2 = pl.DataFrame([{"info": "Z", "name": "B"}])
+
+        f1 = apply_declared_schema(batch1, declared, "ignore", "test_schema")
+        f2 = apply_declared_schema(batch2, declared, "ignore", "test_schema")
+
+        expected_columns = ["brand", "name", "info"]
+        assert f1.columns == expected_columns, (
+            f"batch1 columns {f1.columns!r} != {expected_columns!r}"
+        )
+        assert f2.columns == expected_columns, (
+            f"batch2 columns {f2.columns!r} != {expected_columns!r}"
+        )
+
+        # Must not raise ShapeError
+        pl.concat([f1, f2], how="vertical")
+
+    # ------------------------------------------------------------------
+    # T2 — apply_declared_schema: partial declared-columns in wrong order
+    #       → missing declared cols appended at end → early return with wrong order
+    # ------------------------------------------------------------------
+
+    def test_apply_declared_schema_partial_declared_wrong_order_is_reordered(self) -> None:
+        """When a batch contains some declared columns in a different order than the
+        declared schema, and other declared columns are absent, apply_declared_schema
+        must still return columns in declared key order.
+
+        Buggy path: missing cols are appended with with_columns(), then extra_cols is
+        empty so the function returns early *without* a final select reorder.
+        Result is ['name', 'info', 'brand'] instead of ['brand', 'name', 'info'].
+        """
+        from loom.etl.io.sources._mongo_batch import apply_declared_schema
+
+        # Declared order: brand, name, info
+        declared: dict[str, pl.DataType] = {
+            "brand": pl.String(),
+            "name": pl.String(),
+            "info": pl.String(),
+        }
+
+        # Batch has 'name' and 'info' (both declared) but NOT 'brand'
+        # After with_columns([brand_null]), df.columns = ['name', 'info', 'brand']
+        # No extra_cols → early return → WRONG ORDER (bug)
+        df = pl.DataFrame([{"name": "Y", "info": "Z"}])
+
+        result = apply_declared_schema(df, declared, "ignore", "test_schema")
+
+        expected_columns = ["brand", "name", "info"]
+        assert result.columns == expected_columns, (
+            f"Expected {expected_columns!r}, got {result.columns!r}"
+        )
+        assert result["brand"][0] is None
+
+    # ------------------------------------------------------------------
+    # T3 — apply_declared_schema capture mode: _extra always present
+    # ------------------------------------------------------------------
+
+    def test_apply_declared_schema_capture_mode_always_has_extra_column(self) -> None:
+        """In capture mode both batches (one with extras, one without) must have
+        an _extra column so pl.concat does not raise a ShapeError."""
+        from loom.etl.io.sources._mongo_batch import apply_declared_schema
+
+        declared: dict[str, pl.DataType] = {"name": pl.String()}
+
+        # batch1 has an undeclared field
+        batch1 = pl.DataFrame([{"name": "A", "undeclared_field": "x"}])
+        # batch2 has no undeclared field
+        batch2 = pl.DataFrame([{"name": "B"}])
+
+        f1 = apply_declared_schema(batch1, declared, "capture", "test_schema")
+        f2 = apply_declared_schema(batch2, declared, "capture", "test_schema")
+
+        assert "_extra" in f1.columns, "f1 (with extra fields) must contain _extra"
+        assert "_extra" in f2.columns, "f2 (no extra fields) must also contain _extra"
+
+        # Must not raise ShapeError
+        pl.concat([f1, f2], how="vertical")
+
+    # ------------------------------------------------------------------
+    # T4 — apply_declared_schema warn mode: columns must be in declared order
+    # ------------------------------------------------------------------
+
+    def test_apply_declared_schema_warn_mode_stable_column_order(self) -> None:
+        """In warn mode, after dropping extra columns, the returned frame must have
+        columns in declared key order — not in the order they appear in the batch.
+
+        Buggy path: df.drop(extra_cols) does not reorder; columns remain in the
+        original batch order rather than the declared schema order.
+        """
+        from loom.etl.io.sources._mongo_batch import apply_declared_schema
+
+        # Declared order: brand, name, info
+        declared: dict[str, pl.DataType] = {
+            "brand": pl.String(),
+            "name": pl.String(),
+            "info": pl.String(),
+        }
+
+        # Batch has columns in wrong declared order + an extra undeclared column
+        # After drop('extra'), order would be ['info', 'name', 'brand'] — wrong
+        batch = pl.DataFrame([{"info": "Z", "name": "B", "brand": "X", "extra": "drop_me"}])
+
+        result = apply_declared_schema(batch, declared, "warn", "test_schema")
+
+        expected_columns = ["brand", "name", "info"]
+        assert result.columns == expected_columns, (
+            f"Expected {expected_columns!r}, got {result.columns!r}"
+        )
+
+        # Verify data integrity
+        assert result["brand"][0] == "X"
+        assert result["name"][0] == "B"
+        assert result["info"][0] == "Z"
+
+    # ------------------------------------------------------------------
+    # T5 — apply_declared_schema: capture mode column order is stable
+    #       even when batch has declared cols in wrong order + extras
+    # ------------------------------------------------------------------
+
+    def test_apply_declared_schema_capture_mode_declared_cols_in_declared_order(self) -> None:
+        """In capture mode, the non-extra declared columns must appear in declared
+        key order in the returned frame, even when the batch columns are in a
+        different order and some declared cols are missing.
+
+        Buggy path: df.drop(extra_cols).with_columns(extra_series) preserves the
+        batch's original column order for declared cols rather than reordering to
+        the declared schema key order.
+        """
+        from loom.etl.io.sources._mongo_batch import apply_declared_schema
+
+        # Declared order: brand, name, info
+        declared: dict[str, pl.DataType] = {
+            "brand": pl.String(),
+            "name": pl.String(),
+            "info": pl.String(),
+        }
+
+        # Batch has 'info' and 'name' in wrong order + an extra column; 'brand' missing
+        # Buggy result: missing brand appended → ['info', 'name', 'extra', 'brand']
+        # after drop('extra').with_columns(extra_series):
+        # declared cols are ['info', 'name', 'brand'] — wrong order
+        batch = pl.DataFrame([{"info": "Z", "name": "B", "extra": "x"}])
+
+        result = apply_declared_schema(batch, declared, "capture", "test_schema")
+
+        # _extra must be present
+        assert "_extra" in result.columns, f"_extra missing from {result.columns!r}"
+
+        declared_cols_in_result = [c for c in result.columns if c != "_extra"]
+        expected_declared_order = ["brand", "name", "info"]
+        assert declared_cols_in_result == expected_declared_order, (
+            f"Declared cols in wrong order: {declared_cols_in_result!r} "
+            f"!= {expected_declared_order!r}"
+        )
