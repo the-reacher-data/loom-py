@@ -13,7 +13,9 @@ Differs intentionally from ``loom.streaming.mongo._normalize``:
 - ``DBRef``      → ``str`` (``"collection/id"`` repr)
 - ``Mapping``    → ``dict[str, …]`` (keys coerced to ``str``, values recursed)
 - ``Sequence``   → ``list`` (items recursed)
-- Unknown types  → ``str(value)`` (safe fallback — avoids ``Object`` dtype)
+- bson-origin unknown dict-like → ``dict[str, …]`` (duck-typed via ``.items()``; warns)
+- bson-origin unknown scalar    → ``None`` (null; avoids non-JSON ``Object(…)`` strings)
+- Non-bson unknown types        → ``str(value)`` (original fallback preserved)
 
 Note on ``Decimal128`` precision: Decimal128 is IEEE 754-2008 128-bit decimal
 (up to 34 significant digits).  Conversion to float64 retains ~15-17 digits.
@@ -23,11 +25,24 @@ column-level cast after reading.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+_log = logging.getLogger(__name__)
+
 _MAX_DEPTH = 64
+
+# Tracks bson type names already warned about — prevents WARNING flood when an unknown
+# type appears in every document of a large batch (log each type name once per process).
+_warned_bson_types: set[str] = set()
+
+
+def _is_bson_type(value: object) -> bool:
+    """Return True if *value* originates from the bson/pymongo package tree."""
+    module = type(value).__module__
+    return module == "bson" or module.startswith("bson.")
 
 
 def normalize_bson_doc(doc: dict[str, Any], *, _depth: int = 0) -> dict[str, Any]:
@@ -73,7 +88,40 @@ def _normalize(value: object, depth: int) -> object:
     normalizer = _NORMALIZERS.get(type(value).__name__)
     if normalizer is not None:
         return normalizer(value)
-    # Unknown type: str() fallback prevents Polars Object dtype columns
+
+    # bson-origin types: handle separately to avoid str() producing Object({...}) strings
+    # that are not valid JSON. Guard limits scope to the bson package only.
+    if _is_bson_type(value):
+        type_name = type(value).__name__
+        if callable(getattr(value, "items", None)):
+            if type_name not in _warned_bson_types:
+                _warned_bson_types.add(type_name)
+                _log.warning(
+                    "normalize_bson_doc: unknown bson dict-like %s"
+                    " — normalizing via .items(); add handler to _NORMALIZERS if frequent",
+                    type_name,
+                )
+            try:
+                return {str(k): _normalize(v, depth + 1) for k, v in value.items()}  # type: ignore[attr-defined]
+            except (TypeError, AttributeError, ValueError) as exc:
+                _log.warning(
+                    "normalize_bson_doc: .items() failed for %s: %s — replacing with null",
+                    type_name,
+                    exc,
+                )
+        elif type_name not in _warned_bson_types:
+            _warned_bson_types.add(type_name)
+            _log.warning(
+                "normalize_bson_doc: unknown bson type %s — cannot normalize, replacing with null",
+                type_name,
+            )
+        return None
+
+    # Non-bson unknown type: str() fallback preserved (avoids Polars Object dtype columns).
+    _log.warning(
+        "normalize_bson_doc: unknown non-bson type %s — using str() fallback",
+        type(value).__name__,
+    )
     return str(value)
 
 

@@ -1488,3 +1488,193 @@ class TestStableBatchSchema:
             f"Declared cols in wrong order: {declared_cols_in_result!r} "
             f"!= {expected_declared_order!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# BSON unknown-type normalization fallback (TDD Red phase)
+# ---------------------------------------------------------------------------
+
+
+class TestBsonNormalizationFallback:
+    """_normalize() and _json_default() must handle unknown bson-origin types safely.
+
+    Current bug: ``str(value)`` is called on BSON C/Rust extension types whose
+    ``__str__`` produces ``"Object({...})"`` — a non-JSON-compatible string that
+    breaks downstream ``json_decode()`` calls.
+
+    Fixed contract:
+    - bson-origin type with ``.items()``  → recursive dict (WARNING logged)
+    - bson-origin type without ``.items()`` → ``None`` (WARNING logged)
+    - non-bson unknown type                → ``str(value)`` preserved (unchanged)
+    - ``_json_default`` for bson-origin    → delegates to ``deep_normalize_for_json``
+
+    All five tests FAIL against the current (buggy) code and PASS after the fix.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper: manufacture fake bson-module types without importing pymongo
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_bson_type(
+        class_name: str,
+        items_dict: dict | None = None,
+        str_repr: str = "Object({})",
+    ) -> object:
+        """Create a fake object whose ``__module__`` starts with ``"bson"``."""
+        attrs: dict[str, Any] = {
+            "__repr__": lambda self: str_repr,
+            "__str__": lambda self: str_repr,
+        }
+        if items_dict is not None:
+            # Capture by default-arg to avoid late-binding closure issues
+            attrs["items"] = lambda self, _d=items_dict: _d.items()
+        cls = type(class_name, (), attrs)
+        cls.__module__ = "bson.fake"  # type: ignore[attr-defined]
+        return cls()
+
+    # ------------------------------------------------------------------
+    # T1 — bson dict-like type returns a plain Python dict, not a string
+    # ------------------------------------------------------------------
+
+    def test_normalize_bson_dict_like_type_returns_python_dict(self) -> None:
+        """A bson-origin type that exposes ``.items()`` must be recursively
+        normalized to a plain Python dict — not coerced with ``str()``.
+
+        Current bug: ``_normalize`` falls through to ``return str(value)`` which
+        produces ``"Object({...})"`` — a string, not a dict.
+        """
+        from loom.etl.io.sources._mongo_bson import _normalize
+
+        fake_bson = self._make_bson_type(
+            "FakeBsonDoc",
+            items_dict={"source": "web", "medium": "favorito"},
+        )
+
+        result = _normalize(fake_bson, 0)
+
+        # Bug: result is "Object({})" — a string
+        assert not isinstance(result, str), (
+            f"_normalize returned a string {result!r} instead of a dict for a "
+            "bson dict-like type — str() fallback must not fire for bson-origin types"
+        )
+        assert result == {"source": "web", "medium": "favorito"}
+
+    # ------------------------------------------------------------------
+    # T2 — bson scalar type (no .items()) returns None, not a string
+    # ------------------------------------------------------------------
+
+    def test_normalize_bson_scalar_type_returns_none(self) -> None:
+        """A bson-origin type without ``.items()`` must be normalized to ``None``
+        rather than serialised with ``str()``.
+
+        Current bug: ``_normalize`` returns ``"MaxKey()"`` (the string).
+        """
+        from loom.etl.io.sources._mongo_bson import _normalize
+
+        fake_bson_scalar = self._make_bson_type(
+            "MaxKey",
+            items_dict=None,
+            str_repr="MaxKey()",
+        )
+
+        result = _normalize(fake_bson_scalar, 0)
+
+        assert result is None, (
+            f"_normalize returned {result!r} instead of None for a bson scalar "
+            "type without .items() — str() fallback must not fire for bson-origin types"
+        )
+
+    # ------------------------------------------------------------------
+    # T3 — nested bson dict-like types are fully recursed
+    # ------------------------------------------------------------------
+
+    def test_normalize_nested_bson_dict_is_fully_recursed(self) -> None:
+        """When a bson dict-like type contains another bson dict-like type as a
+        value, both levels must be normalized to plain Python dicts.
+
+        Current bug: the outer ``str()`` fallback prevents any recursion — the
+        result is a flat string rather than a nested dict.
+        """
+        from loom.etl.io.sources._mongo_bson import _normalize
+
+        inner_bson = self._make_bson_type(
+            "FakeBsonInner",
+            items_dict={"nested": "value"},
+        )
+        outer_bson = self._make_bson_type(
+            "FakeBsonOuter",
+            items_dict={"field": inner_bson},
+        )
+
+        result = _normalize(outer_bson, 0)
+
+        assert result == {"field": {"nested": "value"}}, (
+            f"_normalize returned {result!r}; expected fully recursed dict "
+            '{"field": {"nested": "value"}}'
+        )
+
+    # ------------------------------------------------------------------
+    # T4 — result of normalizing a bson dict-like type is JSON-serializable
+    # ------------------------------------------------------------------
+
+    def test_normalize_bson_dict_value_is_json_serializable(self) -> None:
+        """The normalized result of a bson dict-like type must be a plain Python
+        dict that survives a ``json.dumps`` / ``json.loads`` round-trip unchanged.
+
+        Current bug: ``_normalize`` returns the string ``"Object({...})"``; while
+        technically valid JSON, it is *semantically* wrong — the assertion checks
+        ``isinstance(result, dict)`` to catch this case.
+        """
+        import json
+
+        from loom.etl.io.sources._mongo_bson import _normalize
+
+        fake_bson = self._make_bson_type(
+            "FakeBsonDoc",
+            items_dict={"city": "Madrid", "code": "28001"},
+        )
+
+        result = _normalize(fake_bson, 0)
+
+        # Primary assertion: must be a dict, not a string
+        assert isinstance(result, dict), (
+            f"_normalize returned {result!r} (type {type(result).__name__}) "
+            "instead of a plain dict for a bson dict-like type"
+        )
+
+        # Secondary: round-trip through JSON must be lossless
+        serialized = json.dumps(result)
+        assert json.loads(serialized) == result
+
+    # ------------------------------------------------------------------
+    # T5 — _json_default for bson-origin types delegates to deep_normalize_for_json
+    # ------------------------------------------------------------------
+
+    def test_json_default_bson_origin_delegates_to_normalize(self) -> None:
+        """When a bson-origin dict-like type reaches ``_json_default``, the result
+        must be the normalized dict (via ``deep_normalize_for_json``), not the raw
+        ``str()`` of the object.
+
+        Current bug: ``_json_default`` calls ``str(obj)`` unconditionally for
+        unrecognized types, producing ``'"Object({...})"'`` — ``json.loads`` returns
+        a string, not a dict.
+        """
+        import json
+
+        from loom.etl.io.sources._mongo_batch import _json_dumps
+
+        fake_bson = self._make_bson_type(
+            "FakeBsonDoc",
+            items_dict={"key": "value"},
+        )
+
+        raw = _json_dumps(fake_bson)
+        decoded = json.loads(raw)
+
+        assert isinstance(decoded, dict), (
+            f"_json_dumps of a bson dict-like type yielded {decoded!r} "
+            "(type {type(decoded).__name__}); expected a dict — "
+            "_json_default must delegate to deep_normalize_for_json for bson-origin types"
+        )
+        assert decoded == {"key": "value"}

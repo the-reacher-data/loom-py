@@ -10,7 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import polars as pl
 
-from loom.etl.io.sources._mongo_bson import deep_normalize_for_json
+from loom.etl.io.sources._mongo_bson import _is_bson_type, deep_normalize_for_json
 
 _log = logging.getLogger(__name__)
 
@@ -27,12 +27,16 @@ _SHAPE_SUMMARY_LIMIT = 24
 # ---------------------------------------------------------------------------
 
 
-def _json_default(obj: object) -> str:
+def _json_default(obj: object) -> object:
     # datetime/bytes pass through _normalize unchanged; handled at JSON-encode time.
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
     if isinstance(obj, bytes):
         return obj.hex()
+    # Delegate bson-origin objects to _normalize (single source of truth in _mongo_bson.py).
+    # Covers build_frame() callers that skip the cursor loop and normalize_bson_doc().
+    if _is_bson_type(obj):
+        return deep_normalize_for_json(obj)
     _log.warning(
         "MongoSourceReader: unexpected type %s in document field — using str()",
         type(obj).__name__,
