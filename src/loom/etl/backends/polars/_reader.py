@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import json
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -17,13 +20,102 @@ from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions,
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
 from loom.etl.declarative.source._specs import ClickHouseSourceSpec, MongoSourceSpec
 from loom.etl.runtime.contracts import SourceReader
-from loom.etl.schema._schema import ColumnSchema
+from loom.etl.schema._schema import (
+    ArrayType,
+    ColumnSchema,
+    ListType,
+    LoomDtype,
+    LoomType,
+    StructType,
+)
 from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
 from loom.etl.storage.routing import PathRouteResolver, PathTarget, TableRouteResolver
 
 from ._dtype import loom_type_to_polars
 from ._predicate import predicate_to_polars
+
+_log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Polymorphic JSON normalization
+# ---------------------------------------------------------------------------
+
+
+def _normalize_utf8_value(value: object) -> object:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _normalize_struct_value(value: object, loom_type: StructType) -> object:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(value, dict):
+        return None
+    return {f.name: _normalize_to_schema(value.get(f.name), f.dtype) for f in loom_type.fields}
+
+
+def _normalize_list_value(value: object, loom_type: ListType | ArrayType) -> object:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(value, list):
+        return None
+    return [_normalize_to_schema(item, loom_type.inner) for item in value]
+
+
+_COMPLEX_NORMALIZERS: dict[type, Callable[[object, Any], object]] = {
+    StructType: _normalize_struct_value,
+    ListType: _normalize_list_value,
+    ArrayType: _normalize_list_value,
+}
+
+_PRIMITIVE_COERCERS: dict[LoomDtype, Callable[[object], object]] = {
+    LoomDtype.UTF8: _normalize_utf8_value,
+}
+
+
+def _normalize_to_schema(value: object, loom_type: LoomType) -> object:
+    """Coerce *value* to match *loom_type*. Returns ``None`` on unrecoverable mismatch."""
+    if value is None:
+        return None
+    handler = _COMPLEX_NORMALIZERS.get(type(loom_type))
+    if handler is not None:
+        return handler(value, loom_type)
+    if isinstance(loom_type, LoomDtype):
+        prim = _PRIMITIVE_COERCERS.get(loom_type)
+        return prim(value) if prim is not None else value
+    return value
+
+
+def _normalize_json_string(json_str: str | None, *, loom_type: LoomType) -> str | None:
+    """Parse *json_str*, coerce to *loom_type*, and re-serialize.
+
+    Returns ``None`` when *json_str* is ``None``, unparseable, or coercion
+    produces ``None``. After this step, ``str.json_decode(schema)`` always
+    succeeds for the target column.
+    """
+    if json_str is None:
+        return None
+    try:
+        parsed = json.loads(json_str)
+    except (ValueError, TypeError):
+        return None
+    result = _normalize_to_schema(parsed, loom_type)
+    if result is None:
+        return None
+    if result is parsed:
+        return json_str  # no structural change — skip re-serialization
+    return json.dumps(result, ensure_ascii=False)
 
 
 class PolarsSourceReader(SourceReader):
@@ -191,12 +283,23 @@ class PolarsSourceReader(SourceReader):
 
     @staticmethod
     def _apply_json_decode(frame: pl.LazyFrame, json_columns: tuple[Any, ...]) -> pl.LazyFrame:
-        """Decode JSON string columns."""
+        """Decode JSON string columns.
+
+        Applies a per-row normalization pass before ``json_decode`` so that
+        polymorphic fields (e.g. ``String`` in some rows, ``Object`` in others)
+        are coerced to the declared :class:`~loom.etl.schema.LoomType` without
+        raising :exc:`polars.exceptions.ComputeError`.
+        """
         if not json_columns:
             return frame
 
         exprs = [
-            pl.col(jc.column).str.json_decode(loom_type_to_polars(jc.loom_type))
+            pl.col(jc.column)
+            .map_elements(
+                functools.partial(_normalize_json_string, loom_type=jc.loom_type),
+                return_dtype=pl.String,
+            )
+            .str.json_decode(loom_type_to_polars(jc.loom_type))
             for jc in json_columns
         ]
         return frame.with_columns(exprs)
