@@ -214,3 +214,74 @@ class _FakeClient:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_partition_skips_batch_when_try_next_raises_unexpected_error(monkeypatch: Any) -> None:
+    partition = _build_partition(
+        monkeypatch,
+        [],
+        streams=[_FailingStream(ValueError("unexpected"))],
+    )
+
+    batch = partition.next_batch()
+
+    assert batch == []
+    partition.close()
+
+
+def test_partition_skips_event_when_message_build_fails(monkeypatch: Any) -> None:
+    docs = [
+        {
+            "_id": {"_data": "resume-bad"},
+            "operationType": "insert",
+            "ns": {"db": "app", "coll": "orders"},
+            "documentKey": {"_id": "order-bad"},
+        },
+        {
+            "_id": {"_data": "resume-ok"},
+            "operationType": "insert",
+            "ns": {"db": "app", "coll": "orders"},
+            "documentKey": {"_id": "order-ok"},
+        },
+    ]
+    call_count = 0
+    original_build = __import__(
+        "loom.streaming.mongo._normalize",
+        fromlist=["build_mongo_cdc_message"],
+    ).build_mongo_cdc_message
+
+    def _build_once_failing(change: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise TypeError("bad document")
+        return original_build(change)
+
+    monkeypatch.setattr(
+        "loom.streaming.mongo._bytewax_source.build_mongo_cdc_message",
+        _build_once_failing,
+    )
+    partition = _build_partition(monkeypatch, docs)
+
+    batch = partition.next_batch()
+
+    assert len(batch) == 1
+    assert batch[0].payload.event_id == "resume-ok"
+    partition.close()
+
+
+def test_partition_does_not_swallow_operation_failure_unexpired(monkeypatch: Any) -> None:
+    from pymongo.errors import OperationFailure
+
+    non_expiry_error = OperationFailure("some other mongo error", code=999)
+    partition = _build_partition(
+        monkeypatch,
+        [],
+        on_oplog_expired="restart_from_now",
+        streams=[_FailingStream(non_expiry_error)],
+    )
+
+    with pytest.raises(OperationFailure, match="some other mongo error"):
+        partition.next_batch()
+
+    partition.close()

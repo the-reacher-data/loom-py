@@ -159,6 +159,8 @@ def _build_wall_time_ms(
         return cluster_time.seconds * 1000 if cluster_time is not None else None
     if isinstance(value, datetime):
         return _datetime_to_epoch_ms(value)
+    if type(value).__name__ == "DatetimeMS":
+        return _normalize_datetime_ms(value)
     normalized = normalize_bson_value(value)
     if isinstance(normalized, int):
         return normalized
@@ -267,12 +269,18 @@ def _identity(value: object) -> object:
     return value
 
 
+def _normalize_datetime_ms(value: object) -> int:
+    # DatetimeMS.__int__() returns milliseconds since Unix epoch; safe for out-of-range years.
+    return int(value)  # type: ignore[call-overload, no-any-return]
+
+
 _BSON_NORMALIZERS: dict[str, Callable[[object], object]] = {
     "ObjectId": _normalize_objectid,
     "Timestamp": _normalize_timestamp_mapping,
     "Decimal128": _normalize_decimal128,
     "Binary": _normalize_binary,
     "DBRef": _normalize_dbref,
+    "DatetimeMS": _normalize_datetime_ms,
 }
 
 

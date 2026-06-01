@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from bytewax.dataflow import Dataflow
 from bytewax.recovery import RecoveryConfig
@@ -35,6 +35,13 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ErrorSink(Protocol):
+    """Bytewax sink protocol for ErrorEnvelope items."""
+
+    def build(self, step_id: str, worker_index: int, worker_count: int) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -183,11 +190,20 @@ class StreamingRunner:
         prepared = self.prepare_run()
         return prepared.dataflow
 
-    def prepare_run(self) -> _PreparedStreamingRun:
+    def prepare_run(
+        self,
+        *,
+        error_sinks: Mapping[ErrorKind, ErrorSink] | None = None,
+    ) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback.
 
         Releases any resources from a previous ``prepare_run()`` call before
         building the new dataflow, so calling this method twice is safe.
+
+        Args:
+            error_sinks: Optional mapping of :class:`~loom.streaming.core._errors.ErrorKind`
+                to :class:`ErrorSink` instances.  When provided, these sinks override the
+                default error routing built from the compiled plan.
 
         Returns:
             A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
@@ -198,6 +214,7 @@ class StreamingRunner:
             self._plan,
             observability_runtime=self._observability_runtime,
             runtime=self._runtime,
+            error_sinks=error_sinks,
         )
         self._shutdown = prepared.shutdown
         return prepared
@@ -332,5 +349,6 @@ def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBr
 __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
+    "ErrorSink",
     "StreamingRunner",
 ]

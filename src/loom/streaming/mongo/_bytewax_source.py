@@ -74,6 +74,7 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
         self._source = source
         self._resume_token = resume_state
         self._restart_count: int = 0
+        self._skip_count: int = 0
         self._client: _DatabaseLike = _build_mongo_client(source)
         self._stream: _ChangeStream = _open_change_stream(self._client, source, resume_state)
 
@@ -87,11 +88,30 @@ class MongoCDCPartition(StatefulSourcePartition[Message[MongoCDCEvent], dict[str
                 if not _should_restart_from_now(self._source, exc):
                     raise
                 change = self._restart_from_now()
+            except Exception as exc:
+                _logger.warning(
+                    "mongo_cdc_event_skipped resume_token=%s error_type=%s reason=%s",
+                    self._resume_token,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                self._skip_count += 1
+                break
             if change is None:
                 break
             if not isinstance(change, Mapping):
                 raise TypeError("Mongo change stream yielded a non-mapping event.")
-            message = build_mongo_cdc_message(change)
+            try:
+                message = build_mongo_cdc_message(change)
+            except Exception as exc:
+                _logger.warning(
+                    "mongo_cdc_message_build_skipped resume_token=%s error_type=%s reason=%s",
+                    self._resume_token,
+                    type(exc).__name__,
+                    str(exc),
+                )
+                self._skip_count += 1
+                continue
             self._resume_token = message.payload.resume_token
             messages.append(message)
         return messages
@@ -157,7 +177,7 @@ def _build_mongo_client(source: CompiledMongoCDCSource) -> _DatabaseLike:
             "MongoDB CDC support requires the optional 'pymongo' dependency."
         ) from exc
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {"datetime_conversion": "DATETIME_AUTO"}
     if source.settings.server_api_version is not None:
         kwargs["server_api"] = ServerApi(source.settings.server_api_version)
     client: MongoClient[Any] = MongoClient(source.settings.uri, **kwargs)

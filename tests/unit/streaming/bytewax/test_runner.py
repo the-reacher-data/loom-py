@@ -237,6 +237,7 @@ class TestPrepareRun:
             *,
             observability_runtime: object = None,
             runtime: object = None,
+            **kwargs: object,
         ) -> object:
             nonlocal call_count
             call_count += 1
@@ -392,6 +393,37 @@ class TestRunFlowSpan:
         poll_cycle = [e for e in events if e.scope == Scope.POLL_CYCLE]
         assert poll_cycle[0].kind is EventKind.START
         assert poll_cycle[1].kind is EventKind.END
+
+
+class TestPrepareRunErrorSinks:
+    def test_prepare_run_accepts_error_sinks_and_passes_them_through(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        from loom.streaming.core._errors import ErrorKind
+
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        received_kwargs: dict[str, object] = {}
+        error_sink_value = object()
+
+        def _fake_prepare_run(
+            plan: object,
+            *,
+            observability_runtime: object = None,
+            runtime: object = None,
+            **kwargs: object,
+        ) -> object:
+            received_kwargs.update(kwargs)
+            return SimpleNamespace(dataflow=Dataflow("test"), shutdown=lambda: None)
+
+        monkeypatch.setattr("loom.streaming.bytewax.runner._prepare_run", _fake_prepare_run)
+
+        runner.prepare_run(error_sinks={ErrorKind.TASK: error_sink_value})
+
+        assert "error_sinks" in received_kwargs
+        assert received_kwargs["error_sinks"] == {ErrorKind.TASK: error_sink_value}
 
 
 def _mongo_runner_config() -> dict[str, object]:
