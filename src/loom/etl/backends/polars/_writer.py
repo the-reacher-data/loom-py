@@ -258,8 +258,19 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             return
 
         location = path_target.location
+        partition_rows: list[dict[str, Any]] = list(
+            frame.select(list(partition_cols)).unique().iter_rows(named=True)
+        )
+        null_rows = [r for r in partition_rows if any(v is None for v in r.values())]
+        if null_rows:
+            raise ValueError(
+                f"replace_partitions: null values in partition columns {partition_cols} for "
+                f"table {path_target}. Null partition values cannot be used as a replace "
+                f"predicate. Ensure all partition columns are non-null before writing. "
+                f"Offending rows: {null_rows}"
+            )
         predicate = _build_partition_predicate(
-            frame.select(list(partition_cols)).unique().iter_rows(named=True),
+            iter(partition_rows),
             partition_cols,
         )
         write_deltalake(

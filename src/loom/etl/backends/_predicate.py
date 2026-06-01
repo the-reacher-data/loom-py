@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 def sql_literal(value: Any) -> str:
     """Render a Python scalar as a SQL literal."""
+    if value is None:
+        return "NULL"
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
     if isinstance(value, datetime):

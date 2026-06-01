@@ -40,7 +40,7 @@ from typing import Any
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import SupportsFlush
-from loom.etl.checkpoint import CheckpointStore
+from loom.etl.checkpoint import CheckpointCleanupError, CheckpointStore
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
     ParallelStepGroup,
@@ -333,11 +333,27 @@ class ETLExecutor:
     def _cleanup_temps(self, ctx: RunContext, status: RunStatus) -> None:
         if self._checkpoint_store is None:
             return
-        self._checkpoint_store.cleanup_run(ctx.run_id)
+        try:
+            self._checkpoint_store.cleanup_run(ctx.run_id)
+        except CheckpointCleanupError as exc:
+            _log.error(
+                "checkpoint RUN cleanup FAILED run_id=%s — temps may accumulate. Reason: %s",
+                ctx.run_id,
+                exc,
+            )
         if ctx.correlation_id is None:
             return
         if status is RunStatus.SUCCESS and ctx.last_attempt:
-            self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
+            try:
+                self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
+            except CheckpointCleanupError as exc:
+                _log.error(
+                    "checkpoint CORRELATION cleanup FAILED correlation_id=%s — "
+                    "call cleanup_correlation(%r) manually. Reason: %s",
+                    ctx.correlation_id,
+                    ctx.correlation_id,
+                    exc,
+                )
         elif status is RunStatus.FAILED and ctx.last_attempt:
             _log.warning(
                 "CORRELATION intermediates were NOT cleaned — pipeline failed on last attempt. "

@@ -11,6 +11,10 @@ import fsspec.core
 _log = logging.getLogger(__name__)
 
 
+class CheckpointCleanupError(RuntimeError):
+    """Raised when a checkpoint tree cannot be deleted."""
+
+
 _CLOUD_SCHEMES = frozenset({"s3", "gs", "gcs", "abfss", "abfs", "az", "r2"})
 
 
@@ -40,7 +44,8 @@ class FsspecTempCleaner:
     def delete_tree(self, path: str) -> None:
         """Remove *path* and its contents from cloud storage.
 
-        Failure is non-fatal — a ``WARNING`` is logged instead.
+        Raises:
+            CheckpointCleanupError: When the deletion fails for any reason.
         """
         try:
             fs, fpath = fsspec.core.url_to_fs(path, **self._storage_options)
@@ -48,7 +53,9 @@ class FsspecTempCleaner:
                 _log.debug("checkpoint cleanup path=%s", path)
                 fs.rm(fpath, recursive=True)
         except Exception as exc:
-            _log.warning("checkpoint cleanup skipped path=%s reason=%s", path, exc)
+            raise CheckpointCleanupError(
+                f"checkpoint cleanup failed path={path!r} reason={exc}"
+            ) from exc
 
 
 # Backward-compatible alias for public imports.
