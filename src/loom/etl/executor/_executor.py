@@ -335,24 +335,22 @@ class ETLExecutor:
             return
         try:
             self._checkpoint_store.cleanup_run(ctx.run_id)
-        except CheckpointCleanupError as exc:
-            _log.error(
-                "checkpoint RUN cleanup FAILED run_id=%s — temps may accumulate. Reason: %s",
+        except CheckpointCleanupError:
+            _log.exception(
+                "checkpoint RUN cleanup FAILED run_id=%s — temps may accumulate",
                 ctx.run_id,
-                exc,
             )
         if ctx.correlation_id is None:
             return
         if status is RunStatus.SUCCESS and ctx.last_attempt:
             try:
                 self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
-            except CheckpointCleanupError as exc:
-                _log.error(
+            except CheckpointCleanupError:
+                _log.exception(
                     "checkpoint CORRELATION cleanup FAILED correlation_id=%s — "
-                    "call cleanup_correlation(%r) manually. Reason: %s",
+                    "call cleanup_correlation(%r) manually",
                     ctx.correlation_id,
                     ctx.correlation_id,
-                    exc,
                 )
         elif status is RunStatus.FAILED and ctx.last_attempt:
             _log.warning(

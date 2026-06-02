@@ -113,6 +113,11 @@ def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
     return conflicted
 
 
+def _effective_type_set(ts: set[str]) -> set[str]:
+    base = ts - {"int", "float"}
+    return base | ({"numeric"} if ts & {"int", "float"} else set())
+
+
 def _classify_batch_keys(
     batch: list[dict[str, Any]],
 ) -> tuple[set[str], set[str]]:
@@ -128,8 +133,7 @@ def _classify_batch_keys(
                 key_values.setdefault(k, []).append(v)
     conflicted: set[str] = set()
     for k, ts in key_types.items():
-        effective = ts - {"int", "float"} | ({"numeric"} if ts & {"int", "float"} else set())
-        if len(effective) > 1:
+        if len(_effective_type_set(ts)) > 1:
             conflicted.add(k)
     complex_root = {k for k, vals in key_values.items() if _nested_has_conflict(vals)}
     return conflicted, complex_root
@@ -295,49 +299,53 @@ def _row_id(doc: dict[str, Any]) -> Any:
     return None
 
 
-def _value_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
-    notes: list[str] = []
-    if plan.kind == "scalar":
-        if value is None:
-            return notes
-        if isinstance(value, (dict, list)):
-            notes.append(f"{path}: expected scalar got {type(value).__name__}")
-            return notes
-        if isinstance(value, str):
-            coerced = _coerce_string_to_dtype(value, plan.dtype)
-            if isinstance(coerced, str) and plan.dtype not in (None, pl.String):
-                notes.append(f"{path}: unconvertible str for {plan.dtype}")
-        return notes
-
+def _scalar_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
     if value is None:
-        return notes
+        return []
+    if isinstance(value, (dict, list)):
+        return [f"{path}: expected scalar got {type(value).__name__}"]
+    if isinstance(value, str):
+        coerced = _coerce_string_to_dtype(value, plan.dtype)
+        if isinstance(coerced, str) and plan.dtype not in (None, pl.String):
+            return [f"{path}: unconvertible str for {plan.dtype}"]
+    return []
 
-    if plan.kind == "list":
-        if not isinstance(value, list):
-            notes.append(f"{path}: expected list got {type(value).__name__}")
-            return notes
-        if plan.inner is None:
-            return notes
-        for idx, item in enumerate(value[:5]):
-            notes.extend(_value_risk_notes(item, plan.inner, f"{path}[{idx}]"))
-        return notes
 
-    if plan.kind == "struct":
-        if not isinstance(value, dict):
-            notes.append(f"{path}: expected struct got {type(value).__name__}")
-            return notes
-        expected = {field.name for field in plan.fields}
-        extra = [key for key in value if key not in expected]
-        if extra:
-            notes.append(f"{path}: extra key(s) {sorted(extra)!r}")
-        for field in plan.fields:
-            if field.name in value:
-                notes.extend(
-                    _value_risk_notes(value[field.name], field.plan, f"{path}.{field.name}")
-                )
-        return notes
-
+def _list_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
+    if not isinstance(value, list):
+        return [f"{path}: expected list got {type(value).__name__}"]
+    if plan.inner is None:
+        return []
+    notes: list[str] = []
+    for idx, item in enumerate(value[:5]):
+        notes.extend(_value_risk_notes(item, plan.inner, f"{path}[{idx}]"))
     return notes
+
+
+def _struct_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{path}: expected struct got {type(value).__name__}"]
+    expected = {field.name for field in plan.fields}
+    notes: list[str] = []
+    extra = [key for key in value if key not in expected]
+    if extra:
+        notes.append(f"{path}: extra key(s) {sorted(extra)!r}")
+    for field in plan.fields:
+        if field.name in value:
+            notes.extend(_value_risk_notes(value[field.name], field.plan, f"{path}.{field.name}"))
+    return notes
+
+
+def _value_risk_notes(value: Any, plan: _CanonicalValuePlan, path: str) -> list[str]:
+    if value is None:
+        return []
+    if plan.kind == "scalar":
+        return _scalar_risk_notes(value, plan, path)
+    if plan.kind == "list":
+        return _list_risk_notes(value, plan, path)
+    if plan.kind == "struct":
+        return _struct_risk_notes(value, plan, path)
+    return []
 
 
 def _row_risk_notes(
@@ -409,60 +417,75 @@ def _plan_from_dtype(dtype: pl.DataType) -> _CanonicalValuePlan:
     return _CanonicalValuePlan(kind="scalar", dtype=dtype)
 
 
+_INT_DTYPES = frozenset(
+    {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+)
+_FLOAT_DTYPES = frozenset({pl.Float32, pl.Float64})
+_BOOL_TRUTHY = frozenset({"true", "t", "1", "yes", "y"})
+_BOOL_FALSY = frozenset({"false", "f", "0", "no", "n"})
+
+
+def _coerce_int_string(text: str, original: str) -> Any:
+    try:
+        return int(text)
+    except ValueError:
+        return original
+
+
+def _coerce_float_string(text: str, original: str) -> Any:
+    try:
+        return float(text)
+    except ValueError:
+        return original
+
+
+def _coerce_bool_string(text: str, original: str) -> Any:
+    lowered = text.lower()
+    if lowered in _BOOL_TRUTHY:
+        return True
+    if lowered in _BOOL_FALSY:
+        return False
+    return original
+
+
+def _coerce_temporal_string(text: str, original: str, dtype: pl.DataType) -> Any:
+    if isinstance(dtype, pl.Datetime):
+        try:
+            return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return original
+    if isinstance(dtype, pl.Date):
+        try:
+            return datetime.date.fromisoformat(text)
+        except ValueError:
+            return original
+    if isinstance(dtype, pl.Time):
+        try:
+            return datetime.time.fromisoformat(text)
+        except ValueError:
+            return original
+    return original
+
+
 def _coerce_string_to_dtype(value: Any, dtype: pl.DataType | None) -> Any:
     """Coerce a str value to the target Polars dtype. Non-str values are returned unchanged."""
     if value is None or dtype is None:
         return value
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if dtype == pl.String:
-            return value
-        if dtype in (
-            pl.Int8,
-            pl.Int16,
-            pl.Int32,
-            pl.Int64,
-            pl.UInt8,
-            pl.UInt16,
-            pl.UInt32,
-            pl.UInt64,
-        ):
-            try:
-                return int(text)
-            except ValueError:
-                return value
-        if dtype in (pl.Float32, pl.Float64):
-            try:
-                return float(text)
-            except ValueError:
-                return value
-        if dtype == pl.Boolean:
-            lowered = text.lower()
-            if lowered in {"true", "t", "1", "yes", "y"}:
-                return True
-            if lowered in {"false", "f", "0", "no", "n"}:
-                return False
-            return value
-        if isinstance(dtype, pl.Datetime):
-            try:
-                return datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
-            except ValueError:
-                return value
-        if isinstance(dtype, pl.Date):
-            try:
-                return datetime.date.fromisoformat(text)
-            except ValueError:
-                return value
-        if isinstance(dtype, pl.Time):
-            try:
-                return datetime.time.fromisoformat(text)
-            except ValueError:
-                return value
+    if not isinstance(value, str):
         return value
+    text = value.strip()
+    if not text:
+        return None
     if dtype == pl.String:
         return value
+    if dtype in _INT_DTYPES:
+        return _coerce_int_string(text, value)
+    if dtype in _FLOAT_DTYPES:
+        return _coerce_float_string(text, value)
+    if dtype == pl.Boolean:
+        return _coerce_bool_string(text, value)
+    if isinstance(dtype, (pl.Datetime, pl.Date, pl.Time)):
+        return _coerce_temporal_string(text, value, dtype)
     return value
 
 
@@ -538,6 +561,26 @@ def _canonicalize_batch(
 # ---------------------------------------------------------------------------
 
 
+def _apply_series_override(
+    s: pl.Series, k: str, values: list[Any], override: pl.DataType
+) -> pl.Series:
+    if s.dtype == override:
+        return s
+    if override == pl.String and isinstance(s.dtype, (pl.Struct, pl.List, pl.Array)):
+        # polars .cast(String) on Struct emits "{10}" not JSON — use safe_dumps
+        return pl.Series(name=k, values=[_safe_dumps(v) for v in values], dtype=pl.String)
+    try:
+        return s.cast(override, strict=False)
+    except Exception as exc:
+        _log.debug(
+            "MongoSourceReader: could not cast %r to %s — leaving inferred type (%s)",
+            k,
+            override,
+            type(exc).__name__,
+        )
+        return s
+
+
 def _build_frame_fallback(
     batch: list[dict[str, Any]],
     schema_overrides: dict[str, pl.DataType] | None = None,
@@ -553,20 +596,8 @@ def _build_frame_fallback(
         except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, TypeError):
             s = pl.Series(name=k, values=[_safe_dumps(v) for v in cols[k]], dtype=pl.String)
         override = (schema_overrides or {}).get(k)
-        if override is not None and s.dtype != override:
-            try:
-                if override == pl.String and isinstance(s.dtype, (pl.Struct, pl.List, pl.Array)):
-                    # polars .cast(String) on Struct emits "{10}" not JSON — use safe_dumps
-                    s = pl.Series(name=k, values=[_safe_dumps(v) for v in cols[k]], dtype=pl.String)
-                else:
-                    s = s.cast(override, strict=False)
-            except Exception as exc:
-                _log.debug(
-                    "MongoSourceReader: could not cast %r to %s — leaving inferred type (%s)",
-                    k,
-                    override,
-                    type(exc).__name__,
-                )
+        if override is not None:
+            s = _apply_series_override(s, k, cols[k], override)
         series_list.append(s)
     return pl.DataFrame(series_list)
 

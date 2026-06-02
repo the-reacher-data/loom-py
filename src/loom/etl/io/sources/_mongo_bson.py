@@ -69,6 +69,34 @@ def normalize_bson_doc(doc: dict[str, Any], *, _depth: int = 0) -> dict[str, Any
 # ---------------------------------------------------------------------------
 
 
+def _normalize_bson_type(value: object, depth: int) -> object:
+    """Handle unknown bson-origin types — dict-like via .items(), scalars to None."""
+    type_name = type(value).__name__
+    if callable(getattr(value, "items", None)):
+        if type_name not in _warned_bson_types:
+            _warned_bson_types.add(type_name)
+            _log.warning(
+                "normalize_bson_doc: unknown bson dict-like %s"
+                " — normalizing via .items(); add handler to _NORMALIZERS if frequent",
+                type_name,
+            )
+        try:
+            return {str(k): _normalize(v, depth + 1) for k, v in value.items()}  # type: ignore[attr-defined]
+        except (TypeError, AttributeError, ValueError) as exc:
+            _log.warning(
+                "normalize_bson_doc: .items() failed for %s: %s — replacing with null",
+                type_name,
+                exc,
+            )
+    elif type_name not in _warned_bson_types:
+        _warned_bson_types.add(type_name)
+        _log.warning(
+            "normalize_bson_doc: unknown bson type %s — cannot normalize, replacing with null",
+            type_name,
+        )
+    return None
+
+
 def _normalize(value: object, depth: int) -> object:
     if depth > _MAX_DEPTH:
         raise ValueError(f"normalize_bson_doc: nested value exceeds maximum depth of {_MAX_DEPTH}.")
@@ -88,35 +116,9 @@ def _normalize(value: object, depth: int) -> object:
     normalizer = _NORMALIZERS.get(type(value).__name__)
     if normalizer is not None:
         return normalizer(value)
-
     # bson-origin types: handle separately to avoid str() producing Object({...}) strings
-    # that are not valid JSON. Guard limits scope to the bson package only.
     if _is_bson_type(value):
-        type_name = type(value).__name__
-        if callable(getattr(value, "items", None)):
-            if type_name not in _warned_bson_types:
-                _warned_bson_types.add(type_name)
-                _log.warning(
-                    "normalize_bson_doc: unknown bson dict-like %s"
-                    " — normalizing via .items(); add handler to _NORMALIZERS if frequent",
-                    type_name,
-                )
-            try:
-                return {str(k): _normalize(v, depth + 1) for k, v in value.items()}  # type: ignore[attr-defined]
-            except (TypeError, AttributeError, ValueError) as exc:
-                _log.warning(
-                    "normalize_bson_doc: .items() failed for %s: %s — replacing with null",
-                    type_name,
-                    exc,
-                )
-        elif type_name not in _warned_bson_types:
-            _warned_bson_types.add(type_name)
-            _log.warning(
-                "normalize_bson_doc: unknown bson type %s — cannot normalize, replacing with null",
-                type_name,
-            )
-        return None
-
+        return _normalize_bson_type(value, depth)
     # Non-bson unknown type: str() fallback preserved (avoids Polars Object dtype columns).
     _log.warning(
         "normalize_bson_doc: unknown non-bson type %s — using str() fallback",

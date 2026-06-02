@@ -43,6 +43,7 @@ class _FakeCursor:
         return self
 
     def close(self) -> None:
+        # no real connection to close in the fake cursor
         pass
 
     def __iter__(self):

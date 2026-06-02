@@ -125,10 +125,9 @@ class ClickHouseTargetWriter:
         _ = write_ctx
         import polars as pl
 
+        engine: Literal["streaming", "auto"] = "streaming" if streaming else "auto"
         df: pl.DataFrame = (
-            frame.collect(engine="streaming" if streaming else "auto")
-            if isinstance(frame, pl.LazyFrame)
-            else frame
+            frame.collect(engine=engine) if isinstance(frame, pl.LazyFrame) else frame
         )
         if df.is_empty():
             _log.debug("clickhouse write skipped — empty frame table=%s", spec.table)

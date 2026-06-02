@@ -141,7 +141,7 @@ class StubTargetWriter:
         _params_instance: Any,
         *,
         streaming: bool = False,
-        write_ctx: Any = None,
+        _write_ctx: Any = None,
     ) -> None:
         """Capture the ``(frame, spec)`` pair for later assertion."""
         self.written.append((frame, spec))

@@ -351,11 +351,11 @@ class TestRunFlowSpan:
         def _fake_prepare() -> object:
             return SimpleNamespace(dataflow=dataflow, shutdown=lambda: None)
 
+        def _raise_stream_failure(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("stream failure")
+
         monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
-        monkeypatch.setattr(
-            "loom.streaming.bytewax.runner.cli_main",
-            lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("stream failure")),
-        )
+        monkeypatch.setattr("loom.streaming.bytewax.runner.cli_main", _raise_stream_failure)
 
         with pytest.raises(RuntimeError, match="stream failure"):
             runner.run()
@@ -383,9 +383,10 @@ class TestRunFlowSpan:
             observability_runtime=runtime,
         )
 
-        monkeypatch.setattr(
-            runner, "prepare_run", lambda: (_ for _ in ()).throw(RuntimeError("prep failed"))
-        )
+        def _raise_prep_failed() -> None:
+            raise RuntimeError("prep failed")
+
+        monkeypatch.setattr(runner, "prepare_run", _raise_prep_failed)
 
         with pytest.raises(RuntimeError, match="prep failed"):
             runner.run()
