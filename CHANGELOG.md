@@ -1,3 +1,103 @@
+# 🚀 Release 0.9.0 ([#32](https://github.com/the-reacher-data/loom-py/pull/32)) ([`14072d1`](https://github.com/the-reacher-data/loom-py/commit/14072d1be9212116235f26d7a2590a4f0e622451))
+
+
+## ✨ Features
+### streaming
+- **streaming:** add Mongo CDC source
+- **streaming:** add MongoObjectId and MongoDBRef domain types<br>
+  > Replace opaque str/dict BSON normalization with structured domain types:
+  > MongoObjectId(id, created_at_ms) preserves ObjectId hex and creation
+  > timestamp extracted from the embedded 4-byte BSON timestamp field
+  > MongoDBRef(id, collection, database) models cross-collection references
+  > with explicit collection and optional database fields
+  > MongoCDCEvent.document_id widened to MongoObjectId | str | None to
+  > expose rich type when _id is an ObjectId
+  > _normalize_objectid and _normalize_dbref updated to produce the new types
+  > Guard clause added to _normalize_dbref for None identifier
+  > _message_key helper centralizes MongoObjectId → str key extraction
+  > MongoObjectId and MongoDBRef exported from loom.streaming public API
+  > Contract tests cover DBRef without database, integer id, None id error,
+  > and ObjectId without generation_time (created_at_ms=None)
+
+- **streaming:** add Backend.CLICKHOUSE with native clickhouse-connect sink<br>
+  > Add _ClickHouseTablePartition as a standalone SinkPartition backed by
+  > clickhouse-connect (HTTP/2, no SQLAlchemy). Uses a column-oriented buffer
+  > layout matching clickhouse-connect's column_oriented=True path, avoiding
+  > the internal pivot() transposition for maximum insert throughput.
+  > Resolves the _json_serializer crash that occurred when inserting list[str]
+  > fields via the SQLAlchemy backend against ClickHouseDialect_asynch. With the
+  > native client, Array(String) and all CH-native types work without workarounds.
+
+- **streaming:** add ExpandRoutes fan-out node and JsonStr semantic type<br>
+  > ExpandRoutes: expands one event once via PayloadExpander and routes each
+  > typed output list to its own independent Process (dict-based API, optional
+  > default route); wired in Bytewax via flat_map per route branch
+  > JsonStr: Annotated[str, _JsonMarker()] sentinel type for raw JSON fields;
+  > mapped to Text() in SQLAlchemy; passes through as str in ClickHouse/Delta
+  > ProcessNode union extended to include ExpandRoutes[Any]
+
+
+
+## 🐛 Fixes
+### streaming
+- **streaming:** replace assert with explicit TypeError in _adapter.py<br>
+  > Bandit B101: assert statements are stripped when running with -O.
+  > Replaced both isinstance asserts with explicit TypeError raises to
+  > preserve the runtime invariant checks under all execution modes.
+
+- **streaming:** age-based buffer flush never fired in IntoTable sink partitions<br>
+  > Two bugs prevented buffer_max_age_s from triggering a flush:
+  > 1. write_batch([]) returned immediately on empty epochs, so quiet periods
+  > never checked the age threshold.
+  > 2. _last_append_at was updated right before _should_flush(), making the
+  > elapsed-time expression always ≈0ms.
+  > Replace _last_append_at with _buffer_started_at (set when the buffer
+  > transitions from empty, reset after each flush) in both
+  > _SQLAlchemyTablePartition and _DeltaTablePartition. Empty epoch calls
+  > now check for an age-based flush before returning.
+
+- **streaming:** wire ExpandRoutes runtime and ClickHouse HTTP URL resolution
+
+### compiler
+- **compiler:** add Backend.CLICKHOUSE dispatch in build_plan storage sink resolver
+- **compiler:** validate ExpandRoutes branches for terminal output detection
+
+
+
+
+## ♻️ Refactor
+### streaming
+- **streaming:** improve Mongo CDC architecture compliance<br>
+  > Replace bare except Exception with specific OperationFailure catch
+  > Replace type(x).__name__ string dispatch with isinstance and lazy import
+  > Type watch_options as Mapping[str, object] to eliminate implicit Any
+  > Introduce _BSON_NORMALIZERS dispatch map in normalize_bson_value
+  > Define _ChangeStream and _DatabaseLike Protocols for PyMongo types
+  > Make FromMongoCDC generic with covariant MongoCDCPayloadT (PEP 696)
+  > Add needs_decode: ClassVar[bool] to compiled source types
+  > Replace isinstance type-switches with dispatch maps (_SOURCE_BUILDERS,
+  > _RUNTIME_SOURCE_BUILDERS) across compiler and bytewax runtime layers
+  > Declare typing_extensions>=4.12 as direct dependency
+  > Add contract tests for FromMongoCDC generic parametrization
+
+- **streaming:** simplify source dispatch and pymongo error handling<br>
+  > Replace _RUNTIME_SOURCE_BUILDERS dispatch map with direct isinstance check in build_runtime_source
+  > Replace lazy _operation_failure_type() with module-level try/except import for OperationFailure
+  > Use explicit isinstance in _source_topic_or_none instead of getattr duck-typing
+  > Remove redundant empty-collections branch in _open_change_stream
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+
+## ✅ Tests
+### streaming
+- **streaming:** add unit tests for ExpandRoutes fan-out node
+
+
+
+
+
 # 🚀 Release 0.8.0 ([#30](https://github.com/the-reacher-data/loom-py/pull/30)) ([`702b99e`](https://github.com/the-reacher-data/loom-py/commit/702b99ec75a4130f273322f8eb488637a2f98a14))
 
 
