@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
+from loom.streaming.mongo import MongoSourceConfig
 from loom.streaming.nodes._boundary import PartitionPolicy
 from loom.streaming.nodes._shape import StreamShape
 from loom.streaming.nodes._table.common import (
+    ClickHouseSinkConfig,
     DeltaSinkConfig,
     SqlAlchemyDatabaseConfig,
     SqlAlchemySinkConfig,
@@ -21,6 +24,8 @@ from loom.streaming.nodes._table.common import (
 @dataclass(frozen=True)
 class CompiledSingleSource:
     """Resolved Kafka source with a single payload type and decode strategy."""
+
+    needs_decode: ClassVar[bool] = True
 
     settings: ConsumerSettings
     topics: tuple[str, ...]
@@ -43,11 +48,25 @@ class CompiledMultiSource:
         decode_strategy: Whether to decode records individually or in batches.
     """
 
+    needs_decode: ClassVar[bool] = True
+
     settings: ConsumerSettings
     topics: tuple[str, ...]
     dispatch: DispatchTable
     shape: StreamShape
     decode_strategy: Literal["record", "batch"]
+
+
+@dataclass(frozen=True)
+class CompiledMongoCDCSource:
+    """Resolved MongoDB CDC source configuration."""
+
+    needs_decode: ClassVar[bool] = False
+
+    settings: MongoSourceConfig
+    collections: tuple[str, ...]
+    watch_options: Mapping[str, object]
+    shape: StreamShape
 
 
 @dataclass(frozen=True)
@@ -76,7 +95,7 @@ class CompiledStorageSink:
     """
 
     node: Any
-    config: SqlAlchemySinkConfig | DeltaSinkConfig
+    config: SqlAlchemySinkConfig | DeltaSinkConfig | ClickHouseSinkConfig
     database_config: SqlAlchemyDatabaseConfig | None = None
 
 
@@ -102,7 +121,7 @@ class CompilationError(Exception):
         super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
 
 
-CompiledSource = CompiledSingleSource | CompiledMultiSource
+CompiledSource = CompiledSingleSource | CompiledMultiSource | CompiledMongoCDCSource
 """Union of all compiled source variants accepted by a :class:`CompiledPlan`."""
 
 

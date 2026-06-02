@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from loom.core.model.field import ColumnType
 
 
@@ -23,3 +25,12 @@ def DateTime(*, tz: bool = True) -> ColumnType:
 
 def Numeric(*, precision: int = 10, scale: int = 2) -> ColumnType:
     return ColumnType("Numeric", args=(precision, scale))
+
+
+class _JsonMarker:
+    """Sentinel that marks a str field as containing serialized JSON."""
+
+    __slots__ = ()
+
+
+JsonStr = Annotated[str, _JsonMarker()]

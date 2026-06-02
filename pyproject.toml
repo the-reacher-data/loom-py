@@ -10,6 +10,7 @@ dependencies = [
     "omegaconf>=2.3,<3.0",
     "prometheus-client>=0.20",
     "aiocache>=0.12,<1.0",
+    "typing_extensions>=4.12",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,9 @@ rest = [
 sqlalchemy = [
     "sqlalchemy>=2.0,<3.0",
 ]
+clickhouse = [
+    "clickhouse-connect>=0.7,<1.0",
+]
 config = [
     "omegaconf>=2.3,<3.0",
     "fsspec>=2024.2.0",
@@ -35,6 +39,7 @@ cache = [
 etl-polars = [
     "polars>=1.0,<2.0",
     "deltalake>=1.5,<2.0",
+    "pyarrow>=14.0",
     "fsspec>=2024.2.0",
     "opentelemetry-api>=1.20,<2.0",
     "opentelemetry-sdk>=1.20,<2.0",
@@ -110,6 +115,8 @@ dev = [
     "ruff>=0.9.0,<1.0",
     "sqlalchemy>=2.0,<3.0",
     "polars>=1.0,<2.0",
+    "clickhouse-connect>=0.7,<1.0",
+    "pyarrow>=14.0",
     "deltalake>=1.5,<2.0",
     "fsspec>=2024.2.0",
     "httpx>=0.28.1",
@@ -122,6 +129,7 @@ dev = [
     "findspark>=2.0.1",
     "confluent-kafka>=2.6,<3.0",
     "bytewax>=0.21",
+    "pymongo>=4.6,<5.0",
     "opentelemetry-api>=1.20,<2.0",
     "opentelemetry-sdk>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
@@ -172,6 +180,7 @@ include = [
 typeCheckingMode = "standard"
 reportMissingModuleSource = "none"
 reportMissingImports = "none"
+reportPrivateImportUsage = "none"
 ignore = [
     "src/loom/etl/testing/spark.py",
 ]
@@ -193,9 +202,13 @@ module = [
     "findspark",
     "fsspec.*",
     "chispa.*",
-    "pyarrow.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 minversion = "8.0"

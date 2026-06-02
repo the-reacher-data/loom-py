@@ -8,7 +8,9 @@ import msgspec
 import pytest
 
 from loom.etl.storage._config import (
+    AuditConfig,
     CatalogConnection,
+    CustomColumnDef,
     FilePathConfig,
     FileRoute,
     MissingTablePolicy,
@@ -17,6 +19,7 @@ from loom.etl.storage._config import (
     StorageEngine,
     TablePathConfig,
     TableRoute,
+    TempConfig,
     convert_storage_config,
 )
 from loom.etl.storage._file_locator import FileLocation, MappingFileLocator
@@ -34,10 +37,9 @@ class TestStorageConfig:
         assert config.missing_table_policy == MissingTablePolicy.SCHEMA_MODE
         assert config.catalogs == {}
         assert config.defaults == StorageDefaults()
+        assert config.temp == TempConfig()
         assert config.tables == ()
         assert config.files == ()
-        assert config.tmp_root == ""
-        assert config.tmp_storage_options == {}
 
     def test_engine_enum_values(self) -> None:
         assert StorageEngine.POLARS.value == "polars"
@@ -49,18 +51,18 @@ class TestStorageConfig:
 
     def test_validate_rejects_local_checkpoint_root(self, tmp_path: Path) -> None:
         local_path = tmp_path / "loom-checkpoints"
-        config = StorageConfig(tmp_root=str(local_path))
+        config = StorageConfig(temp=TempConfig(root=str(local_path)))
         with pytest.raises(ValueError, match="cloud URI"):
             config.validate()
 
-    @pytest.mark.parametrize("tmp_root", ["s3://", "gs://", "abfss://", "file:///tmp/loom"])
-    def test_validate_rejects_invalid_checkpoint_cloud_uri(self, tmp_root: str) -> None:
-        config = StorageConfig(tmp_root=tmp_root)
+    @pytest.mark.parametrize("root", ["s3://", "gs://", "abfss://", "file:///tmp/loom"])
+    def test_validate_rejects_invalid_checkpoint_cloud_uri(self, root: str) -> None:
+        config = StorageConfig(temp=TempConfig(root=root))
         with pytest.raises(ValueError, match="cloud URI"):
             config.validate()
 
     def test_validate_accepts_r2_checkpoint_root(self) -> None:
-        config = StorageConfig(tmp_root="r2://my-bucket/checkpoints")
+        config = StorageConfig(temp=TempConfig(root="r2://my-bucket/checkpoints"))
         config.validate()
 
     def test_validate_rejects_duplicate_table_names(self) -> None:
@@ -193,6 +195,15 @@ class TestStorageConfig:
         with pytest.raises(TypeError, match=error):
             config.validate()
 
+    def test_validate_rejects_non_positive_target_file_size(self) -> None:
+        config = StorageConfig(
+            defaults=StorageDefaults(
+                table_path=TablePathConfig(uri="s3://lake", target_file_size=0)
+            )
+        )
+        with pytest.raises(ValueError, match="target_file_size"):
+            config.validate()
+
     def test_has_catalog_routes(self) -> None:
         config = StorageConfig(tables=(TableRoute(name="raw.orders", ref="main.raw.orders"),))
         assert config.has_catalog_routes() is True
@@ -234,10 +245,15 @@ class TestConvertStorageConfig:
     def test_convert_valid_shape(self) -> None:
         raw = {
             "engine": "polars",
+            "temp": {
+                "root": "s3://my-checkpoints",
+                "storage_options": {"endpoint_url": "http://localhost:19190"},
+            },
             "defaults": {
                 "table_path": {
                     "uri": "s3://my-lake",
                     "storage_options": {"AWS_REGION": "eu-west-1"},
+                    "target_file_size": 134217728,
                 }
             },
             "tables": [
@@ -248,6 +264,9 @@ class TestConvertStorageConfig:
         config = convert_storage_config(raw)
         assert isinstance(config, StorageConfig)
         assert config.engine == StorageEngine.POLARS.value
+        assert config.temp.root == "s3://my-checkpoints"
+        assert config.defaults.table_path is not None
+        assert config.defaults.table_path.target_file_size == 134217728
         assert len(config.tables) == 2
 
     def test_convert_invalid_engine_raises(self) -> None:
@@ -256,7 +275,7 @@ class TestConvertStorageConfig:
 
     def test_convert_invalid_field_type_raises(self) -> None:
         with pytest.raises(msgspec.ValidationError):
-            convert_storage_config({"tmp_storage_options": ["bad"]})
+            convert_storage_config({"temp": {"storage_options": ["bad"]}})
 
 
 class TestToFileLocator:
@@ -339,3 +358,75 @@ class TestMappingFileLocator:
             storage_options={"AWS_REGION": "us-east-1"},
         )
         assert loc.storage_options == {"AWS_REGION": "us-east-1"}
+
+    def test_target_file_size_preserved_on_location(self) -> None:
+        loc = TablePathConfig(uri="s3://bucket/path/", target_file_size=268435456).to_location()
+        assert loc.target_file_size == 268435456
+
+
+class TestAuditConfig:
+    def test_audit_config_defaults(self) -> None:
+        cfg = AuditConfig()
+        assert cfg.enabled is False
+        assert cfg.prefix == "_loom_"
+        assert cfg.custom == ()
+
+    def test_audit_config_enabled(self) -> None:
+        cfg = AuditConfig(enabled=True)
+        assert cfg.enabled is True
+        assert cfg.prefix == "_loom_"
+
+    def test_audit_config_custom_prefix(self) -> None:
+        cfg = AuditConfig(enabled=True, prefix="_etl_")
+        assert cfg.prefix == "_etl_"
+
+    def test_custom_column_def_with_literal_value(self) -> None:
+        col_def = CustomColumnDef(name="env", value="prod")
+        assert col_def.name == "env"
+        assert col_def.value == "prod"
+        assert col_def.from_param is None
+
+    def test_custom_column_def_with_from_param(self) -> None:
+        col_def = CustomColumnDef(name="run_date", from_param="run_date")
+        assert col_def.name == "run_date"
+        assert col_def.value is None
+        assert col_def.from_param == "run_date"
+
+    def test_audit_config_decode_from_dict(self) -> None:
+        raw = {
+            "enabled": True,
+            "prefix": "_loom_",
+            "custom": [
+                {"name": "env", "value": "prod"},
+                {"name": "run_date", "from_param": "run_date"},
+            ],
+        }
+        import msgspec
+
+        cfg = msgspec.convert(raw, AuditConfig)
+        assert cfg.enabled is True
+        assert len(cfg.custom) == 2
+        assert cfg.custom[0].name == "env"
+        assert cfg.custom[0].value == "prod"
+        assert cfg.custom[1].from_param == "run_date"
+
+    def test_storage_config_has_audit_field(self) -> None:
+        config = StorageConfig()
+        assert isinstance(config.audit, AuditConfig)
+        assert config.audit.enabled is False
+
+    def test_storage_config_with_audit_enabled(self) -> None:
+        config = StorageConfig(audit=AuditConfig(enabled=True))
+        assert config.audit.enabled is True
+
+    def test_convert_storage_config_with_audit(self) -> None:
+        raw = {
+            "audit": {
+                "enabled": True,
+                "prefix": "_loom_",
+                "custom": [{"name": "env", "value": "prod"}],
+            }
+        }
+        config = convert_storage_config(raw)
+        assert config.audit.enabled is True
+        assert config.audit.custom[0].name == "env"

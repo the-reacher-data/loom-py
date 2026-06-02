@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import polars as pl
@@ -80,7 +80,11 @@ def test_predicate_to_sql_supports_composition_and_param_resolution() -> None:
         (col("amount") >= 10, "amount >= 10"),
         (col("amount") < 10, "amount < 10"),
         (col("amount") <= 10, "amount <= 10"),
-        (col("status") != "deleted", "status != deleted"),
+        (col("status") != "deleted", "status != 'deleted'"),
+        (
+            col("updated_at") >= datetime(2026, 5, 25, 0, 0, tzinfo=UTC),
+            "updated_at >= '2026-05-25T00:00:00+00:00'",
+        ),
         (~(col("active") == True), "NOT (active = TRUE)"),  # noqa: E712
     ],
 )
@@ -130,11 +134,19 @@ class _ExecWriter:
         self.written: Any = None
 
     def write(
-        self, frame: Any, spec: Any, params_instance: Any, /, *, streaming: bool = False
+        self,
+        frame: Any,
+        spec: Any,
+        params_instance: Any,
+        /,
+        *,
+        streaming: bool = False,
+        write_ctx: Any = None,
     ) -> None:
         _ = spec
         _ = params_instance
         _ = streaming
+        _ = write_ctx
         self.written = frame
 
 

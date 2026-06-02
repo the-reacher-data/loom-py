@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from bytewax.dataflow import Dataflow
 from bytewax.recovery import RecoveryConfig
@@ -35,6 +35,13 @@ from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class ErrorSink(Protocol):
+    """Bytewax sink protocol for ErrorEnvelope items."""
+
+    def build(self, step_id: str, worker_index: int, worker_count: int) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -183,11 +190,20 @@ class StreamingRunner:
         prepared = self.prepare_run()
         return prepared.dataflow
 
-    def prepare_run(self) -> _PreparedStreamingRun:
+    def prepare_run(
+        self,
+        *,
+        error_sinks: Mapping[ErrorKind, ErrorSink] | None = None,
+    ) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback.
 
         Releases any resources from a previous ``prepare_run()`` call before
         building the new dataflow, so calling this method twice is safe.
+
+        Args:
+            error_sinks: Optional mapping of :class:`~loom.streaming.core._errors.ErrorKind`
+                to :class:`ErrorSink` instances.  When provided, these sinks override the
+                default error routing built from the compiled plan.
 
         Returns:
             A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
@@ -198,6 +214,7 @@ class StreamingRunner:
             self._plan,
             observability_runtime=self._observability_runtime,
             runtime=self._runtime,
+            error_sinks=error_sinks,
         )
         self._shutdown = prepared.shutdown
         return prepared
@@ -205,11 +222,14 @@ class StreamingRunner:
     def run(self, *, runtime: BytewaxRuntimeConfig | None = None) -> None:
         """Execute the compiled dataflow with the real Bytewax runtime.
 
+        Emits ``Scope.POLL_CYCLE`` around the full invocation (including
+        preparation) and ``Scope.FLOW`` around the blocking ``cli_main`` call.
+        Starts the Prometheus scrape server before execution when configured.
+
         Args:
             runtime: Optional runtime override. When omitted, uses the runner's
                 config-loaded runtime settings.
         """
-
         resolved_runtime = runtime or self._runtime
         run_id = generate_trace_id()
         self._observability_runtime.emit(
@@ -222,9 +242,15 @@ class StreamingRunner:
         )
         started_at = perf_counter()
         status = LifecycleStatus.FAILURE
-        prepared = self.prepare_run()
         try:
-            cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
+            self._observability_runtime.start_scrape_server()
+            prepared = self.prepare_run()
+            with self._observability_runtime.span(
+                Scope.FLOW,
+                self._plan.name,
+                node_count=len(self._plan.nodes),
+            ):
+                cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
             status = LifecycleStatus.SUCCESS
         except Exception:
             status = LifecycleStatus.FAILURE
@@ -323,5 +349,6 @@ def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBr
 __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
+    "ErrorSink",
     "StreamingRunner",
 ]

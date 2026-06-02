@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
@@ -30,7 +30,8 @@ from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
 from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
-from loom.etl.lineage._records import LineageRecord, get_lineage_schema
+from loom.etl.lineage._records import LineageRecord, WriteContext, get_lineage_schema
+from loom.etl.schema._schema import SchemaError
 from loom.etl.storage import (
     MissingTablePolicy,
     PathRouteResolver,
@@ -39,6 +40,7 @@ from loom.etl.storage import (
     TableLocation,
     TableRouteResolver,
 )
+from loom.etl.storage._config import AuditConfig
 from loom.etl.storage._file_locator import FileLocator
 from loom.etl.storage._locator import TableLocator, _as_locator
 
@@ -46,6 +48,32 @@ from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
 
 _log = logging.getLogger(__name__)
+
+
+def _check_null_dtype_columns(frame: pl.DataFrame) -> None:
+    """Raise :exc:`~loom.etl.schema.SchemaError` if any column has dtype ``Null``.
+
+    Delta Lake rejects ``Null``-typed columns.  This check surfaces the
+    offending column names before the write attempt so the error is
+    actionable rather than an opaque external exception.
+
+    Args:
+        frame: Collected DataFrame about to be written to Delta.
+
+    Raises:
+        SchemaError: When one or more columns carry ``pl.Null`` dtype.
+    """
+    null_cols = [name for name, dtype in frame.schema.items() if isinstance(dtype, pl.Null)]
+    if not null_cols:
+        return
+    schema_repr = "\n".join(f"  {n}: {d}" for n, d in frame.schema.items())
+    raise SchemaError(
+        f"Delta Lake does not support the Null dtype. "
+        f"Column(s) with Null dtype: {null_cols}.\n"
+        f"Cast each column to its intended type before writing "
+        f"(use an explicit schema declaration or .cast() in the pipeline step).\n"
+        f"Full frame schema:\n{schema_repr}"
+    )
 
 
 class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysicalSchema]):
@@ -58,11 +86,13 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         route_resolver: TableRouteResolver | None = None,
         missing_table_policy: MissingTablePolicy = MissingTablePolicy.SCHEMA_MODE,
         file_locator: FileLocator | None = None,
+        audit_config: AuditConfig | None = None,
     ) -> None:
         self._locator = _as_locator(locator)
         super().__init__(
             resolver=route_resolver or PathRouteResolver(self._locator),
             missing_table_policy=missing_table_policy,
+            audit_config=audit_config,
         )
         self._file_writer = PolarsFileWriter()
         self._file_locator = file_locator
@@ -117,7 +147,9 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
     def _materialize_for_write(self, frame: pl.LazyFrame, streaming: bool) -> pl.DataFrame:
         """Collect lazy frame to DataFrame before Delta write."""
-        return frame.collect(engine="streaming" if streaming else "auto")
+        df = frame.collect(engine="streaming" if streaming else "auto")
+        _check_null_dtype_columns(df)
+        return df
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
         """Convert predicate to SQL (Polars uses internal SQL representation)."""
@@ -148,10 +180,32 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
                 frame,
                 mode="overwrite",
                 partition_by=list(partition_cols),
+                schema_mode="overwrite",
                 **kwargs,
             )
         else:
-            write_deltalake(location.uri, frame, mode="overwrite", **kwargs)
+            write_deltalake(
+                location.uri,
+                frame,
+                mode="overwrite",
+                schema_mode="overwrite",
+                **kwargs,
+            )
+
+    @staticmethod
+    def _delta_schema_mode(
+        schema_mode: SchemaMode,
+    ) -> Literal["merge", "overwrite"] | None:
+        """Map Loom SchemaMode to the delta-rs schema_mode string.
+
+        Returns None for STRICT so delta-rs applies its default behaviour
+        (reject writes that change the schema).
+        """
+        if schema_mode is SchemaMode.OVERWRITE:
+            return "overwrite"
+        if schema_mode is SchemaMode.EVOLVE:
+            return "merge"
+        return None  # STRICT — let delta-rs reject schema changes
 
     def _append(
         self,
@@ -162,9 +216,14 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Append to existing Delta table."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
-        write_deltalake(location.uri, frame, mode="append", **self._write_kwargs(location))
+        write_deltalake(
+            location.uri,
+            frame,
+            mode="append",
+            schema_mode=self._delta_schema_mode(schema_mode),
+            **self._write_kwargs(location),
+        )
 
     def _replace(
         self,
@@ -175,9 +234,14 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite existing Delta table."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
-        write_deltalake(location.uri, frame, mode="overwrite", **self._write_kwargs(location))
+        write_deltalake(
+            location.uri,
+            frame,
+            mode="overwrite",
+            schema_mode=self._delta_schema_mode(schema_mode),
+            **self._write_kwargs(location),
+        )
 
     def _replace_partitions(
         self,
@@ -189,14 +253,24 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite partitions present in frame."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         if frame.is_empty():
             _log.warning("replace_partitions table=%s has 0 rows — nothing written", path_target)
             return
 
         location = path_target.location
+        partition_rows: list[dict[str, Any]] = list(
+            frame.select(list(partition_cols)).unique().iter_rows(named=True)
+        )
+        null_rows = [r for r in partition_rows if any(v is None for v in r.values())]
+        if null_rows:
+            raise ValueError(
+                f"replace_partitions: null values in partition columns {partition_cols} for "
+                f"table {path_target}. Null partition values cannot be used as a replace "
+                f"predicate. Ensure all partition columns are non-null before writing. "
+                f"Offending rows: {null_rows}"
+            )
         predicate = _build_partition_predicate(
-            frame.select(list(partition_cols)).unique().iter_rows(named=True),
+            iter(partition_rows),
             partition_cols,
         )
         write_deltalake(
@@ -204,6 +278,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             frame,
             mode="overwrite",
             predicate=predicate,
+            schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
 
@@ -217,13 +292,13 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
     ) -> None:
         """Overwrite rows matching SQL predicate."""
         path_target = self._as_path_target(target)
-        _ = schema_mode
         location = path_target.location
         write_deltalake(
             location.uri,
             frame,
             mode="overwrite",
             predicate=predicate,
+            schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
 
@@ -361,6 +436,46 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         )
 
     # ====================================================================
+    # Audit Hook
+    # ====================================================================
+
+    def _apply_audit_columns(
+        self,
+        frame: pl.LazyFrame,
+        write_ctx: WriteContext | None,
+        params_instance: Any,
+        audit: AuditConfig,
+    ) -> pl.LazyFrame:
+        """Inject audit columns into a Polars LazyFrame.
+
+        Skipped when ``audit.enabled`` is ``False`` or ``write_ctx`` is ``None``.
+        ``process_run_id`` is only added when it is not ``None`` to avoid
+        nullable-column schema drift in Delta tables.
+
+        Args:
+            frame:           Incoming lazy frame.
+            write_ctx:       Step execution context.
+            params_instance: Concrete params; used to resolve ``from_param``.
+            audit:           Audit configuration from ``StorageConfig``.
+
+        Returns:
+            Frame with audit columns appended, or the original frame unchanged.
+        """
+        if not audit.enabled or write_ctx is None:
+            return frame
+        prefix = audit.prefix
+        cols: list[pl.Expr] = [
+            pl.lit(write_ctx.run_id).alias(f"{prefix}run_id"),
+            pl.lit(write_ctx.step).alias(f"{prefix}step"),
+            pl.lit(write_ctx.attempt).cast(pl.Int32).alias(f"{prefix}attempt"),
+        ]
+        if write_ctx.process_run_id is not None:
+            cols.append(pl.lit(write_ctx.process_run_id).alias(f"{prefix}process_run_id"))
+        for col_def in audit.custom:
+            cols.append(_resolve_custom_column(col_def, params_instance))
+        return frame.with_columns(cols)
+
+    # ====================================================================
     # Helpers
     # ====================================================================
 
@@ -395,6 +510,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             "storage_options": loc.storage_options or None,
             "configuration": loc.delta_config or None,
             "writer_properties": WriterProperties(**loc.writer) if loc.writer else None,
+            "target_file_size": loc.target_file_size,
             "commit_properties": CommitProperties(**loc.commit) if loc.commit else None,
         }
 
@@ -414,6 +530,26 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
 
 __all__ = ["PolarsTargetWriter"]
+
+
+def _resolve_custom_column(col_def: Any, params_instance: Any) -> pl.Expr:
+    """Build a Polars literal expression for one custom audit column definition.
+
+    Args:
+        col_def:         :class:`~loom.etl.storage._config.CustomColumnDef` instance.
+        params_instance: Concrete params object; used when ``from_param`` is set.
+
+    Returns:
+        A ``pl.lit(value).alias(name)`` expression ready for ``with_columns``.
+
+    Raises:
+        AttributeError: When ``from_param`` is set but the attribute is missing
+                        from ``params_instance``.
+    """
+    if col_def.value is not None:
+        return pl.lit(str(col_def.value)).alias(col_def.name)
+    val = str(getattr(params_instance, col_def.from_param))
+    return pl.lit(val).alias(col_def.name)
 
 
 def _partition_filter(

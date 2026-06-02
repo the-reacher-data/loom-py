@@ -12,6 +12,7 @@ from loom.etl import (
     CsvWriteOptions,
     ExcelReadOptions,
     Format,
+    FromClickHouse,
     FromFile,
     FromTable,
     IntoFile,
@@ -61,6 +62,22 @@ class TestFromFileSchemaAndOptions:
 
     def test_with_schema_immutable_original_unchanged(self) -> None:
         original = FromFile("s3://raw/events.json", format=Format.JSON)
+        _ = original.with_schema(SCHEMA)
+        assert original._to_spec("events").schema == ()
+
+
+class TestFromClickHouseWithSchema:
+    def test_with_schema_sets_spec_schema(self) -> None:
+        spec = (
+            FromClickHouse("analytics.cdc_events")
+            .unbounded()
+            .with_schema(SCHEMA)
+            ._to_spec("events")
+        )
+        assert spec.schema == SCHEMA
+
+    def test_with_schema_immutable_original_unchanged(self) -> None:
+        original = FromClickHouse("analytics.cdc_events").unbounded()
         _ = original.with_schema(SCHEMA)
         assert original._to_spec("events").schema == ()
 

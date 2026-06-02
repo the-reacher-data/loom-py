@@ -32,6 +32,7 @@ from loom.core.tracing import generate_trace_id
 from loom.streaming import Message, MessageMeta
 from loom.streaming.bytewax.runner import _prepare_run
 from loom.streaming.compiler import CompiledPlan, compile_flow
+from loom.streaming.compiler._plan import CompiledMultiSource, CompiledSingleSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
 
@@ -113,7 +114,7 @@ class StreamingTestRunner:
         - ``message_id``: ``test-<index>``
         - ``topic``: first source topic declared by the flow
         """
-        topic = _first_source_topic(self._plan)
+        topic = _source_topic_or_none(self._plan)
         self._input = [_test_message(topic, idx, item) for idx, item in enumerate(items)]
         return self
 
@@ -210,7 +211,7 @@ def _ensure_config_context(source: ConfigContext | Mapping[str, Any]) -> ConfigC
     return ConfigContext.from_dict(source)
 
 
-def _test_message(topic: str, idx: int, payload: Any) -> Any:
+def _test_message(topic: str | None, idx: int, payload: Any) -> Any:
     return Message(
         payload=payload,
         meta=MessageMeta(
@@ -220,9 +221,8 @@ def _test_message(topic: str, idx: int, payload: Any) -> Any:
     )
 
 
-def _first_source_topic(plan: CompiledPlan) -> str:
-    """Return the first declared source topic or fail with a clear error."""
-    topic = next(iter(plan.source.topics), None)
-    if topic is None:
-        raise RuntimeError("StreamingTestRunner requires at least one configured source topic.")
-    return topic
+def _source_topic_or_none(plan: CompiledPlan) -> str | None:
+    """Return the first source topic when the compiled source exposes one."""
+    if isinstance(plan.source, (CompiledSingleSource, CompiledMultiSource)):
+        return next(iter(plan.source.topics), None)
+    return None

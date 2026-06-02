@@ -7,11 +7,14 @@ from typing import Any
 
 from loom.core.config import ConfigContext
 from loom.streaming.nodes._table.common import (
+    ClickHouseSinkConfig,
     DeltaSinkConfig,
     IntoTable,
     SqlAlchemyDatabaseConfig,
     SqlAlchemySinkConfig,
 )
+
+_ERR_EMPTY_NAME = "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,15 +32,20 @@ class ResolvedDeltaTableConfig:
     sink: DeltaSinkConfig
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedClickHouseTableConfig:
+    """Resolved ClickHouse table sink configuration."""
+
+    sink: ClickHouseSinkConfig
+
+
 def resolve_sqlalchemy_table_config(
     node: IntoTable[Any],
     ctx: ConfigContext,
 ) -> ResolvedSqlAlchemyTableConfig:
     """Resolve one SQLAlchemy IntoTable node against ``ConfigContext``."""
     if not node.name:
-        raise ValueError(
-            "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
-        )
+        raise ValueError(_ERR_EMPTY_NAME)
     sink_key = f"streaming.sinks.{node.name}"
     if not ctx.has(sink_key):
         raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")
@@ -74,9 +82,7 @@ def resolve_delta_table_config(
 ) -> ResolvedDeltaTableConfig:
     """Resolve one Delta IntoTable node against ``ConfigContext``."""
     if not node.name:
-        raise ValueError(
-            "IntoTable requires a non-empty name so it can resolve streaming.sinks.<name>."
-        )
+        raise ValueError(_ERR_EMPTY_NAME)
     sink_key = f"streaming.sinks.{node.name}"
     if not ctx.has(sink_key):
         raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")
@@ -91,9 +97,41 @@ def resolve_delta_table_config(
     return ResolvedDeltaTableConfig(sink=sink)
 
 
+def resolve_clickhouse_table_config(
+    node: IntoTable[Any],
+    ctx: ConfigContext,
+) -> ResolvedClickHouseTableConfig:
+    """Resolve one ClickHouse IntoTable node against ``ConfigContext``."""
+    if not node.name:
+        raise ValueError(_ERR_EMPTY_NAME)
+    sink_key = f"streaming.sinks.{node.name}"
+    if not ctx.has(sink_key):
+        raise ValueError(f"IntoTable '{node.name}': no config section found at {sink_key}")
+    sink_cfg = ctx.section_or_default(sink_key, dict, {})
+    effective_cfg = dict(sink_cfg)
+    if node.table:
+        effective_cfg["table"] = node.table
+    database_name = str(effective_cfg.get("database") or "").strip()
+    if not database_name:
+        raise ValueError(
+            f"IntoTable '{node.name}': ClickHouse sink requires a 'database' reference."
+        )
+    database_key = f"database.{database_name}"
+    if not ctx.has(database_key):
+        raise ValueError(
+            f"IntoTable '{node.name}': missing shared config section at {database_key}"
+        )
+    db_cfg = ctx.section_or_default(database_key, dict, {})
+    effective_cfg["url"] = str(db_cfg.get("http_url") or db_cfg.get("url") or "").strip()
+    sink = ClickHouseSinkConfig.from_config(effective_cfg, default_table=node.table)
+    return ResolvedClickHouseTableConfig(sink=sink)
+
+
 __all__ = [
+    "ResolvedClickHouseTableConfig",
     "ResolvedDeltaTableConfig",
     "ResolvedSqlAlchemyTableConfig",
+    "resolve_clickhouse_table_config",
     "resolve_delta_table_config",
     "resolve_sqlalchemy_table_config",
 ]

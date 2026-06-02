@@ -16,11 +16,13 @@ from loom.etl.declarative._format import Format
 from loom.etl.declarative.expr._params import params as p
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.source import FileSourceSpec, TableSourceSpec
+from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.declarative.target import IntoTable, SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._table import AppendSpec, ReplacePartitionsSpec, ReplaceSpec
+from loom.etl.lineage._records import WriteContext
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
-from loom.etl.storage._config import MissingTablePolicy
+from loom.etl.storage._config import AuditConfig, CustomColumnDef, MissingTablePolicy
 from loom.etl.storage._locator import MappingLocator, TableLocation
 
 from .conftest import table_path
@@ -73,6 +75,33 @@ def test_reader_reads_correct_data(tmp_path: Path) -> None:
     result = PolarsSourceReader(tmp_path).read(_source_spec("raw.events"), None).collect()
     assert result["id"].to_list() == [1, 2, 3]
     assert result["v"].to_list() == [10, 20, 30]
+
+
+def test_reader_dispatches_clickhouse_source_through_base_reader(tmp_path: Path) -> None:
+    class _FakeClickHouseReader:
+        def __init__(self) -> None:
+            self.calls: list[tuple[ClickHouseSourceSpec, object]] = []
+
+        def read(self, spec: ClickHouseSourceSpec, params_instance: object) -> pl.LazyFrame:
+            self.calls.append((spec, params_instance))
+            return pl.DataFrame({"id": [1], "amount": [9.5]}).lazy()
+
+    reader_impl = _FakeClickHouseReader()
+    spec = ClickHouseSourceSpec(
+        alias="clickhouse",
+        table_ref=TableRef("analytics.cdc_events"),
+        predicates=(),
+        columns=("id", "amount"),
+        schema=(),
+        distinct=False,
+        allow_full_scan=True,
+    )
+
+    reader = PolarsSourceReader(tmp_path, clickhouse_reader=reader_impl)
+    result = reader.read(spec, None).collect()
+
+    assert reader_impl.calls and reader_impl.calls[0][0] == spec
+    assert result.columns == ["id", "amount"]
 
 
 def test_writer_strict_passes_with_matching_frame(tmp_path: Path) -> None:
@@ -260,6 +289,24 @@ def test_writer_warns_on_polars_uc_first_create(
     assert "catalog registration is not guaranteed" in caplog.text
 
 
+def test_write_kwargs_include_target_file_size() -> None:
+    loc = TableLocation(
+        uri="s3://lake/raw/orders",
+        storage_options={"AWS_REGION": "eu-west-1"},
+        writer={"compression": "ZSTD"},
+        target_file_size=268435456,
+        delta_config={"delta.appendOnly": "true"},
+        commit={"custom_metadata": {"pipeline": "motos"}},
+    )
+
+    kwargs = PolarsTargetWriter._write_kwargs(loc)
+
+    assert kwargs["target_file_size"] == 268435456
+    assert kwargs["storage_options"] == {"AWS_REGION": "eu-west-1"}
+    assert kwargs["writer_properties"] is not None
+    assert kwargs["commit_properties"] is not None
+
+
 def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.facts", initial)
@@ -388,3 +435,97 @@ class TestFileLocatorAliasResolution:
         spec = FileSpec(path="exports_daily", format=Format.CSV, is_alias=True)
         with pytest.raises(ValueError, match="storage.files"):
             writer.write(frame, spec, None)
+
+
+def _audit_write_ctx(*, process_run_id: str | None = "proc-1") -> WriteContext:
+    return WriteContext(
+        run_id="run-abc",
+        step="StepA",
+        attempt=1,
+        process_run_id=process_run_id,
+    )
+
+
+class TestApplyAuditColumns:
+    """Unit tests for PolarsTargetWriter._apply_audit_columns hook."""
+
+    def test_disabled_audit_returns_frame_unchanged(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=False)
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit)
+        assert result.collect().columns == ["id"]
+
+    def test_none_write_ctx_returns_frame_unchanged(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        result = writer._apply_audit_columns(frame, None, None, audit)
+        assert result.collect().columns == ["id"]
+
+    def test_enabled_audit_injects_loom_columns(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
+        assert "_loom_run_id" in result.columns
+        assert "_loom_step" in result.columns
+        assert "_loom_attempt" in result.columns
+        assert result["_loom_run_id"][0] == "run-abc"
+        assert result["_loom_step"][0] == "StepA"
+        assert result["_loom_attempt"][0] == 1
+        assert result["_loom_attempt"].dtype == pl.Int32
+
+    def test_enabled_audit_injects_process_run_id_when_present(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        result = writer._apply_audit_columns(
+            frame, _audit_write_ctx(process_run_id="proc-xyz"), None, audit
+        ).collect()
+        assert "_loom_process_run_id" in result.columns
+        assert result["_loom_process_run_id"][0] == "proc-xyz"
+
+    def test_enabled_audit_skips_process_run_id_when_none(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True)
+        result = writer._apply_audit_columns(
+            frame, _audit_write_ctx(process_run_id=None), None, audit
+        ).collect()
+        assert "_loom_process_run_id" not in result.columns
+
+    def test_custom_literal_column_is_added(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(
+            enabled=True,
+            custom=(CustomColumnDef(name="env", value="prod"),),
+        )
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
+        assert "env" in result.columns
+        assert result["env"][0] == "prod"
+
+    def test_custom_from_param_column_reads_param_attribute(self, tmp_path: Path) -> None:
+        from datetime import date
+
+        class _Params:
+            run_date = date(2024, 1, 15)
+
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(
+            enabled=True,
+            custom=(CustomColumnDef(name="run_date", from_param="run_date"),),
+        )
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), _Params(), audit).collect()
+        assert "run_date" in result.columns
+        assert result["run_date"][0] == "2024-01-15"
+
+    def test_custom_prefix_is_used(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
+        frame = pl.DataFrame({"id": [1]}).lazy()
+        audit = AuditConfig(enabled=True, prefix="_etl_")
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
+        assert "_etl_run_id" in result.columns
+        assert "_loom_run_id" not in result.columns

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import atexit
+import logging
+import os
 import threading
 from collections.abc import Callable, MutableMapping
-from typing import Any
+from typing import Any, cast
 
+from opentelemetry import _logs as otel_logs
 from opentelemetry import trace
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, LogRecordExporter
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -22,6 +28,12 @@ from opentelemetry.trace import (
 from loom.core.config.observability import OtelConfig
 from loom.core.observability.event import EventKind, LifecycleEvent
 from loom.core.observability.topology import ROOT_SCOPES, span_parent_key
+
+_ERR_MISSING_GRPC = "OTel protocol='grpc' requires 'opentelemetry-exporter-otlp-proto-grpc'."
+_ERR_MISSING_HTTP = (
+    "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
+)
+_V1_LOGS_SUFFIX = "/v1/logs"
 
 _grpc_exporter_cls: type[Any] | None
 try:
@@ -42,6 +54,26 @@ except ImportError:
     _http_exporter_cls = None
 else:
     _http_exporter_cls = _HttpExporter
+
+_grpc_log_exporter_cls: type[Any] | None
+try:
+    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+        OTLPLogExporter as _GrpcLogExporter,
+    )
+except ImportError:
+    _grpc_log_exporter_cls = None
+else:
+    _grpc_log_exporter_cls = _GrpcLogExporter
+
+_http_log_exporter_cls: type[Any] | None
+try:
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+        OTLPLogExporter as _HttpLogExporter,
+    )
+except ImportError:
+    _http_log_exporter_cls = None
+else:
+    _http_log_exporter_cls = _HttpLogExporter
 
 
 class OtelLifecycleObserver:
@@ -155,15 +187,11 @@ def _build_exporter(config: OtelConfig) -> Any:
         kwargs["headers"] = dict(config.headers)
     if config.protocol == "grpc":
         if _grpc_exporter_cls is None:
-            raise ValueError(
-                "OTel protocol='grpc' requires 'opentelemetry-exporter-otlp-proto-grpc'."
-            )
+            raise ValueError(_ERR_MISSING_GRPC)
         kwargs["insecure"] = config.insecure
         return _grpc_exporter_cls(**kwargs)
     if _http_exporter_cls is None:
-        raise ValueError(
-            "OTel protocol='http/protobuf' requires 'opentelemetry-exporter-otlp-proto-http'."
-        )
+        raise ValueError(_ERR_MISSING_HTTP)
     return _http_exporter_cls(**kwargs)
 
 
@@ -213,4 +241,88 @@ def build_log_correlation_processor() -> Callable[
     return _processor
 
 
-__all__ = ["OtelLifecycleObserver", "build_log_correlation_processor"]
+_LOG_EXPORT_STATE: tuple[LoggerProvider, LoggingHandler] | None = None
+
+
+def install_otel_log_export(
+    config: OtelConfig,
+    *,
+    exporter: LogRecordExporter | None = None,
+) -> LoggingHandler | None:
+    """Install a stdlib log handler that exports OTEL logs.
+
+    The helper is idempotent for the current process. Subsequent calls return
+    the already-installed handler.
+    """
+    global _LOG_EXPORT_STATE
+    config.validate()
+    if _LOG_EXPORT_STATE is not None:
+        return _LOG_EXPORT_STATE[1]
+
+    log_exporter = exporter or _build_log_exporter(config)
+    provider = LoggerProvider(
+        resource=Resource.create(
+            {
+                SERVICE_NAME: config.service_name,
+                **config.resource_attributes,
+            }
+        )
+    )
+    provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+    otel_logs.set_logger_provider(provider)
+
+    handler = LoggingHandler(level=logging.NOTSET, logger_provider=provider)
+    logging.getLogger().addHandler(handler)
+    atexit.register(provider.shutdown)
+    _LOG_EXPORT_STATE = (provider, handler)
+    return handler
+
+
+def _build_log_exporter(config: OtelConfig) -> LogRecordExporter:
+    kwargs: dict[str, Any] = {**config.exporter_kwargs}
+    endpoint = _resolve_log_endpoint(config)
+    if endpoint is not None:
+        kwargs["endpoint"] = endpoint
+    if config.headers:
+        kwargs["headers"] = dict(config.headers)
+
+    protocol = _resolve_log_protocol(config)
+    if protocol == "grpc":
+        if _grpc_log_exporter_cls is None:
+            raise ValueError(_ERR_MISSING_GRPC)
+        kwargs["insecure"] = config.insecure
+        return cast(LogRecordExporter, _grpc_log_exporter_cls(**kwargs))
+    if protocol != "http/protobuf":
+        raise ValueError(_ERR_MISSING_HTTP)
+    if _http_log_exporter_cls is None:
+        raise ValueError(_ERR_MISSING_HTTP)
+    return cast(LogRecordExporter, _http_log_exporter_cls(**kwargs))
+
+
+def _resolve_log_endpoint(config: OtelConfig) -> str | None:
+    env_endpoint = os.getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "").strip()
+    if env_endpoint:
+        return env_endpoint
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", config.endpoint).strip()
+    if not endpoint:
+        return None
+    if endpoint.endswith("/v1/traces"):
+        return endpoint[: -len("/v1/traces")] + _V1_LOGS_SUFFIX
+    if endpoint.endswith(_V1_LOGS_SUFFIX):
+        return endpoint
+    return endpoint.rstrip("/") + _V1_LOGS_SUFFIX
+
+
+def _resolve_log_protocol(config: OtelConfig) -> str:
+    env_protocol = os.getenv("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "").strip()
+    if env_protocol:
+        return env_protocol
+    return os.getenv("OTEL_EXPORTER_OTLP_PROTOCOL", config.protocol).strip()
+
+
+__all__ = [
+    "OtelLifecycleObserver",
+    "build_log_correlation_processor",
+    "install_otel_log_export",
+]

@@ -37,7 +37,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
+      - name: Install uv
+        run: pip install uv
 
       - name: Configure uv environment path
         shell: bash

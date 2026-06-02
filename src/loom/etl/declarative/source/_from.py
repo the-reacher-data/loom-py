@@ -41,6 +41,8 @@ from loom.etl.declarative._read_options import ReadOptions
 from loom.etl.declarative._utils import _clone_slots
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.declarative.source._from_clickhouse import FromClickHouse
+from loom.etl.declarative.source._from_mongo import FromMongo
 from loom.etl.declarative.source._specs import (
     FileSourceSpec,
     JsonColumnSpec,
@@ -58,7 +60,7 @@ from loom.etl.schema._schema import ColumnSchema
 
 ParamsT = TypeVar("ParamsT")
 
-_SourceEntry = "FromTable | FromFile | FromTemp"
+_SourceEntry = "FromTable | FromFile | FromTemp | FromMongo | FromClickHouse"
 
 
 class FromTable:
@@ -463,7 +465,7 @@ class FromTemp:
         return f"FromTemp({self._name!r})"
 
 
-_SourceEntryType = FromTable | FromFile | FromTemp
+_SourceEntryType = FromTable | FromFile | FromTemp | FromMongo | FromClickHouse
 
 
 class Sources:
@@ -535,11 +537,7 @@ class SourceSet(Generic[ParamsT]):
                     "SourceSet. Subclassing a concrete SourceSet is not supported — use "
                     f"{base.__name__}.extended(...) to add sources."
                 )
-        cls._sources = {
-            name: val
-            for name, val in cls.__dict__.items()
-            if isinstance(val, (FromTable, FromFile, FromTemp))
-        }
+        cls._sources = {name: val for name, val in cls.__dict__.items() if hasattr(val, "_to_spec")}
 
     @classmethod
     def extended(cls, **extra: _SourceEntryType) -> SourceSet[ParamsT]:

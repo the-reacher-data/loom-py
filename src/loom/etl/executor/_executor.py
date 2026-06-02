@@ -40,7 +40,7 @@ from typing import Any
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import SupportsFlush
-from loom.etl.checkpoint import CheckpointStore
+from loom.etl.checkpoint import CheckpointCleanupError, CheckpointStore
 from loom.etl.compiler._plan import (
     ParallelProcessGroup,
     ParallelStepGroup,
@@ -53,7 +53,7 @@ from loom.etl.compiler._plan import (
 from loom.etl.declarative.source import TempSourceSpec
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
-from loom.etl.lineage._records import RunContext, RunStatus
+from loom.etl.lineage._records import RunContext, RunStatus, WriteContext
 from loom.etl.pipeline._step_sql import StepSQL
 from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
 
@@ -255,8 +255,19 @@ class ETLExecutor:
                 result = sql_reader.execute_sql(frames, query)
             else:
                 result = step.execute(params, **frames)
+            write_ctx = WriteContext(
+                run_id=ctx.run_id,
+                step=plan.step_type.__name__,
+                attempt=ctx.attempt,
+                process_run_id=ctx.process_run_id,
+            )
             self._write_target(
-                result, plan.target_binding.spec, params, ctx, streaming=plan.streaming
+                result,
+                plan.target_binding.spec,
+                params,
+                ctx,
+                streaming=plan.streaming,
+                write_ctx=write_ctx,
             )
 
     def _require_checkpoint_store(self, name: str) -> CheckpointStore:
@@ -293,7 +304,14 @@ class ETLExecutor:
         return self._reader.read(spec, params)
 
     def _write_target(
-        self, result: Any, spec: Any, params: Any, ctx: RunContext, *, streaming: bool = False
+        self,
+        result: Any,
+        spec: Any,
+        params: Any,
+        ctx: RunContext,
+        *,
+        streaming: bool = False,
+        write_ctx: WriteContext | None = None,
     ) -> None:
         if isinstance(spec, (TempSpec, TempFanInSpec)):
             _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
@@ -310,16 +328,30 @@ class ETLExecutor:
                 "write target ref=%s",
                 getattr(spec, "table_ref", None) or getattr(spec, "path", None),
             )
-            self._writer.write(result, spec, params, streaming=streaming)
+            self._writer.write(result, spec, params, streaming=streaming, write_ctx=write_ctx)
 
     def _cleanup_temps(self, ctx: RunContext, status: RunStatus) -> None:
         if self._checkpoint_store is None:
             return
-        self._checkpoint_store.cleanup_run(ctx.run_id)
+        try:
+            self._checkpoint_store.cleanup_run(ctx.run_id)
+        except CheckpointCleanupError:
+            _log.exception(
+                "checkpoint RUN cleanup FAILED run_id=%s — temps may accumulate",
+                ctx.run_id,
+            )
         if ctx.correlation_id is None:
             return
         if status is RunStatus.SUCCESS and ctx.last_attempt:
-            self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
+            try:
+                self._checkpoint_store.cleanup_correlation(ctx.correlation_id)
+            except CheckpointCleanupError:
+                _log.exception(
+                    "checkpoint CORRELATION cleanup FAILED correlation_id=%s — "
+                    "call cleanup_correlation(%r) manually",
+                    ctx.correlation_id,
+                    ctx.correlation_id,
+                )
         elif status is RunStatus.FAILED and ctx.last_attempt:
             _log.warning(
                 "CORRELATION intermediates were NOT cleaned — pipeline failed on last attempt. "

@@ -18,7 +18,13 @@ from loom.streaming.bytewax._dlq import (
     send_decode_error_batch_to_dlq,
     send_error_batch_to_dlq,
 )
-from loom.streaming.compiler._plan import CompiledSink, CompiledSource
+from loom.streaming.compiler._plan import (
+    CompiledMongoCDCSource,
+    CompiledMultiSource,
+    CompiledSingleSource,
+    CompiledSink,
+    CompiledSource,
+)
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
@@ -36,11 +42,13 @@ from loom.streaming.kafka._wire import DecodeError
 from loom.streaming.kafka.client._consumer import KafkaConsumerClient
 from loom.streaming.kafka.client._producer import KafkaProducerClient
 from loom.streaming.kafka.message._producer import KafkaMessageProducer
+from loom.streaming.mongo._bytewax_source import MongoCDCSource
 from loom.streaming.nodes._boundary import PartitionPolicy
 
 logger = logging.getLogger(__name__)
 ItemT = TypeVar("ItemT")
 PayloadT = TypeVar("PayloadT", bound=StreamPayload)
+_CompiledKafkaSource: TypeAlias = CompiledSingleSource | CompiledMultiSource
 
 
 @dataclass(frozen=True)
@@ -115,7 +123,7 @@ class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
 
     def __init__(
         self,
-        source: CompiledSource,
+        source: _CompiledKafkaSource,
         commit_tracker: KafkaCommitTracker | None = None,
     ) -> None:
         self._poll_timeout_ms = source.settings.poll_timeout_ms
@@ -282,8 +290,10 @@ _ErrorSink: TypeAlias = _KafkaErrorEnvelopeSink | _KafkaDecodeErrorSink
 def build_runtime_source(
     source: CompiledSource,
     commit_tracker: KafkaCommitTracker | None = None,
-) -> _KafkaPollingSource:
-    """Build the runtime source for one compiled Kafka input."""
+) -> _KafkaPollingSource | MongoCDCSource:
+    """Build the runtime source for one compiled input."""
+    if isinstance(source, CompiledMongoCDCSource):
+        return MongoCDCSource(source)
     return _KafkaPollingSource(source, commit_tracker)
 
 
@@ -349,7 +359,9 @@ def build_inline_sink_partition(
 
 def build_commit_tracker(source: CompiledSource) -> KafkaCommitTracker | None:
     """Build a commit tracker when explicit source commits are required."""
-    if source.settings.enable_auto_commit:
+    if not source.needs_decode:
+        return None
+    if source.settings.enable_auto_commit:  # type: ignore[union-attr]
         return None
     return KafkaCommitTracker()
 

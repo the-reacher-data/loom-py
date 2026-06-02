@@ -27,6 +27,7 @@ from loom.etl.storage._config import (
     StorageDefaults,
     TablePathConfig,
     TableRoute,
+    TempConfig,
 )
 
 
@@ -54,11 +55,13 @@ class _DummyTargetWriter:
 
 def test_make_backends_polars_path_defaults_returns_polars_types(tmp_path: Path) -> None:
     from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+    from loom.etl.io._registry import ReaderRegistry
 
     config = StorageConfig(defaults=_path_defaults(str(tmp_path / "test-lake")))
     reader, writer = make_backends(config)
 
-    assert isinstance(reader, PolarsSourceReader)
+    assert isinstance(reader, ReaderRegistry)
+    assert isinstance(reader._base, PolarsSourceReader)
     assert isinstance(writer, PolarsTargetWriter)
 
 
@@ -83,6 +86,7 @@ def test_make_backends_prefers_spark_when_session_is_provided() -> None:
 
 def test_make_backends_polars_catalog_route_builds_backends() -> None:
     from loom.etl.backends.polars import PolarsSourceReader, PolarsTargetWriter
+    from loom.etl.io._registry import ReaderRegistry
 
     config = StorageConfig(
         catalogs={
@@ -92,7 +96,8 @@ def test_make_backends_polars_catalog_route_builds_backends() -> None:
     )
     reader, writer = make_backends(config)
 
-    assert isinstance(reader, PolarsSourceReader)
+    assert isinstance(reader, ReaderRegistry)
+    assert isinstance(reader._base, PolarsSourceReader)
     assert isinstance(writer, PolarsTargetWriter)
 
 
@@ -113,8 +118,11 @@ def test_make_backends_polars_mixed_routes_builds_backends(tmp_path: Path) -> No
         ),
     )
 
+    from loom.etl.io._registry import ReaderRegistry
+
     reader, writer = make_backends(config)
-    assert isinstance(reader, PolarsSourceReader)
+    assert isinstance(reader, ReaderRegistry)
+    assert isinstance(reader._base, PolarsSourceReader)
     assert isinstance(writer, PolarsTargetWriter)
 
 
@@ -327,7 +335,7 @@ def test_make_checkpoint_store_no_root_returns_none() -> None:
 def test_make_checkpoint_store_with_root_returns_store() -> None:
     from loom.etl.checkpoint import CheckpointStore
 
-    config = StorageConfig(tmp_root="s3://bucket/checkpoints")
+    config = StorageConfig(temp=TempConfig(root="s3://bucket/checkpoints"))
     result = make_checkpoint_store(config)
 
     assert isinstance(result, CheckpointStore)

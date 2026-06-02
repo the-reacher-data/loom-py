@@ -24,7 +24,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39 # v3
+      - name: Install uv
+        run: pip install uv
 
       - name: Quality report (strict)
         uses: the-reacher-data/loom-actions/actions/python/quality-report@e731576f4f9cf4ec2b36fddfc895d328c856d29f # v1

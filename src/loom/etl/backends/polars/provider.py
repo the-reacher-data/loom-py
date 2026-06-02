@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from pymongo import MongoClient
+
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
+from loom.etl.io._registry import ReaderRegistry, WriterRegistry
+from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
+from loom.etl.io.sources._mongo import MongoSourceReader
+from loom.etl.io.targets._clickhouse import ClickHouseTargetWriter
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
@@ -25,14 +31,34 @@ class PolarsProvider(BackendProvider):
         _ = spark
         locator = _build_polars_locator(config)
         file_locator = config.to_file_locator()
-        return (
-            PolarsSourceReader(locator, file_locator=file_locator),
-            PolarsTargetWriter(
-                locator,
-                missing_table_policy=config.missing_table_policy,
-                file_locator=file_locator,
-            ),
+        mongo_reader = (
+            MongoSourceReader(MongoClient(config.mongo.uri), config.mongo.database)
+            if config.mongo.uri
+            else MongoSourceReader()
         )
+        clickhouse_reader = ClickHouseSourceReader(config.clickhouse.url or None)
+        polars_reader = PolarsSourceReader(
+            locator,
+            file_locator=file_locator,
+            mongo_reader=mongo_reader,
+            clickhouse_reader=clickhouse_reader,
+        )
+        reader = ReaderRegistry(polars_reader)
+        polars_writer = PolarsTargetWriter(
+            locator,
+            missing_table_policy=config.missing_table_policy,
+            file_locator=file_locator,
+            audit_config=config.audit,
+        )
+        writer: TargetWriter
+        if config.clickhouse.url:
+            writer = WriterRegistry(
+                polars_writer,
+                extra={"clickhouse": ClickHouseTargetWriter(config.clickhouse.url)},
+            )
+        else:
+            writer = polars_writer
+        return (reader, writer)
 
     def create_lineage_writer(
         self,

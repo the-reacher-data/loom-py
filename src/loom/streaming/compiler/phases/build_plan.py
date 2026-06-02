@@ -10,6 +10,7 @@ from loom.core.config import ConfigContext
 from loom.core.config.keys import ConfigKey
 from loom.streaming.compiler._plan import (
     CompilationError,
+    CompiledMongoCDCSource,
     CompiledMultiSource,
     CompiledNode,
     CompiledPlan,
@@ -29,14 +30,18 @@ from loom.streaming.core._errors import ErrorEnvelope
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.kafka._wire import DecodeError, DispatchTable
+from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
+from loom.streaming.nodes._expand_routes import ExpandRoutes
 from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._table import Backend, IntoTable
 from loom.streaming.nodes._table.config import (
+    resolve_clickhouse_table_config,
     resolve_delta_table_config,
     resolve_sqlalchemy_table_config,
 )
@@ -73,10 +78,19 @@ def build_plan(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
     )
 
 
-def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
-    if isinstance(flow.source, FromMultiTypeTopic):
-        return _build_multi_source(flow, ctx)
-    return _build_single_source(flow, ctx)
+def _build_mongo_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledMongoCDCSource:
+    source = flow.source
+    if not isinstance(source, FromMongoCDC):
+        raise TypeError(f"Expected FromMongoCDC source, got {type(source).__name__}.")
+    mongo = ctx.section(ConfigKey.MONGO, MongoConfig)
+    settings = mongo.source_for(source.logical_ref)
+    watch_options = {**settings.watch_options, **source.watch_options}
+    return CompiledMongoCDCSource(
+        settings=settings,
+        collections=source.collections,
+        watch_options=watch_options,
+        shape=source.shape,
+    )
 
 
 def _build_single_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSingleSource:
@@ -110,6 +124,23 @@ def _build_multi_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> Compi
         shape=source.shape,
         decode_strategy=decode_strategy,
     )
+
+
+_SOURCE_BUILDERS: MappingProxyType[
+    type, Callable[[StreamFlow[Any, Any], ConfigContext], CompiledSource]
+] = MappingProxyType(
+    {
+        FromMongoCDC: _build_mongo_source,
+        FromMultiTypeTopic: _build_multi_source,
+    }
+)
+
+
+def _build_source(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledSource:
+    builder = _SOURCE_BUILDERS.get(type(flow.source))
+    if builder is not None:
+        return builder(flow, ctx)
+    return _build_single_source(flow, ctx)
 
 
 def _build_dispatch_table(payloads: tuple[type[Any], ...]) -> DispatchTable:
@@ -271,6 +302,26 @@ def _build_broadcast_terminal_sinks(
     return sinks, storage_sinks
 
 
+def _build_expand_routes_terminal_sinks(
+    node: ExpandRoutes[Any],
+    ctx: ConfigContext,
+    *,
+    path_prefix: tuple[int, ...],
+) -> _TerminalSinks:
+    sinks: dict[tuple[int, ...], CompiledSink] = {}
+    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
+    all_processes = list(node.routes.values())
+    if node.default is not None:
+        all_processes.append(node.default)
+    for branch_idx, process in enumerate(all_processes):
+        sub_sinks, sub_storage = _build_terminal_sinks(
+            process.nodes, ctx, path_prefix=path_prefix + (branch_idx,)
+        )
+        sinks.update(sub_sinks)
+        storage_sinks.update(sub_storage)
+    return sinks, storage_sinks
+
+
 def _build_sink(topic: IntoTopic[Any], ctx: ConfigContext) -> CompiledSink:
     kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
     producer = kafka.producer_for(topic.logical_ref)
@@ -298,6 +349,13 @@ def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStor
                 config=delta_resolved.sink,
                 database_config=None,
             )
+        if node.backend is Backend.CLICKHOUSE:
+            ch_resolved = resolve_clickhouse_table_config(node, ctx)
+            return CompiledStorageSink(
+                node=node,
+                config=ch_resolved.sink,
+                database_config=None,
+            )
     raise ValueError(f"Unsupported storage sink: {type(node).__name__}")
 
 
@@ -306,5 +364,6 @@ _BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = Mappin
         Fork: _build_fork_terminal_sinks,
         Router: _build_router_terminal_sinks,
         Broadcast: _build_broadcast_terminal_sinks,
+        ExpandRoutes: _build_expand_routes_terminal_sinks,
     }
 )
