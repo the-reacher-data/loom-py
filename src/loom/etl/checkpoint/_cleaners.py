@@ -53,9 +53,7 @@ class FsspecTempCleaner:
                 _log.debug("checkpoint cleanup path=%s", path)
                 fs.rm(fpath, recursive=True)
         except Exception as exc:
-            raise CheckpointCleanupError(
-                f"checkpoint cleanup failed path={path!r} reason={exc}"
-            ) from exc
+            _log.warning("checkpoint cleanup skipped path=%r reason=%s", path, exc)
 
 
 # Backward-compatible alias for public imports.

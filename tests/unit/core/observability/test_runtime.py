@@ -264,7 +264,7 @@ class TestStartScrapeServer:
         config = ObservabilityConfig(
             prometheus=PrometheusObservabilityConfig(
                 enabled=True,
-                pushgateway_url="http://pushgateway:9091",
+                pushgateway_url="https://pushgateway:9091",
                 config=PrometheusConfig(port=8080),
             )
         )

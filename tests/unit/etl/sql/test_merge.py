@@ -46,7 +46,7 @@ class TestSqlLiteral:
             (False, "FALSE"),
             (42, "42"),
             (3.14, "3.14"),
-            (None, "None"),
+            (None, "NULL"),
         ],
     )
     def test_sql_literal(self, value: object, expected: str) -> None:
