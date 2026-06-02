@@ -437,38 +437,37 @@ class TestFileLocatorAliasResolution:
             writer.write(frame, spec, None)
 
 
+def _audit_write_ctx(*, process_run_id: str | None = "proc-1") -> WriteContext:
+    return WriteContext(
+        run_id="run-abc",
+        step="StepA",
+        attempt=1,
+        process_run_id=process_run_id,
+    )
+
+
 class TestApplyAuditColumns:
     """Unit tests for PolarsTargetWriter._apply_audit_columns hook."""
 
-    @pytest.fixture()
-    def writer(self, tmp_path: Path) -> PolarsTargetWriter:
-        return PolarsTargetWriter(str(tmp_path))
-
-    def _write_ctx(self, *, process_run_id: str | None = "proc-1") -> WriteContext:
-        return WriteContext(
-            run_id="run-abc",
-            step="StepA",
-            attempt=1,
-            process_run_id=process_run_id,
-        )
-
-    def test_disabled_audit_returns_frame_unchanged(self, writer: PolarsTargetWriter) -> None:
+    def test_disabled_audit_returns_frame_unchanged(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=False)
-        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit)
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit)
         assert result.collect().columns == ["id"]
 
-    def test_none_write_ctx_returns_frame_unchanged(self, writer: PolarsTargetWriter) -> None:
+    def test_none_write_ctx_returns_frame_unchanged(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=True)
         result = writer._apply_audit_columns(frame, None, None, audit)
         assert result.collect().columns == ["id"]
 
-    def test_enabled_audit_injects_loom_columns(self, writer: PolarsTargetWriter) -> None:
+    def test_enabled_audit_injects_loom_columns(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=True)
-        ctx = self._write_ctx()
-        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
         assert "_loom_run_id" in result.columns
         assert "_loom_step" in result.columns
         assert "_loom_attempt" in result.columns
@@ -477,53 +476,56 @@ class TestApplyAuditColumns:
         assert result["_loom_attempt"][0] == 1
         assert result["_loom_attempt"].dtype == pl.Int32
 
-    def test_enabled_audit_injects_process_run_id_when_present(
-        self, writer: PolarsTargetWriter
-    ) -> None:
+    def test_enabled_audit_injects_process_run_id_when_present(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=True)
-        ctx = self._write_ctx(process_run_id="proc-xyz")
-        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        result = writer._apply_audit_columns(
+            frame, _audit_write_ctx(process_run_id="proc-xyz"), None, audit
+        ).collect()
         assert "_loom_process_run_id" in result.columns
         assert result["_loom_process_run_id"][0] == "proc-xyz"
 
-    def test_enabled_audit_skips_process_run_id_when_none(self, writer: PolarsTargetWriter) -> None:
+    def test_enabled_audit_skips_process_run_id_when_none(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=True)
-        ctx = self._write_ctx(process_run_id=None)
-        result = writer._apply_audit_columns(frame, ctx, None, audit).collect()
+        result = writer._apply_audit_columns(
+            frame, _audit_write_ctx(process_run_id=None), None, audit
+        ).collect()
         assert "_loom_process_run_id" not in result.columns
 
-    def test_custom_literal_column_is_added(self, writer: PolarsTargetWriter) -> None:
+    def test_custom_literal_column_is_added(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(
             enabled=True,
             custom=(CustomColumnDef(name="env", value="prod"),),
         )
-        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit).collect()
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
         assert "env" in result.columns
         assert result["env"][0] == "prod"
 
-    def test_custom_from_param_column_reads_param_attribute(
-        self, writer: PolarsTargetWriter
-    ) -> None:
+    def test_custom_from_param_column_reads_param_attribute(self, tmp_path: Path) -> None:
         from datetime import date
 
         class _Params:
             run_date = date(2024, 1, 15)
 
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(
             enabled=True,
             custom=(CustomColumnDef(name="run_date", from_param="run_date"),),
         )
-        result = writer._apply_audit_columns(frame, self._write_ctx(), _Params(), audit).collect()
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), _Params(), audit).collect()
         assert "run_date" in result.columns
         assert result["run_date"][0] == "2024-01-15"
 
-    def test_custom_prefix_is_used(self, writer: PolarsTargetWriter) -> None:
+    def test_custom_prefix_is_used(self, tmp_path: Path) -> None:
+        writer = PolarsTargetWriter(str(tmp_path))
         frame = pl.DataFrame({"id": [1]}).lazy()
         audit = AuditConfig(enabled=True, prefix="_etl_")
-        result = writer._apply_audit_columns(frame, self._write_ctx(), None, audit).collect()
+        result = writer._apply_audit_columns(frame, _audit_write_ctx(), None, audit).collect()
         assert "_etl_run_id" in result.columns
         assert "_loom_run_id" not in result.columns
