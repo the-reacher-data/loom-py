@@ -19,10 +19,11 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# Prevent concurrent deploys; let an in-progress run finish.
+# PRs use a per-PR group so they never block or wait on the Pages deploy lock.
+# Push/dispatch use the shared 'pages' group to serialise concurrent deploys.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('docs-pr-{0}', github.event.pull_request.number) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
