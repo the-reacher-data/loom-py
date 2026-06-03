@@ -50,7 +50,7 @@ class ConfigResolver(Protocol):
             def name(self) -> str:
                 return "vault"
 
-            def resolve(self, key: str) -> str:
+            def resolve(self, key: str) -> object:
                 return vault_client.read_secret(key)
 
         cfg = load_config("config/prod.yaml", resolvers=[VaultResolver()])
@@ -68,7 +68,7 @@ class ConfigResolver(Protocol):
         """
         ...
 
-    def resolve(self, key: str) -> str:
+    def resolve(self, key: str) -> object:
         """Resolve *key* to its string value.
 
         Called by OmegaConf when materialising ``${<name>:key}``
@@ -80,7 +80,8 @@ class ConfigResolver(Protocol):
                 (e.g. ``"/prod/token"`` for ``${ssm:/prod/token}``).
 
         Returns:
-            Resolved string value.
+            Resolved value. Typically a string, but may be a structured type
+            when the resolver supports JSON navigation.
         """
         ...
 
