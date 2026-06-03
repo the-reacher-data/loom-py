@@ -18,6 +18,15 @@ YAML placeholders::
 The resolver name becomes the placeholder prefix.  Values are resolved
 when OmegaConf materialises the config — i.e. at job startup, so secret
 rotation takes effect on the next run without redeployment.
+
+Built-in resolvers
+------------------
+:class:`~loom.core.config.ssm.SsmResolver` is the bundled implementation
+for AWS SSM Parameter Store.  Install ``loom[config-ssm]`` to use it::
+
+    from loom.core.config import load_config, SsmResolver
+
+    cfg = load_config("config/prod.yaml", resolvers=[SsmResolver()])
 """
 
 from __future__ import annotations
@@ -32,22 +41,19 @@ class ConfigResolver(Protocol):
     Implementors provide a *name* (used as the OmegaConf placeholder prefix)
     and a *resolve* callable that fetches the actual value at parse time.
 
-    Example::
+    See :class:`~loom.core.config.ssm.SsmResolver` for the bundled AWS SSM
+    implementation.  Custom resolvers only need to satisfy this two-member
+    protocol::
 
-        class SsmResolver:
-            name = "ssm"
-
-            def __init__(self, region: str) -> None:
-                self._region = region
+        class VaultResolver:
+            @property
+            def name(self) -> str:
+                return "vault"
 
             def resolve(self, key: str) -> str:
-                import boto3
-                client = boto3.client("ssm", region_name=self._region)
-                return client.get_parameter(Name=key, WithDecryption=True)[
-                    "Parameter"
-                ]["Value"]
+                return vault_client.read_secret(key)
 
-        cfg = load_config("s3://bucket/prod.yaml", resolvers=[SsmResolver("eu-west-1")])
+        cfg = load_config("config/prod.yaml", resolvers=[VaultResolver()])
     """
 
     @property
