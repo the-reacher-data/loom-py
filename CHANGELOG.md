@@ -1,3 +1,20 @@
+# 🚀 Release 0.9.2 ([#39](https://github.com/the-reacher-data/loom-py/pull/39)) ([`f1a482d`](https://github.com/the-reacher-data/loom-py/commit/f1a482d03f8b83f8e0c7725e7af6160466ac6126))
+
+
+## ✨ Features
+### config
+- **config:** add SecretsManagerResolver + shared resolver utilities
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.9.1 ([#36](https://github.com/the-reacher-data/loom-py/pull/36)) ([`5c420c9`](https://github.com/the-reacher-data/loom-py/commit/5c420c9dd4efe0f697affb8a921054bc6504358f))
 
 
