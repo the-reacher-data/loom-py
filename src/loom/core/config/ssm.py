@@ -28,16 +28,18 @@ from loom.core.config.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
-_ENV_VAR_PATTERN = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
+_ENV_VAR_PATTERN = re.compile(r"%([A-Z][A-Z0-9_]*)%")
 
 
 def _expand_env_vars(key: str) -> str:
-    """Expand ``{VAR_NAME}`` placeholders in *key* using environment variables.
+    """Expand ``%VAR_NAME%`` placeholders in *key* using environment variables.
 
     Only uppercase identifiers matching ``[A-Z][A-Z0-9_]*`` are expanded.
+    The ``%VAR%`` syntax is used (not ``{VAR}``) because OmegaConf's grammar
+    rejects bare ``{`` inside ``${resolver:...}`` interpolations.
 
     Args:
-        key: SSM parameter path, possibly containing ``{VAR_NAME}`` tokens.
+        key: SSM parameter path, possibly containing ``%VAR_NAME%`` tokens.
 
     Returns:
         Path with all tokens replaced by their environment variable values.
@@ -153,7 +155,7 @@ class SsmResolver:
     Fetches parameter values from AWS Systems Manager Parameter Store.
     The boto3 client is created lazily on first use and reused across calls.
 
-    Env-var tokens in the form ``{VAR_NAME}`` (uppercase letters, digits,
+    Env-var tokens in the form ``%VAR_NAME%`` (uppercase letters, digits,
     and underscores only) are expanded from ``os.environ`` before the
     SSM request is made.
 
@@ -167,7 +169,7 @@ class SsmResolver:
     Example::
 
         resolver = SsmResolver("eu-west-1")
-        value = resolver.resolve("/myapp/{ENV}/db_password")
+        value = resolver.resolve("/myapp/%ENV%/db_password")
     """
 
     def __init__(
@@ -210,11 +212,11 @@ class SsmResolver:
     def resolve(self, key: str) -> object:
         """Resolve an SSM parameter path to its stored value.
 
-        Expands ``{VAR_NAME}`` tokens in *key* from the environment, then
+        Expands ``%VAR_NAME%`` tokens in *key* from the environment, then
         fetches the parameter from AWS SSM Parameter Store.
 
         Args:
-            key: SSM parameter path, optionally containing ``{VAR_NAME}``
+            key: SSM parameter path, optionally containing ``%VAR_NAME%``
                 placeholders that are replaced with environment variable values.
                 Supports dot-notation for JSON key navigation: ``/path/param.key``
                 fetches ``/path/param`` and returns ``param["key"]``.
