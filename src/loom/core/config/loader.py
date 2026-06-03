@@ -212,7 +212,7 @@ def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
     """
     for resolver in resolvers:
         with contextlib.suppress(Exception):
-            omega_conf.register_new_resolver(resolver.name, resolver.resolve)
+            omega_conf.register_new_resolver(resolver.name, resolver.resolve, use_cache=True)
 
 
 def load_config(
