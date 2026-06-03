@@ -129,8 +129,10 @@ class TestSinkRegistry:
         bindings = registry.resolve(ctx)
 
         assert len(bindings) == 1
-        assert isinstance(received[0], _FakeConfig)
-        assert received[0].some_field == "hello"
+        assert len(received) == 1
+        captured_cfg = received[0]
+        assert isinstance(captured_cfg, _FakeConfig)
+        assert captured_cfg.some_field == "hello"
 
     def test_resolve_raises_on_duplicate_error_kind(self) -> None:
         """AC-3: two error sinks claiming the same ErrorKind raises DuplicateErrorSinkError."""
