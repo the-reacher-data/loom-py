@@ -144,17 +144,31 @@ class ETLRunner:
         *,
         include: Sequence[str] | None = None,
         correlation_id: str | None = None,
+        run_id: str | None = None,
         attempt: int = 1,
         last_attempt: bool = True,
     ) -> None:
-        """Compile, optionally filter, and execute *pipeline*."""
+        """Compile, optionally filter, and execute *pipeline*.
+
+        Args:
+            pipeline: ETLPipeline class to compile and execute.
+            params: ETLParams instance for this run.
+            include: If set, only steps whose names are in this sequence run.
+            correlation_id: Logical business unit identifier, stable across retries.
+            run_id: Execution-specific identifier for lineage records. If None,
+                a random UUID is generated. Callers that share a traceability
+                identifier with an orchestrator (e.g. Prefect) should pass it
+                explicitly so lineage and orchestrator records align.
+            attempt: Current attempt number (1-based).
+            last_attempt: Whether this is the final allowed attempt.
+        """
         _log.info("compile pipeline=%s", pipeline.__name__)
         plan = self._compiler.compile(pipeline)
         if include is not None:
             _log.debug("filter plan include=%s", sorted(include))
             plan = _filter_plan(plan, frozenset(include))
         ctx = RunContext(
-            run_id=str(uuid.uuid4()),
+            run_id=run_id if run_id is not None else str(uuid.uuid4()),
             correlation_id=correlation_id,
             attempt=attempt,
             last_attempt=last_attempt,
