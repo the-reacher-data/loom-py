@@ -1,3 +1,57 @@
+# 🚀 Release 0.9.1 ([#36](https://github.com/the-reacher-data/loom-py/pull/36)) ([`5c420c9`](https://github.com/the-reacher-data/loom-py/commit/5c420c9dd4efe0f697affb8a921054bc6504358f))
+
+
+## ✨ Features
+### streaming
+- **streaming:** add register_sink to StreamingRunner<br>
+  > Allows applications to declare sinks once via register_sink(cls) and
+  > let the runner resolve them from YAML config at startup, eliminating
+  > manual sink wiring in entrypoints.
+  > New public API:
+  > runner = StreamingRunner()
+  > runner.register_sink(ClickHouseErrorTableSink)
+  > runner.run(flow=build_flow(), config_path=streaming_config_path())
+  > Sink classes satisfy the RegisteredSink protocol (sink_type, config_type,
+  > build_binding). The runner matches YAML entries by type field, deserializes
+  > each section with config_type, and calls build_binding(cfg, ctx).
+  > Adds DuplicateErrorSinkError for conflicting ErrorKind assignments.
+  > Adds STREAMING_SINKS to ConfigKey.
+  > StreamingRunner.__init__ is now no-arg; factory methods unchanged.
+  > prepare_run(error_sinks=...) remains supported for tests and overrides.
+
+
+### config
+- **config:** add SSM dot-notation key navigation and resolve logging<br>
+  > _split_ssm_key splits /path/param.key into SSM path + JSON key list
+  > _navigate_json parses SSM value as JSON and traverses key path
+  > resolve() emits INFO log with expanded SSM path (never the value)
+  > ConfigResolver.resolve() widened to -> object (str <= object, LSP-safe)
+  > Guard against empty key with explicit ConfigError
+
+
+
+## 🐛 Fixes
+### tests
+- **tests:** guard received[0] index access in test_sink_registry
+
+
+
+
+
+
+
+## 🛠 Chores
+### release
+- **release:** sync pyproject.toml version to 0.9.0<br>
+  > The v0.9.0 tag was created by a hotfix but the version bump PR did not
+  > merge cleanly, leaving pyproject.toml stuck at 0.8.0 on master. This
+  > aligns the declared version with the existing tag so the next release
+  > computes 0.10.0 instead of colliding with v0.9.0.
+
+
+
+
+
 # 🚀 Release 0.8.0 ([#30](https://github.com/the-reacher-data/loom-py/pull/30)) ([`702b99e`](https://github.com/the-reacher-data/loom-py/commit/702b99ec75a4130f273322f8eb488637a2f98a14))
 
 
