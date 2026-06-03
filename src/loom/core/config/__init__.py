@@ -20,6 +20,7 @@ from loom.core.config.keys import ConfigKey
 from loom.core.config.loader import load_config, section
 from loom.core.config.observability import OtelConfig
 from loom.core.config.resolver import ConfigResolver
+from loom.core.config.secrets import SecretsManagerResolver
 from loom.core.config.ssm import SsmResolver
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "ConfigResolver",
     "Configurable",
     "OtelConfig",
+    "SecretsManagerResolver",
     "SsmResolver",
     "StructBinder",
     "load_config",
