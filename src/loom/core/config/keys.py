@@ -24,6 +24,7 @@ class ConfigKey(StrEnum):
     STORAGE = "storage"
     STREAMING = "streaming"
     STREAMING_RUNTIME = "streaming.runtime"
+    STREAMING_SINKS = "streaming.sinks"
     OBSERVABILITY = "observability"
     LOGGER = "logger"
     METRICS = "metrics"

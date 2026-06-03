@@ -13,6 +13,8 @@ Example::
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from typing import Any
@@ -23,6 +25,8 @@ except ImportError:
     _boto3_module = None
 
 from loom.core.config.errors import ConfigError
+
+logger = logging.getLogger(__name__)
 
 _ENV_VAR_PATTERN = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 
@@ -76,6 +80,71 @@ def _fetch_parameter(client: Any, name: str, with_decryption: bool) -> str:
     except Exception as exc:
         raise ConfigError(f"Failed to fetch SSM parameter {name!r}: {exc}") from exc
     return str(result["Parameter"]["Value"])
+
+
+def _split_ssm_key(key: str) -> tuple[str, list[str]]:
+    """Split an SSM key into the parameter path and JSON navigation keys.
+
+    The first dot after the last '/' separator marks the start of a JSON key
+    path. SSM paths use '/' as their separator, so a dot is unambiguously a
+    JSON navigation token.
+
+    Args:
+        key: Expanded SSM key, e.g. ``"/app/prod/db_config.host"``.
+
+    Returns:
+        A 2-tuple ``(ssm_path, json_keys)`` where *ssm_path* is the SSM
+        parameter path to fetch and *json_keys* is a list of dict keys to
+        navigate (empty list when no dot-notation is present).
+
+    Examples:
+        >>> _split_ssm_key("/app/prod/token")
+        ('/app/prod/token', [])
+        >>> _split_ssm_key("/app/prod/db_config.host")
+        ('/app/prod/db_config', ['host'])
+        >>> _split_ssm_key("/app/prod/db.connection.host")
+        ('/app/prod/db', ['connection', 'host'])
+    """
+    if not key:
+        return key, []
+    last_slash = key.rfind("/")
+    after_last_slash = key[last_slash + 1 :] if last_slash != -1 else key
+    dot_pos = after_last_slash.find(".")
+    if dot_pos == -1:
+        return key, []
+    base_end = (last_slash + 1 + dot_pos) if last_slash != -1 else dot_pos
+    json_tail = key[base_end + 1 :]
+    return key[:base_end], [k for k in json_tail.split(".") if k]
+
+
+def _navigate_json(raw: str, keys: list[str], ssm_path: str) -> object:
+    """Parse *raw* as JSON and navigate to the value at *keys*.
+
+    Args:
+        raw: Raw string value from SSM.
+        keys: Ordered list of dict keys to traverse.
+        ssm_path: Original SSM path, used only in error messages.
+
+    Returns:
+        The value at the navigated position. May be any JSON-compatible type.
+
+    Raises:
+        ConfigError: When *raw* is not valid JSON, or a key is absent.
+    """
+    try:
+        data: object = json.loads(
+            raw
+        )  # json.loads returns Any; annotated as object to avoid implicit Any propagation
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"SSM parameter {ssm_path!r} is not valid JSON (required for key navigation): {exc}"
+        ) from exc
+    current: object = data
+    for k in keys:
+        if not isinstance(current, dict) or k not in current:
+            raise ConfigError(f"Key {k!r} not found in SSM parameter {ssm_path!r}")
+        current = current[k]
+    return current
 
 
 class SsmResolver:
@@ -138,7 +207,7 @@ class SsmResolver:
             self._client = _boto3_module.client("ssm", region_name=self._region)
         return self._client
 
-    def resolve(self, key: str) -> str:
+    def resolve(self, key: str) -> object:
         """Resolve an SSM parameter path to its stored value.
 
         Expands ``{VAR_NAME}`` tokens in *key* from the environment, then
@@ -147,14 +216,25 @@ class SsmResolver:
         Args:
             key: SSM parameter path, optionally containing ``{VAR_NAME}``
                 placeholders that are replaced with environment variable values.
+                Supports dot-notation for JSON key navigation: ``/path/param.key``
+                fetches ``/path/param`` and returns ``param["key"]``.
 
         Returns:
-            The parameter value as a string.
+            Resolved value. A plain string for parameters without dot-notation;
+            a structured value (string, int, dict, etc.) when dot-notation
+            navigates into a JSON parameter.
 
         Raises:
-            ConfigError: When an env-var placeholder is missing, boto3 is not
-                installed, or the SSM API call fails.
+            ConfigError: When *key* is empty, an env-var placeholder is missing,
+                boto3 is not installed, or the SSM API call fails.
         """
+        if not key:
+            raise ConfigError("SSM key must not be empty")
         expanded = _expand_env_vars(key)
+        ssm_path, json_keys = _split_ssm_key(expanded)
+        logger.info("ssm_resolver: fetching %s", ssm_path)
         client = self._get_client()
-        return _fetch_parameter(client, expanded, self._with_decryption)
+        raw = _fetch_parameter(client, ssm_path, self._with_decryption)
+        if not json_keys:
+            return raw
+        return _navigate_json(raw, json_keys, ssm_path)

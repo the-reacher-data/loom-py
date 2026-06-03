@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, ClassVar
 
+import msgspec
 import pytest
 import uvloop
 from bytewax.dataflow import Dataflow
@@ -19,6 +21,7 @@ from loom.streaming.bytewax.runner import (
     BytewaxRuntimeConfig,
     StreamingRunner,
 )
+from loom.streaming.core._errors import ErrorKind
 from loom.streaming.mongo import MongoCDCEvent
 from tests.unit.streaming.bytewax.cases import Order, Result
 
@@ -438,3 +441,185 @@ def _mongo_runner_config() -> dict[str, object]:
             }
         }
     }
+
+
+# ---------------------------------------------------------------------------
+# Fake helpers for TestRegisterSink
+# ---------------------------------------------------------------------------
+
+
+class _RegistryFakeConfig(msgspec.Struct, frozen=True):
+    some_field: str = "default"
+
+
+class _RegistryFakeSink:
+    """Minimal sink satisfying the RegisteredSink protocol."""
+
+    sink_type: ClassVar[str] = "registry_test_sink"
+    config_type: ClassVar[type] = _RegistryFakeConfig
+
+    @classmethod
+    def build_binding(cls, cfg: Any, ctx: ConfigContext) -> Any:
+        from loom.streaming.bytewax._sink_registry import RuntimeSinkBinding
+
+        return RuntimeSinkBinding(
+            purpose="errors",
+            sink=object(),
+            kinds=(ErrorKind.TASK,),
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestRegisterSink
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterSink:
+    def test_register_sink_stores_in_registry(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+    ) -> None:
+        """AC-1 at runner level: register_sink delegates to the internal SinkRegistry."""
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+
+        runner.register_sink(_RegistryFakeSink)
+
+        # The runner must expose its registry so we can inspect the stored entry.
+        assert _RegistryFakeSink in runner._registry
+
+    def test_run_with_config_path_resolves_registered_sinks(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """AC-2: when a YAML config path is given, resolved sinks are passed to _prepare_run."""
+        config_path = tmp_path / "streaming.yaml"
+        config_path.write_text(
+            """
+kafka:
+  consumer:
+    brokers: ["localhost:9092"]
+    group_id: "test"
+    topics: ["orders.in"]
+  producer:
+    brokers: ["localhost:9092"]
+    client_id: "test-producer"
+    topic: "orders.out"
+streaming:
+  sinks:
+    my_sink:
+      type: registry_test_sink
+      some_field: value
+""".strip()
+        )
+
+        runner = StreamingRunner.from_yaml(bytewax_stream_flow, str(config_path))
+        runner.register_sink(_RegistryFakeSink)
+
+        received_kwargs: dict[str, object] = {}
+
+        def _fake_prepare_run(
+            plan: object,
+            *,
+            observability_runtime: object = None,
+            runtime: object = None,
+            **kwargs: object,
+        ) -> object:
+            received_kwargs.update(kwargs)
+            return SimpleNamespace(dataflow=Dataflow("test"), shutdown=lambda: None)
+
+        monkeypatch.setattr("loom.streaming.bytewax.runner._prepare_run", _fake_prepare_run)
+        monkeypatch.setattr("loom.streaming.bytewax.runner.cli_main", lambda *_a, **_kw: None)
+
+        runner.run(config_path=str(config_path))
+
+        assert "error_sinks" in received_kwargs
+        error_sinks = received_kwargs["error_sinks"]
+        assert isinstance(error_sinks, dict)
+        assert ErrorKind.TASK in error_sinks
+
+    def test_explicit_error_sinks_override_registered_sinks(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """AC-5: explicitly passed error_sinks take precedence over registry-resolved ones."""
+        config_path = tmp_path / "streaming.yaml"
+        config_path.write_text(
+            """
+kafka:
+  consumer:
+    brokers: ["localhost:9092"]
+    group_id: "test"
+    topics: ["orders.in"]
+  producer:
+    brokers: ["localhost:9092"]
+    client_id: "test-producer"
+    topic: "orders.out"
+streaming:
+  sinks:
+    my_sink:
+      type: registry_test_sink
+      some_field: value
+""".strip()
+        )
+
+        runner = StreamingRunner.from_yaml(bytewax_stream_flow, str(config_path))
+        runner.register_sink(_RegistryFakeSink)
+
+        explicit_sink = object()
+        received_kwargs: dict[str, object] = {}
+
+        def _fake_prepare_run(
+            plan: object,
+            *,
+            observability_runtime: object = None,
+            runtime: object = None,
+            **kwargs: object,
+        ) -> object:
+            received_kwargs.update(kwargs)
+            return SimpleNamespace(dataflow=Dataflow("test"), shutdown=lambda: None)
+
+        monkeypatch.setattr("loom.streaming.bytewax.runner._prepare_run", _fake_prepare_run)
+        monkeypatch.setattr("loom.streaming.bytewax.runner.cli_main", lambda *_a, **_kw: None)
+
+        explicit_map = {ErrorKind.TASK: explicit_sink}
+        runner.run(config_path=str(config_path), error_sinks=explicit_map)
+
+        passed_sinks = received_kwargs.get("error_sinks")
+        assert passed_sinks is explicit_map
+
+    def test_prepare_run_direct_without_run_ignores_registry(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """AC-4 + AC-6: calling prepare_run() directly (not via run()) skips registry resolution."""
+        runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        runner.register_sink(_RegistryFakeSink)
+
+        received_kwargs: dict[str, object] = {}
+
+        def _fake_prepare_run(
+            plan: object,
+            *,
+            observability_runtime: object = None,
+            runtime: object = None,
+            **kwargs: object,
+        ) -> object:
+            received_kwargs.update(kwargs)
+            return SimpleNamespace(dataflow=Dataflow("test"), shutdown=lambda: None)
+
+        monkeypatch.setattr("loom.streaming.bytewax.runner._prepare_run", _fake_prepare_run)
+
+        # Call prepare_run without going through run()
+        runner.prepare_run()
+
+        # error_sinks should be None or absent — registry is not auto-resolved here
+        assert received_kwargs.get("error_sinks") is None

@@ -30,6 +30,7 @@ from loom.streaming.bytewax._runtime_io import (
     build_runtime_source,
     build_runtime_terminal_sinks,
 )
+from loom.streaming.bytewax._sink_registry import SinkRegistry
 from loom.streaming.compiler import CompiledPlan, compile_flow
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
@@ -111,25 +112,30 @@ class StreamingRunner:
     Bytewax runtime.
 
     Args:
-        flow: User-declared streaming flow.
-        plan: Compiled plan produced by the compiler.
-        runtime: Resolved Bytewax runtime settings.
-        observability_runtime: Optional observability runtime for lifecycle events.
+        _registry: Optional pre-built SinkRegistry for testing purposes.
     """
 
-    def __init__(
+    def __init__(self, *, _registry: SinkRegistry | None = None) -> None:
+        self._flow: StreamFlow[Any, Any] | None = None
+        self._plan: CompiledPlan | None = None
+        self._runtime: BytewaxRuntimeConfig = BytewaxRuntimeConfig()
+        self._observability_runtime: ObservabilityRuntime = ObservabilityRuntime.noop()
+        self._log = logger
+        self._shutdown: Callable[[], None] | None = None
+        self._sink_registry: SinkRegistry = _registry or SinkRegistry()
+        self._resolved_error_sinks: dict[ErrorKind, Any] = {}
+
+    def _configure(
         self,
         flow: StreamFlow[Any, Any],
         plan: CompiledPlan,
-        runtime: BytewaxRuntimeConfig | None = None,
-        observability_runtime: ObservabilityRuntime | None = None,
+        runtime: BytewaxRuntimeConfig,
+        observability_runtime: ObservabilityRuntime,
     ) -> None:
         self._flow = flow
         self._plan = plan
-        self._runtime = runtime or BytewaxRuntimeConfig()
-        self._observability_runtime = observability_runtime or ObservabilityRuntime.noop()
-        self._log = logger
-        self._shutdown: Callable[[], None] | None = None
+        self._runtime = runtime
+        self._observability_runtime = observability_runtime
 
     @classmethod
     def from_context(
@@ -153,7 +159,9 @@ class StreamingRunner:
         if observability_cfg is None:
             observability_cfg = ObservabilityConfig()
         obs = observability_runtime or ObservabilityRuntime.from_config(observability_cfg)
-        return cls(flow, plan, runtime, observability_runtime=obs)
+        runner = cls()
+        runner._configure(flow, plan, runtime, obs)
+        return runner
 
     @classmethod
     def from_yaml(
@@ -185,6 +193,22 @@ class StreamingRunner:
             observability_runtime=observability_runtime,
         )
 
+    @property
+    def _registry(self) -> SinkRegistry:
+        """Internal sink registry for inspection in tests."""
+        return self._sink_registry
+
+    def register_sink(self, sink_class: type) -> None:
+        """Register a sink class to be resolved from YAML config at run time.
+
+        Args:
+            sink_class: Class that satisfies the RegisteredSink protocol.
+
+        Raises:
+            TypeError: If sink_class does not implement RegisteredSink.
+        """
+        self._sink_registry.register(sink_class)
+
     def build_dataflow(self) -> Dataflow:
         """Assemble the Bytewax Dataflow and keep shutdown state."""
         prepared = self.prepare_run()
@@ -209,17 +233,36 @@ class StreamingRunner:
             A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
             and a shutdown callable that releases adapter-owned resources.
         """
+        if self._plan is None:
+            raise RuntimeError(
+                "StreamingRunner has no compiled plan. "
+                "Use run(flow=..., config_path=...) or a factory method "
+                "(from_yaml / from_context / from_dict) before calling prepare_run."
+            )
         shutdown_runner(self)
+        merged_error_sinks: Mapping[ErrorKind, Any] | None
+        if error_sinks is not None:
+            merged_error_sinks = error_sinks
+        else:
+            merged_error_sinks = self._resolved_error_sinks or None
         prepared = _prepare_run(
             self._plan,
             observability_runtime=self._observability_runtime,
             runtime=self._runtime,
-            error_sinks=error_sinks,
+            error_sinks=merged_error_sinks,
         )
         self._shutdown = prepared.shutdown
         return prepared
 
-    def run(self, *, runtime: BytewaxRuntimeConfig | None = None) -> None:
+    def run(
+        self,
+        *,
+        flow: StreamFlow[Any, Any] | None = None,
+        config: ConfigContext | None = None,
+        config_path: str | Path | None = None,
+        error_sinks: Mapping[ErrorKind, Any] | None = None,
+        runtime: BytewaxRuntimeConfig | None = None,
+    ) -> None:
         """Execute the compiled dataflow with the real Bytewax runtime.
 
         Emits ``Scope.POLL_CYCLE`` around the full invocation (including
@@ -227,9 +270,40 @@ class StreamingRunner:
         Starts the Prometheus scrape server before execution when configured.
 
         Args:
+            flow: Optional flow override. When provided together with ``config``
+                or ``config_path``, the runner is reconfigured before execution.
+            config: Optional config context. Used together with ``flow`` to
+                reconfigure the runner.
+            config_path: Optional path to a YAML config file. Loaded and used
+                like ``config`` when provided.
+            error_sinks: Optional explicit error sinks. When provided, these
+                take precedence over registry-resolved sinks.
             runtime: Optional runtime override. When omitted, uses the runner's
                 config-loaded runtime settings.
         """
+        if config_path is not None:
+            config = ConfigContext.from_yaml(str(config_path))
+        if flow is not None and config is not None:
+            plan = compile_flow(flow, config=config)
+            runtime_cfg = config.section_or_default(
+                ConfigKey.STREAMING_RUNTIME, BytewaxRuntimeConfig, BytewaxRuntimeConfig()
+            )
+            obs_cfg = config.section_optional(ConfigKey.OBSERVABILITY, ObservabilityConfig)
+            obs = ObservabilityRuntime.from_config(obs_cfg or ObservabilityConfig())
+            self._configure(flow, plan, runtime_cfg, obs)
+        if config is not None:
+            bindings = self._sink_registry.resolve(config)
+            self._resolved_error_sinks = {
+                kind: b.sink for b in bindings if b.purpose == "errors" for kind in b.kinds
+            }
+        if error_sinks is not None:
+            self._resolved_error_sinks = error_sinks  # type: ignore[assignment]
+        if self._plan is None:
+            raise RuntimeError(
+                "StreamingRunner has no compiled plan. "
+                "Use run(flow=..., config_path=...) or a factory method "
+                "(from_yaml / from_context / from_dict) before calling run."
+            )
         resolved_runtime = runtime or self._runtime
         run_id = generate_trace_id()
         self._observability_runtime.emit(

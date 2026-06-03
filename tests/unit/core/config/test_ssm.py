@@ -6,6 +6,7 @@ The library is assumed to be installed in dev — no library-presence tests.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -106,3 +107,93 @@ class TestSsmResolverErrors:
         mock_client.get_parameter.side_effect = Exception("ParameterNotFound")
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
             SsmResolver().resolve("/missing/param")
+
+
+class TestSsmResolverDotNotation:
+    def test_plain_path_returns_string(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": "secret123"}}
+        with patch("boto3.client", return_value=mock_client):
+            result = SsmResolver().resolve("/prod/token")
+        assert result == "secret123"
+
+    def test_single_key_navigation(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.return_value = {
+            "Parameter": {"Value": '{"host": "mydb.internal", "port": 5432}'}
+        }
+        with patch("boto3.client", return_value=mock_client):
+            result = SsmResolver().resolve("/prod/db_config.host")
+        assert result == "mydb.internal"
+        mock_client.get_parameter.assert_called_once_with(
+            Name="/prod/db_config", WithDecryption=True
+        )
+
+    def test_nested_key_navigation(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.return_value = {
+            "Parameter": {"Value": '{"connection": {"host": "db.internal"}}'}
+        }
+        with patch("boto3.client", return_value=mock_client):
+            result = SsmResolver().resolve("/prod/db.connection.host")
+        assert result == "db.internal"
+
+    def test_raises_config_error_on_invalid_json(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": "not-json-at-all"}}
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
+            SsmResolver().resolve("/prod/db.host")
+
+    def test_raises_config_error_on_missing_key(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db"}'}}
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
+            SsmResolver().resolve("/prod/db.missing_key")
+
+    def test_env_var_expansion_then_dot_navigation(
+        self, mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ENV", "prod")
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "prod-db"}'}}
+        with patch("boto3.client", return_value=mock_client):
+            result = SsmResolver().resolve("/myapp/{ENV}/db_config.host")
+        assert result == "prod-db"
+        mock_client.get_parameter.assert_called_once_with(
+            Name="/myapp/prod/db_config", WithDecryption=True
+        )
+
+
+class TestSsmResolverLogging:
+    def test_info_log_emitted_with_ssm_path(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db.internal"}'}}
+        with (
+            caplog.at_level(logging.INFO, logger="loom.core.config.ssm"),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            SsmResolver().resolve("/prod/db_config.host")
+        messages = [r.message for r in caplog.records]
+        assert any("/prod/db_config" in msg for msg in messages), (
+            f"Expected a log record containing '/prod/db_config', got: {messages}"
+        )
+        secret_value = "db.internal"
+        assert all(secret_value not in msg for msg in messages), (
+            f"Log must not contain the secret value '{secret_value}', got: {messages}"
+        )
+
+    def test_log_uses_expanded_path_not_original(
+        self,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setenv("STAGE", "prod")
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": "some-value"}}
+        with (
+            caplog.at_level(logging.INFO, logger="loom.core.config.ssm"),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            SsmResolver().resolve("/app/{STAGE}/db")
+        messages = [r.message for r in caplog.records]
+        assert any("/app/prod/db" in msg for msg in messages), (
+            f"Expected a log record containing '/app/prod/db', got: {messages}"
+        )
+        assert all("{STAGE}" not in msg for msg in messages), (
+            f"Log must not contain the unexpanded placeholder '{{STAGE}}', got: {messages}"
+        )

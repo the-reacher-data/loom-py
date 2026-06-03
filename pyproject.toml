@@ -1,9 +1,12 @@
 [project]
 name = "loom-kernel"
-version = "0.8.0"
+version = "0.9.0"
 description = "Loom Python project"
 readme = "README.md"
 requires-python = ">=3.11"
+classifiers = [
+    "Typing :: Typed",
+]
 dependencies = [
     "msgspec>=0.18,<1.0",
     "structlog>=24.4,<26.0",
@@ -146,6 +149,9 @@ dev = [
 packages = [
     "src/loom",
 ]
+include = [
+    "src/loom/py.typed",
+]
 
 [tool.ruff]
 line-length = 100
@@ -239,7 +245,7 @@ markers = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.8.0"
+version = "0.9.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:project.version",

@@ -19,7 +19,12 @@ class MissingBridgeError(LoomStreamingError):
     """Raised when async execution is required but no bridge exists."""
 
 
+class DuplicateErrorSinkError(LoomStreamingError):
+    """Raised when two registered sinks cover the same ErrorKind."""
+
+
 __all__ = [
+    "DuplicateErrorSinkError",
     "LoomStreamingError",
     "MissingBridgeError",
     "MissingSinkError",
