@@ -90,7 +90,7 @@ class FromMongo:
         self._projection: tuple[str, ...] | None = None
         self._schema: tuple[ColumnSchema, ...] = ()
         self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
-        self._batch_size: int = 10_000
+        self._batch_size: int = 2_000
         self._limit: int | None = None
 
     def where(self, filter: ExprNode) -> FromMongo:

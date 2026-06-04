@@ -32,7 +32,7 @@ class TestConstruction:
         assert spec.projection is None
         assert spec.schema == ()
         assert spec.extra_fields_mode == "ignore"
-        assert spec.batch_size == 10_000
+        assert spec.batch_size == 2_000
         assert spec.limit is None
 
     def test_kind_is_mongo(self) -> None:
@@ -141,7 +141,7 @@ class TestOnExtraFields:
 class TestBatchSize:
     def test_default_batch_size(self) -> None:
         spec = FromMongo("orders")._to_spec("orders")
-        assert spec.batch_size == 10_000
+        assert spec.batch_size == 2_000
 
     def test_custom_batch_size(self) -> None:
         spec = FromMongo("orders").batch_size(500)._to_spec("orders")
