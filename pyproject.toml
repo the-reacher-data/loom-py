@@ -74,6 +74,9 @@ prefect = [
     "prefect>=3.0,<4.0",
     "fsspec>=2024.2.0",
     "pyyaml>=6.0",
+    "omegaconf>=2.3,<3.0",
+    "boto3>=1.35",
+    "docker>=7.0",
 ]
 pyspark = [
     "pyspark>=3.5,<4.0",
@@ -228,6 +231,17 @@ module = [
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+module = [
+    "docker",
+    "docker.*",
+    "requests",
+    "requests.*",
+    "prefect",
+    "prefect.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

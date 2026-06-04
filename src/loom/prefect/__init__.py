@@ -27,17 +27,45 @@ Architecture contract
 """
 
 from loom.prefect._ctx import FlowCtx
+from loom.prefect._deploy import deploy_etl
+from loom.prefect._docker_launcher import DockerConfig, LocalDockerLauncher
+from loom.prefect._fargate_launcher import FargateConfig, FargateLauncher
 from loom.prefect._flow_builder import build_etl_flow
+from loom.prefect._launcher import (
+    ContainerExecution,
+    ContainerLauncher,
+    ContainerLaunchError,
+    ContainerResult,
+    ContainerTaskFailedError,
+    ContainerTaskTimeoutError,
+    run_etl_in_container,
+)
+from loom.prefect._launcher_config import build_launcher
 from loom.prefect._manifest import ManifestStore, RunManifest, StepEntry
 from loom.prefect._manifest_s3 import S3JsonManifestStore
 from loom.prefect._observer import PrefectObserver
+from loom.prefect._placeholders import resolve_placeholder
 
 __all__ = [
+    "ContainerExecution",
+    "ContainerLaunchError",
+    "ContainerLauncher",
+    "ContainerResult",
+    "ContainerTaskFailedError",
+    "ContainerTaskTimeoutError",
+    "DockerConfig",
+    "FargateConfig",
+    "FargateLauncher",
     "FlowCtx",
+    "LocalDockerLauncher",
     "ManifestStore",
     "PrefectObserver",
     "RunManifest",
     "S3JsonManifestStore",
     "StepEntry",
     "build_etl_flow",
+    "build_launcher",
+    "deploy_etl",
+    "resolve_placeholder",
+    "run_etl_in_container",
 ]

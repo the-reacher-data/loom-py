@@ -1643,7 +1643,10 @@ etl-spark = [
     { name = "pyspark" },
 ]
 prefect = [
+    { name = "boto3" },
+    { name = "docker" },
     { name = "fsspec" },
+    { name = "omegaconf" },
     { name = "prefect" },
     { name = "pyyaml" },
 ]
@@ -1724,12 +1727,14 @@ requires-dist = [
     { name = "aiocache", marker = "extra == 'cache'", specifier = ">=0.12,<1.0" },
     { name = "anyio", marker = "extra == 'streaming'", specifier = ">=4.0,<5.0" },
     { name = "boto3", marker = "extra == 'config-ssm'", specifier = ">=1.35" },
+    { name = "boto3", marker = "extra == 'prefect'", specifier = ">=1.35" },
     { name = "bytewax", marker = "extra == 'streaming'", specifier = ">=0.21" },
     { name = "celery", marker = "extra == 'celery'", specifier = ">=5.3,<6.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=0.7,<1.0" },
     { name = "confluent-kafka", marker = "extra == 'streaming'", specifier = ">=2.6,<3.0" },
     { name = "delta-spark", marker = "extra == 'etl-spark'", specifier = ">=3.2,<4.0" },
     { name = "deltalake", marker = "extra == 'etl-polars'", specifier = ">=1.5,<2.0" },
+    { name = "docker", marker = "extra == 'prefect'", specifier = ">=7.0" },
     { name = "fastapi", marker = "extra == 'rest'", specifier = ">=0.115,<1.0" },
     { name = "findspark", marker = "extra == 'etl-spark'", specifier = ">=2.0,<3.0" },
     { name = "fsspec", marker = "extra == 'config'", specifier = ">=2024.2.0" },
@@ -1744,6 +1749,7 @@ requires-dist = [
     { name = "omegaconf", marker = "extra == 'cache'", specifier = ">=2.3,<3.0" },
     { name = "omegaconf", marker = "extra == 'config'", specifier = ">=2.3,<3.0" },
     { name = "omegaconf", marker = "extra == 'config-ssm'", specifier = ">=2.3,<3.0" },
+    { name = "omegaconf", marker = "extra == 'prefect'", specifier = ">=2.3,<3.0" },
     { name = "opentelemetry-api", marker = "extra == 'etl-otel'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-api", marker = "extra == 'etl-polars'", specifier = ">=1.20,<2.0" },
     { name = "opentelemetry-api", marker = "extra == 'etl-spark'", specifier = ">=1.20,<2.0" },
