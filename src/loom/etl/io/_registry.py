@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from loom.etl.runtime.contracts import StreamingSourceReader
+
 
 class ConfigurationError(Exception):
     """Raised when a required connector dependency is absent at construction."""
@@ -20,11 +22,40 @@ class ReaderRegistry:
         self._extra: dict[str, Any] = extra or {}
 
     def read(self, spec: Any, params: Any, /) -> Any:
+        handler = self._resolve_handler(spec)
+        return handler.read(spec, params)
+
+    def read_streaming(self, spec: Any, params: Any, /) -> Any:
+        """Dispatch a streaming read to the per-kind handler or base reader.
+
+        Args:
+            spec: Source specification with a ``.kind`` attribute.
+            params: Concrete params for current run.
+
+        Returns:
+            Backend frame produced by the matching reader's
+            ``read_streaming``.
+
+        Raises:
+            ConfigurationError: When no reader is registered for this kind.
+            TypeError: When the matching reader does not implement
+                :class:`StreamingSourceReader`.
+        """
+        handler = self._resolve_handler(spec)
+        if not isinstance(handler, StreamingSourceReader):
+            raise TypeError(
+                f"Reader for spec kind {spec.kind!r} "
+                f"({type(handler).__qualname__}) does not implement "
+                "StreamingSourceReader; cannot honor streaming=True."
+            )
+        return handler.read_streaming(spec, params)
+
+    def _resolve_handler(self, spec: Any) -> Any:
         handler = self._extra.get(spec.kind)
         if handler is not None:
-            return handler.read(spec, params)
+            return handler
         if self._base is not None:
-            return self._base.read(spec, params)
+            return self._base
         raise ConfigurationError(
             f"No reader registered for spec kind {spec.kind!r} and no base reader."
         )

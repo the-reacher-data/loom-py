@@ -129,6 +129,10 @@ class MinimalPolarsSourceReader:
         path = table_path(self._root, spec.table_ref)
         return pl.scan_delta(str(path))
 
+    def read_streaming(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
+        """Streaming path: a lazy ``scan_delta`` is already memory-bounded."""
+        return self.read(spec, params_instance)
+
 
 class MinimalPolarsTargetWriter:
     """Minimal :class:`~loom.etl._io.TargetWriter` backed by ``write_delta()``.

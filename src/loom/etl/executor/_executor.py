@@ -55,7 +55,12 @@ from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.lineage._records import RunContext, RunStatus, WriteContext
 from loom.etl.pipeline._step_sql import StepSQL
-from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
+from loom.etl.runtime.contracts import (
+    SourceReader,
+    SQLExecutor,
+    StreamingSourceReader,
+    TargetWriter,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -248,7 +253,10 @@ class ETLExecutor:
             ),
             streaming=plan.streaming,
         ):
-            frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
+            frames = {
+                b.alias: self._read_source(b.spec, params, ctx, streaming=plan.streaming)
+                for b in plan.source_bindings
+            }
             step = plan.step_type()
             if isinstance(step, StepSQL):
                 query = _render_sql_query(step, params)
@@ -289,7 +297,9 @@ class ETLExecutor:
             f"{type(self._reader).__qualname__!r} does not implement SQLExecutor."
         )
 
-    def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
+    def _read_source(
+        self, spec: Any, params: Any, ctx: RunContext, *, streaming: bool = False
+    ) -> Any:
         if isinstance(spec, TempSourceSpec):
             _log.debug("read source kind=TEMP name=%s", spec.temp_name)
             return self._require_checkpoint_store(spec.temp_name).get(
@@ -298,10 +308,20 @@ class ETLExecutor:
                 correlation_id=ctx.correlation_id,
             )
         _log.debug(
-            "read source kind=%s ref=%s",
+            "read source kind=%s ref=%s streaming=%s",
             spec.kind,
             getattr(spec, "table_ref", None) or getattr(spec, "path", None),
+            streaming,
         )
+        if streaming:
+            if not isinstance(self._reader, StreamingSourceReader):
+                raise TypeError(
+                    f"Step opts into streaming=True but reader "
+                    f"{type(self._reader).__qualname__!r} does not implement "
+                    "StreamingSourceReader. Falling back to a non-streaming read "
+                    "would risk OOM, so the read is refused."
+                )
+            return self._reader.read_streaming(spec, params)
         return self._reader.read(spec, params)
 
     def _write_target(

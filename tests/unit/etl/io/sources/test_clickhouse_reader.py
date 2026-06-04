@@ -119,3 +119,119 @@ class TestClickHouseReaderClientInit:
 
         with pytest.raises(TypeError, match="query_arrow"):
             reader.read(spec, None)
+
+
+# ---------------------------------------------------------------------------
+# Streaming path: spool query_arrow_stream() to IPC and scan it lazily
+# ---------------------------------------------------------------------------
+
+
+class _StreamContext:
+    """Minimal ``with``-able / iterable stand-in for clickhouse-connect's StreamContext."""
+
+    def __init__(self, batches: list[pa.Table]) -> None:
+        self._batches = batches
+        self._iter: object | None = None
+
+    def __enter__(self) -> _StreamContext:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def __iter__(self) -> _StreamContext:
+        if self._iter is None:
+            self._iter = iter(self._batches)
+        return self
+
+    def __next__(self) -> pa.Table:
+        if self._iter is None:
+            self._iter = iter(self._batches)
+        return next(self._iter)  # type: ignore[arg-type]
+
+
+class _FakeStreamingClient:
+    def __init__(self, batches: list[pa.Table]) -> None:
+        self._batches = batches
+        self.queries: list[str] = []
+
+    def query_arrow_stream(self, query: str) -> _StreamContext:
+        self.queries.append(query)
+        return _StreamContext(self._batches)
+
+    # Provide query_arrow as well so the empty-stream fallback is testable.
+    def query_arrow(self, query: str) -> pa.Table:
+        self.queries.append(query)
+        if not self._batches:
+            return pa.table({"id": pa.array([], type=pa.int64())})
+        return self._batches[0]
+
+
+class TestClickHouseReaderStreamingPath:
+    def test_read_streaming_spools_batches_to_ipc(self) -> None:
+        batches = [
+            pa.table({"id": [1, 2]}),
+            pa.table({"id": [3, 4]}),
+            pa.table({"id": [5]}),
+        ]
+        client = _FakeStreamingClient(batches)
+        reader = ClickHouseSourceReader(client=client)
+        spec = FromClickHouse("t").unbounded()._to_spec("t")
+
+        lazy = reader.read_streaming(spec, None)
+        result = lazy.collect(engine="streaming")
+
+        assert client.queries == ["SELECT * FROM `t`"]
+        assert result["id"].to_list() == [1, 2, 3, 4, 5]
+
+    def test_read_streaming_empty_stream_falls_back_to_query_arrow(self) -> None:
+        client = _FakeStreamingClient(batches=[])
+        reader = ClickHouseSourceReader(client=client)
+        spec = FromClickHouse("t").unbounded()._to_spec("t")
+
+        result = reader.read_streaming(spec, None).collect()
+
+        # First call is query_arrow_stream (empty), second is the query_arrow fallback.
+        assert len(client.queries) == 2
+        assert result["id"].to_list() == []
+
+    def test_read_streaming_writes_ipc_file_format_not_stream(self) -> None:
+        # Regression: pl.scan_ipc expects the Arrow IPC *File* format (with
+        # footer), not the streaming format. Using pa.ipc.new_stream produced
+        # a footer-less artifact that failed downstream with InvalidFooter.
+        batches = [pa.table({"id": [1, 2, 3]})]
+        client = _FakeStreamingClient(batches)
+        reader = ClickHouseSourceReader(client=client)
+        spec = FromClickHouse("t").unbounded()._to_spec("t")
+
+        lazy = reader.read_streaming(spec, None)
+        # Resolve the backing file path from the LazyFrame plan and assert it
+        # is a valid Arrow IPC File (has footer) and not a bare IPC Stream.
+        plan = lazy.explain()
+        # Extract the temp path; it is the .arrow file we wrote.
+        import re
+
+        match = re.search(r"(/[^\s\"']+loom-clickhouse-[^\s\"']+\.arrow)", plan)
+        assert match is not None, f"Could not find IPC path in plan: {plan}"
+        path = match.group(1)
+
+        # File format must open successfully.
+        with pa.OSFile(path, "rb") as source:
+            reader_file = pa.ipc.open_file(source)
+            assert reader_file.num_record_batches >= 1
+
+        # Stream format open should fail on a File-format artifact (the
+        # leading bytes are 'ARROW1' magic, not a stream schema message).
+        with pa.OSFile(path, "rb") as source, pytest.raises(pa.ArrowInvalid):
+            pa.ipc.open_stream(source)
+
+    def test_read_streaming_requires_query_arrow_stream(self) -> None:
+        class _NoStreamClient:
+            def query_arrow(self, query: str) -> pa.Table:
+                return pa.table({"x": [1]})
+
+        reader = ClickHouseSourceReader(client=_NoStreamClient())
+        spec = FromClickHouse("t").unbounded()._to_spec("t")
+
+        with pytest.raises(TypeError, match="query_arrow_stream"):
+            reader.read_streaming(spec, None)

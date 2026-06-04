@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import textwrap
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
-from loom.prefect._etl_flow import _LOOM_ETL_META_ATTR, etl_flow
+from loom.prefect._etl_flow import (
+    _LOOM_ETL_META_ATTR,
+    _normalize_datetime_fields,
+    etl_flow,
+)
+from loom.prefect._placeholders import resolve_placeholder
 
 
 class _SampleParams(ETLParams, frozen=True):  # type: ignore[misc]
@@ -121,6 +126,80 @@ def test_etl_flow_attaches_discovery_metadata(tmp_path: Path) -> None:
     assert meta.pool_config["prod"]["job_variables"]["cpu"] == "1024"
     assert meta.pool_config["local"]["work_pool"] == "loom-docker"
     assert meta.pool_config["local"]["job_variables"]["image"] == "sample:dev"
+
+
+class _OptionalDtParams(ETLParams, frozen=True):  # type: ignore[misc]
+    updated_at_from: datetime | None = None
+    label: str = "x"
+    count: int = 0
+
+
+def test_naive_datetime_string_is_normalized_to_utc() -> None:
+    out = _normalize_datetime_fields(
+        {"updated_at_from": "2026-06-03T00:00:00", "updated_at_to": "2026-06-04T00:00:00"},
+        _SampleParams,
+    )
+    assert isinstance(out["updated_at_from"], datetime)
+    assert out["updated_at_from"].tzinfo is UTC
+    assert out["updated_at_to"].tzinfo is UTC
+
+
+def test_naive_datetime_object_is_normalized_to_utc() -> None:
+    naive = datetime(2026, 6, 3, 0, 0, 0)
+    out = _normalize_datetime_fields(
+        {"updated_at_from": naive, "updated_at_to": naive},
+        _SampleParams,
+    )
+    assert out["updated_at_from"].tzinfo is UTC
+    assert out["updated_at_from"].replace(tzinfo=None) == naive
+
+
+def test_aware_datetime_passes_through() -> None:
+    aware = datetime(2026, 6, 3, 0, 0, 0, tzinfo=UTC)
+    out = _normalize_datetime_fields(
+        {"updated_at_from": aware, "updated_at_to": aware},
+        _SampleParams,
+    )
+    assert out["updated_at_from"] is aware
+
+
+def test_aware_datetime_with_offset_passes_through() -> None:
+    offset = timezone(timedelta(hours=2))
+    aware = datetime(2026, 6, 3, 0, 0, 0, tzinfo=offset)
+    out = _normalize_datetime_fields(
+        {"updated_at_from": aware, "updated_at_to": aware},
+        _SampleParams,
+    )
+    assert out["updated_at_from"].tzinfo is offset
+    assert out["updated_at_from"].utcoffset() == timedelta(hours=2)
+
+
+def test_non_datetime_fields_untouched() -> None:
+    out = _normalize_datetime_fields(
+        {"updated_at_from": None, "label": "hello", "count": 42},
+        _OptionalDtParams,
+    )
+    assert out["label"] == "hello"
+    assert out["count"] == 42
+
+
+def test_placeholder_now_produces_aware_datetime() -> None:
+    resolved = {
+        "updated_at_from": resolve_placeholder("${now}"),
+        "updated_at_to": resolve_placeholder("${now}"),
+    }
+    out = _normalize_datetime_fields(resolved, _SampleParams)
+    assert out["updated_at_from"].tzinfo is UTC
+    # Idempotent: the aware datetime is unchanged.
+    assert out["updated_at_from"] is resolved["updated_at_from"]
+
+
+def test_optional_datetime_none_value() -> None:
+    out = _normalize_datetime_fields(
+        {"updated_at_from": None},
+        _OptionalDtParams,
+    )
+    assert out["updated_at_from"] is None
 
 
 def test_etl_flow_rejects_non_struct_params_type(tmp_path: Path) -> None:

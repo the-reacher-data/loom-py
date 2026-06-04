@@ -186,6 +186,61 @@ class TestRunStep:
 
         assert writer.streaming_flags == [True, False]
 
+    def test_streaming_step_invokes_read_streaming(
+        self,
+        compiler: ETLCompiler,
+        params: RunParams,
+    ) -> None:
+        """A streaming step routes through reader.read_streaming, not read."""
+
+        class _TracingReader:
+            def __init__(self) -> None:
+                self.read_calls: list[Any] = []
+                self.stream_calls: list[Any] = []
+
+            def read(self, spec: Any, _params: Any, /) -> Any:
+                self.read_calls.append(spec)
+                return SENTINEL_A
+
+            def read_streaming(self, spec: Any, _params: Any, /) -> Any:
+                self.stream_calls.append(spec)
+                return SENTINEL_A
+
+        reader = _TracingReader()
+        writer = StubTargetWriter()
+        executor = ETLExecutor(
+            reader,
+            writer,
+            observability=ObservabilityRuntime([StubRunObserver()]),
+        )
+
+        streaming_plan = compiler.compile_step(StepStreaming)
+        executor.run_step(streaming_plan, params)
+
+        assert len(reader.stream_calls) == 1
+        assert reader.read_calls == []
+
+    def test_streaming_step_without_capability_raises(
+        self,
+        compiler: ETLCompiler,
+        params: RunParams,
+    ) -> None:
+        """A streaming step refuses to fall back to non-streaming read."""
+
+        class _NonStreamingReader:
+            def read(self, spec: Any, _params: Any, /) -> Any:
+                return SENTINEL_A
+
+        executor = ETLExecutor(
+            _NonStreamingReader(),
+            StubTargetWriter(),
+            observability=ObservabilityRuntime([StubRunObserver()]),
+        )
+        streaming_plan = compiler.compile_step(StepStreaming)
+
+        with pytest.raises(TypeError, match="StreamingSourceReader"):
+            executor.run_step(streaming_plan, params)
+
     def test_run_step_error_events_and_order(
         self,
         compiler: ETLCompiler,

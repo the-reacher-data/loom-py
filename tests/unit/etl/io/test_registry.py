@@ -147,3 +147,68 @@ class TestRegistryValidatesPresenceAtConstruction:
                 None,
                 extra={"mongo_lookup": _make_broken_reader()},
             )
+
+
+# ---------------------------------------------------------------------------
+# Streaming dispatch
+# ---------------------------------------------------------------------------
+
+
+class _StreamingCapableReader:
+    """Reader that implements both read and read_streaming."""
+
+    def __init__(self) -> None:
+        self.read_calls: list[tuple[Any, Any]] = []
+        self.stream_calls: list[tuple[Any, Any]] = []
+
+    def read(self, spec: Any, params: Any, /) -> Any:
+        self.read_calls.append((spec, params))
+        return "non-streaming-result"
+
+    def read_streaming(self, spec: Any, params: Any, /) -> Any:
+        self.stream_calls.append((spec, params))
+        return "streaming-result"
+
+
+class _NonStreamingReader:
+    """Reader that only implements read (no streaming capability)."""
+
+    def read(self, spec: Any, params: Any, /) -> Any:
+        return "result"
+
+
+class TestRegistryReadStreaming:
+    def test_read_streaming_dispatches_to_capable_handler(self) -> None:
+        handler = _StreamingCapableReader()
+        registry = ReaderRegistry(None, extra={"clickhouse": handler})
+        spec = _FakeSpec(kind="clickhouse")
+
+        result = registry.read_streaming(spec, _PARAMS)
+
+        assert result == "streaming-result"
+        assert handler.stream_calls == [(spec, _PARAMS)]
+        assert handler.read_calls == []
+
+    def test_read_streaming_rejects_non_streaming_handler(self) -> None:
+        registry = ReaderRegistry(None, extra={"clickhouse": _NonStreamingReader()})
+        spec = _FakeSpec(kind="clickhouse")
+
+        with pytest.raises(TypeError, match="StreamingSourceReader"):
+            registry.read_streaming(spec, _PARAMS)
+
+    def test_read_streaming_falls_back_to_streaming_base(self) -> None:
+        base = _StreamingCapableReader()
+        registry = ReaderRegistry(base, extra={"clickhouse": _NonStreamingReader()})
+        spec = _FakeSpec(kind="table")
+
+        result = registry.read_streaming(spec, _PARAMS)
+
+        assert result == "streaming-result"
+        assert base.stream_calls == [(spec, _PARAMS)]
+
+    def test_read_streaming_raises_on_unknown_kind(self) -> None:
+        registry = ReaderRegistry(None, extra={})
+        spec = _FakeSpec(kind="mystery")
+
+        with pytest.raises(ConfigurationError):
+            registry.read_streaming(spec, _PARAMS)

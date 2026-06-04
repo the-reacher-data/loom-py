@@ -92,6 +92,46 @@ class SourceReader(Protocol):
 
 
 @runtime_checkable
+class StreamingSourceReader(Protocol):
+    """Optional capability protocol for memory-bounded streaming reads.
+
+    Implementations must return a backend frame (typically a
+    :class:`polars.LazyFrame`) whose terminal ``collect(engine="streaming")``
+    consumes the source incrementally — without materializing the full result
+    set in memory. Typical implementations spool a server-side cursor (e.g.
+    ClickHouse ``query_arrow_stream``) into a temporary IPC file and return a
+    ``pl.scan_ipc(...)`` over it, capping peak RAM at one batch.
+
+    This capability is opt-in: readers expose it only when they can guarantee
+    bounded memory. ``ETLExecutor`` checks for this protocol via
+    ``isinstance(reader, StreamingSourceReader)`` and raises a clear
+    ``TypeError`` when a step requests ``streaming=True`` against a reader
+    that lacks the capability, to prevent silent OOM regressions.
+
+    Example:
+        >>> reader: StreamingSourceReader = ClickHouseSourceReader(url=...)
+        >>> lazy = reader.read_streaming(spec, params)
+        >>> df = lazy.collect(engine="streaming")
+    """
+
+    def read_streaming(self, spec: SourceSpec, params_instance: Any, /) -> Any:
+        """Read the source using a memory-bounded streaming strategy.
+
+        Args:
+            spec: Compiled source specification.
+            params_instance: Concrete params for current run.
+
+        Returns:
+            Backend frame type (typically ``pl.LazyFrame``) whose downstream
+            ``collect(engine="streaming")`` consumes the source incrementally.
+
+        Raises:
+            TypeError: When the underlying client cannot stream this spec.
+        """
+        ...
+
+
+@runtime_checkable
 class SQLExecutor(Protocol):
     """Optional capability protocol for SQL execution over source frames."""
 
@@ -137,4 +177,10 @@ class TargetWriter(Protocol):
         ...
 
 
-__all__ = ["TableDiscovery", "SourceReader", "SQLExecutor", "TargetWriter"]
+__all__ = [
+    "TableDiscovery",
+    "SourceReader",
+    "StreamingSourceReader",
+    "SQLExecutor",
+    "TargetWriter",
+]

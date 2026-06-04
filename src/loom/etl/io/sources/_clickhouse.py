@@ -83,10 +83,51 @@ class ClickHouseSourceReader(SourceReader):
         self._client = client
 
     def read(self, spec: Any, params_instance: Any, /) -> pl.LazyFrame:
-        """Execute the ClickHouse source query and return a lazy Polars frame."""
+        """Execute the ClickHouse source query and return a lazy Polars frame.
+
+        Materializes the full result via ``query_arrow()`` (or ``query_df()``
+        as a pandas fallback). Use :meth:`read_streaming` for very large
+        result sets that would not fit in memory.
+
+        Args:
+            spec: Compiled ClickHouse source specification.
+            params_instance: Concrete params for current run.
+
+        Returns:
+            Lazy Polars frame with the query result.
+        """
         client = self._client or self._get_client()
         query = self._build_query(spec, params_instance)
         frame = self._query_to_frame(client, query)
+        if spec.schema:
+            frame = self._apply_source_schema(frame, spec.schema)
+        return frame
+
+    def read_streaming(self, spec: Any, params_instance: Any, /) -> pl.LazyFrame:
+        """Stream the ClickHouse query result through a temporary IPC file.
+
+        Uses ``clickhouse_connect``'s ``query_arrow_stream()`` to pull the
+        result batch-by-batch. Each Arrow batch is appended to a temporary
+        IPC file, and the returned ``pl.LazyFrame`` is a ``pl.scan_ipc(...)``
+        over that file. Downstream ``collect(engine="streaming")`` then
+        consumes the file incrementally, capping peak RAM at roughly one
+        Arrow batch. Required for sources that emit millions of rows where
+        a full ``query_arrow()`` would exhaust memory.
+
+        Args:
+            spec: Compiled ClickHouse source specification.
+            params_instance: Concrete params for current run.
+
+        Returns:
+            Lazy Polars frame backed by the spooled IPC file.
+
+        Raises:
+            TypeError: When the underlying client does not expose
+                ``query_arrow_stream()``.
+        """
+        client = self._client or self._get_client()
+        query = self._build_query(spec, params_instance)
+        frame = self._stream_query_to_frame(client, query)
         if spec.schema:
             frame = self._apply_source_schema(frame, spec.schema)
         return frame
@@ -141,6 +182,52 @@ class ClickHouseSourceReader(SourceReader):
         raise TypeError(
             "ClickHouse client must expose query_arrow() or query_df() to read sources."
         )
+
+    @staticmethod
+    def _stream_query_to_frame(client: Any, query: str) -> pl.LazyFrame:
+        # Spool the streaming Arrow result to a temp IPC file so downstream
+        # ``collect(engine="streaming")`` can consume it lazily. Caps peak
+        # RAM at one batch instead of the full result set.
+        if not hasattr(client, "query_arrow_stream"):
+            raise TypeError(
+                "ClickHouse client must expose query_arrow_stream() to read in streaming mode."
+            )
+        import tempfile  # noqa: PLC0415
+
+        import pyarrow as pa  # noqa: PLC0415
+
+        # clickhouse-connect's StreamContext yields pa.Table per block (no
+        # ``.schema`` attribute on the context itself), so we peek the first
+        # chunk to obtain the schema before opening the IPC writer.
+        with client.query_arrow_stream(query) as stream:
+            iterator = iter(stream)
+            try:
+                first_chunk = next(iterator)
+            except StopIteration:
+                # Empty result set — fall back to a single non-streaming
+                # query so we still return a frame with the right schema.
+                return ClickHouseSourceReader._query_to_frame(client, query)
+            tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
+                prefix="loom-clickhouse-", suffix=".arrow", delete=False
+            )
+            try:
+                with pa.ipc.new_file(tmp, first_chunk.schema) as writer:
+                    ClickHouseSourceReader._write_arrow_chunk(writer, first_chunk)
+                    for chunk in iterator:
+                        ClickHouseSourceReader._write_arrow_chunk(writer, chunk)
+            finally:
+                tmp.close()
+        return pl.scan_ipc(tmp.name, memory_map=False)
+
+    @staticmethod
+    def _write_arrow_chunk(writer: Any, chunk: Any) -> None:
+        import pyarrow as pa  # noqa: PLC0415
+
+        if isinstance(chunk, pa.Table):
+            for batch in chunk.to_batches():
+                writer.write_batch(batch)
+            return
+        writer.write_batch(chunk)
 
     @staticmethod
     def _apply_source_schema(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) -> pl.LazyFrame:
