@@ -19,8 +19,6 @@ from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.io.sources._mongo_predicate import predicate_to_mongo
 from loom.etl.schema._schema import LoomDtype
 
-_SCHEMA_INFERENCE_SAMPLE = 100
-
 
 class MongoSourceReader:
     """Read a :class:`~loom.etl.declarative.source.MongoSourceSpec` into a Polars LazyFrame.
@@ -58,13 +56,18 @@ class MongoSourceReader:
         projection = dict.fromkeys(spec.projection, 1) if spec.projection else None
 
         declared_schema, schema_str_fields = self._resolve_declared_schema(spec)
-        registered_schema = self._registered_schema(
-            spec, declared_schema, collection, filter_dict, projection, schema_str_fields
-        )
-
         batch_processor: BatchProcessorProtocol = MongoBatchProcessor(
             schema_str_fields=schema_str_fields,
             declared_schema=declared_schema or None,
+        )
+
+        registered_schema, first_frame, cursor = self._prepare_scan(
+            spec,
+            collection,
+            filter_dict,
+            projection,
+            declared_schema,
+            batch_processor,
         )
 
         def _io_source(
@@ -83,6 +86,8 @@ class MongoSourceReader:
                 registered_schema,
                 with_columns,
                 n_rows,
+                first_frame,
+                cursor,
             )
 
         return register_io_source(
@@ -103,22 +108,22 @@ class MongoSourceReader:
         str_field_names = frozenset(col.name for col in spec.schema if col.dtype == LoomDtype.UTF8)
         return (field_dtypes, str_field_names)
 
-    def _registered_schema(
+    def _prepare_scan(
         self,
         spec: Any,
-        declared_schema: dict[str, pl.DataType],
         collection: Any,
         filter_dict: dict[str, Any],
         projection: dict[str, Any] | None,
-        schema_str_fields: frozenset[str],
-    ) -> dict[str, pl.DataType]:
+        declared_schema: dict[str, pl.DataType],
+        batch_processor: BatchProcessorProtocol,
+    ) -> tuple[dict[str, pl.DataType], pl.DataFrame | None, Any]:
         if declared_schema:
             schema = dict(declared_schema)
             if spec.extra_fields_mode == "capture":
                 schema["_extra"] = pl.String()
-            return schema
-        return _infer_schema_from_sample(
-            collection, filter_dict, projection, spec, schema_str_fields
+            return schema, None, None
+        return _infer_schema_from_first_batch(
+            collection, filter_dict, projection, spec, batch_processor
         )
 
 
@@ -140,31 +145,29 @@ def _normalize_null_dtypes(schema: dict[str, pl.DataType]) -> dict[str, pl.DataT
     return result
 
 
-def _infer_schema_from_sample(
+def _infer_schema_from_first_batch(
     collection: Any,
     filter_dict: dict[str, Any],
     projection: dict[str, Any] | None,
     spec: Any,
-    schema_str_fields: frozenset[str],
-) -> dict[str, pl.DataType]:
-    cursor = collection.find(filter_dict, projection, batch_size=spec.batch_size)
-    if spec.limit is not None:
-        cursor = cursor.limit(spec.limit)
-
+    batch_processor: BatchProcessorProtocol,
+) -> tuple[dict[str, pl.DataType], pl.DataFrame | None, Any]:
+    # Reads the first batch eagerly so the registered schema is concrete, then hands the
+    # partially-consumed iterator to the scan generator to avoid re-reading.
+    cursor = _open_cursor(collection, filter_dict, projection, spec, None)
+    cursor_iter = iter(cursor)
+    inference_size = min(spec.batch_size, 1024)
     docs: list[dict[str, Any]] = []
-    for doc in cursor:
+    for doc in cursor_iter:
         docs.append(normalize_bson_doc(doc))
-        if len(docs) >= _SCHEMA_INFERENCE_SAMPLE:
+        if len(docs) >= inference_size:
             break
-    cursor.close()
-
     if not docs:
-        return {}
-
-    processor = MongoBatchProcessor(schema_str_fields=schema_str_fields)
-    sample_frame = processor.build_frame(docs)
-    raw = dict(zip(sample_frame.columns, sample_frame.dtypes, strict=True))
-    return _normalize_null_dtypes(raw)
+        cursor.close()
+        return {}, None, None
+    frame = batch_processor.build_frame(docs)
+    schema = _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
+    return schema, frame, cursor_iter
 
 
 def _open_cursor(
@@ -214,11 +217,34 @@ def _scan(
     registered_schema: dict[str, pl.DataType],
     with_columns: list[str] | None,
     n_rows: int | None,
+    first_frame: pl.DataFrame | None,
+    primed_cursor: Any,
 ) -> Any:
     schema_name = spec.collection
     schema_overrides = declared_schema or registered_schema or None
-    cursor = _open_cursor(collection, filter_dict, projection, spec, n_rows)
     remaining = n_rows
+
+    if first_frame is not None:
+        finalized = _finalize_batch(
+            first_frame,
+            declared_schema,
+            registered_schema,
+            spec.extra_fields_mode,
+            schema_name,
+            with_columns,
+            remaining,
+        )
+        if remaining is not None:
+            remaining -= len(finalized)
+        yield finalized
+        if remaining is not None and remaining <= 0:
+            return
+
+    cursor = (
+        primed_cursor
+        if primed_cursor is not None
+        else _open_cursor(collection, filter_dict, projection, spec, n_rows)
+    )
     batch: list[dict[str, Any]] = []
 
     for doc in cursor:

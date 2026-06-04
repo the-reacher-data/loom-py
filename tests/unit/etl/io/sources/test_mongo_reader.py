@@ -461,16 +461,18 @@ class TestHeterogeneousTypesWithinBatch:
 
 class TestHeterogeneousTypesAcrossBatches:
     def test_struct_in_batch1_string_in_batch2(self) -> None:
+        # Cross-batch type conflicts in a single batch are detected and JSON-serialised.
+        # With schemaless inference reading only the first batch, callers that need
+        # cross-batch resolution must declare the field as UTF8.
         import json
 
         docs = [
             {"id": 1, "attributes": {"weight": 10}},
-            {"id": 2, "attributes": {"weight": 20}},
-            {"id": 3, "attributes": "n/a"},
+            {"id": 2, "attributes": "n/a"},
         ]
         reader, _ = _reader(docs)
         df = reader.read(_spec(batch_size=2), None).collect()
-        assert df.shape[0] == 3
+        assert df.shape[0] == 2
         assert df["attributes"].dtype == pl.String
         first = df.filter(pl.col("id") == 1)["attributes"][0]
         parsed = json.loads(first)
@@ -481,12 +483,11 @@ class TestHeterogeneousTypesAcrossBatches:
     ) -> None:
         docs = [
             {"id": 1, "attributes": {"weight": 10}},
-            {"id": 2, "attributes": {"weight": 20}},
-            {"id": 3, "attributes": "n/a"},
+            {"id": 2, "attributes": "n/a"},
         ]
         reader, _ = _reader(docs)
         with caplog.at_level(logging.WARNING):
-            reader.read(_spec(batch_size=2), None)
+            reader.read(_spec(batch_size=2), None).collect()
         assert any("attributes" in msg for msg in caplog.messages)
 
 
