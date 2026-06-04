@@ -47,7 +47,8 @@ import re
 import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, get_type_hints
+from types import UnionType
+from typing import Any, Union, get_args, get_origin, get_type_hints
 from uuid import uuid4
 
 import msgspec
@@ -215,6 +216,7 @@ def etl_flow(
         env = kwargs.pop("env", "prod")
         explicit_correlation = kwargs.pop("correlation_id", None)
         resolved = {key: resolve_placeholder(value) for key, value in kwargs.items()}
+        resolved = _normalize_datetime_fields(resolved, params_type)
         params_obj = msgspec.convert(resolved, type=params_type)
         ctx = FlowCtx(
             correlation_id=(
@@ -224,18 +226,10 @@ def etl_flow(
             environment=env,
         )
 
-        # Allow per-environment override via env var (e.g. the local
-        # Docker work pool sets LOOM_STORAGE_CONFIG_PATH=/app/config.container.yaml
-        # to point at a host-network-aware config). Production keeps the
-        # baked default.
         import os as _os  # noqa: PLC0415
 
         actual_config_path = _os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
 
-        # Resume support: load any prior manifest for this correlation_id
-        # and compute the set of steps that still need to execute. A clean
-        # run starts with an empty manifest and ``pending`` covers all
-        # steps; a retry skips whatever the previous attempt completed.
         manifest_store = (
             manifest_store_factory() if manifest_store_factory else _NoopManifestStore()
         )
@@ -249,13 +243,9 @@ def etl_flow(
         pending = [s for s in all_step_names if s not in done]
 
         if not pending:
-            # Manifest already complete — nothing to execute. Treat as success.
             manifest_store.delete(ctx.correlation_id)
             return 0
 
-        # Single observer wiring: loom drives execution in one shot, the
-        # observers translate STEP events into (a) Prefect TaskRun rows for
-        # the UI and (b) incremental manifest writes for resume-on-failure.
         flow_run_id: Any = None
         try:
             from prefect.runtime import flow_run as _fr  # noqa: PLC0415
@@ -264,21 +254,12 @@ def etl_flow(
         except Exception:  # noqa: BLE001
             flow_run_id = None
 
-        _log.info("flow body: flow_run_id=%s pending=%s", flow_run_id, pending)
-
         extra_observers: list[Any] = []
         if flow_run_id is not None:
             extra_observers.append(PrefectTaskRunObserver(flow_run_id=flow_run_id))
-            _log.info("flow body: PrefectTaskRunObserver attached")
-        else:
-            _log.warning("flow body: flow_run_id is None — no per-step TaskRuns will appear in UI")
-        manifest_observer = _ManifestObserver(manifest_store, manifest)
-        extra_observers.append(manifest_observer)
+        extra_observers.append(_ManifestObserver(manifest_store, manifest))
 
-        runner = ETLRunner.from_yaml(
-            actual_config_path,
-            extra_observers=extra_observers,
-        )
+        runner = ETLRunner.from_yaml(actual_config_path, extra_observers=extra_observers)
         runner.run(
             pipeline,
             params_obj,
@@ -286,11 +267,8 @@ def etl_flow(
             run_id=ctx.run_id,
             correlation_id=ctx.correlation_id,
         )
-        # Reached only on full success of the single runner.run() — clean
-        # up the manifest so a follow-up trigger with the same
-        # correlation_id starts fresh. On failure the exception propagates
-        # and the manifest left on disk by ``_ManifestObserver`` lets the
-        # next attempt skip the steps already marked SUCCESS.
+        # Cleared on full success; on failure the manifest stays so the next
+        # attempt can skip SUCCESS steps via ``include=pending``.
         manifest_store.delete(ctx.correlation_id)
         return 0
 
@@ -604,6 +582,71 @@ def _signature_from_params_type(
     ]
 
 
+def _is_datetime_annotation(annotation: Any) -> bool:
+    """Return True iff ``annotation`` is ``datetime`` or a union including it.
+
+    Strictly rejects ``date`` (which is a supertype of ``datetime``) so we
+    only touch fields that are explicitly typed as ``datetime``.
+    """
+    if annotation is datetime:
+        return True
+    if get_origin(annotation) in (Union, UnionType):
+        return any(arg is datetime for arg in get_args(annotation))
+    return False
+
+
+def _coerce_to_utc(value: Any) -> Any:
+    """Promote a naive ``datetime`` (or naive ISO string) to UTC-aware.
+
+    Returns the original value unchanged when it is already tz-aware, when
+    it is ``None``, or when it is a string that cannot be parsed as a naive
+    ISO datetime.
+    """
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else value
+    return value
+
+
+def _normalize_datetime_fields(
+    resolved: dict[str, Any],
+    params_type: type[msgspec.Struct],
+) -> dict[str, Any]:
+    """Normalize naive datetime fields to UTC-aware.
+
+    Prefect injects naive datetime strings via CLI/UI (e.g.
+    ``'2026-06-03T00:00:00'``); Loom comparisons against Polars columns
+    require UTC-aware datetimes. This function inspects ``params_type`` and
+    promotes any value bound to a ``datetime``-typed field to UTC when it is
+    naive, leaving aware datetimes, ``None``, and non-datetime fields
+    untouched (idempotent).
+
+    Args:
+        resolved: Parameter mapping with placeholders already resolved.
+        params_type: ``msgspec.Struct`` describing the expected field types.
+
+    Returns:
+        A new dict with naive datetime values promoted to UTC-aware.
+    """
+    hints = get_type_hints(params_type)
+    datetime_fields = {
+        field.name
+        for field in msgspec.structs.fields(params_type)
+        if _is_datetime_annotation(hints.get(field.name))
+    }
+    if not datetime_fields:
+        return resolved
+    return {
+        key: _coerce_to_utc(value) if key in datetime_fields else value
+        for key, value in resolved.items()
+    }
+
+
 _UNSAFE_CORR_CHARS = re.compile(r"[^a-zA-Z0-9_\-]")
 
 
@@ -638,10 +681,17 @@ def _build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:
     if cron is None:
         return None
     try:
+        from prefect.client.schemas.actions import (  # noqa: PLC0415
+            DeploymentScheduleCreate,
+        )
         from prefect.client.schemas.schedules import CronSchedule  # noqa: PLC0415
     except ImportError:  # pragma: no cover
         return None
-    return CronSchedule(cron=cron, timezone=schedule.get("timezone"))
+    return DeploymentScheduleCreate(
+        schedule=CronSchedule(cron=cron, timezone=schedule.get("timezone")),
+        active=True,
+        max_scheduled_runs=int(schedule.get("max_scheduled_runs", 1)),
+    )
 
 
 class _NoopManifestStore:
