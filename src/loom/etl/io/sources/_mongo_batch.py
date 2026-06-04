@@ -191,14 +191,12 @@ def _pre_serialize_value(v: Any) -> Any:
 def _pre_serialize_fields(
     batch: list[dict[str, Any]], fields: frozenset[str]
 ) -> list[dict[str, Any]]:
-    result = []
+    # Mutates in place; the dicts come from normalize_bson_doc which already produced fresh copies.
     for doc in batch:
-        new_doc = dict(doc)
         for k in fields:
-            if k in new_doc:
-                new_doc[k] = _pre_serialize_value(new_doc[k])
-        result.append(new_doc)
-    return result
+            if k in doc:
+                doc[k] = _pre_serialize_value(doc[k])
+    return batch
 
 
 def _serialize_extra_complex_fields(
@@ -228,14 +226,11 @@ def _serialize_conflicted(
 ) -> list[dict[str, Any]]:
     if not conflicted:
         return batch
-    result = []
     for doc in batch:
-        new_doc = dict(doc)
         for k in conflicted:
-            if k in new_doc and new_doc[k] is not None:
-                new_doc[k] = _json_dumps(new_doc[k])
-        result.append(new_doc)
-    return result
+            if k in doc and doc[k] is not None:
+                doc[k] = _json_dumps(doc[k])
+    return batch
 
 
 def _series_to_json_string(s: pl.Series) -> pl.Series:
@@ -528,16 +523,14 @@ def _canonicalize_batch(
     batch: list[dict[str, Any]],
     plan: dict[str, _CanonicalValuePlan],
 ) -> list[dict[str, Any]]:
+    # Mutates in place; the dicts come from normalize_bson_doc which already produced fresh copies.
     if not batch or not plan:
         return batch
-    result: list[dict[str, Any]] = []
     for doc in batch:
-        new_doc = dict(doc)
         for field_name, field_plan in plan.items():
-            if field_name in new_doc:
-                new_doc[field_name] = _canonicalize_value(new_doc[field_name], field_plan)
-        result.append(new_doc)
-    return result
+            if field_name in doc:
+                doc[field_name] = _canonicalize_value(doc[field_name], field_plan)
+    return batch
 
 
 # ---------------------------------------------------------------------------
