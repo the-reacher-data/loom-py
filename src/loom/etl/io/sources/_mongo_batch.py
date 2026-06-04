@@ -108,84 +108,68 @@ def _classify_list(v: list[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
-    conflicted, _ = _classify_batch_keys(batch)
-    return conflicted
-
-
 def _effective_type_set(ts: set[str]) -> set[str]:
     base = ts - {"int", "float"}
     return base | ({"numeric"} if ts & {"int", "float"} else set())
 
 
+def _record_value_tags(
+    tags: dict[str, set[str]],
+    is_complex: dict[str, bool],
+    root_key: str,
+    sub_path: str,
+    value: Any,
+    depth: int,
+) -> None:
+    if depth >= _MAX_NESTED_DEPTH:
+        tags.setdefault(sub_path, set()).add("depth_cap")
+        return
+    if value is None:
+        return
+    if isinstance(value, dict):
+        is_complex[root_key] = True
+        tags.setdefault(sub_path, set()).add("dict")
+        for sk, sv in value.items():
+            _record_value_tags(tags, is_complex, root_key, f"{sub_path}.{sk}", sv, depth + 1)
+        return
+    if isinstance(value, list):
+        is_complex[root_key] = is_complex.get(root_key, False) or any(
+            isinstance(item, dict) for item in value
+        )
+        tags.setdefault(sub_path, set()).add("list")
+        for item in value:
+            _record_value_tags(tags, is_complex, root_key, f"{sub_path}[]", item, depth + 1)
+        return
+    tags.setdefault(sub_path, set()).add(_classify_value(value))
+
+
 def _classify_batch_keys(
     batch: list[dict[str, Any]],
 ) -> tuple[set[str], set[str]]:
-    """Return (conflicted_keys, complex_root_keys) in a single pass over the batch."""
-    key_types: dict[str, set[str]] = {}
-    key_values: dict[str, list[Any]] = {}
+    """Return (conflicted_keys, complex_root_keys) in a single pass over the batch.
+
+    Records per-path type tags directly instead of materialising every complex
+    value into intermediate lists; memory is O(distinct sub-paths) per batch.
+    """
+    root_types: dict[str, set[str]] = {}
+    sub_tags: dict[str, dict[str, set[str]]] = {}
+    is_complex: dict[str, bool] = {}
     for doc in batch:
         for k, v in doc.items():
             t = _classify_value(v)
             if t != "null":
-                key_types.setdefault(k, set()).add(t)
-            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
-                key_values.setdefault(k, []).append(v)
-    conflicted: set[str] = set()
-    for k, ts in key_types.items():
-        if len(_effective_type_set(ts)) > 1:
-            conflicted.add(k)
-    complex_root = {k for k, vals in key_values.items() if _nested_has_conflict(vals)}
+                root_types.setdefault(k, set()).add(t)
+            if isinstance(v, (dict, list)):
+                inner = sub_tags.setdefault(k, {})
+                _record_value_tags(inner, is_complex, k, "$", v, 0)
+    conflicted = {k for k, ts in root_types.items() if len(_effective_type_set(ts)) > 1}
+    complex_root = {
+        k
+        for k, paths in sub_tags.items()
+        if is_complex.get(k, False)
+        and any(len(_effective_type_set(ts)) > 1 for ts in paths.values())
+    }
     return conflicted, complex_root
-
-
-def _has_type_conflict(non_null: list[Any]) -> bool:
-    """True if values mix container and scalar types, or have incompatible scalar types."""
-    has_dict = any(isinstance(v, dict) for v in non_null)
-    has_list = any(isinstance(v, list) for v in non_null)
-    has_scalar = any(not isinstance(v, (dict, list)) for v in non_null)
-    if (has_dict and has_scalar) or (has_dict and has_list):
-        return True
-    return (
-        has_scalar
-        and not has_dict
-        and not has_list
-        and len({_classify_value(v) for v in non_null}) > 1
-    )
-
-
-def _dict_children_conflict(non_null: list[Any], depth: int) -> bool:
-    """True if any sub-key has a type conflict across the dicts in the batch."""
-    sub: dict[str, list[Any]] = {}
-    for v in non_null:
-        if isinstance(v, dict):
-            for sk, sv in v.items():
-                sub.setdefault(sk, []).append(sv)
-    return any(_nested_has_conflict(sv, depth + 1) for sv in sub.values())
-
-
-def _list_children_conflict(non_null: list[Any], depth: int) -> bool:
-    """True if the flattened items of all lists have a type conflict."""
-    flat: list[Any] = [item for v in non_null if isinstance(v, list) for item in v]
-    return bool(flat) and _nested_has_conflict(flat, depth + 1)
-
-
-def _nested_has_conflict(values: list[Any], _depth: int = 0) -> bool:
-    if _depth >= _MAX_NESTED_DEPTH:
-        return True
-    non_null = [v for v in values if v is not None]
-    if not non_null:
-        return False
-    if _has_type_conflict(non_null):
-        return True
-    if any(isinstance(v, dict) for v in non_null) and _dict_children_conflict(non_null, _depth):
-        return True
-    return any(isinstance(v, list) for v in non_null) and _list_children_conflict(non_null, _depth)
-
-
-def _complex_root_keys(batch: list[dict[str, Any]]) -> set[str]:
-    _, complex_root = _classify_batch_keys(batch)
-    return complex_root
 
 
 # ---------------------------------------------------------------------------
