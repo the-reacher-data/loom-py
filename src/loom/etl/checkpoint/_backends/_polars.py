@@ -34,10 +34,13 @@ class _PolarsCheckpointBackend:
         """Return LazyFrame scanning *name* under *base*, or None if absent."""
         scan_path = self._find_arrow(name, base)
         if scan_path is None:
+            _log.info("checkpoint READ MISS name=%s base=%s", name, base)
             return None
         kwargs: dict[str, Any] = {"memory_map": not base.startswith(_CLOUD_SCHEMES)}
-        if self._storage_options:
-            kwargs["storage_options"] = self._storage_options
+        polars_opts = _to_object_store_opts(self._storage_options)
+        if polars_opts:
+            kwargs["storage_options"] = polars_opts
+        _log.info("checkpoint READ HIT  name=%s path=%s", name, scan_path)
         return pl.scan_ipc(scan_path, **kwargs)
 
     def write(self, name: str, base: str, data: Any, *, append: bool) -> None:
@@ -62,7 +65,7 @@ class _PolarsCheckpointBackend:
         final = _arrow_part(name, base) if append else _arrow_path(name, base)
         tmp = f"{final}{_WRITING}"
 
-        _log.debug("checkpoint write tmp=%s final=%s", tmp, final)
+        _log.info("checkpoint WRITE     name=%s path=%s", name, final)
         _write_atomic(frame, tmp, final, self._storage_options)
 
     def _find_arrow(self, name: str, base: str) -> str | None:
@@ -97,10 +100,37 @@ def _align_lazy_to_schema(frame: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFram
     return frame.select(exprs)
 
 
+_FSSPEC_TO_OBJECT_STORE = {
+    "endpoint_url": "aws_endpoint_url",
+    "key": "aws_access_key_id",
+    "secret": "aws_secret_access_key",
+    "token": "aws_session_token",
+}
+
+
+def _to_object_store_opts(opts: dict[str, str] | None) -> dict[str, str]:
+    """Translate fsspec-style storage options into Polars/object_store form.
+
+    Polars' ``sink_ipc`` is backed by Rust ``object_store`` which expects
+    ``aws_endpoint_url`` / ``aws_access_key_id`` / ``aws_secret_access_key``
+    keys, NOT the fsspec ``endpoint_url`` / ``key`` / ``secret`` names.
+    Without this translation Polars ignores the options and falls back to
+    EC2 IMDS lookup — which fails inside non-AWS environments (MinIO, GCS
+    via S3 API, on-prem) with a cryptic IMDS HTTP error.
+    """
+    if not opts:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in opts.items():
+        out[_FSSPEC_TO_OBJECT_STORE.get(k, k)] = v
+    return out
+
+
 def _write_atomic(frame: pl.LazyFrame, tmp: str, final: str, opts: dict[str, str] | None) -> None:
     """Write to tmp, then rename to final atomically."""
     fs, p = fsspec.core.url_to_fs(tmp, **(opts or {}))
     fs.makedirs(fs._parent(p), exist_ok=True)
-    kwargs: dict[str, Any] = {"storage_options": opts} if opts else {}
+    polars_opts = _to_object_store_opts(opts)
+    kwargs: dict[str, Any] = {"storage_options": polars_opts} if polars_opts else {}
     frame.sink_ipc(tmp, **kwargs)
     fs.rename(p, p.removesuffix(_WRITING))

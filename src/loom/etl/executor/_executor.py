@@ -153,6 +153,7 @@ class ETLExecutor:
                 attempt=ctx.attempt,
                 last_attempt=ctx.last_attempt,
                 nodes=len(plan.nodes),
+                params=_render_params(params),
             ):
                 for node in plan.nodes:
                     self._run_pipeline_node(node, params, ctx)
@@ -388,6 +389,25 @@ class ETLExecutor:
 def _new_run_id() -> str:
     """Generate a fresh UUID4 run identifier."""
     return str(uuid.uuid4())
+
+
+def _render_params(params: Any) -> dict[str, Any]:
+    """Render an ``ETLParams`` instance as a JSON-friendly dict for events.
+
+    Used to attach the resolved invocation parameters to the pipeline START
+    event so observers (structlog/JSON sinks, Prefect UI) can show what the
+    pipeline was called with. Datetimes are ISO-formatted by ``msgspec``.
+    Falls back to ``str(params)`` if msgspec cannot encode the object.
+    """
+    import msgspec  # noqa: PLC0415
+
+    try:
+        rendered = msgspec.to_builtins(params)
+    except Exception:  # noqa: BLE001
+        return {"repr": str(params)}
+    if isinstance(rendered, dict):
+        return rendered
+    return {"value": rendered}
 
 
 def _ms(start: float) -> int:
