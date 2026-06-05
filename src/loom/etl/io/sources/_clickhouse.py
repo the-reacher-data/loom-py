@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime
 from typing import Any
 
 import polars as pl
 
+from loom.core.logger import get_logger
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.expr._predicate_dialect import PredicateDialect, fold_predicate
 from loom.etl.declarative.source._from_clickhouse import FromClickHouse
 from loom.etl.declarative.source._specs import ClickHouseSourceSpec
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import ColumnSchema
+
+_log = get_logger(__name__)
 
 
 class _ClickHousePredicateDialect(PredicateDialect[str]):
@@ -98,7 +102,15 @@ class ClickHouseSourceReader(SourceReader):
         """
         client = self._client or self._get_client()
         query = self._build_query(spec, params_instance)
-        frame = self._query_to_frame(client, query)
+        _log_query_start(spec, query, streaming=False)
+        started = time.monotonic()
+        frame, rows = self._query_to_frame(client, query)
+        _log.info(
+            "clickhouse read complete",
+            table=spec.table_ref.ref,
+            rows=rows,
+            duration_s=round(time.monotonic() - started, 3),
+        )
         if spec.schema:
             frame = self._apply_source_schema(frame, spec.schema)
         return frame
@@ -127,7 +139,16 @@ class ClickHouseSourceReader(SourceReader):
         """
         client = self._client or self._get_client()
         query = self._build_query(spec, params_instance)
-        frame = self._stream_query_to_frame(client, query)
+        _log_query_start(spec, query, streaming=True)
+        started = time.monotonic()
+        frame, rows, batches = self._stream_query_to_frame(client, query)
+        _log.info(
+            "clickhouse stream spooled",
+            table=spec.table_ref.ref,
+            rows=rows,
+            batches=batches,
+            duration_s=round(time.monotonic() - started, 3),
+        )
         if spec.schema:
             frame = self._apply_source_schema(frame, spec.schema)
         return frame
@@ -171,20 +192,21 @@ class ClickHouseSourceReader(SourceReader):
         return ".".join(f"`{part.replace('`', '``')}`" for part in parts)
 
     @staticmethod
-    def _query_to_frame(client: Any, query: str) -> pl.LazyFrame:
+    def _query_to_frame(client: Any, query: str) -> tuple[pl.LazyFrame, int]:
         if hasattr(client, "query_arrow"):
             result = pl.from_arrow(client.query_arrow(query))
             if not isinstance(result, pl.DataFrame):
                 raise TypeError("Expected a PyArrow Table from query_arrow(), not a scalar array.")
-            return result.lazy()
+            return result.lazy(), result.height
         if hasattr(client, "query_df"):
-            return pl.from_pandas(client.query_df(query)).lazy()
+            df = pl.from_pandas(client.query_df(query))
+            return df.lazy(), df.height
         raise TypeError(
             "ClickHouse client must expose query_arrow() or query_df() to read sources."
         )
 
     @staticmethod
-    def _stream_query_to_frame(client: Any, query: str) -> pl.LazyFrame:
+    def _stream_query_to_frame(client: Any, query: str) -> tuple[pl.LazyFrame, int, int]:
         # Spool the streaming Arrow result to a temp IPC file so downstream
         # ``collect(engine="streaming")`` can consume it lazily. Caps peak
         # RAM at one batch instead of the full result set.
@@ -206,28 +228,36 @@ class ClickHouseSourceReader(SourceReader):
             except StopIteration:
                 # Empty result set — fall back to a single non-streaming
                 # query so we still return a frame with the right schema.
-                return ClickHouseSourceReader._query_to_frame(client, query)
+                frame, rows = ClickHouseSourceReader._query_to_frame(client, query)
+                return frame, rows, 0
             tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
                 prefix="loom-clickhouse-", suffix=".arrow", delete=False
             )
+            rows = 0
+            batches = 0
             try:
                 with pa.ipc.new_file(tmp, first_chunk.schema) as writer:
-                    ClickHouseSourceReader._write_arrow_chunk(writer, first_chunk)
+                    rows += ClickHouseSourceReader._write_arrow_chunk(writer, first_chunk)
+                    batches += 1
                     for chunk in iterator:
-                        ClickHouseSourceReader._write_arrow_chunk(writer, chunk)
+                        rows += ClickHouseSourceReader._write_arrow_chunk(writer, chunk)
+                        batches += 1
             finally:
                 tmp.close()
-        return pl.scan_ipc(tmp.name, memory_map=False)
+        return pl.scan_ipc(tmp.name, memory_map=False), rows, batches
 
     @staticmethod
-    def _write_arrow_chunk(writer: Any, chunk: Any) -> None:
+    def _write_arrow_chunk(writer: Any, chunk: Any) -> int:
         import pyarrow as pa  # noqa: PLC0415
 
         if isinstance(chunk, pa.Table):
+            rows = 0
             for batch in chunk.to_batches():
                 writer.write_batch(batch)
-            return
+                rows += batch.num_rows
+            return rows
         writer.write_batch(chunk)
+        return int(getattr(chunk, "num_rows", 0))
 
     @staticmethod
     def _apply_source_schema(frame: pl.LazyFrame, schema: tuple[ColumnSchema, ...]) -> pl.LazyFrame:
@@ -235,6 +265,17 @@ class ClickHouseSourceReader(SourceReader):
             return frame
         exprs = [pl.col(col.name).cast(loom_type_to_polars(col.dtype)) for col in schema]
         return frame.with_columns(exprs)
+
+
+def _log_query_start(spec: ClickHouseSourceSpec, query: str, *, streaming: bool) -> None:
+    _log.info(
+        "clickhouse query",
+        table=spec.table_ref.ref,
+        columns=list(spec.columns) if spec.columns else None,
+        predicates=len(spec.predicates),
+        sql=query,
+        streaming=streaming,
+    )
 
 
 __all__ = ["ClickHouseSourceReader", "ClickHouseSourceSpec", "FromClickHouse"]
