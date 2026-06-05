@@ -271,41 +271,24 @@ def _build_stdlib_handler(cfg: HandlerConfig) -> logging.Handler:
             raise TypeError(f"Unhandled handler config type: {type(cfg).__name__!r}")
 
 
-def _setup_stdlib(config: LogConfig, level: int) -> bool:
-    """Attach handlers from ``config`` to the target stdlib logger.
-
-    Returns ``True`` when any handler declares its own renderer — in that
-    case ``configure_logging`` must route structlog through stdlib so each
-    handler can format with its own ``ProcessorFormatter``.
-    """
-    if not config.handlers:
-        logging.basicConfig(level=level, format="%(message)s", force=True)
-        return False
-
+def _setup_stdlib(config: LogConfig, level: int) -> None:
+    # Every stdlib record (loom-internal or third-party) is routed through
+    # a structlog ProcessorFormatter so the whole process shares one render.
     target = logging.getLogger(config.name) if config.name else logging.getLogger()
     target.setLevel(level)
-    # Clear any pre-existing handlers so re-configuration doesn't duplicate
-    # output (e.g. in tests or repeated bootstraps).
     for existing in list(target.handlers):
         target.removeHandler(existing)
 
-    per_handler_renderer = any(getattr(h, "renderer", None) is not None for h in config.handlers)
-
-    for handler_cfg in config.handlers:
+    for handler_cfg in config.handlers or (StreamHandlerConfig(),):
         handler = _build_stdlib_handler(handler_cfg)
         handler.setLevel(level)
-        if per_handler_renderer:
-            # Each handler gets a ProcessorFormatter rendering with its own
-            # configured (or inherited) renderer so a single log record can
-            # land on stdout as colour text AND on a file as JSON.
-            handler.setFormatter(
-                structlog.stdlib.ProcessorFormatter(
-                    processor=_handler_renderer(handler_cfg, config),
-                    foreign_pre_chain=_foreign_pre_chain(),
-                )
+        handler.setFormatter(
+            structlog.stdlib.ProcessorFormatter(
+                processor=_handler_renderer(handler_cfg, config),
+                foreign_pre_chain=_foreign_pre_chain(),
             )
+        )
         target.addHandler(handler)
-    return per_handler_renderer
 
 
 def _foreign_pre_chain() -> list[Any]:
@@ -399,19 +382,11 @@ def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:
         >>> configure_logging(LogConfig(environment=Environment.PROD, level="WARNING"))
     """
     level = _parse_level(config.level)
-    per_handler_renderer = _setup_stdlib(config, level)
+    _setup_stdlib(config, level)
     _apply_named_levels(config)
 
     if config.fields:
         structlog.contextvars.bind_contextvars(**dict(config.fields))
-
-    if per_handler_renderer:
-        # Hand off the final rendering to each stdlib handler's
-        # ProcessorFormatter so different sinks can use different renderers
-        # (e.g. console+colour on stdout, JSON on a file for OTEL ingestion).
-        final_processor: Any = structlog.stdlib.ProcessorFormatter.wrap_for_formatter
-    else:
-        final_processor = _resolve_renderer(config)
 
     structlog.configure(
         processors=[
@@ -421,7 +396,7 @@ def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.format_exc_info,
             *config.extra_processors,
-            final_processor,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),

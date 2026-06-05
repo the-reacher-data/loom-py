@@ -25,9 +25,9 @@ class MongoSourceReader:
 
     MongoDB I/O is deferred until ``.collect()`` is called. With ``schema``
     declared, zero queries are issued during ``read()`` — the cursor opens lazily
-    inside the scan plugin. Without ``schema``, up to
-    :data:`_SCHEMA_INFERENCE_SAMPLE` documents are sampled eagerly to infer
-    the registered schema; the full scan is still deferred.
+    inside the scan plugin. Without ``schema``, up to ``min(batch_size, 1024)``
+    documents are sampled eagerly to infer the registered schema; the full scan
+    opens a fresh cursor on each ``.collect()``.
 
     Args:
         client:   pymongo ``MongoClient`` (or compatible).
@@ -61,7 +61,7 @@ class MongoSourceReader:
             declared_schema=declared_schema or None,
         )
 
-        registered_schema, first_frame, cursor = self._prepare_scan(
+        registered_schema = self._prepare_scan(
             spec,
             collection,
             filter_dict,
@@ -86,8 +86,6 @@ class MongoSourceReader:
                 registered_schema,
                 with_columns,
                 n_rows,
-                first_frame,
-                cursor,
             )
 
         return register_io_source(
@@ -116,12 +114,12 @@ class MongoSourceReader:
         projection: dict[str, Any] | None,
         declared_schema: dict[str, pl.DataType],
         batch_processor: BatchProcessorProtocol,
-    ) -> tuple[dict[str, pl.DataType], pl.DataFrame | None, Any]:
+    ) -> dict[str, pl.DataType]:
         if declared_schema:
             schema = dict(declared_schema)
             if spec.extra_fields_mode == "capture":
                 schema["_extra"] = pl.String()
-            return schema, None, None
+            return schema
         return _infer_schema_from_first_batch(
             collection, filter_dict, projection, spec, batch_processor
         )
@@ -151,23 +149,21 @@ def _infer_schema_from_first_batch(
     projection: dict[str, Any] | None,
     spec: Any,
     batch_processor: BatchProcessorProtocol,
-) -> tuple[dict[str, pl.DataType], pl.DataFrame | None, Any]:
-    # Reads the first batch eagerly so the registered schema is concrete, then hands the
-    # partially-consumed iterator to the scan generator to avoid re-reading.
+) -> dict[str, pl.DataType]:
     cursor = _open_cursor(collection, filter_dict, projection, spec, None)
-    cursor_iter = iter(cursor)
     inference_size = min(spec.batch_size, 1024)
     docs: list[dict[str, Any]] = []
-    for doc in cursor_iter:
-        docs.append(normalize_bson_doc(doc))
-        if len(docs) >= inference_size:
-            break
-    if not docs:
+    try:
+        for doc in cursor:
+            docs.append(normalize_bson_doc(doc))
+            if len(docs) >= inference_size:
+                break
+    finally:
         cursor.close()
-        return {}, None, None
+    if not docs:
+        return {}
     frame = batch_processor.build_frame(docs)
-    schema = _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
-    return schema, frame, cursor_iter
+    return _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
 
 
 def _open_cursor(
@@ -217,39 +213,33 @@ def _scan(
     registered_schema: dict[str, pl.DataType],
     with_columns: list[str] | None,
     n_rows: int | None,
-    first_frame: pl.DataFrame | None,
-    primed_cursor: Any,
 ) -> Any:
     schema_name = spec.collection
     schema_overrides = declared_schema or registered_schema or None
     remaining = n_rows
-
-    if first_frame is not None:
-        finalized = _finalize_batch(
-            first_frame,
-            declared_schema,
-            registered_schema,
-            spec.extra_fields_mode,
-            schema_name,
-            with_columns,
-            remaining,
-        )
-        if remaining is not None:
-            remaining -= len(finalized)
-        yield finalized
-        if remaining is not None and remaining <= 0:
-            return
-
-    cursor = (
-        primed_cursor
-        if primed_cursor is not None
-        else _open_cursor(collection, filter_dict, projection, spec, n_rows)
-    )
+    cursor = _open_cursor(collection, filter_dict, projection, spec, n_rows)
     batch: list[dict[str, Any]] = []
-
-    for doc in cursor:
-        batch.append(normalize_bson_doc(doc))
-        if len(batch) >= spec.batch_size:
+    try:
+        for doc in cursor:
+            batch.append(normalize_bson_doc(doc))
+            if len(batch) >= spec.batch_size:
+                frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
+                frame = _finalize_batch(
+                    frame,
+                    declared_schema,
+                    registered_schema,
+                    spec.extra_fields_mode,
+                    schema_name,
+                    with_columns,
+                    remaining,
+                )
+                if remaining is not None:
+                    remaining -= len(frame)
+                yield frame
+                batch = []
+                if remaining is not None and remaining <= 0:
+                    return
+        if batch:
             frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
             frame = _finalize_batch(
                 frame,
@@ -260,25 +250,9 @@ def _scan(
                 with_columns,
                 remaining,
             )
-            if remaining is not None:
-                remaining -= len(frame)
             yield frame
-            batch = []
-            if remaining is not None and remaining <= 0:
-                return
-
-    if batch:
-        frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
-        frame = _finalize_batch(
-            frame,
-            declared_schema,
-            registered_schema,
-            spec.extra_fields_mode,
-            schema_name,
-            with_columns,
-            remaining,
-        )
-        yield frame
+    finally:
+        cursor.close()
 
 
 __all__ = ["FromMongo", "MongoSourceReader", "MongoSourceSpec", "SourceRef"]

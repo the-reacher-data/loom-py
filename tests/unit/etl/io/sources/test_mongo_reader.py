@@ -191,6 +191,22 @@ class TestHappyPath:
         assert df["order_id"].to_list() == ["o1", "o2"]
         assert df["status"].to_list() == ["active", "pending"]
 
+    def test_lazyframe_can_be_collected_twice(self) -> None:
+        # Regression: cursor_iter captured in closure was exhausted on 2nd collect,
+        # returning only the first inference batch instead of all documents.
+        # batch_size=2 forces inference_size=2, leaving 3 docs unconsumed in cursor.
+        docs = [{"id": i, "val": f"v{i}"} for i in range(5)]
+        reader, _ = _reader(docs)
+        lf = reader.read(_spec(batch_size=2), None)
+
+        df1 = lf.collect()
+        df2 = lf.collect()
+
+        assert df1.shape == df2.shape, (
+            f"Second collect returned {df2.shape[0]} rows, expected {df1.shape[0]}"
+        )
+        assert df1.sort("id").equals(df2.sort("id"))
+
 
 # ---------------------------------------------------------------------------
 # pymongo call args

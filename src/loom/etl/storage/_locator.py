@@ -61,6 +61,30 @@ class TableLocation:
     delta_config: dict[str, str | None] = field(default_factory=dict)
     commit: dict[str, Any] = field(default_factory=dict)
 
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic only
+        masked = _mask_storage_options(self.storage_options)
+        return (
+            f"TableLocation(uri={self.uri!r}, storage_options={masked!r}, "
+            f"writer={self.writer!r}, target_file_size={self.target_file_size!r}, "
+            f"delta_config={self.delta_config!r}, commit={self.commit!r})"
+        )
+
+
+_SECRET_KEY_FRAGMENTS = ("secret", "password", "token", "key", "credential")
+
+
+def _mask_storage_options(opts: dict[str, str]) -> dict[str, str]:
+    """Return *opts* with credential-bearing values replaced by ``"***"``."""
+    masked: dict[str, str] = {}
+    for k, v in opts.items():
+        lk = k.lower()
+        # ``aws_endpoint_url`` matches "key" too loosely — exclude hostnames.
+        if any(f in lk for f in _SECRET_KEY_FRAGMENTS) and "endpoint" not in lk:
+            masked[k] = "***"
+        else:
+            masked[k] = v
+    return masked
+
 
 @runtime_checkable
 class TableLocator(Protocol):

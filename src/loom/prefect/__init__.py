@@ -37,6 +37,7 @@ from loom.prefect._manifest import ManifestStore, RunManifest, StepEntry
 from loom.prefect._manifest_s3 import S3JsonManifestStore
 from loom.prefect._observer import PrefectObserver
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect._rename_scheduled import rename_scheduled_runs
 from loom.prefect._task_run_observer import PrefectTaskRunObserver
 
 __all__ = [
@@ -49,5 +50,6 @@ __all__ = [
     "StepEntry",
     "discover_and_deploy_etls",
     "etl_flow",
+    "rename_scheduled_runs",
     "resolve_placeholder",
 ]

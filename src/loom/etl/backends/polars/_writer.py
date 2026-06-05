@@ -254,7 +254,10 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         """Overwrite partitions present in frame."""
         path_target = self._as_path_target(target)
         if frame.is_empty():
-            _log.warning("replace_partitions table=%s has 0 rows — nothing written", path_target)
+            _log.warning(
+                "replace_partitions table=%s has 0 rows — nothing written",
+                path_target.location.uri,
+            )
             return
 
         location = path_target.location
