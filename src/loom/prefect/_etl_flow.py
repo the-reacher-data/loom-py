@@ -684,6 +684,3 @@ def _build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:
         active=True,
         max_scheduled_runs=int(schedule.get("max_scheduled_runs", 1)),
     )
-
-
-__all__ = ["discover_and_deploy_etls", "etl_flow"]
