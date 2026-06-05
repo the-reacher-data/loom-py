@@ -45,10 +45,6 @@ class StructlogLifecycleObserver:
             return
         match event.kind:
             case EventKind.START:
-                # Pipeline START is interesting enough to surface at INFO so
-                # operators see the invocation parameters in default-level
-                # logs. PROCESS / STEP start events stay at DEBUG to avoid
-                # flooding logs on pipelines with many steps.
                 if event.scope is Scope.PIPELINE:
                     bound.info(event.kind.value, **event.meta)
                 else:
@@ -58,8 +54,9 @@ class StructlogLifecycleObserver:
                     event.kind.value,
                     duration_ms=event.duration_ms,
                     status=event.status.value if event.status is not None else None,
-                    **event.meta,
                 )
+                if event.meta:
+                    bound.debug(event.kind.value, **event.meta)
             case EventKind.ERROR:
                 bound.error(
                     event.kind.value,

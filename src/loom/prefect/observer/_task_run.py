@@ -81,7 +81,7 @@ class PrefectTaskRunObserver:
             return
         if event.scope is not Scope.STEP:
             return
-        _log.info(
+        _log.debug(
             "PrefectTaskRunObserver event step=%s kind=%s step_run_id=%s",
             event.name,
             event.kind,
