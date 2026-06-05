@@ -113,6 +113,43 @@ def test_install_log_bridge_none_flow_id_is_a_noop() -> None:
     assert not any(isinstance(h, PrefectLogBridgeHandler) for h in logging.getLogger().handlers)
 
 
+def test_flush_retries_then_increments_dropped_counter() -> None:
+    handler = PrefectLogBridgeHandler()
+    attempts: list[int] = []
+
+    def _always_fail(batch: list[dict[str, object]], run_sync_fn: object) -> None:
+        attempts.append(1)
+        raise RuntimeError("simulated outage")
+
+    handler._post_batch = _always_fail  # type: ignore[method-assign]
+    handler._sleep = lambda _s: None  # type: ignore[attr-defined]
+    try:
+        handler._flush_with_retry([{"name": "x", "level": 20, "message": "m"}], run_sync_fn=None)
+    finally:
+        handler.close()
+    assert len(attempts) == handler._MAX_ATTEMPTS
+    assert handler.dropped_logs == 1
+
+
+def test_flush_succeeds_on_second_attempt_no_drop() -> None:
+    handler = PrefectLogBridgeHandler()
+    attempts: list[int] = []
+
+    def _fail_then_succeed(batch: list[dict[str, object]], run_sync_fn: object) -> None:
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise RuntimeError("transient")
+
+    handler._post_batch = _fail_then_succeed  # type: ignore[method-assign]
+    handler._sleep = lambda _s: None  # type: ignore[attr-defined]
+    try:
+        handler._flush_with_retry([{"name": "x", "level": 20, "message": "m"}], run_sync_fn=None)
+    finally:
+        handler.close()
+    assert len(attempts) == 2
+    assert handler.dropped_logs == 0
+
+
 @pytest.mark.parametrize("level", [logging.DEBUG, logging.WARNING, logging.ERROR])
 def test_record_level_is_preserved(level: int) -> None:
     handler = PrefectLogBridgeHandler()

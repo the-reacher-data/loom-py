@@ -27,6 +27,7 @@ import contextlib
 import logging
 import queue
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -94,12 +95,16 @@ class PrefectLogBridgeHandler(logging.Handler):
     _BATCH_SIZE = 100
     _FLUSH_SECONDS = 1.0
     _SENTINEL: Any = object()
+    _MAX_ATTEMPTS = 3
+    _BACKOFF_BASE_SECONDS = 1.0
 
     def __init__(self) -> None:
         super().__init__(level=logging.NOTSET)
         self._queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self._worker: threading.Thread | None = None
         self._closed = False
+        self.dropped_logs = 0
+        self._sleep = time.sleep
 
     def start(self) -> None:
         """Spawn the background drain worker. Idempotent."""
@@ -170,13 +175,12 @@ class PrefectLogBridgeHandler(logging.Handler):
                 item = self._queue.get(timeout=self._FLUSH_SECONDS)
             except queue.Empty:
                 if batch:
-                    self._flush(batch, run_sync)
+                    self._flush_with_retry(batch, run_sync_fn=run_sync)
                     batch = []
                 continue
             if item is self._SENTINEL:
                 if batch:
-                    self._flush(batch, run_sync)
-                # Drain any stragglers queued before the sentinel.
+                    self._flush_with_retry(batch, run_sync_fn=run_sync)
                 while True:
                     try:
                         leftover = self._queue.get_nowait()
@@ -184,30 +188,37 @@ class PrefectLogBridgeHandler(logging.Handler):
                         return
                     if leftover is self._SENTINEL:
                         continue
-                    self._flush([leftover], run_sync)
+                    self._flush_with_retry([leftover], run_sync_fn=run_sync)
                 return
             batch.append(item)
             if len(batch) >= self._BATCH_SIZE:
-                self._flush(batch, run_sync)
+                self._flush_with_retry(batch, run_sync_fn=run_sync)
                 batch = []
 
-    def _flush(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> None:
+    def _flush_with_retry(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> None:
+        for attempt in range(1, self._MAX_ATTEMPTS + 1):
+            try:
+                self._post_batch(batch, run_sync_fn)
+                return
+            except Exception:  # noqa: BLE001
+                if attempt >= self._MAX_ATTEMPTS:
+                    break
+                self._sleep(self._BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+        self.dropped_logs += len(batch)
+        with contextlib.suppress(Exception):
+            self.handleError(logging.LogRecord(__name__, logging.ERROR, "", 0, "", None, None))
+
+    def _post_batch(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> None:
         from prefect.client.orchestration import get_client  # noqa: PLC0415
         from prefect.client.schemas.actions import LogCreate  # noqa: PLC0415
 
-        try:
-            logs = [LogCreate(**payload) for payload in batch]
+        logs = [LogCreate(**payload) for payload in batch]
 
-            async def _send() -> None:
-                async with get_client() as client:
-                    await client.create_logs(logs)
+        async def _send() -> None:
+            async with get_client() as client:
+                await client.create_logs(logs)
 
-            run_sync_fn(_send())
-        except Exception:  # noqa: BLE001
-            # Losing log lines is preferable to crashing the worker thread.
-            # Use sys.stderr via the handler's own error path.
-            with contextlib.suppress(Exception):
-                self.handleError(logging.LogRecord(__name__, logging.ERROR, "", 0, "", None, None))
+        run_sync_fn(_send())
 
 
 # ---------------------------------------------------------------------------
