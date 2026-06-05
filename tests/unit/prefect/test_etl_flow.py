@@ -207,6 +207,22 @@ def test_deploy_passes_meta_name_and_yaml_tags_no_loom_etl(tmp_path: Path) -> No
     assert "loom-etl" not in deploy_kwargs["tags"]
 
 
+def test_prometheus_adapter_wired_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    from loom.prefect.flow._body import _build_observers
+
+    monkeypatch.setenv("PROMETHEUS_PUSHGATEWAY_URL", "http://pushgateway:9091")
+    observers = _build_observers(flow_run_id=None, manifest_store=None, manifest=None)
+    assert any(type(o).__name__ == "PrometheusLifecycleAdapter" for o in observers)
+
+
+def test_prometheus_adapter_absent_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from loom.prefect.flow._body import _build_observers
+
+    monkeypatch.delenv("PROMETHEUS_PUSHGATEWAY_URL", raising=False)
+    observers = _build_observers(flow_run_id=None, manifest_store=None, manifest=None)
+    assert not any(type(o).__name__ == "PrometheusLifecycleAdapter" for o in observers)
+
+
 def test_etl_flow_rejects_non_string_tags(tmp_path: Path) -> None:
     content = textwrap.dedent(
         """\

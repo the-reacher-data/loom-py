@@ -149,7 +149,21 @@ def _build_observers(
         observers.append(PrefectTaskRunObserver(flow_run_id=flow_run_id))
     if manifest_store is not None:
         observers.append(ManifestObserver(manifest_store, manifest))
+    prometheus = _maybe_build_prometheus_adapter()
+    if prometheus is not None:
+        observers.append(prometheus)
     return observers
+
+
+def _maybe_build_prometheus_adapter() -> Any:
+    pushgateway = os.environ.get("PROMETHEUS_PUSHGATEWAY_URL")
+    if not pushgateway:
+        return None
+    try:
+        from loom.prometheus.lifecycle import PrometheusLifecycleAdapter  # noqa: PLC0415
+    except ImportError:
+        return None
+    return PrometheusLifecycleAdapter(pushgateway_url=pushgateway)
 
 
 def _current_flow_run_id() -> Any:
