@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 from prefect.exceptions import MissingContextError
 
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
-from loom.prefect._observer import PrefectObserver
+from loom.prefect.observer import PrefectObserver
 
 # ---------------------------------------------------------------------------
 # Helpers
