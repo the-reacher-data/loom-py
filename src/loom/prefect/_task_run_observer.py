@@ -28,6 +28,7 @@ import uuid
 from typing import Any
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+from loom.prefect._async import run_sync
 
 _log = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ class PrefectTaskRunObserver:
                 )
                 return uuid.UUID(str(created.id))
 
-        result = _run_sync(_create())
+        result = run_sync(_create())
         return result if isinstance(result, uuid.UUID) else None
 
     def _set_state(
@@ -156,23 +157,7 @@ class PrefectTaskRunObserver:
             async with get_client() as client:
                 await client.set_task_run_state(task_run_id, state, force=True)
 
-        _run_sync(_set())
-
-
-def _run_sync(coro: Any) -> Any:
-    """Run *coro* on a fresh event loop in the current thread.
-
-    The observer fires from inside loom's executor (sync code path).  Creating
-    a short-lived loop per call keeps the implementation simple and avoids
-    interfering with any outer asyncio context.
-    """
-    import asyncio  # noqa: PLC0415
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        run_sync(_set())
 
 
 __all__ = ["PrefectTaskRunObserver"]

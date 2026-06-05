@@ -115,9 +115,9 @@ def _pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:
         return  # ad-hoc run, no schedule to pause
 
     try:
-        import asyncio  # noqa: PLC0415
-
         from prefect.client.orchestration import get_client  # noqa: PLC0415
+
+        from loom.prefect._async import run_sync  # noqa: PLC0415
 
         async def _pause() -> None:
             async with get_client() as client:
@@ -125,7 +125,7 @@ def _pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:
                 for sched in deployment.schedules or []:
                     await client.update_deployment_schedule(deployment_id, sched.id, active=False)
 
-        asyncio.run(_pause())
+        run_sync(_pause())
         _log.warning(
             "pause-on-failure: deactivated schedules for deployment %s",
             deployment_id,
