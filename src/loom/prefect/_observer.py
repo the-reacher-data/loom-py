@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import prefect
+from prefect.exceptions import MissingContextError
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 
@@ -32,7 +33,7 @@ class PrefectObserver:
         """
         try:
             logger = prefect.get_run_logger()
-        except Exception:
+        except MissingContextError:
             logger = logging.getLogger(__name__)
 
         match event.kind:
@@ -57,23 +58,19 @@ class PrefectObserver:
 
 
 def _publish_summary_artifact(event: LifecycleEvent) -> None:
-    try:
-        import prefect.runtime  # noqa: PLC0415
+    from prefect.runtime import flow_run  # noqa: PLC0415
 
-        # Only publish when inside an active Prefect flow run context.
-        flow_run_id = getattr(prefect.runtime, "flow_run", None)
-        if not flow_run_id:
-            return
+    # Only publish when inside an active Prefect flow run context.
+    if flow_run.id is None:
+        return
 
-        from prefect.artifacts import create_markdown_artifact  # noqa: PLC0415
+    from prefect.artifacts import create_markdown_artifact  # noqa: PLC0415
 
-        duration = f"{event.duration_ms:.1f}ms" if event.duration_ms is not None else "n/a"
-        create_markdown_artifact(
-            key="pipeline-summary",
-            markdown=(f"## {event.name}\n\n- Status: {event.status}\n- Duration: {duration}\n"),
-        )
-    except Exception:
-        pass
+    duration = f"{event.duration_ms:.1f}ms" if event.duration_ms is not None else "n/a"
+    create_markdown_artifact(
+        key="pipeline-summary",
+        markdown=(f"## {event.name}\n\n- Status: {event.status}\n- Duration: {duration}\n"),
+    )
 
 
 __all__ = ["PrefectObserver"]

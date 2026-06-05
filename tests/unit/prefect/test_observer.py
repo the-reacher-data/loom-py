@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from prefect.exceptions import MissingContextError
+
 from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
 from loom.prefect._observer import PrefectObserver
 
@@ -80,7 +82,7 @@ def test_on_event_does_not_raise_outside_prefect_context() -> None:
     # Simulate missing Prefect context by making get_run_logger raise
     with patch(
         "prefect.get_run_logger",
-        side_effect=Exception("No active flow run context"),
+        side_effect=MissingContextError("No active flow run context"),
     ):
         # None of these must raise
         observer.on_event(_start_event())
@@ -91,21 +93,21 @@ def test_on_event_does_not_raise_outside_prefect_context() -> None:
 def test_on_event_start_does_not_raise() -> None:
     """START events are handled without error (no Prefect context mocked)."""
     observer = PrefectObserver()
-    with patch("prefect.get_run_logger", side_effect=RuntimeError("no context")):
+    with patch("prefect.get_run_logger", side_effect=MissingContextError("no context")):
         observer.on_event(_start_event())  # must not raise
 
 
 def test_on_event_end_does_not_raise() -> None:
     """END events are handled without error."""
     observer = PrefectObserver()
-    with patch("prefect.get_run_logger", side_effect=RuntimeError("no context")):
+    with patch("prefect.get_run_logger", side_effect=MissingContextError("no context")):
         observer.on_event(_end_event())
 
 
 def test_on_event_error_does_not_raise() -> None:
     """ERROR events are handled without error."""
     observer = PrefectObserver()
-    with patch("prefect.get_run_logger", side_effect=RuntimeError("no context")):
+    with patch("prefect.get_run_logger", side_effect=MissingContextError("no context")):
         observer.on_event(_error_event())
 
 
@@ -149,7 +151,7 @@ def test_on_event_handles_step_start() -> None:
     """STEP START events are handled without raising."""
     observer = PrefectObserver()
     event = LifecycleEvent.start(scope=Scope.STEP, name="TransformStep")
-    with patch("prefect.get_run_logger", side_effect=RuntimeError):
+    with patch("prefect.get_run_logger", side_effect=MissingContextError):
         observer.on_event(event)
 
 
@@ -162,7 +164,7 @@ def test_on_event_handles_step_end() -> None:
         duration_ms=10.0,
         status=LifecycleStatus.SUCCESS,
     )
-    with patch("prefect.get_run_logger", side_effect=RuntimeError):
+    with patch("prefect.get_run_logger", side_effect=MissingContextError):
         observer.on_event(event)
 
 
@@ -176,7 +178,7 @@ def test_on_event_falls_back_to_stdlib_logging() -> None:
     observer = PrefectObserver()
 
     with (
-        patch("prefect.get_run_logger", side_effect=RuntimeError("no context")),
+        patch("prefect.get_run_logger", side_effect=MissingContextError("no context")),
         patch("logging.getLogger") as mock_get_logger,
     ):
         mock_std_logger = MagicMock()

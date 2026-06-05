@@ -187,7 +187,9 @@ def etl_flow(
     if flow_config_path:
         try:
             flow_cfg = _load_flow_config(flow_config_path, pipeline.__name__)
-        except Exception:
+        except KeyError:
+            # Pipeline not listed under ``flows:`` in the YAML — fall back to
+            # defaults. Any other error (missing file, bad YAML) propagates.
             flow_cfg = FlowConfig()
     else:
         flow_cfg = FlowConfig()
