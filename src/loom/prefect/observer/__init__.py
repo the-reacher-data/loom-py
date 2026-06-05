@@ -15,6 +15,7 @@ safe to register unconditionally.
 """
 
 from loom.prefect.observer._flow import PrefectObserver
+from loom.prefect.observer._manifest import ManifestObserver
 from loom.prefect.observer._task_run import PrefectTaskRunObserver
 
-__all__ = ["PrefectObserver", "PrefectTaskRunObserver"]
+__all__ = ["ManifestObserver", "PrefectObserver", "PrefectTaskRunObserver"]

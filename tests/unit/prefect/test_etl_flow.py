@@ -1,4 +1,4 @@
-"""Tests for loom.prefect._etl_flow (factory + discovery)."""
+"""Tests for the per-ETL Prefect flow factory."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
-from loom.prefect._etl_flow import (
-    _LOOM_ETL_META_ATTR,
-    _normalize_datetime_fields,
-    etl_flow,
-)
+from loom.prefect import etl_flow
+from loom.prefect._meta import LOOM_ETL_META_ATTR as _LOOM_ETL_META_ATTR
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect.flow._signature import (
+    normalize_datetime_fields as _normalize_datetime_fields,
+)
 
 
 class _SampleParams(ETLParams, frozen=True):  # type: ignore[misc]
