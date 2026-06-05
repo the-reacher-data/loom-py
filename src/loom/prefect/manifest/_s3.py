@@ -9,7 +9,7 @@ from typing import IO, cast
 import fsspec
 import msgspec
 
-from loom.prefect._manifest import RunManifest
+from loom.prefect.manifest._model import RunManifest
 
 _log = logging.getLogger(__name__)
 

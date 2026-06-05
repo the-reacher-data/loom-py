@@ -1,19 +1,14 @@
-"""Ephemeral retry-cycle manifest for ETL flows.
+"""Frozen manifest models and pure helpers.
 
 The manifest tracks which steps have been attempted within a single
-correlation_id's retry window. It is stored in S3 only on failure and
-deleted at the end of the last attempt — leaving no residue on the happy path.
-
-Design decisions:
-- PENDING is modelled as absence (a step absent from ``steps`` has not run yet).
-- ``RunStatus`` from loom lineage is reused directly — no new enum.
-- All model types are frozen msgspec structs for immutability and fast (de)serialisation.
+correlation_id's retry window. PENDING is modelled as absence (a step
+absent from ``RunManifest.steps`` has not run yet). ``RunStatus`` from
+loom lineage is reused directly so we don't introduce a parallel enum.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Protocol
 
 import msgspec
 
@@ -50,38 +45,6 @@ class RunManifest(msgspec.Struct, frozen=True, kw_only=True):
     correlation_id: str
     steps: tuple[StepEntry, ...]
     updated_at: datetime
-
-
-class ManifestStore(Protocol):
-    """Persistence backend for run manifests.
-
-    Implementors must tolerate concurrent load/save from a single process.
-    The manifest is small (< 1 KB) and written only on failure.
-    """
-
-    def load(self, correlation_id: str) -> RunManifest | None:
-        """Return the stored manifest, or ``None`` if none exists.
-
-        Args:
-            correlation_id: Manifest key.
-        """
-        ...
-
-    def save(self, manifest: RunManifest) -> None:
-        """Persist the manifest.
-
-        Args:
-            manifest: Current state to persist.
-        """
-        ...
-
-    def delete(self, correlation_id: str) -> None:
-        """Remove the stored manifest.  No-op if it does not exist.
-
-        Args:
-            correlation_id: Manifest key.
-        """
-        ...
 
 
 def completed_steps(manifest: RunManifest) -> frozenset[str]:
@@ -128,10 +91,4 @@ def mark_step(
     )
 
 
-__all__ = [
-    "ManifestStore",
-    "RunManifest",
-    "StepEntry",
-    "completed_steps",
-    "mark_step",
-]
+__all__ = ["RunManifest", "StepEntry", "completed_steps", "mark_step"]

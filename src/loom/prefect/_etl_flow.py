@@ -61,14 +61,14 @@ from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
 from loom.prefect._config import FlowConfig, _load_flow_config
 from loom.prefect._ctx import FlowCtx
-from loom.prefect._manifest import (
+from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect._task_run_observer import PrefectTaskRunObserver
+from loom.prefect.manifest import (
     ManifestStore,
     RunManifest,
     completed_steps,
     mark_step,
 )
-from loom.prefect._placeholders import resolve_placeholder
-from loom.prefect._task_run_observer import PrefectTaskRunObserver
 
 _log = logging.getLogger(__name__)
 

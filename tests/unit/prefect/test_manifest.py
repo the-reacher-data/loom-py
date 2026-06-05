@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 import pytest
 
 from loom.etl.lineage._records import RunStatus
-from loom.prefect._manifest import (
+from loom.prefect.manifest import (
     ManifestStore,
     RunManifest,
     StepEntry,

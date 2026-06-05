@@ -21,8 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from loom.etl.lineage._records import RunStatus
-from loom.prefect._manifest import RunManifest, StepEntry
-from loom.prefect._manifest_s3 import S3JsonManifestStore
+from loom.prefect.manifest import RunManifest, S3JsonManifestStore, StepEntry
 
 # ---------------------------------------------------------------------------
 # Helpers

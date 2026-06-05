@@ -33,11 +33,15 @@ to loom.
 
 from loom.prefect._ctx import FlowCtx
 from loom.prefect._etl_flow import discover_and_deploy_etls, etl_flow
-from loom.prefect._manifest import ManifestStore, RunManifest, StepEntry
-from loom.prefect._manifest_s3 import S3JsonManifestStore
 from loom.prefect._observer import PrefectObserver
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._task_run_observer import PrefectTaskRunObserver
+from loom.prefect.manifest import (
+    ManifestStore,
+    RunManifest,
+    S3JsonManifestStore,
+    StepEntry,
+)
 
 __all__ = [
     "FlowCtx",
