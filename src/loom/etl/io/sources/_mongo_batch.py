@@ -744,7 +744,7 @@ class MongoBatchProcessor:
     def _warn_str_coercion_once(self, str_complex: set[str]) -> None:
         if self._str_coercion_warned or not str_complex:
             return
-        _log.warning(
+        _log.debug(
             "MongoSourceReader: field(s) %s declared as str in schema but data contains "
             "complex types — pre-serialising to JSON string",
             sorted(str_complex),
@@ -785,7 +785,7 @@ class MongoBatchProcessor:
             )
         extras_only = (to_serialize & undeclared_complex) - all_conflicted - all_nested
         if extras_only:
-            _log.warning(
+            _log.debug(
                 "MongoSourceReader: serialising undeclared complex field(s) %s to JSON string",
                 sorted(extras_only),
             )

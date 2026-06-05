@@ -52,9 +52,13 @@ class _FakeCursor:
 
 
 class _FakeCollection:
-    def __init__(self, docs: list[dict]) -> None:
+    def __init__(
+        self, docs: list[dict], name: str = "fake", database: object | None = None
+    ) -> None:
         self._docs = docs
         self._cursor: _FakeCursor | None = None
+        self.name = name
+        self.database = database
 
     def find(
         self,
@@ -71,13 +75,16 @@ class _FakeCollection:
 
 
 class _FakeDatabase:
-    def __init__(self, collections: dict[str, list[dict]]) -> None:
+    def __init__(self, collections: dict[str, list[dict]], name: str = "fakedb") -> None:
         self._cols = collections
         self.collections: dict[str, _FakeCollection] = {}
+        self.name = name
 
     def __getitem__(self, name: str) -> _FakeCollection:
         if name not in self.collections:
-            self.collections[name] = _FakeCollection(self._cols.get(name, []))
+            self.collections[name] = _FakeCollection(
+                self._cols.get(name, []), name=name, database=self
+            )
         return self.collections[name]
 
 
@@ -527,14 +534,14 @@ class TestSchemaGuidedCoercion:
         parsed = json.loads(df["label"][0])
         assert parsed == {"short": "A1", "long": "Alpha One"}
 
-    def test_warning_emitted_on_schema_coercion(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_debug_emitted_on_schema_coercion(self, caplog: pytest.LogCaptureFixture) -> None:
         docs = [
             {"label": {"short": "A1", "long": "Alpha One"}},
             {"label": {"short": "B2", "long": "Beta Two"}},
         ]
         reader, _ = _reader(docs)
         schema = (ColumnSchema("label", LoomDtype.UTF8),)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             reader.read(_spec(schema=schema), None).collect()
         assert any("label" in msg for msg in caplog.messages)
 

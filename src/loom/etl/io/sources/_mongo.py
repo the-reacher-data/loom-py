@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import polars as pl
+import structlog
 
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.source._from_mongo import FromMongo, SourceRef
@@ -18,6 +20,8 @@ from loom.etl.io.sources._mongo_batch import (
 from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.io.sources._mongo_predicate import predicate_to_mongo
 from loom.etl.schema._schema import LoomDtype
+
+_log = structlog.get_logger(__name__)
 
 
 class MongoSourceReader:
@@ -161,9 +165,17 @@ def _infer_schema_from_first_batch(
     finally:
         cursor.close()
     if not docs:
+        _log.info("mongo schema inferred", collection=collection.name, sampled=0, columns=0)
         return {}
     frame = batch_processor.build_frame(docs)
-    return _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
+    schema = _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
+    _log.info(
+        "mongo schema inferred",
+        collection=collection.name,
+        sampled=len(docs),
+        columns=len(schema),
+    )
+    return schema
 
 
 def _open_cursor(
@@ -179,6 +191,15 @@ def _open_cursor(
         effective_limit = min(effective_limit, n_rows) if effective_limit is not None else n_rows
     if effective_limit is not None:
         cursor = cursor.limit(effective_limit)
+    _log.info(
+        "mongo query",
+        collection=collection.name,
+        database=getattr(collection.database, "name", None),
+        filter=filter_dict,
+        projection=list(projection) if projection else None,
+        batch_size=spec.batch_size,
+        limit=effective_limit,
+    )
     return cursor
 
 
@@ -219,6 +240,9 @@ def _scan(
     remaining = n_rows
     cursor = _open_cursor(collection, filter_dict, projection, spec, n_rows)
     batch: list[dict[str, Any]] = []
+    batches_yielded = 0
+    total_rows = 0
+    started = time.monotonic()
     try:
         for doc in cursor:
             batch.append(normalize_bson_doc(doc))
@@ -235,6 +259,16 @@ def _scan(
                 )
                 if remaining is not None:
                     remaining -= len(frame)
+                rows = len(frame)
+                total_rows += rows
+                batches_yielded += 1
+                _log_batch(
+                    collection.name,
+                    batches_yielded,
+                    rows,
+                    total_rows,
+                    time.monotonic() - started,
+                )
                 yield frame
                 batch = []
                 if remaining is not None and remaining <= 0:
@@ -250,9 +284,42 @@ def _scan(
                 with_columns,
                 remaining,
             )
+            rows = len(frame)
+            total_rows += rows
+            batches_yielded += 1
+            _log_batch(
+                collection.name,
+                batches_yielded,
+                rows,
+                total_rows,
+                time.monotonic() - started,
+            )
             yield frame
     finally:
         cursor.close()
+        _log.info(
+            "mongo read complete",
+            collection=collection.name,
+            docs=total_rows,
+            batches=batches_yielded,
+            duration_s=round(time.monotonic() - started, 3),
+        )
+
+
+def _log_batch(
+    collection: str, batch_index: int, rows: int, total_rows: int, elapsed_s: float
+) -> None:
+    payload = {
+        "collection": collection,
+        "batch": batch_index,
+        "rows": rows,
+        "total_rows": total_rows,
+        "elapsed_s": round(elapsed_s, 3),
+    }
+    if batch_index == 1:
+        _log.info("mongo first batch", **payload)
+    else:
+        _log.debug("mongo batch", **payload)
 
 
 __all__ = ["FromMongo", "MongoSourceReader", "MongoSourceSpec", "SourceRef"]
