@@ -35,6 +35,10 @@ from loom.prefect.manifest import (
     completed_steps,
 )
 from loom.prefect.observer import ManifestObserver, PrefectTaskRunObserver
+from loom.prefect.observer._logging_bridge import (
+    install_log_bridge,
+    uninstall_log_bridge,
+)
 
 
 def build_flow_body(
@@ -92,15 +96,20 @@ def build_flow_body(
             _maybe_delete_manifest(manifest_store, ctx.correlation_id)
             return 0
 
-        observers = _build_observers(manifest_store, manifest)
-        _invoke_runner(
-            actual_config_path,
-            pipeline,
-            params_obj,
-            pending,
-            ctx,
-            observers,
-        )
+        flow_run_id = _current_flow_run_id()
+        install_log_bridge(flow_run_id)
+        try:
+            observers = _build_observers(flow_run_id, manifest_store, manifest)
+            _invoke_runner(
+                actual_config_path,
+                pipeline,
+                params_obj,
+                pending,
+                ctx,
+                observers,
+            )
+        finally:
+            uninstall_log_bridge()
         # Cleared on full success; on failure the manifest stays so the next
         # attempt can skip SUCCESS steps via ``include=pending``.
         _maybe_delete_manifest(manifest_store, ctx.correlation_id)
@@ -131,10 +140,10 @@ def _resolve_pending(
 
 
 def _build_observers(
+    flow_run_id: Any,
     manifest_store: ManifestStore | None,
     manifest: RunManifest,
 ) -> list[Any]:
-    flow_run_id = _current_flow_run_id()
     observers: list[Any] = []
     if flow_run_id is not None:
         observers.append(PrefectTaskRunObserver(flow_run_id=flow_run_id))

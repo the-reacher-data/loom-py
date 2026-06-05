@@ -23,12 +23,15 @@ missing in the UI for the affected step.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
+from contextvars import Token
 from typing import Any
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.prefect._async import run_sync
+from loom.prefect.observer._logging_bridge import _current_task_run_id
 
 _log = logging.getLogger(__name__)
 
@@ -57,6 +60,15 @@ class PrefectTaskRunObserver:
         )
         # step_run_id (from loom) → task_run_id (from Prefect)
         self._task_runs: dict[str, uuid.UUID] = {}
+        # step_run_id → ContextVar token, kept so STEP_END/ERROR can
+        # reset the logging-bridge binding for this step.
+        self._tokens: dict[str, Token[uuid.UUID | None]] = {}
+        # Cache @task decorators by step name to avoid re-defining one
+        # on every STEP_START (was an anti-pattern flagged in review).
+        self._task_markers: dict[str, Any] = {}
+        # Pre-bind the ``Scope.PROCESS`` map (Fase 4): events arrive
+        # already so future subflow integration only needs to read this.
+        self._process_events: dict[uuid.UUID, LifecycleEvent] = {}
 
     def on_event(self, event: LifecycleEvent) -> None:
         """Handle one lifecycle event from the ``ObservabilityRuntime``.
@@ -64,6 +76,9 @@ class PrefectTaskRunObserver:
         Args:
             event: Immutable lifecycle event emitted by the runtime.
         """
+        if event.scope is Scope.PROCESS:
+            self._record_process_event(event)
+            return
         if event.scope is not Scope.STEP:
             return
         _log.info(
@@ -99,18 +114,41 @@ class PrefectTaskRunObserver:
         task_run_id = self._create_task_run(event)
         if task_run_id is not None:
             self._task_runs[step_run_id] = task_run_id
+            # Bind the TaskRun for any logger.* calls inside the step so
+            # the logging bridge ships them under this TaskRun in the UI.
+            self._tokens[step_run_id] = _current_task_run_id.set(task_run_id)
 
     def _on_end(self, event: LifecycleEvent) -> None:
+        self._reset_log_binding(event.id)
         task_run_id = self._task_runs.pop(event.id, None) if event.id else None
         if task_run_id is None:
             return
         self._set_state(task_run_id, completed=True)
 
     def _on_error(self, event: LifecycleEvent) -> None:
+        self._reset_log_binding(event.id)
         task_run_id = self._task_runs.pop(event.id, None) if event.id else None
         if task_run_id is None:
             return
         self._set_state(task_run_id, completed=False, message=event.error)
+
+    def _reset_log_binding(self, step_run_id: str | None) -> None:
+        if step_run_id is None:
+            return
+        token = self._tokens.pop(step_run_id, None)
+        if token is None:
+            return
+        # Token may have been created in a different async context — best effort.
+        with contextlib.suppress(ValueError):
+            _current_task_run_id.reset(token)
+
+    def _record_process_event(self, event: LifecycleEvent) -> None:
+        # TODO(subflow): wire Scope.PROCESS into a Prefect subflow / artifact
+        # so processes render as subgraphs in the UI. For now we only
+        # observe them so the integration point exists and is testable.
+        if event.id is None:
+            return
+        self._process_events[uuid.UUID(str(event.id))] = event
 
     # ------------------------------------------------------------------
     # Prefect orchestration calls (sync, best-effort)
@@ -118,22 +156,15 @@ class PrefectTaskRunObserver:
 
     def _create_task_run(self, event: LifecycleEvent) -> uuid.UUID | None:
         # Lazy import: keep observer importable in environments without Prefect.
-        from prefect import task  # noqa: PLC0415
         from prefect.client.orchestration import get_client  # noqa: PLC0415
         from prefect.states import Running  # noqa: PLC0415
 
-        # The client requires a Prefect Task object even though we never
-        # invoke it — the orchestration plane uses it only for naming /
-        # task_key. We synthesise a no-op task per step name so the UI
-        # shows a meaningful row.
-        @task(name=event.name)
-        def _step_marker() -> None:  # pragma: no cover - never called
-            return None
+        marker = self._step_marker(event.name)
 
         async def _create() -> uuid.UUID:
             async with get_client() as client:
                 created = await client.create_task_run(
-                    task=_step_marker,
+                    task=marker,
                     flow_run_id=self._flow_run_id,
                     dynamic_key=str(event.id),
                     name=event.name,
@@ -144,6 +175,25 @@ class PrefectTaskRunObserver:
 
         result = run_sync(_create())
         return result if isinstance(result, uuid.UUID) else None
+
+    def _step_marker(self, name: str) -> Any:
+        """Return a cached no-op ``@task`` for *name*.
+
+        The orchestration plane only uses the Task object for naming /
+        ``task_key`` — it is never invoked. Caching by step name avoids
+        re-defining a decorated function on every STEP_START.
+        """
+        marker = self._task_markers.get(name)
+        if marker is not None:
+            return marker
+        from prefect import task  # noqa: PLC0415
+
+        @task(name=name)
+        def _step_marker() -> None:  # pragma: no cover - never called
+            return None
+
+        self._task_markers[name] = _step_marker
+        return _step_marker
 
     def _set_state(
         self, task_run_id: uuid.UUID, *, completed: bool, message: str | None = None
