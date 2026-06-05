@@ -6,8 +6,8 @@ import time
 from typing import Any
 
 import polars as pl
-import structlog
 
+from loom.core.logger import get_logger
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.source._from_mongo import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import MongoSourceSpec
@@ -21,7 +21,7 @@ from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.io.sources._mongo_predicate import predicate_to_mongo
 from loom.etl.schema._schema import LoomDtype
 
-_log = structlog.get_logger(__name__)
+_log = get_logger(__name__)
 
 
 class MongoSourceReader:

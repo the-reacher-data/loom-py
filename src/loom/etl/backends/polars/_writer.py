@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Sequence
 from typing import Any, Literal
 
 import polars as pl
-import structlog
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
+from loom.core.logger import get_logger
 from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
@@ -48,8 +47,7 @@ from loom.etl.storage._locator import TableLocator, _as_locator
 from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
 
-_log = logging.getLogger(__name__)
-_slog = structlog.get_logger(__name__)
+_log = get_logger(__name__)
 
 
 def _log_write_start(
@@ -60,7 +58,7 @@ def _log_write_start(
     partition_cols: tuple[str, ...] = (),
     predicate: str | None = None,
 ) -> None:
-    _slog.info(
+    _log.info(
         "delta write start",
         mode=mode,
         uri=location.uri,
@@ -77,7 +75,7 @@ def _log_write_commit(mode: str, location: TableLocation) -> None:
         history = dt.history(1)
         entry = history[0] if history else {}
         metrics = entry.get("operationMetrics") or {}
-        _slog.info(
+        _log.info(
             "delta write commit",
             mode=mode,
             uri=location.uri,
@@ -87,7 +85,7 @@ def _log_write_commit(mode: str, location: TableLocation) -> None:
             files=int(metrics.get("numAddedFiles", 0)) or None,
         )
     except Exception:  # noqa: BLE001
-        _slog.info("delta write commit", mode=mode, uri=location.uri, metrics="unavailable")
+        _log.info("delta write commit", mode=mode, uri=location.uri, metrics="unavailable")
 
 
 def _check_null_dtype_columns(frame: pl.DataFrame) -> None:
@@ -301,8 +299,8 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         path_target = self._as_path_target(target)
         if frame.is_empty():
             _log.warning(
-                "replace_partitions table=%s has 0 rows — nothing written",
-                path_target.location.uri,
+                "replace_partitions empty frame",
+                table=path_target.location.uri,
             )
             return
 
@@ -552,11 +550,11 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         if not target.location.uri.lower().startswith("uc://"):
             return
         _log.warning(
-            "Polars write first-create for Unity Catalog ref=%s uri=%s. "
+            "Polars write first-create for Unity Catalog. "
             "delta-rs writes Delta log data, but catalog registration is not guaranteed; "
             "pre-create the table in UC (Spark SQL/Databricks) before this write.",
-            target.logical_ref.ref,
-            target.location.uri,
+            ref=target.logical_ref.ref,
+            uri=target.location.uri,
         )
 
     @staticmethod

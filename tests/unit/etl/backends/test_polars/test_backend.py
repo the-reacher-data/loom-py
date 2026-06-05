@@ -254,7 +254,6 @@ def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
 
 def test_writer_warns_on_polars_uc_first_create(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from loom.etl.backends.polars import _writer as polars_writer_module
 
@@ -266,7 +265,6 @@ def test_writer_warns_on_polars_uc_first_create(
 
     monkeypatch.setattr(polars_writer_module, "write_deltalake", _fake_write_deltalake)
     monkeypatch.setattr(polars_writer_module, "read_delta_physical_schema", lambda *_args: None)
-    caplog.set_level("WARNING", logger="loom.etl.backends.polars._writer")
 
     locator = MappingLocator(
         mapping={
@@ -283,10 +281,16 @@ def test_writer_warns_on_polars_uc_first_create(
         locator,
         missing_table_policy=MissingTablePolicy.CREATE,
     )
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    def _capture(event: str, **fields: object) -> None:
+        warnings.append((event, fields))
+
+    monkeypatch.setattr(polars_writer_module._log, "warning", _capture)
     writer.append(pl.DataFrame({"id": [1]}).lazy(), TableRef("raw.uc_orders"), None)
 
     assert writes == [("uc://main.raw.orders", "overwrite")]
-    assert "catalog registration is not guaranteed" in caplog.text
+    assert any("catalog registration is not guaranteed" in event for event, _ in warnings)
 
 
 def test_write_kwargs_include_target_file_size() -> None:
