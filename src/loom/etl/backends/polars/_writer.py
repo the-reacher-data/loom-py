@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any, Literal
 
 import polars as pl
+import structlog
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
 
 from loom.etl.backends._historify._transform import scd2_transform
@@ -48,6 +49,45 @@ from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
 
 _log = logging.getLogger(__name__)
+_slog = structlog.get_logger(__name__)
+
+
+def _log_write_start(
+    mode: str,
+    location: TableLocation,
+    frame: pl.DataFrame,
+    *,
+    partition_cols: tuple[str, ...] = (),
+    predicate: str | None = None,
+) -> None:
+    _slog.info(
+        "delta write start",
+        mode=mode,
+        uri=location.uri,
+        rows=frame.height,
+        cols=len(frame.columns),
+        partition_cols=list(partition_cols) or None,
+        predicate=predicate,
+    )
+
+
+def _log_write_commit(mode: str, location: TableLocation) -> None:
+    try:
+        dt = DeltaTable(location.uri, storage_options=location.storage_options or {})
+        history = dt.history(1)
+        entry = history[0] if history else {}
+        metrics = entry.get("operationMetrics") or {}
+        _slog.info(
+            "delta write commit",
+            mode=mode,
+            uri=location.uri,
+            version=dt.version(),
+            rows=int(metrics.get("numOutputRows", 0)) or None,
+            bytes=int(metrics.get("numOutputBytes", 0)) or None,
+            files=int(metrics.get("numAddedFiles", 0)) or None,
+        )
+    except Exception:  # noqa: BLE001
+        _slog.info("delta write commit", mode=mode, uri=location.uri, metrics="unavailable")
 
 
 def _check_null_dtype_columns(frame: pl.DataFrame) -> None:
@@ -174,6 +214,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         self._warn_uc_first_create(path_target)
         kwargs = self._write_kwargs(location)
 
+        _log_write_start("create", location, frame, partition_cols=partition_cols)
         if partition_cols:
             write_deltalake(
                 location.uri,
@@ -191,6 +232,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
                 schema_mode="overwrite",
                 **kwargs,
             )
+        _log_write_commit("create", location)
 
     @staticmethod
     def _delta_schema_mode(
@@ -217,6 +259,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         """Append to existing Delta table."""
         path_target = self._as_path_target(target)
         location = path_target.location
+        _log_write_start("append", location, frame)
         write_deltalake(
             location.uri,
             frame,
@@ -224,6 +267,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
+        _log_write_commit("append", location)
 
     def _replace(
         self,
@@ -235,6 +279,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         """Overwrite existing Delta table."""
         path_target = self._as_path_target(target)
         location = path_target.location
+        _log_write_start("replace", location, frame)
         write_deltalake(
             location.uri,
             frame,
@@ -242,6 +287,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
+        _log_write_commit("replace", location)
 
     def _replace_partitions(
         self,
@@ -276,6 +322,13 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             iter(partition_rows),
             partition_cols,
         )
+        _log_write_start(
+            "replace_partitions",
+            location,
+            frame,
+            partition_cols=partition_cols,
+            predicate=predicate,
+        )
         write_deltalake(
             location.uri,
             frame,
@@ -284,6 +337,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
+        _log_write_commit("replace_partitions", location)
 
     def _replace_where(
         self,
@@ -296,6 +350,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         """Overwrite rows matching SQL predicate."""
         path_target = self._as_path_target(target)
         location = path_target.location
+        _log_write_start("replace_where", location, frame, predicate=predicate)
         write_deltalake(
             location.uri,
             frame,
@@ -304,6 +359,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             schema_mode=self._delta_schema_mode(schema_mode),
             **self._write_kwargs(location),
         )
+        _log_write_commit("replace_where", location)
 
     def _upsert(
         self,
@@ -334,6 +390,13 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         )
 
         dt = DeltaTable(location.uri, storage_options=location.storage_options or {})
+        _log_write_start(
+            "upsert",
+            location,
+            frame,
+            partition_cols=spec.partition_cols,
+            predicate=merge_plan.predicate,
+        )
         (
             dt.merge(
                 source=frame,
@@ -345,6 +408,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             .when_not_matched_insert(updates=merge_plan.insert_values)
             .execute()
         )
+        _log_write_commit("upsert", location)
 
     def _read_existing_data(
         self,
