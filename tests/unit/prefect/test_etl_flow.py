@@ -128,6 +128,107 @@ def test_etl_flow_attaches_discovery_metadata(tmp_path: Path) -> None:
     assert meta.pool_config["local"]["job_variables"]["image"] == "sample:dev"
 
 
+def test_etl_flow_captures_tags_when_present(tmp_path: Path) -> None:
+    content = textwrap.dedent(
+        """\
+        etl: sample-etl
+        tags:
+          - mongo
+          - daily
+          - team:data-platform
+        params: {}
+        """
+    )
+    yaml_path = tmp_path / "tagged.yaml"
+    yaml_path.write_text(content, encoding="utf-8")
+    flow_obj = etl_flow(
+        name="tagged-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        config_path=str(yaml_path),
+        source_file=__file__,
+    )
+    meta = getattr(flow_obj, _LOOM_ETL_META_ATTR)
+    assert meta.tags == ("mongo", "daily", "team:data-platform")
+
+
+def test_etl_flow_tags_default_to_empty_tuple(tmp_path: Path) -> None:
+    flow_obj = etl_flow(
+        name="sample-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        config_path=str(_write_cfg(tmp_path)),
+        source_file=__file__,
+    )
+    meta = getattr(flow_obj, _LOOM_ETL_META_ATTR)
+    assert meta.tags == ()
+
+
+def test_deploy_passes_meta_name_and_yaml_tags_no_loom_etl(tmp_path: Path) -> None:
+    from unittest.mock import MagicMock
+
+    from loom.prefect.deploy._discovery import _deploy_single
+
+    content = textwrap.dedent(
+        """\
+        etl: sample-etl
+        tags:
+          - mongo
+          - daily
+        params: {}
+        environments:
+          prod:
+            work_pool: loom-fargate
+            job_variables:
+              image: sample:dev
+              cpu: "1024"
+        """
+    )
+    yaml_path = tmp_path / "deploy_tags.yaml"
+    yaml_path.write_text(content, encoding="utf-8")
+    flow_obj = etl_flow(
+        name="deploy-tags-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        config_path=str(yaml_path),
+        source_file=__file__,
+    )
+    meta = getattr(flow_obj, _LOOM_ETL_META_ATTR)
+
+    sourced = MagicMock()
+    sourced.deploy = MagicMock(return_value="deployment-id-abc")
+    flow_obj.from_source = MagicMock(return_value=sourced)
+
+    deployment_id = _deploy_single(flow_obj, meta, work_pool="default-pool", env="prod")
+
+    assert deployment_id == "deployment-id-abc"
+    deploy_kwargs = sourced.deploy.call_args.kwargs
+    assert deploy_kwargs["tags"] == ["deploy-tags-etl", "mongo", "daily"]
+    assert "loom-etl" not in deploy_kwargs["tags"]
+
+
+def test_etl_flow_rejects_non_string_tags(tmp_path: Path) -> None:
+    content = textwrap.dedent(
+        """\
+        etl: sample-etl
+        tags:
+          - mongo
+          - 42
+        params: {}
+        """
+    )
+    yaml_path = tmp_path / "bad_tags.yaml"
+    yaml_path.write_text(content, encoding="utf-8")
+    with pytest.raises(TypeError, match="tags"):
+        etl_flow(
+            name="sample-etl",
+            pipeline=_SamplePipeline,
+            params_type=_SampleParams,
+            config_path=str(yaml_path),
+            source_file=__file__,
+        )
+
+
 class _OptionalDtParams(ETLParams, frozen=True):  # type: ignore[misc]
     updated_at_from: datetime | None = None
     label: str = "x"

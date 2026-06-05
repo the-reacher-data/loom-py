@@ -40,6 +40,7 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     schedule: dict[str, Any] | None
     raw_params: dict[str, Any]
     pool_config: dict[str, dict[str, Any]]
+    tags: tuple[str, ...] = ()
 
 
 __all__ = ["LOOM_ETL_META_ATTR", "ETLFlowMeta"]

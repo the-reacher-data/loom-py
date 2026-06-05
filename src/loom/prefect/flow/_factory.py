@@ -89,6 +89,7 @@ def etl_flow(
     schedule = raw_cfg.get("schedule")
     raw_params = dict(raw_cfg.get("params") or {})
     pool_config = extract_pool_config(raw_cfg)
+    tags = _coerce_tags(raw_cfg.get("tags"))
 
     plan = ETLCompiler().compile(pipeline)
 
@@ -132,9 +133,23 @@ def etl_flow(
             schedule=schedule,
             raw_params=raw_params,
             pool_config=pool_config,
+            tags=tags,
         ),
     )
     return decorated
+
+
+def _coerce_tags(raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise TypeError(f"tags: expected a list of strings, got {type(raw).__name__}")
+    coerced: list[str] = []
+    for value in raw:
+        if not isinstance(value, str):
+            raise TypeError(f"tags: every entry must be str, got {type(value).__name__}")
+        coerced.append(value)
+    return tuple(coerced)
 
 
 def _resolve_flow_config(

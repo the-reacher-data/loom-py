@@ -91,7 +91,7 @@ def _deploy_single(flow_obj: Any, meta: ETLFlowMeta, work_pool: str, env: str) -
         "work_pool_name": actual_pool,
         "build": False,
         "push": False,
-        "tags": ["loom-etl", meta.name],
+        "tags": [meta.name, *meta.tags],
         "parameters": dict(meta.raw_params),
         "job_variables": job_variables,
         "enforce_parameter_schema": False,
