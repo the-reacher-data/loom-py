@@ -55,14 +55,7 @@ import prefect
 import prefect.runtime
 
 from loom.core.model import LoomFrozenStruct
-from loom.etl.compiler import ETLCompiler
-from loom.etl.compiler._plan import (
-    PipelinePlan,
-    ProcessPlan,
-    StepPlan,
-    visit_pipeline_nodes,
-    visit_process_nodes,
-)
+from loom.etl.compiler import ETLCompiler, flatten_step_names
 from loom.etl.lineage._records import RunStatus
 from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
@@ -238,7 +231,7 @@ def etl_flow(
             updated_at=datetime.now(tz=UTC),
         )
         done = completed_steps(manifest)
-        all_step_names = _collect_step_names(plan, ctx.processes)
+        all_step_names = flatten_step_names(plan, ctx.processes)
         pending = [s for s in all_step_names if s not in done]
 
         if not pending:
@@ -466,30 +459,6 @@ def _deploy_single(flow_obj: Any, meta: _ETLFlowMeta, work_pool: str, env: str) 
 # ---------------------------------------------------------------------------
 # Execution helpers
 # ---------------------------------------------------------------------------
-
-
-def _collect_step_names(
-    plan: PipelinePlan,
-    processes: tuple[str, ...] | None,
-) -> list[str]:
-    """Flatten the compiled plan into the ordered list of step class names.
-
-    Honours the optional ``processes`` filter from :class:`FlowCtx` so users
-    can scope a run to a subset of processes (e.g. ``processes=("Raw",)``).
-    """
-    names: list[str] = []
-
-    def _add_process(proc: ProcessPlan) -> None:
-        if processes is not None and proc.process_type.__name__ not in processes:
-            return
-
-        def _add_step(step: StepPlan) -> None:
-            names.append(step.step_type.__name__)
-
-        visit_process_nodes(proc.nodes, _add_step)
-
-    visit_pipeline_nodes(plan.nodes, _add_process)
-    return names
 
 
 class _ManifestObserver:
