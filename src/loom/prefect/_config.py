@@ -15,8 +15,6 @@ class FlowConfig(msgspec.Struct, frozen=True, kw_only=True):
         flow_retries: Number of full-flow retries Prefect will attempt before
             declaring the run failed (each retry is a new Fargate container).
         flow_retry_delay_seconds: Seconds Prefect waits between flow retries.
-        task_retries: Number of in-place step retries before the step is marked
-            failed (within the same Fargate container).
 
     Example::
 
@@ -25,7 +23,6 @@ class FlowConfig(msgspec.Struct, frozen=True, kw_only=True):
 
     flow_retries: int = 2
     flow_retry_delay_seconds: int = 60
-    task_retries: int = 1
 
 
 def _load_flow_config(config_path: str, flow_name: str) -> FlowConfig:
@@ -37,7 +34,6 @@ def _load_flow_config(config_path: str, flow_name: str) -> FlowConfig:
           my_etl:
             flow_retries: 2
             flow_retry_delay_seconds: 60
-            task_retries: 1
 
     Args:
         config_path: Path to the YAML configuration file.
@@ -60,7 +56,6 @@ def _load_flow_config(config_path: str, flow_name: str) -> FlowConfig:
             "flow_retry_delay_seconds",
             _defaults.flow_retry_delay_seconds,
         ),
-        task_retries=section.get("task_retries", _defaults.task_retries),
     )
 
 

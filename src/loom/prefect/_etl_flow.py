@@ -44,7 +44,6 @@ import inspect
 import logging
 import pkgutil
 import re
-import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import UnionType
@@ -665,14 +664,6 @@ def _compute_correlation_id(
     rendered = value.strftime("%Y%m%dT%H%M%S") if isinstance(value, datetime | date) else str(value)
     safe = _UNSAFE_CORR_CHARS.sub("_", rendered)
     return f"{flow_name}-{safe}"
-
-
-def _source_root_from_syspath(flow_file: Path) -> Path:
-    candidates = [Path(entry).resolve() for entry in sys.path if entry and Path(entry).is_dir()]
-    matches = [c for c in candidates if flow_file.is_relative_to(c)]
-    if not matches:
-        return flow_file.parent
-    return max(matches, key=lambda p: len(p.parts))
 
 
 def _build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:

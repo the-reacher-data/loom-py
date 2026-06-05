@@ -2,8 +2,7 @@
 
 Verifies:
 - FlowConfig is a frozen msgspec.Struct with correct defaults.
-- FlowConfig fields: flow_retries (int=2), flow_retry_delay_seconds (int=60),
-  task_retries (int=1).
+- FlowConfig fields: flow_retries (int=2), flow_retry_delay_seconds (int=60).
 - FlowConfig is immutable (frozen=True).
 - _load_flow_config() returns a FlowConfig from a valid YAML file.
 - _load_flow_config() raises KeyError when flow_name is not found in YAML.
@@ -30,15 +29,13 @@ def test_flow_config_default_values() -> None:
     config = FlowConfig()
     assert config.flow_retries == 2
     assert config.flow_retry_delay_seconds == 60
-    assert config.task_retries == 1
 
 
 def test_flow_config_custom_values() -> None:
     """FlowConfig accepts explicit values for all fields."""
-    config = FlowConfig(flow_retries=5, flow_retry_delay_seconds=120, task_retries=3)
+    config = FlowConfig(flow_retries=5, flow_retry_delay_seconds=120)
     assert config.flow_retries == 5
     assert config.flow_retry_delay_seconds == 120
-    assert config.task_retries == 3
 
 
 def test_flow_config_is_immutable() -> None:
@@ -50,10 +47,9 @@ def test_flow_config_is_immutable() -> None:
 
 def test_flow_config_partial_overrides() -> None:
     """FlowConfig allows partial overrides; non-specified fields keep defaults."""
-    config = FlowConfig(task_retries=0)
+    config = FlowConfig(flow_retry_delay_seconds=30)
     assert config.flow_retries == 2
-    assert config.flow_retry_delay_seconds == 60
-    assert config.task_retries == 0
+    assert config.flow_retry_delay_seconds == 30
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +65,9 @@ def yaml_file(tmp_path: Path) -> Path:
           my_etl:
             flow_retries: 3
             flow_retry_delay_seconds: 90
-            task_retries: 2
           other_etl:
             flow_retries: 1
             flow_retry_delay_seconds: 30
-            task_retries: 0
     """)
     config_file = tmp_path / "flows.yaml"
     config_file.write_text(content)
@@ -85,7 +79,6 @@ def test_load_flow_config_reads_correct_flow(yaml_file: Path) -> None:
     config = _load_flow_config(str(yaml_file), "my_etl")
     assert config.flow_retries == 3
     assert config.flow_retry_delay_seconds == 90
-    assert config.task_retries == 2
 
 
 def test_load_flow_config_reads_second_flow(yaml_file: Path) -> None:
@@ -93,7 +86,6 @@ def test_load_flow_config_reads_second_flow(yaml_file: Path) -> None:
     config = _load_flow_config(str(yaml_file), "other_etl")
     assert config.flow_retries == 1
     assert config.flow_retry_delay_seconds == 30
-    assert config.task_retries == 0
 
 
 def test_load_flow_config_returns_flow_config_instance(yaml_file: Path) -> None:
@@ -122,7 +114,6 @@ def test_load_flow_config_with_defaults_yaml(tmp_path: Path) -> None:
     assert config.flow_retries == 1
     # Non-specified keys must fall back to FlowConfig defaults
     assert config.flow_retry_delay_seconds == 60
-    assert config.task_retries == 1
 
 
 def test_load_flow_config_raises_when_flows_key_missing(tmp_path: Path) -> None:
