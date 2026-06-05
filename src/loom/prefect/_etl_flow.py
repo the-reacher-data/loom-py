@@ -281,42 +281,40 @@ def etl_flow(
         """Compute a meaningful run name from the bound flow parameters.
 
         Resolution order:
-          1. Cron-triggered runs → ``<scheduled_start UTC ISO minute>``
-             (detected via the Prefect API ``auto_scheduled`` field)
-          2. explicit ``correlation_id`` kwarg
-          3. ``<value of correlation_field>-<HHMMSS>``
-          4. ``<UTC timestamp>`` as last resort
+          1. Schedule-triggered runs (no explicit correlation override and a
+             ``scheduled_start_time`` set by Prefect) → ``<slot UTC ISO minute>``.
+          2. explicit ``correlation_id`` kwarg.
+          3. ``<value of correlation_field>-<HHMMSS>``.
+          4. ``<UTC timestamp>`` as last resort.
         """
         # Fallback to ``prefect.runtime`` if Prefect calls us without kwargs
         # (some code paths skip the injection).
+        scheduled_start = None
         if not params:
             try:
                 from prefect.runtime import flow_run as _fr  # noqa: PLC0415
 
                 params = dict(_fr.parameters or {})
+                scheduled_start = _fr.scheduled_start_time
             except Exception:  # noqa: BLE001
                 params = {}
+        else:
+            try:
+                from prefect.runtime import flow_run as _fr  # noqa: PLC0415
 
-        # Cron-triggered runs: use the scheduled slot as the name. We detect
-        # by querying the Prefect REST API for the ``auto_scheduled`` flag
-        # — runtime.flow_run does not expose it. Best-effort: on any error
-        # (no PREFECT_API_URL, network issue, ...) we fall through to the
-        # manual-trigger logic below.
-        try:
-            import os  # noqa: PLC0415
+                scheduled_start = _fr.scheduled_start_time
+            except Exception:  # noqa: BLE001
+                scheduled_start = None
 
-            import httpx
-            from prefect.runtime import flow_run as _fr  # noqa: PLC0415
-
-            api = os.environ.get("PREFECT_API_URL")
-            if api and _fr.id:
-                r = httpx.get(f"{api}/flow_runs/{_fr.id}", timeout=2.0)
-                if r.status_code == 200 and r.json().get("auto_scheduled"):
-                    sst = _fr.scheduled_start_time
-                    if sst is not None:
-                        return str(sst.strftime("%Y-%m-%dT%H:%M"))
-        except Exception:  # noqa: BLE001
-            pass
+        # Schedule-triggered: no explicit correlation override was passed and
+        # Prefect injected a ``scheduled_start_time``. Use the scheduled slot
+        # so cron runs read as ``2026-06-05T08:00`` in the UI.
+        has_explicit_correlation = bool(
+            params.get("correlation_id")
+            or (correlation_field and params.get(correlation_field) is not None)
+        )
+        if scheduled_start is not None and not has_explicit_correlation:
+            return str(scheduled_start.strftime("%Y-%m-%dT%H:%M"))
 
         # The run already lives under the flow named ``<name>`` in the UI,
         # so we don't repeat it in the run name. Format: the correlation

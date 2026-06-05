@@ -135,7 +135,6 @@ dev = [
     "pyarrow>=14.0",
     "deltalake>=1.5,<2.0",
     "fsspec>=2024.2.0",
-    "httpx>=0.28.1",
     "httptools>=0.6,<1.0",
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
