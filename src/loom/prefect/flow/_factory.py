@@ -41,10 +41,11 @@ from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
 from loom.prefect.deploy._schedule import extract_pool_config
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._body import build_flow_body
-from loom.prefect.flow._hooks import pause_schedule_on_failure
+from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
 from loom.prefect.flow._signature import signature_from_params_type
 from loom.prefect.manifest import ManifestStore
+from loom.prefect.notify import build_notifiers
 
 
 def etl_flow(
@@ -90,6 +91,7 @@ def etl_flow(
     raw_params = dict(raw_cfg.get("params") or {})
     pool_config = extract_pool_config(raw_cfg)
     tags = _coerce_tags(raw_cfg.get("tags"))
+    notifiers = build_notifiers(raw_cfg.get("notifications"))
 
     plan = ETLCompiler().compile(pipeline)
 
@@ -114,13 +116,15 @@ def etl_flow(
     flow_body.__name__ = safe_name
     flow_body.__qualname__ = safe_name
 
+    failure_hooks, completion_hooks = make_notification_hooks(name, notifiers)
     decorated = prefect.flow(
         name=name,
         flow_run_name=make_run_name_callback(name, correlation_field),
         retries=flow_cfg.flow_retries,
         retry_delay_seconds=flow_cfg.flow_retry_delay_seconds,
         validate_parameters=False,
-        on_failure=[pause_schedule_on_failure],
+        on_failure=[pause_schedule_on_failure, *failure_hooks],
+        on_completion=completion_hooks or None,
     )(flow_body)
     setattr(
         decorated,
