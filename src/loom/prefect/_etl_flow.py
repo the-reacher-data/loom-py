@@ -149,7 +149,7 @@ def etl_flow(
     source_file: str,
     storage_config_path: str = "/app/config.yaml",
     flow_config_path: str | None = None,
-    manifest_store_factory: Any = None,
+    manifest_store: ManifestStore | None = None,
 ) -> Any:
     """Build a per-ETL Prefect flow with a typed, synthesized signature.
 
@@ -170,9 +170,8 @@ def etl_flow(
         flow_config_path: Optional path to a YAML with
             :class:`~loom.prefect.FlowConfig` retry settings. Falls back
             to :class:`FlowConfig` defaults when omitted.
-        manifest_store_factory: Optional callable returning a
-            :class:`~loom.prefect.ManifestStore` for cross-attempt resume.
-            ``None`` disables manifest persistence.
+        manifest_store: Optional :class:`~loom.prefect.ManifestStore` for
+            cross-attempt resume. ``None`` disables manifest persistence.
 
     Returns:
         A ``@prefect.flow``-decorated callable. Discovery metadata is
@@ -230,10 +229,9 @@ def etl_flow(
 
         actual_config_path = _os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
 
-        manifest_store = (
-            manifest_store_factory() if manifest_store_factory else _NoopManifestStore()
-        )
-        manifest = manifest_store.load(ctx.correlation_id) or RunManifest(
+        manifest = (
+            manifest_store.load(ctx.correlation_id) if manifest_store is not None else None
+        ) or RunManifest(
             correlation_id=ctx.correlation_id,
             steps=(),
             updated_at=datetime.now(tz=UTC),
@@ -243,7 +241,8 @@ def etl_flow(
         pending = [s for s in all_step_names if s not in done]
 
         if not pending:
-            manifest_store.delete(ctx.correlation_id)
+            if manifest_store is not None:
+                manifest_store.delete(ctx.correlation_id)
             return 0
 
         flow_run_id: Any = None
@@ -257,7 +256,8 @@ def etl_flow(
         extra_observers: list[Any] = []
         if flow_run_id is not None:
             extra_observers.append(PrefectTaskRunObserver(flow_run_id=flow_run_id))
-        extra_observers.append(_ManifestObserver(manifest_store, manifest))
+        if manifest_store is not None:
+            extra_observers.append(_ManifestObserver(manifest_store, manifest))
 
         runner = ETLRunner.from_yaml(actual_config_path, extra_observers=extra_observers)
         runner.run(
@@ -269,7 +269,8 @@ def etl_flow(
         )
         # Cleared on full success; on failure the manifest stays so the next
         # attempt can skip SUCCESS steps via ``include=pending``.
-        manifest_store.delete(ctx.correlation_id)
+        if manifest_store is not None:
+            manifest_store.delete(ctx.correlation_id)
         return 0
 
     safe_name = name.replace("-", "_")
@@ -692,19 +693,6 @@ def _build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:
         active=True,
         max_scheduled_runs=int(schedule.get("max_scheduled_runs", 1)),
     )
-
-
-class _NoopManifestStore:
-    """No-op manifest store for callers that don't provide one."""
-
-    def load(self, correlation_id: str) -> None:
-        return None
-
-    def save(self, manifest: Any) -> None:
-        return None
-
-    def delete(self, correlation_id: str) -> None:
-        return None
 
 
 __all__ = ["discover_and_deploy_etls", "etl_flow"]
