@@ -189,7 +189,7 @@ class ETLExecutor:
         """
         ctx = ctx or RunContext(run_id=_new_run_id())
         process_run_id = _new_run_id()
-        _log.debug(
+        _log.info(
             "process start process=%s process_run_id=%s nodes=%d",
             plan.process_type.__name__,
             process_run_id,
@@ -231,7 +231,7 @@ class ETLExecutor:
         """
         ctx = ctx or RunContext(run_id=_new_run_id())
         step_run_id = _new_run_id()
-        _log.debug(
+        _log.info(
             "step start step=%s step_run_id=%s sources=%s",
             plan.step_type.__name__,
             step_run_id,
@@ -301,13 +301,13 @@ class ETLExecutor:
         self, spec: Any, params: Any, ctx: RunContext, *, streaming: bool = False
     ) -> Any:
         if isinstance(spec, TempSourceSpec):
-            _log.debug("read source kind=TEMP name=%s", spec.temp_name)
+            _log.info("read source kind=TEMP name=%s", spec.temp_name)
             return self._require_checkpoint_store(spec.temp_name).get(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,
             )
-        _log.debug(
+        _log.info(
             "read source kind=%s ref=%s streaming=%s",
             spec.kind,
             getattr(spec, "table_ref", None) or getattr(spec, "path", None),
@@ -335,7 +335,7 @@ class ETLExecutor:
         write_ctx: WriteContext | None = None,
     ) -> None:
         if isinstance(spec, (TempSpec, TempFanInSpec)):
-            _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
+            _log.info("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
             self._require_checkpoint_store(spec.temp_name).put(
                 spec.temp_name,
                 run_id=ctx.run_id,
@@ -345,7 +345,7 @@ class ETLExecutor:
                 append=isinstance(spec, TempFanInSpec),
             )
         else:
-            _log.debug(
+            _log.info(
                 "write target ref=%s",
                 getattr(spec, "table_ref", None) or getattr(spec, "path", None),
             )
