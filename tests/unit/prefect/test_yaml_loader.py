@@ -103,6 +103,31 @@ def test_read_yaml_oc_env_default_when_missing(
     assert out["notifications"][0]["webhook_url"] == ""
 
 
+def test_read_yaml_accepts_cloud_uri(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    import fsspec
+
+    yaml_body = "etl: from-s3\ntags: [remote]\nparams: {a: 1}\n"
+
+    class _FakeFile(io.StringIO):
+        def __enter__(self) -> _FakeFile:  # type: ignore[override]
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    def _fake_open(uri: str, mode: str = "r", encoding: str = "utf-8") -> _FakeFile:
+        assert uri.startswith("s3://"), f"expected cloud URI, got {uri!r}"
+        return _FakeFile(yaml_body)
+
+    monkeypatch.setattr(fsspec, "open", _fake_open)
+    out = read_yaml("s3://my-bucket/loom/etls/from_s3.yaml")
+    assert out["etl"] == "from-s3"
+    assert out["tags"] == ["remote"]
+    assert out["params"] == {"a": 1}
+
+
 def test_read_yaml_rejects_non_mapping_top_level(tmp_path: Path) -> None:
     cfg = _write(tmp_path, "list.yaml", "- item1\n- item2\n")
     with pytest.raises(ValueError, match="mapping"):
