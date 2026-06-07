@@ -8,13 +8,21 @@ from typing import Any
 from loom.prefect.notify._port import Notifier
 from loom.prefect.notify._slack import SlackNotifier
 
-_BUILDERS: dict[str, Callable[[dict[str, Any]], Notifier]] = {
-    "slack": lambda cfg: SlackNotifier(
-        webhook_url=cfg["webhook_url"],
+
+def _build_slack(cfg: dict[str, Any]) -> Notifier | None:
+    webhook = cfg.get("webhook_url") or ""
+    if not webhook.strip():
+        return None
+    return SlackNotifier(
+        webhook_url=webhook,
         on_failure=bool(cfg.get("on_failure", True)),
         on_completion=bool(cfg.get("on_completion", False)),
         channel=cfg.get("channel"),
-    ),
+    )
+
+
+_BUILDERS: dict[str, Callable[[dict[str, Any]], Notifier | None]] = {
+    "slack": _build_slack,
 }
 
 
@@ -43,11 +51,13 @@ def build_notifiers(block: Iterable[dict[str, Any]] | None) -> tuple[Notifier, .
             raise ValueError(
                 f"notifications: unknown notifier kind {kind!r}. Available: {sorted(_BUILDERS)}"
             )
-        out.append(builder(entry))
+        instance = builder(entry)
+        if instance is not None:
+            out.append(instance)
     return tuple(out)
 
 
-def register_notifier(kind: str, builder: Callable[[dict[str, Any]], Notifier]) -> None:
+def register_notifier(kind: str, builder: Callable[[dict[str, Any]], Notifier | None]) -> None:
     """Register a new notifier kind for ``build_notifiers``.
 
     Args:
