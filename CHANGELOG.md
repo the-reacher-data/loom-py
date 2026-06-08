@@ -1,3 +1,20 @@
+# 🚀 Release 0.10.1 ([#44](https://github.com/the-reacher-data/loom-py/pull/44)) ([`a55cd27`](https://github.com/the-reacher-data/loom-py/commit/a55cd27020dee60aea6849b510500e7e6f5a83b2))
+
+
+
+## 🐛 Fixes
+### testing
+- **testing:** implement read_streaming on _PolarsStubReader (#44)
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.10.0 ([#41](https://github.com/the-reacher-data/loom-py/pull/41)) ([`099de38`](https://github.com/the-reacher-data/loom-py/commit/099de38b47cd7002a9c36fc56c9c85f673431022))
 
 
