@@ -50,6 +50,14 @@ class _PolarsStubReader:
         key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]
 
+    def read_streaming(
+        self,
+        spec: SourceSpec,
+        params_instance: Any,
+        /,
+    ) -> pl.LazyFrame:
+        return self.read(spec, params_instance)
+
     def execute_sql(self, frames: dict[str, Any], query: str, /) -> pl.LazyFrame:
         ctx = pl.SQLContext()
         for name, frame in frames.items():
