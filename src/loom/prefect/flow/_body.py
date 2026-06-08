@@ -1,16 +1,4 @@
-"""The runtime body that ``etl_flow()`` returns inside the ``@prefect.flow``.
-
-Split into small helpers so each unit has a single responsibility:
-
-- :func:`build_flow_body` is the entrypoint — it closes over the factory
-  state and returns the ``_flow_body(**kwargs)`` callable Prefect calls.
-- :func:`_load_or_init_manifest` and :func:`_resolve_pending` together
-  decide which steps still need to run.
-- :func:`_build_observers` wires the Prefect-side observers loom's
-  runtime will dispatch lifecycle events to.
-- :func:`_invoke_runner` constructs the ``ETLRunner`` and runs the
-  pending steps, then deletes the manifest on success.
-"""
+"""Runtime body of the per-ETL Prefect flow."""
 
 from __future__ import annotations
 
@@ -22,7 +10,7 @@ from uuid import uuid4
 import msgspec
 
 from loom.etl.compiler import flatten_step_names
-from loom.etl.compiler._plan import PipelinePlan
+from loom.etl.compiler._plan import PipelinePlan, iter_processes
 from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
 from loom.prefect._ctx import FlowCtx
@@ -72,9 +60,12 @@ def build_flow_body(
         runner failure.
     """
 
+    known_processes = _known_process_names(plan)
+
     def _flow_body(**kwargs: Any) -> int:
         env = kwargs.pop("env", "prod")
         explicit_correlation = kwargs.pop("correlation_id", None)
+        processes = _validate_processes(kwargs.pop("processes", None), known_processes)
         resolved = {key: resolve_placeholder(value) for key, value in kwargs.items()}
         resolved = normalize_datetime_fields(resolved, params_type)
         params_obj = msgspec.convert(resolved, type=params_type)
@@ -85,6 +76,7 @@ def build_flow_body(
             ),
             run_id=f"{flow_name}-{uuid4().hex[:8]}",
             environment=env,
+            processes=processes,
         )
 
         actual_config_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
@@ -110,8 +102,6 @@ def build_flow_body(
             )
         finally:
             uninstall_log_bridge()
-        # Cleared on full success; on failure the manifest stays so the next
-        # attempt can skip SUCCESS steps via ``include=pending``.
         _maybe_delete_manifest(manifest_store, ctx.correlation_id)
         return 0
 
@@ -171,7 +161,7 @@ def _current_flow_run_id() -> Any:
         from prefect.runtime import flow_run as _fr  # noqa: PLC0415
 
         return _fr.id
-    except Exception:  # noqa: BLE001
+    except (ImportError, AttributeError):
         return None
 
 
@@ -197,6 +187,27 @@ def _maybe_delete_manifest(store: ManifestStore | None, correlation_id: str) -> 
     if store is None:
         return
     store.delete(correlation_id)
+
+
+def _known_process_names(plan: PipelinePlan) -> frozenset[str]:
+    return frozenset(proc.process_type.__name__ for proc in iter_processes(plan))
+
+
+def _validate_processes(
+    raw: Any,
+    known: frozenset[str],
+) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or not all(isinstance(v, str) for v in raw):
+        raise TypeError("processes: expected list[str] | None")
+    requested = tuple(raw)
+    if not requested:
+        return None
+    unknown = [name for name in requested if name not in known]
+    if unknown:
+        raise ValueError(f"processes: unknown names {unknown}; known processes are {sorted(known)}")
+    return requested
 
 
 __all__ = ["build_flow_body"]

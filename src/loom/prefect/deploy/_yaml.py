@@ -11,28 +11,16 @@ _ENV_INTERPOLATION = re.compile(r"\$\{oc\.[^}]*\}")
 
 
 def read_yaml(config_path: str) -> dict[str, Any]:
-    """Load a per-ETL YAML using loom's canonical config loader.
+    """Load a per-ETL YAML via ``loom.core.config.load_config``.
 
-    Supports the framework-wide ``includes:`` directive, ``${oc.env:VAR}``
-    interpolation, custom resolvers, and cloud URIs (``s3://``, ``gs://``…)
-    — same surface as the storage YAML loaded by ``ETLRunner.from_yaml``.
-
-    Loom-runtime placeholders (``${now}``, ``${today-1d}``, …) are
-    deliberately left untouched here so :func:`resolve_placeholder`
-    materialises them at flow-run time against the bound parameters.
-
-    Args:
-        config_path: Local path or cloud URI to the per-ETL YAML.
-
-    Returns:
-        Merged top-level mapping with ``${oc.*}`` interpolations resolved,
-        loom placeholders preserved verbatim, and the ``includes`` key
-        stripped.
+    ``${oc.*}`` interpolations are resolved against the host env at load
+    time; loom placeholders (``${now}``, ``${today-1d}``, …) are kept
+    verbatim so :func:`resolve_placeholder` resolves them at flow-run
+    time. ``s3://``/``gs://``/… URIs are honoured.
 
     Raises:
         ValueError: When the top level is not a mapping.
-        loom.core.config.errors.ConfigError: Underlying load failures
-            (missing file, circular include, parse error).
+        loom.core.config.errors.ConfigError: Underlying load failures.
     """
     from omegaconf import DictConfig, OmegaConf  # noqa: PLC0415
 
@@ -52,8 +40,8 @@ def _ensure_mapping_top_level(config_path: str) -> None:
 
     try:
         raw = OmegaConf.load(config_path)
-    except Exception:  # noqa: BLE001
-        return  # let load_config produce the canonical error
+    except (FileNotFoundError, OSError):
+        return
     if not isinstance(raw, DictConfig):
         raise ValueError(f"{config_path}: top-level YAML must be a mapping")
 
@@ -70,15 +58,16 @@ def _resolve_oc_only(value: Any) -> Any:
 
 def _resolve_string(value: str) -> Any:
     from omegaconf import OmegaConf  # noqa: PLC0415
+    from omegaconf.errors import OmegaConfBaseException  # noqa: PLC0415
 
     try:
         node = OmegaConf.create({"_": value})
         resolved = OmegaConf.to_container(node, resolve=True)
-        if isinstance(resolved, dict):
-            return resolved.get("_", value)
+    except OmegaConfBaseException:
         return value
-    except Exception:  # noqa: BLE001
-        return value
+    if isinstance(resolved, dict):
+        return resolved.get("_", value)
+    return value
 
 
 __all__ = ["read_yaml"]

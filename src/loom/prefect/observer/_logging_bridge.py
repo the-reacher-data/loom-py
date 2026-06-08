@@ -1,25 +1,4 @@
-"""Route stdlib log records to the right Prefect TaskRun.
-
-Loom steps emit logs through Python's standard ``logging`` module (or
-``structlog`` which is configured to feed stdlib). With the synthetic
-``TaskRun`` pattern those logs never reach the Prefect UI because the
-step's logic does not run inside a ``@prefect.task`` context.
-
-This module bridges that gap **without** coupling steps to Prefect:
-
-- A ``ContextVar`` tracks the active ``task_run_id`` (set by
-  :class:`PrefectTaskRunObserver` while a STEP is running).
-- :class:`PrefectLogBridgeHandler` reads that ContextVar in ``emit`` and
-  ships each ``LogRecord`` to Prefect via ``client.create_logs(...)``,
-  tagged with the right ``task_run_id`` (or ``flow_run_id`` when no step
-  is active).
-- A background worker thread drains a queue in small batches so the
-  hot path never blocks on the Prefect API.
-
-The handler is installed once per flow run from
-:func:`loom.prefect.flow._body.build_flow_body` and uninstalled in a
-``finally`` block.
-"""
+"""Route stdlib log records to the right Prefect TaskRun via a ContextVar."""
 
 from __future__ import annotations
 
@@ -74,22 +53,13 @@ def current_flow_run_id() -> uuid.UUID | None:
     return _current_flow_run_id.get()
 
 
-# ---------------------------------------------------------------------------
-# Handler + worker
-# ---------------------------------------------------------------------------
-
-
 class PrefectLogBridgeHandler(logging.Handler):
-    """``logging.Handler`` that ships records to the Prefect logs API.
+    """logging.Handler that ships records to the Prefect logs API.
 
-    Records carry the current ``task_run_id`` if one is bound; otherwise
-    they fall back to the installed ``flow_run_id``.
-
-    A daemon worker thread drains the internal queue and posts batches
-    of up to :data:`_BATCH_SIZE` records every :data:`_FLUSH_SECONDS` so
-    the hot path never blocks on the API. Errors during emit/post are
-    routed through ``logging.Handler.handleError`` and never raised back
-    to the caller — losing a log line is preferable to crashing a step.
+    Records carry the active ``task_run_id`` from the ContextVar if one
+    is bound; otherwise they fall back to the installed ``flow_run_id``.
+    A daemon worker drains the queue and retries with exponential
+    backoff up to ``_MAX_ATTEMPTS`` before incrementing ``dropped_logs``.
     """
 
     _BATCH_SIZE = 100
@@ -117,10 +87,6 @@ class PrefectLogBridgeHandler(logging.Handler):
         )
         self._worker.start()
 
-    # ------------------------------------------------------------------
-    # Handler API
-    # ------------------------------------------------------------------
-
     def emit(self, record: logging.LogRecord) -> None:  # noqa: D401 - inherited
         if self._closed:
             return
@@ -144,14 +110,9 @@ class PrefectLogBridgeHandler(logging.Handler):
             worker.join(timeout=5.0)
         super().close()
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
     def _record_to_payload(self, record: logging.LogRecord) -> dict[str, Any] | None:
         task_run_id = _current_task_run_id.get()
         flow_run_id = _current_flow_run_id.get()
-        # Without any binding we have nowhere to send the record.
         if task_run_id is None and flow_run_id is None:
             return None
         payload: dict[str, Any] = {
@@ -174,26 +135,30 @@ class PrefectLogBridgeHandler(logging.Handler):
             try:
                 item = self._queue.get(timeout=self._FLUSH_SECONDS)
             except queue.Empty:
-                if batch:
-                    self._flush_with_retry(batch, run_sync_fn=run_sync)
-                    batch = []
+                batch = self._flush_batch(batch, run_sync)
                 continue
             if item is self._SENTINEL:
-                if batch:
-                    self._flush_with_retry(batch, run_sync_fn=run_sync)
-                while True:
-                    try:
-                        leftover = self._queue.get_nowait()
-                    except queue.Empty:
-                        return
-                    if leftover is self._SENTINEL:
-                        continue
-                    self._flush_with_retry([leftover], run_sync_fn=run_sync)
+                self._drain_remaining(batch, run_sync)
                 return
             batch.append(item)
             if len(batch) >= self._BATCH_SIZE:
-                self._flush_with_retry(batch, run_sync_fn=run_sync)
-                batch = []
+                batch = self._flush_batch(batch, run_sync)
+
+    def _flush_batch(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> list[dict[str, Any]]:
+        if batch:
+            self._flush_with_retry(batch, run_sync_fn=run_sync_fn)
+        return []
+
+    def _drain_remaining(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> None:
+        self._flush_batch(batch, run_sync_fn)
+        while True:
+            try:
+                leftover = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            if leftover is self._SENTINEL:
+                continue
+            self._flush_with_retry([leftover], run_sync_fn=run_sync_fn)
 
     def _flush_with_retry(self, batch: list[dict[str, Any]], run_sync_fn: Any) -> None:
         for attempt in range(1, self._MAX_ATTEMPTS + 1):
@@ -221,55 +186,50 @@ class PrefectLogBridgeHandler(logging.Handler):
         run_sync_fn(_send())
 
 
-# ---------------------------------------------------------------------------
-# Install / uninstall
-# ---------------------------------------------------------------------------
+class _BridgeRegistry:
+    """Tracks the singleton handler attached to the root logger."""
 
-_handler_lock = threading.Lock()
-_installed: PrefectLogBridgeHandler | None = None
-_flow_run_token: Any = None
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._handler: PrefectLogBridgeHandler | None = None
+        self._token: Any = None
+
+    def install(self, flow_run_id: uuid.UUID | None) -> None:
+        if flow_run_id is None:
+            return
+        with self._lock:
+            if self._handler is not None:
+                return
+            handler = PrefectLogBridgeHandler()
+            handler.start()
+            logging.getLogger().addHandler(handler)
+            self._handler = handler
+            self._token = _current_flow_run_id.set(flow_run_id)
+
+    def uninstall(self) -> None:
+        with self._lock:
+            if self._handler is None:
+                return
+            logging.getLogger().removeHandler(self._handler)
+            self._handler.close()
+            self._handler = None
+            if self._token is not None:
+                with contextlib.suppress(ValueError):
+                    _current_flow_run_id.reset(self._token)
+                self._token = None
+
+
+_registry = _BridgeRegistry()
 
 
 def install_log_bridge(flow_run_id: uuid.UUID | None) -> None:
-    """Attach the bridge handler to the root logger and bind *flow_run_id*.
-
-    Idempotent: a second call within the same process is a no-op. The
-    handler is removed by :func:`uninstall_log_bridge` (typically from a
-    ``finally`` block in the flow body).
-
-    Args:
-        flow_run_id: The Prefect FlowRun id used as fallback target when
-            no TaskRun is bound. ``None`` is accepted and disables the
-            install entirely (so unit tests / standalone runs don't pay
-            any cost).
-    """
-    global _installed, _flow_run_token
-    if flow_run_id is None:
-        return
-    with _handler_lock:
-        if _installed is not None:
-            return
-        handler = PrefectLogBridgeHandler()
-        handler.start()
-        logging.getLogger().addHandler(handler)
-        _installed = handler
-        _flow_run_token = _current_flow_run_id.set(flow_run_id)
+    """Attach the bridge handler to the root logger. Idempotent, ``None`` is a no-op."""
+    _registry.install(flow_run_id)
 
 
 def uninstall_log_bridge() -> None:
     """Detach the bridge handler and clear the flow_run_id binding."""
-    global _installed, _flow_run_token
-    with _handler_lock:
-        if _installed is None:
-            return
-        logging.getLogger().removeHandler(_installed)
-        _installed.close()
-        _installed = None
-        if _flow_run_token is not None:
-            # Token may have been created in another context — best effort.
-            with contextlib.suppress(ValueError):
-                _current_flow_run_id.reset(_flow_run_token)
-            _flow_run_token = None
+    _registry.uninstall()
 
 
 __all__ = [

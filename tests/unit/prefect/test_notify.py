@@ -18,7 +18,7 @@ def _make_event(state: str = "Failed", flow_name: str = "etl-x") -> NotifyEvent:
     return NotifyEvent(
         flow_name=flow_name,
         flow_run_name="run-1",
-        flow_run_url="http://prefect/runs/1",
+        flow_run_url="https://prefect/runs/1",
         state=state,
         correlation_id="corr-1",
         message="boom",

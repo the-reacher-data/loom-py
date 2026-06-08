@@ -14,26 +14,10 @@ _log = logging.getLogger(__name__)
 
 
 def pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:
-    """Prefect ``on_failure`` hook: deactivate the deployment's schedules.
-
-    Fires only when the flow finally enters Failed state (after
-    ``flow_retries`` have been exhausted). Stops the cron from firing
-    further until an operator investigates and re-enables the schedule.
-
-    Best-effort: any error here is logged and swallowed — pausing the
-    schedule is a safety net, not part of the critical path.
-
-    Args:
-        flow: The Prefect ``Flow`` instance (unused; required by Prefect's
-            hook signature).
-        flow_run: The Prefect ``FlowRun`` state container. Reads
-            ``deployment_id`` from it.
-        state: The terminal Prefect state (unused; required by Prefect's
-            hook signature).
-    """
+    """Deactivate the deployment's schedules on terminal failure."""
     deployment_id = getattr(flow_run, "deployment_id", None)
     if not deployment_id:
-        return  # ad-hoc run, no schedule to pause
+        return
 
     try:
         from prefect.client.orchestration import get_client  # noqa: PLC0415
@@ -57,13 +41,7 @@ def make_notification_hooks(
     flow_name: str,
     notifiers: Iterable[Notifier],
 ) -> tuple[list[Any], list[Any]]:
-    """Build Prefect ``on_failure`` and ``on_completion`` hook lists.
-
-    Each notifier fans out to both hook lists; the notifier itself
-    decides (via its ``on_failure`` / ``on_completion`` flags) whether to
-    actually emit. Returning separate lists lets Prefect route the
-    terminal state to the right hook chain.
-    """
+    """Return Prefect ``on_failure`` / ``on_completion`` hook lists."""
     notifiers_tuple = tuple(notifiers)
     if not notifiers_tuple:
         return [], []

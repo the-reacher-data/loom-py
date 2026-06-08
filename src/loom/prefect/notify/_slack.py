@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from typing import Any
 
@@ -44,13 +47,21 @@ class SlackNotifier:
         self._http_post = http_post or _default_http_post
 
     def notify(self, event: NotifyEvent) -> None:
+        """Post *event* to Slack when filters match. Errors are swallowed."""
         if not self._should_post(event.state):
             return
         payload = self._render(event)
         try:
             self._http_post(self._webhook_url, json=payload, timeout=5.0)
-        except Exception:  # noqa: BLE001
-            _log.warning("SlackNotifier post failed", exc_info=True)
+        except (urllib.error.URLError, TimeoutError, RuntimeError):
+            _log.warning(
+                "SlackNotifier post failed for %s/%s state=%s correlation_id=%s",
+                event.flow_name,
+                event.flow_run_name,
+                event.state,
+                event.correlation_id,
+                exc_info=True,
+            )
 
     def _should_post(self, state: str) -> bool:
         if self._on_failure and state in {"Failed", "Crashed"}:
@@ -73,10 +84,6 @@ class SlackNotifier:
 
 
 def _default_http_post(url: str, *, json: dict[str, Any], timeout: float) -> None:
-    import json as _json
-    import urllib.error
-    import urllib.request
-
     data = _json.dumps(json).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -85,7 +92,7 @@ def _default_http_post(url: str, *, json: dict[str, Any], timeout: float) -> Non
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             resp.read()
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Slack webhook POST failed: {exc}") from exc

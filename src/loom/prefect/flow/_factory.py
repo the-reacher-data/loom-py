@@ -1,29 +1,4 @@
-"""Per-ETL Prefect flow factory.
-
-The user declares one ETL like this::
-
-    # pipelines/flows/motos_snapshot.py
-    from loom.prefect import etl_flow
-    from pipelines.entrypoint import MotosSnapshotPipeline
-    from pipelines.common.window import WindowParams
-
-    motos_snapshot = etl_flow(
-        name="motos-snapshot",
-        pipeline=MotosSnapshotPipeline,
-        params_type=WindowParams,
-        config_path="config/etls/motos_snapshot.yaml",
-        source_file=__file__,
-    )
-
-The flow's signature is **synthesised from the params type** so the
-Prefect UI shows a typed parameter form and ``-p key=value`` CLI
-overrides work.
-
-Architecture: this flow runs inside whatever container the Prefect
-worker provisions. Per-step ``@prefect.task`` rows appear in the UI
-under this single flow run; the runner itself executes loom steps
-in-process.
-"""
+"""Per-ETL Prefect flow factory."""
 
 from __future__ import annotations
 
@@ -164,8 +139,6 @@ def _resolve_flow_config(
     try:
         return _load_flow_config(flow_config_path, pipeline.__name__)
     except KeyError:
-        # Pipeline not listed under ``flows:`` in the YAML — fall back to
-        # defaults. Any other error (missing file, bad YAML) propagates.
         return FlowConfig()
 
 
@@ -178,6 +151,12 @@ def _synthesise_signature(params_type: type[msgspec.Struct]) -> inspect.Signatur
             inspect.Parameter.KEYWORD_ONLY,
             default=None,
             annotation=str | None,
+        ),
+        inspect.Parameter(
+            "processes",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=list[str] | None,
         ),
     ]
     return inspect.Signature(

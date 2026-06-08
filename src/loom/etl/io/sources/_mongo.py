@@ -175,7 +175,7 @@ def _infer_schema_from_first_batch(
         sampled=len(docs),
         columns=len(schema),
     )
-    return schema
+    return schema  # noqa: RET504
 
 
 def _open_cursor(
