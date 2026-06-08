@@ -23,6 +23,28 @@ _YESTERDAY_RE = re.compile(r"^\$\{yesterday\}$")
 _NOW_RE = re.compile(r"^\$\{now(?:([+-])(\d+)([dhm]))?\}$")
 _ANY_DOLLAR = re.compile(r"^\$\{.*\}$")
 
+_NOW_UNIT_KW = {"d": "days", "h": "hours", "m": "minutes"}
+
+
+def _signed_int(sign: str | None, amount: str | None) -> int:
+    if sign is None or amount is None:
+        return 0
+    magnitude = int(amount)
+    return magnitude if sign == "+" else -magnitude
+
+
+def _resolve_today(match: re.Match[str]) -> Any:
+    sign, days = match.groups()
+    return datetime.now(UTC).date() + timedelta(days=_signed_int(sign, days))
+
+
+def _resolve_now(match: re.Match[str]) -> Any:
+    sign, amount, unit = match.groups()
+    now = datetime.now(UTC)
+    if sign is None:
+        return now
+    return now + timedelta(**{_NOW_UNIT_KW[unit]: _signed_int(sign, amount)})
+
 
 def resolve_placeholder(value: Any) -> Any:
     """Resolve a placeholder string to a concrete ``date`` / ``datetime``.
@@ -39,32 +61,19 @@ def resolve_placeholder(value: Any) -> Any:
         ValueError: If the value looks like a placeholder (``${...}``) but
             does not match any of the supported patterns.
     """
-    if not isinstance(value, str):
-        return value
-    if not value.startswith("${"):
+    if not isinstance(value, str) or not value.startswith("${"):
         return value
 
     today_match = _TODAY_RE.match(value)
     if today_match is not None:
-        sign, days = today_match.groups()
-        delta = 0 if sign is None else int(days) * (1 if sign == "+" else -1)
-        return datetime.now(UTC).date() + timedelta(days=delta)
+        return _resolve_today(today_match)
 
     if _YESTERDAY_RE.match(value) is not None:
         return datetime.now(UTC).date() - timedelta(days=1)
 
     now_match = _NOW_RE.match(value)
     if now_match is not None:
-        sign, amount, unit = now_match.groups()
-        now = datetime.now(UTC)
-        if sign is None:
-            return now
-        value_int = int(amount) * (1 if sign == "+" else -1)
-        if unit == "d":
-            return now + timedelta(days=value_int)
-        if unit == "h":
-            return now + timedelta(hours=value_int)
-        return now + timedelta(minutes=value_int)
+        return _resolve_now(now_match)
 
     if _ANY_DOLLAR.match(value) is not None:
         raise ValueError(f"invalid placeholder: {value!r}")

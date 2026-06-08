@@ -212,10 +212,10 @@ def test_manifest_store_protocol_is_satisfied_by_compatible_class() -> None:
             return None
 
         def save(self, manifest: RunManifest) -> None:
-            pass
+            """No-op stub: only the method signature is needed for the protocol check."""
 
         def delete(self, correlation_id: str) -> None:
-            pass
+            """No-op stub: only the method signature is needed for the protocol check."""
 
     store = _FakeStore()
     # ManifestStore is a Protocol — we verify it has the right attribute names

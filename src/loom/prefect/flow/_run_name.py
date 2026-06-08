@@ -10,6 +10,47 @@ from uuid import uuid4
 from loom.prefect._placeholders import resolve_placeholder
 
 _UNSAFE_CORR_CHARS = re.compile(r"[^a-zA-Z0-9_\-]")
+_COMPACT_TIMESTAMP_FMT = "%Y%m%dT%H%M%S"
+
+
+def _render_value(value: Any) -> str:
+    if isinstance(value, datetime | date):
+        return value.strftime(_COMPACT_TIMESTAMP_FMT)
+    return str(value)
+
+
+def _sanitize(value: Any) -> str:
+    return _UNSAFE_CORR_CHARS.sub("_", _render_value(value))
+
+
+def _prefect_scheduled_start() -> Any:
+    try:
+        from prefect.runtime import flow_run as _fr  # noqa: PLC0415
+
+        return _fr.scheduled_start_time
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prefect_runtime_params() -> tuple[dict[str, Any], Any]:
+    try:
+        from prefect.runtime import flow_run as _fr  # noqa: PLC0415
+
+        return dict(_fr.parameters or {}), _fr.scheduled_start_time
+    except Exception:  # noqa: BLE001
+        return {}, None
+
+
+def _load_runtime_params(params: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+    if not params:
+        return _prefect_runtime_params()
+    return params, _prefect_scheduled_start()
+
+
+def _has_explicit_correlation(params: dict[str, Any], correlation_field: str | None) -> bool:
+    if params.get("correlation_id"):
+        return True
+    return bool(correlation_field and params.get(correlation_field) is not None)
 
 
 def compute_correlation_id(
@@ -35,10 +76,7 @@ def compute_correlation_id(
     """
     if correlation_field is None:
         return f"{flow_name}-{uuid4().hex}"
-    value = resolved[correlation_field]
-    rendered = value.strftime("%Y%m%dT%H%M%S") if isinstance(value, datetime | date) else str(value)
-    safe = _UNSAFE_CORR_CHARS.sub("_", rendered)
-    return f"{flow_name}-{safe}"
+    return f"{flow_name}-{_sanitize(resolved[correlation_field])}"
 
 
 def make_run_name_callback(
@@ -67,48 +105,21 @@ def make_run_name_callback(
     """
 
     def _run_name(**params: Any) -> str:
-        scheduled_start = None
-        if not params:
-            try:
-                from prefect.runtime import flow_run as _fr  # noqa: PLC0415
-
-                params = dict(_fr.parameters or {})
-                scheduled_start = _fr.scheduled_start_time
-            except Exception:  # noqa: BLE001
-                params = {}
-        else:
-            try:
-                from prefect.runtime import flow_run as _fr  # noqa: PLC0415
-
-                scheduled_start = _fr.scheduled_start_time
-            except Exception:  # noqa: BLE001
-                scheduled_start = None
-
-        has_explicit_correlation = bool(
-            params.get("correlation_id")
-            or (correlation_field and params.get(correlation_field) is not None)
-        )
+        params, scheduled_start = _load_runtime_params(params)
+        has_explicit_correlation = _has_explicit_correlation(params, correlation_field)
         if scheduled_start is not None and not has_explicit_correlation:
             return str(scheduled_start.strftime("%Y-%m-%dT%H:%M"))
 
         ts = datetime.now(tz=UTC).strftime("%H%M%S")
-
         cid = params.get("correlation_id")
         if cid:
             return f"{cid}-{ts}"
         if correlation_field and params.get(correlation_field) is not None:
-            value = params[correlation_field]
             # The callable runs BEFORE the flow body that resolves
             # ``${now}`` etc. — resolve here too so the displayed name
             # reflects the real bound value.
-            resolved_value = resolve_placeholder(value)
-            if isinstance(resolved_value, datetime | date):
-                rendered = resolved_value.strftime("%Y%m%dT%H%M%S")
-            else:
-                rendered = str(resolved_value)
-            safe = _UNSAFE_CORR_CHARS.sub("_", rendered)
-            return f"{safe}-{ts}"
-        return datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
+            return f"{_sanitize(resolve_placeholder(params[correlation_field]))}-{ts}"
+        return datetime.now(tz=UTC).strftime(_COMPACT_TIMESTAMP_FMT)
 
     return _run_name
 

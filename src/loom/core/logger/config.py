@@ -276,8 +276,8 @@ def _setup_stdlib(config: LogConfig, level: int) -> None:
     # a structlog ProcessorFormatter so the whole process shares one render.
     target = logging.getLogger(config.name) if config.name else logging.getLogger()
     target.setLevel(level)
-    for existing in list(target.handlers):
-        target.removeHandler(existing)
+    while target.handlers:
+        target.removeHandler(target.handlers[-1])
 
     for handler_cfg in config.handlers or (StreamHandlerConfig(),):
         handler = _build_stdlib_handler(handler_cfg)

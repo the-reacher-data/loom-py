@@ -188,16 +188,45 @@ def _pre_serialize_value(v: Any) -> Any:
     return _json_dumps(deep_normalize_for_json(v))
 
 
-def _serialize_conflicted(
-    batch: list[dict[str, Any]], conflicted: set[str]
-) -> list[dict[str, Any]]:
+def _preserialize_str_fields(
+    doc: dict[str, Any],
+    str_fields: frozenset[str] | set[str],
+    str_complex: set[str],
+) -> None:
+    for k in str_fields:
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, (dict, list)):
+            str_complex.add(k)
+        doc[k] = _pre_serialize_value(v)
+
+
+def _classify_doc_fields(
+    doc: dict[str, Any],
+    declared: set[str],
+    root_types: dict[str, set[str]],
+    sub_tags: dict[str, dict[str, set[str]]],
+    is_complex: dict[str, bool],
+    undeclared_complex: set[str],
+) -> None:
+    for k, v in doc.items():
+        t = _classify_value(v)
+        if t != "null":
+            root_types.setdefault(k, set()).add(t)
+        if isinstance(v, (dict, list)):
+            if declared and k not in declared:
+                undeclared_complex.add(k)
+            _record_value_tags(sub_tags.setdefault(k, {}), is_complex, k, "$", v, 0)
+
+
+def _serialize_conflicted(batch: list[dict[str, Any]], conflicted: set[str]) -> None:
     if not conflicted:
-        return batch
+        return
     for doc in batch:
         for k in conflicted:
             if k in doc and doc[k] is not None:
                 doc[k] = _json_dumps(doc[k])
-    return batch
 
 
 def _series_to_json_string(s: pl.Series) -> pl.Series:
@@ -489,15 +518,14 @@ def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
 def _canonicalize_batch(
     batch: list[dict[str, Any]],
     plan: dict[str, _CanonicalValuePlan],
-) -> list[dict[str, Any]]:
+) -> None:
     # Mutates in place; the dicts come from normalize_bson_doc which already produced fresh copies.
     if not batch or not plan:
-        return batch
+        return
     for doc in batch:
         for field_name, field_plan in plan.items():
             if field_name in doc:
                 doc[field_name] = _canonicalize_value(doc[field_name], field_plan)
-    return batch
 
 
 # ---------------------------------------------------------------------------
@@ -724,21 +752,10 @@ class MongoBatchProcessor:
         is_complex: dict[str, bool] = {}
         undeclared_complex: set[str] = set()
         for doc in batch:
-            for k in str_fields:
-                if k in doc:
-                    v = doc[k]
-                    if isinstance(v, (dict, list)):
-                        str_complex.add(k)
-                    doc[k] = _pre_serialize_value(v)
-            for k, v in doc.items():
-                t = _classify_value(v)
-                if t != "null":
-                    root_types.setdefault(k, set()).add(t)
-                if isinstance(v, (dict, list)):
-                    if declared and k not in declared:
-                        undeclared_complex.add(k)
-                    inner = sub_tags.setdefault(k, {})
-                    _record_value_tags(inner, is_complex, k, "$", v, 0)
+            _preserialize_str_fields(doc, str_fields, str_complex)
+            _classify_doc_fields(
+                doc, declared, root_types, sub_tags, is_complex, undeclared_complex
+            )
         return str_complex, root_types, sub_tags, is_complex, undeclared_complex
 
     def _warn_str_coercion_once(self, str_complex: set[str]) -> None:

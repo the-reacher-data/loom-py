@@ -628,9 +628,9 @@ class TestSchemaGuidedCoercion:
             }
         ]
 
-        canonicalized = _canonicalize_batch(batch, _build_schema_plan(declared))
+        _canonicalize_batch(batch, _build_schema_plan(declared))
 
-        assets = canonicalized[0]["bundle"]["assets"]
+        assets = batch[0]["bundle"]["assets"]
         assert isinstance(assets, list)
         assert list(assets[0].keys()) == [
             "url",
@@ -1313,17 +1313,18 @@ class TestPhase2Improvements:
 
         plan = {"x": _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)}
         batch = [{"x": "42", "y": "untouched"}]
-        result = _canonicalize_batch(batch, plan)
+        _canonicalize_batch(batch, plan)
 
-        assert result[0]["x"] == 42
-        assert result[0]["y"] == "untouched"
+        assert batch[0]["x"] == 42
+        assert batch[0]["y"] == "untouched"
 
     def test_canonicalize_batch_empty_plan_returns_batch_unchanged(self) -> None:
         from loom.etl.io.sources._mongo_batch import _canonicalize_batch
 
         batch = [{"x": "hello"}]
-        result = _canonicalize_batch(batch, {})
-        assert result == batch
+        original = [dict(d) for d in batch]
+        _canonicalize_batch(batch, {})
+        assert batch == original
 
 
 # ---------------------------------------------------------------------------
