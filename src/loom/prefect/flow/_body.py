@@ -56,13 +56,13 @@ def build_flow_body(
         manifest_store: Cross-attempt resume backend, or ``None``.
 
     Returns:
-        The flow body callable. Returns ``0`` on success, raises on
+        The flow body callable. Returns ``None`` on success, raises on
         runner failure.
     """
 
     known_processes = _known_process_names(plan)
 
-    def _flow_body(**kwargs: Any) -> int:
+    def _flow_body(**kwargs: Any) -> None:
         env = kwargs.pop("env", "prod")
         explicit_correlation = kwargs.pop("correlation_id", None)
         processes = _validate_processes(kwargs.pop("processes", None), known_processes)
@@ -86,7 +86,7 @@ def build_flow_body(
 
         if not pending:
             _maybe_delete_manifest(manifest_store, ctx.correlation_id)
-            return 0
+            return
 
         flow_run_id = _current_flow_run_id()
         install_log_bridge(flow_run_id)
@@ -103,7 +103,6 @@ def build_flow_body(
         finally:
             uninstall_log_bridge()
         _maybe_delete_manifest(manifest_store, ctx.correlation_id)
-        return 0
 
     return _flow_body
 

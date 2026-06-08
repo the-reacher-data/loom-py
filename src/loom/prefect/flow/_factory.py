@@ -161,7 +161,7 @@ def _synthesise_signature(params_type: type[msgspec.Struct]) -> inspect.Signatur
     ]
     return inspect.Signature(
         parameters=user_parameters + universal_parameters,
-        return_annotation=int,
+        return_annotation=None,
     )
 
 

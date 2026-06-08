@@ -40,7 +40,7 @@ def _ensure_mapping_top_level(config_path: str) -> None:
 
     try:
         raw = OmegaConf.load(config_path)
-    except (FileNotFoundError, OSError):
+    except OSError:
         return
     if not isinstance(raw, DictConfig):
         raise ValueError(f"{config_path}: top-level YAML must be a mapping")

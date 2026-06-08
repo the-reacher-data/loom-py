@@ -13,8 +13,9 @@ from loom.prefect.notify import Notifier, NotifyEvent
 _log = logging.getLogger(__name__)
 
 
-def pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:
+def pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:  # noqa: ARG001
     """Deactivate the deployment's schedules on terminal failure."""
+    del flow, state  # NOSONAR S1172 - signature dictated by Prefect's FlowStateHook protocol
     deployment_id = getattr(flow_run, "deployment_id", None)
     if not deployment_id:
         return
@@ -47,7 +48,8 @@ def make_notification_hooks(
         return [], []
 
     def _dispatch(state_name: str) -> Any:
-        def _hook(flow: Any, flow_run: Any, state: Any) -> None:
+        def _hook(flow: Any, flow_run: Any, state: Any) -> None:  # noqa: ARG001
+            del flow  # NOSONAR S1172 - signature dictated by Prefect's FlowStateHook protocol
             event = _event_from_run(flow_name, flow_run, state, state_name)
             for n in notifiers_tuple:
                 try:
