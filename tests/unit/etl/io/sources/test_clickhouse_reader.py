@@ -14,6 +14,17 @@ from loom.etl.declarative.source import FromClickHouse
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
 from loom.etl.schema._schema import ColumnSchema, LoomDtype
 
+_ARROW_SUFFIX = ".arrow"
+_TEMP_MARKER = "loom-clickhouse-"
+
+
+def _extract_arrow_path(plan: str) -> str | None:
+    for raw_token in plan.split():
+        token = raw_token.strip("\"'[]")
+        if _TEMP_MARKER in token and token.endswith(_ARROW_SUFFIX) and token.startswith("/"):
+            return token
+    return None
+
 
 @dataclass(frozen=True)
 class _Params:
@@ -208,12 +219,8 @@ class TestClickHouseReaderStreamingPath:
         # Resolve the backing file path from the LazyFrame plan and assert it
         # is a valid Arrow IPC File (has footer) and not a bare IPC Stream.
         plan = lazy.explain()
-        # Extract the temp path; it is the .arrow file we wrote.
-        import re
-
-        match = re.search(r"(/[^\s\"']+loom-clickhouse-[^\s\"']+\.arrow)", plan)
-        assert match is not None, f"Could not find IPC path in plan: {plan}"
-        path = match.group(1)
+        path = _extract_arrow_path(plan)
+        assert path is not None, f"Could not find IPC path in plan: {plan}"
 
         # File format must open successfully.
         with pa.OSFile(path, "rb") as source:
