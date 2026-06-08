@@ -1,3 +1,37 @@
+# 🚀 Release 0.10.0 ([#41](https://github.com/the-reacher-data/loom-py/pull/41)) ([`099de38`](https://github.com/the-reacher-data/loom-py/commit/099de38b47cd7002a9c36fc56c9c85f673431022))
+
+
+## ✨ Features
+### prefect
+- **prefect:** add loom.prefect observer module for ETL observability<br>
+  > Introduces loom.prefect as an optional integration layer that exposes each
+  > ETLStep as an observable Prefect @task, giving Prefect full step-level
+  > visibility into ETL pipelines rather than treating the whole run as a
+  > single opaque process.
+  > Key additions:
+  > FlowCtx: typed operational contract (correlation_id, run_id, processes, force, dry_run)
+  > RunManifest + ManifestStore: ephemeral S3-backed retry state — zero S3 writes on happy path
+  > S3JsonManifestStore: fsspec-backed implementation with correlation_id path validation
+  > PrefectObserver: LifecycleObserver forwarding loom events to Prefect UI logs/artifacts
+  > FlowConfig + _load_flow_config: per-flow retry policy from YAML
+  > build_etl_flow(): factory that compiles a PipelinePlan once at build time,
+  > creates the runner once per Fargate container, and submits each step as @task
+  > respecting ParallelStepGroup topology and skipping SUCCESS steps from the manifest
+  > ETLRunner.run() now accepts optional run_id so Prefect and loom lineage share
+  > the same traceability identifier
+
+- **prefect:** add Fargate/Docker launcher + deploy_etl() for ETL flow generation
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.9.2 ([#39](https://github.com/the-reacher-data/loom-py/pull/39)) ([`f1a482d`](https://github.com/the-reacher-data/loom-py/commit/f1a482d03f8b83f8e0c7725e7af6160466ac6126))
 
 
