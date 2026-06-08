@@ -103,8 +103,8 @@ def _align_lazy_to_schema(frame: pl.LazyFrame, schema: pl.Schema) -> pl.LazyFram
 _FSSPEC_TO_OBJECT_STORE = {
     "endpoint_url": "aws_endpoint_url",
     "key": "aws_access_key_id",
-    "secret": "aws_secret_access_key",  # NOSONAR: fsspec storage-option key name, not a credential
-    "token": "aws_session_token",  # NOSONAR: fsspec storage-option key name, not a credential
+    "secret": "aws_secret_access_key",
+    "token": "aws_session_token",
 }
 
 
