@@ -55,7 +55,12 @@ from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.lineage._records import RunContext, RunStatus, WriteContext
 from loom.etl.pipeline._step_sql import StepSQL
-from loom.etl.runtime.contracts import SourceReader, SQLExecutor, TargetWriter
+from loom.etl.runtime.contracts import (
+    SourceReader,
+    SQLExecutor,
+    StreamingSourceReader,
+    TargetWriter,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -153,6 +158,7 @@ class ETLExecutor:
                 attempt=ctx.attempt,
                 last_attempt=ctx.last_attempt,
                 nodes=len(plan.nodes),
+                params=_render_params(params),
             ):
                 for node in plan.nodes:
                     self._run_pipeline_node(node, params, ctx)
@@ -183,7 +189,7 @@ class ETLExecutor:
         """
         ctx = ctx or RunContext(run_id=_new_run_id())
         process_run_id = _new_run_id()
-        _log.debug(
+        _log.info(
             "process start process=%s process_run_id=%s nodes=%d",
             plan.process_type.__name__,
             process_run_id,
@@ -225,7 +231,7 @@ class ETLExecutor:
         """
         ctx = ctx or RunContext(run_id=_new_run_id())
         step_run_id = _new_run_id()
-        _log.debug(
+        _log.info(
             "step start step=%s step_run_id=%s sources=%s",
             plan.step_type.__name__,
             step_run_id,
@@ -247,7 +253,10 @@ class ETLExecutor:
             ),
             streaming=plan.streaming,
         ):
-            frames = {b.alias: self._read_source(b.spec, params, ctx) for b in plan.source_bindings}
+            frames = {
+                b.alias: self._read_source(b.spec, params, ctx, streaming=plan.streaming)
+                for b in plan.source_bindings
+            }
             step = plan.step_type()
             if isinstance(step, StepSQL):
                 query = _render_sql_query(step, params)
@@ -288,19 +297,31 @@ class ETLExecutor:
             f"{type(self._reader).__qualname__!r} does not implement SQLExecutor."
         )
 
-    def _read_source(self, spec: Any, params: Any, ctx: RunContext) -> Any:
+    def _read_source(
+        self, spec: Any, params: Any, ctx: RunContext, *, streaming: bool = False
+    ) -> Any:
         if isinstance(spec, TempSourceSpec):
-            _log.debug("read source kind=TEMP name=%s", spec.temp_name)
+            _log.info("read source kind=TEMP name=%s", spec.temp_name)
             return self._require_checkpoint_store(spec.temp_name).get(
                 spec.temp_name,
                 run_id=ctx.run_id,
                 correlation_id=ctx.correlation_id,
             )
-        _log.debug(
-            "read source kind=%s ref=%s",
+        _log.info(
+            "read source kind=%s ref=%s streaming=%s",
             spec.kind,
             getattr(spec, "table_ref", None) or getattr(spec, "path", None),
+            streaming,
         )
+        if streaming:
+            if not isinstance(self._reader, StreamingSourceReader):
+                raise TypeError(
+                    f"Step opts into streaming=True but reader "
+                    f"{type(self._reader).__qualname__!r} does not implement "
+                    "StreamingSourceReader. Falling back to a non-streaming read "
+                    "would risk OOM, so the read is refused."
+                )
+            return self._reader.read_streaming(spec, params)
         return self._reader.read(spec, params)
 
     def _write_target(
@@ -314,7 +335,7 @@ class ETLExecutor:
         write_ctx: WriteContext | None = None,
     ) -> None:
         if isinstance(spec, (TempSpec, TempFanInSpec)):
-            _log.debug("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
+            _log.info("write target kind=TEMP name=%s scope=%s", spec.temp_name, spec.temp_scope)
             self._require_checkpoint_store(spec.temp_name).put(
                 spec.temp_name,
                 run_id=ctx.run_id,
@@ -324,7 +345,7 @@ class ETLExecutor:
                 append=isinstance(spec, TempFanInSpec),
             )
         else:
-            _log.debug(
+            _log.info(
                 "write target ref=%s",
                 getattr(spec, "table_ref", None) or getattr(spec, "path", None),
             )
@@ -388,6 +409,25 @@ class ETLExecutor:
 def _new_run_id() -> str:
     """Generate a fresh UUID4 run identifier."""
     return str(uuid.uuid4())
+
+
+def _render_params(params: Any) -> dict[str, Any]:
+    """Render an ``ETLParams`` instance as a JSON-friendly dict for events.
+
+    Used to attach the resolved invocation parameters to the pipeline START
+    event so observers (structlog/JSON sinks, Prefect UI) can show what the
+    pipeline was called with. Datetimes are ISO-formatted by ``msgspec``.
+    Falls back to ``str(params)`` if msgspec cannot encode the object.
+    """
+    import msgspec  # noqa: PLC0415
+
+    try:
+        rendered = msgspec.to_builtins(params)
+    except Exception:  # noqa: BLE001
+        return {"repr": str(params)}
+    if isinstance(rendered, dict):
+        return rendered
+    return {"value": rendered}
 
 
 def _ms(start: float) -> int:

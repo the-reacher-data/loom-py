@@ -136,7 +136,7 @@ class PolarsSourceReader(SourceReader):
         self._mongo_reader: MongoSourceReader | None = mongo_reader
         self._clickhouse_reader: ClickHouseSourceReader | None = clickhouse_reader
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> pl.LazyFrame:
+    def read(self, spec: SourceSpec, params_instance: Any, /) -> pl.LazyFrame:
         """Read source spec and return lazy frame."""
         if isinstance(spec, TableSourceSpec):
             return self._read_table(spec, params_instance)
@@ -151,6 +151,32 @@ class PolarsSourceReader(SourceReader):
             "TEMP sources are handled by CheckpointStore."
         )
 
+    def read_streaming(self, spec: SourceSpec, params_instance: Any, /) -> pl.LazyFrame:
+        """Route streaming reads to the matching capability-aware sub-reader.
+
+        Only ``ClickHouseSourceSpec`` is supported today; other kinds raise
+        :class:`TypeError`. We refuse to silently fall back to ``read()``
+        because a step that opts into streaming for memory safety must fail
+        loudly rather than risk OOM on a non-streaming path.
+
+        Args:
+            spec: Compiled source specification.
+            params_instance: Concrete params for current run.
+
+        Returns:
+            Lazy frame whose ``collect(engine="streaming")`` is memory-bounded.
+
+        Raises:
+            TypeError: When *spec* is not a ClickHouse spec, or the matching
+                sub-reader was not configured at construction time.
+        """
+        if isinstance(spec, ClickHouseSourceSpec):
+            return self._read_clickhouse_streaming(spec, params_instance)
+        raise TypeError(
+            f"PolarsSourceReader does not support streaming for source kind "
+            f"{spec.kind!r}. Streaming is only available for ClickHouse sources."
+        )
+
     def _read_mongo(self, spec: MongoSourceSpec, params_instance: Any) -> pl.LazyFrame:
         if self._mongo_reader is None:
             raise TypeError(
@@ -160,7 +186,11 @@ class PolarsSourceReader(SourceReader):
         frame: pl.LazyFrame = self._mongo_reader.read(spec, params_instance)
         return frame
 
-    def _read_clickhouse(self, spec: ClickHouseSourceSpec, params_instance: Any) -> pl.LazyFrame:
+    def _read_clickhouse(
+        self,
+        spec: ClickHouseSourceSpec,
+        params_instance: Any,
+    ) -> pl.LazyFrame:
         if self._clickhouse_reader is None:
             raise TypeError(
                 "ClickHouseSourceSpec requires a ClickHouseSourceReader "
@@ -168,6 +198,20 @@ class PolarsSourceReader(SourceReader):
                 "Set clickhouse_reader= when constructing PolarsSourceReader."
             )
         frame: pl.LazyFrame = self._clickhouse_reader.read(spec, params_instance)
+        return frame
+
+    def _read_clickhouse_streaming(
+        self,
+        spec: ClickHouseSourceSpec,
+        params_instance: Any,
+    ) -> pl.LazyFrame:
+        if self._clickhouse_reader is None:
+            raise TypeError(
+                "ClickHouseSourceSpec requires a ClickHouseSourceReader "
+                "injected at construction time. "
+                "Set clickhouse_reader= when constructing PolarsSourceReader."
+            )
+        frame: pl.LazyFrame = self._clickhouse_reader.read_streaming(spec, params_instance)
         return frame
 
     def execute_sql(self, frames: dict[str, Any], query: str) -> pl.LazyFrame:

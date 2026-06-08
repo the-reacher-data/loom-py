@@ -40,7 +40,12 @@ class _PolarsStubReader:
     def __init__(self, frames: dict[str, pl.LazyFrame]) -> None:
         self._frames = frames
 
-    def read(self, spec: SourceSpec, _params_instance: Any) -> pl.LazyFrame:
+    def read(
+        self,
+        spec: SourceSpec,
+        _params_instance: Any,
+        /,
+    ) -> pl.LazyFrame:
         table_ref = getattr(spec, "table_ref", None)
         key = table_ref.ref if table_ref is not None else spec.alias
         return self._frames[key]

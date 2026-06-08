@@ -279,15 +279,13 @@ class TestStructlogLifecycleObserver:
             def bind(self, **_: object) -> _FakeLogger:
                 return self
 
-            def debug(self, event: str, **_: object) -> None:
-                # Intentional no-op: this branch is not exercised here.
-                return None
-
-            def info(self, event: str, **kwargs: object) -> None:
+            def debug(self, event: str, **kwargs: object) -> None:
                 captured.update(kwargs)
 
+            def info(self, event: str, **_: object) -> None:
+                return None
+
             def error(self, event: str, **_: object) -> None:
-                # Intentional no-op: this branch is not exercised here.
                 return None
 
         monkeypatch.setattr(structlog, "get_logger", lambda *_: _FakeLogger())

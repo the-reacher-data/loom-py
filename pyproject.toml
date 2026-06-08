@@ -70,6 +70,14 @@ etl-otel = [
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
 ]
+prefect = [
+    "prefect>=3.0,<4.0",
+    "fsspec>=2024.2.0",
+    "pyyaml>=6.0",
+    "omegaconf>=2.3,<3.0",
+    "boto3>=1.35",
+    "docker>=7.0",
+]
 pyspark = [
     "pyspark>=3.5,<4.0",
 ]
@@ -127,7 +135,6 @@ dev = [
     "pyarrow>=14.0",
     "deltalake>=1.5,<2.0",
     "fsspec>=2024.2.0",
-    "httpx>=0.28.1",
     "httptools>=0.6,<1.0",
     "uvloop>=0.21,<1.0; sys_platform != 'win32'",
     "prometheus-client>=0.20",
@@ -143,6 +150,9 @@ dev = [
     "opentelemetry-sdk>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2.0",
+    "prefect>=3.0,<4.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -223,6 +233,17 @@ module = [
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+module = [
+    "docker",
+    "docker.*",
+    "requests",
+    "requests.*",
+    "prefect",
+    "prefect.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"

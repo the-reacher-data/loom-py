@@ -208,7 +208,7 @@ class MongoSourceSpec:
     projection: tuple[str, ...] | None = None
     schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
     extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
-    batch_size: int = 10_000
+    batch_size: int = 2_000
     limit: int | None = None
 
     def __post_init__(self) -> None:

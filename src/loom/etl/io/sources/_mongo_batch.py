@@ -108,84 +108,68 @@ def _classify_list(v: list[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _detect_conflicted_keys(batch: list[dict[str, Any]]) -> set[str]:
-    conflicted, _ = _classify_batch_keys(batch)
-    return conflicted
-
-
 def _effective_type_set(ts: set[str]) -> set[str]:
     base = ts - {"int", "float"}
     return base | ({"numeric"} if ts & {"int", "float"} else set())
 
 
+def _record_value_tags(
+    tags: dict[str, set[str]],
+    is_complex: dict[str, bool],
+    root_key: str,
+    sub_path: str,
+    value: Any,
+    depth: int,
+) -> None:
+    if depth >= _MAX_NESTED_DEPTH:
+        tags.setdefault(sub_path, set()).add("depth_cap")
+        return
+    if value is None:
+        return
+    if isinstance(value, dict):
+        is_complex[root_key] = True
+        tags.setdefault(sub_path, set()).add("dict")
+        for sk, sv in value.items():
+            _record_value_tags(tags, is_complex, root_key, f"{sub_path}.{sk}", sv, depth + 1)
+        return
+    if isinstance(value, list):
+        is_complex[root_key] = is_complex.get(root_key, False) or any(
+            isinstance(item, dict) for item in value
+        )
+        tags.setdefault(sub_path, set()).add("list")
+        for item in value:
+            _record_value_tags(tags, is_complex, root_key, f"{sub_path}[]", item, depth + 1)
+        return
+    tags.setdefault(sub_path, set()).add(_classify_value(value))
+
+
 def _classify_batch_keys(
     batch: list[dict[str, Any]],
 ) -> tuple[set[str], set[str]]:
-    """Return (conflicted_keys, complex_root_keys) in a single pass over the batch."""
-    key_types: dict[str, set[str]] = {}
-    key_values: dict[str, list[Any]] = {}
+    """Return (conflicted_keys, complex_root_keys) in a single pass over the batch.
+
+    Records per-path type tags directly instead of materialising every complex
+    value into intermediate lists; memory is O(distinct sub-paths) per batch.
+    """
+    root_types: dict[str, set[str]] = {}
+    sub_tags: dict[str, dict[str, set[str]]] = {}
+    is_complex: dict[str, bool] = {}
     for doc in batch:
         for k, v in doc.items():
             t = _classify_value(v)
             if t != "null":
-                key_types.setdefault(k, set()).add(t)
-            if isinstance(v, dict) or (isinstance(v, list) and any(isinstance(i, dict) for i in v)):
-                key_values.setdefault(k, []).append(v)
-    conflicted: set[str] = set()
-    for k, ts in key_types.items():
-        if len(_effective_type_set(ts)) > 1:
-            conflicted.add(k)
-    complex_root = {k for k, vals in key_values.items() if _nested_has_conflict(vals)}
+                root_types.setdefault(k, set()).add(t)
+            if isinstance(v, (dict, list)):
+                inner = sub_tags.setdefault(k, {})
+                _record_value_tags(inner, is_complex, k, "$", v, 0)
+    conflicted = {k for k, ts in root_types.items() if len(_effective_type_set(ts)) > 1}
+    complex_root = {
+        k
+        for k, paths in sub_tags.items()
+        if is_complex.get(k, False)
+        and any(len(_effective_type_set(ts)) > 1 for ts in paths.values())
+    }
     return conflicted, complex_root
-
-
-def _has_type_conflict(non_null: list[Any]) -> bool:
-    """True if values mix container and scalar types, or have incompatible scalar types."""
-    has_dict = any(isinstance(v, dict) for v in non_null)
-    has_list = any(isinstance(v, list) for v in non_null)
-    has_scalar = any(not isinstance(v, (dict, list)) for v in non_null)
-    if (has_dict and has_scalar) or (has_dict and has_list):
-        return True
-    return (
-        has_scalar
-        and not has_dict
-        and not has_list
-        and len({_classify_value(v) for v in non_null}) > 1
-    )
-
-
-def _dict_children_conflict(non_null: list[Any], depth: int) -> bool:
-    """True if any sub-key has a type conflict across the dicts in the batch."""
-    sub: dict[str, list[Any]] = {}
-    for v in non_null:
-        if isinstance(v, dict):
-            for sk, sv in v.items():
-                sub.setdefault(sk, []).append(sv)
-    return any(_nested_has_conflict(sv, depth + 1) for sv in sub.values())
-
-
-def _list_children_conflict(non_null: list[Any], depth: int) -> bool:
-    """True if the flattened items of all lists have a type conflict."""
-    flat: list[Any] = [item for v in non_null if isinstance(v, list) for item in v]
-    return bool(flat) and _nested_has_conflict(flat, depth + 1)
-
-
-def _nested_has_conflict(values: list[Any], _depth: int = 0) -> bool:
-    if _depth >= _MAX_NESTED_DEPTH:
-        return True
-    non_null = [v for v in values if v is not None]
-    if not non_null:
-        return False
-    if _has_type_conflict(non_null):
-        return True
-    if any(isinstance(v, dict) for v in non_null) and _dict_children_conflict(non_null, _depth):
-        return True
-    return any(isinstance(v, list) for v in non_null) and _list_children_conflict(non_null, _depth)
-
-
-def _complex_root_keys(batch: list[dict[str, Any]]) -> set[str]:
-    _, complex_root = _classify_batch_keys(batch)
-    return complex_root
 
 
 # ---------------------------------------------------------------------------
@@ -204,54 +188,45 @@ def _pre_serialize_value(v: Any) -> Any:
     return _json_dumps(deep_normalize_for_json(v))
 
 
-def _pre_serialize_fields(
-    batch: list[dict[str, Any]], fields: frozenset[str]
-) -> list[dict[str, Any]]:
-    result = []
-    for doc in batch:
-        new_doc = dict(doc)
-        for k in fields:
-            if k in new_doc:
-                new_doc[k] = _pre_serialize_value(new_doc[k])
-        result.append(new_doc)
-    return result
+def _preserialize_str_fields(
+    doc: dict[str, Any],
+    str_fields: frozenset[str] | set[str],
+    str_complex: set[str],
+) -> None:
+    for k in str_fields:
+        if k not in doc:
+            continue
+        v = doc[k]
+        if isinstance(v, (dict, list)):
+            str_complex.add(k)
+        doc[k] = _pre_serialize_value(v)
 
 
-def _serialize_extra_complex_fields(
-    batch: list[dict[str, Any]], schema_overrides: dict[str, pl.DataType] | None
-) -> list[dict[str, Any]]:
-    if not batch or not schema_overrides:
-        return batch
-    declared = set(schema_overrides)
-    extra_fields: set[str] = set()
-    for doc in batch:
-        for key, value in doc.items():
-            if key in declared:
-                continue
-            if isinstance(value, (dict, list)):
-                extra_fields.add(key)
-    if not extra_fields:
-        return batch
-    _log.warning(
-        "MongoSourceReader: serialising undeclared complex field(s) %s to JSON string",
-        sorted(extra_fields),
-    )
-    return _serialize_conflicted(batch, extra_fields)
+def _classify_doc_fields(
+    doc: dict[str, Any],
+    declared: set[str],
+    root_types: dict[str, set[str]],
+    sub_tags: dict[str, dict[str, set[str]]],
+    is_complex: dict[str, bool],
+    undeclared_complex: set[str],
+) -> None:
+    for k, v in doc.items():
+        t = _classify_value(v)
+        if t != "null":
+            root_types.setdefault(k, set()).add(t)
+        if isinstance(v, (dict, list)):
+            if declared and k not in declared:
+                undeclared_complex.add(k)
+            _record_value_tags(sub_tags.setdefault(k, {}), is_complex, k, "$", v, 0)
 
 
-def _serialize_conflicted(
-    batch: list[dict[str, Any]], conflicted: set[str]
-) -> list[dict[str, Any]]:
+def _serialize_conflicted(batch: list[dict[str, Any]], conflicted: set[str]) -> None:
     if not conflicted:
-        return batch
-    result = []
+        return
     for doc in batch:
-        new_doc = dict(doc)
         for k in conflicted:
-            if k in new_doc and new_doc[k] is not None:
-                new_doc[k] = _json_dumps(new_doc[k])
-        result.append(new_doc)
-    return result
+            if k in doc and doc[k] is not None:
+                doc[k] = _json_dumps(doc[k])
 
 
 def _series_to_json_string(s: pl.Series) -> pl.Series:
@@ -543,17 +518,14 @@ def _canonicalize_value(value: Any, plan: _CanonicalValuePlan) -> Any:
 def _canonicalize_batch(
     batch: list[dict[str, Any]],
     plan: dict[str, _CanonicalValuePlan],
-) -> list[dict[str, Any]]:
+) -> None:
+    # Mutates in place; the dicts come from normalize_bson_doc which already produced fresh copies.
     if not batch or not plan:
-        return batch
-    result: list[dict[str, Any]] = []
+        return
     for doc in batch:
-        new_doc = dict(doc)
         for field_name, field_plan in plan.items():
-            if field_name in new_doc:
-                new_doc[field_name] = _canonicalize_value(new_doc[field_name], field_plan)
-        result.append(new_doc)
-    return result
+            if field_name in doc:
+                doc[field_name] = _canonicalize_value(doc[field_name], field_plan)
 
 
 # ---------------------------------------------------------------------------
@@ -748,45 +720,72 @@ class MongoBatchProcessor:
         if not batch:
             return pl.DataFrame()
         self._check_schema_drift(batch)
-        batch = self._pre_serialize(batch)
-        batch = self._resolve_conflicts(batch, schema_overrides)
-        batch = _serialize_extra_complex_fields(batch, schema_overrides)
+        # Single classification + str pre-serialise pass before any mutation.
+        str_complex, root_types, sub_tags, is_complex, undeclared_complex = self._scan_batch(
+            batch, schema_overrides
+        )
+        self._warn_str_coercion_once(str_complex)
+        to_serialize = self._resolve_conflict_fields(
+            root_types, sub_tags, is_complex, undeclared_complex, schema_overrides
+        )
+        if to_serialize:
+            _serialize_conflicted(batch, to_serialize)
+        if schema_overrides:
+            if self._canonical_plan is None:
+                self._canonical_plan = _build_schema_plan(schema_overrides)
+            _canonicalize_batch(batch, self._canonical_plan)
         _log_risky_rows(batch, self._declared_schema)
-        batch = self._canonicalize_declared_structs(batch, schema_overrides)
         return self._to_dataframe(batch, schema_overrides)
 
-    def _pre_serialize(self, batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not self._schema_str_fields:
-            return batch
-        self._warn_str_coercion(batch)
-        return _pre_serialize_fields(batch, self._schema_str_fields)
-
-    def _warn_str_coercion(self, batch: list[dict[str, Any]]) -> None:
-        if self._str_coercion_warned or not self._schema_str_fields:
-            return
-        complex_fields = {
-            k
-            for k in self._schema_str_fields
-            if any(isinstance(doc.get(k), (dict, list)) for doc in batch)
-        }
-        if complex_fields:
-            _log.warning(
-                "MongoSourceReader: field(s) %s declared as str in schema but data contains "
-                "complex types — pre-serialising to JSON string",
-                sorted(complex_fields),
-            )
-            self._str_coercion_warned = True
-
-    def _resolve_conflicts(
+    def _scan_batch(
         self,
         batch: list[dict[str, Any]],
-        schema_overrides: dict[str, pl.DataType] | None = None,
-    ) -> list[dict[str, Any]]:
-        protected = _declared_complex_fields(schema_overrides)
-        all_conflicted, complex_root = _classify_batch_keys(batch)
-        all_nested = complex_root - all_conflicted
+        schema_overrides: dict[str, pl.DataType] | None,
+    ) -> tuple[
+        set[str], dict[str, set[str]], dict[str, dict[str, set[str]]], dict[str, bool], set[str]
+    ]:
+        declared = set(schema_overrides) if schema_overrides else set()
+        str_fields = self._schema_str_fields
+        str_complex: set[str] = set()
+        root_types: dict[str, set[str]] = {}
+        sub_tags: dict[str, dict[str, set[str]]] = {}
+        is_complex: dict[str, bool] = {}
+        undeclared_complex: set[str] = set()
+        for doc in batch:
+            _preserialize_str_fields(doc, str_fields, str_complex)
+            _classify_doc_fields(
+                doc, declared, root_types, sub_tags, is_complex, undeclared_complex
+            )
+        return str_complex, root_types, sub_tags, is_complex, undeclared_complex
 
-        to_serialize = (all_conflicted | all_nested) - protected
+    def _warn_str_coercion_once(self, str_complex: set[str]) -> None:
+        if self._str_coercion_warned or not str_complex:
+            return
+        _log.debug(
+            "MongoSourceReader: field(s) %s declared as str in schema but data contains "
+            "complex types — pre-serialising to JSON string",
+            sorted(str_complex),
+        )
+        self._str_coercion_warned = True
+
+    def _resolve_conflict_fields(
+        self,
+        root_types: dict[str, set[str]],
+        sub_tags: dict[str, dict[str, set[str]]],
+        is_complex: dict[str, bool],
+        undeclared_complex: set[str],
+        schema_overrides: dict[str, pl.DataType] | None,
+    ) -> set[str]:
+        protected = _declared_complex_fields(schema_overrides)
+        all_conflicted = {k for k, ts in root_types.items() if len(_effective_type_set(ts)) > 1}
+        all_nested = {
+            k
+            for k, paths in sub_tags.items()
+            if is_complex.get(k, False)
+            and any(len(_effective_type_set(ts)) > 1 for ts in paths.values())
+        } - all_conflicted
+
+        to_serialize = (all_conflicted | all_nested | undeclared_complex) - protected
         skipped = (all_conflicted | all_nested) & protected
 
         if to_serialize & all_conflicted:
@@ -801,24 +800,19 @@ class MongoBatchProcessor:
                 " to JSON string",
                 sorted(to_serialize & all_nested),
             )
+        extras_only = (to_serialize & undeclared_complex) - all_conflicted - all_nested
+        if extras_only:
+            _log.debug(
+                "MongoSourceReader: serialising undeclared complex field(s) %s to JSON string",
+                sorted(extras_only),
+            )
         if skipped:
             _log.warning(
                 "MongoSourceReader: type conflict in declared complex field(s) %s"
                 " — deferring to schema canonicalization",
                 sorted(skipped),
             )
-        return _serialize_conflicted(batch, to_serialize)
-
-    def _canonicalize_declared_structs(
-        self,
-        batch: list[dict[str, Any]],
-        schema_overrides: dict[str, pl.DataType] | None,
-    ) -> list[dict[str, Any]]:
-        if not schema_overrides:
-            return batch
-        if self._canonical_plan is None:
-            self._canonical_plan = _build_schema_plan(schema_overrides)
-        return _canonicalize_batch(batch, self._canonical_plan)
+        return to_serialize
 
     def _to_dataframe(
         self, batch: list[dict[str, Any]], schema_overrides: dict[str, pl.DataType] | None

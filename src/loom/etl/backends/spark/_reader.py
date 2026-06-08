@@ -53,7 +53,7 @@ class SparkSourceReader(SourceReader):
         self._resolver = resolver
         self._file_locator = file_locator
 
-    def read(self, spec: SourceSpec, params_instance: Any) -> DataFrame:
+    def read(self, spec: SourceSpec, params_instance: Any, /) -> DataFrame:
         """Read source spec and return DataFrame."""
         if isinstance(spec, TableSourceSpec):
             return self._read_table(spec, params_instance)

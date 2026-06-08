@@ -65,7 +65,7 @@ def test_stub_catalog_satisfies_protocol() -> None:
 )
 def test_stub_source_reader_read(seeds: dict, alias: str, expected: object) -> None:
     reader = StubSourceReader(seeds)
-    result = reader.read(_make_source_spec(alias), _params_instance=None)
+    result = reader.read(_make_source_spec(alias), None)
     assert result is expected
 
 

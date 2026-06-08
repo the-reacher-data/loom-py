@@ -81,9 +81,13 @@ class StreamHandlerConfig(LoomFrozenStruct, frozen=True, tag="stream", tag_field
 
     Attributes:
         stream: Target stream — ``"stdout"`` or ``"stderr"``.
+        renderer: Per-handler output renderer (``"console"`` / ``"json"``).
+            When ``None`` the handler inherits the top-level
+            :attr:`LogConfig.renderer`.
     """
 
     stream: Literal["stdout", "stderr"] = "stdout"
+    renderer: str | None = None
 
 
 class FileHandlerConfig(LoomFrozenStruct, frozen=True, tag="file", tag_field="type"):
@@ -92,10 +96,12 @@ class FileHandlerConfig(LoomFrozenStruct, frozen=True, tag="file", tag_field="ty
     Attributes:
         filename: Absolute or relative path to the log file.
         encoding: File encoding. Defaults to ``"utf-8"``.
+        renderer: Per-handler output renderer. See :class:`StreamHandlerConfig`.
     """
 
     filename: str
     encoding: str = "utf-8"
+    renderer: str | None = None
 
 
 class RotatingFileHandlerConfig(
@@ -108,12 +114,14 @@ class RotatingFileHandlerConfig(
         max_bytes: Maximum file size in bytes before rotation. Defaults to 10 MB.
         backup_count: Number of rotated backup files to retain.
         encoding: File encoding. Defaults to ``"utf-8"``.
+        renderer: Per-handler output renderer. See :class:`StreamHandlerConfig`.
     """
 
     filename: str
     max_bytes: int = 10 * 1024 * 1024
     backup_count: int = 5
     encoding: str = "utf-8"
+    renderer: str | None = None
 
 
 HandlerConfig = StreamHandlerConfig | FileHandlerConfig | RotatingFileHandlerConfig
@@ -217,11 +225,31 @@ def _parse_level(level: str) -> int:
     return value
 
 
-def _resolve_renderer(config: LogConfig) -> Any:
+def _default_renderer(config: LogConfig) -> Renderer:
     is_prod = config.environment == Environment.PROD
-    renderer = config.renderer or (Renderer.JSON if is_prod else Renderer.CONSOLE)
-    colors = config.colors if config.colors is not None else not is_prod
-    return _RENDERER_FACTORIES[renderer](colors)
+    return config.renderer or (Renderer.JSON if is_prod else Renderer.CONSOLE)
+
+
+def _default_colors(config: LogConfig) -> bool:
+    if config.colors is not None:
+        return config.colors
+    return config.environment != Environment.PROD
+
+
+def _resolve_renderer(config: LogConfig) -> Any:
+    """Top-level renderer (used by ``_setup_structlog`` for the wrapper chain)."""
+    return _RENDERER_FACTORIES[_default_renderer(config)](_default_colors(config))
+
+
+def _handler_renderer(handler_cfg: HandlerConfig, config: LogConfig) -> Any:
+    """Build the structlog renderer instance for a single handler.
+
+    Honours the per-handler ``renderer`` field when set; otherwise falls
+    back to the top-level :attr:`LogConfig.renderer` / environment default.
+    """
+    raw = getattr(handler_cfg, "renderer", None)
+    renderer = Renderer.from_str(raw) if raw is not None else _default_renderer(config)
+    return _RENDERER_FACTORIES[renderer](_default_colors(config))
 
 
 def _build_stdlib_handler(cfg: HandlerConfig) -> logging.Handler:
@@ -244,16 +272,38 @@ def _build_stdlib_handler(cfg: HandlerConfig) -> logging.Handler:
 
 
 def _setup_stdlib(config: LogConfig, level: int) -> None:
-    if not config.handlers:
-        logging.basicConfig(level=level, format="%(message)s", force=True)
-        return
-
+    # Every stdlib record (loom-internal or third-party) is routed through
+    # a structlog ProcessorFormatter so the whole process shares one render.
     target = logging.getLogger(config.name) if config.name else logging.getLogger()
     target.setLevel(level)
-    for handler_cfg in config.handlers:
+    while target.handlers:
+        target.removeHandler(target.handlers[-1])
+
+    for handler_cfg in config.handlers or (StreamHandlerConfig(),):
         handler = _build_stdlib_handler(handler_cfg)
         handler.setLevel(level)
+        handler.setFormatter(
+            structlog.stdlib.ProcessorFormatter(
+                processor=_handler_renderer(handler_cfg, config),
+                foreign_pre_chain=_foreign_pre_chain(),
+            )
+        )
         target.addHandler(handler)
+
+
+def _foreign_pre_chain() -> list[Any]:
+    """Pre-chain applied to records that did NOT originate from structlog.
+
+    Lets stdlib log records (e.g. third-party libraries) flow through the
+    same processors so they render consistently with structlog events.
+    """
+    return [
+        structlog.contextvars.merge_contextvars,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.format_exc_info,
+    ]
 
 
 def _resolve_level(level_name: str, logger_name: str) -> int:
@@ -346,7 +396,7 @@ def configure_logging(config: LogConfig = _DEFAULT_LOG_CONFIG) -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.format_exc_info,
             *config.extra_processors,
-            _resolve_renderer(config),
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.stdlib.LoggerFactory(),

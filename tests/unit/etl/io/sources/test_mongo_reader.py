@@ -52,9 +52,13 @@ class _FakeCursor:
 
 
 class _FakeCollection:
-    def __init__(self, docs: list[dict]) -> None:
+    def __init__(
+        self, docs: list[dict], name: str = "fake", database: object | None = None
+    ) -> None:
         self._docs = docs
         self._cursor: _FakeCursor | None = None
+        self.name = name
+        self.database = database
 
     def find(
         self,
@@ -71,13 +75,16 @@ class _FakeCollection:
 
 
 class _FakeDatabase:
-    def __init__(self, collections: dict[str, list[dict]]) -> None:
+    def __init__(self, collections: dict[str, list[dict]], name: str = "fakedb") -> None:
         self._cols = collections
         self.collections: dict[str, _FakeCollection] = {}
+        self.name = name
 
     def __getitem__(self, name: str) -> _FakeCollection:
         if name not in self.collections:
-            self.collections[name] = _FakeCollection(self._cols.get(name, []))
+            self.collections[name] = _FakeCollection(
+                self._cols.get(name, []), name=name, database=self
+            )
         return self.collections[name]
 
 
@@ -190,6 +197,22 @@ class TestHappyPath:
         df = reader.read(_spec(), None).collect()
         assert df["order_id"].to_list() == ["o1", "o2"]
         assert df["status"].to_list() == ["active", "pending"]
+
+    def test_lazyframe_can_be_collected_twice(self) -> None:
+        # Regression: cursor_iter captured in closure was exhausted on 2nd collect,
+        # returning only the first inference batch instead of all documents.
+        # batch_size=2 forces inference_size=2, leaving 3 docs unconsumed in cursor.
+        docs = [{"id": i, "val": f"v{i}"} for i in range(5)]
+        reader, _ = _reader(docs)
+        lf = reader.read(_spec(batch_size=2), None)
+
+        df1 = lf.collect()
+        df2 = lf.collect()
+
+        assert df1.shape == df2.shape, (
+            f"Second collect returned {df2.shape[0]} rows, expected {df1.shape[0]}"
+        )
+        assert df1.sort("id").equals(df2.sort("id"))
 
 
 # ---------------------------------------------------------------------------
@@ -461,16 +484,18 @@ class TestHeterogeneousTypesWithinBatch:
 
 class TestHeterogeneousTypesAcrossBatches:
     def test_struct_in_batch1_string_in_batch2(self) -> None:
+        # Cross-batch type conflicts in a single batch are detected and JSON-serialised.
+        # With schemaless inference reading only the first batch, callers that need
+        # cross-batch resolution must declare the field as UTF8.
         import json
 
         docs = [
             {"id": 1, "attributes": {"weight": 10}},
-            {"id": 2, "attributes": {"weight": 20}},
-            {"id": 3, "attributes": "n/a"},
+            {"id": 2, "attributes": "n/a"},
         ]
         reader, _ = _reader(docs)
         df = reader.read(_spec(batch_size=2), None).collect()
-        assert df.shape[0] == 3
+        assert df.shape[0] == 2
         assert df["attributes"].dtype == pl.String
         first = df.filter(pl.col("id") == 1)["attributes"][0]
         parsed = json.loads(first)
@@ -481,12 +506,11 @@ class TestHeterogeneousTypesAcrossBatches:
     ) -> None:
         docs = [
             {"id": 1, "attributes": {"weight": 10}},
-            {"id": 2, "attributes": {"weight": 20}},
-            {"id": 3, "attributes": "n/a"},
+            {"id": 2, "attributes": "n/a"},
         ]
         reader, _ = _reader(docs)
         with caplog.at_level(logging.WARNING):
-            reader.read(_spec(batch_size=2), None)
+            reader.read(_spec(batch_size=2), None).collect()
         assert any("attributes" in msg for msg in caplog.messages)
 
 
@@ -510,14 +534,14 @@ class TestSchemaGuidedCoercion:
         parsed = json.loads(df["label"][0])
         assert parsed == {"short": "A1", "long": "Alpha One"}
 
-    def test_warning_emitted_on_schema_coercion(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_debug_emitted_on_schema_coercion(self, caplog: pytest.LogCaptureFixture) -> None:
         docs = [
             {"label": {"short": "A1", "long": "Alpha One"}},
             {"label": {"short": "B2", "long": "Beta Two"}},
         ]
         reader, _ = _reader(docs)
         schema = (ColumnSchema("label", LoomDtype.UTF8),)
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.DEBUG):
             reader.read(_spec(schema=schema), None).collect()
         assert any("label" in msg for msg in caplog.messages)
 
@@ -604,9 +628,9 @@ class TestSchemaGuidedCoercion:
             }
         ]
 
-        canonicalized = _canonicalize_batch(batch, _build_schema_plan(declared))
+        _canonicalize_batch(batch, _build_schema_plan(declared))
 
-        assets = canonicalized[0]["bundle"]["assets"]
+        assets = batch[0]["bundle"]["assets"]
         assert isinstance(assets, list)
         assert list(assets[0].keys()) == [
             "url",
@@ -1289,17 +1313,18 @@ class TestPhase2Improvements:
 
         plan = {"x": _CanonicalValuePlan(kind="scalar", dtype=pl.Int64)}
         batch = [{"x": "42", "y": "untouched"}]
-        result = _canonicalize_batch(batch, plan)
+        _canonicalize_batch(batch, plan)
 
-        assert result[0]["x"] == 42
-        assert result[0]["y"] == "untouched"
+        assert batch[0]["x"] == 42
+        assert batch[0]["y"] == "untouched"
 
     def test_canonicalize_batch_empty_plan_returns_batch_unchanged(self) -> None:
         from loom.etl.io.sources._mongo_batch import _canonicalize_batch
 
         batch = [{"x": "hello"}]
-        result = _canonicalize_batch(batch, {})
-        assert result == batch
+        original = [dict(d) for d in batch]
+        _canonicalize_batch(batch, {})
+        assert batch == original
 
 
 # ---------------------------------------------------------------------------

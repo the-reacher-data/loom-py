@@ -10,6 +10,7 @@ from loom.etl.compiler._plan import (
     SourceBinding,
     StepPlan,
     TargetBinding,
+    flatten_step_names,
 )
 from loom.etl.compiler._validators import (
     StepCompilationContext,
@@ -36,6 +37,7 @@ __all__ = [
     "ParallelStepGroup",
     "ParallelProcessGroup",
     "StepCompilationContext",
+    "flatten_step_names",
     "validate_execute_signature",
     "validate_param_exprs",
     "validate_params_compat",

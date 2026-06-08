@@ -12,6 +12,7 @@ import msgspec
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
+from loom.core.observability.protocol import LifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import flush_runner
 from loom.etl.checkpoint import CheckpointStore, TempCleaner
@@ -72,8 +73,16 @@ class ETLRunner:
         spark: SparkSession | None = None,
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
+        extra_observers: Sequence[LifecycleObserver] | None = None,
     ) -> ETLRunner:
-        """Build an :class:`ETLRunner` from resolved config objects."""
+        """Build an :class:`ETLRunner` from resolved config objects.
+
+        Args:
+            extra_observers: Optional additional :class:`LifecycleObserver`
+                instances appended after the config-derived ones. Use this
+                to inject orchestrator-specific observers (e.g. the Prefect
+                TaskRun observer) without subclassing the runner.
+        """
         resolved_obs_config = obs_config or ETLObservabilityConfig()
         reader, writer = make_backends(config, spark)
         observability = ObservabilityRuntime.from_config(resolved_obs_config)
@@ -83,6 +92,8 @@ class ETLRunner:
                 observability = ObservabilityRuntime(
                     [*observability.observers, LineageObserver(lineage_store)]
                 )
+        if extra_observers:
+            observability = ObservabilityRuntime([*observability.observers, *extra_observers])
         checkpoint_store = make_checkpoint_store(config, spark, cleaner)
         return cls(reader, writer, observability, dispatcher, checkpoint_store)
 
@@ -93,12 +104,24 @@ class ETLRunner:
         *,
         spark: SparkSession | None = None,
         dispatcher: ParallelDispatcher | None = None,
+        extra_observers: Sequence[LifecycleObserver] | None = None,
     ) -> ETLRunner:
-        """Load config from a YAML file and build an :class:`ETLRunner`."""
+        """Load config from a YAML file and build an :class:`ETLRunner`.
+
+        Args:
+            extra_observers: Optional additional :class:`LifecycleObserver`
+                instances forwarded to :meth:`from_config`.
+        """
         _log.debug("load yaml path=%s", path)
         storage_config, obs_config = _load_yaml(path)
         storage_config.validate()
-        return cls.from_config(storage_config, obs_config, spark=spark, dispatcher=dispatcher)
+        return cls.from_config(
+            storage_config,
+            obs_config,
+            spark=spark,
+            dispatcher=dispatcher,
+            extra_observers=extra_observers,
+        )
 
     @classmethod
     def from_spark(
@@ -144,17 +167,31 @@ class ETLRunner:
         *,
         include: Sequence[str] | None = None,
         correlation_id: str | None = None,
+        run_id: str | None = None,
         attempt: int = 1,
         last_attempt: bool = True,
     ) -> None:
-        """Compile, optionally filter, and execute *pipeline*."""
+        """Compile, optionally filter, and execute *pipeline*.
+
+        Args:
+            pipeline: ETLPipeline class to compile and execute.
+            params: ETLParams instance for this run.
+            include: If set, only steps whose names are in this sequence run.
+            correlation_id: Logical business unit identifier, stable across retries.
+            run_id: Execution-specific identifier for lineage records. If None,
+                a random UUID is generated. Callers that share a traceability
+                identifier with an orchestrator (e.g. Prefect) should pass it
+                explicitly so lineage and orchestrator records align.
+            attempt: Current attempt number (1-based).
+            last_attempt: Whether this is the final allowed attempt.
+        """
         _log.info("compile pipeline=%s", pipeline.__name__)
         plan = self._compiler.compile(pipeline)
         if include is not None:
             _log.debug("filter plan include=%s", sorted(include))
             plan = _filter_plan(plan, frozenset(include))
         ctx = RunContext(
-            run_id=str(uuid.uuid4()),
+            run_id=run_id if run_id is not None else str(uuid.uuid4()),
             correlation_id=correlation_id,
             attempt=attempt,
             last_attempt=last_attempt,

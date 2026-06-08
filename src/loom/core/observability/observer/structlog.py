@@ -45,14 +45,18 @@ class StructlogLifecycleObserver:
             return
         match event.kind:
             case EventKind.START:
-                bound.debug(event.kind.value, **event.meta)
+                if event.scope is Scope.PIPELINE:
+                    bound.info(event.kind.value, **event.meta)
+                else:
+                    bound.debug(event.kind.value, **event.meta)
             case EventKind.END:
                 bound.info(
                     event.kind.value,
                     duration_ms=event.duration_ms,
                     status=event.status.value if event.status is not None else None,
-                    **event.meta,
                 )
+                if event.meta:
+                    bound.debug(event.kind.value, **event.meta)
             case EventKind.ERROR:
                 bound.error(
                     event.kind.value,

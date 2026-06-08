@@ -1,0 +1,43 @@
+# Minimal PoC stack for the Prefect → Fargate/Docker launcher.
+# Brings up a local Prefect Server plus a process worker that spawns ETL
+# containers via the host's docker socket.
+#
+# ⚠️  SECURITY WARNING
+# The prefect-worker mounts /var/run/docker.sock. Any process inside that
+# container can spawn arbitrary containers on the host, mount the host
+# filesystem, and escalate to host root. This compose file is for LOCAL
+# DEVELOPMENT ONLY. Never deploy it to a shared / production environment.
+#
+# Usage:
+#   docker compose -f docker-compose.local.yaml up -d
+#   docker build -t loom-etl-daily-orders:dev -f Dockerfile.daily_orders .
+#   python -m my_app.deploy
+#   prefect deployment run "daily-orders/daily-orders" -p env=local
+
+networks:
+  loom_net:
+    driver: bridge
+
+services:
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0
+    ports:
+      - "4200:4200"
+    networks: [loom_net]
+    environment:
+      PREFECT_UI_API_URL: http://localhost:4200/api
+
+  prefect-worker:
+    image: prefecthq/prefect:3-latest
+    command: >
+      sh -c "prefect config set PREFECT_API_URL=http://prefect-server:4200/api &&
+             prefect worker start --pool default --type process"
+    depends_on: [prefect-server]
+    networks: [loom_net]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
+    working_dir: /workspace
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api

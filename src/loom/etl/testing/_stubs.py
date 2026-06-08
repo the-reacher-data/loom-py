@@ -98,8 +98,26 @@ class StubSourceReader:
     def __init__(self, frames: dict[str, Any] | None = None) -> None:
         self._frames: dict[str, Any] = dict(frames or {})
 
-    def read(self, spec: SourceSpec, _params_instance: Any) -> Any:
+    def read(
+        self,
+        spec: SourceSpec,
+        _params_instance: Any,
+        /,
+    ) -> Any:
         """Return the pre-seeded frame for ``spec.alias``, or ``None``."""
+        return self._frames.get(spec.alias)
+
+    def read_streaming(
+        self,
+        spec: SourceSpec,
+        _params_instance: Any,
+        /,
+    ) -> Any:
+        """Return the same pre-seeded frame as :meth:`read`.
+
+        The stub does not implement true streaming; it just records that the
+        streaming code path was taken so tests can exercise it.
+        """
         return self._frames.get(spec.alias)
 
     def execute_sql(self, frames: dict[str, Any], query: str, /) -> Any:

@@ -204,3 +204,45 @@ def visit_process_nodes(
                         on_step(step)
                 else:
                     on_parallel_group(plans)
+
+
+def flatten_step_names(
+    plan: PipelinePlan,
+    processes: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Flatten a compiled plan into the ordered tuple of step class names.
+
+    Steps are returned in their planned execution order (parallel groups
+    are flattened in declaration order). When *processes* is given, only
+    processes whose ``ProcessPlan.process_type.__name__`` is in that
+    tuple contribute their step names.
+
+    Args:
+        plan: The compiled pipeline plan.
+        processes: Optional whitelist of process class names. ``None``
+            (the default) includes every process.
+
+    Returns:
+        Ordered tuple of step class names ready to be passed to
+        :class:`~loom.etl.runner.ETLRunner.run` via ``include=``.
+
+    Example::
+
+        >>> from loom.etl.compiler import ETLCompiler, flatten_step_names
+        >>> plan = ETLCompiler().compile(MyPipeline)
+        >>> flatten_step_names(plan)
+        ('ExtractStep', 'TransformStep', 'LoadStep')
+    """
+    names: list[str] = []
+
+    def _add_process(proc: ProcessPlan) -> None:
+        if processes is not None and proc.process_type.__name__ not in processes:
+            return
+
+        def _add_step(step: StepPlan) -> None:
+            names.append(step.step_type.__name__)
+
+        visit_process_nodes(proc.nodes, _add_step)
+
+    visit_pipeline_nodes(plan.nodes, _add_process)
+    return tuple(names)

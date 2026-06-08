@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import polars as pl
 
+from loom.core.logger import get_logger
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.source._from_mongo import FromMongo, SourceRef
 from loom.etl.declarative.source._specs import MongoSourceSpec
@@ -19,7 +21,7 @@ from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.io.sources._mongo_predicate import predicate_to_mongo
 from loom.etl.schema._schema import LoomDtype
 
-_SCHEMA_INFERENCE_SAMPLE = 100
+_log = get_logger(__name__)
 
 
 class MongoSourceReader:
@@ -27,9 +29,9 @@ class MongoSourceReader:
 
     MongoDB I/O is deferred until ``.collect()`` is called. With ``schema``
     declared, zero queries are issued during ``read()`` — the cursor opens lazily
-    inside the scan plugin. Without ``schema``, up to
-    :data:`_SCHEMA_INFERENCE_SAMPLE` documents are sampled eagerly to infer
-    the registered schema; the full scan is still deferred.
+    inside the scan plugin. Without ``schema``, up to ``min(batch_size, 1024)``
+    documents are sampled eagerly to infer the registered schema; the full scan
+    opens a fresh cursor on each ``.collect()``.
 
     Args:
         client:   pymongo ``MongoClient`` (or compatible).
@@ -58,13 +60,18 @@ class MongoSourceReader:
         projection = dict.fromkeys(spec.projection, 1) if spec.projection else None
 
         declared_schema, schema_str_fields = self._resolve_declared_schema(spec)
-        registered_schema = self._registered_schema(
-            spec, declared_schema, collection, filter_dict, projection, schema_str_fields
-        )
-
         batch_processor: BatchProcessorProtocol = MongoBatchProcessor(
             schema_str_fields=schema_str_fields,
             declared_schema=declared_schema or None,
+        )
+
+        registered_schema = self._prepare_scan(
+            spec,
+            collection,
+            filter_dict,
+            projection,
+            declared_schema,
+            batch_processor,
         )
 
         def _io_source(
@@ -103,22 +110,22 @@ class MongoSourceReader:
         str_field_names = frozenset(col.name for col in spec.schema if col.dtype == LoomDtype.UTF8)
         return (field_dtypes, str_field_names)
 
-    def _registered_schema(
+    def _prepare_scan(
         self,
         spec: Any,
-        declared_schema: dict[str, pl.DataType],
         collection: Any,
         filter_dict: dict[str, Any],
         projection: dict[str, Any] | None,
-        schema_str_fields: frozenset[str],
+        declared_schema: dict[str, pl.DataType],
+        batch_processor: BatchProcessorProtocol,
     ) -> dict[str, pl.DataType]:
         if declared_schema:
             schema = dict(declared_schema)
             if spec.extra_fields_mode == "capture":
                 schema["_extra"] = pl.String()
             return schema
-        return _infer_schema_from_sample(
-            collection, filter_dict, projection, spec, schema_str_fields
+        return _infer_schema_from_first_batch(
+            collection, filter_dict, projection, spec, batch_processor
         )
 
 
@@ -140,31 +147,35 @@ def _normalize_null_dtypes(schema: dict[str, pl.DataType]) -> dict[str, pl.DataT
     return result
 
 
-def _infer_schema_from_sample(
+def _infer_schema_from_first_batch(
     collection: Any,
     filter_dict: dict[str, Any],
     projection: dict[str, Any] | None,
     spec: Any,
-    schema_str_fields: frozenset[str],
+    batch_processor: BatchProcessorProtocol,
 ) -> dict[str, pl.DataType]:
-    cursor = collection.find(filter_dict, projection, batch_size=spec.batch_size)
-    if spec.limit is not None:
-        cursor = cursor.limit(spec.limit)
-
+    cursor = _open_cursor(collection, filter_dict, projection, spec, None)
+    inference_size = min(spec.batch_size, 1024)
     docs: list[dict[str, Any]] = []
-    for doc in cursor:
-        docs.append(normalize_bson_doc(doc))
-        if len(docs) >= _SCHEMA_INFERENCE_SAMPLE:
-            break
-    cursor.close()
-
+    try:
+        for doc in cursor:
+            docs.append(normalize_bson_doc(doc))
+            if len(docs) >= inference_size:
+                break
+    finally:
+        cursor.close()
     if not docs:
+        _log.info("mongo schema inferred", collection=collection.name, sampled=0, columns=0)
         return {}
-
-    processor = MongoBatchProcessor(schema_str_fields=schema_str_fields)
-    sample_frame = processor.build_frame(docs)
-    raw = dict(zip(sample_frame.columns, sample_frame.dtypes, strict=True))
-    return _normalize_null_dtypes(raw)
+    frame = batch_processor.build_frame(docs)
+    schema = _normalize_null_dtypes(dict(zip(frame.columns, frame.dtypes, strict=True)))
+    _log.info(
+        "mongo schema inferred",
+        collection=collection.name,
+        sampled=len(docs),
+        columns=len(schema),
+    )
+    return schema  # noqa: RET504
 
 
 def _open_cursor(
@@ -180,6 +191,15 @@ def _open_cursor(
         effective_limit = min(effective_limit, n_rows) if effective_limit is not None else n_rows
     if effective_limit is not None:
         cursor = cursor.limit(effective_limit)
+    _log.info(
+        "mongo query",
+        collection=collection.name,
+        database=getattr(collection.database, "name", None),
+        filter=filter_dict,
+        projection=list(projection) if projection else None,
+        batch_size=spec.batch_size,
+        limit=effective_limit,
+    )
     return cursor
 
 
@@ -217,13 +237,43 @@ def _scan(
 ) -> Any:
     schema_name = spec.collection
     schema_overrides = declared_schema or registered_schema or None
-    cursor = _open_cursor(collection, filter_dict, projection, spec, n_rows)
     remaining = n_rows
+    cursor = _open_cursor(collection, filter_dict, projection, spec, n_rows)
     batch: list[dict[str, Any]] = []
-
-    for doc in cursor:
-        batch.append(normalize_bson_doc(doc))
-        if len(batch) >= spec.batch_size:
+    batches_yielded = 0
+    total_rows = 0
+    started = time.monotonic()
+    try:
+        for doc in cursor:
+            batch.append(normalize_bson_doc(doc))
+            if len(batch) >= spec.batch_size:
+                frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
+                frame = _finalize_batch(
+                    frame,
+                    declared_schema,
+                    registered_schema,
+                    spec.extra_fields_mode,
+                    schema_name,
+                    with_columns,
+                    remaining,
+                )
+                if remaining is not None:
+                    remaining -= len(frame)
+                rows = len(frame)
+                total_rows += rows
+                batches_yielded += 1
+                _log_batch(
+                    collection.name,
+                    batches_yielded,
+                    rows,
+                    total_rows,
+                    time.monotonic() - started,
+                )
+                yield frame
+                batch = []
+                if remaining is not None and remaining <= 0:
+                    return
+        if batch:
             frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
             frame = _finalize_batch(
                 frame,
@@ -234,25 +284,42 @@ def _scan(
                 with_columns,
                 remaining,
             )
-            if remaining is not None:
-                remaining -= len(frame)
+            rows = len(frame)
+            total_rows += rows
+            batches_yielded += 1
+            _log_batch(
+                collection.name,
+                batches_yielded,
+                rows,
+                total_rows,
+                time.monotonic() - started,
+            )
             yield frame
-            batch = []
-            if remaining is not None and remaining <= 0:
-                return
-
-    if batch:
-        frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
-        frame = _finalize_batch(
-            frame,
-            declared_schema,
-            registered_schema,
-            spec.extra_fields_mode,
-            schema_name,
-            with_columns,
-            remaining,
+    finally:
+        cursor.close()
+        _log.info(
+            "mongo read complete",
+            collection=collection.name,
+            docs=total_rows,
+            batches=batches_yielded,
+            duration_s=round(time.monotonic() - started, 3),
         )
-        yield frame
+
+
+def _log_batch(
+    collection: str, batch_index: int, rows: int, total_rows: int, elapsed_s: float
+) -> None:
+    payload = {
+        "collection": collection,
+        "batch": batch_index,
+        "rows": rows,
+        "total_rows": total_rows,
+        "elapsed_s": round(elapsed_s, 3),
+    }
+    if batch_index == 1:
+        _log.info("mongo first batch", **payload)
+    else:
+        _log.debug("mongo batch", **payload)
 
 
 __all__ = ["FromMongo", "MongoSourceReader", "MongoSourceSpec", "SourceRef"]

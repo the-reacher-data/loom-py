@@ -65,7 +65,7 @@ class TestStubIO:
         src_spec = TableSourceSpec(alias="orders", table_ref=TableRef("raw.orders"))
         target_spec = ReplaceSpec(table_ref=TableRef("staging.out"))
 
-        assert reader.read(src_spec, _params_instance=None) is frame
+        assert reader.read(src_spec, None) is frame
         writer.write(frame, target_spec, _params_instance=None)
         assert writer.written == [(frame, target_spec)]
 

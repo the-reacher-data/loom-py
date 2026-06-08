@@ -209,12 +209,18 @@ class ObservabilityRuntime:
         """
         start = perf_counter()
         meta_dict = dict(meta)
+        # Promote ``id`` from meta to the LifecycleEvent's first-class ``id``
+        # field so observers can correlate START/END/ERROR events without
+        # reaching into the ``meta`` dict.
+        _raw_event_id = meta_dict.pop("id", None)
+        event_id: str | None = str(_raw_event_id) if _raw_event_id is not None else None
         self.emit(
             LifecycleEvent.start(
                 scope=scope,
                 name=name,
                 trace_id=trace_id,
                 correlation_id=correlation_id,
+                id=event_id,
                 meta=meta_dict,
             )
         )
@@ -227,6 +233,7 @@ class ObservabilityRuntime:
                     name=name,
                     trace_id=trace_id,
                     correlation_id=correlation_id,
+                    id=event_id,
                     duration_ms=(perf_counter() - start) * 1000,
                     error=str(exc),
                     meta={**meta_dict, "error_type": type(exc).__name__},
@@ -240,6 +247,7 @@ class ObservabilityRuntime:
                     name=name,
                     trace_id=trace_id,
                     correlation_id=correlation_id,
+                    id=event_id,
                     duration_ms=(perf_counter() - start) * 1000,
                     status=LifecycleStatus.SUCCESS,
                     meta=meta_dict,
