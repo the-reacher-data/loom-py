@@ -47,23 +47,38 @@ class OptimizeResult:
     num_files_removed: int = 0
 
 
+@runtime_checkable
+class OpSpec(Protocol):
+    """Protocol implemented by VacuumSpec, CompactSpec, ZOrderSpec — and any future op.
+
+    Each spec knows how to dispatch itself against a DeltaTableMaintainer.
+    Adding a new operation type requires only a new spec class; the runner
+    does not change.
+    """
+
+    name: str
+
+    def execute(
+        self,
+        maintainer: DeltaTableMaintainer,
+        uri: str,
+        location: TableLocation,
+    ) -> VacuumResult | OptimizeResult: ...
+
+
 @dataclass
 class TableMaintenanceResult:
     """Per-table maintenance outcome.
 
     Args:
         table_ref: Logical table reference (e.g. ``"raw.events"``).
-        vacuum: Result of the vacuum step, or ``None`` if not requested.
-        compact: Result of the compact step, or ``None`` if not requested.
-        z_order: Result of the z-order step, or ``None`` if not requested.
+        op_results: Keyed results for each op that ran, by ``op.name``.
         error: Exception caught during execution, or ``None`` on success.
         duration_seconds: Wall-clock time for all ops on this table.
     """
 
     table_ref: str
-    vacuum: VacuumResult | None = None
-    compact: OptimizeResult | None = None
-    z_order: OptimizeResult | None = None
+    op_results: dict[str, VacuumResult | OptimizeResult] = field(default_factory=dict)
     error: Exception | None = None
     duration_seconds: float = 0.0
 
@@ -71,6 +86,21 @@ class TableMaintenanceResult:
     def ok(self) -> bool:
         """``True`` when no error occurred."""
         return self.error is None
+
+    @property
+    def vacuum(self) -> VacuumResult | None:
+        result = self.op_results.get("vacuum")
+        return result if isinstance(result, VacuumResult) else None
+
+    @property
+    def compact(self) -> OptimizeResult | None:
+        result = self.op_results.get("compact")
+        return result if isinstance(result, OptimizeResult) else None
+
+    @property
+    def z_order(self) -> OptimizeResult | None:
+        result = self.op_results.get("z_order")
+        return result if isinstance(result, OptimizeResult) else None
 
 
 @runtime_checkable

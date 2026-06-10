@@ -8,6 +8,11 @@ execute.  They are not part of the public API.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from loom.etl.maintenance._protocol import DeltaTableMaintainer, OptimizeResult, VacuumResult
+    from loom.etl.storage._locator import TableLocation
 
 
 @dataclass(frozen=True)
@@ -22,8 +27,17 @@ class VacuumSpec:
             deleting them.  Set ``dry_run=False`` explicitly in production.
     """
 
+    name: ClassVar[str] = "vacuum"
     retention_hours: int | None = None
     dry_run: bool = True
+
+    def execute(
+        self,
+        maintainer: DeltaTableMaintainer,
+        uri: str,
+        location: TableLocation,
+    ) -> VacuumResult:
+        return maintainer.vacuum(uri, self, location)
 
 
 @dataclass(frozen=True)
@@ -35,7 +49,16 @@ class CompactSpec:
             delta-rs choose based on the table's configuration.
     """
 
+    name: ClassVar[str] = "compact"
     target_size: int | None = None
+
+    def execute(
+        self,
+        maintainer: DeltaTableMaintainer,
+        uri: str,
+        location: TableLocation,
+    ) -> OptimizeResult:
+        return maintainer.compact(uri, self, location)
 
 
 @dataclass(frozen=True)
@@ -48,20 +71,24 @@ class ZOrderSpec:
             delta-rs default.
     """
 
+    name: ClassVar[str] = "z_order"
     columns: list[str] = field(default_factory=list)
     target_size: int | None = None
+
+    def execute(
+        self,
+        maintainer: DeltaTableMaintainer,
+        uri: str,
+        location: TableLocation,
+    ) -> OptimizeResult:
+        return maintainer.z_order(uri, self, location)
 
 
 @dataclass(frozen=True)
 class MaintenanceSpec:
     """All ops to execute against one concrete table (already resolved to its
     logical ref — the runner resolves it to a URI via the locator).
-
-    Exactly one of ``compact`` or ``z_order`` may be set; setting both is a
-    definition-time error caught by the builder.
     """
 
     table_ref: str
-    vacuum: VacuumSpec | None = None
-    compact: CompactSpec | None = None
-    z_order: ZOrderSpec | None = None
+    ops: tuple[VacuumSpec | CompactSpec | ZOrderSpec, ...] = ()

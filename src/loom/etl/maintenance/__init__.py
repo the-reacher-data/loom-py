@@ -43,6 +43,7 @@ from loom.etl.maintenance._builder import MaintainSchema, MaintainTable
 from loom.etl.maintenance._protocol import (
     DeltaTableMaintainer,
     OperationDeclaration,
+    OpSpec,
     OptimizeResult,
     TableMaintenanceResult,
     VacuumResult,
@@ -66,4 +67,5 @@ __all__ = [
     # protocols
     "DeltaTableMaintainer",
     "OperationDeclaration",
+    "OpSpec",
 ]

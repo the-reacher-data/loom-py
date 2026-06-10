@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from loom.etl.maintenance._protocol import DeltaTableMaintainer
+    from loom.etl.maintenance._protocol import DeltaTableMaintainer, OptimizeResult, VacuumResult
     from loom.etl.maintenance._step import MaintenanceStep
     from loom.etl.storage._config import StorageConfig
     from loom.etl.storage._locator import TableLocation, TableLocator
@@ -16,11 +16,7 @@ if TYPE_CHECKING:
 from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.maintenance._builder import _expand_for_schemas
 from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
-from loom.etl.maintenance._protocol import (
-    OptimizeResult,
-    TableMaintenanceResult,
-    VacuumResult,
-)
+from loom.etl.maintenance._protocol import TableMaintenanceResult
 
 _log = logging.getLogger(__name__)
 
@@ -188,13 +184,10 @@ class MaintenanceRunner:
                 "StorageConfig.maintenance: compact and z_order_by are mutually exclusive"
             )
 
-        specs = _expand_for_schemas(
-            self._config.tables,
-            mc.schemas,
-            vacuum_spec,
-            compact_spec,
-            z_order_spec,
+        ops: tuple[VacuumSpec | CompactSpec | ZOrderSpec, ...] = tuple(
+            s for s in [vacuum_spec, compact_spec, z_order_spec] if s is not None
         )
+        specs = _expand_for_schemas(self._config.tables, mc.schemas, ops)
         return MaintenanceReport(results=[self._run_one(spec) for spec in specs])
 
     # ------------------------------------------------------------------
@@ -229,27 +222,19 @@ class MaintenanceRunner:
             return TableMaintenanceResult(table_ref=spec.table_ref)
 
         t0 = time.monotonic()
-        vacuum_result: VacuumResult | None = None
-        compact_result: OptimizeResult | None = None
-        z_order_result: OptimizeResult | None = None
+        op_results: dict[str, VacuumResult | OptimizeResult] = {}
         error: Exception | None = None
 
         try:
-            if spec.vacuum is not None:
-                vacuum_result = self._maintainer.vacuum(location.uri, spec.vacuum, location)
-            if spec.compact is not None:
-                compact_result = self._maintainer.compact(location.uri, spec.compact, location)
-            if spec.z_order is not None:
-                z_order_result = self._maintainer.z_order(location.uri, spec.z_order, location)
+            for op in spec.ops:
+                op_results[op.name] = op.execute(self._maintainer, location.uri, location)
         except Exception as exc:
             error = exc
             _log.error("maintenance failed table=%s error=%r", spec.table_ref, exc)
 
         return TableMaintenanceResult(
             table_ref=spec.table_ref,
-            vacuum=vacuum_result,
-            compact=compact_result,
-            z_order=z_order_result,
+            op_results=op_results,
             error=error,
             duration_seconds=time.monotonic() - t0,
         )

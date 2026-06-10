@@ -19,9 +19,7 @@ if TYPE_CHECKING:
 def _expand_for_schemas(
     routes: Iterable[TableRoute],
     schemas: Iterable[str],
-    vacuum: VacuumSpec | None,
-    compact: CompactSpec | None,
-    z_order: ZOrderSpec | None,
+    ops: tuple[VacuumSpec | CompactSpec | ZOrderSpec, ...],
 ) -> list[MaintenanceSpec]:
     """Build one MaintenanceSpec per route whose name matches any schema prefix.
 
@@ -31,7 +29,7 @@ def _expand_for_schemas(
     """
     prefixes = tuple(f"{s}." for s in schemas)
     return [
-        MaintenanceSpec(table_ref=r.name, vacuum=vacuum, compact=compact, z_order=z_order)
+        MaintenanceSpec(table_ref=r.name, ops=ops)
         for r in routes
         if not prefixes or any(r.name.startswith(p) for p in prefixes)
     ]
@@ -54,9 +52,7 @@ class MaintainTable:
         if not table_ref.strip():
             raise ValueError("MaintainTable: table_ref must be a non-empty string")
         self._table_ref = table_ref
-        self._vacuum: VacuumSpec | None = None
-        self._compact: CompactSpec | None = None
-        self._z_order: ZOrderSpec | None = None
+        self._ops: list[VacuumSpec | CompactSpec | ZOrderSpec] = []
 
     # ------------------------------------------------------------------
     # Fluent setters
@@ -77,7 +73,7 @@ class MaintainTable:
             dry_run: When ``True`` (default), lists files without deleting.
                 Set ``dry_run=False`` explicitly for production runs.
         """
-        self._vacuum = VacuumSpec(retention_hours=retention_hours, dry_run=dry_run)
+        self._ops.append(VacuumSpec(retention_hours=retention_hours, dry_run=dry_run))
         return self
 
     def compact(self, target_size: int | None = None) -> MaintainTable:
@@ -85,7 +81,7 @@ class MaintainTable:
 
         Mutually exclusive with :meth:`z_order_by`.
         """
-        self._compact = CompactSpec(target_size=target_size)
+        self._ops.append(CompactSpec(target_size=target_size))
         return self
 
     def z_order_by(
@@ -104,7 +100,7 @@ class MaintainTable:
             raise ValueError(
                 f"MaintainTable({self._table_ref!r}): z_order_by requires at least one column"
             )
-        self._z_order = ZOrderSpec(columns=list(columns), target_size=target_size)
+        self._ops.append(ZOrderSpec(columns=list(columns), target_size=target_size))
         return self
 
     # ------------------------------------------------------------------
@@ -113,17 +109,14 @@ class MaintainTable:
 
     def _to_spec(self) -> MaintenanceSpec:
         """Compile to an immutable :class:`MaintenanceSpec`."""
-        if self._compact is not None and self._z_order is not None:
+        has_compact = any(isinstance(op, CompactSpec) for op in self._ops)
+        has_z_order = any(isinstance(op, ZOrderSpec) for op in self._ops)
+        if has_compact and has_z_order:
             raise TypeError(
                 f"MaintainTable({self._table_ref!r}): compact() and z_order_by() are "
                 "mutually exclusive — use one or the other"
             )
-        return MaintenanceSpec(
-            table_ref=self._table_ref,
-            vacuum=self._vacuum,
-            compact=self._compact,
-            z_order=self._z_order,
-        )
+        return MaintenanceSpec(table_ref=self._table_ref, ops=tuple(self._ops))
 
     def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
         """Implement :class:`~loom.etl.maintenance._protocol.OperationDeclaration`."""
@@ -154,9 +147,7 @@ class MaintainSchema:
         if not schema_prefix.strip():
             raise ValueError("MaintainSchema: schema_prefix must be a non-empty string")
         self._schema_prefix = schema_prefix.strip()
-        self._vacuum: VacuumSpec | None = None
-        self._compact: CompactSpec | None = None
-        self._z_order: ZOrderSpec | None = None
+        self._ops: list[VacuumSpec | CompactSpec | ZOrderSpec] = []
 
     # ------------------------------------------------------------------
     # Fluent setters (mirror MaintainTable)
@@ -169,7 +160,7 @@ class MaintainSchema:
         dry_run: bool = True,
     ) -> MaintainSchema:
         """Schedule a VACUUM step for all discovered tables."""
-        self._vacuum = VacuumSpec(retention_hours=retention_hours, dry_run=dry_run)
+        self._ops.append(VacuumSpec(retention_hours=retention_hours, dry_run=dry_run))
         return self
 
     def compact(self, target_size: int | None = None) -> MaintainSchema:
@@ -177,7 +168,7 @@ class MaintainSchema:
 
         Mutually exclusive with :meth:`z_order_by`.
         """
-        self._compact = CompactSpec(target_size=target_size)
+        self._ops.append(CompactSpec(target_size=target_size))
         return self
 
     def z_order_by(
@@ -193,7 +184,7 @@ class MaintainSchema:
             raise ValueError(
                 f"MaintainSchema({self._schema_prefix!r}): z_order_by requires at least one column"
             )
-        self._z_order = ZOrderSpec(columns=list(columns), target_size=target_size)
+        self._ops.append(ZOrderSpec(columns=list(columns), target_size=target_size))
         return self
 
     # ------------------------------------------------------------------
@@ -206,18 +197,14 @@ class MaintainSchema:
         Filters ``config.tables`` for routes whose ``name`` starts with
         ``{schema_prefix}.``.
         """
-        if self._compact is not None and self._z_order is not None:
+        has_compact = any(isinstance(op, CompactSpec) for op in self._ops)
+        has_z_order = any(isinstance(op, ZOrderSpec) for op in self._ops)
+        if has_compact and has_z_order:
             raise TypeError(
                 f"MaintainSchema({self._schema_prefix!r}): compact() and z_order_by() are "
                 "mutually exclusive — use one or the other"
             )
-        return _expand_for_schemas(
-            config.tables,
-            (self._schema_prefix,),
-            self._vacuum,
-            self._compact,
-            self._z_order,
-        )
+        return _expand_for_schemas(config.tables, (self._schema_prefix,), tuple(self._ops))
 
     def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
         """Implement :class:`~loom.etl.maintenance._protocol.OperationDeclaration`."""
