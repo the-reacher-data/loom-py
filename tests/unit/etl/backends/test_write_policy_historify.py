@@ -233,6 +233,15 @@ class TestHistorifyMissingTablePolicy:
         with pytest.raises(SchemaNotFoundError):
             writer.write([1], spec, None)
 
+    def test_missing_table_with_error_policy_raises_regardless_of_schema_mode(self) -> None:
+        for schema_mode in (SchemaMode.OVERWRITE, SchemaMode.STRICT):
+            writer = _StubWritePolicy(
+                schema_exists=False,
+                missing_table_policy=MissingTablePolicy.ERROR,
+            )
+            with pytest.raises(SchemaNotFoundError):
+                writer.write([1], _spec(schema_mode=schema_mode), None)
+
     def test_existing_table_always_delegates_to_historify(self) -> None:
         writer = _StubWritePolicy(schema_exists=True)
         writer.write([1], _spec(), None)
