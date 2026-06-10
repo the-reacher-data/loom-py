@@ -470,3 +470,90 @@ class TestRunnerCleaner:
         assert runner._checkpoint_store is not None
         runner._checkpoint_store.cleanup_run("run-xyz")
         assert any("run-xyz" in path for path in deleted)
+
+    def test_run_cleans_up_run_scope_checkpoints_on_success(self, tmp_path: Path) -> None:
+        import polars as pl
+        from deltalake import write_deltalake
+
+        from loom.etl.storage._config import MissingTablePolicy
+
+        deleted: list[str] = []
+
+        class SpyCleaner:
+            def delete_tree(self, path: str) -> None:
+                deleted.append(path)
+
+        src = tmp_path / "raw" / "items"
+        src.mkdir(parents=True)
+        write_deltalake(str(src), pl.DataFrame({"id": [1, 2]}), mode="overwrite")
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            missing_table_policy=MissingTablePolicy.CREATE,
+            temp=TempConfig(root="s3://fake-bucket/checkpoints"),
+        )
+        runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
+
+        class _P(ETLParams):
+            pass
+
+        class _Step(ETLStep[_P]):
+            items = FromTable("raw.items")
+            target = IntoTable("staging.out").replace()
+
+            def execute(self, params: _P, *, items: Any) -> Any:  # type: ignore[override]
+                return items
+
+        class _Proc(ETLProcess[_P]):
+            steps = [_Step]
+
+        class _Pipeline(ETLPipeline[_P]):
+            processes = [_Proc]
+
+        runner.run(_Pipeline, _P(), run_id="test-run-abc")
+
+        assert any("test-run-abc" in path for path in deleted)
+
+    def test_run_cleans_up_run_scope_checkpoints_on_failure(self, tmp_path: Path) -> None:
+        import polars as pl
+        from deltalake import write_deltalake
+
+        from loom.etl.storage._config import MissingTablePolicy
+
+        deleted: list[str] = []
+
+        class SpyCleaner:
+            def delete_tree(self, path: str) -> None:
+                deleted.append(path)
+
+        src = tmp_path / "raw" / "items"
+        src.mkdir(parents=True)
+        write_deltalake(str(src), pl.DataFrame({"id": [1]}), mode="overwrite")
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            missing_table_policy=MissingTablePolicy.CREATE,
+            temp=TempConfig(root="s3://fake-bucket/checkpoints"),
+        )
+        runner = ETLRunner.from_config(config, cleaner=SpyCleaner())
+
+        class _P(ETLParams):
+            pass
+
+        class _FailStep(ETLStep[_P]):
+            items = FromTable("raw.items")
+            target = IntoTable("staging.fail").replace()
+
+            def execute(self, params: _P, *, items: Any) -> Any:  # type: ignore[override]
+                raise RuntimeError("intentional failure")
+
+        class _Proc(ETLProcess[_P]):
+            steps = [_FailStep]
+
+        class _Pipeline(ETLPipeline[_P]):
+            processes = [_Proc]
+
+        with pytest.raises(RuntimeError, match="intentional failure"):
+            runner.run(_Pipeline, _P(), run_id="fail-run-xyz")
+
+        assert any("fail-run-xyz" in path for path in deleted)
