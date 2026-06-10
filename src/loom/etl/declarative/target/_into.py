@@ -82,38 +82,53 @@ class IntoTable:
         # Default write mode is REPLACE.  Call a write-mode method to change it.
         self._spec: Any = ReplaceSpec(table_ref=table_ref)
 
-    def append(self, *, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
+    def append(
+        self,
+        *,
+        schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
+    ) -> IntoTable:
         """Write mode: append rows to the target table.
 
         Args:
-            schema: Schema evolution strategy.  Defaults to
-                    :attr:`~SchemaMode.STRICT`.
+            schema:    Schema evolution strategy.  Defaults to
+                       :attr:`~SchemaMode.STRICT`.
+            streaming: When ``True`` the Polars backend writes via an Arrow
+                       ``RecordBatchReader`` instead of materialising.
 
         Returns:
             New ``IntoTable`` with APPEND mode.
         """
-        return self._with(AppendSpec(table_ref=self._ref, schema_mode=schema))
+        return self._with(AppendSpec(table_ref=self._ref, schema_mode=schema, streaming=streaming))
 
-    def replace(self, *, schema: SchemaMode = SchemaMode.STRICT) -> IntoTable:
+    def replace(
+        self,
+        *,
+        schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
+    ) -> IntoTable:
         """Write mode: full replace of the target table.
 
         Overwrites all data in the table.  Use :meth:`replace_partitions` for
         partition-scoped overwrite or :meth:`replace_where` for predicate-scoped.
 
         Args:
-            schema: Schema evolution strategy.  Use
-                    :attr:`~SchemaMode.OVERWRITE` to replace the table schema
-                    entirely alongside the data.
+            schema:    Schema evolution strategy.  Use
+                       :attr:`~SchemaMode.OVERWRITE` to replace the table schema
+                       entirely alongside the data.
+            streaming: When ``True`` the Polars backend writes via an Arrow
+                       ``RecordBatchReader`` instead of materialising.
 
         Returns:
             New ``IntoTable`` with REPLACE mode.
         """
-        return self._with(ReplaceSpec(table_ref=self._ref, schema_mode=schema))
+        return self._with(ReplaceSpec(table_ref=self._ref, schema_mode=schema, streaming=streaming))
 
     def replace_partitions(
         self,
         *cols: str,
         schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
     ) -> IntoTable:
         """Write mode: replace the partitions present in the batch frame.
 
@@ -144,6 +159,7 @@ class IntoTable:
                 table_ref=self._ref,
                 partition_cols=cols,
                 schema_mode=schema,
+                streaming=streaming,
             )
         )
 
@@ -200,6 +216,7 @@ class IntoTable:
         predicate: PredicateNode,
         *,
         schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
     ) -> IntoTable:
         """Write mode: replace rows matching an explicit predicate.
 
@@ -228,6 +245,7 @@ class IntoTable:
                 table_ref=self._ref,
                 replace_predicate=predicate,
                 schema_mode=schema,
+                streaming=streaming,
             )
         )
 

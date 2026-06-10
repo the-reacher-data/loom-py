@@ -22,10 +22,16 @@ class AppendSpec:
     Args:
         table_ref:   Logical table reference.
         schema_mode: Schema evolution strategy.  Defaults to ``STRICT``.
+        streaming:   When ``True`` requests a streaming Arrow write.  In
+                     this release the Polars backend honours the flag
+                     only for :class:`ReplacePartitionsSpec`; other modes
+                     accept the flag for forward-compatibility but still
+                     materialise the frame.
     """
 
     table_ref: TableRef
     schema_mode: SchemaMode = SchemaMode.STRICT
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,10 +42,16 @@ class ReplaceSpec:
         table_ref:   Logical table reference.
         schema_mode: Schema evolution strategy.  ``OVERWRITE`` replaces the
                      table schema alongside the data.
+        streaming:   When ``True`` requests a streaming Arrow write.  In
+                     this release the Polars backend honours the flag
+                     only for :class:`ReplacePartitionsSpec`; other modes
+                     accept the flag for forward-compatibility but still
+                     materialise the frame.
     """
 
     table_ref: TableRef
     schema_mode: SchemaMode = SchemaMode.STRICT
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,11 +65,16 @@ class ReplacePartitionsSpec:
         table_ref:      Logical table reference.
         partition_cols: Partition columns used to build the predicate.
         schema_mode:    Schema evolution strategy.
+        streaming:      When ``True`` the Polars backend writes via an
+                        Arrow ``RecordBatchReader`` and computes the
+                        partition predicate via a cheap projection over
+                        the spool, bounding peak memory.
     """
 
     table_ref: TableRef
     partition_cols: tuple[str, ...]
     schema_mode: SchemaMode = SchemaMode.STRICT
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,11 +88,18 @@ class ReplaceWhereSpec:
         table_ref:         Logical table reference.
         replace_predicate: Predicate node built with the col/params DSL.
         schema_mode:       Schema evolution strategy.
+        streaming:         When ``True`` requests a streaming Arrow write.
+                           In this release the Polars backend honours
+                           the flag only for
+                           :class:`ReplacePartitionsSpec`; other modes
+                           accept the flag for forward-compatibility but
+                           still materialise the frame.
     """
 
     table_ref: TableRef
     replace_predicate: PredicateNode
     schema_mode: SchemaMode = SchemaMode.STRICT
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
