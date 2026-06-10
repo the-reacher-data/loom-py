@@ -1,3 +1,20 @@
+# 🚀 Release 0.10.2 ([#46](https://github.com/the-reacher-data/loom-py/pull/46)) ([`0fa17f5`](https://github.com/the-reacher-data/loom-py/commit/0fa17f5735be843e68ba446993bb41f2d107c33b))
+
+
+## ✨ Features
+### polars
+- **polars:** streaming Arrow writes for replace_partitions
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.10.1 ([#44](https://github.com/the-reacher-data/loom-py/pull/44)) ([`a55cd27`](https://github.com/the-reacher-data/loom-py/commit/a55cd27020dee60aea6849b510500e7e6f5a83b2))
 
 
