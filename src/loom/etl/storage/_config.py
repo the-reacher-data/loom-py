@@ -34,6 +34,7 @@ class MissingTablePolicy(StrEnum):
 
     SCHEMA_MODE = "schema_mode"
     CREATE = "create"
+    ERROR = "error"
 
 
 class CatalogConnection(LoomFrozenStruct, frozen=True):

@@ -242,6 +242,15 @@ def test_writer_append_first_write_requires_create_policy(tmp_path: Path) -> Non
         writer.append(frame, TableRef("staging.append_first"), None)
 
 
+def test_writer_error_policy_blocks_creation_even_with_overwrite_schema(tmp_path: Path) -> None:
+    writer = PolarsTargetWriter(tmp_path, missing_table_policy=MissingTablePolicy.ERROR)
+    frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
+    spec = ReplaceSpec(table_ref=TableRef("staging.must_exist"), schema_mode=SchemaMode.OVERWRITE)
+
+    with pytest.raises(SchemaNotFoundError):
+        writer.write(frame, spec, None)
+
+
 def test_writer_append_creates_table_on_first_write(tmp_path: Path) -> None:
     writer = PolarsTargetWriter(tmp_path, missing_table_policy=MissingTablePolicy.CREATE)
     frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
