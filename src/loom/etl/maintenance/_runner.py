@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from loom.etl.storage._locator import TableLocator
 
 from loom.etl.declarative.expr._refs import TableRef
-from loom.etl.maintenance._builder import MaintainSchema
 from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
 from loom.etl.maintenance._protocol import (
     OptimizeResult,
@@ -213,13 +212,9 @@ class MaintenanceRunner:
     def _resolve_specs(
         self, step_cls: type[MaintenanceStep[Any]], params: Any
     ) -> list[MaintenanceSpec]:
-        specs: list[MaintenanceSpec] = []
-        for op in step_cls().operations_for(params):
-            if isinstance(op, MaintainSchema):
-                specs.extend(op._expand(self._config))
-            else:
-                specs.append(op._to_spec())
-        return specs
+        return [
+            spec for op in step_cls().operations_for(params) for spec in op.resolve(self._config)
+        ]
 
     def _run_one(self, spec: MaintenanceSpec) -> TableMaintenanceResult:
         """Execute all ops for one table, catching errors per table."""

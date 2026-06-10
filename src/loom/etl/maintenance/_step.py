@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Generic, TypeVar
 
-from loom.etl.maintenance._builder import MaintainSchema, MaintainTable
+from loom.etl.maintenance._protocol import OperationDeclaration
 from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")
@@ -39,7 +39,7 @@ class MaintenanceStep(Generic[ParamsT]):
         report.raise_if_errors()
     """
 
-    operations: ClassVar[list[MaintainTable | MaintainSchema]] = []
+    operations: ClassVar[list[OperationDeclaration]] = []
     _params_type: ClassVar[type[Any] | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -47,7 +47,7 @@ class MaintenanceStep(Generic[ParamsT]):
         cls._params_type = _extract_params_type(cls)
         _validate_operations(cls)
 
-    def operations_for(self, params: ParamsT) -> list[MaintainTable | MaintainSchema]:
+    def operations_for(self, params: ParamsT) -> list[OperationDeclaration]:
         """Return the list of operations to execute for this run.
 
         Override to build the list dynamically from *params* — useful when
@@ -72,15 +72,15 @@ def _extract_params_type(cls: type[Any]) -> type[Any] | None:
 
 
 def _validate_operations(cls: type[Any]) -> None:
-    """Ensure ``operations`` is a list of MaintainTable / MaintainSchema."""
+    """Ensure ``operations`` is a list of OperationDeclaration implementors."""
     ops = cls.__dict__.get("operations", cls.operations)
     if not isinstance(ops, list):
         raise TypeError(
             f"{cls.__qualname__}: 'operations' must be a list, got {type(ops).__name__}"
         )
     for idx, op in enumerate(ops):
-        if not isinstance(op, (MaintainTable, MaintainSchema)):
+        if not isinstance(op, OperationDeclaration):
             raise TypeError(
-                f"{cls.__qualname__}: operations[{idx}] must be MaintainTable or "
-                f"MaintainSchema, got {type(op).__name__}"
+                f"{cls.__qualname__}: operations[{idx}] must implement OperationDeclaration "
+                f"(MaintainTable or MaintainSchema), got {type(op).__name__}"
             )

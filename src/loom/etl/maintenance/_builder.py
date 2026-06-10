@@ -103,6 +103,11 @@ class MaintainTable:
             z_order=self._z_order,
         )
 
+    def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
+        """Implement :class:`~loom.etl.maintenance._protocol.OperationDeclaration`."""
+        _ = config  # MaintainTable is explicit — no config needed
+        return [self._to_spec()]
+
     def __repr__(self) -> str:
         return f"MaintainTable({self._table_ref!r})"
 
@@ -197,6 +202,10 @@ class MaintainSchema:
                     )
                 )
         return specs
+
+    def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
+        """Implement :class:`~loom.etl.maintenance._protocol.OperationDeclaration`."""
+        return self._expand(config)
 
     def __repr__(self) -> str:
         return f"MaintainSchema({self._schema_prefix!r})"

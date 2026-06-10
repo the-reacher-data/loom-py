@@ -42,6 +42,7 @@ Example::
 from loom.etl.maintenance._builder import MaintainSchema, MaintainTable
 from loom.etl.maintenance._protocol import (
     DeltaTableMaintainer,
+    OperationDeclaration,
     OptimizeResult,
     TableMaintenanceResult,
     VacuumResult,
@@ -62,6 +63,7 @@ __all__ = [
     "VacuumResult",
     "OptimizeResult",
     "TableMaintenanceResult",
-    # protocol (for custom backends)
+    # protocols
     "DeltaTableMaintainer",
+    "OperationDeclaration",
 ]

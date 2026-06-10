@@ -6,8 +6,21 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from loom.etl.maintenance._ops import CompactSpec, VacuumSpec, ZOrderSpec
+    from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
+    from loom.etl.storage._config import StorageConfig
     from loom.etl.storage._locator import TableLocation
+
+
+@runtime_checkable
+class OperationDeclaration(Protocol):
+    """Unified interface for declarative operation builders.
+
+    Both :class:`~loom.etl.maintenance.MaintainTable` and
+    :class:`~loom.etl.maintenance.MaintainSchema` implement this Protocol
+    so the runner can iterate them uniformly without isinstance branching.
+    """
+
+    def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]: ...
 
 
 @dataclass
