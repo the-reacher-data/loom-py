@@ -236,7 +236,8 @@ class ClickHouseSourceReader(SourceReader):
             rows = 0
             batches = 0
             try:
-                with pa.ipc.new_file(tmp, first_chunk.schema) as writer:
+                _ipc_opts = pa.ipc.IpcWriteOptions(compression="lz4")
+                with pa.ipc.new_file(tmp, first_chunk.schema, options=_ipc_opts) as writer:
                     rows += ClickHouseSourceReader._write_arrow_chunk(writer, first_chunk)
                     batches += 1
                     for chunk in iterator:
