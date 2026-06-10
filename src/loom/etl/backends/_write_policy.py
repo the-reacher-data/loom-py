@@ -62,6 +62,8 @@ def _can_create_missing_table(
     missing_table_policy: MissingTablePolicy,
 ) -> bool:
     """Return ``True`` when table creation is allowed for missing destination."""
+    if missing_table_policy is MissingTablePolicy.ERROR:
+        return False
     return missing_table_policy is MissingTablePolicy.CREATE or schema_mode is SchemaMode.OVERWRITE
 
 
