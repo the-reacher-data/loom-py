@@ -21,6 +21,15 @@ _log = logging.getLogger(__name__)
 class DeltaRsMaintainer:
     """Execute maintenance operations via the ``deltalake`` Python package (delta-rs)."""
 
+    def _open(
+        self, uri: str, location: TableLocation
+    ) -> tuple[DeltaTable, WriterProperties | None, CommitProperties | None]:
+        """Open a DeltaTable and build write-time config objects from location."""
+        dt = DeltaTable(uri, storage_options=location.storage_options or {})
+        writer = WriterProperties(**location.writer) if location.writer else None
+        commit = CommitProperties(**location.commit) if location.commit else None
+        return dt, writer, commit
+
     def vacuum(
         self,
         uri: str,
@@ -28,8 +37,7 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> VacuumResult:
         """Run VACUUM on the Delta table at *uri*."""
-        dt = DeltaTable(uri, storage_options=location.storage_options or {})
-        commit = CommitProperties(**location.commit) if location.commit else None
+        dt, _writer, commit = self._open(uri, location)
         deleted = dt.vacuum(
             retention_hours=spec.retention_hours,
             dry_run=spec.dry_run,
@@ -45,9 +53,7 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> OptimizeResult:
         """Run bin-packing compaction on the Delta table at *uri*."""
-        dt = DeltaTable(uri, storage_options=location.storage_options or {})
-        writer = WriterProperties(**location.writer) if location.writer else None
-        commit = CommitProperties(**location.commit) if location.commit else None
+        dt, writer, commit = self._open(uri, location)
         result = dt.optimize.compact(
             target_size=spec.target_size,
             writer_properties=writer,
@@ -71,9 +77,7 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> OptimizeResult:
         """Run Z-Order clustering on the Delta table at *uri*."""
-        dt = DeltaTable(uri, storage_options=location.storage_options or {})
-        writer = WriterProperties(**location.writer) if location.writer else None
-        commit = CommitProperties(**location.commit) if location.commit else None
+        dt, writer, commit = self._open(uri, location)
         result = dt.optimize.z_order(
             columns=spec.columns,
             target_size=spec.target_size,

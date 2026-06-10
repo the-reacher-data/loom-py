@@ -7,12 +7,34 @@ instances of :class:`MaintainTable` (explicit single table) or
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
 
 if TYPE_CHECKING:
-    from loom.etl.storage._config import StorageConfig
+    from loom.etl.storage._config import StorageConfig, TableRoute
+
+
+def _expand_for_schemas(
+    routes: Iterable[TableRoute],
+    schemas: Iterable[str],
+    vacuum: VacuumSpec | None,
+    compact: CompactSpec | None,
+    z_order: ZOrderSpec | None,
+) -> list[MaintenanceSpec]:
+    """Build one MaintenanceSpec per route whose name matches any schema prefix.
+
+    An empty *schemas* iterable matches all routes (no prefix filtering).
+    Prefix matching uses ``name.startswith(f"{schema}.")`` so ``"raw"``
+    matches ``"raw.events"`` but not ``"raw_backup.events"``.
+    """
+    prefixes = tuple(f"{s}." for s in schemas)
+    return [
+        MaintenanceSpec(table_ref=r.name, vacuum=vacuum, compact=compact, z_order=z_order)
+        for r in routes
+        if not prefixes or any(r.name.startswith(p) for p in prefixes)
+    ]
 
 
 class MaintainTable:
@@ -189,19 +211,13 @@ class MaintainSchema:
                 f"MaintainSchema({self._schema_prefix!r}): compact() and z_order_by() are "
                 "mutually exclusive — use one or the other"
             )
-        prefix = f"{self._schema_prefix}."
-        specs = []
-        for route in config.tables:
-            if route.name.startswith(prefix):
-                specs.append(
-                    MaintenanceSpec(
-                        table_ref=route.name,
-                        vacuum=self._vacuum,
-                        compact=self._compact,
-                        z_order=self._z_order,
-                    )
-                )
-        return specs
+        return _expand_for_schemas(
+            config.tables,
+            (self._schema_prefix,),
+            self._vacuum,
+            self._compact,
+            self._z_order,
+        )
 
     def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
         """Implement :class:`~loom.etl.maintenance._protocol.OperationDeclaration`."""

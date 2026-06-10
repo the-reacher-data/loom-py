@@ -11,9 +11,10 @@ if TYPE_CHECKING:
     from loom.etl.maintenance._protocol import DeltaTableMaintainer
     from loom.etl.maintenance._step import MaintenanceStep
     from loom.etl.storage._config import StorageConfig
-    from loom.etl.storage._locator import TableLocator
+    from loom.etl.storage._locator import TableLocation, TableLocator
 
 from loom.etl.declarative.expr._refs import TableRef
+from loom.etl.maintenance._builder import _expand_for_schemas
 from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
 from loom.etl.maintenance._protocol import (
     OptimizeResult,
@@ -172,13 +173,11 @@ class MaintenanceRunner:
             _log.debug("run_from_config: no maintenance config — skipping")
             return MaintenanceReport()
 
-        vacuum_spec: VacuumSpec | None = None
-        if mc.vacuum is not None:
-            vacuum_spec = VacuumSpec(
-                retention_hours=mc.vacuum.retention_hours,
-                dry_run=mc.vacuum.dry_run,
-            )
-
+        vacuum_spec = (
+            VacuumSpec(retention_hours=mc.vacuum.retention_hours, dry_run=mc.vacuum.dry_run)
+            if mc.vacuum
+            else None
+        )
         compact_spec: CompactSpec | None = CompactSpec() if mc.compact else None
         z_order_spec: ZOrderSpec | None = (
             ZOrderSpec(columns=list(mc.z_order_by)) if mc.z_order_by else None
@@ -189,21 +188,14 @@ class MaintenanceRunner:
                 "StorageConfig.maintenance: compact and z_order_by are mutually exclusive"
             )
 
-        specs: list[MaintenanceSpec] = []
-        prefixes = [f"{s}." for s in mc.schemas] if mc.schemas else [""]
-        for route in self._config.tables:
-            if any(route.name.startswith(p) for p in prefixes):
-                specs.append(
-                    MaintenanceSpec(
-                        table_ref=route.name,
-                        vacuum=vacuum_spec,
-                        compact=compact_spec,
-                        z_order=z_order_spec,
-                    )
-                )
-
-        results = [self._run_one(spec) for spec in specs]
-        return MaintenanceReport(results=results)
+        specs = _expand_for_schemas(
+            self._config.tables,
+            mc.schemas,
+            vacuum_spec,
+            compact_spec,
+            z_order_spec,
+        )
+        return MaintenanceReport(results=[self._run_one(spec) for spec in specs])
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -216,15 +208,25 @@ class MaintenanceRunner:
             spec for op in step_cls().operations_for(params) for spec in op.resolve(self._config)
         ]
 
-    def _run_one(self, spec: MaintenanceSpec) -> TableMaintenanceResult:
-        """Execute all ops for one table, catching errors per table."""
+    def _resolve_location(self, table_ref: str) -> TableLocation | None:
+        """Resolve *table_ref* to a TableLocation, applying missing_table_policy.
+
+        Returns ``None`` when the table is absent and policy is ``"skip"``.
+        Raises the underlying exception when policy is ``"error"``.
+        """
         try:
-            location = self._locator.locate(TableRef(spec.table_ref))
+            return self._locator.locate(TableRef(table_ref))
         except Exception as exc:
             if self._missing_table_policy == "skip":
-                _log.warning("maintenance skip table=%s reason=%r", spec.table_ref, exc)
-                return TableMaintenanceResult(table_ref=spec.table_ref)
+                _log.warning("maintenance skip table=%s reason=%r", table_ref, exc)
+                return None
             raise
+
+    def _run_one(self, spec: MaintenanceSpec) -> TableMaintenanceResult:
+        """Execute all ops for one table, catching errors per table."""
+        location = self._resolve_location(spec.table_ref)
+        if location is None:
+            return TableMaintenanceResult(table_ref=spec.table_ref)
 
         t0 = time.monotonic()
         vacuum_result: VacuumResult | None = None
