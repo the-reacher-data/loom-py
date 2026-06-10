@@ -199,7 +199,16 @@ class ETLRunner:
         try:
             self._executor.run_pipeline(plan, params, ctx)
         finally:
-            flush_runner(self)
+            try:
+                flush_runner(self)
+            finally:
+                if self._checkpoint_store is not None:
+                    try:
+                        self._checkpoint_store.cleanup_run(ctx.run_id)
+                    except Exception:
+                        _log.warning(
+                            "checkpoint cleanup failed run_id=%s", ctx.run_id, exc_info=True
+                        )
 
     def flush(self) -> None:
         """Flush buffered ETL observability sinks after a run."""
