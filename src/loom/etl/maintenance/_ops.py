@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from loom.etl.maintenance._protocol import DeltaTableMaintainer, OptimizeResult, VacuumResult
+    from loom.etl.maintenance._protocol import (
+        DeltaTableMaintainer,
+        OpSpec,
+        OptimizeResult,
+        VacuumResult,
+    )
     from loom.etl.storage._locator import TableLocation
 
 
@@ -91,4 +96,4 @@ class MaintenanceSpec:
     """
 
     table_ref: str
-    ops: tuple[VacuumSpec | CompactSpec | ZOrderSpec, ...] = ()
+    ops: tuple[OpSpec, ...] = ()

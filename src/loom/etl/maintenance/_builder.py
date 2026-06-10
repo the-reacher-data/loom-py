@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from loom.etl.storage._config import StorageConfig, TableRoute
 
 
+def _assert_no_conflicting_ops(
+    ops: list[VacuumSpec | CompactSpec | ZOrderSpec], owner: str
+) -> None:
+    """Raise TypeError when both compact and z_order ops are declared."""
+    has_compact = any(isinstance(op, CompactSpec) for op in ops)
+    has_z_order = any(isinstance(op, ZOrderSpec) for op in ops)
+    if has_compact and has_z_order:
+        raise TypeError(f"{owner}: compact() and z_order_by() are mutually exclusive")
+
+
 def _expand_for_schemas(
     routes: Iterable[TableRoute],
     schemas: Iterable[str],
@@ -109,13 +119,7 @@ class MaintainTable:
 
     def _to_spec(self) -> MaintenanceSpec:
         """Compile to an immutable :class:`MaintenanceSpec`."""
-        has_compact = any(isinstance(op, CompactSpec) for op in self._ops)
-        has_z_order = any(isinstance(op, ZOrderSpec) for op in self._ops)
-        if has_compact and has_z_order:
-            raise TypeError(
-                f"MaintainTable({self._table_ref!r}): compact() and z_order_by() are "
-                "mutually exclusive — use one or the other"
-            )
+        _assert_no_conflicting_ops(self._ops, f"MaintainTable({self._table_ref!r})")
         return MaintenanceSpec(table_ref=self._table_ref, ops=tuple(self._ops))
 
     def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
@@ -197,13 +201,7 @@ class MaintainSchema:
         Filters ``config.tables`` for routes whose ``name`` starts with
         ``{schema_prefix}.``.
         """
-        has_compact = any(isinstance(op, CompactSpec) for op in self._ops)
-        has_z_order = any(isinstance(op, ZOrderSpec) for op in self._ops)
-        if has_compact and has_z_order:
-            raise TypeError(
-                f"MaintainSchema({self._schema_prefix!r}): compact() and z_order_by() are "
-                "mutually exclusive — use one or the other"
-            )
+        _assert_no_conflicting_ops(self._ops, f"MaintainSchema({self._schema_prefix!r})")
         return _expand_for_schemas(config.tables, (self._schema_prefix,), tuple(self._ops))
 
     def resolve(self, config: StorageConfig) -> list[MaintenanceSpec]:
