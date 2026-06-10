@@ -8,13 +8,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from loom.etl.maintenance._ops import MaintenanceSpec
     from loom.etl.maintenance._protocol import DeltaTableMaintainer
     from loom.etl.maintenance._step import MaintenanceStep
     from loom.etl.storage._config import StorageConfig
     from loom.etl.storage._locator import TableLocator
 
+from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.maintenance._builder import MaintainSchema
+from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
 from loom.etl.maintenance._protocol import (
     OptimizeResult,
     TableMaintenanceResult,
@@ -115,7 +116,10 @@ class MaintenanceRunner:
             ValueError: If *config* has no path routes configured
                 (only catalog/UC refs, which delta-rs cannot resolve directly).
         """
-        from loom.etl.maintenance.backends._delta_rs import DeltaRsMaintainer
+        # DeltaRsMaintainer is imported lazily here so that importing
+        # MaintenanceRunner does not force the [delta] extra for users who only
+        # use type annotations or subclass MaintenanceStep without running it.
+        from loom.etl.maintenance.backends._delta_rs import DeltaRsMaintainer  # noqa: PLC0415
 
         locator = config.to_path_locator()
         return cls(
@@ -132,7 +136,7 @@ class MaintenanceRunner:
     def run(
         self,
         step_cls: type[MaintenanceStep[Any]],
-        params: Any = None,  # noqa: ARG002 — reserved for future parameterisation
+        params: Any = None,
     ) -> MaintenanceReport:
         """Execute all operations declared on *step_cls*.
 
@@ -164,8 +168,6 @@ class MaintenanceRunner:
         Returns an empty :class:`MaintenanceReport` when no ``maintenance``
         config is defined or no matching tables are found.
         """
-        from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
-
         mc = self._config.maintenance
         if not mc.schemas and not mc.vacuum and not mc.compact and not mc.z_order_by:
             _log.debug("run_from_config: no maintenance config — skipping")
@@ -221,8 +223,6 @@ class MaintenanceRunner:
 
     def _run_one(self, spec: MaintenanceSpec) -> TableMaintenanceResult:
         """Execute all ops for one table, catching errors per table."""
-        from loom.etl.declarative.expr._refs import TableRef
-
         try:
             location = self._locator.locate(TableRef(spec.table_ref))
         except Exception as exc:

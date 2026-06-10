@@ -1,19 +1,19 @@
 """delta-rs (deltalake) implementation of DeltaTableMaintainer.
 
-All deltalake imports are lazy (inside method bodies) so that importing
-``loom.etl.maintenance`` does not force the ``deltalake`` package at module
-load time for users who haven't installed the ``[delta]`` extra.
+This module is only imported when DeltaRsMaintainer is used — it is not part
+of the ``loom.etl.maintenance`` top-level import path — so importing deltalake
+at module level is safe and avoids hidden lazy-import latency at call time.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from loom.etl.maintenance._ops import CompactSpec, VacuumSpec, ZOrderSpec
-    from loom.etl.maintenance._protocol import OptimizeResult, VacuumResult
-    from loom.etl.storage._locator import TableLocation
+from deltalake import CommitProperties, DeltaTable, WriterProperties
+
+from loom.etl.maintenance._ops import CompactSpec, VacuumSpec, ZOrderSpec
+from loom.etl.maintenance._protocol import OptimizeResult, VacuumResult
+from loom.etl.storage._locator import TableLocation
 
 _log = logging.getLogger(__name__)
 
@@ -28,10 +28,6 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> VacuumResult:
         """Run VACUUM on the Delta table at *uri*."""
-        from deltalake import CommitProperties, DeltaTable
-
-        from loom.etl.maintenance._protocol import VacuumResult
-
         dt = DeltaTable(uri, storage_options=location.storage_options or {})
         commit = CommitProperties(**location.commit) if location.commit else None
         deleted = dt.vacuum(
@@ -39,12 +35,7 @@ class DeltaRsMaintainer:
             dry_run=spec.dry_run,
             commit_properties=commit,
         )
-        _log.info(
-            "vacuum uri=%s dry_run=%s files=%d",
-            uri,
-            spec.dry_run,
-            len(deleted),
-        )
+        _log.info("vacuum uri=%s dry_run=%s files=%d", uri, spec.dry_run, len(deleted))
         return VacuumResult(files_deleted=deleted)
 
     def compact(
@@ -54,10 +45,6 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> OptimizeResult:
         """Run bin-packing compaction on the Delta table at *uri*."""
-        from deltalake import CommitProperties, DeltaTable, WriterProperties
-
-        from loom.etl.maintenance._protocol import OptimizeResult
-
         dt = DeltaTable(uri, storage_options=location.storage_options or {})
         writer = WriterProperties(**location.writer) if location.writer else None
         commit = CommitProperties(**location.commit) if location.commit else None
@@ -84,10 +71,6 @@ class DeltaRsMaintainer:
         location: TableLocation,
     ) -> OptimizeResult:
         """Run Z-Order clustering on the Delta table at *uri*."""
-        from deltalake import CommitProperties, DeltaTable, WriterProperties
-
-        from loom.etl.maintenance._protocol import OptimizeResult
-
         dt = DeltaTable(uri, storage_options=location.storage_options or {})
         writer = WriterProperties(**location.writer) if location.writer else None
         commit = CommitProperties(**location.commit) if location.commit else None
