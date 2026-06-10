@@ -1,3 +1,55 @@
+# 🚀 Release 0.10.3 ([#48](https://github.com/the-reacher-data/loom-py/pull/48)) ([`15c54d0`](https://github.com/the-reacher-data/loom-py/commit/15c54d09d74297bac63508a11b23ec5048b8128a))
+
+
+## ✨ Features
+### polars
+- **polars:** streaming Arrow writes for replace_partitions<br>
+  > Adds a target-level streaming flag on AppendSpec/ReplaceSpec/
+  > ReplacePartitionsSpec/ReplaceWhereSpec (UpsertSpec excluded — MERGE has
+  > no streaming source path in delta-rs). The Polars backend honours the
+  > flag today for replace_partitions against existing tables: the
+  > LazyFrame is sunk to a lz4-compressed IPC spool and re-opened as a
+  > pyarrow.RecordBatchReader passed straight to write_deltalake, bounding
+  > peak RAM to roughly one batch + delta-rs internals.
+  > Partition predicate is computed via a projection-pushdown scan over the
+  > same spool. Schema alignment and the Null-dtype guard run lazily on the
+  > LazyFrame before the sink. Other modes accept the flag for forward
+  > compatibility but still materialise the frame.
+  > Spool directory is configurable via LOOM_SPOOL_DIR so container
+  > workloads with a tmpfs /tmp (Fargate) can spill to a real disk.
+  > Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### clickhouse
+- **clickhouse:** compress streaming IPC spool with lz4<br>
+  > The read_streaming path spooled Arrow IPC files without compression,
+  > producing ~10-15 GB temporary files for large ClickHouse result sets
+  > (e.g. 19M-row CDC tables). Combined with a second lz4-compressed spool
+  > from the downstream streaming Delta write, total ephemeral disk usage
+  > exceeded 20 GB on Fargate tasks.
+  > Adding lz4 compression to the CH spool reduces it ~3x (~4-5 GB),
+  > bringing the combined footprint to ~8-10 GB — within the Fargate
+  > default ephemeral limit without requiring task definition changes.
+  > Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+## 🔖 Other
+- chore(version) Update version<br>
+  > --------
+  > Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+
+
 # 🚀 Release 0.10.2 ([#46](https://github.com/the-reacher-data/loom-py/pull/46)) ([`0fa17f5`](https://github.com/the-reacher-data/loom-py/commit/0fa17f5735be843e68ba446993bb41f2d107c33b))
 
 
