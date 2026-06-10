@@ -1,3 +1,40 @@
+# 🚀 Release 0.10.4 ([#52](https://github.com/the-reacher-data/loom-py/pull/52)) ([`3bf88be`](https://github.com/the-reacher-data/loom-py/commit/3bf88bee9210893dbf9522c1cf5c0424c069e43e))
+
+
+## ✨ Features
+### storage
+- **storage:** add MissingTablePolicy.ERROR to block auto-creation<br>
+  > Tables must be pre-created via the catalog process. With schema_mode,
+  > steps using SchemaMode.OVERWRITE could silently create tables bypassing
+  > catalog governance. ERROR unconditionally blocks creation regardless of
+  > the step's schema_mode.
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### runner
+- **runner:** cleanup RUN-scope checkpoints in ETLRunner.run() finally block<br>
+  > CheckpointScope.RUN promises cleanup 'in the finally block of every
+  > pipeline run' but ETLRunner.run() never called cleanup_run(). RUN-scope
+  > checkpoint files accumulated in S3 indefinitely after every run.
+  > Wrap flush_runner in its own try/finally so cleanup always executes
+  > even if the observability flush raises. Cleanup errors are caught and
+  > logged as warnings to avoid masking the original pipeline exception.
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.10.3 ([#48](https://github.com/the-reacher-data/loom-py/pull/48)) ([`15c54d0`](https://github.com/the-reacher-data/loom-py/commit/15c54d09d74297bac63508a11b23ec5048b8128a))
 
 
