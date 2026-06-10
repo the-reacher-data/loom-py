@@ -29,7 +29,11 @@ from loom.etl.backends.polars._schema import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
-from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
+from loom.etl.declarative.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    UpsertSpec,
+)
 from loom.etl.lineage._records import LineageRecord, WriteContext, get_lineage_schema
 from loom.etl.schema._schema import SchemaError
 from loom.etl.storage import (
@@ -46,6 +50,7 @@ from loom.etl.storage._locator import TableLocator, _as_locator
 
 from ._dtype import loom_type_to_polars
 from ._file_writer import PolarsFileWriter
+from ._streaming import partition_rows_from_spool, spool_lazy_to_arrow_reader
 
 _log = get_logger(__name__)
 
@@ -86,6 +91,27 @@ def _log_write_commit(mode: str, location: TableLocation) -> None:
         )
     except Exception:  # noqa: BLE001
         _log.info("delta write commit", mode=mode, uri=location.uri, metrics="unavailable")
+
+
+def _check_null_dtype_columns_lazy(frame: pl.LazyFrame) -> None:
+    """Lazy variant of :func:`_check_null_dtype_columns`.
+
+    Raises :exc:`~loom.etl.schema.SchemaError` if any column in the lazy
+    schema has dtype ``Null``.  Operates on ``collect_schema()`` (metadata
+    only), so it is safe to call on a frame about to be streamed.
+    """
+    schema = frame.collect_schema()
+    null_cols = [name for name, dtype in schema.items() if isinstance(dtype, pl.Null)]
+    if not null_cols:
+        return
+    schema_repr = "\n".join(f"  {n}: {d}" for n, d in schema.items())
+    raise SchemaError(
+        f"Delta Lake does not support the Null dtype. "
+        f"Column(s) with Null dtype: {null_cols}.\n"
+        f"Cast each column to its intended type before writing "
+        f"(use an explicit schema declaration or .cast() in the pipeline step).\n"
+        f"Full frame schema:\n{schema_repr}"
+    )
 
 
 def _check_null_dtype_columns(frame: pl.DataFrame) -> None:
@@ -188,6 +214,74 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         df = frame.collect(engine="streaming" if streaming else "auto")
         _check_null_dtype_columns(df)
         return df
+
+    def _do_replace_partitions(
+        self,
+        frame: pl.LazyFrame,
+        target: ResolvedTarget,
+        spec: ReplacePartitionsSpec,
+        streaming: bool,
+    ) -> None:
+        if not spec.streaming:
+            super()._do_replace_partitions(frame, target, spec, streaming)
+            return
+
+        existing = self._physical_schema(target)
+        if existing is None:
+            super()._do_replace_partitions(frame, target, spec, streaming)
+            return
+
+        aligned = self._align(frame, existing, spec.schema_mode)
+        _check_null_dtype_columns_lazy(aligned)
+        self._streaming_replace_partitions(aligned, target, spec)
+
+    def _streaming_replace_partitions(
+        self,
+        frame: pl.LazyFrame,
+        target: ResolvedTarget,
+        spec: ReplacePartitionsSpec,
+    ) -> None:
+        path_target = self._as_path_target(target)
+        location = path_target.location
+        with spool_lazy_to_arrow_reader(frame) as spool:
+            partition_rows = partition_rows_from_spool(spool.spool_path, spec.partition_cols)
+            if not partition_rows:
+                _log.warning("replace_partitions empty frame", table=location.uri)
+                return
+            null_rows = [r for r in partition_rows if any(v is None for v in r.values())]
+            if null_rows:
+                sample = null_rows[:5]
+                more = (
+                    f" (+{len(null_rows) - len(sample)} more)"
+                    if len(null_rows) > len(sample)
+                    else ""
+                )
+                raise ValueError(
+                    f"replace_partitions: null values in partition columns "
+                    f"{spec.partition_cols} for table {path_target}. Null partition "
+                    f"values cannot be used as a replace predicate. Ensure all "
+                    f"partition columns are non-null before writing. "
+                    f"Offending rows: {sample}{more}"
+                )
+            predicate = _build_partition_predicate(iter(partition_rows), spec.partition_cols)
+            _log.info(
+                "delta write start",
+                mode="replace_partitions",
+                uri=location.uri,
+                rows="streaming",
+                cols=None,
+                partition_cols=list(spec.partition_cols),
+                predicate=predicate,
+            )
+            write_deltalake(
+                location.uri,
+                spool.reader,
+                mode="overwrite",
+                predicate=predicate,
+                schema_mode=self._delta_schema_mode(spec.schema_mode),
+                **self._write_kwargs(location),
+            )
+        _log_write_commit("replace_partitions", location)
 
     def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
         """Convert predicate to SQL (Polars uses internal SQL representation)."""
