@@ -24,13 +24,15 @@ class TestMaintenanceStepDefinition:
 
     def test_operations_not_list_raises(self) -> None:
         with pytest.raises(TypeError, match="must be a list"):
-            # type() triggers __init_subclass__ identically to a class statement.
-            # Avoids a "unused class declaration" static-analysis warning.
-            type("_Step", (MaintenanceStep,), {"operations": MaintainTable("raw.events").vacuum()})
+
+            class _StepNonListOps(MaintenanceStep[None]):  # type: ignore[type-arg]  # NOSONAR
+                operations = MaintainTable("raw.events").vacuum()  # type: ignore[assignment]
 
     def test_operations_wrong_element_type_raises(self) -> None:
         with pytest.raises(TypeError, match="MaintainTable or MaintainSchema"):
-            type("_Step", (MaintenanceStep,), {"operations": ["not-a-builder"]})
+
+            class _StepInvalidElement(MaintenanceStep[None]):  # type: ignore[type-arg]  # NOSONAR
+                operations = ["not-a-builder"]  # type: ignore[list-item]
 
     def test_mix_maintain_table_and_schema(self) -> None:
         class Mixed(MaintenanceStep[None]):
