@@ -247,6 +247,54 @@ class AuditConfig(LoomFrozenStruct, frozen=True):
     custom: tuple[CustomColumnDef, ...] = ()
 
 
+class MaintenanceVacuumConfig(LoomFrozenStruct, frozen=True):
+    """Vacuum settings for the config-driven maintenance block.
+
+    Args:
+        retention_hours: Files older than this are eligible for deletion.
+            ``None`` uses the table's ``delta.deletedFileRetentionDuration``
+            (default 168 h / 7 days).
+        dry_run: When ``True`` (default), lists files without deleting.
+            Set ``dry_run=False`` explicitly for production runs.
+    """
+
+    retention_hours: int | None = None
+    dry_run: bool = True
+
+
+class MaintenanceConfig(LoomFrozenStruct, frozen=True):
+    """Config-driven Delta table maintenance settings.
+
+    Declaring this section in the storage YAML allows :meth:`MaintenanceRunner.run_from_config`
+    to execute maintenance without any Python class::
+
+        maintenance:
+          schemas:
+            - raw
+            - staging
+          vacuum:
+            retention_hours: 168
+            dry_run: false
+          compact: true
+
+    Args:
+        schemas: Schema prefixes to discover tables from (e.g. ``["raw", "staging"]``).
+            Matches all ``StorageConfig.tables`` routes whose name starts with
+            ``{schema}.``.  An empty list means all configured tables.
+        vacuum: Vacuum settings to apply to all discovered tables.
+            ``None`` skips vacuum.
+        compact: When ``True``, run compaction on all discovered tables.
+            Mutually exclusive with ``z_order_by``.
+        z_order_by: Columns to Z-Order by.  Empty tuple skips Z-Order.
+            Mutually exclusive with ``compact``.
+    """
+
+    schemas: tuple[str, ...] = ()
+    vacuum: MaintenanceVacuumConfig | None = None
+    compact: bool = False
+    z_order_by: tuple[str, ...] = ()
+
+
 class StorageConfig(LoomFrozenStruct, frozen=True):
     """Canonical storage configuration used by ETL runner/factory.
 
@@ -271,6 +319,7 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
     clickhouse: ClickHouseConfig = ClickHouseConfig()
     mongo: MongoConfig = MongoConfig()
     audit: AuditConfig = AuditConfig()
+    maintenance: MaintenanceConfig = MaintenanceConfig()
 
     def validate(self) -> None:
         """Validate structural constraints and option dictionaries."""

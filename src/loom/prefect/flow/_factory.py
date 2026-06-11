@@ -16,6 +16,7 @@ from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
 from loom.prefect.deploy._schedule import extract_pool_config
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._body import build_flow_body
+from loom.prefect.flow._common import coerce_tags as _coerce_tags
 from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
 from loom.prefect.flow._signature import signature_from_params_type
@@ -116,19 +117,6 @@ def etl_flow(
         ),
     )
     return decorated
-
-
-def _coerce_tags(raw: Any) -> tuple[str, ...]:
-    if raw is None:
-        return ()
-    if not isinstance(raw, list):
-        raise TypeError(f"tags: expected a list of strings, got {type(raw).__name__}")
-    coerced: list[str] = []
-    for value in raw:
-        if not isinstance(value, str):
-            raise TypeError(f"tags: every entry must be str, got {type(value).__name__}")
-        coerced.append(value)
-    return tuple(coerced)
 
 
 def _resolve_flow_config(

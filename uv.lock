@@ -1583,7 +1583,7 @@ wheels = [
 
 [[package]]
 name = "loom-kernel"
-version = "0.10.1"
+version = "0.10.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },

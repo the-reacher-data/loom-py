@@ -80,6 +80,18 @@ from loom.etl.declarative import (
 )
 from loom.etl.io import FromClickHouse, FromMongo, IntoClickHouse, SourceRef
 from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
+from loom.etl.maintenance import (
+    DeltaTableMaintainer,
+    MaintainSchema,
+    MaintainTable,
+    MaintenanceError,
+    MaintenanceReport,
+    MaintenanceRunner,
+    MaintenanceStep,
+    OptimizeResult,
+    TableMaintenanceResult,
+    VacuumResult,
+)
 from loom.etl.pipeline import (
     ETLParams,
     ETLPipeline,
@@ -113,6 +125,8 @@ from loom.etl.storage import (
     CatalogConnection,
     FilePathConfig,
     FileRoute,
+    MaintenanceConfig,
+    MaintenanceVacuumConfig,
     MappingLocator,
     PrefixLocator,
     StorageConfig,
@@ -203,6 +217,19 @@ __all__ = [
     "TableRoute",
     "FilePathConfig",
     "FileRoute",
+    "MaintenanceConfig",
+    "MaintenanceVacuumConfig",
+    # maintenance
+    "MaintenanceStep",
+    "MaintainTable",
+    "MaintainSchema",
+    "MaintenanceRunner",
+    "MaintenanceReport",
+    "MaintenanceError",
+    "VacuumResult",
+    "OptimizeResult",
+    "TableMaintenanceResult",
+    "DeltaTableMaintainer",
     # observability config (YAML-loadable)
     "ETLObservabilityConfig",
     "LineageConfig",
