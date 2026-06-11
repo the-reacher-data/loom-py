@@ -7,15 +7,14 @@ at module level is safe and avoids hidden lazy-import latency at call time.
 
 from __future__ import annotations
 
-import logging
-
 from deltalake import CommitProperties, DeltaTable, WriterProperties
 
+from loom.core.logger import get_logger
 from loom.etl.maintenance._ops import CompactSpec, VacuumSpec, ZOrderSpec
 from loom.etl.maintenance._protocol import OptimizeResult, VacuumResult
 from loom.etl.storage._locator import TableLocation
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 class DeltaRsMaintainer:
@@ -43,7 +42,7 @@ class DeltaRsMaintainer:
             dry_run=spec.dry_run,
             commit_properties=commit,
         )
-        _log.info("vacuum uri=%s dry_run=%s files=%d", uri, spec.dry_run, len(deleted))
+        _log.info("vacuum", uri=uri, dry_run=spec.dry_run, files=len(deleted))
         return VacuumResult(files_deleted=deleted)
 
     def compact(
@@ -60,10 +59,10 @@ class DeltaRsMaintainer:
             commit_properties=commit,
         )
         _log.info(
-            "compact uri=%s added=%d removed=%d",
-            uri,
-            result["numFilesAdded"],
-            result["numFilesRemoved"],
+            "compact",
+            uri=uri,
+            added=result["numFilesAdded"],
+            removed=result["numFilesRemoved"],
         )
         return OptimizeResult(
             num_files_added=result["numFilesAdded"],
@@ -85,11 +84,11 @@ class DeltaRsMaintainer:
             commit_properties=commit,
         )
         _log.info(
-            "z_order uri=%s columns=%s added=%d removed=%d",
-            uri,
-            spec.columns,
-            result["numFilesAdded"],
-            result["numFilesRemoved"],
+            "z_order",
+            uri=uri,
+            columns=spec.columns,
+            added=result["numFilesAdded"],
+            removed=result["numFilesRemoved"],
         )
         return OptimizeResult(
             num_files_added=result["numFilesAdded"],

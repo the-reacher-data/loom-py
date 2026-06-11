@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+
+from loom.core.logger import get_logger
 
 if TYPE_CHECKING:
     from loom.etl.maintenance._protocol import DeltaTableMaintainer, OptimizeResult, VacuumResult
@@ -18,7 +19,7 @@ from loom.etl.maintenance._builder import _expand_for_schemas
 from loom.etl.maintenance._ops import CompactSpec, MaintenanceSpec, VacuumSpec, ZOrderSpec
 from loom.etl.maintenance._protocol import TableMaintenanceResult
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 class MaintenanceError(Exception):
@@ -211,7 +212,7 @@ class MaintenanceRunner:
             return self._locator.locate(TableRef(table_ref))
         except Exception as exc:
             if self._missing_table_policy == "skip":
-                _log.warning("maintenance skip table=%s reason=%r", table_ref, exc)
+                _log.warning("maintenance skip", table=table_ref, reason=repr(exc))
                 return None
             raise
 
@@ -230,7 +231,7 @@ class MaintenanceRunner:
                 op_results[op.name] = op.execute(self._maintainer, location.uri, location)
         except Exception as exc:
             error = exc
-            _log.error("maintenance failed table=%s error=%r", spec.table_ref, exc)
+            _log.exception("maintenance failed", table=spec.table_ref)
 
         return TableMaintenanceResult(
             table_ref=spec.table_ref,

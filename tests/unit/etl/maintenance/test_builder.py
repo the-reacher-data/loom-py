@@ -20,23 +20,23 @@ class TestMaintainTable:
 
     def test_vacuum_defaults_dry_run_true(self) -> None:
         spec = MaintainTable("raw.events").vacuum()._to_spec()
-        assert spec.vacuum == VacuumSpec(retention_hours=None, dry_run=True)
+        assert spec.ops == (VacuumSpec(retention_hours=None, dry_run=True),)
 
     def test_vacuum_explicit_params(self) -> None:
         spec = MaintainTable("raw.events").vacuum(retention_hours=48, dry_run=False)._to_spec()
-        assert spec.vacuum == VacuumSpec(retention_hours=48, dry_run=False)
+        assert spec.ops == (VacuumSpec(retention_hours=48, dry_run=False),)
 
     def test_compact_default(self) -> None:
         spec = MaintainTable("raw.events").compact()._to_spec()
-        assert spec.compact == CompactSpec(target_size=None)
+        assert spec.ops == (CompactSpec(target_size=None),)
 
     def test_compact_with_target_size(self) -> None:
         spec = MaintainTable("raw.events").compact(target_size=128 * 1024 * 1024)._to_spec()
-        assert spec.compact == CompactSpec(target_size=128 * 1024 * 1024)
+        assert spec.ops == (CompactSpec(target_size=128 * 1024 * 1024),)
 
     def test_z_order_by(self) -> None:
         spec = MaintainTable("raw.events").z_order_by(["date", "id"])._to_spec()
-        assert spec.z_order == ZOrderSpec(columns=["date", "id"])
+        assert spec.ops == (ZOrderSpec(columns=["date", "id"]),)
 
     def test_z_order_empty_columns_raises(self) -> None:
         with pytest.raises(ValueError, match="at least one column"):
@@ -54,9 +54,10 @@ class TestMaintainTable:
             .compact()
             ._to_spec()
         )
-        assert spec.vacuum == VacuumSpec(retention_hours=168, dry_run=False)
-        assert spec.compact == CompactSpec()
-        assert spec.z_order is None
+        assert spec.ops == (
+            VacuumSpec(retention_hours=168, dry_run=False),
+            CompactSpec(),
+        )
 
     def test_table_ref_preserved(self) -> None:
         spec = MaintainTable("staging.events").vacuum()._to_spec()
@@ -111,9 +112,10 @@ class TestMaintainSchema:
             ._expand(config)
         )
         assert len(specs) == 1
-        assert specs[0].vacuum == VacuumSpec(retention_hours=72, dry_run=False)
-        assert specs[0].compact == CompactSpec()
-        assert specs[0].z_order is None
+        assert specs[0].ops == (
+            VacuumSpec(retention_hours=72, dry_run=False),
+            CompactSpec(),
+        )
 
     def test_compact_and_z_order_mutually_exclusive(self) -> None:
         config = StorageConfig(
