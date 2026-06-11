@@ -8,6 +8,7 @@ from typing import Any
 
 from loom.core.logger import get_logger
 from loom.prefect._async import run_sync
+from loom.prefect._summary import get_run_summary
 from loom.prefect.notify import Notifier, NotifyEvent
 
 _log = get_logger(__name__)
@@ -73,7 +74,7 @@ def _event_from_run(
         correlation_id=_correlation_from_params(flow_run),
         duration_seconds=_duration_from_run(flow_run),
         env=_env_from_params(flow_run),
-        message=getattr(state, "message", None),
+        message=getattr(state, "message", None) or get_run_summary(),
     )
 
 

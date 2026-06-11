@@ -81,10 +81,15 @@ class SlackNotifier:
             meta_parts.append(f"duration: `{_fmt_duration(event.duration_seconds)}`")
 
         lines = [header, "  ".join(meta_parts)]
+        if event.message:
+            # Use code block only for raw exception text (contains newlines or
+            # stack traces); structured summaries are rendered as plain text.
+            if "\n" in event.message or "Traceback" in event.message:
+                lines.append(f"```{event.message}```")
+            else:
+                lines.append(event.message)
         if event.flow_run_url:
             lines.append(f"<{event.flow_run_url}|Open in Prefect>")
-        if event.message:
-            lines.append(f"```{event.message}```")
 
         payload: dict[str, Any] = {"text": "\n".join(lines)}
         if self._channel:

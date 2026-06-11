@@ -10,11 +10,12 @@ from uuid import uuid4
 import msgspec
 
 from loom.etl.compiler import flatten_step_names
-from loom.etl.compiler._plan import PipelinePlan, iter_processes
+from loom.etl.compiler._plan import PipelinePlan, iter_processes, iter_steps_in_process
 from loom.etl.pipeline import ETLPipeline
 from loom.etl.runner import ETLRunner
 from loom.prefect._ctx import FlowCtx
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect._summary import set_run_summary
 from loom.prefect.flow._run_name import compute_correlation_id
 from loom.prefect.flow._signature import normalize_datetime_fields
 from loom.prefect.manifest import (
@@ -102,6 +103,7 @@ def build_flow_body(
             )
         finally:
             uninstall_log_bridge()
+        set_run_summary(_etl_summary(plan, pending))
         _maybe_delete_manifest(manifest_store, ctx.correlation_id)
 
     return _flow_body
@@ -186,6 +188,22 @@ def _maybe_delete_manifest(store: ManifestStore | None, correlation_id: str) -> 
     if store is None:
         return
     store.delete(correlation_id)
+
+
+def _etl_summary(plan: PipelinePlan, pending: list[str]) -> str:
+    """Build a one-line completion summary from the pipeline plan.
+
+    Example: ``StagingProcess → 3 steps ✓   PreparedProcess → 3 steps ✓``
+    """
+    pending_set = set(pending)
+    parts = []
+    for proc in iter_processes(plan):
+        step_names = [s.step_type.__name__ for s in iter_steps_in_process(proc)]
+        total = len(step_names)
+        ran = sum(1 for s in step_names if s not in pending_set)
+        mark = "✓" if ran == total else f"{ran}/{total}"
+        parts.append(f"{proc.process_type.__name__} → {total} steps {mark}")
+    return "   ".join(parts)
 
 
 def _known_process_names(plan: PipelinePlan) -> frozenset[str]:

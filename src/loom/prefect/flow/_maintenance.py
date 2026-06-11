@@ -15,6 +15,7 @@ from loom.etl.maintenance._step import MaintenanceStep
 from loom.etl.runner.config_loader import _load_yaml
 from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect._summary import set_run_summary
 from loom.prefect.deploy._schedule import extract_pool_config
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._common import coerce_tags as _coerce_tags
@@ -76,7 +77,9 @@ def maintenance_flow(
         params = msgspec.convert(resolved, type=params_type)
         actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
         storage_config, _ = _load_yaml(actual_path)
-        MaintenanceRunner.from_config(storage_config).run(step, params=params).raise_if_errors()
+        report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
+        set_run_summary(_maintenance_summary(report, resolved))
+        report.raise_if_errors()
 
     safe_name = name.replace("-", "_")
     body: Any = _flow_body  # cast to Any — __signature__ is a valid runtime attribute
@@ -107,6 +110,40 @@ def maintenance_flow(
         ),
     )
     return decorated
+
+
+def _maintenance_summary(report: Any, params: dict[str, Any]) -> str:
+    """Format a one-line summary from a MaintenanceReport.
+
+    Examples:
+        ``5 tables — vacuum ✓  compact ✓  dry_run: false``
+        ``3/5 tables failed: raw.events, staging.snapshots``
+    """
+    from loom.etl.maintenance._runner import MaintenanceReport  # noqa: PLC0415
+
+    if not isinstance(report, MaintenanceReport):
+        return ""
+
+    total = len(report.results)
+    failed = [r for r in report.results if not r.ok]
+
+    dry_run = params.get("dry_run")
+    dry_run_tag = f"  dry_run: {str(dry_run).lower()}" if dry_run is not None else ""
+
+    if failed:
+        refs = ", ".join(r.table_ref for r in failed)
+        return f"{len(failed)}/{total} tables failed: {refs}{dry_run_tag}"
+
+    # Collect op names that ran across all tables
+    op_names: list[str] = []
+    seen: set[str] = set()
+    for result in report.results:
+        for name in result.op_results:
+            if name not in seen:
+                op_names.append(name)
+                seen.add(name)
+    ops_str = "  ".join(f"{n} ✓" for n in op_names) if op_names else "no ops"
+    return f"{total} tables — {ops_str}{dry_run_tag}"
 
 
 def _synthesise_signature(params_type: type[msgspec.Struct]) -> inspect.Signature:
