@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import json as _json
-import logging
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from loom.core.logger import get_logger
 from loom.prefect.notify._event import NotifyEvent
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 HttpPost = Callable[..., Any]
@@ -55,11 +55,10 @@ class SlackNotifier:
             self._http_post(self._webhook_url, json=payload, timeout=5.0)
         except (urllib.error.URLError, TimeoutError, RuntimeError):
             _log.warning(
-                "SlackNotifier post failed for %s/%s state=%s correlation_id=%s",
-                event.flow_name,
-                event.flow_run_name,
-                event.state,
-                event.correlation_id,
+                "Slack post failed",
+                flow=event.flow_name,
+                run=event.flow_run_name,
+                state=event.state,
                 exc_info=True,
             )
 
@@ -70,17 +69,39 @@ class SlackNotifier:
 
     def _render(self, event: NotifyEvent) -> dict[str, Any]:
         icon = ":x:" if event.state in {"Failed", "Crashed"} else ":white_check_mark:"
-        lines = [
-            f"{icon} *{event.flow_name}* run *{event.flow_run_name}* → `{event.state}`",
-            f"correlation_id: `{event.correlation_id}`",
-            f"<{event.flow_run_url}|Open in Prefect>",
-        ]
+
+        header = f"{icon} *{event.flow_name}* → `{event.state}`"
+
+        meta_parts = [f"run: `{event.flow_run_name}`"]
+        if event.env:
+            meta_parts.append(f"env: `{event.env}`")
+        if event.correlation_id:
+            meta_parts.append(f"correlation: `{event.correlation_id}`")
+        if event.duration_seconds is not None:
+            meta_parts.append(f"duration: `{_fmt_duration(event.duration_seconds)}`")
+
+        lines = [header, "  ".join(meta_parts)]
+        if event.flow_run_url:
+            lines.append(f"<{event.flow_run_url}|Open in Prefect>")
         if event.message:
             lines.append(f"```{event.message}```")
+
         payload: dict[str, Any] = {"text": "\n".join(lines)}
         if self._channel:
             payload["channel"] = self._channel
         return payload
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as a human-readable duration string."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m {s:02d}s"
 
 
 def _default_http_post(url: str, *, json: dict[str, Any], timeout: float) -> None:

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Iterable
 from typing import Any
 
+from loom.core.logger import get_logger
 from loom.prefect._async import run_sync
 from loom.prefect.notify import Notifier, NotifyEvent
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 def pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:  # noqa: ARG001
@@ -30,10 +30,7 @@ def pause_schedule_on_failure(flow: Any, flow_run: Any, state: Any) -> None:  # 
                     await client.update_deployment_schedule(deployment_id, sched.id, active=False)
 
         run_sync(_pause())
-        _log.warning(
-            "pause-on-failure: deactivated schedules for deployment %s",
-            deployment_id,
-        )
+        _log.warning("pause-on-failure: deactivated schedules", deployment_id=str(deployment_id))
     except Exception:  # noqa: BLE001
         _log.warning("pause-on-failure hook failed", exc_info=True)
 
@@ -74,6 +71,8 @@ def _event_from_run(
         flow_run_url=_run_url(flow_run),
         state=state_name,
         correlation_id=_correlation_from_params(flow_run),
+        duration_seconds=_duration_from_run(flow_run),
+        env=_env_from_params(flow_run),
         message=getattr(state, "message", None),
     )
 
@@ -88,6 +87,27 @@ def _run_url(flow_run: Any) -> str:
 def _correlation_from_params(flow_run: Any) -> str:
     params = getattr(flow_run, "parameters", None) or {}
     return str(params.get("correlation_id") or "")
+
+
+def _env_from_params(flow_run: Any) -> str | None:
+    params = getattr(flow_run, "parameters", None) or {}
+    env = params.get("env")
+    return str(env) if env else None
+
+
+def _duration_from_run(flow_run: Any) -> float | None:
+    """Extract wall-clock duration from Prefect's flow_run object.
+
+    Prefect exposes ``total_run_time`` as a ``datetime.timedelta`` on the
+    flow run object passed to ``on_failure`` / ``on_completion`` hooks.
+    Returns ``None`` when the attribute is absent or zero (run was so fast
+    Prefect hadn't recorded it yet).
+    """
+    t = getattr(flow_run, "total_run_time", None)
+    if t is None:
+        return None
+    seconds = t.total_seconds()
+    return seconds if seconds > 0 else None
 
 
 __all__ = ["make_notification_hooks", "pause_schedule_on_failure"]
