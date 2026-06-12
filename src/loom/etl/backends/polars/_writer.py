@@ -303,6 +303,25 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         path_target = self._as_path_target(target)
         _ = schema_mode
         location = path_target.location
+        if partition_cols:
+            missing = tuple(c for c in partition_cols if c not in frame.columns)
+            if missing:
+                # Empty frame with no partition cols is a legitimate no-op
+                # (e.g. decomposition fallback when the source field is absent
+                # from the input schema). Mirrors _replace_partitions on the
+                # update path.
+                if frame.is_empty():
+                    _log.warning(
+                        "create skipped: empty frame missing partition columns",
+                        table=location.uri,
+                        missing=list(missing),
+                    )
+                    return
+                raise ValueError(
+                    f"_create: partition columns not found in frame schema: "
+                    f"{list(missing)}. Frame columns: {frame.columns}. Cannot "
+                    f"create partitioned Delta table at {location.uri!r}."
+                )
         self._warn_uc_first_create(path_target)
         kwargs = self._write_kwargs(location)
 

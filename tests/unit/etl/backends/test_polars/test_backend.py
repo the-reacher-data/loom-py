@@ -379,6 +379,54 @@ def test_writer_replace_partitions_first_run_creates_partitioned_table(tmp_path:
     assert dt.metadata().partition_columns == ["year"]
 
 
+def test_writer_replace_partitions_first_run_empty_frame_missing_partition_cols_skips(
+    tmp_path: Path,
+) -> None:
+    """Empty frame whose schema omits the partition columns must be a no-op.
+
+    This is the case produced by decomposition fallbacks that emit an empty
+    frame with only the root id column when the source field is absent. The
+    create path used to surface a cryptic delta-rs error ("Partition column(s)
+    not found in write schema"); it should silently skip instead, mirroring
+    ``_replace_partitions`` on the update path.
+    """
+    writer = PolarsTargetWriter(tmp_path)
+    # No "year" column at all — empty schema, empty rows. Mimics _empty_frame().
+    empty = pl.DataFrame({"transaction_id": []}, schema={"transaction_id": pl.Utf8})
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.empty_no_partition_cols"),
+        partition_cols=("year",),
+        schema_mode=SchemaMode.OVERWRITE,
+    )
+
+    writer.write(empty.lazy(), spec, None)
+
+    target_dir = table_path(tmp_path, TableRef("staging.empty_no_partition_cols"))
+    assert not target_dir.exists() or not any(target_dir.iterdir())
+
+
+def test_writer_replace_partitions_first_run_missing_partition_cols_raises_loom_error(
+    tmp_path: Path,
+) -> None:
+    """Non-empty frame missing partition columns must raise a clear loom error.
+
+    Without this guard the delta-rs error ``Partition column(s) not found in
+    write schema`` surfaces to callers and gives no hint that the frame is the
+    cause.
+    """
+    writer = PolarsTargetWriter(tmp_path)
+    # Has data, but partition column "year" is absent from the schema.
+    frame = pl.DataFrame({"v": [1, 2]})
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.missing_partition"),
+        partition_cols=("year",),
+        schema_mode=SchemaMode.OVERWRITE,
+    )
+
+    with pytest.raises(ValueError, match="partition columns.*not found.*year"):
+        writer.write(frame.lazy(), spec, None)
+
+
 def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
     initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
     _seed(tmp_path, "staging.yearly", initial)
