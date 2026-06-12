@@ -1,3 +1,48 @@
+# 🚀 Release 0.11.1 ([#56](https://github.com/the-reacher-data/loom-py/pull/56)) ([`817a6c4`](https://github.com/the-reacher-data/loom-py/commit/817a6c48c6d377ca21bf60cede1c16126a8fdcfb))
+
+
+
+## 🐛 Fixes
+### config
+- **config:** resolve interpolations in includes paths<br>
+  > `_load_local_file` was calling `omega_conf.to_container(raw_includes)` without
+  > `resolve=True`, so paths like `includes: [pool.${oc.env:VARIANT,local}.yaml]`
+  > were treated literally and raised ConfigError on the next load attempt.
+  > Aligns the call with `loader.py:325`, which already passes `resolve=True`
+  > when materialising the resolved config. The facade default stays
+  > `resolve=False` to preserve other callers that need unresolved data.
+  > Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+### polars
+- **polars:** skip create on empty frame missing partition cols<br>
+  > `replace_partitions` already skips writing when the frame is empty on the
+  > update path (existing table). The create path (target does not exist yet)
+  > did not, so a fallback that produced an empty frame without the partition
+  > columns surfaced a cryptic delta-rs `SchemaMismatchError: Unable to get
+  > field named "<col>"`.
+  > Two changes in `PolarsTargetWriter._create`:
+  > 1. If partition cols are missing AND the frame is empty: skip with a
+  > warning. Mirrors `_replace_partitions` / `_streaming_replace_partitions`
+  > so create and update behave consistently.
+  > 2. If partition cols are missing AND the frame has rows: raise a clear
+  > loom `ValueError` instead of letting delta-rs fail with an opaque
+  > schema error. The message lists the missing cols and the frame schema
+  > so the caller can diagnose without inspecting tracebacks.
+  > Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.11.0 ([#54](https://github.com/the-reacher-data/loom-py/pull/54)) ([`23bff3d`](https://github.com/the-reacher-data/loom-py/commit/23bff3df20607bc12268de0d941ce46df61e16bf))
 
 
