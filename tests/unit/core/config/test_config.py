@@ -313,6 +313,33 @@ def test_includes_missing_file_raises(tmp_path: Path) -> None:
         load_config(str(main))
 
 
+def test_includes_resolves_env_interpolation_in_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VARIANT", "prod")
+    (tmp_path / "values.prod.yaml").write_text("database:\n  url: postgresql://prod/db\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - values.${oc.env:VARIANT}.yaml\napp:\n  name: myapp\n")
+
+    cfg = load_config(str(main))
+
+    assert cfg.database.url == "postgresql://prod/db"
+    assert cfg.app.name == "myapp"
+
+
+def test_includes_resolves_env_interpolation_default_when_var_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("VARIANT", raising=False)
+    (tmp_path / "values.local.yaml").write_text("flag: from_default\n")
+    main = tmp_path / "app.yaml"
+    main.write_text("includes:\n  - values.${oc.env:VARIANT,local}.yaml\n")
+
+    cfg = load_config(str(main))
+
+    assert cfg.flag == "from_default"
+
+
 # ---------------------------------------------------------------------------
 # load_config — cloud URIs
 # ---------------------------------------------------------------------------

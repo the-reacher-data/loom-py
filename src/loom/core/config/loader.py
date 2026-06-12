@@ -178,7 +178,7 @@ def _load_local_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
     if raw_includes is None:
         return cfg
 
-    include_paths = list(omega_conf.to_container(raw_includes))
+    include_paths = list(omega_conf.to_container(raw_includes, resolve=True))
     cfg = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
 
     base_dir = Path(resolved).parent
