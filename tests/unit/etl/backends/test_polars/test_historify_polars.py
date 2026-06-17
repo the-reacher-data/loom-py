@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ pytest.importorskip("deltalake")
 
 import polars as pl  # noqa: E402
 
+from loom.etl.backends._historify._transform import scd2_transform  # noqa: E402
 from loom.etl.backends.polars._historify import PolarsHistorifyBackend  # noqa: E402
 from loom.etl.backends.polars._writer import PolarsTargetWriter  # noqa: E402
 from loom.etl.declarative.expr._refs import TableRef  # noqa: E402
@@ -161,8 +162,35 @@ class TestBackendHelpers:
         )
         naive = pl.DataFrame({"t": [datetime(2024, 1, 2, 8)]})
         result = PolarsHistorifyBackend().union([aware, naive])
-        assert result["t"].dtype == pl.Datetime("us")
-        assert result["t"].to_list() == [datetime(2024, 1, 1, 8), datetime(2024, 1, 2, 8)]
+        assert result["t"].dtype == pl.Datetime("us", "UTC")
+        assert result["t"].to_list() == [
+            datetime(2024, 1, 1, 8, tzinfo=UTC),
+            datetime(2024, 1, 2, 8, tzinfo=UTC),
+        ]
+
+
+class TestTimestampBoundariesAreUtcAware:
+    def test_log_timestamp_boundaries_are_utc_aware(self) -> None:
+        spec = HistorifySpec(
+            table_ref=TableRef("dim"),
+            keys=("id",),
+            effective_date="eff",
+            mode=HistorifyInputMode.LOG,
+            track=("status",),
+            date_type=HistoryDateType.TIMESTAMP,
+        )
+        frame = pl.DataFrame(
+            {
+                "id": [1, 1],
+                "status": ["a", "b"],
+                "eff": [datetime(2024, 1, 1, 8), datetime(2024, 6, 1, 8)],
+            }
+        ).with_columns(pl.col("eff").dt.replace_time_zone("UTC"))
+        result = scd2_transform(PolarsHistorifyBackend(), frame, None, spec, None)
+        assert result["valid_from"].dtype == pl.Datetime("us", "UTC")
+        assert result["valid_to"].dtype == pl.Datetime("us", "UTC")
+        closed = result.filter(pl.col("status") == "a")
+        assert closed["valid_to"].to_list() == [datetime(2024, 6, 1, 7, 59, 59, 999999, tzinfo=UTC)]
 
 
 class TestStampNewRows:
