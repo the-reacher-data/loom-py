@@ -1,3 +1,20 @@
+# 🚀 Release 0.11.3 ([#60](https://github.com/the-reacher-data/loom-py/pull/60)) ([`ae40236`](https://github.com/the-reacher-data/loom-py/commit/ae40236b2706ccd30924267ea87294de6a76ad1b))
+
+
+
+## 🐛 Fixes
+### historify
+- **historify:** align tz-aware Delta read-back in LOG-mode union
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.11.2 ([#58](https://github.com/the-reacher-data/loom-py/pull/58)) ([`54b6069`](https://github.com/the-reacher-data/loom-py/commit/54b6069e4b012e1ad64e8da3baaf18afe735afc9))
 
 
