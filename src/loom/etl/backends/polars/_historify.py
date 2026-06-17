@@ -50,7 +50,19 @@ class PolarsHistorifyBackend:
         return left.join(right, on=on, how="semi")
 
     def union(self, frames: list[pl.DataFrame]) -> pl.DataFrame:
-        return pl.concat(frames, how="diagonal_relaxed")
+        return pl.concat([self._naive_datetimes(f) for f in frames], how="diagonal_relaxed")
+
+    @staticmethod
+    def _naive_datetimes(frame: pl.DataFrame) -> pl.DataFrame:
+        # Align tz-aware Delta read-back to naive (history boundaries are naive).
+        aware = [
+            c for c, dt in frame.schema.items() if isinstance(dt, pl.Datetime) and dt.time_zone
+        ]
+        if not aware:
+            return frame
+        return frame.with_columns(
+            pl.col(c).dt.convert_time_zone("UTC").dt.replace_time_zone(None) for c in aware
+        )
 
     def stamp_col(self, frame: pl.DataFrame, name: str, value: Any, dtype: Any) -> pl.DataFrame:
         if dtype is not None:
