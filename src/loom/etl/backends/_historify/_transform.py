@@ -48,8 +48,9 @@ def scd2_transform(
     join_key = list(spec.keys) + list(track_cols)
     eff_date = resolve_effective_date(spec, params_instance)
 
-    ops.assert_unique_keys(frame, join_key)
-    if spec.mode is HistorifyInputMode.LOG:
+    is_log = spec.mode is HistorifyInputMode.LOG
+    ops.assert_unique_keys(frame, [*spec.keys, str(spec.effective_date)] if is_log else join_key)
+    if is_log:
         ops.assert_no_date_collisions(frame, join_key, str(spec.effective_date), spec)
 
     if existing is None:

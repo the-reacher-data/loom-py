@@ -28,6 +28,7 @@ from loom.etl.declarative.expr._refs import TableRef
 from loom.etl.declarative.target._history import (
     DeletePolicy,
     HistorifyInputMode,
+    HistorifyKeyConflictError,
     HistorifySpec,
     HistorifyTemporalConflictError,
 )
@@ -809,6 +810,66 @@ class HistorifyContractTests:
         sub2 = [r for r in rows if r["subscription_id"] == 2]
         assert len(sub2) == 1
         assert sub2[0]["valid_to"] is None
+
+    def test_log_recurring_value_creates_three_versions(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        frame = make_frame(
+            [
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 6, 1)},
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 9, 1)},
+            ]
+        )
+        writer.write(frame, _log_spec(), None)
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert len(rows) == 3
+        assert [r["plan"] for r in rows] == ["basic", "pro", "basic"]
+        assert [r["valid_from"] for r in rows] == [
+            date(2024, 1, 1),
+            date(2024, 6, 1),
+            date(2024, 9, 1),
+        ]
+        assert [r["valid_to"] for r in rows] == [date(2024, 5, 31), date(2024, 8, 31), None]
+
+    def test_log_recurrence_replay_is_idempotent(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        events = [
+            {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+            {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 6, 1)},
+            {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 9, 1)},
+        ]
+        writer.write(make_frame(events), _log_spec(), None)
+        writer.write(make_frame(events), _log_spec(), None)  # replay
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 3
+        froms = [r["valid_from"] for r in rows]
+        assert len(set(froms)) == 3
+        for r in rows:
+            assert r["valid_to"] is None or r["valid_to"] >= r["valid_from"]
+
+    def test_log_same_instant_duplicate_raises(
+        self,
+        writer: Any,
+        make_frame: Callable,
+    ) -> None:
+        frame = make_frame(
+            [
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 1, 1)},
+            ]
+        )
+        with pytest.raises(HistorifyKeyConflictError):
+            writer.write(frame, _log_spec(), None)
 
     # ------------------------------------------------------------------
     # Overwrite columns
