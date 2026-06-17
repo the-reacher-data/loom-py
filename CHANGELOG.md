@@ -1,3 +1,20 @@
+# 🚀 Release 0.11.4 ([#62](https://github.com/the-reacher-data/loom-py/pull/62)) ([`92904c2`](https://github.com/the-reacher-data/loom-py/commit/92904c20b99b7a4659a6658f3c29af46ac3887f3))
+
+
+
+## 🐛 Fixes
+### historify
+- **historify:** tz-aware UTC SCD2 boundaries
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.11.3 ([#60](https://github.com/the-reacher-data/loom-py/pull/60)) ([`ae40236`](https://github.com/the-reacher-data/loom-py/commit/ae40236b2706ccd30924267ea87294de6a76ad1b))
 
 
