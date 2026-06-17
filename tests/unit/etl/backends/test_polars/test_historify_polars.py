@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,15 @@ class TestBackendHelpers:
         result = PolarsHistorifyBackend().null_col(frame, "n", pl.Date)
         assert result["n"].is_null().all()
         assert result["n"].dtype == pl.Date
+
+    def test_union_aligns_tz_aware_with_naive(self) -> None:
+        aware = pl.DataFrame({"t": [datetime(2024, 1, 1, 8)]}).with_columns(
+            pl.col("t").dt.replace_time_zone("UTC")
+        )
+        naive = pl.DataFrame({"t": [datetime(2024, 1, 2, 8)]})
+        result = PolarsHistorifyBackend().union([aware, naive])
+        assert result["t"].dtype == pl.Datetime("us")
+        assert result["t"].to_list() == [datetime(2024, 1, 1, 8), datetime(2024, 1, 2, 8)]
 
 
 class TestStampNewRows:
