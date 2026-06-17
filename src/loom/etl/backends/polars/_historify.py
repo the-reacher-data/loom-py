@@ -16,8 +16,8 @@ from loom.etl.declarative.target._history import (
 )
 
 
-def _history_boundary_dtype(spec: HistorifySpec) -> type[pl.Date] | type[pl.Datetime]:
-    return pl.Date if spec.date_type is HistoryDateType.DATE else pl.Datetime
+def _history_boundary_dtype(spec: HistorifySpec) -> pl.DataType | type[pl.Date]:
+    return pl.Date if spec.date_type is HistoryDateType.DATE else pl.Datetime("us", "UTC")
 
 
 class PolarsHistorifyBackend:
@@ -50,19 +50,18 @@ class PolarsHistorifyBackend:
         return left.join(right, on=on, how="semi")
 
     def union(self, frames: list[pl.DataFrame]) -> pl.DataFrame:
-        return pl.concat([self._naive_datetimes(f) for f in frames], how="diagonal_relaxed")
+        return pl.concat([self._utc_datetimes(f) for f in frames], how="diagonal_relaxed")
 
     @staticmethod
-    def _naive_datetimes(frame: pl.DataFrame) -> pl.DataFrame:
-        # Align tz-aware Delta read-back to naive (history boundaries are naive).
-        aware = [
-            c for c, dt in frame.schema.items() if isinstance(dt, pl.Datetime) and dt.time_zone
+    def _utc_datetimes(frame: pl.DataFrame) -> pl.DataFrame:
+        exprs = [
+            pl.col(c).dt.replace_time_zone("UTC")
+            if dt.time_zone is None
+            else pl.col(c).dt.convert_time_zone("UTC")
+            for c, dt in frame.schema.items()
+            if isinstance(dt, pl.Datetime)
         ]
-        if not aware:
-            return frame
-        return frame.with_columns(
-            pl.col(c).dt.convert_time_zone("UTC").dt.replace_time_zone(None) for c in aware
-        )
+        return frame.with_columns(exprs) if exprs else frame
 
     def stamp_col(self, frame: pl.DataFrame, name: str, value: Any, dtype: Any) -> pl.DataFrame:
         if dtype is not None:
