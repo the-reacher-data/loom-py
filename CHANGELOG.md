@@ -1,3 +1,20 @@
+# 🚀 Release 0.11.2 ([#58](https://github.com/the-reacher-data/loom-py/pull/58)) ([`54b6069`](https://github.com/the-reacher-data/loom-py/commit/54b6069e4b012e1ad64e8da3baaf18afe735afc9))
+
+
+
+## 🐛 Fixes
+### historify
+- **historify:** allow recurring tracked values in LOG mode
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.11.1 ([#56](https://github.com/the-reacher-data/loom-py/pull/56)) ([`817a6c4`](https://github.com/the-reacher-data/loom-py/commit/817a6c48c6d377ca21bf60cede1c16126a8fdcfb))
 
 
