@@ -18,8 +18,10 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, ClassVar, Generic, TypeVar
 
+from loom.core.logger import get_logger
 from loom.etl.declarative.source import FromFile, FromTable, FromTemp, Sources, SourceSet
 from loom.etl.declarative.target import IntoFile, IntoTable, IntoTemp
+from loom.etl.declarative.target._client import IntoClient
 from loom.etl.pipeline._generics import _extract_generic_arg
 
 ParamsT = TypeVar("ParamsT")
@@ -80,18 +82,20 @@ class ETLStep(Generic[ParamsT]):
     """
 
     sources: ClassVar[Sources | SourceSet[Any] | None] = None
-    target: ClassVar[IntoTable | IntoFile | IntoTemp | None] = None
+    target: ClassVar[IntoTable | IntoFile | IntoTemp | IntoClient | None] = None
     streaming: ClassVar[bool] = False
 
     # Set by __init_subclass__
     _params_type: ClassVar[type[Any] | None] = None
     _source_form: ClassVar[_SourceForm] = _SourceForm.NONE
     _inline_sources: ClassVar[dict[str, FromTable | FromFile | FromTemp]]
+    _log: ClassVar[Any]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         cls._params_type = _extract_generic_arg(cls, ETLStep)
         cls._inline_sources = {}
+        cls._log = get_logger(f"{cls.__module__}.{cls.__qualname__}")
         _validate_streaming_flag(cls)
         _validate_and_classify_sources(cls)
 

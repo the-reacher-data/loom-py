@@ -11,6 +11,7 @@ Dependency direction
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from loom.etl.declarative.expr._refs import TableRef
@@ -177,10 +178,47 @@ class TargetWriter(Protocol):
         ...
 
 
+@runtime_checkable
+class ClientCommandExecutor(Protocol):
+    """Optional capability protocol for engine-client command execution.
+
+    Implemented by engine-specific executors (e.g. ClickHouseClientExecutor)
+    and injected into :class:`~loom.etl.executor.ETLExecutor` as a separate
+    dependency.  Used exclusively to serve :class:`~loom.etl.ClientStep`
+    steps, which produce no DataFrame output and instead receive the raw
+    engine client via a ``client`` keyword argument.
+
+    The executor calls :meth:`command` with a callable that encapsulates
+    the step invocation.  The implementor is responsible for obtaining the
+    engine client and calling ``fn(client)``.
+
+    Example::
+
+        class ClickHouseClientExecutor:
+            def command(self, fn: Callable[[Any], None]) -> None:
+                fn(self._get_clickhouse_client())
+    """
+
+    def command(self, fn: Callable[[Any], None]) -> None:
+        """Obtain the engine client and invoke *fn* with it.
+
+        Args:
+            fn: Callable that accepts the raw engine client as its sole
+                positional argument and executes the step logic against it.
+                Produced by the executor as a closure over the step instance
+                and the current params.
+
+        Raises:
+            RuntimeError: When the underlying client cannot be obtained.
+        """
+        ...
+
+
 __all__ = [
     "TableDiscovery",
     "SourceReader",
     "StreamingSourceReader",
     "SQLExecutor",
     "TargetWriter",
+    "ClientCommandExecutor",
 ]

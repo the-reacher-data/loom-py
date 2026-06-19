@@ -1,10 +1,21 @@
-"""ClickHouse target — IntoClickHouse builder and ClickHouseTableSpec."""
+"""ClickHouse target — IntoClickHouse builder, ClickHouseTableSpec, and ClickHouseClientExecutor."""
 
 from __future__ import annotations
 
 import logging
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
+
+import polars as pl
+
+try:
+    import clickhouse_connect as _clickhouse_connect  # type: ignore[import-untyped]
+except ImportError:
+    _clickhouse_connect = None
+
+from loom.etl.declarative.target._client import ClientSpec
 
 _log = logging.getLogger(__name__)
 
@@ -87,14 +98,12 @@ class ClickHouseTargetWriter:
     """
 
     def __init__(self, url: str) -> None:
-        try:
-            import clickhouse_connect as _cc  # type: ignore[import-untyped]
-        except ImportError as exc:
+        if _clickhouse_connect is None:
             raise ImportError(
                 "ClickHouseTargetWriter requires 'clickhouse-connect'. "
                 "Install it with: pip install 'loom-py[clickhouse]'"
-            ) from exc
-        self._client = _cc.get_client(dsn=url)
+            )
+        self._client = _clickhouse_connect.get_client(dsn=url)
 
     def write(
         self,
@@ -122,9 +131,13 @@ class ClickHouseTargetWriter:
             write_ctx: Execution context for audit-column injection (unused
                        in ClickHouse targets).
         """
+        if isinstance(spec, ClientSpec):
+            raise TypeError(
+                "ClickHouseTargetWriter.write() does not handle ClientSpec. "
+                "ClientStep execution is routed by ETLExecutor before write() is called. "
+                "This is an internal error — ClientSpec should never reach write()."
+            )
         _ = write_ctx
-        import polars as pl
-
         engine: Literal["streaming", "auto"] = "streaming" if streaming else "auto"
         df: pl.DataFrame = (
             frame.collect(engine=engine) if isinstance(frame, pl.LazyFrame) else frame
@@ -155,4 +168,78 @@ class ClickHouseTargetWriter:
         )
 
 
-__all__ = ["ClickHouseTableSpec", "ClickHouseTargetWriter", "IntoClickHouse"]
+class ClickHouseClientExecutor:
+    """Provides a ClickHouse client to :class:`~loom.etl.ClientStep` instances.
+
+    Implements :class:`~loom.etl.runtime.contracts.ClientCommandExecutor`.
+    Inject into :class:`~loom.etl.executor.ETLExecutor` (or
+    :class:`~loom.etl.ETLRunner`) to enable ``ClientStep`` execution against
+    ClickHouse.
+
+    Args:
+        url:    ClickHouse DSN, e.g. ``clickhouse://user:pass@host:8123/db``.
+                Mutually exclusive with *client*.
+        client: Pre-built ``clickhouse_connect`` client.  Use for testing or
+                when the client is managed externally.  Mutually exclusive
+                with *url*.
+
+    Raises:
+        ImportError: If ``clickhouse-connect`` is not installed and *client*
+            is not provided.
+        ValueError: If neither *url* nor *client* is provided when
+            :meth:`command` is called.
+
+    Example::
+
+        from loom.etl import ETLRunner
+        from loom.etl.io import ClickHouseClientExecutor
+
+        runner = ETLRunner(
+            reader=ch_reader,
+            writer=ch_writer,
+            client_executor=ClickHouseClientExecutor(url="clickhouse://user:pass@host:8123/db"),
+        )
+    """
+
+    def __init__(self, url: str | None = None, *, client: Any | None = None) -> None:
+        self._url = url
+        self._client = client
+        self._client_lock = threading.Lock()
+
+    def command(self, fn: Callable[[Any], None]) -> None:
+        """Resolve the ClickHouse client and invoke *fn* with it.
+
+        Args:
+            fn: Callable produced by the executor that accepts the raw
+                ``clickhouse_connect`` client and executes the step logic.
+
+        Raises:
+            ValueError: If neither a URL nor a pre-built client was provided.
+            ImportError: If ``clickhouse-connect`` is not installed.
+        """
+        fn(self._client or self._get_client())
+
+    def _get_client(self) -> Any:
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            if not self._url:
+                raise ValueError(
+                    "ClickHouseClientExecutor requires either 'url' or 'client' "
+                    "at construction time."
+                )
+            if _clickhouse_connect is None:
+                raise ImportError(
+                    "ClickHouseClientExecutor requires 'clickhouse-connect'. "
+                    "Install it with: pip install 'loom-py[clickhouse]'"
+                )
+            self._client = _clickhouse_connect.get_client(dsn=self._url)
+            return self._client
+
+
+__all__ = [
+    "ClickHouseTableSpec",
+    "ClickHouseTargetWriter",
+    "IntoClickHouse",
+    "ClickHouseClientExecutor",
+]

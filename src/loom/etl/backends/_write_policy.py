@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
 
 from loom.etl.declarative.target import (
     AppendSpec,
+    ClientSpec,
     FileSpec,
     ReplacePartitionsSpec,
     ReplaceSpec,
@@ -120,6 +121,12 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             raise TypeError(
                 f"{type(self).__name__} does not support temp targets; "
                 "TEMP writes are handled by CheckpointStore in ETLExecutor."
+            )
+        if isinstance(spec, ClientSpec):
+            raise TypeError(
+                f"{type(self).__name__} does not support client targets. "
+                "ClientStep execution is handled by ETLExecutor before write() is called. "
+                "This is an internal error — ClientSpec should never reach write()."
             )
 
         frame = self._apply_audit_columns(frame, write_ctx, params_instance, self._audit_config)

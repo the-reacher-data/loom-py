@@ -16,6 +16,7 @@ from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.target import TargetSpec
+from loom.etl.pipeline._step_client import ClientStep
 from loom.etl.pipeline._step_sql import StepSQL
 
 _log = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ def validate_execute_signature(
     sig = inspect.signature(step_type.execute)
     params = list(sig.parameters.values())
     _validate_params_arg(step_type, params, params_type)
-    if _is_sql_step_type(step_type):
+    if _is_sql_step_type(step_type) or _is_client_step_type(step_type):
         return
     kw_only = _collect_kw_only_frames(params)
     source_aliases = {b.alias for b in source_bindings}
@@ -148,6 +149,10 @@ def _collect_kw_only_frames(params: list[inspect.Parameter]) -> dict[str, inspec
 
 def _is_sql_step_type(step_type: type[Any]) -> bool:
     return issubclass(step_type, StepSQL)
+
+
+def _is_client_step_type(step_type: type[Any]) -> bool:
+    return issubclass(step_type, ClientStep)
 
 
 def _check_missing_frames(
