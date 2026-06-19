@@ -2,18 +2,31 @@
 
 from __future__ import annotations
 
+import tempfile
+import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
 
 import polars as pl
+
+try:
+    import clickhouse_connect as _clickhouse_connect  # type: ignore[import-untyped]
+except ImportError:
+    _clickhouse_connect = None
+
+try:
+    import pyarrow as _pa
+except ImportError:
+    _pa = None  # type: ignore[assignment]
 
 from loom.core.logger import get_logger
 from loom.etl.backends.polars._dtype import loom_type_to_polars
 from loom.etl.declarative.expr._predicate_dialect import PredicateDialect, fold_predicate
 from loom.etl.declarative.source._from_clickhouse import FromClickHouse
 from loom.etl.declarative.source._specs import ClickHouseSourceSpec
-from loom.etl.runtime.contracts import SourceReader
+from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader
 from loom.etl.schema._schema import ColumnSchema
 
 _log = get_logger(__name__)
@@ -74,8 +87,20 @@ class _ClickHousePredicateDialect(PredicateDialect[str]):
 _CLICKHOUSE_PREDICATE_DIALECT = _ClickHousePredicateDialect()
 
 
-class ClickHouseSourceReader(SourceReader):
-    """Read ClickHouse sources through the native clickhouse-connect client."""
+class ClickHouseSourceReader(SourceReader, ClientCommandExecutor):
+    """Read ClickHouse sources and execute client commands via clickhouse-connect.
+
+    Implements both :class:`~loom.etl.runtime.contracts.SourceReader` (DataFrame
+    reads) and :class:`~loom.etl.runtime.contracts.ClientCommandExecutor`
+    (side-effect commands), so one instance can serve as both ``reader`` and
+    ``client_executor`` in :class:`~loom.etl.ETLRunner` — reusing a single
+    connection for both roles.
+
+    Args:
+        url:    ClickHouse DSN, e.g. ``clickhouse://user:pass@host:8123/default``.
+        client: Pre-built ``clickhouse_connect`` client.  Takes precedence over
+                *url*.  Use for testing or when the client is managed externally.
+    """
 
     def __init__(
         self,
@@ -85,6 +110,7 @@ class ClickHouseSourceReader(SourceReader):
     ) -> None:
         self._url = url
         self._client = client
+        self._client_lock = threading.Lock()
 
     def read(self, spec: Any, params_instance: Any, /) -> pl.LazyFrame:
         """Execute the ClickHouse source query and return a lazy Polars frame.
@@ -153,21 +179,38 @@ class ClickHouseSourceReader(SourceReader):
             frame = self._apply_source_schema(frame, spec.schema)
         return frame
 
+    def command(self, fn: Callable[[Any], None]) -> None:
+        """Obtain the ClickHouse client and invoke *fn* with it.
+
+        Implements :class:`~loom.etl.runtime.contracts.ClientCommandExecutor`
+        so the reader can be passed as ``client_executor`` to avoid opening
+        a second connection when the runner already holds one.
+
+        Args:
+            fn: Callable that receives the raw ``clickhouse_connect`` client.
+
+        Raises:
+            ValueError: If neither a URL nor a pre-built client was provided.
+            ImportError: If ``clickhouse-connect`` is not installed.
+        """
+        fn(self._client or self._get_client())
+
     def _get_client(self) -> Any:
-        if not self._url:
-            raise ValueError(
-                "ClickHouseSourceReader requires storage.clickhouse.url to be configured "
-                "or an explicit client injected at construction time."
-            )
-        try:
-            import clickhouse_connect as _cc  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise ImportError(
-                "ClickHouseSourceReader requires 'clickhouse-connect'. "
-                "Install it with: pip install 'loom-py[clickhouse]'"
-            ) from exc
-        self._client = _cc.get_client(dsn=self._url)
-        return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            if not self._url:
+                raise ValueError(
+                    "ClickHouseSourceReader requires storage.clickhouse.url to be configured "
+                    "or an explicit client injected at construction time."
+                )
+            if _clickhouse_connect is None:
+                raise ImportError(
+                    "ClickHouseSourceReader requires 'clickhouse-connect'. "
+                    "Install it with: pip install 'loom-py[clickhouse]'"
+                )
+            self._client = _clickhouse_connect.get_client(dsn=self._url)
+            return self._client
 
     def _build_query(self, spec: ClickHouseSourceSpec, params_instance: Any) -> str:
         columns = (
@@ -207,27 +250,25 @@ class ClickHouseSourceReader(SourceReader):
 
     @staticmethod
     def _stream_query_to_frame(client: Any, query: str) -> tuple[pl.LazyFrame, int, int]:
-        # Spool the streaming Arrow result to a temp IPC file so downstream
-        # ``collect(engine="streaming")`` can consume it lazily. Caps peak
-        # RAM at one batch instead of the full result set.
         if not hasattr(client, "query_arrow_stream"):
             raise TypeError(
                 "ClickHouse client must expose query_arrow_stream() to read in streaming mode."
             )
-        import tempfile  # noqa: PLC0415
-
-        import pyarrow as pa  # noqa: PLC0415
-
-        # clickhouse-connect's StreamContext yields pa.Table per block (no
-        # ``.schema`` attribute on the context itself), so we peek the first
-        # chunk to obtain the schema before opening the IPC writer.
+        if _pa is None:
+            raise ImportError(
+                "read_streaming requires 'pyarrow'. "
+                "Install it with: pip install 'loom-py[clickhouse]'"
+            )
+        # Spool the streaming Arrow result to a temp IPC file so downstream
+        # ``collect(engine="streaming")`` can consume it lazily. Caps peak
+        # RAM at one batch instead of the full result set.
+        # clickhouse-connect StreamContext yields _pa.Table per block — peek
+        # the first chunk to obtain schema before opening the IPC writer.
         with client.query_arrow_stream(query) as stream:
             iterator = iter(stream)
             try:
                 first_chunk = next(iterator)
             except StopIteration:
-                # Empty result set — fall back to a single non-streaming
-                # query so we still return a frame with the right schema.
                 frame, rows = ClickHouseSourceReader._query_to_frame(client, query)
                 return frame, rows, 0
             tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
@@ -236,8 +277,8 @@ class ClickHouseSourceReader(SourceReader):
             rows = 0
             batches = 0
             try:
-                _ipc_opts = pa.ipc.IpcWriteOptions(compression="lz4")
-                with pa.ipc.new_file(tmp, first_chunk.schema, options=_ipc_opts) as writer:
+                _ipc_opts = _pa.ipc.IpcWriteOptions(compression="lz4")
+                with _pa.ipc.new_file(tmp, first_chunk.schema, options=_ipc_opts) as writer:
                     rows += ClickHouseSourceReader._write_arrow_chunk(writer, first_chunk)
                     batches += 1
                     for chunk in iterator:
@@ -249,9 +290,8 @@ class ClickHouseSourceReader(SourceReader):
 
     @staticmethod
     def _write_arrow_chunk(writer: Any, chunk: Any) -> int:
-        import pyarrow as pa  # noqa: PLC0415
-
-        if isinstance(chunk, pa.Table):
+        assert _pa is not None
+        if isinstance(chunk, _pa.Table):
             rows = 0
             for batch in chunk.to_batches():
                 writer.write_batch(batch)
