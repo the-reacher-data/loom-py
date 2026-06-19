@@ -100,6 +100,7 @@ def build_flow_body(
                 pending,
                 ctx,
                 observers,
+                plan,
             )
         finally:
             uninstall_log_bridge()
@@ -173,15 +174,30 @@ def _invoke_runner(
     pending: list[str],
     ctx: FlowCtx,
     observers: list[Any],
+    plan: PipelinePlan,
 ) -> None:
+    import prefect  # noqa: PLC0415
+
     runner = ETLRunner.from_yaml(config_path, extra_observers=observers)
-    runner.run(
-        pipeline,
-        params_obj,
-        include=pending,
-        run_id=ctx.run_id,
-        correlation_id=ctx.correlation_id,
-    )
+    pending_set = set(pending)
+
+    for proc in iter_processes(plan):
+        proc_step_names = [s.step_type.__name__ for s in iter_steps_in_process(proc)]
+        proc_pending = [s for s in proc_step_names if s in pending_set]
+        if not proc_pending:
+            continue
+
+        @prefect.flow(name=proc.process_type.__name__)
+        def _run_proc(steps: list[str] = proc_pending) -> None:
+            runner.run(
+                pipeline,
+                params_obj,
+                include=steps,
+                run_id=ctx.run_id,
+                correlation_id=ctx.correlation_id,
+            )
+
+        _run_proc()
 
 
 def _maybe_delete_manifest(store: ManifestStore | None, correlation_id: str) -> None:

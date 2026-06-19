@@ -97,8 +97,10 @@ class TestLazyFrameInput:
 class TestMissingDependency:
     def test_import_error_when_clickhouse_connect_missing(self) -> None:
         """ImportError is raised at construction if clickhouse-connect is absent."""
+        import loom.etl.io.targets._clickhouse as _module
+
         with (
-            patch.dict("sys.modules", {"clickhouse_connect": None}),
+            patch.object(_module, "_clickhouse_connect", None),
             pytest.raises(ImportError, match="clickhouse-connect"),
         ):
             ClickHouseTargetWriter(_URL)

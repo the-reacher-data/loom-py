@@ -36,6 +36,7 @@ SCD2 support types:
 * :class:`HistorifyTemporalConflictError` — future-open records without re-weave
 """
 
+from loom.etl.declarative.target._client import ClientSpec, IntoClient
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import (
     DeletePolicy,
@@ -69,12 +70,23 @@ TargetSpec = (
     | FileSpec
     | TempSpec
     | TempFanInSpec
+    | ClientSpec
 )
 """Union of all concrete target spec variants.
 
-Used as the public type annotation for any value produced by
-:meth:`IntoTable._to_spec`, :meth:`IntoFile._to_spec`,
-:meth:`IntoTemp._to_spec`, or :meth:`IntoHistory._to_spec`.
+Used as the public type annotation for any value produced by ``_to_spec``
+on any target builder (:class:`IntoTable`, :class:`IntoFile`,
+:class:`IntoTemp`, :class:`IntoHistory`, :class:`IntoClient`).
+
+.. note::
+    :class:`ClientSpec` is included in this union because it is produced by
+    :meth:`IntoClient._to_spec`, but it is **never** passed to
+    :meth:`~loom.etl.runtime.contracts.TargetWriter.write`.  The executor
+    intercepts it before the write path and routes it to
+    :class:`~loom.etl.runtime.contracts.ClientCommandExecutor`.  Both
+    :class:`~loom.etl.backends._write_policy.WritePolicy` and
+    :class:`~loom.etl.io.targets.ClickHouseTargetWriter` reject it explicitly
+    with a :exc:`TypeError` as a defensive guard.
 """
 
 __all__ = [
@@ -83,10 +95,13 @@ __all__ = [
     "IntoFile",
     "IntoTemp",
     "IntoHistory",
+    "IntoClient",
     # schema
     "SchemaMode",
     # union
     "TargetSpec",
+    # client sentinel
+    "ClientSpec",
     # table specs
     "AppendSpec",
     "ReplaceSpec",

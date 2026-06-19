@@ -16,7 +16,7 @@ from loom.etl.declarative.target._history import (
 )
 
 
-def _history_boundary_dtype(spec: HistorifySpec) -> pl.DataType | type[pl.Date]:
+def _history_boundary_dtype(spec: HistorifySpec) -> type[pl.Date] | pl.Datetime:
     return pl.Date if spec.date_type is HistoryDateType.DATE else pl.Datetime("us", "UTC")
 
 
@@ -26,7 +26,7 @@ class PolarsHistorifyBackend:
     def columns(self, frame: pl.DataFrame) -> list[str]:
         return list(frame.columns)
 
-    def history_dtype(self, spec: HistorifySpec) -> type[pl.Date] | type[pl.Datetime]:
+    def history_dtype(self, spec: HistorifySpec) -> type[pl.Date] | pl.Datetime:
         return _history_boundary_dtype(spec)
 
     def filter_null(self, frame: pl.DataFrame, col: str) -> pl.DataFrame:

@@ -30,7 +30,7 @@ from loom.etl.runner._wiring import (
 from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
-from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig, convert_storage_config
 
 _log = logging.getLogger(__name__)
@@ -53,6 +53,7 @@ class ETLRunner:
         observability: ObservabilityRuntime | None = None,
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
+        client_executor: ClientCommandExecutor | None = None,
     ) -> None:
         self._executor = ETLExecutor(
             reader,
@@ -60,6 +61,7 @@ class ETLRunner:
             observability or ObservabilityRuntime.noop(),
             dispatcher,
             checkpoint_store,
+            client_executor,
         )
         self._compiler = ETLCompiler()
         self._checkpoint_store = checkpoint_store

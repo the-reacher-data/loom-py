@@ -51,11 +51,13 @@ from loom.etl.compiler._plan import (
     StepPlan,
 )
 from loom.etl.declarative.source import TempSourceSpec
+from loom.etl.declarative.target._client import ClientSpec
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
 from loom.etl.executor._dispatcher import ParallelDispatcher, ThreadDispatcher
 from loom.etl.lineage._records import RunContext, RunStatus, WriteContext
 from loom.etl.pipeline._step_sql import StepSQL
 from loom.etl.runtime.contracts import (
+    ClientCommandExecutor,
     SourceReader,
     SQLExecutor,
     StreamingSourceReader,
@@ -99,12 +101,14 @@ class ETLExecutor:
         observability: ObservabilityRuntime | None = None,
         dispatcher: ParallelDispatcher | None = None,
         checkpoint_store: CheckpointStore | None = None,
+        client_executor: ClientCommandExecutor | None = None,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._observability = observability or ObservabilityRuntime.noop()
         self._dispatcher: ParallelDispatcher = dispatcher or ThreadDispatcher()
         self._checkpoint_store: CheckpointStore | None = checkpoint_store
+        self._client_executor: ClientCommandExecutor | None = client_executor
 
     @property
     def observability(self) -> ObservabilityRuntime:
@@ -247,12 +251,15 @@ class ETLExecutor:
             process_run_id=ctx.process_run_id,
             step_run_id=step_run_id,
             sources=[b.alias for b in plan.source_bindings],
-            target=str(
-                getattr(plan.target_binding.spec, "table_ref", None)
-                or getattr(plan.target_binding.spec, "path", None)
-            ),
+            target=_span_target_label(plan.target_binding.spec),
             streaming=plan.streaming,
         ):
+            if isinstance(plan.target_binding.spec, ClientSpec):
+                step = plan.step_type()
+                client_exec = self._require_client_executor(step)
+                client_exec.command(lambda client: step.execute(params, client=client))
+                return
+
             frames = {
                 b.alias: self._read_source(b.spec, params, ctx, streaming=plan.streaming)
                 for b in plan.source_bindings
@@ -295,6 +302,17 @@ class ETLExecutor:
         raise TypeError(
             f"Step {type(step).__qualname__!r} is SQL-based but configured reader "
             f"{type(self._reader).__qualname__!r} does not implement SQLExecutor."
+        )
+
+    def _require_client_executor(self, step: Any) -> ClientCommandExecutor:
+        """Return the injected ClientCommandExecutor, or raise a clear configuration error."""
+        if self._client_executor is not None:
+            return self._client_executor
+        raise TypeError(
+            f"Step {type(step).__qualname__!r} is a ClientStep but no "
+            "ClientCommandExecutor was configured. "
+            "Pass client_executor= to ETLExecutor (or ETLRunner) to enable client steps. "
+            "Example: client_executor=ClickHouseClientExecutor(url=...)"
         )
 
     def _read_source(
@@ -409,6 +427,13 @@ class ETLExecutor:
 def _new_run_id() -> str:
     """Generate a fresh UUID4 run identifier."""
     return str(uuid.uuid4())
+
+
+def _span_target_label(spec: Any) -> str:
+    """Return a human-readable target label for observability spans."""
+    if isinstance(spec, ClientSpec):
+        return "client"
+    return str(getattr(spec, "table_ref", None) or getattr(spec, "path", None))
 
 
 def _render_params(params: Any) -> dict[str, Any]:

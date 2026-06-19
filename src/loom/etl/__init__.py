@@ -78,7 +78,14 @@ from loom.etl.declarative import (
     SourceSet,
     WriteOptions,
 )
-from loom.etl.io import FromClickHouse, FromMongo, IntoClickHouse, SourceRef
+from loom.etl.declarative.target._client import IntoClient
+from loom.etl.io import (
+    ClickHouseClientExecutor,
+    FromClickHouse,
+    FromMongo,
+    IntoClickHouse,
+    SourceRef,
+)
 from loom.etl.lineage._config import ETLObservabilityConfig, LineageConfig
 from loom.etl.maintenance import (
     DeltaTableMaintainer,
@@ -93,6 +100,7 @@ from loom.etl.maintenance import (
     VacuumResult,
 )
 from loom.etl.pipeline import (
+    ClientStep,
     ETLParams,
     ETLPipeline,
     ETLProcess,
@@ -102,7 +110,12 @@ from loom.etl.pipeline import (
     params,
 )
 from loom.etl.runner import ETLRunner, InvalidStageError
-from loom.etl.runtime.contracts import SourceReader, TableDiscovery, TargetWriter
+from loom.etl.runtime.contracts import (
+    ClientCommandExecutor,
+    SourceReader,
+    TableDiscovery,
+    TargetWriter,
+)
 from loom.etl.schema import (
     ArrayType,
     CategoricalType,
@@ -144,6 +157,7 @@ __all__ = [
     # step / process / pipeline
     "ETLStep",
     "StepSQL",
+    "ClientStep",
     "ETLProcess",
     "ETLPipeline",
     # runner
@@ -163,6 +177,7 @@ __all__ = [
     "IntoFile",
     "IntoTemp",
     "IntoClickHouse",
+    "IntoClient",
     "IntoHistory",
     # SCD2 enums
     "HistorifyInputMode",
@@ -203,6 +218,9 @@ __all__ = [
     "TableDiscovery",
     "SourceReader",
     "TargetWriter",
+    "ClientCommandExecutor",
+    # ClickHouse client executor
+    "ClickHouseClientExecutor",
     # storage locator
     "TableLocation",
     "TableLocator",
