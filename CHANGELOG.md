@@ -1,3 +1,85 @@
+# 🚀 Release 0.12.0 ([#64](https://github.com/the-reacher-data/loom-py/pull/64)) ([`a471a17`](https://github.com/the-reacher-data/loom-py/commit/a471a17337d2d63b66fad0f74c81b199b943e588))
+
+
+## ✨ Features
+### etl
+- **etl:** add ClientStep for side-effect engine commands<br>
+  > Introduces a new step type for executing ClickHouse DDL, OPTIMIZE,
+  > ALTER TABLE DROP PARTITION, and similar commands that need the native
+  > engine client but produce no DataFrame output.
+  > New public API:
+  > `ClientStep[ParamsT]` — base class; implement `execute(params, *, client)`
+  > `IntoClient` / `ClientSpec` — target sentinel that bypasses read-write path
+  > `ClientCommandExecutor` protocol — injected capability; method is `command(fn)`
+  > `ClickHouseClientExecutor` — standalone executor with lazy thread-safe client
+  > `ETLRunner(client_executor=...)` / `ETLExecutor(client_executor=...)` params
+  > Architecture decisions:
+  > `ETLExecutor.run_step` short-circuits to `client_executor.command(fn)` before
+  > any source reads when `target_binding.spec` is `ClientSpec`
+  > Compiler skips execute-signature validation for `ClientStep` subclasses
+  > `_write_policy` and `ClickHouseTargetWriter.write()` raise on `ClientSpec`
+  > as a defence-in-depth guard
+  > `ETLStep._log` class variable set by `__init_subclass__` gives every step
+  > a structured logger named after the concrete step class
+  > Module-level `try/except` imports replace lazy function-level imports;
+  > `threading.Lock` guards lazy client init under parallel step execution
+  > Also fixes a pre-existing return type annotation in `_historify.py`:
+  > `pl.Datetime("us", "UTC")` is an instance, not `type[pl.Datetime]`.
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+- **etl:** ClickHouseSourceReader implements ClientCommandExecutor<br>
+  > Allows passing the existing ClickHouseSourceReader as client_executor
+  > to ETLRunner / ETLExecutor, reusing the same connection for both
+  > DataFrame reads and ClientStep side-effect commands — no second
+  > ClickHouse connection opened.
+  > Changes:
+  > `ClickHouseSourceReader` now inherits `ClientCommandExecutor` and
+  > exposes `command(fn)` which lazily resolves the client via the same
+  > `_get_client()` path used by `read()` and `read_streaming()`
+  > `threading.Lock` and double-check pattern protect the shared lazy
+  > client init against concurrent access under `ParallelStepGroup`
+  > Module-level `try/except` imports for `clickhouse_connect` and
+  > `pyarrow` replace lazy function-level imports
+  > Usage:
+  > ch_reader = ClickHouseSourceReader(url="clickhouse://...")
+  > runner = ETLRunner(
+  > reader=ch_reader,
+  > writer=ch_writer,
+  > client_executor=ch_reader,  # reuses the same connection
+  > )
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+### prefect
+- **prefect:** wrap ETLProcess instances as Prefect subflows<br>
+  > Each ETLProcess now runs inside a nested @prefect.flow, giving the Prefect
+  > UI a process-level hierarchy instead of a flat list of 300 tasks.
+  > PrefectTaskRunObserver resolves the active flow_run_id at task-creation
+  > time via prefect.runtime, so task runs attach to the correct subflow
+  > automatically. Fallback to the stored flow_run_id keeps unit tests intact.
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### tests
+- **tests:** resolve Sonar collection-access issues in test_client_step<br>
+  > Replace [0] index access with tuple unpacking to eliminate potential
+  > IndexError; replace == [] comparisons with `not collection` idiom.
+  > Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Sonnet 4.6 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.11.4 ([#62](https://github.com/the-reacher-data/loom-py/pull/62)) ([`92904c2`](https://github.com/the-reacher-data/loom-py/commit/92904c20b99b7a4659a6658f3c29af46ac3887f3))
 
 
