@@ -74,3 +74,42 @@ def test_process_scope_events_are_ignored() -> None:
     event = LifecycleEvent.start(scope=Scope.PROCESS, name="MyProcess")
     observer.on_event(event)
     assert not observer._task_runs
+
+
+class TestActiveFlowRunId:
+    def test_returns_runtime_id_when_available(self) -> None:
+        import types
+
+        stored = uuid.uuid4()
+        runtime_id = uuid.uuid4()
+        observer = PrefectTaskRunObserver(flow_run_id=stored)
+
+        fake_module = types.SimpleNamespace(flow_run=types.SimpleNamespace(id=str(runtime_id)))
+        with patch.dict("sys.modules", {"prefect.runtime": fake_module}):
+            result = observer._active_flow_run_id()
+
+        assert result == runtime_id
+
+    def test_falls_back_to_stored_when_runtime_id_is_none(self) -> None:
+        import types
+
+        stored = uuid.uuid4()
+        observer = PrefectTaskRunObserver(flow_run_id=stored)
+
+        fake_module = types.SimpleNamespace(flow_run=types.SimpleNamespace(id=None))
+        with patch.dict("sys.modules", {"prefect.runtime": fake_module}):
+            result = observer._active_flow_run_id()
+
+        assert result == stored
+
+    def test_falls_back_to_stored_on_attribute_error(self) -> None:
+        import types
+
+        stored = uuid.uuid4()
+        observer = PrefectTaskRunObserver(flow_run_id=stored)
+
+        fake_module = types.SimpleNamespace()  # no flow_run attribute
+        with patch.dict("sys.modules", {"prefect.runtime": fake_module}):
+            result = observer._active_flow_run_id()
+
+        assert result == stored

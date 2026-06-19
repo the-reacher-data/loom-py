@@ -103,13 +103,14 @@ class PrefectTaskRunObserver:
         from prefect.client.orchestration import get_client  # noqa: PLC0415
         from prefect.states import Running  # noqa: PLC0415
 
+        flow_run_id = self._active_flow_run_id()
         marker = self._step_marker(event.name)
 
         async def _create() -> uuid.UUID:
             async with get_client() as client:
                 created = await client.create_task_run(
                     task=marker,
-                    flow_run_id=self._flow_run_id,
+                    flow_run_id=flow_run_id,
                     dynamic_key=str(event.id),
                     name=event.name,
                     state=Running(),
@@ -119,6 +120,23 @@ class PrefectTaskRunObserver:
 
         result = run_sync(_create())
         return result if isinstance(result, uuid.UUID) else None
+
+    def _active_flow_run_id(self) -> uuid.UUID:
+        """Return the Prefect flow run ID for the currently active flow context.
+
+        Inside a Prefect subflow the runtime context reflects the subflow's ID,
+        so task runs are automatically attached to the correct process subflow.
+        Falls back to the stored ``_flow_run_id`` when called outside a live
+        Prefect context (unit tests, non-Prefect execution).
+        """
+        try:
+            from prefect.runtime import flow_run as _fr  # noqa: PLC0415
+
+            if _fr.id:
+                return uuid.UUID(str(_fr.id))
+        except (ImportError, AttributeError):
+            pass
+        return self._flow_run_id
 
     def _step_marker(self, name: str) -> Any:
         """Return a cached no-op ``@task`` for *name* used as orchestration marker."""
