@@ -154,8 +154,8 @@ class TestClientStepExecution:
         plan = ETLCompiler().compile_step(_RecordingStep)
         executor.run_step(plan, SimpleParams(value=42))
 
-        assert len(received) == 1
-        assert received[0] is mock_client
+        (client,) = received
+        assert client is mock_client
 
     def test_params_forwarded_to_execute(self) -> None:
         received_params: list[Any] = []
@@ -176,7 +176,8 @@ class TestClientStepExecution:
         plan = ETLCompiler().compile_step(_ParamsCapture)
         executor.run_step(plan, SimpleParams(value=7))
 
-        assert received_params[0].value == 7
+        (param,) = received_params
+        assert param.value == 7
 
     def test_no_sources_read_for_client_step(self) -> None:
         reader = StubSourceReader({})
@@ -203,7 +204,7 @@ class TestClientStepExecution:
         plan = ETLCompiler().compile_step(_ConcreteClientStep)
         executor.run_step(plan, SimpleParams(value=1))
 
-        assert read_calls == [], "reader.read should not be called for ClientStep"
+        assert not read_calls, "reader.read should not be called for ClientStep"
 
     def test_no_write_called_for_client_step(self) -> None:
         writer = StubTargetWriter()
@@ -229,7 +230,7 @@ class TestClientStepExecution:
         plan = ETLCompiler().compile_step(_ConcreteClientStep)
         executor.run_step(plan, SimpleParams(value=1))
 
-        assert write_calls == [], "writer.write should not be called for ClientStep"
+        assert not write_calls, "writer.write should not be called for ClientStep"
 
     def test_missing_client_executor_raises_clear_error(self) -> None:
         executor = _make_executor(client_executor=None)
