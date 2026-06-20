@@ -17,11 +17,13 @@ from loom.etl.runner._providers import load_backend_provider
 from loom.etl.runner._wiring import (
     make_backends,
     make_checkpoint_store,
+    make_client_executor,
     make_lineage_store,
     make_lineage_writer,
 )
 from loom.etl.storage._config import (
     CatalogConnection,
+    ClickHouseConfig,
     MissingTablePolicy,
     StorageConfig,
     StorageDefaults,
@@ -318,6 +320,39 @@ def test_make_lineage_store_returns_table_store_when_enabled() -> None:
     lineage = LineageConfig(enabled=True, root="s3://bucket/runs")
     store = make_lineage_store(StorageConfig(engine="polars"), lineage)
     assert isinstance(store, TableLineageStore)
+
+
+# ---------------------------------------------------------------------------
+# make_client_executor
+# ---------------------------------------------------------------------------
+
+
+def test_make_client_executor_polars_with_clickhouse_url_returns_executor() -> None:
+    from loom.etl.io.targets._clickhouse import ClickHouseClientExecutor
+
+    config = StorageConfig(
+        engine="polars",
+        clickhouse=ClickHouseConfig(url="clickhouse://user:pass@host:8123/db"),
+    )
+    executor = make_client_executor(config)
+
+    assert isinstance(executor, ClickHouseClientExecutor)
+
+
+def test_make_client_executor_polars_without_clickhouse_url_returns_none() -> None:
+    config = StorageConfig(engine="polars")
+    assert make_client_executor(config) is None
+
+
+def test_make_client_executor_spark_returns_none() -> None:
+    from unittest.mock import MagicMock
+
+    spark = MagicMock()
+    config = StorageConfig(
+        engine="spark",
+        clickhouse=ClickHouseConfig(url="clickhouse://user:pass@host:8123/db"),
+    )
+    assert make_client_executor(config, spark=spark) is None
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ from loom.etl.pipeline._pipeline import ETLPipeline
 from loom.etl.runner._wiring import (
     make_backends,
     make_checkpoint_store,
+    make_client_executor,
     make_lineage_store,
 )
 from loom.etl.runner.config_loader import _load_yaml
@@ -97,7 +98,8 @@ class ETLRunner:
         if extra_observers:
             observability = ObservabilityRuntime([*observability.observers, *extra_observers])
         checkpoint_store = make_checkpoint_store(config, spark, cleaner)
-        return cls(reader, writer, observability, dispatcher, checkpoint_store)
+        client_executor = make_client_executor(config, spark)
+        return cls(reader, writer, observability, dispatcher, checkpoint_store, client_executor)
 
     @classmethod
     def from_yaml(

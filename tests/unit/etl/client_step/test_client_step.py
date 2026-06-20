@@ -239,6 +239,35 @@ class TestClientStepExecution:
         with pytest.raises(TypeError, match="ClientCommandExecutor"):
             executor.run_step(plan, SimpleParams(value=1))
 
+    def test_from_config_runner_runs_client_step_without_missing_executor_error(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A runner built via from_config with a clickhouse url executes a
+        ClientStep without raising the missing-executor TypeError (offline).
+        """
+        from loom.etl.runner import ETLRunner
+        from loom.etl.storage._config import (
+            ClickHouseConfig,
+            StorageConfig,
+            StorageDefaults,
+            TablePathConfig,
+        )
+
+        fake_client = MagicMock()
+        fake_module = MagicMock()
+        fake_module.get_client.return_value = fake_client
+        monkeypatch.setattr("loom.etl.io.targets._clickhouse._clickhouse_connect", fake_module)
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            clickhouse=ClickHouseConfig(url="clickhouse://user:pass@host:8123/db"),
+        )
+        runner = ETLRunner.from_config(config)
+
+        runner.run(_PipelineWithClientStep, SimpleParams(value=99))
+
+        fake_client.command.assert_called_once_with("SELECT 99")
+
 
 # ---------------------------------------------------------------------------
 # ClickHouseClientExecutor
