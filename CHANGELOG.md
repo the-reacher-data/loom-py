@@ -1,3 +1,20 @@
+# 🚀 Release 0.12.1 ([#66](https://github.com/the-reacher-data/loom-py/pull/66)) ([`f3c045e`](https://github.com/the-reacher-data/loom-py/commit/f3c045ec6b9e915e5d2c9f55d7134a7be37c1475))
+
+
+
+## 🐛 Fixes
+### runner
+- **runner:** wire ClickHouseClientExecutor in from_config for ClientStep
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.12.0 ([#64](https://github.com/the-reacher-data/loom-py/pull/64)) ([`a471a17`](https://github.com/the-reacher-data/loom-py/commit/a471a17337d2d63b66fad0f74c81b199b943e588))
 
 
