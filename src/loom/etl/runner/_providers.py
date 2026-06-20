@@ -7,7 +7,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import LineageWriter
-from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
 
 _BACKEND_EP_GROUP = "loom.etl.backends"
@@ -32,6 +32,23 @@ class BackendProvider(Protocol):
         spark: Any = None,
     ) -> LineageWriter:
         """Create lineage writer for ETL lineage persistence."""
+        ...
+
+    def create_client_executor(
+        self,
+        config: StorageConfig,
+        spark: Any = None,
+    ) -> ClientCommandExecutor | None:
+        """Create a client command executor for ``ClientStep`` execution.
+
+        Args:
+            config: Resolved storage config.
+            spark: Active SparkSession, when the engine is Spark.
+
+        Returns:
+            An executor when the engine and config support client steps,
+            or ``None`` when no client backend is configured.
+        """
         ...
 
 

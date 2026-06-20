@@ -11,11 +11,11 @@ from loom.etl.backends.polars._writer import PolarsTargetWriter
 from loom.etl.io._registry import ReaderRegistry, WriterRegistry
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
 from loom.etl.io.sources._mongo import MongoSourceReader
-from loom.etl.io.targets._clickhouse import ClickHouseTargetWriter
+from loom.etl.io.targets._clickhouse import ClickHouseClientExecutor, ClickHouseTargetWriter
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
-from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
 from loom.etl.storage._config import CatalogConnection, StorageConfig
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 
@@ -86,6 +86,16 @@ class PolarsProvider(BackendProvider):
             missing_table_policy=config.missing_table_policy,
         )
         return TargetLineageWriter(cast(RecordFrameTargetWriter, target_writer))
+
+    def create_client_executor(
+        self,
+        config: StorageConfig,
+        spark: Any = None,
+    ) -> ClientCommandExecutor | None:
+        _ = spark
+        if config.clickhouse.url:
+            return ClickHouseClientExecutor(url=config.clickhouse.url)
+        return None
 
 
 def _build_polars_locator(config: StorageConfig) -> TableLocator:

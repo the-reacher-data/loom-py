@@ -321,6 +321,34 @@ class TestRunnerFromConfig:
         assert isinstance(runner._executor._writer, PolarsTargetWriter)
         assert (runner._checkpoint_store is not None) is has_checkpoint_store
 
+    def test_from_config_with_clickhouse_url_wires_client_executor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from loom.etl.io.targets._clickhouse import ClickHouseClientExecutor
+        from loom.etl.storage._config import ClickHouseConfig
+
+        monkeypatch.setattr("loom.etl.io.targets._clickhouse._clickhouse_connect", MagicMock())
+
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+            clickhouse=ClickHouseConfig(url="clickhouse://user:pass@host:8123/db"),
+        )
+        runner = ETLRunner.from_config(config)
+
+        assert isinstance(runner._executor._client_executor, ClickHouseClientExecutor)
+
+    def test_from_config_without_clickhouse_url_leaves_client_executor_none(
+        self, tmp_path: Path
+    ) -> None:
+        config = StorageConfig(
+            defaults=StorageDefaults(table_path=TablePathConfig(uri=str(tmp_path))),
+        )
+        runner = ETLRunner.from_config(config)
+
+        assert runner._executor._client_executor is None
+
 
 class TestRunnerFromDict:
     def test_from_dict_polars_path_builds_polars_backends(self, tmp_path: Path) -> None:

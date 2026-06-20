@@ -9,7 +9,7 @@ from loom.etl.backends.spark._writer import SparkTargetWriter
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
-from loom.etl.runtime.contracts import SourceReader, TargetWriter
+from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
 from loom.etl.storage._config import StorageConfig
 from loom.etl.storage._locator import PrefixLocator
 from loom.etl.storage.routing import build_table_resolver
@@ -74,6 +74,15 @@ class SparkProvider(BackendProvider):
             missing_table_policy=config.missing_table_policy,
         )
         return TargetLineageWriter(cast(RecordFrameTargetWriter, target_writer))
+
+    def create_client_executor(
+        self,
+        config: StorageConfig,
+        spark: Any = None,
+    ) -> ClientCommandExecutor | None:
+        """Return ``None``: ClickHouse client steps do not apply to Spark yet."""
+        _ = (config, spark)
+        return None
 
 
 __all__ = ["SparkProvider"]
