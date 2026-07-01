@@ -1,3 +1,20 @@
+# 🚀 Release 0.12.2 ([#68](https://github.com/the-reacher-data/loom-py/pull/68)) ([`4f067d0`](https://github.com/the-reacher-data/loom-py/commit/4f067d060347334128455503d6a4975c1bcc6285))
+
+
+
+## 🐛 Fixes
+### prefect
+- **prefect:** observe maintenance logs in flow runs
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.12.1 ([#66](https://github.com/the-reacher-data/loom-py/pull/66)) ([`f3c045e`](https://github.com/the-reacher-data/loom-py/commit/f3c045ec6b9e915e5d2c9f55d7134a7be37c1475))
 
 
