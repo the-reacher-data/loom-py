@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import uuid
+from typing import Any, cast
 
 
 def coerce_tags(raw: Any) -> tuple[str, ...]:
@@ -17,4 +18,18 @@ def coerce_tags(raw: Any) -> tuple[str, ...]:
     return tuple(raw)
 
 
-__all__ = ["coerce_tags"]
+def prefect_flow_run_id() -> uuid.UUID | None:
+    """Return the current Prefect flow run identifier.
+
+    Returns:
+        The active flow run UUID, or ``None`` outside a Prefect flow run.
+    """
+    try:
+        from prefect.runtime import flow_run  # noqa: PLC0415
+
+        return cast(uuid.UUID | None, flow_run.id)
+    except (ImportError, AttributeError):
+        return None
+
+
+__all__ = ["coerce_tags", "prefect_flow_run_id"]
