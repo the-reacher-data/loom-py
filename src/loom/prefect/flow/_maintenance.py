@@ -19,10 +19,12 @@ from loom.prefect._summary import set_run_summary
 from loom.prefect.deploy._schedule import extract_pool_config
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._common import coerce_tags as _coerce_tags
+from loom.prefect.flow._common import prefect_flow_run_id
 from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
 from loom.prefect.flow._signature import normalize_datetime_fields, signature_from_params_type
 from loom.prefect.notify import build_notifiers
+from loom.prefect.observer._logging_bridge import install_log_bridge, uninstall_log_bridge
 
 
 def maintenance_flow(
@@ -76,8 +78,13 @@ def maintenance_flow(
         resolved = normalize_datetime_fields(resolved, params_type)
         params = msgspec.convert(resolved, type=params_type)
         actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
-        storage_config, _ = _load_yaml(actual_path)
-        report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
+        # Bridge loom logs into the Prefect run (mirrors etl_flow).
+        install_log_bridge(prefect_flow_run_id())
+        try:
+            storage_config, _ = _load_yaml(actual_path)
+            report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
+        finally:
+            uninstall_log_bridge()
         set_run_summary(_maintenance_summary(report, resolved))
         report.raise_if_errors()
 

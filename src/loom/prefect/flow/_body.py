@@ -16,6 +16,7 @@ from loom.etl.runner import ETLRunner
 from loom.prefect._ctx import FlowCtx
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._summary import set_run_summary
+from loom.prefect.flow._common import prefect_flow_run_id
 from loom.prefect.flow._run_name import compute_correlation_id
 from loom.prefect.flow._signature import normalize_datetime_fields
 from loom.prefect.manifest import (
@@ -89,7 +90,7 @@ def build_flow_body(
             _maybe_delete_manifest(manifest_store, ctx.correlation_id)
             return
 
-        flow_run_id = _current_flow_run_id()
+        flow_run_id = prefect_flow_run_id()
         install_log_bridge(flow_run_id)
         try:
             observers = _build_observers(flow_run_id, manifest_store, manifest)
@@ -156,15 +157,6 @@ def _maybe_build_prometheus_adapter() -> Any:
     except ImportError:
         return None
     return PrometheusLifecycleAdapter(pushgateway_url=pushgateway)
-
-
-def _current_flow_run_id() -> Any:
-    try:
-        from prefect.runtime import flow_run as _fr  # noqa: PLC0415
-
-        return _fr.id
-    except (ImportError, AttributeError):
-        return None
 
 
 def _invoke_runner(
