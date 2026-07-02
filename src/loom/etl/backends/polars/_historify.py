@@ -133,13 +133,57 @@ class PolarsHistorifyBackend:
             else pl.duration(microseconds=1)
         )
 
-        sorted_events = frame.sort(entity_key + [eff_col])
+        collapsed = self._collapse_same_track_runs(frame, spec, entity_key, eff_col)
+        sorted_events = collapsed.sort(entity_key + [eff_col])
         next_date = pl.col(eff_col).shift(-1).over(entity_key)
 
         return sorted_events.with_columns(
             pl.col(eff_col).cast(boundary_dtype).alias(spec.valid_from),
             (next_date - offset).cast(boundary_dtype).alias(spec.valid_to),
         ).drop(eff_col)
+
+    @staticmethod
+    def _collapse_same_track_runs(
+        frame: pl.DataFrame,
+        spec: HistorifySpec,
+        entity_key: list[str],
+        eff_col: str,
+    ) -> pl.DataFrame:
+        """Collapse consecutive same-``track`` events per entity into one run.
+
+        valid_from anchors to the first event of the run (``eff_col`` min),
+        ``overwrite`` columns refresh to the last observed value, and every other
+        payload column freezes at its transition-time (first) value.
+        """
+        if spec.track is None:
+            return frame
+
+        track = list(spec.track)
+        overwrite = list(spec.overwrite or ())
+        track_struct = pl.struct(track)
+
+        runs = (
+            frame.sort(entity_key + [eff_col])
+            .with_columns(
+                track_struct.ne_missing(track_struct.shift().over(entity_key))
+                .fill_null(True)
+                .alias("__new_run__")
+            )
+            .with_columns(pl.col("__new_run__").cum_sum().over(entity_key).alias("__run_id__"))
+        )
+
+        reserved = {*entity_key, "__new_run__", "__run_id__", eff_col, *overwrite}
+        frozen_cols = [c for c in runs.columns if c not in reserved]
+        aggs = [
+            pl.col(eff_col).min().alias(eff_col),
+            *(pl.col(c).last().alias(c) for c in overwrite),
+            *(pl.col(c).first().alias(c) for c in frozen_cols),
+        ]
+        return (
+            runs.group_by([*entity_key, "__run_id__"], maintain_order=True)
+            .agg(aggs)
+            .drop("__run_id__")
+        )
 
     def apply_delete_policy(
         self,
