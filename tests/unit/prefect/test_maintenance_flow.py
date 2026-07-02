@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import msgspec
 import pytest
 
-from loom.etl.maintenance._runner import MaintenanceReport
+from loom.core.observability.event import Scope
+from loom.etl.maintenance._protocol import TableMaintenanceResult
+from loom.etl.maintenance._runner import MaintenanceError, MaintenanceReport
 from loom.etl.maintenance._step import MaintenanceStep
 from loom.prefect.flow import _maintenance
 
@@ -42,23 +46,37 @@ def test_maintenance_flow_bridges_logs_to_current_flow_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    events: list[str] = []
     flow_run_id = uuid.uuid4()
+    storage_config = MagicMock()
+    observability_config = MagicMock()
     runner = MagicMock()
-    runner.run.return_value = MaintenanceReport()
-    install = MagicMock()
-    uninstall = MagicMock()
+    runner.run.side_effect = lambda *args, **kwargs: events.append("run") or MaintenanceReport()
+    runtime = MagicMock()
+    runtime.span.side_effect = lambda *args, **kwargs: events.append("span") or nullcontext()
+    configure = MagicMock(side_effect=lambda config: events.append("configure") or runtime)
+    install = MagicMock(side_effect=lambda flow_id: events.append("install"))
+    uninstall = MagicMock(side_effect=lambda: events.append("uninstall"))
 
     monkeypatch.setattr(_maintenance, "prefect_flow_run_id", lambda: flow_run_id)
     monkeypatch.setattr(_maintenance, "install_log_bridge", install)
     monkeypatch.setattr(_maintenance, "uninstall_log_bridge", uninstall)
-    monkeypatch.setattr(_maintenance, "_load_yaml", lambda path: (MagicMock(), path))
+    monkeypatch.setattr(
+        _maintenance,
+        "_load_yaml",
+        lambda path: events.append("load") or (storage_config, observability_config),
+    )
+    monkeypatch.setattr(_maintenance.ObservabilityRuntime, "from_config", configure)
     monkeypatch.setattr(_maintenance.MaintenanceRunner, "from_config", lambda config: runner)
 
     flow = _build_flow(tmp_path)
     flow.fn(dry_run=True)  # type: ignore[attr-defined]
 
+    assert events == ["load", "configure", "install", "span", "run", "uninstall"]
+    configure.assert_called_once_with(observability_config)
     install.assert_called_once_with(flow_run_id)
     uninstall.assert_called_once_with()
+    runtime.span.assert_called_once_with(Scope.MAINTENANCE, "_MaintenanceStep")
     runner.run.assert_called_once()
 
 
@@ -66,19 +84,39 @@ def test_maintenance_flow_uninstalls_log_bridge_after_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    span_events: list[str] = []
+    report = MaintenanceReport(
+        results=[TableMaintenanceResult(table_ref="raw.events", error=RuntimeError("boom"))]
+    )
+    runner = MagicMock()
+    runner.run.return_value = report
+    runtime = MagicMock()
+
+    @contextmanager
+    def record_span(*args: object, **kwargs: object) -> Iterator[None]:
+        try:
+            yield
+        except MaintenanceError:
+            span_events.append("error")
+            raise
+
+    runtime.span.side_effect = record_span
     uninstall = MagicMock()
 
     monkeypatch.setattr(_maintenance, "prefect_flow_run_id", uuid.uuid4)
     monkeypatch.setattr(_maintenance, "install_log_bridge", MagicMock())
     monkeypatch.setattr(_maintenance, "uninstall_log_bridge", uninstall)
+    monkeypatch.setattr(_maintenance, "_load_yaml", lambda path: (MagicMock(), MagicMock()))
     monkeypatch.setattr(
-        _maintenance,
-        "_load_yaml",
-        MagicMock(side_effect=RuntimeError("storage config failed")),
+        _maintenance.ObservabilityRuntime,
+        "from_config",
+        MagicMock(return_value=runtime),
     )
+    monkeypatch.setattr(_maintenance.MaintenanceRunner, "from_config", lambda config: runner)
 
     flow = _build_flow(tmp_path)
-    with pytest.raises(RuntimeError, match="storage config failed"):
+    with pytest.raises(MaintenanceError, match="raw.events"):
         flow.fn(dry_run=False)  # type: ignore[attr-defined]
 
+    assert span_events == ["error"]
     uninstall.assert_called_once_with()

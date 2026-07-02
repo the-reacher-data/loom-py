@@ -10,6 +10,7 @@ from typing import Any
 import msgspec
 import prefect
 
+from loom.core.observability import ObservabilityRuntime, Scope
 from loom.etl.maintenance._runner import MaintenanceRunner
 from loom.etl.maintenance._step import MaintenanceStep
 from loom.etl.runner.config_loader import _load_yaml
@@ -78,15 +79,16 @@ def maintenance_flow(
         resolved = normalize_datetime_fields(resolved, params_type)
         params = msgspec.convert(resolved, type=params_type)
         actual_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
-        # Bridge loom logs into the Prefect run (mirrors etl_flow).
+        storage_config, observability_config = _load_yaml(actual_path)
+        observability = ObservabilityRuntime.from_config(observability_config)
         install_log_bridge(prefect_flow_run_id())
         try:
-            storage_config, _ = _load_yaml(actual_path)
-            report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
+            with observability.span(Scope.MAINTENANCE, step.__name__):
+                report = MaintenanceRunner.from_config(storage_config).run(step, params=params)
+                set_run_summary(_maintenance_summary(report, resolved))
+                report.raise_if_errors()
         finally:
             uninstall_log_bridge()
-        set_run_summary(_maintenance_summary(report, resolved))
-        report.raise_if_errors()
 
     safe_name = name.replace("-", "_")
     body: Any = _flow_body  # cast to Any — __signature__ is a valid runtime attribute
