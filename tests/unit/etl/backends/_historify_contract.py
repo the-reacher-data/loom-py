@@ -71,6 +71,7 @@ def _log_spec(
     *,
     keys: tuple[str, ...] = ("subscription_id",),
     track: tuple[str, ...] | None = ("plan",),
+    overwrite: tuple[str, ...] | None = None,
 ) -> HistorifySpec:
     return HistorifySpec(
         table_ref=TableRef("dim_subs"),
@@ -78,6 +79,7 @@ def _log_spec(
         effective_date="event_date",
         mode=HistorifyInputMode.LOG,
         track=track,
+        overwrite=overwrite,
         schema_mode=SchemaMode.STRICT,
     )
 
@@ -870,6 +872,406 @@ class HistorifyContractTests:
         )
         with pytest.raises(HistorifyKeyConflictError):
             writer.write(frame, _log_spec(), None)
+
+    # ------------------------------------------------------------------
+    # LOG mode — same-track collapse + overwrite
+    # ------------------------------------------------------------------
+
+    def test_log_same_track_run_collapses_to_one_version(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Consecutive same-track events collapse: valid_from=first, overwrite=last, rest=first."""
+        frame = make_frame(
+            [
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 10,
+                    "agent": "a1",
+                    "event_date": date(2024, 1, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 20,
+                    "agent": "a2",
+                    "event_date": date(2024, 2, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 30,
+                    "agent": "a3",
+                    "event_date": date(2024, 3, 1),
+                },
+            ]
+        )
+        writer.write(frame, _log_spec(overwrite=("price",)), None)
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] is None
+        assert rows[0]["price"] == 30
+        assert rows[0]["agent"] == "a1"
+
+    def test_log_track_change_freezes_previous_run(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A->B: the A run is frozen (overwrite=last-of-run, rest=first); B opens fresh."""
+        frame = make_frame(
+            [
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 10,
+                    "agent": "a1",
+                    "event_date": date(2024, 1, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 20,
+                    "agent": "a2",
+                    "event_date": date(2024, 2, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "pro",
+                    "price": 30,
+                    "agent": "a3",
+                    "event_date": date(2024, 3, 1),
+                },
+            ]
+        )
+        writer.write(frame, _log_spec(overwrite=("price",)), None)
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert len(rows) == 2
+        assert rows[0]["plan"] == "basic"
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] == date(2024, 2, 29)
+        assert rows[0]["price"] == 20
+        assert rows[0]["agent"] == "a1"
+        assert rows[1]["plan"] == "pro"
+        assert rows[1]["valid_from"] == date(2024, 3, 1)
+        assert rows[1]["valid_to"] is None
+        assert rows[1]["price"] == 30
+        assert rows[1]["agent"] == "a3"
+
+    def test_log_recurrence_not_collapsed_with_overwrite(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A->B->A yields three versions — non-consecutive runs never merge."""
+        frame = make_frame(
+            [
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 10,
+                    "event_date": date(2024, 1, 1),
+                },
+                {"subscription_id": 1, "plan": "pro", "price": 20, "event_date": date(2024, 6, 1)},
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 30,
+                    "event_date": date(2024, 9, 1),
+                },
+            ]
+        )
+        writer.write(frame, _log_spec(overwrite=("price",)), None)
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert [r["plan"] for r in rows] == ["basic", "pro", "basic"]
+        assert [r["price"] for r in rows] == [10, 20, 30]
+        assert [r["valid_from"] for r in rows] == [
+            date(2024, 1, 1),
+            date(2024, 6, 1),
+            date(2024, 9, 1),
+        ]
+        assert [r["valid_to"] for r in rows] == [date(2024, 5, 31), date(2024, 8, 31), None]
+
+    def test_log_pure_freeze_collapse_without_overwrite(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """overwrite=None: same-track run collapses to one version, all cols frozen to first."""
+        frame = make_frame(
+            [
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "agent": "a1",
+                    "event_date": date(2024, 1, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "agent": "a2",
+                    "event_date": date(2024, 2, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "agent": "a3",
+                    "event_date": date(2024, 3, 1),
+                },
+            ]
+        )
+        writer.write(frame, _log_spec(overwrite=None), None)
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] is None
+        assert rows[0]["agent"] == "a1"
+
+    def test_log_null_track_values_collapse_consecutively(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """ne_missing treats null==null: consecutive null-track events collapse; value opens run."""
+        frame = make_frame(
+            [
+                {"subscription_id": 1, "plan": None, "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": None, "event_date": date(2024, 2, 1)},
+                {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 3, 1)},
+            ]
+        )
+        writer.write(frame, _log_spec(), None)
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert len(rows) == 2
+        assert rows[0]["plan"] is None
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] == date(2024, 2, 29)
+        assert rows[1]["plan"] == "pro"
+        assert rows[1]["valid_from"] == date(2024, 3, 1)
+        assert rows[1]["valid_to"] is None
+
+    def test_log_overwrite_null_last_clobbers_open_vector(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A null in the run's last observation clobbers the overwrite col (last-observed wins)."""
+        frame = make_frame(
+            [
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": 10,
+                    "event_date": date(2024, 1, 1),
+                },
+                {
+                    "subscription_id": 1,
+                    "plan": "basic",
+                    "price": None,
+                    "event_date": date(2024, 2, 1),
+                },
+            ]
+        )
+        writer.write(frame, _log_spec(overwrite=("price",)), None)
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["price"] is None
+
+    def test_log_collapse_partitions_by_entity(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Interleaved entities collapse independently — runs never cross entity boundaries."""
+        frame = make_frame(
+            [
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 2, "plan": "basic", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 2, 1)},
+                {"subscription_id": 2, "plan": "pro", "event_date": date(2024, 2, 1)},
+            ]
+        )
+        writer.write(frame, _log_spec(), None)
+        rows = read_table(self._uri(root, "dim_subs"))
+        sub1 = [r for r in rows if r["subscription_id"] == 1]
+        sub2 = sorted((r for r in rows if r["subscription_id"] == 2), key=lambda r: r["valid_from"])
+        assert len(sub1) == 1
+        assert sub1[0]["valid_from"] == date(2024, 1, 1)
+        assert sub1[0]["valid_to"] is None
+        assert [r["plan"] for r in sub2] == ["basic", "pro"]
+        assert sub2[0]["valid_to"] == date(2024, 1, 31)
+
+    def test_log_incremental_freeze_across_three_writes(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """obs2 refreshes the open overwrite; obs3 (track change) freezes it and opens a new run."""
+        spec = _log_spec(overwrite=("price",))
+        writer.write(
+            make_frame(
+                [
+                    {
+                        "subscription_id": 1,
+                        "plan": "basic",
+                        "price": 10,
+                        "agent": "a1",
+                        "event_date": date(2024, 1, 1),
+                    }
+                ]
+            ),
+            spec,
+            None,
+        )
+        writer.write(
+            make_frame(
+                [
+                    {
+                        "subscription_id": 1,
+                        "plan": "basic",
+                        "price": 20,
+                        "agent": "a2",
+                        "event_date": date(2024, 2, 1),
+                    }
+                ]
+            ),
+            spec,
+            None,
+        )
+        writer.write(
+            make_frame(
+                [
+                    {
+                        "subscription_id": 1,
+                        "plan": "pro",
+                        "price": 30,
+                        "agent": "a3",
+                        "event_date": date(2024, 3, 1),
+                    }
+                ]
+            ),
+            spec,
+            None,
+        )
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert len(rows) == 2
+        assert rows[0]["plan"] == "basic"
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] == date(2024, 2, 29)
+        assert rows[0]["price"] == 20
+        assert rows[0]["agent"] == "a1"
+        assert rows[1]["plan"] == "pro"
+        assert rows[1]["valid_from"] == date(2024, 3, 1)
+        assert rows[1]["valid_to"] is None
+        assert rows[1]["price"] == 30
+        assert rows[1]["agent"] == "a3"
+
+    def test_log_overwrite_refreshes_open_vector_across_writes(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A later same-track write refreshes the overwrite col without a new version."""
+        spec = _log_spec(overwrite=("price",))
+        writer.write(
+            make_frame(
+                [
+                    {
+                        "subscription_id": 1,
+                        "plan": "basic",
+                        "price": 10,
+                        "agent": "a1",
+                        "event_date": date(2024, 1, 1),
+                    }
+                ]
+            ),
+            spec,
+            None,
+        )
+        writer.write(
+            make_frame(
+                [
+                    {
+                        "subscription_id": 1,
+                        "plan": "basic",
+                        "price": 20,
+                        "agent": "a2",
+                        "event_date": date(2024, 6, 1),
+                    }
+                ]
+            ),
+            spec,
+            None,
+        )
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] is None
+        assert rows[0]["price"] == 20
+        assert rows[0]["agent"] == "a1"
+
+    def test_log_same_track_collapse_replay_is_idempotent(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Re-running the same same-track window creates no spurious versions."""
+        events = [
+            {
+                "subscription_id": 1,
+                "plan": "basic",
+                "price": 10,
+                "agent": "a1",
+                "event_date": date(2024, 1, 1),
+            },
+            {
+                "subscription_id": 1,
+                "plan": "basic",
+                "price": 20,
+                "agent": "a2",
+                "event_date": date(2024, 2, 1),
+            },
+            {
+                "subscription_id": 1,
+                "plan": "basic",
+                "price": 30,
+                "agent": "a3",
+                "event_date": date(2024, 3, 1),
+            },
+        ]
+        spec = _log_spec(overwrite=("price",))
+        writer.write(make_frame(events), spec, None)
+        writer.write(make_frame(events), spec, None)  # replay
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] is None
+        assert rows[0]["price"] == 30
+        assert rows[0]["agent"] == "a1"
 
     # ------------------------------------------------------------------
     # Overwrite columns
