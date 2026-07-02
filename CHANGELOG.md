@@ -1,3 +1,20 @@
+# 🚀 Release 0.12.3 ([#70](https://github.com/the-reacher-data/loom-py/pull/70)) ([`1964d8b`](https://github.com/the-reacher-data/loom-py/commit/1964d8b36e1402a63d7e46ff70d41d460a8e9812))
+
+
+
+## 🐛 Fixes
+### prefect
+- **prefect:** configure maintenance observability
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.12.2 ([#68](https://github.com/the-reacher-data/loom-py/pull/68)) ([`4f067d0`](https://github.com/the-reacher-data/loom-py/commit/4f067d060347334128455503d6a4975c1bcc6285))
 
 
