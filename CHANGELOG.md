@@ -1,3 +1,20 @@
+# 🚀 Release 0.13.0 ([#73](https://github.com/the-reacher-data/loom-py/pull/73)) ([`bd19527`](https://github.com/the-reacher-data/loom-py/commit/bd195275a7395fcf512177bce6c80b1f6cd1c750))
+
+
+## ✨ Features
+### historify
+- **historify:** honor `overwrite` in LOG mode (same-track run collapse)
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.12.3 ([#70](https://github.com/the-reacher-data/loom-py/pull/70)) ([`1964d8b`](https://github.com/the-reacher-data/loom-py/commit/1964d8b36e1402a63d7e46ff70d41d460a8e9812))
 
 
