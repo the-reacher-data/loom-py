@@ -134,6 +134,8 @@ class SparkHistorifyBackend:
         entity_key = list(spec.keys)
         boundary_dtype = _history_boundary_dtype_sql(spec)
 
+        collapsed = self._collapse_same_track_runs(frame, spec, entity_key, eff_col)
+
         # Lead/Lag in Spark do not accept any explicit window frame.
         window = Window.partitionBy(entity_key).orderBy(eff_col)
         next_date = F.lead(eff_col).over(window)
@@ -144,10 +146,49 @@ class SparkHistorifyBackend:
             valid_to_expr = next_date - F.expr("INTERVAL 1 MICROSECOND")
 
         return (
-            frame.withColumn(spec.valid_from, F.col(eff_col).cast(boundary_dtype))
+            collapsed.withColumn(spec.valid_from, F.col(eff_col).cast(boundary_dtype))
             .withColumn(spec.valid_to, valid_to_expr.cast(boundary_dtype))
             .drop(eff_col)
         )
+
+    @staticmethod
+    def _collapse_same_track_runs(
+        frame: DataFrame,
+        spec: HistorifySpec,
+        entity_key: list[str],
+        eff_col: str,
+    ) -> DataFrame:
+        """Collapse consecutive same-``track`` events per entity into one run.
+
+        valid_from anchors to the first event of the run (``eff_col`` min),
+        ``overwrite`` columns refresh to the last observed value, and every other
+        payload column freezes at its transition-time (first) value.
+        """
+        if spec.track is None:
+            return frame
+
+        track = list(spec.track)
+        overwrite = list(spec.overwrite or ())
+        track_struct = F.struct(*[F.col(c) for c in track])
+
+        order_w = Window.partitionBy(entity_key).orderBy(eff_col)
+        prev_struct = F.lag(track_struct).over(order_w)
+        is_new_run = F.when(
+            prev_struct.isNull() | ~track_struct.eqNullSafe(prev_struct), F.lit(1)
+        ).otherwise(F.lit(0))
+
+        run_sum_w = order_w.rowsBetween(Window.unboundedPreceding, Window.currentRow)
+        with_run = frame.withColumn("__new_run__", is_new_run).withColumn(
+            "__run_id__", F.sum("__new_run__").over(run_sum_w)
+        )
+
+        run_w = Window.partitionBy([*entity_key, "__run_id__"]).orderBy(eff_col)
+        full_run_w = run_w.rowsBetween(Window.unboundedPreceding, Window.unboundedFollowing)
+
+        result = with_run.withColumn("__rn__", F.row_number().over(run_w))
+        for col in overwrite:
+            result = result.withColumn(col, F.last(F.col(col)).over(full_run_w))
+        return result.filter(F.col("__rn__") == 1).drop("__rn__", "__run_id__", "__new_run__")
 
     def apply_delete_policy(
         self,

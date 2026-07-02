@@ -28,9 +28,13 @@ class IntoHistory:
     * ``track`` — change-triggering columns. A value change inserts a new row
       and closes the previous open vector. ``None`` means every non-key column
       is tracked.
-    * ``overwrite`` — columns updated in-place on the open row when the entity is
-      UNCHANGED. No new history row is created; the current open row is silently
-      refreshed. Useful for mutable metadata that should not drive history.
+    * ``overwrite`` — columns refreshed to their latest value without opening a
+      new history row. In SNAPSHOT mode the open row is silently refreshed when
+      the entity is UNCHANGED. In LOG mode consecutive same-``track`` events are
+      collapsed into a single run whose ``valid_from`` anchors to the first event;
+      these columns take the last observed value while the remaining payload
+      columns freeze at the transition-time (first) value. Useful for mutable
+      metadata that should not drive history.
     * *Remaining* — "passive" columns: carried forward into each new row but
       never updated nor tracked.
 
@@ -51,7 +55,9 @@ class IntoHistory:
         mode: ``\"snapshot\"`` (default) or ``\"log\"``.
         track: Columns whose changes trigger a new history row.
             ``None`` means all non-key columns are tracked.
-        overwrite: Columns to update in-place on the open row when unchanged.
+        overwrite: Columns refreshed to their latest value without opening a new
+            history row (in-place on the open row in SNAPSHOT; last-value of the
+            collapsed same-``track`` run in LOG).
             Must not overlap with ``keys`` or ``track``.
         delete_policy: Action for absent keys in SNAPSHOT mode.
             Defaults to ``\"close\"``.

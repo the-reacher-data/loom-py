@@ -33,9 +33,13 @@ class HistorifySpec:
         mode: Input semantics — ``SNAPSHOT`` or ``LOG``.
         track: Columns whose value change triggers a new history row.
             ``None`` means every non-key column is tracked.
-        overwrite: Columns updated in-place on the current open row when
-            the entity is UNCHANGED (no new history row created).
-            Ignored in LOG mode. Must not overlap with ``keys`` or ``track``.
+        overwrite: Columns refreshed to their latest value without opening a new
+            history row. In SNAPSHOT mode they update the current open row when
+            the entity is UNCHANGED. In LOG mode consecutive same-``track`` events
+            are collapsed into one run: ``valid_from`` anchors to the first event,
+            these columns take the last observed value, and every other payload
+            column freezes at the transition-time (first) value.
+            Must not overlap with ``keys`` or ``track``.
         delete_policy: Action for absent keys in SNAPSHOT mode.
             Ignored in LOG mode.
         partition_scope: Partition columns used to limit Delta reads/writes.

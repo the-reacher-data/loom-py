@@ -193,6 +193,20 @@ class TestTimestampBoundariesAreUtcAware:
         assert closed["valid_to"].to_list() == [datetime(2024, 6, 1, 7, 59, 59, 999999, tzinfo=UTC)]
 
 
+class TestLogTrackNoneNoCollapse:
+    def test_track_none_emits_one_version_per_event(self) -> None:
+        spec = _log_spec(track=None)
+        frame = pl.DataFrame(
+            {
+                "subscription_id": [1, 1],
+                "plan": ["basic", "basic"],
+                "event_date": [date(2024, 1, 1), date(2024, 2, 1)],
+            }
+        )
+        result = PolarsHistorifyBackend().build_log_boundaries(frame, spec)
+        assert len(result) == 2
+
+
 class TestStampNewRows:
     def test_adds_history_columns(self) -> None:
         frame = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})

@@ -71,6 +71,7 @@ def _log_spec(
     *,
     keys: tuple[str, ...] = ("subscription_id",),
     track: tuple[str, ...] | None = ("plan",),
+    overwrite: tuple[str, ...] | None = None,
 ) -> HistorifySpec:
     return HistorifySpec(
         table_ref=TableRef("dim_subs"),
@@ -78,8 +79,161 @@ def _log_spec(
         effective_date="event_date",
         mode=HistorifyInputMode.LOG,
         track=track,
+        overwrite=overwrite,
         schema_mode=SchemaMode.STRICT,
     )
+
+
+def _sub_event(plan: str | None, event_date: date, *, sub: int = 1, **extra: Any) -> dict[str, Any]:
+    return {"subscription_id": sub, "plan": plan, "event_date": event_date, **extra}
+
+
+_D1, _D2, _D3 = date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)
+_JUN, _SEP = date(2024, 6, 1), date(2024, 9, 1)
+
+# (spec_kwargs, write batches, expected rows sorted by (subscription_id, valid_from)).
+# Each expected row is a subset of columns asserted against the persisted history.
+_LOG_COLLAPSE_CASES = [
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [
+                _sub_event("basic", _D1, price=10, agent="a1"),
+                _sub_event("basic", _D2, price=20, agent="a2"),
+                _sub_event("basic", _D3, price=30, agent="a3"),
+            ]
+        ],
+        [{"valid_from": _D1, "valid_to": None, "price": 30, "agent": "a1"}],
+        id="same_track_run_collapses_overwrite_last_rest_first",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [
+                _sub_event("basic", _D1, price=10, agent="a1"),
+                _sub_event("basic", _D2, price=20, agent="a2"),
+                _sub_event("pro", _D3, price=30, agent="a3"),
+            ]
+        ],
+        [
+            {
+                "plan": "basic",
+                "valid_from": _D1,
+                "valid_to": date(2024, 2, 29),
+                "price": 20,
+                "agent": "a1",
+            },
+            {"plan": "pro", "valid_from": _D3, "valid_to": None, "price": 30, "agent": "a3"},
+        ],
+        id="track_change_freezes_previous_run",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [
+                _sub_event("basic", _D1, price=10),
+                _sub_event("pro", _JUN, price=20),
+                _sub_event("basic", _SEP, price=30),
+            ]
+        ],
+        [
+            {"plan": "basic", "valid_from": _D1, "valid_to": date(2024, 5, 31), "price": 10},
+            {"plan": "pro", "valid_from": _JUN, "valid_to": date(2024, 8, 31), "price": 20},
+            {"plan": "basic", "valid_from": _SEP, "valid_to": None, "price": 30},
+        ],
+        id="recurrence_not_collapsed_three_versions",
+    ),
+    pytest.param(
+        {"overwrite": None},
+        [
+            [
+                _sub_event("basic", _D1, agent="a1"),
+                _sub_event("basic", _D2, agent="a2"),
+                _sub_event("basic", _D3, agent="a3"),
+            ]
+        ],
+        [{"valid_from": _D1, "valid_to": None, "agent": "a1"}],
+        id="pure_freeze_without_overwrite",
+    ),
+    pytest.param(
+        {},
+        [[_sub_event(None, _D1), _sub_event(None, _D2), _sub_event("pro", _D3)]],
+        [
+            {"plan": None, "valid_from": _D1, "valid_to": date(2024, 2, 29)},
+            {"plan": "pro", "valid_from": _D3, "valid_to": None},
+        ],
+        id="null_track_values_collapse_consecutively",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [[_sub_event("basic", _D1, price=10), _sub_event("basic", _D2, price=None)]],
+        [{"valid_from": _D1, "price": None}],
+        id="overwrite_null_last_clobbers_open_vector",
+    ),
+    pytest.param(
+        {},
+        [
+            [
+                _sub_event("basic", _D1, sub=1),
+                _sub_event("basic", _D1, sub=2),
+                _sub_event("basic", _D2, sub=1),
+                _sub_event("pro", _D2, sub=2),
+            ]
+        ],
+        [
+            {"subscription_id": 1, "plan": "basic", "valid_from": _D1, "valid_to": None},
+            {
+                "subscription_id": 2,
+                "plan": "basic",
+                "valid_from": _D1,
+                "valid_to": date(2024, 1, 31),
+            },
+            {"subscription_id": 2, "plan": "pro", "valid_from": _D2, "valid_to": None},
+        ],
+        id="collapse_partitions_by_entity",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [_sub_event("basic", _D1, price=10, agent="a1")],
+            [_sub_event("basic", _D2, price=20, agent="a2")],
+            [_sub_event("pro", _D3, price=30, agent="a3")],
+        ],
+        [
+            {
+                "plan": "basic",
+                "valid_from": _D1,
+                "valid_to": date(2024, 2, 29),
+                "price": 20,
+                "agent": "a1",
+            },
+            {"plan": "pro", "valid_from": _D3, "valid_to": None, "price": 30, "agent": "a3"},
+        ],
+        id="incremental_freeze_across_three_writes",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [_sub_event("basic", _D1, price=10, agent="a1")],
+            [_sub_event("basic", _JUN, price=20, agent="a2")],
+        ],
+        [{"valid_from": _D1, "valid_to": None, "price": 20, "agent": "a1"}],
+        id="overwrite_refreshes_open_vector_across_writes",
+    ),
+    pytest.param(
+        {"overwrite": ("price",)},
+        [
+            [
+                _sub_event("basic", _D1, price=10, agent="a1"),
+                _sub_event("basic", _D2, price=20, agent="a2"),
+                _sub_event("basic", _D3, price=30, agent="a3"),
+            ]
+        ]
+        * 2,
+        [{"valid_from": _D1, "valid_to": None, "price": 30, "agent": "a1"}],
+        id="same_track_collapse_replay_is_idempotent",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +1024,34 @@ class HistorifyContractTests:
         )
         with pytest.raises(HistorifyKeyConflictError):
             writer.write(frame, _log_spec(), None)
+
+    # ------------------------------------------------------------------
+    # LOG mode — same-track collapse + overwrite (table-driven)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(("spec_kwargs", "batches", "expected"), _LOG_COLLAPSE_CASES)
+    def test_log_same_track_collapse(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+        spec_kwargs: dict[str, Any],
+        batches: list[list[dict[str, Any]]],
+        expected: list[dict[str, Any]],
+    ) -> None:
+        """Consecutive same-track events collapse per entity: valid_from=first run event,
+        overwrite cols=last observed, all other payload cols frozen to first."""
+        spec = _log_spec(**spec_kwargs)
+        for batch in batches:
+            writer.write(make_frame(batch), spec, None)
+        rows = sorted(
+            read_table(self._uri(root, "dim_subs")),
+            key=lambda r: (r["subscription_id"], r["valid_from"]),
+        )
+        assert len(rows) == len(expected)
+        for actual, want in zip(rows, expected, strict=True):
+            assert {col: actual[col] for col in want} == want
 
     # ------------------------------------------------------------------
     # Overwrite columns

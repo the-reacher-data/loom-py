@@ -180,6 +180,19 @@ class TestBackendHelpers:
         assert rows[0]["valid_to"] == datetime(2024, 1, 1, 11, 59, 59, 999999)
 
 
+class TestLogTrackNoneNoCollapse:
+    def test_track_none_emits_one_version_per_event(self, spark: SparkSession) -> None:
+        spec = _log_spec(track=None)
+        frame = spark.createDataFrame(
+            [
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+                {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 2, 1)},
+            ]
+        )
+        result = SparkHistorifyBackend().build_log_boundaries(frame, spec)
+        assert result.count() == 2
+
+
 class TestStampNewRows:
     def test_adds_history_columns(self, spark: SparkSession) -> None:
         frame = spark.createDataFrame([{"player_id": 1, "team_id": "RM"}])
