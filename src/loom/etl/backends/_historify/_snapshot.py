@@ -35,7 +35,7 @@ def apply_snapshot(
 
     Closed historical rows are always preserved unchanged.
     """
-    existing = ops.rollback_same_day_run(existing, spec, eff_date, join_key)
+    existing = ops.rewind_to(existing, spec, eff_date)
 
     entity_key = list(spec.keys)
     open_existing = ops.filter_null(existing, spec.valid_to)

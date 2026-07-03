@@ -77,8 +77,10 @@ class PolarsHistorifyBackend:
     def drop(self, frame: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
         return frame.drop(cols)
 
-    def dedup_last(self, frame: pl.DataFrame, subset: list[str]) -> pl.DataFrame:
-        return frame.unique(subset=subset, keep="last")
+    def dedup_priority(
+        self, frame: pl.DataFrame, subset: list[str], priority_col: str
+    ) -> pl.DataFrame:
+        return frame.filter(pl.col(priority_col) == pl.col(priority_col).max().over(subset))
 
     def apply_overwrite_cols(
         self,
@@ -90,34 +92,43 @@ class PolarsHistorifyBackend:
         overwrite_vals = incoming.select(join_key + list(overwrite))
         return unchanged.drop(list(overwrite)).join(overwrite_vals, on=join_key, how="left")
 
-    def rollback_same_day_run(
+    def rewind_to(
         self,
         frame: pl.DataFrame,
         spec: HistorifySpec,
         eff_date: Any,
-        join_key: list[str],
     ) -> pl.DataFrame:
         boundary_dtype = _history_boundary_dtype(spec)
         prev = prev_period_value(eff_date, spec)
 
-        stripped = frame.filter(pl.col(spec.valid_from) != pl.lit(eff_date).cast(boundary_dtype))
-        if stripped.is_empty():
-            return stripped
+        kept = frame.filter(pl.col(spec.valid_from) < pl.lit(eff_date).cast(boundary_dtype))
+        reopen = pl.col(spec.valid_to) >= pl.lit(prev).cast(boundary_dtype)
+        null_boundary = pl.lit(None, dtype=boundary_dtype)
 
-        max_valid_from = stripped.group_by(join_key).agg(
-            pl.col(spec.valid_from).max().alias("__max_valid_from__")
-        )
-        with_max = stripped.join(max_valid_from, on=join_key, how="left")
-
-        is_last_closed_by_run = (pl.col(spec.valid_from) == pl.col("__max_valid_from__")) & (
-            pl.col(spec.valid_to) == pl.lit(prev).cast(boundary_dtype)
-        )
-        return with_max.with_columns(
-            pl.when(is_last_closed_by_run)
-            .then(pl.lit(None, dtype=boundary_dtype))
+        exprs = [
+            pl.when(reopen)
+            .then(null_boundary)
             .otherwise(pl.col(spec.valid_to))
             .alias(spec.valid_to)
-        ).drop("__max_valid_from__")
+        ]
+        if spec.deleted_at in frame.columns:
+            exprs.append(
+                pl.when(reopen)
+                .then(null_boundary)
+                .otherwise(pl.col(spec.deleted_at))
+                .alias(spec.deleted_at)
+            )
+        return kept.with_columns(exprs)
+
+    def collect_future_rows(
+        self,
+        existing: pl.DataFrame,
+        spec: HistorifySpec,
+        eff_date: Any,
+    ) -> list[tuple[object, ...]]:
+        boundary_dtype = _history_boundary_dtype(spec)
+        future = existing.filter(pl.col(spec.valid_from) > pl.lit(eff_date).cast(boundary_dtype))
+        return list(future.select([*spec.keys, spec.valid_from]).iter_rows())
 
     def build_log_boundaries(
         self,

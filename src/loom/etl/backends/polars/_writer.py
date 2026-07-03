@@ -569,7 +569,16 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = scd2_transform(PolarsHistorifyBackend(), frame, existing, spec, params_instance)
+        result, report = scd2_transform(
+            PolarsHistorifyBackend(), frame, existing, spec, params_instance
+        )
+        if report is not None:
+            _log.warning(
+                "historify temporal rerun rewound future history",
+                affected_key_count=len(report.affected_keys),
+                dates_requiring_rerun=[str(d) for d in report.dates_requiring_rerun],
+                warnings=list(report.warnings),
+            )
         if existing is None:
             self._create(
                 result,
@@ -583,7 +592,7 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             )
         else:
             self._replace(result, target, schema_mode=spec.schema_mode)
-        return None
+        return report
 
     def _write_file(
         self,

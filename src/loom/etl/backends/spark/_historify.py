@@ -74,16 +74,12 @@ class SparkHistorifyBackend:
     def drop(self, frame: DataFrame, cols: list[str]) -> DataFrame:
         return frame.drop(*cols)
 
-    def dedup_last(self, frame: DataFrame, subset: list[str]) -> DataFrame:
-        window = (
-            Window.partitionBy(subset)
-            .orderBy(F.lit(1).desc())
-            .rowsBetween(Window.unboundedPreceding, Window.currentRow)
-        )
+    def dedup_priority(self, frame: DataFrame, subset: list[str], priority_col: str) -> DataFrame:
+        window = Window.partitionBy(subset)
         return (
-            frame.withColumn("__rn__", F.row_number().over(window))
-            .filter(F.col("__rn__") == 1)
-            .drop("__rn__")
+            frame.withColumn("__max_priority__", F.max(priority_col).over(window))
+            .filter(F.col(priority_col) == F.col("__max_priority__"))
+            .drop("__max_priority__")
         )
 
     def apply_overwrite_cols(
@@ -96,34 +92,45 @@ class SparkHistorifyBackend:
         overwrite_vals = incoming.select(join_key + list(overwrite))
         return unchanged.drop(*overwrite).join(overwrite_vals, on=join_key, how="left")
 
-    def rollback_same_day_run(
+    def rewind_to(
         self,
         frame: DataFrame,
         spec: HistorifySpec,
         eff_date: Any,
-        join_key: list[str],
     ) -> DataFrame:
         boundary_dtype = _history_boundary_dtype_sql(spec)
         prev = prev_period_value(eff_date, spec)
+        null_boundary = F.lit(None).cast(boundary_dtype)
 
-        stripped = frame.filter(F.col(spec.valid_from) != F.lit(eff_date).cast(boundary_dtype))
-
-        window = (
-            Window.partitionBy(join_key)
-            .orderBy(F.col(spec.valid_from).desc())
-            .rowsBetween(Window.unboundedPreceding, Window.currentRow)
+        kept = frame.filter(F.col(spec.valid_from) < F.lit(eff_date).cast(boundary_dtype))
+        # Flag before mutating valid_to so deleted_at sees the original values.
+        flagged = kept.withColumn(
+            "__reopen__", F.col(spec.valid_to) >= F.lit(prev).cast(boundary_dtype)
         )
-        with_rank = stripped.withColumn("__rank__", F.rank().over(window))
-
-        is_last_closed_by_run = (F.col("__rank__") == 1) & (
-            F.col(spec.valid_to) == F.lit(prev).cast(boundary_dtype)
-        )
-        return with_rank.withColumn(
+        result = flagged.withColumn(
             spec.valid_to,
-            F.when(is_last_closed_by_run, F.lit(None).cast(boundary_dtype)).otherwise(
-                F.col(spec.valid_to)
-            ),
-        ).drop("__rank__")
+            F.when(F.col("__reopen__"), null_boundary).otherwise(F.col(spec.valid_to)),
+        )
+        if spec.deleted_at in frame.columns:
+            result = result.withColumn(
+                spec.deleted_at,
+                F.when(F.col("__reopen__"), null_boundary).otherwise(F.col(spec.deleted_at)),
+            )
+        return result.drop("__reopen__")
+
+    def collect_future_rows(
+        self,
+        existing: DataFrame,
+        spec: HistorifySpec,
+        eff_date: Any,
+    ) -> list[tuple[object, ...]]:
+        boundary_dtype = _history_boundary_dtype_sql(spec)
+        collected = (
+            existing.filter(F.col(spec.valid_from) > F.lit(eff_date).cast(boundary_dtype))
+            .select(*spec.keys, spec.valid_from)
+            .collect()
+        )
+        return [tuple(row) for row in collected]
 
     def build_log_boundaries(
         self,

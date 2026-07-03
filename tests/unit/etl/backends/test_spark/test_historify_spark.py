@@ -203,36 +203,47 @@ class TestStampNewRows:
         assert rows[0]["valid_to"] is None
 
 
-class TestIdempotencyStrip:
-    def test_strips_rows_from_same_eff_date(self, spark: SparkSession) -> None:
-        spec = _snapshot_spec()
-        schema = T.StructType(
-            [
-                T.StructField("player_id", T.LongType()),
-                T.StructField("team_id", T.StringType()),
-                T.StructField("valid_from", T.DateType()),
-                T.StructField("valid_to", T.DateType()),
-            ]
-        )
+_HISTORY_SCHEMA = T.StructType(
+    [
+        T.StructField("player_id", T.LongType()),
+        T.StructField("team_id", T.StringType()),
+        T.StructField("valid_from", T.DateType()),
+        T.StructField("valid_to", T.DateType()),
+    ]
+)
+
+_HISTORY_SCHEMA_SOFT = T.StructType(
+    [*_HISTORY_SCHEMA.fields, T.StructField("deleted_at", T.DateType())]
+)
+
+
+class TestRewindTo:
+    def test_discards_rows_from_same_eff_date(self, spark: SparkSession) -> None:
         existing = spark.createDataFrame(
             [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}],
-            schema=schema,
+            schema=_HISTORY_SCHEMA,
         )
-        result = SparkHistorifyBackend().rollback_same_day_run(
-            existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
-        )
+        result = SparkHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
         assert result.count() == 0
 
-    def test_reopens_row_closed_by_previous_run(self, spark: SparkSession) -> None:
-        spec = _snapshot_spec()
-        schema = T.StructType(
+    def test_discards_future_rows_on_backfill(self, spark: SparkSession) -> None:
+        existing = spark.createDataFrame(
             [
-                T.StructField("player_id", T.LongType()),
-                T.StructField("team_id", T.StringType()),
-                T.StructField("valid_from", T.DateType()),
-                T.StructField("valid_to", T.DateType()),
-            ]
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 1, 1), "valid_to": None},
+                {
+                    "player_id": 1,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+            ],
+            schema=_HISTORY_SCHEMA,
         )
+        result = SparkHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 3, 1))
+        rows = result.collect()
+        assert [r["team_id"] for r in rows] == ["RM"]
+
+    def test_reopens_row_closed_by_previous_run(self, spark: SparkSession) -> None:
         existing = spark.createDataFrame(
             [
                 {
@@ -242,10 +253,71 @@ class TestIdempotencyStrip:
                     "valid_to": date(2024, 5, 31),
                 }
             ],
-            schema=schema,
+            schema=_HISTORY_SCHEMA,
         )
-        result = SparkHistorifyBackend().rollback_same_day_run(
-            existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
-        )
+        result = SparkHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
         rows = result.collect()
         assert rows[0]["valid_to"] is None
+
+    def test_clears_deleted_at_only_on_reopened_rows(self, spark: SparkSession) -> None:
+        existing = spark.createDataFrame(
+            [
+                {
+                    "player_id": 1,
+                    "team_id": "RM",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 5, 31),
+                    "deleted_at": date(2024, 6, 1),
+                },
+                {
+                    "player_id": 2,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 3, 31),
+                    "deleted_at": date(2024, 4, 1),
+                },
+            ],
+            schema=_HISTORY_SCHEMA_SOFT,
+        )
+        result = SparkHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
+        rows = {r["player_id"]: r for r in result.collect()}
+        assert rows[1]["valid_to"] is None
+        assert rows[1]["deleted_at"] is None
+        assert rows[2]["valid_to"] == date(2024, 3, 31)
+        assert rows[2]["deleted_at"] == date(2024, 4, 1)
+
+
+class TestCollectFutureRows:
+    def test_empty_when_no_future_rows(self, spark: SparkSession) -> None:
+        existing = spark.createDataFrame(
+            [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}],
+            schema=_HISTORY_SCHEMA,
+        )
+        rows = SparkHistorifyBackend().collect_future_rows(
+            existing, _snapshot_spec(), date(2024, 6, 1)
+        )
+        assert rows == []
+
+    def test_returns_keys_and_valid_from_of_future_rows(self, spark: SparkSession) -> None:
+        existing = spark.createDataFrame(
+            [
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 1, 1), "valid_to": None},
+                {
+                    "player_id": 1,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+                {
+                    "player_id": 2,
+                    "team_id": "LIV",
+                    "valid_from": date(2024, 9, 1),
+                    "valid_to": None,
+                },
+            ],
+            schema=_HISTORY_SCHEMA,
+        )
+        rows = SparkHistorifyBackend().collect_future_rows(
+            existing, _snapshot_spec(), date(2024, 3, 1)
+        )
+        assert sorted(rows) == [(1, date(2024, 6, 1)), (2, date(2024, 9, 1))]

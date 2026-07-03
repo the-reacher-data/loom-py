@@ -818,6 +818,100 @@ class HistorifyContractTests:
         old = [r for r in rows if r["team_id"] == "RM"]
         assert old[0]["valid_to"] == date(2024, 5, 31)
 
+    def test_soft_delete_rerun_reopens_deleted_entity(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Same-day rerun reopens a soft-deleted entity and clears deleted_at."""
+        spec = _snapshot_spec(delete_policy=DeletePolicy.SOFT_DELETE)
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}, {"player_id": 2, "team_id": "BCA"}]),
+            spec,
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}, {"player_id": 2, "team_id": "BCA"}]),
+            spec,
+            _Params(run_date=date(2024, 6, 1)),  # rerun
+        )
+        rows = read_table(self._uri(root))
+        p2 = [r for r in rows if r["player_id"] == 2]
+        assert len(p2) == 1
+        assert p2[0]["valid_to"] is None
+        assert p2[0]["deleted_at"] is None
+
+    # ------------------------------------------------------------------
+    # Backfill rewind (allow_temporal_rerun)
+    # ------------------------------------------------------------------
+
+    def test_backfill_rewind_rebuilds_history(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Backfill discards runs at/after the rerun date and re-weaves from there."""
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}]),
+            _snapshot_spec(),
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "BCA"}]),
+            _snapshot_spec(),
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "LIV"}]),
+            _snapshot_spec(allow_temporal_rerun=True),
+            _Params(run_date=date(2024, 3, 1)),
+        )
+        rows = sorted(read_table(self._uri(root)), key=lambda r: r["valid_from"])
+        assert [(r["team_id"], r["valid_from"], r["valid_to"]) for r in rows] == [
+            ("RM", date(2024, 1, 1), date(2024, 2, 29)),
+            ("LIV", date(2024, 3, 1), None),
+        ]
+
+    def test_backfill_rewind_is_idempotent(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Re-running the same backfill produces the exact same history."""
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "RM"}]),
+            _snapshot_spec(),
+            _Params(run_date=date(2024, 1, 1)),
+        )
+        writer.write(
+            make_frame([{"player_id": 1, "team_id": "BCA"}]),
+            _snapshot_spec(),
+            _Params(run_date=date(2024, 6, 1)),
+        )
+        backfill = [{"player_id": 1, "team_id": "LIV"}]
+        for _ in range(2):
+            writer.write(
+                make_frame(backfill),
+                _snapshot_spec(allow_temporal_rerun=True),
+                _Params(run_date=date(2024, 3, 1)),
+            )
+        rows = sorted(read_table(self._uri(root)), key=lambda r: r["valid_from"])
+        assert [(r["team_id"], r["valid_from"], r["valid_to"]) for r in rows] == [
+            ("RM", date(2024, 1, 1), date(2024, 2, 29)),
+            ("LIV", date(2024, 3, 1), None),
+        ]
+
     # ------------------------------------------------------------------
     # Temporal conflict guard
     # ------------------------------------------------------------------
@@ -1024,6 +1118,59 @@ class HistorifyContractTests:
         )
         with pytest.raises(HistorifyKeyConflictError):
             writer.write(frame, _log_spec(), None)
+
+    def test_log_same_date_correction_replaces_event(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """A later write for the same (key, date) replaces the stored event."""
+        writer.write(
+            make_frame([{"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)}]),
+            _log_spec(),
+            None,
+        )
+        writer.write(
+            make_frame([{"subscription_id": 1, "plan": "pro", "event_date": date(2024, 1, 1)}]),
+            _log_spec(),
+            None,
+        )
+        rows = read_table(self._uri(root, "dim_subs"))
+        assert len(rows) == 1
+        assert rows[0]["plan"] == "pro"
+        assert rows[0]["valid_from"] == date(2024, 1, 1)
+        assert rows[0]["valid_to"] is None
+
+    def test_log_same_date_correction_preserves_later_boundaries(
+        self,
+        writer: Any,
+        root: Path,
+        make_frame: Callable,
+        read_table: Callable,
+    ) -> None:
+        """Correcting an early event keeps boundaries against later events intact."""
+        writer.write(
+            make_frame(
+                [
+                    {"subscription_id": 1, "plan": "basic", "event_date": date(2024, 1, 1)},
+                    {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 6, 1)},
+                ]
+            ),
+            _log_spec(),
+            None,
+        )
+        writer.write(
+            make_frame([{"subscription_id": 1, "plan": "premium", "event_date": date(2024, 1, 1)}]),
+            _log_spec(),
+            None,
+        )
+        rows = sorted(read_table(self._uri(root, "dim_subs")), key=lambda r: r["valid_from"])
+        assert [(r["plan"], r["valid_from"], r["valid_to"]) for r in rows] == [
+            ("premium", date(2024, 1, 1), date(2024, 5, 31)),
+            ("pro", date(2024, 6, 1), None),
+        ]
 
     # ------------------------------------------------------------------
     # LOG mode — same-track collapse + overwrite (table-driven)

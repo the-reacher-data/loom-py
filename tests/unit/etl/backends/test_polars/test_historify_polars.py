@@ -186,7 +186,8 @@ class TestTimestampBoundariesAreUtcAware:
                 "eff": [datetime(2024, 1, 1, 8), datetime(2024, 6, 1, 8)],
             }
         ).with_columns(pl.col("eff").dt.replace_time_zone("UTC"))
-        result = scd2_transform(PolarsHistorifyBackend(), frame, None, spec, None)
+        result, report = scd2_transform(PolarsHistorifyBackend(), frame, None, spec, None)
+        assert report is None
         assert result["valid_from"].dtype == pl.Datetime("us", "UTC")
         assert result["valid_to"].dtype == pl.Datetime("us", "UTC")
         closed = result.filter(pl.col("status") == "a")
@@ -215,49 +216,157 @@ class TestStampNewRows:
         assert result["valid_to"].is_null().all()
 
 
-class TestIdempotencyStrip:
-    def test_strips_rows_from_same_eff_date(self) -> None:
-        spec = _snapshot_spec()
-        existing = pl.DataFrame(
-            {
-                "player_id": [1],
-                "team_id": ["RM"],
-                "valid_from": [date(2024, 6, 1)],
-                "valid_to": [None],
-            }
-        ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsHistorifyBackend().rollback_same_day_run(
-            existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
+def _history_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:
+    date_cols = [c for c in ("valid_from", "valid_to", "deleted_at") if c in rows[0]]
+    return pl.from_dicts(rows).with_columns([pl.col(c).cast(pl.Date) for c in date_cols])
+
+
+class TestRewindTo:
+    def test_discards_rows_from_same_eff_date(self) -> None:
+        existing = _history_frame(
+            [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}]
         )
+        result = PolarsHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
         assert len(result) == 0
 
-    def test_reopens_row_closed_by_previous_run(self) -> None:
-        spec = _snapshot_spec()
-        existing = pl.DataFrame(
-            {
-                "player_id": [1],
-                "team_id": ["RM"],
-                "valid_from": [date(2024, 1, 1)],
-                "valid_to": [date(2024, 5, 31)],
-            }
-        ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsHistorifyBackend().rollback_same_day_run(
-            existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
+    def test_discards_future_rows_on_backfill(self) -> None:
+        existing = _history_frame(
+            [
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 1, 1), "valid_to": None},
+                {
+                    "player_id": 1,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+            ]
         )
+        result = PolarsHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 3, 1))
+        assert result["team_id"].to_list() == ["RM"]
+
+    def test_reopens_row_closed_by_previous_run(self) -> None:
+        existing = _history_frame(
+            [
+                {
+                    "player_id": 1,
+                    "team_id": "RM",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 5, 31),
+                }
+            ]
+        )
+        result = PolarsHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
         assert result["valid_to"].is_null().all()
 
     def test_preserves_rows_closed_before_run(self) -> None:
-        spec = _snapshot_spec()
-        existing = pl.DataFrame(
-            {
-                "player_id": [1, 1],
-                "team_id": ["OLD", "RM"],
-                "valid_from": [date(2024, 1, 1), date(2024, 4, 1)],
-                "valid_to": [date(2024, 3, 31), None],
-            }
-        ).with_columns(pl.col("valid_from").cast(pl.Date), pl.col("valid_to").cast(pl.Date))
-        result = PolarsHistorifyBackend().rollback_same_day_run(
-            existing, spec, date(2024, 6, 1), ["player_id", "team_id"]
+        existing = _history_frame(
+            [
+                {
+                    "player_id": 1,
+                    "team_id": "OLD",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 3, 31),
+                },
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 4, 1), "valid_to": None},
+            ]
         )
+        result = PolarsHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
         old = result.filter(pl.col("team_id") == "OLD")
         assert old["valid_to"].to_list() == [date(2024, 3, 31)]
+
+    def test_clears_deleted_at_only_on_reopened_rows(self) -> None:
+        existing = _history_frame(
+            [
+                {
+                    "player_id": 1,
+                    "team_id": "RM",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 5, 31),
+                    "deleted_at": date(2024, 6, 1),
+                },
+                {
+                    "player_id": 2,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 1, 1),
+                    "valid_to": date(2024, 3, 31),
+                    "deleted_at": date(2024, 4, 1),
+                },
+            ]
+        )
+        result = PolarsHistorifyBackend().rewind_to(existing, _snapshot_spec(), date(2024, 6, 1))
+        reopened = result.filter(pl.col("player_id") == 1)
+        assert reopened["valid_to"].is_null().all()
+        assert reopened["deleted_at"].is_null().all()
+        untouched = result.filter(pl.col("player_id") == 2)
+        assert untouched["valid_to"].to_list() == [date(2024, 3, 31)]
+        assert untouched["deleted_at"].to_list() == [date(2024, 4, 1)]
+
+
+class TestCollectFutureRows:
+    def test_empty_when_no_future_rows(self) -> None:
+        existing = _history_frame(
+            [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}]
+        )
+        rows = PolarsHistorifyBackend().collect_future_rows(
+            existing, _snapshot_spec(), date(2024, 6, 1)
+        )
+        assert rows == []
+
+    def test_returns_keys_and_valid_from_of_future_rows(self) -> None:
+        existing = _history_frame(
+            [
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 1, 1), "valid_to": None},
+                {
+                    "player_id": 1,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+                {
+                    "player_id": 2,
+                    "team_id": "LIV",
+                    "valid_from": date(2024, 9, 1),
+                    "valid_to": None,
+                },
+            ]
+        )
+        rows = PolarsHistorifyBackend().collect_future_rows(
+            existing, _snapshot_spec(), date(2024, 3, 1)
+        )
+        assert sorted(rows) == [(1, date(2024, 6, 1)), (2, date(2024, 9, 1))]
+
+
+class TestTransformRepairReport:
+    def test_backfill_returns_report(self) -> None:
+        spec = _snapshot_spec(allow_temporal_rerun=True)
+        existing = _history_frame(
+            [
+                {"player_id": 1, "team_id": "RM", "valid_from": date(2024, 1, 1), "valid_to": None},
+                {
+                    "player_id": 1,
+                    "team_id": "BCA",
+                    "valid_from": date(2024, 6, 1),
+                    "valid_to": None,
+                },
+            ]
+        )
+        incoming = pl.DataFrame({"player_id": [1], "team_id": ["LIV"]})
+        _, report = scd2_transform(
+            PolarsHistorifyBackend(), incoming, existing, spec, _Params(run_date=date(2024, 3, 1))
+        )
+        assert report is not None
+        assert report.affected_keys == frozenset({(1,)})
+        assert report.dates_requiring_rerun == (date(2024, 6, 1),)
+        assert len(report.warnings) == 1
+        assert "1 future row(s)" in report.warnings[0]
+
+    def test_same_day_rerun_returns_no_report(self) -> None:
+        spec = _snapshot_spec(allow_temporal_rerun=True)
+        existing = _history_frame(
+            [{"player_id": 1, "team_id": "RM", "valid_from": date(2024, 6, 1), "valid_to": None}]
+        )
+        incoming = pl.DataFrame({"player_id": [1], "team_id": ["RM"]})
+        _, report = scd2_transform(
+            PolarsHistorifyBackend(), incoming, existing, spec, _Params(run_date=date(2024, 6, 1))
+        )
+        assert report is None
