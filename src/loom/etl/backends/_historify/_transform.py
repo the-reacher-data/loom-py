@@ -58,7 +58,7 @@ def scd2_transform(
         ops.assert_no_date_collisions(frame, join_key, str(spec.effective_date), spec)
 
     if existing is None:
-        return _first_run(ops, frame, spec, join_key, eff_date), None
+        return _first_run(ops, frame, spec, eff_date), None
 
     _temporal_guard(ops, existing, spec, eff_date)
 
@@ -72,7 +72,6 @@ def _first_run(
     ops: HistorifyBackend[F],
     frame: F,
     spec: HistorifySpec,
-    join_key: list[str],
     eff_date: Any,
 ) -> F:
     """Build the initial history frame when the target table is empty."""
