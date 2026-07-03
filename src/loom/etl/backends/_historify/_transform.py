@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, TypeVar
 
 from loom.etl.backends._historify._common import (
+    build_rewind_report,
     resolve_effective_date,
     resolve_track_cols,
 )
@@ -13,6 +14,7 @@ from loom.etl.backends._historify._ops import HistorifyBackend
 from loom.etl.backends._historify._snapshot import apply_snapshot
 from loom.etl.declarative.target._history import (
     HistorifyInputMode,
+    HistorifyRepairReport,
     HistorifySpec,
     HistorifyTemporalConflictError,
 )
@@ -26,8 +28,8 @@ def scd2_transform(
     existing: F | None,
     spec: HistorifySpec,
     params_instance: object,
-) -> F:
-    """Apply SCD Type 2 logic and return the transformed frame.
+) -> tuple[F, HistorifyRepairReport | None]:
+    """Apply SCD Type 2 logic and return the transformed frame plus repair report.
 
     Args:
         ops:             Backend-specific frame operations.
@@ -37,7 +39,9 @@ def scd2_transform(
         params_instance: Runtime params for ParamExpr resolution.
 
     Returns:
-        Transformed frame ready to be written to Delta.
+        Tuple of the transformed frame ready to be written to Delta and a
+        repair report when a temporal rerun rewound strictly-future history
+        (SNAPSHOT mode with ``allow_temporal_rerun``), otherwise ``None``.
 
     Raises:
         HistorifyKeyConflictError:      Duplicate entity state vectors.
@@ -54,20 +58,20 @@ def scd2_transform(
         ops.assert_no_date_collisions(frame, join_key, str(spec.effective_date), spec)
 
     if existing is None:
-        return _first_run(ops, frame, spec, join_key, eff_date)
+        return _first_run(ops, frame, spec, eff_date), None
 
     _temporal_guard(ops, existing, spec, eff_date)
 
     if spec.mode is HistorifyInputMode.SNAPSHOT:
-        return apply_snapshot(ops, frame, existing, spec, join_key, eff_date)
-    return apply_log(ops, frame, existing, spec, join_key)
+        report = _rewind_report_if_enabled(ops, existing, spec, eff_date)
+        return apply_snapshot(ops, frame, existing, spec, join_key, eff_date), report
+    return apply_log(ops, frame, existing, spec), None
 
 
 def _first_run(
     ops: HistorifyBackend[F],
     frame: F,
     spec: HistorifySpec,
-    join_key: list[str],
     eff_date: Any,
 ) -> F:
     """Build the initial history frame when the target table is empty."""
@@ -81,6 +85,18 @@ def _first_run(
         )
         return ops.ensure_soft_delete_col(result, spec)
     return ops.build_log_boundaries(frame, spec)
+
+
+def _rewind_report_if_enabled(
+    ops: HistorifyBackend[F],
+    existing: F,
+    spec: HistorifySpec,
+    eff_date: Any,
+) -> HistorifyRepairReport | None:
+    """Report strictly-future rows rewound by a temporal rerun, if enabled."""
+    if not spec.allow_temporal_rerun:
+        return None
+    return build_rewind_report(ops.collect_future_rows(existing, spec, eff_date), eff_date)
 
 
 def _temporal_guard(

@@ -48,8 +48,8 @@ class HistorifyBackend(Protocol[F]):
         """Drop columns."""
         ...
 
-    def dedup_last(self, frame: F, subset: list[str]) -> F:
-        """Deduplicate keeping last occurrence."""
+    def dedup_priority(self, frame: F, subset: list[str], priority_col: str) -> F:
+        """Deduplicate keeping, per ``subset`` group, rows with the max ``priority_col``."""
         ...
 
     def apply_overwrite_cols(
@@ -63,10 +63,14 @@ class HistorifyBackend(Protocol[F]):
         """
         ...
 
-    def rollback_same_day_run(
-        self, frame: F, spec: HistorifySpec, eff_date: Any, join_key: list[str]
-    ) -> F:
-        """Undo a previous run on the same eff_date (SNAPSHOT idempotency)."""
+    def rewind_to(self, frame: F, spec: HistorifySpec, eff_date: Any) -> F:
+        """Rewind history to its state before any run at or after eff_date."""
+        ...
+
+    def collect_future_rows(
+        self, existing: F, spec: HistorifySpec, eff_date: Any
+    ) -> list[tuple[object, ...]]:
+        """Materialize ``keys + valid_from`` tuples of rows with valid_from > eff_date."""
         ...
 
     def build_log_boundaries(self, frame: F, spec: HistorifySpec) -> F:

@@ -324,7 +324,17 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         params_instance: Any,
     ) -> HistorifyRepairReport | None:
         """Run SCD Type 2 transform and write result via existing write hooks."""
-        result = scd2_transform(SparkHistorifyBackend(), frame, existing, spec, params_instance)
+        result, report = scd2_transform(
+            SparkHistorifyBackend(), frame, existing, spec, params_instance
+        )
+        if report is not None:
+            _log.warning(
+                "historify temporal rerun rewound future history: "
+                "affected_key_count=%d dates_requiring_rerun=%s warnings=%s",
+                len(report.affected_keys),
+                [str(d) for d in report.dates_requiring_rerun],
+                list(report.warnings),
+            )
         if existing is None:
             self._create(
                 result,
@@ -338,7 +348,7 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             )
         else:
             self._replace(result, target, schema_mode=spec.schema_mode)
-        return None
+        return report
 
     def _write_file(
         self,

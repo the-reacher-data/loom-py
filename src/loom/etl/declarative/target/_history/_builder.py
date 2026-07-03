@@ -45,6 +45,24 @@ class IntoHistory:
     ``(player_id=P1, team_id=GET, role=LOAN)`` are independent and coexist
     without conflict.
 
+    **Idempotency contract:**
+
+    * Re-running the same effective date (same-day rerun) is idempotent in both
+      SNAPSHOT and LOG mode: the run's effects are rolled back and reapplied,
+      including reopening rows closed or soft-deleted by the previous run.
+    * A SNAPSHOT backfill (effective date earlier than existing history) requires
+      ``allow_temporal_rerun=True`` and is **destructive**: history from the
+      effective date onward is discarded (within ``partition_scope`` when set)
+      and rebuilt from the incoming snapshot. The write returns a
+      :class:`~loom.etl.HistorifyRepairReport` listing the dates that must be
+      re-processed — re-running the later days is the caller's responsibility.
+    * A snapshot covering only part of the entity universe applies
+      ``delete_policy`` to every absent entity. For partial backfills use
+      ``delete_policy=\"ignore\"`` or restrict the run with ``partition_scope``.
+    * LOG mode is idempotent by construction: replaying events converges, and a
+      same-date correction for an entity replaces the stored event (incoming
+      wins).
+
     Args:
         ref: Logical table reference — ``str`` or :class:`~loom.etl.TableRef`.
         keys: One or more column names that identify the entity.
@@ -70,8 +88,14 @@ class IntoHistory:
         date_type: Precision for boundary columns. Defaults to ``\"date\"``.
         schema: Schema evolution strategy.
             Defaults to :attr:`~SchemaMode.STRICT`.
-        allow_temporal_rerun: Allow re-weave when past-date corrections are loaded.
-            Defaults to ``False``.
+        allow_temporal_rerun: Allow SNAPSHOT backfills with a past effective
+            date. The run rewinds history: rows starting at or after the
+            effective date are discarded, rows closed by discarded runs are
+            reopened, and history is rebuilt from the incoming snapshot. When
+            strictly-future rows were discarded, the write reports the dates
+            requiring a downstream rerun. With ``False`` (default) a past
+            effective date raises
+            :class:`~loom.etl.HistorifyTemporalConflictError`.
 
     Raises:
         ValueError: If ``keys`` is empty.
