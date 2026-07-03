@@ -1,3 +1,36 @@
+# 🚀 Release 0.14.0 ([#76](https://github.com/the-reacher-data/loom-py/pull/76)) ([`18c274d`](https://github.com/the-reacher-data/loom-py/commit/18c274d20bb5da0f15b1f00b642aad950c22cf3e))
+
+
+## ✨ Features
+### historify
+- **historify:** idempotent reruns and rewind-based backfill<br>
+  > Replace rollback_same_day_run with rewind_to: discard rows with
+  > valid_from >= eff_date and reopen rows closed at prev(eff_date),
+  > clearing valid_to and deleted_at. Covers same-day reruns and makes
+  > SNAPSHOT backfills with allow_temporal_rerun=True safe (rewind +
+  > replay) instead of corrupting intervals.
+  > Materialize HistorifyRepairReport on backfill (affected keys, dates
+  > requiring downstream rerun) and log it from both writers.
+  > Make LOG-mode corrections converge: dedup by keys + effective_date
+  > with explicit origin priority (incoming wins), replacing the
+  > non-deterministic Spark dedup ordering.
+  > Document the idempotency contract in IntoHistory.
+
+
+
+
+
+
+## ♻️ Refactor
+### historify
+- **historify:** drop unused join_key parameter from _first_run
+
+
+
+
+
+
+
 # 🚀 Release 0.13.0 ([#73](https://github.com/the-reacher-data/loom-py/pull/73)) ([`bd19527`](https://github.com/the-reacher-data/loom-py/commit/bd195275a7395fcf512177bce6c80b1f6cd1c750))
 
 
