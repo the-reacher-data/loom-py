@@ -1,3 +1,20 @@
+# 🚀 Release 0.14.1 ([#78](https://github.com/the-reacher-data/loom-py/pull/78)) ([`b616857`](https://github.com/the-reacher-data/loom-py/commit/b6168572dd2bcd2789992369bb715798bdd97dfa))
+
+
+
+## 🐛 Fixes
+### mongo
+- **mongo:** count and surface serialization failures, never abort a scan on a bad document
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.14.0 ([#76](https://github.com/the-reacher-data/loom-py/pull/76)) ([`18c274d`](https://github.com/the-reacher-data/loom-py/commit/18c274d20bb5da0f15b1f00b642aad950c22cf3e))
 
 
