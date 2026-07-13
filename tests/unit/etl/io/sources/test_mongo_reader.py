@@ -1045,6 +1045,95 @@ class TestJsonDefaultFallback:
 
 
 # ---------------------------------------------------------------------------
+# Serialization failure degradation
+# ---------------------------------------------------------------------------
+
+
+class TestSafeDumpsDegradation:
+    def test_circular_reference_returns_null_and_counts(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _safe_dumps
+        from loom.etl.io.sources._serialization import _serialization_stats
+
+        mark = _serialization_stats.failures
+        circular: dict = {}
+        circular["self"] = circular
+        assert _safe_dumps(circular) is None
+        assert _serialization_stats.failures == mark + 1
+        assert "ValueError" in _serialization_stats.last_error
+
+    def test_non_str_key_returns_null_instead_of_raising(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _safe_dumps
+        from loom.etl.io.sources._serialization import _serialization_stats
+
+        mark = _serialization_stats.failures
+        assert _safe_dumps({("a", "b"): 1}) is None
+        assert _serialization_stats.failures == mark + 1
+        assert "TypeError" in _serialization_stats.last_error
+
+    def test_raising_str_returns_null_instead_of_raising(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _safe_dumps
+        from loom.etl.io.sources._serialization import _serialization_stats
+
+        class Evil:
+            def __str__(self) -> str:
+                raise ZeroDivisionError
+
+        mark = _serialization_stats.failures
+        assert _safe_dumps({"field": Evil()}) is None
+        assert _serialization_stats.failures == mark + 1
+
+    def test_recursion_error_returns_null(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _safe_dumps
+
+        deep: list = []
+        cursor = deep
+        for _ in range(20_000):
+            cursor.append([])
+            cursor = cursor[0]
+        assert _safe_dumps(deep) is None
+
+    def test_serialize_conflicted_degrades_per_doc(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _serialize_conflicted
+
+        good = {"payload": {"a": 1}}
+        circular: dict = {}
+        circular["self"] = circular
+        bad = {"payload": circular}
+        batch = [good, bad]
+        _serialize_conflicted(batch, {"payload"})
+        assert batch[0]["payload"] == '{"a": 1}'
+        assert batch[1]["payload"] is None
+
+    def test_pre_serialize_value_degrades_to_null_and_counts_once(self) -> None:
+        from loom.etl.io.sources._mongo_batch import _pre_serialize_value
+        from loom.etl.io.sources._serialization import _serialization_stats
+
+        circular: dict = {}
+        circular["self"] = circular
+        mark = _serialization_stats.failures
+        assert _pre_serialize_value([circular]) is None
+        assert _serialization_stats.failures == mark + 1
+
+    def test_scan_reports_serialization_failures_delta(self, capfd) -> None:
+        from loom.etl.io.sources._serialization import _serialization_stats
+
+        class Evil:
+            def __str__(self) -> str:
+                raise ZeroDivisionError
+
+        docs = [{"order_id": "o1", "ref": {"at": Evil()}}, {"order_id": "o2", "ref": "plain"}]
+        reader, _ = _reader(docs)
+        mark = _serialization_stats.failures
+        df = reader.read(_spec(), None).collect()
+        assert df.height == 2
+        assert df["ref"][0] == '{"at": null}'
+        assert _serialization_stats.failures > mark
+        captured = capfd.readouterr()
+        assert "mongo read degraded" in captured.out
+        assert "serialization_failures" in captured.out
+
+
+# ---------------------------------------------------------------------------
 # Schemaless null/empty-list safeguard
 # ---------------------------------------------------------------------------
 

@@ -19,6 +19,7 @@ from loom.etl.io.sources._mongo_batch import (
 )
 from loom.etl.io.sources._mongo_bson import normalize_bson_doc
 from loom.etl.io.sources._mongo_predicate import predicate_to_mongo
+from loom.etl.io.sources._serialization import _serialization_stats
 from loom.etl.schema._schema import LoomDtype
 
 _log = get_logger(__name__)
@@ -243,6 +244,7 @@ def _scan(
     batches_yielded = 0
     total_rows = 0
     started = time.monotonic()
+    serialization_failures_mark = _serialization_stats.failures
     try:
         for doc in cursor:
             batch.append(normalize_bson_doc(doc))
@@ -297,11 +299,20 @@ def _scan(
             yield frame
     finally:
         cursor.close()
+        serialization_failures = _serialization_stats.failures - serialization_failures_mark
+        if serialization_failures:
+            _log.warning(
+                "mongo read degraded",
+                collection=collection.name,
+                serialization_failures=serialization_failures,
+                last_error=_serialization_stats.last_error,
+            )
         _log.info(
             "mongo read complete",
             collection=collection.name,
             docs=total_rows,
             batches=batches_yielded,
+            serialization_failures=serialization_failures,
             duration_s=round(time.monotonic() - started, 3),
         )
 

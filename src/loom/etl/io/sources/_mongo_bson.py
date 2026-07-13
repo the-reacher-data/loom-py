@@ -30,6 +30,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from loom.etl.io.sources._serialization import _record_serialization_failure
+
 _log = logging.getLogger(__name__)
 
 _MAX_DEPTH = 64
@@ -124,7 +126,11 @@ def _normalize(value: object, depth: int) -> object:
         "normalize_bson_doc: unknown non-bson type %s — using str() fallback",
         type(value).__name__,
     )
-    return str(value)
+    try:
+        return str(value)
+    except Exception as exc:  # noqa: BLE001 — a bad document must never abort a scan
+        _record_serialization_failure(exc, value)
+        return None
 
 
 def _normalize_objectid(value: object) -> str:
