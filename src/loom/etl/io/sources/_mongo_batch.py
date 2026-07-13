@@ -11,6 +11,7 @@ from typing import Any, Protocol, runtime_checkable
 import polars as pl
 
 from loom.etl.io.sources._mongo_bson import _is_bson_type, deep_normalize_for_json
+from loom.etl.io.sources._serialization import _record_serialization_failure
 
 _log = logging.getLogger(__name__)
 
@@ -53,11 +54,8 @@ def _safe_dumps(v: Any) -> str | None:
         return None
     try:
         return _json_dumps(v)
-    except (RecursionError, ValueError):
-        _log.warning(
-            "MongoSourceReader: could not serialise value of type %s — replacing with null",
-            type(v).__name__,
-        )
+    except Exception as exc:  # noqa: BLE001 — a bad document must never abort a scan
+        _record_serialization_failure(exc, v)
         return None
 
 
@@ -185,7 +183,11 @@ def _pre_serialize_value(v: Any) -> Any:
     # Contract: normalize_bson_doc() already ran in _mongo.py's cursor loop, converting
     # all BSON types to Python builtins. deep_normalize_for_json() is a defensive guard
     # for callers that invoke build_frame() directly without going through the cursor.
-    return _json_dumps(deep_normalize_for_json(v))
+    try:
+        return _json_dumps(deep_normalize_for_json(v))
+    except Exception as exc:  # noqa: BLE001 — a bad document must never abort a scan
+        _record_serialization_failure(exc, v)
+        return None
 
 
 def _preserialize_str_fields(
@@ -226,7 +228,7 @@ def _serialize_conflicted(batch: list[dict[str, Any]], conflicted: set[str]) -> 
     for doc in batch:
         for k in conflicted:
             if k in doc and doc[k] is not None:
-                doc[k] = _json_dumps(doc[k])
+                doc[k] = _safe_dumps(doc[k])
 
 
 def _series_to_json_string(s: pl.Series) -> pl.Series:
