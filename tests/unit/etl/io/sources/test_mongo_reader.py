@@ -8,6 +8,7 @@ documents correctly to Polars DataFrames.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1045,6 +1046,138 @@ class TestJsonDefaultFallback:
 
 
 # ---------------------------------------------------------------------------
+# Extended JSON literal flattening
+# ---------------------------------------------------------------------------
+
+
+class TestExtendedJsonLiterals:
+    def test_off_by_default_keeps_wrapper_dict(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc({"d": {"$date": "2026-06-19T02:00:00Z"}})
+        assert doc["d"] == {"$date": "2026-06-19T02:00:00Z"}
+
+    def test_date_string_wrapper_becomes_utc_datetime(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc({"d": {"$date": "2026-06-19T02:00:00Z"}}, extended_json=True)
+        assert doc["d"] == datetime(2026, 6, 19, 2, tzinfo=UTC)
+
+    def test_date_numberlong_wrapper(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"d": {"$date": {"$numberLong": "1750291200000"}}}, extended_json=True
+        )
+        assert doc["d"] == datetime.fromtimestamp(1750291200, tz=UTC)
+
+    def test_oid_and_number_wrappers(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "o": {"$oid": "507f1f77bcf86cd799439011"},
+                "p": {"$numberDecimal": "3599.5"},
+                "n": {"$numberInt": "42"},
+            },
+            extended_json=True,
+        )
+        assert doc["o"] == "507f1f77bcf86cd799439011"
+        assert doc["p"] == pytest.approx(3599.5)
+        assert doc["n"] == 42
+
+    def test_wrapper_nested_in_subdoc_and_list(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"delete_data": {"txs": [{"at": {"$date": "2026-04-10T10:07:47.010Z"}}]}},
+            extended_json=True,
+        )
+        assert doc["delete_data"]["txs"][0]["at"] == datetime(
+            2026, 4, 10, 10, 7, 47, 10000, tzinfo=UTC
+        )
+
+    def test_malformed_wrapper_left_as_dict(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"d": {"$date": "not-a-date"}, "n": {"$numberInt": "abc"}}, extended_json=True
+        )
+        assert doc["d"] == {"$date": "not-a-date"}
+        assert doc["n"] == {"$numberInt": "abc"}
+
+    def test_multikey_and_unknown_dollar_dicts_untouched(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"a": {"$set": 1, "$inc": 2}, "b": {"$unknown": 1}}, extended_json=True
+        )
+        assert doc["a"] == {"$set": 1, "$inc": 2}
+        assert doc["b"] == {"$unknown": 1}
+
+    def test_out_of_range_epochs_degrade_per_value(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "a": {"$date": 9223372036854775807},
+                "b": {"$date": float("nan")},
+                "c": {"$date": float("inf")},
+                "d": {"$date": -1e18},
+                "e": {"$date": {"$numberLong": "99999999999999999999"}},
+            },
+            extended_json=True,
+        )
+        assert doc["a"] == {"$date": 9223372036854775807}
+        assert math.isnan(doc["b"]["$date"])
+        assert math.isinf(doc["c"]["$date"])
+        assert doc["d"]["$date"] == pytest.approx(-1e18)
+        assert doc["e"] == {"$date": 99999999999999999999}
+
+    def test_nonfinite_and_oversized_values_degrade(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "f": {"$numberDouble": "1e309"},
+                "g": {"$numberLong": float("inf")},
+                "h": {"$date": "x" * 10_000},
+            },
+            extended_json=True,
+        )
+        assert doc["f"] == {"$numberDouble": "1e309"}
+        assert math.isinf(doc["g"]["$numberLong"])
+        assert doc["h"] == {"$date": "x" * 10_000}
+
+    def test_oid_requires_canonical_hex(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"ok": {"$oid": "507f1f77bcf86cd799439011"}, "bad": {"$oid": "'; DROP TABLE--"}},
+            extended_json=True,
+        )
+        assert doc["ok"] == "507f1f77bcf86cd799439011"
+        assert doc["bad"] == {"$oid": "'; DROP TABLE--"}
+
+    def test_reader_flag_flattens_through_scan(self) -> None:
+        docs = [
+            {"order_id": "o1", "deleted": {"$date": "2026-04-10T10:07:47.010Z"}},
+            {"order_id": "o2", "deleted": None},
+        ]
+        reader, _ = _reader(docs)
+        spec = _spec()
+        object.__setattr__(spec, "normalize_extended_json", True)
+        df = reader.read(spec, None).collect()
+        assert df["deleted"][0] == datetime(2026, 4, 10, 10, 7, 47, 10000, tzinfo=UTC)
+
+    def test_from_mongo_builder_sets_spec_flag(self) -> None:
+        from loom.etl.declarative.source import FromMongo
+
+        assert FromMongo("t").normalize_extended_json()._to_spec("t").normalize_extended_json
+        assert not FromMongo("t")._to_spec("t").normalize_extended_json
+
+
+# ---------------------------------------------------------------------------
 # Serialization failure degradation
 # ---------------------------------------------------------------------------
 
@@ -1114,7 +1247,9 @@ class TestSafeDumpsDegradation:
         assert _pre_serialize_value([circular]) is None
         assert _serialization_stats.failures == mark + 1
 
-    def test_scan_reports_serialization_failures_delta(self, capfd) -> None:
+    def test_scan_counts_and_warns_on_serialization_failures(self, caplog) -> None:
+        import logging
+
         from loom.etl.io.sources._serialization import _serialization_stats
 
         class Evil:
@@ -1124,13 +1259,12 @@ class TestSafeDumpsDegradation:
         docs = [{"order_id": "o1", "ref": {"at": Evil()}}, {"order_id": "o2", "ref": "plain"}]
         reader, _ = _reader(docs)
         mark = _serialization_stats.failures
-        df = reader.read(_spec(), None).collect()
+        with caplog.at_level(logging.WARNING, logger="loom.etl.io.sources._serialization"):
+            df = reader.read(_spec(), None).collect()
         assert df.height == 2
         assert df["ref"][0] == '{"at": null}'
         assert _serialization_stats.failures > mark
-        captured = capfd.readouterr()
-        assert "mongo read degraded" in captured.out
-        assert "serialization_failures" in captured.out
+        assert any("could not serialise" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

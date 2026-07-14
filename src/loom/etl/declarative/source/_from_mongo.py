@@ -75,6 +75,7 @@ class FromMongo:
         "_projection",
         "_schema",
         "_extra_fields_mode",
+        "_normalize_extended_json",
         "_batch_size",
         "_limit",
     )
@@ -90,6 +91,7 @@ class FromMongo:
         self._projection: tuple[str, ...] | None = None
         self._schema: tuple[ColumnSchema, ...] = ()
         self._extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
+        self._normalize_extended_json: bool = False
         self._batch_size: int = 2_000
         self._limit: int | None = None
 
@@ -132,6 +134,18 @@ class FromMongo:
         """
         return self._clone(_schema=resolve_schema(schema))
 
+    def normalize_extended_json(self, enabled: bool = True) -> FromMongo:  # noqa: FBT001, FBT002
+        """Flatten literal Extended JSON wrappers stored as data (``{"$date": ...}``).
+
+        Opt-in and off by default: reinterpreting stored data is a consumer
+        decision, and MongoDB 5.0+ permits ``$``-prefixed field names in stored
+        documents, so a legitimate single-key ``$date``/``$oid`` subdocument
+        would be reinterpreted. ``$numberDecimal`` flattens to float64
+        (~15-17 significant digits) — declare a schema and cast for
+        high-precision monetary columns.
+        """
+        return self._clone(_normalize_extended_json=enabled)
+
     def on_extra_fields(self, mode: Literal["ignore", "warn", "capture", "error"]) -> FromMongo:
         """Control how document fields absent from the schema are handled."""
         if mode not in _EXTRA_FIELDS_MODES:
@@ -161,6 +175,7 @@ class FromMongo:
             projection=self._projection,
             schema=self._schema,
             extra_fields_mode=self._extra_fields_mode,
+            normalize_extended_json=self._normalize_extended_json,
             batch_size=self._batch_size,
             limit=self._limit,
         )

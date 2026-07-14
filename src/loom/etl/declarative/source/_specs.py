@@ -198,6 +198,8 @@ class MongoSourceSpec:
                            are pre-serialized to JSON string when the MongoDB value
                            is a complex type (dict / list).
         extra_fields_mode: How to handle fields not covered by the schema.
+        normalize_extended_json: Flatten literal Extended JSON wrappers stored
+                           as data into plain values during normalization.
         batch_size:        Pymongo cursor batch size.
         limit:             Hard limit on documents returned (dev/CI only).
     """
@@ -208,6 +210,7 @@ class MongoSourceSpec:
     projection: tuple[str, ...] | None = None
     schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
     extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
+    normalize_extended_json: bool = False
     batch_size: int = 2_000
     limit: int | None = None
 
