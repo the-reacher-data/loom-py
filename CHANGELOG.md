@@ -1,3 +1,37 @@
+# 🚀 Release 0.14.2 ([#80](https://github.com/the-reacher-data/loom-py/pull/80)) ([`74e626d`](https://github.com/the-reacher-data/loom-py/commit/74e626d9d58ed703d54449ad078d652dc2779ce2))
+
+
+## ✨ Features
+### mongo
+- **mongo:** opt-in flattening of literal Extended JSON wrappers<br>
+  > Legacy writers sometimes store serialized Extended JSON back as data:
+  > a field holds the dict {"$date": "..."} instead of a BSON date. The
+  > BSON normalizer is blind to plain dicts, so the wrapper reaches the
+  > lake verbatim and typed decoders downstream either null the value or
+  > abort. In production this first dropped business subdocuments silently
+  > and later crashed a nightly load on a single poisoned document.
+  > FromMongo(...).normalize_extended_json() flattens single-key wrapper
+  > dicts to plain values inside the existing normalization walk — an O(1)
+  > probe per dict node, no extra traversal. Off by default: reinterpreting
+  > stored data is a consumer decision. Mongo forbids $-prefixed field
+  > names in stored documents, so no legitimate data matches the probe;
+  > malformed wrappers degrade per-value.
+
+
+
+
+
+
+## ♻️ Refactor
+### mongo
+- **mongo:** flatten _normalize dispatch below the cognitive-complexity gate
+
+
+
+
+
+
+
 # 🚀 Release 0.14.1 ([#78](https://github.com/the-reacher-data/loom-py/pull/78)) ([`b616857`](https://github.com/the-reacher-data/loom-py/commit/b6168572dd2bcd2789992369bb715798bdd97dfa))
 
 
