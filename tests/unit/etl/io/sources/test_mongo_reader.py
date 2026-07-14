@@ -1247,7 +1247,9 @@ class TestSafeDumpsDegradation:
         assert _pre_serialize_value([circular]) is None
         assert _serialization_stats.failures == mark + 1
 
-    def test_scan_reports_serialization_failures_delta(self, capfd) -> None:
+    def test_scan_counts_and_warns_on_serialization_failures(self, caplog) -> None:
+        import logging
+
         from loom.etl.io.sources._serialization import _serialization_stats
 
         class Evil:
@@ -1257,13 +1259,12 @@ class TestSafeDumpsDegradation:
         docs = [{"order_id": "o1", "ref": {"at": Evil()}}, {"order_id": "o2", "ref": "plain"}]
         reader, _ = _reader(docs)
         mark = _serialization_stats.failures
-        df = reader.read(_spec(), None).collect()
+        with caplog.at_level(logging.WARNING, logger="loom.etl.io.sources._serialization"):
+            df = reader.read(_spec(), None).collect()
         assert df.height == 2
         assert df["ref"][0] == '{"at": null}'
         assert _serialization_stats.failures > mark
-        captured = capfd.readouterr()
-        assert "mongo read degraded" in captured.out
-        assert "serialization_failures" in captured.out
+        assert any("could not serialise" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
