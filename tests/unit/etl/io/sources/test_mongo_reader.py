@@ -8,6 +8,7 @@ documents correctly to Polars DataFrames.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1113,6 +1114,50 @@ class TestExtendedJsonLiterals:
         )
         assert doc["a"] == {"$set": 1, "$inc": 2}
         assert doc["b"] == {"$unknown": 1}
+
+    def test_out_of_range_epochs_degrade_per_value(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "a": {"$date": 9223372036854775807},
+                "b": {"$date": float("nan")},
+                "c": {"$date": float("inf")},
+                "d": {"$date": -1e18},
+                "e": {"$date": {"$numberLong": "99999999999999999999"}},
+            },
+            extended_json=True,
+        )
+        assert doc["a"] == {"$date": 9223372036854775807}
+        assert math.isnan(doc["b"]["$date"])
+        assert doc["c"] == {"$date": float("inf")}
+        assert doc["d"] == {"$date": -1e18}
+        assert doc["e"] == {"$date": 99999999999999999999}
+
+    def test_nonfinite_and_oversized_values_degrade(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "f": {"$numberDouble": "1e309"},
+                "g": {"$numberLong": float("inf")},
+                "h": {"$date": "x" * 10_000},
+            },
+            extended_json=True,
+        )
+        assert doc["f"] == {"$numberDouble": "1e309"}
+        assert doc["g"] == {"$numberLong": float("inf")}
+        assert doc["h"] == {"$date": "x" * 10_000}
+
+    def test_oid_requires_canonical_hex(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"ok": {"$oid": "507f1f77bcf86cd799439011"}, "bad": {"$oid": "'; DROP TABLE--"}},
+            extended_json=True,
+        )
+        assert doc["ok"] == "507f1f77bcf86cd799439011"
+        assert doc["bad"] == {"$oid": "'; DROP TABLE--"}
 
     def test_reader_flag_flattens_through_scan(self) -> None:
         docs = [

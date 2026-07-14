@@ -26,6 +26,8 @@ column-level cast after reading.
 from __future__ import annotations
 
 import logging
+import math
+import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -107,26 +109,36 @@ def _normalize_bson_type(value: object, depth: int, extjson: bool = False) -> ob
 
 _EXTJSON_MISS = object()
 
+_EXTJSON_DATE_MAX_LEN = 40
+_EXTJSON_OID_RE = re.compile(r"^[0-9a-f]{24}$")
+
 
 def _extjson_date(v: object) -> object:
     if isinstance(v, str):
+        if len(v) > _EXTJSON_DATE_MAX_LEN:
+            return _EXTJSON_MISS
         try:
-            parsed = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(v)
         except ValueError:
             return _EXTJSON_MISS
         return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     if isinstance(v, Mapping):
         try:
             return datetime.fromtimestamp(int(v["$numberLong"]) / 1000, tz=UTC)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
             return _EXTJSON_MISS
     if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return datetime.fromtimestamp(v / 1000, tz=UTC)
+        try:
+            return datetime.fromtimestamp(v / 1000, tz=UTC)
+        except (ValueError, OverflowError, OSError):
+            return _EXTJSON_MISS
     return _EXTJSON_MISS
 
 
 def _extjson_str(v: object) -> object:
-    return v if isinstance(v, str) else _EXTJSON_MISS
+    if isinstance(v, str) and _EXTJSON_OID_RE.match(v):
+        return v
+    return _EXTJSON_MISS
 
 
 def _extjson_int(v: object) -> object:
@@ -134,7 +146,7 @@ def _extjson_int(v: object) -> object:
         return _EXTJSON_MISS
     try:
         return int(v)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _EXTJSON_MISS
 
 
@@ -142,9 +154,10 @@ def _extjson_float(v: object) -> object:
     if isinstance(v, bool):
         return _EXTJSON_MISS
     try:
-        return float(v)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        parsed = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
         return _EXTJSON_MISS
+    return parsed if math.isfinite(parsed) else _EXTJSON_MISS
 
 
 _EXTJSON_HANDLERS: dict[str, Callable[[object], object]] = {

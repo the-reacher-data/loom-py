@@ -137,9 +137,12 @@ class FromMongo:
     def normalize_extended_json(self, enabled: bool = True) -> FromMongo:  # noqa: FBT001, FBT002
         """Flatten literal Extended JSON wrappers stored as data (``{"$date": ...}``).
 
-        Opt-in: stored ``$``-key single-entry dicts are, per MongoDB's own field
-        naming rules, serialized Extended JSON text written back as data — but
-        reinterpreting stored data is a consumer decision, so it is off by default.
+        Opt-in and off by default: reinterpreting stored data is a consumer
+        decision, and MongoDB 5.0+ permits ``$``-prefixed field names in stored
+        documents, so a legitimate single-key ``$date``/``$oid`` subdocument
+        would be reinterpreted. ``$numberDecimal`` flattens to float64
+        (~15-17 significant digits) — declare a schema and cast for
+        high-precision monetary columns.
         """
         return self._clone(_normalize_extended_json=enabled)
 
