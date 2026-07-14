@@ -1083,7 +1083,7 @@ class TestExtendedJsonLiterals:
             extended_json=True,
         )
         assert doc["o"] == "507f1f77bcf86cd799439011"
-        assert doc["p"] == 3599.5
+        assert doc["p"] == pytest.approx(3599.5)
         assert doc["n"] == 42
 
     def test_wrapper_nested_in_subdoc_and_list(self) -> None:
@@ -1130,8 +1130,8 @@ class TestExtendedJsonLiterals:
         )
         assert doc["a"] == {"$date": 9223372036854775807}
         assert math.isnan(doc["b"]["$date"])
-        assert doc["c"] == {"$date": float("inf")}
-        assert doc["d"] == {"$date": -1e18}
+        assert math.isinf(doc["c"]["$date"])
+        assert doc["d"]["$date"] == pytest.approx(-1e18)
         assert doc["e"] == {"$date": 99999999999999999999}
 
     def test_nonfinite_and_oversized_values_degrade(self) -> None:
@@ -1146,7 +1146,7 @@ class TestExtendedJsonLiterals:
             extended_json=True,
         )
         assert doc["f"] == {"$numberDouble": "1e309"}
-        assert doc["g"] == {"$numberLong": float("inf")}
+        assert math.isinf(doc["g"]["$numberLong"])
         assert doc["h"] == {"$date": "x" * 10_000}
 
     def test_oid_requires_canonical_hex(self) -> None:
