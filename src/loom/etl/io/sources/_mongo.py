@@ -160,7 +160,7 @@ def _infer_schema_from_first_batch(
     docs: list[dict[str, Any]] = []
     try:
         for doc in cursor:
-            docs.append(normalize_bson_doc(doc))
+            docs.append(normalize_bson_doc(doc, extended_json=spec.normalize_extended_json))
             if len(docs) >= inference_size:
                 break
     finally:
@@ -247,7 +247,7 @@ def _scan(
     serialization_failures_mark = _serialization_stats.failures
     try:
         for doc in cursor:
-            batch.append(normalize_bson_doc(doc))
+            batch.append(normalize_bson_doc(doc, extended_json=spec.normalize_extended_json))
             if len(batch) >= spec.batch_size:
                 frame = batch_processor.build_frame(batch, schema_overrides=schema_overrides)
                 frame = _finalize_batch(

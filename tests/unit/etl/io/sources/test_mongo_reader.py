@@ -1045,6 +1045,94 @@ class TestJsonDefaultFallback:
 
 
 # ---------------------------------------------------------------------------
+# Extended JSON literal flattening
+# ---------------------------------------------------------------------------
+
+
+class TestExtendedJsonLiterals:
+    def test_off_by_default_keeps_wrapper_dict(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc({"d": {"$date": "2026-06-19T02:00:00Z"}})
+        assert doc["d"] == {"$date": "2026-06-19T02:00:00Z"}
+
+    def test_date_string_wrapper_becomes_utc_datetime(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc({"d": {"$date": "2026-06-19T02:00:00Z"}}, extended_json=True)
+        assert doc["d"] == datetime(2026, 6, 19, 2, tzinfo=UTC)
+
+    def test_date_numberlong_wrapper(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"d": {"$date": {"$numberLong": "1750291200000"}}}, extended_json=True
+        )
+        assert doc["d"] == datetime.fromtimestamp(1750291200, tz=UTC)
+
+    def test_oid_and_number_wrappers(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {
+                "o": {"$oid": "507f1f77bcf86cd799439011"},
+                "p": {"$numberDecimal": "3599.5"},
+                "n": {"$numberInt": "42"},
+            },
+            extended_json=True,
+        )
+        assert doc["o"] == "507f1f77bcf86cd799439011"
+        assert doc["p"] == 3599.5
+        assert doc["n"] == 42
+
+    def test_wrapper_nested_in_subdoc_and_list(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"delete_data": {"txs": [{"at": {"$date": "2026-04-10T10:07:47.010Z"}}]}},
+            extended_json=True,
+        )
+        assert doc["delete_data"]["txs"][0]["at"] == datetime(
+            2026, 4, 10, 10, 7, 47, 10000, tzinfo=UTC
+        )
+
+    def test_malformed_wrapper_left_as_dict(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"d": {"$date": "not-a-date"}, "n": {"$numberInt": "abc"}}, extended_json=True
+        )
+        assert doc["d"] == {"$date": "not-a-date"}
+        assert doc["n"] == {"$numberInt": "abc"}
+
+    def test_multikey_and_unknown_dollar_dicts_untouched(self) -> None:
+        from loom.etl.io.sources._mongo_bson import normalize_bson_doc
+
+        doc = normalize_bson_doc(
+            {"a": {"$set": 1, "$inc": 2}, "b": {"$unknown": 1}}, extended_json=True
+        )
+        assert doc["a"] == {"$set": 1, "$inc": 2}
+        assert doc["b"] == {"$unknown": 1}
+
+    def test_reader_flag_flattens_through_scan(self) -> None:
+        docs = [
+            {"order_id": "o1", "deleted": {"$date": "2026-04-10T10:07:47.010Z"}},
+            {"order_id": "o2", "deleted": None},
+        ]
+        reader, _ = _reader(docs)
+        spec = _spec()
+        object.__setattr__(spec, "normalize_extended_json", True)
+        df = reader.read(spec, None).collect()
+        assert df["deleted"][0] == datetime(2026, 4, 10, 10, 7, 47, 10000, tzinfo=UTC)
+
+    def test_from_mongo_builder_sets_spec_flag(self) -> None:
+        from loom.etl.declarative.source import FromMongo
+
+        assert FromMongo("t").normalize_extended_json()._to_spec("t").normalize_extended_json
+        assert not FromMongo("t")._to_spec("t").normalize_extended_json
+
+
+# ---------------------------------------------------------------------------
 # Serialization failure degradation
 # ---------------------------------------------------------------------------
 
