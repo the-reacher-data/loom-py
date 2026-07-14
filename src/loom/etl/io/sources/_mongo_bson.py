@@ -79,7 +79,7 @@ def normalize_bson_doc(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_bson_type(value: object, depth: int, extjson: bool = False) -> object:
+def _normalize_bson_type(value: object, depth: int, extjson: bool) -> object:
     """Handle unknown bson-origin types — dict-like via .items(), scalars to None."""
     type_name = type(value).__name__
     if callable(getattr(value, "items", None)):
@@ -113,25 +113,37 @@ _EXTJSON_DATE_MAX_LEN = 40
 _EXTJSON_OID_RE = re.compile(r"^[0-9a-f]{24}$")
 
 
+def _date_from_iso(v: str) -> object:
+    if len(v) > _EXTJSON_DATE_MAX_LEN:
+        return _EXTJSON_MISS
+    try:
+        parsed = datetime.fromisoformat(v)
+    except ValueError:
+        return _EXTJSON_MISS
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _date_from_canonical(v: Mapping[str, Any]) -> object:
+    try:
+        return datetime.fromtimestamp(int(v["$numberLong"]) / 1000, tz=UTC)
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return _EXTJSON_MISS
+
+
+def _date_from_epoch_millis(v: float) -> object:
+    try:
+        return datetime.fromtimestamp(v / 1000, tz=UTC)
+    except (ValueError, OverflowError, OSError):
+        return _EXTJSON_MISS
+
+
 def _extjson_date(v: object) -> object:
     if isinstance(v, str):
-        if len(v) > _EXTJSON_DATE_MAX_LEN:
-            return _EXTJSON_MISS
-        try:
-            parsed = datetime.fromisoformat(v)
-        except ValueError:
-            return _EXTJSON_MISS
-        return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+        return _date_from_iso(v)
     if isinstance(v, Mapping):
-        try:
-            return datetime.fromtimestamp(int(v["$numberLong"]) / 1000, tz=UTC)
-        except (KeyError, TypeError, ValueError, OverflowError, OSError):
-            return _EXTJSON_MISS
+        return _date_from_canonical(v)
     if isinstance(v, (int, float)) and not isinstance(v, bool):
-        try:
-            return datetime.fromtimestamp(v / 1000, tz=UTC)
-        except (ValueError, OverflowError, OSError):
-            return _EXTJSON_MISS
+        return _date_from_epoch_millis(v)
     return _EXTJSON_MISS
 
 
@@ -177,6 +189,27 @@ def _flatten_extended_json(value: Mapping[str, Any]) -> object:
     return handler(next(iter(value.values())))
 
 
+def _normalize_mapping(value: Mapping[str, Any], depth: int, extjson: bool) -> object:
+    if extjson and len(value) == 1:
+        flattened = _flatten_extended_json(value)
+        if flattened is not _EXTJSON_MISS:
+            return flattened
+    return {str(k): _normalize(v, depth + 1, extjson) for k, v in value.items()}
+
+
+def _normalize_unknown(value: object) -> object:
+    """Non-bson unknown type: str() fallback preserved (avoids Polars Object dtype columns)."""
+    _log.warning(
+        "normalize_bson_doc: unknown non-bson type %s — using str() fallback",
+        type(value).__name__,
+    )
+    try:
+        return str(value)
+    except Exception as exc:  # noqa: BLE001 — a bad document must never abort a scan
+        _record_serialization_failure(exc, value)
+        return None
+
+
 def _normalize(value: object, depth: int, extjson: bool = False) -> object:
     if depth > _MAX_DEPTH:
         raise ValueError(f"normalize_bson_doc: nested value exceeds maximum depth of {_MAX_DEPTH}.")
@@ -189,11 +222,7 @@ def _normalize(value: object, depth: int, extjson: bool = False) -> object:
         return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
     # Recursive containers
     if isinstance(value, Mapping):
-        if extjson and len(value) == 1:
-            flattened = _flatten_extended_json(value)
-            if flattened is not _EXTJSON_MISS:
-                return flattened
-        return {str(k): _normalize(v, depth + 1, extjson) for k, v in value.items()}
+        return _normalize_mapping(value, depth, extjson)
     if isinstance(value, Sequence) and not isinstance(value, (bytearray, memoryview)):
         return [_normalize(item, depth + 1, extjson) for item in value]
     # BSON types dispatched by class name — avoids a hard bson import at module level
@@ -203,16 +232,7 @@ def _normalize(value: object, depth: int, extjson: bool = False) -> object:
     # bson-origin types: handle separately to avoid str() producing Object({...}) strings
     if _is_bson_type(value):
         return _normalize_bson_type(value, depth, extjson)
-    # Non-bson unknown type: str() fallback preserved (avoids Polars Object dtype columns).
-    _log.warning(
-        "normalize_bson_doc: unknown non-bson type %s — using str() fallback",
-        type(value).__name__,
-    )
-    try:
-        return str(value)
-    except Exception as exc:  # noqa: BLE001 — a bad document must never abort a scan
-        _record_serialization_failure(exc, value)
-        return None
+    return _normalize_unknown(value)
 
 
 def _normalize_objectid(value: object) -> str:
