@@ -1,3 +1,20 @@
+# 🚀 Release 0.14.3 ([#82](https://github.com/the-reacher-data/loom-py/pull/82)) ([`02bdbc4`](https://github.com/the-reacher-data/loom-py/commit/02bdbc4345805748dc2bb57f8f7c54c0517fb160))
+
+
+
+## 🐛 Fixes
+### mongo
+- **mongo:** preserve sparse fields beyond schema sample
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.14.2 ([#80](https://github.com/the-reacher-data/loom-py/pull/80)) ([`74e626d`](https://github.com/the-reacher-data/loom-py/commit/74e626d9d58ed703d54449ad078d652dc2779ce2))
 
 
