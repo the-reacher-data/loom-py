@@ -824,6 +824,7 @@ class MongoBatchProcessor:
                 batch,
                 schema_overrides=schema_overrides or None,
                 strict=False,
+                infer_schema_length=None,
             )
         except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, TypeError):
             if batch:

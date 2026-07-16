@@ -1927,3 +1927,52 @@ class TestBsonNormalizationFallback:
             "_json_default must delegate to deep_normalize_for_json for bson-origin types"
         )
         assert decoded == {"key": "value"}
+
+
+# ---------------------------------------------------------------------------
+# Sparse fields beyond pl.from_dicts' default sampling window (100 rows)
+# ---------------------------------------------------------------------------
+
+
+class TestSparseFieldBeyondDefaultSampleWindow:
+    """A field present only past row 100 of a batch must not be dropped.
+
+    Regression test for a production data-loss bug: ``pl.from_dicts`` without
+    an explicit ``infer_schema_length`` samples only its default (100) rows to
+    decide which columns exist. A sparse field absent from that sample was
+    silently dropped for the *entire* batch, even for rows where it was
+    present — with no exception and no serialization-failure counter
+    incremented. Confirmed in production: 403/3833 transactions with a real
+    ``delete_data`` subdocument lost it this way in a single 2000-row batch.
+    """
+
+    def _docs(self, *, total: int, sparse_field_at: int) -> list[dict[str, object]]:
+        docs: list[dict[str, object]] = [{"id": i, "status": "active"} for i in range(total)]
+        docs[sparse_field_at] = {
+            "id": sparse_field_at,
+            "status": "active",
+            "delete_data": {"reason": "", "status": "CONFIRMED"},
+        }
+        return docs
+
+    def test_declared_utf8_field_past_row_100_is_preserved(self) -> None:
+        docs = self._docs(total=200, sparse_field_at=150)
+        reader, _ = _reader(docs)
+        schema = (
+            ColumnSchema("id", LoomDtype.INT64),
+            ColumnSchema("status", LoomDtype.UTF8),
+            ColumnSchema("delete_data", LoomDtype.UTF8),
+        )
+        df = reader.read(_spec(schema=schema, batch_size=200), None).collect()
+        assert "delete_data" in df.columns
+        row = df.filter(pl.col("id") == 150)
+        assert row["delete_data"][0] is not None
+        assert "CONFIRMED" in row["delete_data"][0]
+
+    def test_undeclared_field_past_row_100_is_preserved(self) -> None:
+        docs = self._docs(total=200, sparse_field_at=150)
+        reader, _ = _reader(docs)
+        df = reader.read(_spec(batch_size=200), None).collect()
+        assert "delete_data" in df.columns
+        row = df.filter(pl.col("id") == 150)
+        assert row["delete_data"][0] is not None
