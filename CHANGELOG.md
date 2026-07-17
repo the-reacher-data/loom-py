@@ -1,3 +1,20 @@
+# 🚀 Release 0.15.0 ([#84](https://github.com/the-reacher-data/loom-py/pull/84)) ([`c3581bd`](https://github.com/the-reacher-data/loom-py/commit/c3581bdc28255935c5658a15b9b64c035cf3cc96))
+
+
+## ✨ Features
+### dynamodb
+- **dynamodb:** add FromDynamoDb source connector for the polars backend
+
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.14.3 ([#82](https://github.com/the-reacher-data/loom-py/pull/82)) ([`02bdbc4`](https://github.com/the-reacher-data/loom-py/commit/02bdbc4345805748dc2bb57f8f7c54c0517fb160))
 
 
