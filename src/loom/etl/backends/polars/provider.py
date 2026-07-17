@@ -10,13 +10,14 @@ from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
 from loom.etl.io._registry import ReaderRegistry, WriterRegistry
 from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
+from loom.etl.io.sources._dynamodb import DynamoDbSourceReader
 from loom.etl.io.sources._mongo import MongoSourceReader
 from loom.etl.io.targets._clickhouse import ClickHouseClientExecutor, ClickHouseTargetWriter
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
-from loom.etl.storage._config import CatalogConnection, StorageConfig
+from loom.etl.storage._config import CatalogConnection, DynamoDbConfig, StorageConfig
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 
 
@@ -37,11 +38,17 @@ class PolarsProvider(BackendProvider):
             else MongoSourceReader()
         )
         clickhouse_reader = ClickHouseSourceReader(config.clickhouse.url or None)
+        dynamodb_reader = (
+            DynamoDbSourceReader(_build_dynamodb_client(config.dynamodb))
+            if config.dynamodb.enabled
+            else DynamoDbSourceReader()
+        )
         polars_reader = PolarsSourceReader(
             locator,
             file_locator=file_locator,
             mongo_reader=mongo_reader,
             clickhouse_reader=clickhouse_reader,
+            dynamodb_reader=dynamodb_reader,
         )
         reader = ReaderRegistry(polars_reader)
         polars_writer = PolarsTargetWriter(
@@ -96,6 +103,19 @@ class PolarsProvider(BackendProvider):
         if config.clickhouse.url:
             return ClickHouseClientExecutor(url=config.clickhouse.url)
         return None
+
+
+def _build_dynamodb_client(cfg: DynamoDbConfig) -> Any:
+    # Local import: boto3 is an optional dependency (loom-kernel[dynamodb]) and
+    # must only be required when DynamoDB sources are enabled in the config.
+    import boto3  # type: ignore[import-untyped]
+
+    session = boto3.Session(profile_name=cfg.profile) if cfg.profile else boto3.Session()
+    return session.client(
+        "dynamodb",
+        region_name=cfg.region or None,
+        endpoint_url=cfg.endpoint_url or None,
+    )
 
 
 def _build_polars_locator(config: StorageConfig) -> TableLocator:
