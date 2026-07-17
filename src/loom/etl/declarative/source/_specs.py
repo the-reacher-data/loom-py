@@ -30,6 +30,7 @@ class SourceKind(StrEnum):
     TEMP = "temp"
     CLICKHOUSE = "clickhouse"
     MONGO = "mongo"
+    DYNAMODB = "dynamodb"
 
 
 @dataclass(frozen=True)
@@ -226,7 +227,78 @@ class MongoSourceSpec:
         return SourceKind.MONGO
 
 
+@dataclass(frozen=True)
+class DynamoDbSourceSpec:
+    """Normalized internal representation of a DynamoDB ETL source.
+
+    Produced by :meth:`~loom.etl.declarative.source.FromDynamoDb._to_spec`.
+    Consumed by the executor and
+    :class:`~loom.etl.io.sources.DynamoDbSourceReader`.
+
+    Args:
+        alias:             Name matching the ``execute()`` parameter.
+        table:             DynamoDB table name.
+        filter:            Optional predicate built with the col()/params DSL,
+                           pushed down as a ``FilterExpression``.  May contain
+                           :class:`~loom.etl.io.sources.SourceRef` nodes inside
+                           ``InExpr.values`` — these are resolved by the
+                           executor before ``read()`` is called.
+        projection:        Tuple of attribute names to include (server-side
+                           ``ProjectionExpression``).
+        schema:            Optional column schema — same contract as
+                           :class:`~loom.etl.declarative.source.FromTable`.
+                           Fields declared as :attr:`~loom.etl.schema.LoomDtype.UTF8`
+                           are pre-serialized to JSON string when the DynamoDB
+                           value is a complex type (map / list).
+        extra_fields_mode: How to handle attributes not covered by the schema.
+        batch_size:        Scan page size (DynamoDB ``Limit`` per page).
+        limit:             Hard limit on items returned (dev/CI only),
+                           enforced globally across scan segments.
+        consistent_read:   Use strongly consistent scan reads.
+        total_segments:    When set, enables parallel ``Scan`` with this many
+                           ``TotalSegments`` (one worker thread per segment).
+
+    Raises:
+        ValueError: When ``batch_size`` is outside 1..10 000 or
+            ``total_segments`` is set outside 2..64.
+    """
+
+    alias: str
+    table: str
+    filter: ExprNode | None = None
+    projection: tuple[str, ...] | None = None
+    schema: tuple[ColumnSchema, ...] = field(default_factory=tuple)
+    extra_fields_mode: Literal["ignore", "warn", "capture", "error"] = "ignore"
+    batch_size: int = 1_000
+    limit: int | None = None
+    consistent_read: bool = False
+    total_segments: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.batch_size <= 10_000:
+            raise ValueError(
+                f"DynamoDbSourceSpec.batch_size must be between 1 and 10000, got {self.batch_size}"
+            )
+        if self.total_segments is not None and not 2 <= self.total_segments <= 64:
+            raise ValueError(
+                f"DynamoDbSourceSpec.total_segments must be between 2 and 64, "
+                f"got {self.total_segments}"
+            )
+        if self.limit is not None and self.limit < 1:
+            raise ValueError(f"DynamoDbSourceSpec.limit must be >= 1, got {self.limit}")
+
+    @property
+    def kind(self) -> SourceKind:
+        """Physical kind — always :attr:`SourceKind.DYNAMODB`."""
+        return SourceKind.DYNAMODB
+
+
 # Type alias — the union of all typed source spec variants.
 SourceSpec = (
-    TableSourceSpec | FileSourceSpec | TempSourceSpec | MongoSourceSpec | ClickHouseSourceSpec
+    TableSourceSpec
+    | FileSourceSpec
+    | TempSourceSpec
+    | MongoSourceSpec
+    | ClickHouseSourceSpec
+    | DynamoDbSourceSpec
 )

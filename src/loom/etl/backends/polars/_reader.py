@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from loom.etl.io.sources._clickhouse import ClickHouseSourceReader
+    from loom.etl.io.sources._dynamodb import DynamoDbSourceReader
     from loom.etl.io.sources._mongo import MongoSourceReader
 
 import polars as pl
@@ -18,7 +19,11 @@ from loom.etl.backends._format_registry import resolve_format_handler
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
-from loom.etl.declarative.source._specs import ClickHouseSourceSpec, MongoSourceSpec
+from loom.etl.declarative.source._specs import (
+    ClickHouseSourceSpec,
+    DynamoDbSourceSpec,
+    MongoSourceSpec,
+)
 from loom.etl.runtime.contracts import SourceReader
 from loom.etl.schema._schema import (
     ArrayType,
@@ -129,12 +134,14 @@ class PolarsSourceReader(SourceReader):
         file_locator: FileLocator | None = None,
         mongo_reader: MongoSourceReader | None = None,
         clickhouse_reader: ClickHouseSourceReader | None = None,
+        dynamodb_reader: DynamoDbSourceReader | None = None,
     ) -> None:
         self._locator = _as_locator(locator)
         self._resolver = route_resolver or PathRouteResolver(self._locator)
         self._file_locator = file_locator
         self._mongo_reader: MongoSourceReader | None = mongo_reader
         self._clickhouse_reader: ClickHouseSourceReader | None = clickhouse_reader
+        self._dynamodb_reader: DynamoDbSourceReader | None = dynamodb_reader
 
     def read(self, spec: SourceSpec, params_instance: Any, /) -> pl.LazyFrame:
         """Read source spec and return lazy frame."""
@@ -146,6 +153,8 @@ class PolarsSourceReader(SourceReader):
             return self._read_mongo(spec, params_instance)
         if isinstance(spec, ClickHouseSourceSpec):
             return self._read_clickhouse(spec, params_instance)
+        if isinstance(spec, DynamoDbSourceSpec):
+            return self._read_dynamodb(spec, params_instance)
         raise TypeError(
             f"PolarsSourceReader does not support source kind {spec.kind!r}. "
             "TEMP sources are handled by CheckpointStore."
@@ -184,6 +193,16 @@ class PolarsSourceReader(SourceReader):
                 "Set mongo_reader= when constructing PolarsSourceReader."
             )
         frame: pl.LazyFrame = self._mongo_reader.read(spec, params_instance)
+        return frame
+
+    def _read_dynamodb(self, spec: DynamoDbSourceSpec, params_instance: Any) -> pl.LazyFrame:
+        if self._dynamodb_reader is None:
+            raise TypeError(
+                "DynamoDbSourceSpec requires a DynamoDbSourceReader injected at "
+                "construction time. "
+                "Set dynamodb_reader= when constructing PolarsSourceReader."
+            )
+        frame: pl.LazyFrame = self._dynamodb_reader.read(spec, params_instance)
         return frame
 
     def _read_clickhouse(

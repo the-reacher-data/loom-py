@@ -82,6 +82,7 @@ from loom.etl.declarative.target._client import IntoClient
 from loom.etl.io import (
     ClickHouseClientExecutor,
     FromClickHouse,
+    FromDynamoDb,
     FromMongo,
     IntoClickHouse,
     SourceRef,
@@ -171,6 +172,7 @@ __all__ = [
     "FromTemp",
     "FromClickHouse",
     "FromMongo",
+    "FromDynamoDb",
     "SourceRef",
     # targets
     "IntoTable",

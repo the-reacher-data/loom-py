@@ -209,6 +209,26 @@ class MongoConfig(LoomFrozenStruct, frozen=True):
     database: str = ""
 
 
+class DynamoDbConfig(LoomFrozenStruct, frozen=True):
+    """Connection settings for DynamoDB sources.
+
+    Args:
+        enabled:      Activate DynamoDB read sources.  When ``False`` (default),
+                      no boto3 client is built at provider wiring time.
+        region:       AWS region name, e.g. ``eu-west-1``.  Empty uses the
+                      default boto3 resolution chain.
+        endpoint_url: Custom endpoint for DynamoDB Local / LocalStack.
+                      Empty uses the real AWS endpoint.
+        profile:      AWS named profile.  Empty uses the default credential
+                      resolution chain.
+    """
+
+    enabled: bool = False
+    region: str = ""
+    endpoint_url: str = ""
+    profile: str = ""
+
+
 class CustomColumnDef(LoomFrozenStruct, frozen=True):
     """Definition of one custom audit column injected at write time.
 
@@ -318,6 +338,7 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
     files: tuple[FileRoute, ...] = ()
     clickhouse: ClickHouseConfig = ClickHouseConfig()
     mongo: MongoConfig = MongoConfig()
+    dynamodb: DynamoDbConfig = DynamoDbConfig()
     audit: AuditConfig = AuditConfig()
     maintenance: MaintenanceConfig = MaintenanceConfig()
 

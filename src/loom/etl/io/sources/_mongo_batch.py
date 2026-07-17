@@ -340,7 +340,9 @@ def _row_risk_notes(
 
 
 def _log_risky_rows(
-    batch: list[dict[str, Any]], schema_overrides: dict[str, pl.DataType] | None
+    batch: list[dict[str, Any]],
+    schema_overrides: dict[str, pl.DataType] | None,
+    source_label: str = "MongoSourceReader",
 ) -> None:
     if not batch or not schema_overrides:
         return
@@ -352,7 +354,8 @@ def _log_risky_rows(
             continue
         reported += 1
         _log.warning(
-            "MongoSourceReader: risky row sample row=%d id=%r issues=%s",
+            "%s: risky row sample row=%d id=%r issues=%s",
+            source_label,
             row_index,
             _row_id(doc),
             notes[:_MAX_RISKY_NOTES_PER_ROW],
@@ -581,8 +584,18 @@ def _build_frame_fallback(
 # ---------------------------------------------------------------------------
 
 
-def align_to_schema(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
-    """Align a schemaless-path batch to the sample-inferred registered schema."""
+def align_to_schema(
+    df: pl.DataFrame,
+    schema: dict[str, pl.DataType],
+    source_label: str = "MongoSourceReader",
+) -> pl.DataFrame:
+    """Align a schemaless-path batch to the sample-inferred registered schema.
+
+    Args:
+        df:           Batch frame to align.
+        schema:       Registered schema (column → dtype).
+        source_label: Reader name used as prefix in emitted log messages.
+    """
     if not schema:
         return df
     exprs: list[pl.Expr | pl.Series] = []
@@ -604,7 +617,8 @@ def align_to_schema(df: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.Data
     new_cols = [c for c in df.columns if c not in schema]
     if new_cols:
         _log.warning(
-            "MongoSourceReader: schema drift — field(s) %s not in registered schema, dropping",
+            "%s: schema drift — field(s) %s not in registered schema, dropping",
+            source_label,
             sorted(new_cols),
         )
         df = df.drop(new_cols)
@@ -616,8 +630,20 @@ def apply_declared_schema(
     declared: dict[str, pl.DataType],
     mode: str,
     schema_name: str,
+    source_label: str = "MongoSourceReader",
 ) -> pl.DataFrame:
-    """Add missing declared columns and dispatch extra columns per extra_fields_mode."""
+    """Add missing declared columns and dispatch extra columns per extra_fields_mode.
+
+    Args:
+        df:           Batch frame to reshape.
+        declared:     User-declared schema (column → dtype).
+        mode:         Extra-fields mode: ignore / warn / capture / error.
+        schema_name:  Collection or table name used in messages.
+        source_label: Reader name used as prefix in emitted messages.
+
+    Raises:
+        ValueError: When *mode* is ``"error"`` and undeclared fields are present.
+    """
     missing = [
         pl.lit(None, dtype=dtype).alias(name)
         for name, dtype in declared.items()
@@ -630,13 +656,14 @@ def apply_declared_schema(
     if extra_cols:
         if mode == "error":
             raise ValueError(
-                f"MongoSourceReader: documents contain fields not declared in "
+                f"{source_label}: documents contain fields not declared in "
                 f"{schema_name}: {extra_cols}. "
                 "Use on_extra_fields('ignore'), ('warn'), or ('capture') to suppress."
             )
         if mode == "warn":
             _log.warning(
-                "MongoSourceReader: dropping %d undeclared field(s) from %s: %s",
+                "%s: dropping %d undeclared field(s) from %s: %s",
+                source_label,
                 len(extra_cols),
                 schema_name,
                 extra_cols,
@@ -676,6 +703,7 @@ class MongoBatchProcessor:
             These are pre-serialised to JSON before conflict detection.
         declared_schema: The schema explicitly declared by the user (not inferred).
             Used only for risky-row logging to avoid false positives on inferred types.
+        source_label: Reader name used as prefix in emitted log messages.
     """
 
     def __init__(
@@ -683,9 +711,11 @@ class MongoBatchProcessor:
         *,
         schema_str_fields: frozenset[str],
         declared_schema: dict[str, pl.DataType] | None = None,
+        source_label: str = "MongoSourceReader",
     ) -> None:
         self._schema_str_fields = schema_str_fields
         self._declared_schema = declared_schema
+        self._source_label = source_label
         self._str_coercion_warned = False
         # Lazily built on first batch; safe as a singleton because schema_overrides
         # is the same dict object across all build_frame() calls within a single scan.
@@ -703,13 +733,15 @@ class MongoBatchProcessor:
         dropped_fields = self._observed_fields - current_fields
         if new_fields:
             _log.warning(
-                "MongoSourceReader: schema drift — new field(s) %s appeared after first batch",
+                "%s: schema drift — new field(s) %s appeared after first batch",
+                self._source_label,
                 sorted(new_fields),
             )
             self._observed_fields = self._observed_fields | new_fields
         if dropped_fields:
             _log.warning(
-                "MongoSourceReader: schema drift — field(s) %s absent in this batch",
+                "%s: schema drift — field(s) %s absent in this batch",
+                self._source_label,
                 sorted(dropped_fields),
             )
             # Do not update _observed_fields for dropped fields so the warning persists.
@@ -736,7 +768,7 @@ class MongoBatchProcessor:
             if self._canonical_plan is None:
                 self._canonical_plan = _build_schema_plan(schema_overrides)
             _canonicalize_batch(batch, self._canonical_plan)
-        _log_risky_rows(batch, self._declared_schema)
+        _log_risky_rows(batch, self._declared_schema, self._source_label)
         return self._to_dataframe(batch, schema_overrides)
 
     def _scan_batch(
@@ -764,8 +796,9 @@ class MongoBatchProcessor:
         if self._str_coercion_warned or not str_complex:
             return
         _log.debug(
-            "MongoSourceReader: field(s) %s declared as str in schema but data contains "
+            "%s: field(s) %s declared as str in schema but data contains "
             "complex types — pre-serialising to JSON string",
+            self._source_label,
             sorted(str_complex),
         )
         self._str_coercion_warned = True
@@ -792,26 +825,28 @@ class MongoBatchProcessor:
 
         if to_serialize & all_conflicted:
             _log.warning(
-                "MongoSourceReader: heterogeneous types detected in fields %s"
-                " — serialising to JSON string",
+                "%s: heterogeneous types detected in fields %s — serialising to JSON string",
+                self._source_label,
                 sorted(to_serialize & all_conflicted),
             )
         if to_serialize & all_nested:
             _log.warning(
-                "MongoSourceReader: nested type conflict — serialising parent field(s) %s"
-                " to JSON string",
+                "%s: nested type conflict — serialising parent field(s) %s to JSON string",
+                self._source_label,
                 sorted(to_serialize & all_nested),
             )
         extras_only = (to_serialize & undeclared_complex) - all_conflicted - all_nested
         if extras_only:
             _log.debug(
-                "MongoSourceReader: serialising undeclared complex field(s) %s to JSON string",
+                "%s: serialising undeclared complex field(s) %s to JSON string",
+                self._source_label,
                 sorted(extras_only),
             )
         if skipped:
             _log.warning(
-                "MongoSourceReader: type conflict in declared complex field(s) %s"
+                "%s: type conflict in declared complex field(s) %s"
                 " — deferring to schema canonicalization",
+                self._source_label,
                 sorted(skipped),
             )
         return to_serialize
@@ -828,8 +863,9 @@ class MongoBatchProcessor:
         except (pl.exceptions.ComputeError, pl.exceptions.SchemaError, TypeError):
             if batch:
                 _log.warning(
-                    "MongoSourceReader: pl.from_dicts() failed — "
+                    "%s: pl.from_dicts() failed — "
                     "falling back to series construction. Batch shape sample:\n%s",
+                    self._source_label,
                     "\n".join(_summarize_nested_shapes(batch[0])),
                 )
             return _build_frame_fallback(batch, schema_overrides)
