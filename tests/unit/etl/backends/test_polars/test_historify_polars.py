@@ -20,6 +20,7 @@ pytest.importorskip("deltalake")
 
 import polars as pl  # noqa: E402
 
+from loom.etl.backends._historify._log import apply_log  # noqa: E402
 from loom.etl.backends._historify._transform import scd2_transform  # noqa: E402
 from loom.etl.backends.polars._historify import PolarsHistorifyBackend  # noqa: E402
 from loom.etl.backends.polars._writer import PolarsTargetWriter  # noqa: E402
@@ -192,6 +193,87 @@ class TestTimestampBoundariesAreUtcAware:
         assert result["valid_to"].dtype == pl.Datetime("us", "UTC")
         closed = result.filter(pl.col("status") == "a")
         assert closed["valid_to"].to_list() == [datetime(2024, 6, 1, 7, 59, 59, 999999, tzinfo=UTC)]
+
+
+class TestBuildLogBoundariesClampsSameInstant:
+    """Two events sharing an effective instant (e.g. a task created and flipped
+    to true in the same snapshot millisecond) must collapse to a zero-width
+    [T, T] vector, never an inverted valid_to < valid_from, and without raising."""
+
+    _SPEC = HistorifySpec(
+        table_ref=TableRef("vital"),
+        keys=("id",),
+        effective_date="event_ts",
+        mode=HistorifyInputMode.LOG,
+        track=("state",),
+        date_type=HistoryDateType.TIMESTAMP,
+    )
+
+    @staticmethod
+    def _events(rows: list[dict[str, Any]]) -> pl.DataFrame:
+        return pl.from_dicts(rows).with_columns(pl.col("event_ts").dt.replace_time_zone("UTC"))
+
+    def test_same_instant_yields_zero_width_not_negative(self) -> None:
+        events = self._events(
+            [
+                {"id": 1, "state": "false", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "true", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "done", "event_ts": datetime(2024, 6, 1, 8)},
+            ]
+        )
+        result = (
+            PolarsHistorifyBackend().build_log_boundaries(events, self._SPEC).sort("valid_from")
+        )
+        assert len(result.filter(pl.col("valid_to") < pl.col("valid_from"))) == 0
+        collided = result.filter(
+            (pl.col("valid_from") == datetime(2024, 1, 1, 8, tzinfo=UTC))
+            & (pl.col("state") == "false")
+        )
+        assert collided["valid_to"].to_list() == [datetime(2024, 1, 1, 8, tzinfo=UTC)]
+
+    def test_open_row_stays_null(self) -> None:
+        events = self._events(
+            [
+                {"id": 1, "state": "false", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "true", "event_ts": datetime(2024, 1, 1, 8)},
+            ]
+        )
+        result = PolarsHistorifyBackend().build_log_boundaries(events, self._SPEC)
+        open_rows = result.filter(pl.col("valid_to").is_null())
+        assert open_rows["state"].to_list() == ["true"]
+
+    def test_distinct_instants_unchanged(self) -> None:
+        events = self._events(
+            [
+                {"id": 1, "state": "a", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "b", "event_ts": datetime(2024, 6, 1, 8)},
+            ]
+        )
+        result = (
+            PolarsHistorifyBackend().build_log_boundaries(events, self._SPEC).sort("valid_from")
+        )
+        closed = result.filter(pl.col("state") == "a")
+        assert closed["valid_to"].to_list() == [datetime(2024, 6, 1, 7, 59, 59, 999999, tzinfo=UTC)]
+
+    def test_same_instant_via_apply_log_reweave(self) -> None:
+        # Existing history already holds two vectors at the same valid_from (e.g. a
+        # false/true flip stamped in the same snapshot ms). Re-weaving through
+        # apply_log feeds both same-instant rows into build_log_boundaries; the clamp
+        # must keep the earlier one at zero width rather than inverting it.
+        existing = pl.DataFrame(
+            {
+                "id": [1, 1],
+                "state": ["false", "true"],
+                "valid_from": [datetime(2024, 1, 1, 8), datetime(2024, 1, 1, 8)],
+                "valid_to": [None, None],
+            }
+        ).with_columns(
+            pl.col("valid_from").dt.replace_time_zone("UTC"),
+            pl.col("valid_to").cast(pl.Datetime("us", "UTC")),
+        )
+        incoming = self._events([{"id": 1, "state": "done", "event_ts": datetime(2024, 6, 1, 8)}])
+        result = apply_log(PolarsHistorifyBackend(), incoming, existing, self._SPEC)
+        assert len(result.filter(pl.col("valid_to") < pl.col("valid_from"))) == 0
 
 
 class TestLogTrackNoneNoCollapse:

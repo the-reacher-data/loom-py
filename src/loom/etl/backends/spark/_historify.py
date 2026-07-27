@@ -152,9 +152,19 @@ class SparkHistorifyBackend:
         else:
             valid_to_expr = next_date - F.expr("INTERVAL 1 MICROSECOND")
 
+        # Clamp so valid_to is never below valid_from: two events sharing an
+        # effective instant (e.g. task created and flipped in the same snapshot ms)
+        # yield next_eff - offset < valid_from, an inverted interval. Collapse those
+        # to a zero-width [T, T] vector instead of a negative one. The last event has
+        # a null next_date -> keep valid_to null (open row); greatest alone would skip
+        # that null and wrongly close it.
+        clamped_valid_to = F.when(next_date.isNull(), F.lit(None)).otherwise(
+            F.greatest(F.col(eff_col), valid_to_expr)
+        )
+
         return (
             collapsed.withColumn(spec.valid_from, F.col(eff_col).cast(boundary_dtype))
-            .withColumn(spec.valid_to, valid_to_expr.cast(boundary_dtype))
+            .withColumn(spec.valid_to, clamped_valid_to.cast(boundary_dtype))
             .drop(eff_col)
         )
 

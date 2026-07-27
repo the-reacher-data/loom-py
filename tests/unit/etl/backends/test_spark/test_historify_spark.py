@@ -179,6 +179,32 @@ class TestBackendHelpers:
         assert rows[0]["valid_from"] == datetime(2024, 1, 1, 10, 0, 0)
         assert rows[0]["valid_to"] == datetime(2024, 1, 1, 11, 59, 59, 999999)
 
+    def test_build_log_boundaries_clamps_same_instant(self, spark: SparkSession) -> None:
+        from datetime import datetime
+
+        spec = HistorifySpec(
+            table_ref=TableRef("vital"),
+            keys=("id",),
+            effective_date="event_ts",
+            mode=HistorifyInputMode.LOG,
+            track=("state",),
+            date_type=HistoryDateType.TIMESTAMP,
+        )
+        # false and true stamped in the same snapshot instant -> zero-width, not negative.
+        frame = spark.createDataFrame(
+            [
+                {"id": 1, "state": "false", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "true", "event_ts": datetime(2024, 1, 1, 8)},
+                {"id": 1, "state": "done", "event_ts": datetime(2024, 6, 1, 8)},
+            ]
+        )
+        rows = SparkHistorifyBackend().build_log_boundaries(frame, spec).collect()
+        assert all(r["valid_to"] is None or r["valid_to"] >= r["valid_from"] for r in rows)
+        collided = [r for r in rows if r["state"] == "false"]
+        assert collided[0]["valid_to"] == collided[0]["valid_from"] == datetime(2024, 1, 1, 8)
+        open_rows = [r for r in rows if r["valid_to"] is None]
+        assert [r["state"] for r in open_rows] == ["done"]
+
 
 class TestLogTrackNoneNoCollapse:
     def test_track_none_emits_one_version_per_event(self, spark: SparkSession) -> None:
