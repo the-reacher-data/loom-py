@@ -1,3 +1,112 @@
+# 🚀 Release 0.15.1 ([#86](https://github.com/the-reacher-data/loom-py/pull/86)) ([`72f562c`](https://github.com/the-reacher-data/loom-py/commit/72f562cb57b16c7857e89844853faa6baa0d9768))
+
+
+## ✨ Features
+### prefect
+- **prefect:** add chunked backfill_flow orchestration primitive<br>
+  > Add backfill_flow() alongside etl_flow()/maintenance_flow(): a generic
+  > @flow that runs an ETLPipeline chunk-by-chunk over a time window instead
+  > of in a single pass. It slices [window_start_field, window_end_field) into
+  > chunk-aligned partitions (hour/day/month, default day), runs
+  > per_chunk_processes once per chunk oldest->newest, then runs
+  > finalize_processes once with window_end pinned to the start of the current
+  > chunk (not now) so batch-sequenced refreshes get a stable boundary.
+  > Reuses the existing machinery for parity: ETLRunner.from_yaml, the _body
+  > observer/manifest helpers, deploy metadata and synthesised signature. Each
+  > chunk gets its own correlation id so manifests never leak across chunks;
+  > resume is chunk-level via the start_from flow parameter.
+  > Chunk granularity, window field names and process lists are all
+  > parameterised so the primitive stays generic.
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01HNJydUX2yBKkiDEeh4uxtQ
+
+
+
+## 🐛 Fixes
+### deps
+- **deps:** floor deltalake >=1.6.2 (MERGE correctness regression)<br>
+  > deltalake (delta-rs) 1.6.0/1.6.1 raise "matched a target row with multiple source
+  > rows that satisfy duplicate relevant WHEN MATCHED clauses" on clean, unique data
+  > once a target file is read in more than one DataFusion batch — breaking the only
+  > MERGE path in loom (IntoTable.upsert / _writer._upsert). Upstream
+  > delta-io/delta-rs #4471/#4475/#4572, fixed in 1.6.2.
+  > Raise the etl-polars / etl extras floor from >=1.5 to >=1.6.2 so no consumer
+  > resolves a MERGE-broken delta-rs, and re-lock (deltalake 1.5.0 -> 1.6.2).
+
+
+### historify
+- **historify:** clamp LOG boundaries to zero-width on same-instant events<br>
+  > Two events sharing an effective instant (e.g. a task created and flipped to
+  > true in the same snapshot millisecond, task_created_at == task_updated_at)
+  > land on the same effective_ts. build_log_boundaries then computes
+  > valid_to = next_eff - offset < valid_from, an inverted (negative) interval.
+  > Clamp valid_to to never fall below valid_from via
+  > greatest(valid_from, next_eff - offset) in both backends, collapsing such
+  > collisions to a zero-width [T, T] vector. The last event per entity has a
+  > null next_eff and must stay open: max_horizontal/greatest skip nulls, so an
+  > explicit null guard preserves the open row. Normal boundaries
+  > (next_eff - offset > valid_from) are unchanged.
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01HNJydUX2yBKkiDEeh4uxtQ
+
+
+
+
+
+## ♻️ Refactor
+### prefect
+- **prefect:** deduplicate factory boilerplate and split backfill body<br>
+  > Every flow factory (etl_flow, maintenance_flow, backfill_flow) duplicated
+  > the same deploy-time boilerplate: per-flow YAML settings, safe-name +
+  > __signature__ attachment, prefect.flow decoration and ETLFlowMeta wiring.
+  > Extract it into flow._assemble (load_flow_settings + assemble_flow) so a
+  > change to the decoration or metadata contract touches one place, and unify
+  > the three per-factory _synthesise_signature copies into
+  > _signature.synthesise_flow_signature(params_type, extra_parameters=...).
+  > Promote the manifest/observer helpers backfill imported privately from
+  > _body into flow._runtime with public names (load_or_init_manifest,
+  > build_observers, maybe_delete_manifest), and process-name validation into
+  > flow._stages with a parameterised field label. Type flow_run_id as
+  > uuid.UUID | None and observers as list[LifecycleObserver].
+  > Backfill hardening, in parity with etl_flow:
+  > split the runtime body out of the factory into _backfill_body, with the
+  > per-chunk floor/advance/label rules in one _ChunkAlgebra table so adding
+  > a granularity touches a single dict
+  > validate per_chunk_processes AND finalize_processes against the compiled
+  > pipeline at build time (a typo no longer explodes after hours of chunks)
+  > rename Chunk to BackfillChunk and re-export it from loom.prefect and
+  > loom.prefect.flow so consumers can type chunk=
+  > make window_start_field/window_end_field required (they were consumer
+  > conventions leaking into the library defaults)
+  > log the accepted env parameter and document that it does not route;
+  > document that manifests are observability-only (resume is chunk-granular
+  > via start_from), that finalize runs once after all chunks, and that the
+  > flow deliberately registers without Prefect retries
+  > drop the redundant _as_utc double-coercion in _chunk_windows
+
+
+
+
+## ✅ Tests
+### historify
+- **historify:** cover DATE-precision clamp and document zero-width vectors<br>
+  > Add same-day collision tests for build_log_boundaries with
+  > date_type=DATE on both backends (the clamp fix was only exercised at
+  > TIMESTAMP precision), and document the zero-width [T, T] semantics in
+  > the public IntoHistory/HistorifySpec docstrings: boundaries are
+  > inclusive, so a point-in-time query at the collision instant matches
+  > both the zero-width row and the row opening at it.
+  > Also hoist the datetime import in the Spark historify test module.
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01HNJydUX2yBKkiDEeh4uxtQ
+  > --------
+  > Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 0.15.0 ([#84](https://github.com/the-reacher-data/loom-py/pull/84)) ([`c3581bd`](https://github.com/the-reacher-data/loom-py/commit/c3581bdc28255935c5658a15b9b64c035cf3cc96))
 
 
