@@ -6,6 +6,8 @@ Public surface
   typed, synthesised signature derived from the pipeline's ``ParamsT``.
 - :func:`maintenance_flow` — build one ``@prefect.flow`` per
   :class:`~loom.etl.maintenance.MaintenanceStep` (vacuum, compact, z-order).
+- :func:`backfill_flow` — build one ``@prefect.flow`` that runs an
+  ``ETLPipeline`` one natural day at a time, then finalizes once.
 
 The sub-modules here split the factory's concerns:
 
@@ -21,7 +23,8 @@ The sub-modules here split the factory's concerns:
   schedules when the flow finally fails).
 """
 
+from loom.prefect.flow._backfill import backfill_flow
 from loom.prefect.flow._factory import etl_flow
 from loom.prefect.flow._maintenance import maintenance_flow
 
-__all__ = ["etl_flow", "maintenance_flow"]
+__all__ = ["backfill_flow", "etl_flow", "maintenance_flow"]

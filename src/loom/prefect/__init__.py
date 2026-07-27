@@ -36,7 +36,7 @@ from loom.prefect._config import _load_flow_config as load_flow_config
 from loom.prefect._ctx import FlowCtx
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect.deploy import discover_and_deploy_etls
-from loom.prefect.flow import etl_flow, maintenance_flow
+from loom.prefect.flow import backfill_flow, etl_flow, maintenance_flow
 from loom.prefect.manifest import (
     ManifestStore,
     RunManifest,
@@ -54,6 +54,7 @@ __all__ = [
     "RunManifest",
     "S3JsonManifestStore",
     "StepEntry",
+    "backfill_flow",
     "discover_and_deploy_etls",
     "etl_flow",
     "maintenance_flow",
