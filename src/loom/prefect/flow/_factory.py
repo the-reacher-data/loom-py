@@ -3,25 +3,17 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 from typing import Any
 
 import msgspec
-import prefect
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.pipeline import ETLPipeline
 from loom.prefect._config import FlowConfig, _load_flow_config
-from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
-from loom.prefect.deploy._schedule import extract_pool_config
-from loom.prefect.deploy._yaml import read_yaml
+from loom.prefect.flow._assemble import assemble_flow, load_flow_settings
 from loom.prefect.flow._body import build_flow_body
-from loom.prefect.flow._common import coerce_tags as _coerce_tags
-from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
-from loom.prefect.flow._run_name import make_run_name_callback
-from loom.prefect.flow._signature import signature_from_params_type
+from loom.prefect.flow._signature import synthesise_flow_signature
 from loom.prefect.manifest import ManifestStore
-from loom.prefect.notify import build_notifiers
 
 
 def etl_flow(
@@ -61,62 +53,47 @@ def etl_flow(
         A ``@prefect.flow``-decorated callable. Discovery metadata is
         attached at ``__loom_etl_meta__``.
     """
-    raw_cfg = read_yaml(config_path)
-    correlation_field = raw_cfg.get("correlation_field")
-    schedule = raw_cfg.get("schedule")
-    raw_params = dict(raw_cfg.get("params") or {})
-    pool_config = extract_pool_config(raw_cfg)
-    tags = _coerce_tags(raw_cfg.get("tags"))
-    notifiers = build_notifiers(raw_cfg.get("notifications"))
-
+    settings = load_flow_settings(config_path)
     plan = ETLCompiler().compile(pipeline)
-
     flow_cfg = _resolve_flow_config(flow_config_path, pipeline)
-
-    resolved_config_path = str(Path(config_path).resolve())
-    resolved_source_file = str(Path(source_file).resolve())
-
-    new_signature = _synthesise_signature(params_type)
 
     flow_body = build_flow_body(
         flow_name=name,
         pipeline=pipeline,
         params_type=params_type,
         plan=plan,
-        correlation_field=correlation_field,
+        correlation_field=settings.correlation_field,
         storage_config_path=storage_config_path,
         manifest_store=manifest_store,
     )
-    safe_name = name.replace("-", "_")
-    flow_body.__signature__ = new_signature
-    flow_body.__name__ = safe_name
-    flow_body.__qualname__ = safe_name
-
-    failure_hooks, completion_hooks = make_notification_hooks(name, notifiers)
-    decorated = prefect.flow(
+    signature = synthesise_flow_signature(
+        params_type,
+        extra_parameters=[
+            inspect.Parameter(
+                "correlation_id",
+                inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=str | None,
+            ),
+            inspect.Parameter(
+                "processes",
+                inspect.Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=list[str] | None,
+            ),
+        ],
+    )
+    return assemble_flow(
         name=name,
-        flow_run_name=make_run_name_callback(name, correlation_field),
+        body=flow_body,
+        signature=signature,
+        settings=settings,
+        config_path=config_path,
+        source_file=source_file,
+        correlation_field=settings.correlation_field,
         retries=flow_cfg.flow_retries,
         retry_delay_seconds=flow_cfg.flow_retry_delay_seconds,
-        validate_parameters=False,
-        on_failure=[pause_schedule_on_failure, *failure_hooks],
-        on_completion=completion_hooks or None,
-    )(flow_body)
-    setattr(
-        decorated,
-        LOOM_ETL_META_ATTR,
-        ETLFlowMeta(
-            name=name,
-            config_path=resolved_config_path,
-            source_file=resolved_source_file,
-            correlation_field=correlation_field,
-            schedule=schedule,
-            raw_params=raw_params,
-            pool_config=pool_config,
-            tags=tags,
-        ),
     )
-    return decorated
 
 
 def _resolve_flow_config(
@@ -128,29 +105,6 @@ def _resolve_flow_config(
         return _load_flow_config(flow_config_path, pipeline.__name__)
     except KeyError:
         return FlowConfig()
-
-
-def _synthesise_signature(params_type: type[msgspec.Struct]) -> inspect.Signature:
-    user_parameters = signature_from_params_type(params_type)
-    universal_parameters = [
-        inspect.Parameter("env", inspect.Parameter.KEYWORD_ONLY, default="prod", annotation=str),
-        inspect.Parameter(
-            "correlation_id",
-            inspect.Parameter.KEYWORD_ONLY,
-            default=None,
-            annotation=str | None,
-        ),
-        inspect.Parameter(
-            "processes",
-            inspect.Parameter.KEYWORD_ONLY,
-            default=None,
-            annotation=list[str] | None,
-        ),
-    ]
-    return inspect.Signature(
-        parameters=user_parameters + universal_parameters,
-        return_annotation=None,
-    )
 
 
 __all__ = ["etl_flow"]

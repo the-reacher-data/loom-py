@@ -148,9 +148,22 @@ class PolarsHistorifyBackend:
         sorted_events = collapsed.sort(entity_key + [eff_col])
         next_date = pl.col(eff_col).shift(-1).over(entity_key)
 
+        valid_from = pl.col(eff_col)
+        # Clamp so valid_to is never below valid_from: two events sharing an
+        # effective instant (e.g. task created and flipped in the same snapshot ms)
+        # yield next_eff - offset < valid_from, an inverted interval. Collapse those
+        # to a zero-width [T, T] vector instead of a negative one. The last event has
+        # a null next_date -> keep valid_to null (open row); max_horizontal alone
+        # would skip that null and wrongly close it.
+        clamped_valid_to = (
+            pl.when(next_date.is_null())
+            .then(pl.lit(None))
+            .otherwise(pl.max_horizontal(valid_from, next_date - offset))
+        )
+
         return sorted_events.with_columns(
-            pl.col(eff_col).cast(boundary_dtype).alias(spec.valid_from),
-            (next_date - offset).cast(boundary_dtype).alias(spec.valid_to),
+            valid_from.cast(boundary_dtype).alias(spec.valid_from),
+            clamped_valid_to.cast(boundary_dtype).alias(spec.valid_to),
         ).drop(eff_col)
 
     @staticmethod

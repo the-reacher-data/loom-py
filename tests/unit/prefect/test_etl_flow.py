@@ -211,18 +211,18 @@ def test_deploy_passes_meta_name_and_yaml_tags_no_loom_etl(tmp_path: Path) -> No
 
 
 def test_prometheus_adapter_wired_when_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    from loom.prefect.flow._body import _build_observers
+    from loom.prefect.flow._runtime import build_observers
 
     monkeypatch.setenv("PROMETHEUS_PUSHGATEWAY_URL", "https://pushgateway:9091")
-    observers = _build_observers(flow_run_id=None, manifest_store=None, manifest=None)
+    observers = build_observers(flow_run_id=None, manifest_store=None, manifest=None)
     assert any(type(o).__name__ == "PrometheusLifecycleAdapter" for o in observers)
 
 
 def test_prometheus_adapter_absent_when_env_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    from loom.prefect.flow._body import _build_observers
+    from loom.prefect.flow._runtime import build_observers
 
     monkeypatch.delenv("PROMETHEUS_PUSHGATEWAY_URL", raising=False)
-    observers = _build_observers(flow_run_id=None, manifest_store=None, manifest=None)
+    observers = build_observers(flow_run_id=None, manifest_store=None, manifest=None)
     assert not any(type(o).__name__ == "PrometheusLifecycleAdapter" for o in observers)
 
 
@@ -326,42 +326,42 @@ class TestValidateProcesses:
     @pytest.fixture
     def known(self) -> frozenset[str]:
         from loom.etl.compiler import ETLCompiler
-        from loom.prefect.flow._body import _known_process_names
+        from loom.prefect.flow._stages import known_process_names
 
-        return _known_process_names(ETLCompiler().compile(_SamplePipeline))
+        return known_process_names(ETLCompiler().compile(_SamplePipeline))
 
     def test_accepts_known_name(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
-        assert _validate_processes(["_SampleProcess"], known) == ("_SampleProcess",)
+        assert validate_stage_names(["_SampleProcess"], known) == ("_SampleProcess",)
 
     def test_none_passes_through(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
-        assert _validate_processes(None, known) is None
+        assert validate_stage_names(None, known) is None
 
     def test_empty_list_normalises_to_none(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
-        assert _validate_processes([], known) is None
+        assert validate_stage_names([], known) is None
 
     def test_rejects_unknown_name(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
         with pytest.raises(ValueError, match="unknown"):
-            _validate_processes(["DoesNotExist"], known)
+            validate_stage_names(["DoesNotExist"], known)
 
     def test_rejects_non_list_value(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
         with pytest.raises(TypeError, match="processes"):
-            _validate_processes("not-a-list", known)
+            validate_stage_names("not-a-list", known)
 
     def test_rejects_non_string_entries(self, known: frozenset[str]) -> None:
-        from loom.prefect.flow._body import _validate_processes
+        from loom.prefect.flow._stages import validate_stage_names
 
         with pytest.raises(TypeError, match="processes"):
-            _validate_processes([1, 2], known)
+            validate_stage_names([1, 2], known)
 
 
 def test_etl_flow_rejects_non_struct_params_type(tmp_path: Path) -> None:

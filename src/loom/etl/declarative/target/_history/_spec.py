@@ -46,7 +46,9 @@ class HistorifySpec:
             Strongly recommended for large tables.
         valid_from: Name of the period-start boundary column.
         valid_to: Name of the period-end boundary column.
-            ``NULL`` in the table means the vector is currently open.
+            ``NULL`` in the table means the vector is currently open. In LOG
+            mode, same-instant events for one entity collapse the earlier
+            vector to zero width (``valid_from == valid_to``).
         deleted_at: Name of the soft-delete audit column. Only written when
             ``delete_policy=SOFT_DELETE``.
         date_type: Precision of the ``valid_from`` / ``valid_to`` columns.

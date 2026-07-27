@@ -62,6 +62,13 @@ class IntoHistory:
     * LOG mode is idempotent by construction: replaying events converges, and a
       same-date correction for an entity replaces the stored event (incoming
       wins).
+    * In LOG mode, two events for the same entity that share an effective
+      instant (with different ``track`` values) collapse the earlier vector to
+      zero width (``valid_from == valid_to``). Boundaries are inclusive, so a
+      point-in-time query at exactly that instant matches both the zero-width
+      row and the row opening at it; filter zero-width rows out
+      (``valid_from < valid_to OR valid_to IS NULL``) when only the surviving
+      state matters.
 
     Args:
         ref: Logical table reference — ``str`` or :class:`~loom.etl.TableRef`.
