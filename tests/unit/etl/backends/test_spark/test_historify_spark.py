@@ -8,7 +8,7 @@ This module provides the Spark fixtures and backend-specific helper tests.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -158,8 +158,6 @@ class TestBackendHelpers:
         assert "n" in result.columns
 
     def test_build_log_boundaries_timestamp(self, spark: SparkSession) -> None:
-        from datetime import datetime
-
         spec = HistorifySpec(
             table_ref=TableRef("dim_subs"),
             keys=("subscription_id",),
@@ -180,8 +178,6 @@ class TestBackendHelpers:
         assert rows[0]["valid_to"] == datetime(2024, 1, 1, 11, 59, 59, 999999)
 
     def test_build_log_boundaries_clamps_same_instant(self, spark: SparkSession) -> None:
-        from datetime import datetime
-
         spec = HistorifySpec(
             table_ref=TableRef("vital"),
             keys=("id",),
@@ -202,6 +198,32 @@ class TestBackendHelpers:
         assert all(r["valid_to"] is None or r["valid_to"] >= r["valid_from"] for r in rows)
         collided = [r for r in rows if r["state"] == "false"]
         assert collided[0]["valid_to"] == collided[0]["valid_from"] == datetime(2024, 1, 1, 8)
+        open_rows = [r for r in rows if r["valid_to"] is None]
+        assert [r["state"] for r in open_rows] == ["done"]
+
+    def test_build_log_boundaries_clamps_same_date(self, spark: SparkSession) -> None:
+        spec = HistorifySpec(
+            table_ref=TableRef("vital"),
+            keys=("id",),
+            effective_date="event_date",
+            mode=HistorifyInputMode.LOG,
+            track=("state",),
+            date_type=HistoryDateType.DATE,
+        )
+        # Two events on the same day -> zero-width [D, D], not D-1.
+        frame = spark.createDataFrame(
+            [
+                {"id": 1, "state": "false", "event_date": date(2024, 1, 1)},
+                {"id": 1, "state": "true", "event_date": date(2024, 1, 1)},
+                {"id": 1, "state": "done", "event_date": date(2024, 6, 1)},
+            ]
+        )
+        rows = SparkHistorifyBackend().build_log_boundaries(frame, spec).collect()
+        assert all(r["valid_to"] is None or r["valid_to"] >= r["valid_from"] for r in rows)
+        collided = [r for r in rows if r["state"] == "false"]
+        assert collided[0]["valid_to"] == collided[0]["valid_from"] == date(2024, 1, 1)
+        closed = [r for r in rows if r["state"] == "true"]
+        assert closed[0]["valid_to"] == date(2024, 5, 31)
         open_rows = [r for r in rows if r["valid_to"] is None]
         assert [r["state"] for r in open_rows] == ["done"]
 

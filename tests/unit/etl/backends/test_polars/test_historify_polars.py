@@ -255,6 +255,32 @@ class TestBuildLogBoundariesClampsSameInstant:
         closed = result.filter(pl.col("state") == "a")
         assert closed["valid_to"].to_list() == [datetime(2024, 6, 1, 7, 59, 59, 999999, tzinfo=UTC)]
 
+    def test_same_date_yields_zero_width_date_vector(self) -> None:
+        spec = HistorifySpec(
+            table_ref=TableRef("vital"),
+            keys=("id",),
+            effective_date="event_date",
+            mode=HistorifyInputMode.LOG,
+            track=("state",),
+            date_type=HistoryDateType.DATE,
+        )
+        # Two events on the same day -> zero-width [D, D], not D-1.
+        events = pl.DataFrame(
+            {
+                "id": [1, 1, 1],
+                "state": ["false", "true", "done"],
+                "event_date": [date(2024, 1, 1), date(2024, 1, 1), date(2024, 6, 1)],
+            }
+        )
+        result = PolarsHistorifyBackend().build_log_boundaries(events, spec)
+        assert len(result.filter(pl.col("valid_to") < pl.col("valid_from"))) == 0
+        collided = result.filter(pl.col("state") == "false")
+        assert collided["valid_from"].to_list() == [date(2024, 1, 1)]
+        assert collided["valid_to"].to_list() == [date(2024, 1, 1)]
+        closed = result.filter(pl.col("state") == "true")
+        assert closed["valid_to"].to_list() == [date(2024, 5, 31)]
+        assert result.filter(pl.col("valid_to").is_null())["state"].to_list() == ["done"]
+
     def test_same_instant_via_apply_log_reweave(self) -> None:
         # Existing history already holds two vectors at the same valid_from (e.g. a
         # false/true flip stamped in the same snapshot ms). Re-weaving through
