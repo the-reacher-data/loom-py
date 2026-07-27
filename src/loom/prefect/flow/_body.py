@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -18,13 +17,14 @@ from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect._summary import set_run_summary
 from loom.prefect.flow._common import prefect_flow_run_id
 from loom.prefect.flow._run_name import compute_correlation_id
-from loom.prefect.flow._signature import normalize_datetime_fields
-from loom.prefect.manifest import (
-    ManifestStore,
-    RunManifest,
-    completed_steps,
+from loom.prefect.flow._runtime import (
+    build_observers,
+    load_or_init_manifest,
+    maybe_delete_manifest,
 )
-from loom.prefect.observer import ManifestObserver, PrefectTaskRunObserver
+from loom.prefect.flow._signature import normalize_datetime_fields
+from loom.prefect.flow._stages import known_process_names, validate_stage_names
+from loom.prefect.manifest import ManifestStore, RunManifest, completed_steps
 from loom.prefect.observer._logging_bridge import (
     install_log_bridge,
     uninstall_log_bridge,
@@ -62,12 +62,12 @@ def build_flow_body(
         runner failure.
     """
 
-    known_processes = _known_process_names(plan)
+    known_processes = known_process_names(plan)
 
     def _flow_body(**kwargs: Any) -> None:
         env = kwargs.pop("env", "prod")
         explicit_correlation = kwargs.pop("correlation_id", None)
-        processes = _validate_processes(kwargs.pop("processes", None), known_processes)
+        processes = validate_stage_names(kwargs.pop("processes", None), known_processes)
         resolved = {key: resolve_placeholder(value) for key, value in kwargs.items()}
         resolved = normalize_datetime_fields(resolved, params_type)
         params_obj = msgspec.convert(resolved, type=params_type)
@@ -83,17 +83,17 @@ def build_flow_body(
 
         actual_config_path = os.environ.get("LOOM_STORAGE_CONFIG_PATH") or storage_config_path
 
-        manifest = _load_or_init_manifest(manifest_store, ctx.correlation_id)
+        manifest = load_or_init_manifest(manifest_store, ctx.correlation_id)
         pending = _resolve_pending(plan, ctx.processes, manifest)
 
         if not pending:
-            _maybe_delete_manifest(manifest_store, ctx.correlation_id)
+            maybe_delete_manifest(manifest_store, ctx.correlation_id)
             return
 
         flow_run_id = prefect_flow_run_id()
         install_log_bridge(flow_run_id)
         try:
-            observers = _build_observers(flow_run_id, manifest_store, manifest)
+            observers = build_observers(flow_run_id, manifest_store, manifest)
             _invoke_runner(
                 actual_config_path,
                 pipeline,
@@ -106,20 +106,9 @@ def build_flow_body(
         finally:
             uninstall_log_bridge()
         set_run_summary(_etl_summary(plan, pending))
-        _maybe_delete_manifest(manifest_store, ctx.correlation_id)
+        maybe_delete_manifest(manifest_store, ctx.correlation_id)
 
     return _flow_body
-
-
-def _load_or_init_manifest(store: ManifestStore | None, correlation_id: str) -> RunManifest:
-    loaded = store.load(correlation_id) if store is not None else None
-    if loaded is not None:
-        return loaded
-    return RunManifest(
-        correlation_id=correlation_id,
-        steps=(),
-        updated_at=datetime.now(tz=UTC),
-    )
 
 
 def _resolve_pending(
@@ -130,33 +119,6 @@ def _resolve_pending(
     done = completed_steps(manifest)
     all_step_names = flatten_step_names(plan, processes)
     return [s for s in all_step_names if s not in done]
-
-
-def _build_observers(
-    flow_run_id: Any,
-    manifest_store: ManifestStore | None,
-    manifest: RunManifest,
-) -> list[Any]:
-    observers: list[Any] = []
-    if flow_run_id is not None:
-        observers.append(PrefectTaskRunObserver(flow_run_id=flow_run_id))
-    if manifest_store is not None:
-        observers.append(ManifestObserver(manifest_store, manifest))
-    prometheus = _maybe_build_prometheus_adapter()
-    if prometheus is not None:
-        observers.append(prometheus)
-    return observers
-
-
-def _maybe_build_prometheus_adapter() -> Any:
-    pushgateway = os.environ.get("PROMETHEUS_PUSHGATEWAY_URL")
-    if not pushgateway:
-        return None
-    try:
-        from loom.prometheus.lifecycle import PrometheusLifecycleAdapter  # noqa: PLC0415
-    except ImportError:
-        return None
-    return PrometheusLifecycleAdapter(pushgateway_url=pushgateway)
 
 
 def _invoke_runner(
@@ -192,12 +154,6 @@ def _invoke_runner(
         _run_proc()
 
 
-def _maybe_delete_manifest(store: ManifestStore | None, correlation_id: str) -> None:
-    if store is None:
-        return
-    store.delete(correlation_id)
-
-
 def _etl_summary(plan: PipelinePlan, pending: list[str]) -> str:
     """Build a one-line completion summary from the pipeline plan.
 
@@ -212,27 +168,6 @@ def _etl_summary(plan: PipelinePlan, pending: list[str]) -> str:
         mark = "✓" if ran == total else f"{ran}/{total}"
         parts.append(f"{proc.process_type.__name__} → {total} steps {mark}")
     return "   ".join(parts)
-
-
-def _known_process_names(plan: PipelinePlan) -> frozenset[str]:
-    return frozenset(proc.process_type.__name__ for proc in iter_processes(plan))
-
-
-def _validate_processes(
-    raw: Any,
-    known: frozenset[str],
-) -> tuple[str, ...] | None:
-    if raw is None:
-        return None
-    if not isinstance(raw, (list, tuple)) or not all(isinstance(v, str) for v in raw):
-        raise TypeError("processes: expected list[str] | None")
-    requested = tuple(raw)
-    if not requested:
-        return None
-    unknown = [name for name in requested if name not in known]
-    if unknown:
-        raise ValueError(f"processes: unknown names {unknown}; known processes are {sorted(known)}")
-    return requested
 
 
 __all__ = ["build_flow_body"]

@@ -14,6 +14,8 @@ Public API
 ----------
 - :class:`FlowCtx` — operational context (correlation_id, run_id, env).
 - :func:`etl_flow` — per-ETL flow factory with synthesized signature.
+- :func:`backfill_flow` / :data:`BackfillChunk` — chunked backfill flow
+  factory (hour/day/month partitions plus a finalize pass).
 - :func:`discover_and_deploy_etls` — walks a flows package and registers
   one Prefect deployment per ETL.
 - :class:`ManifestStore` / :class:`RunManifest` / :class:`StepEntry` —
@@ -36,7 +38,7 @@ from loom.prefect._config import _load_flow_config as load_flow_config
 from loom.prefect._ctx import FlowCtx
 from loom.prefect._placeholders import resolve_placeholder
 from loom.prefect.deploy import discover_and_deploy_etls
-from loom.prefect.flow import backfill_flow, etl_flow, maintenance_flow
+from loom.prefect.flow import BackfillChunk, backfill_flow, etl_flow, maintenance_flow
 from loom.prefect.manifest import (
     ManifestStore,
     RunManifest,
@@ -46,6 +48,7 @@ from loom.prefect.manifest import (
 from loom.prefect.observer import PrefectObserver, PrefectTaskRunObserver
 
 __all__ = [
+    "BackfillChunk",
     "FlowConfig",
     "FlowCtx",
     "ManifestStore",

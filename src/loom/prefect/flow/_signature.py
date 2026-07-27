@@ -14,6 +14,7 @@ runner.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
@@ -46,6 +47,32 @@ def signature_from_params_type(
         )
         for field in msgspec.structs.fields(params_type)
     ]
+
+
+def synthesise_flow_signature(
+    params_type: type[msgspec.Struct],
+    *,
+    extra_parameters: Sequence[inspect.Parameter] = (),
+) -> inspect.Signature:
+    """Build the flow signature: user params + ``env`` + factory-specific extras.
+
+    Every loom flow exposes ``env`` (defaulting to ``"prod"``) so the deploy
+    machinery can bind it uniformly; each factory appends its own extras
+    (``correlation_id``/``processes`` for ``etl_flow``, ``start_from`` for
+    ``backfill_flow``, none for ``maintenance_flow``).
+
+    Args:
+        params_type: ``msgspec.Struct`` describing the ETL's parameters.
+        extra_parameters: Keyword-only parameters appended after ``env``.
+
+    Returns:
+        The synthesised ``inspect.Signature``.
+    """
+    env = inspect.Parameter("env", inspect.Parameter.KEYWORD_ONLY, default="prod", annotation=str)
+    return inspect.Signature(
+        parameters=[*signature_from_params_type(params_type), env, *extra_parameters],
+        return_annotation=None,
+    )
 
 
 def is_datetime_annotation(annotation: Any) -> bool:
@@ -112,4 +139,5 @@ __all__ = [
     "is_datetime_annotation",
     "normalize_datetime_fields",
     "signature_from_params_type",
+    "synthesise_flow_signature",
 ]
