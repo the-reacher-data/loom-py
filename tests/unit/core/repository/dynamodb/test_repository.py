@@ -37,9 +37,10 @@ async def test_create_encodes_floats_as_decimal(fake_client: FakeClient) -> None
 async def test_create_on_existing_id_raises_conflict(fake_client: FakeClient) -> None:
     repo = _repo(fake_client)
     await repo.create(ProductCreate(id=1, name="Widget", price=9.5))
+    duplicate = ProductCreate(id=1, name="Duplicate")
 
     with pytest.raises(Conflict, match="already exists"):
-        await repo.create(ProductCreate(id=1, name="Duplicate"))
+        await repo.create(duplicate)
 
 
 async def test_get_by_id_missing_returns_none(fake_client: FakeClient) -> None:
@@ -54,8 +55,10 @@ async def test_get_by_primary_key_delegates_to_get_by_id(fake_client: FakeClient
 
 
 async def test_get_by_non_key_field_raises_capability_error(fake_client: FakeClient) -> None:
+    repo = _repo(fake_client)
+
     with pytest.raises(DynamoCapabilityError, match="get_by\\('name'\\)"):
-        await _repo(fake_client).get_by("name", "Bolt")
+        await repo.get_by("name", "Bolt")
 
 
 async def test_exists_by_primary_key(fake_client: FakeClient) -> None:
@@ -67,8 +70,10 @@ async def test_exists_by_primary_key(fake_client: FakeClient) -> None:
 
 
 async def test_exists_by_non_key_field_raises_capability_error(fake_client: FakeClient) -> None:
+    repo = _repo(fake_client)
+
     with pytest.raises(DynamoCapabilityError, match="exists_by\\('name'\\)"):
-        await _repo(fake_client).exists_by("name", "Nut")
+        await repo.exists_by("name", "Nut")
 
 
 async def test_update_merges_fields(fake_client: FakeClient) -> None:
@@ -113,15 +118,23 @@ async def test_delete_reports_existence(fake_client: FakeClient) -> None:
 
 
 async def test_count_raises_capability_error(fake_client: FakeClient) -> None:
+    repo = _repo(fake_client)
+
     with pytest.raises(DynamoCapabilityError, match="count"):
-        await _repo(fake_client).count()
+        await repo.count()
 
 
 async def test_list_paginated_raises_capability_error(fake_client: FakeClient) -> None:
+    repo = _repo(fake_client)
+    params = PageParams(page=1, limit=10)
+
     with pytest.raises(DynamoCapabilityError, match="list_paginated"):
-        await _repo(fake_client).list_paginated(PageParams(page=1, limit=10))
+        await repo.list_paginated(params)
 
 
 async def test_list_with_query_raises_capability_error(fake_client: FakeClient) -> None:
+    repo = _repo(fake_client)
+    query = QuerySpec()
+
     with pytest.raises(DynamoCapabilityError, match="list_with_query"):
-        await _repo(fake_client).list_with_query(QuerySpec())
+        await repo.list_with_query(query)
