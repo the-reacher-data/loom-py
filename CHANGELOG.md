@@ -1,3 +1,84 @@
+# 🚀 Release 0.16.0 ([#88](https://github.com/the-reacher-data/loom-py/pull/88)) ([`c04d61e`](https://github.com/the-reacher-data/loom-py/commit/c04d61ed88d9d46f954e9b851290e7cce22fbf46))
+
+
+## ✨ Features
+- add DynamoDB repository backend behind persistence.backend<br>
+  > Add a DynamoDB backend for the Repository contract, selectable via
+  > persistence.backend: dynamodb. Apps using it start with no database:
+  > section and without SQLAlchemy — credentials come from boto3's default
+  > chain (task role on ECS; endpoint_url + dummy creds locally), never
+  > from config.
+  > RepositoryDynamoDB implements key-scoped ops (get_by_id, create,
+  > update, delete, key-only get_by/exists_by); scan-only ops (count,
+  > list_paginated, list_with_query, non-key get_by/exists_by) raise an
+  > explicit DynamoCapabilityError instead of degrading silently.
+  > DynamoUnitOfWork/Factory: no-op UoW (writes autocommit via PutItem).
+  > build_dynamodb_repository_registration_module mirrors the SQLAlchemy
+  > registry; every model maps to the single configured table.
+  > auto.py: new _dynamodb_wiring + elif branch in _resolve_persistence;
+  > _PersistenceWiring structure unchanged.
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### dynamodb
+- **dynamodb:** thread-safe client, insert/update conditions, resource-leak guard<br>
+  > Address review feedback on the pluggable DynamoDB repository backend.
+  > Thread-safety: migrate from boto3 `resource`/`Table` (not thread-safe under
+  > `asyncio.to_thread`) to the low-level `client("dynamodb")`. Items now cross
+  > the wire as AttributeValue dicts; `TypeSerializer`/`TypeDeserializer` wrap the
+  > existing float<->Decimal / Decimal->int/float conversion. boto3/botocore and
+  > the serializers are imported lazily to preserve the `loom[dynamodb]` optional
+  > dependency. `RepositoryDynamoDB(client, table_name, model)`; registry and
+  > `_dynamodb_wiring` pass the shared client.
+  > Connection pool: add `_DynamoDBConfig.max_pool_connections` (default 32,
+  > mirroring `_DatabaseConfig.pool_size`), applied via `botocore.config.Config`.
+  > `create` is now an insert, not an upsert: `ConditionExpression`
+  > `attribute_not_exists(pk)`; a failed condition maps to `Conflict`.
+  > `update` carries `attribute_exists(pk)` to prevent resurrecting a
+  > concurrently-deleted item; a failed condition maps to `None`, matching the
+  > contract's "does not exist" return.
+  > Resource leak: enforce the "No BaseModel classes discovered" guard before
+  > `_resolve_persistence` allocates a SQLAlchemy engine, so the error path no
+  > longer leaks an engine.
+  > Docs: correct the obsolete `_resolve_persistence` docstring (the two-branch
+  > if/elif is deliberate; promote to a dispatch dict at a third backend) and
+  > document that DynamoDB `count`/`list_paginated`/`list_with_query` raise
+  > `DynamoCapabilityError`, so REST listing endpoints error on this backend.
+  > Tests: `FakeClient` replaces `FakeTable`/`FakeResource` with the client-shaped
+  > API and honours the conditions by raising a real botocore `ClientError`; adds
+  > coverage for create-on-existing-id (Conflict) and update losing the
+  > conditional race (None).
+  > Note (from commit 1): discovery now runs before the `database` `ConfigError`,
+  > changing error precedence when both discovery and database config are invalid.
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+## ♻️ Refactor
+- extract persistence wiring selection in create_app; keep sqlalchemy default; sanitize DIP/docs<br>
+  > Extract the REST auto-bootstrap persistence choice into a single symmetric
+
+
+
+
+## ✅ Tests
+### dynamodb
+- **dynamodb:** keep a single raising call inside pytest.raises blocks<br>
+  > Move repo/argument construction out of the pytest.raises context so each
+  > exception test has exactly one invocation that may throw (SonarQube S5915).
+  > Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 0.15.1 ([#86](https://github.com/the-reacher-data/loom-py/pull/86)) ([`72f562c`](https://github.com/the-reacher-data/loom-py/commit/72f562cb57b16c7857e89844853faa6baa0d9768))
 
 
