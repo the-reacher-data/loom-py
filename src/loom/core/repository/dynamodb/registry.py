@@ -35,17 +35,17 @@ __all__ = [
 class DynamoDBDefaultRepositoryBuilder:
     """Default repository builder for DynamoDB-backed models.
 
-    A frozen dataclass injected with the shared boto3 ``dynamodb`` resource and
+    A frozen dataclass injected with the shared boto3 ``dynamodb`` client and
     the configured table name. Every model is bound to the same table — the
     simple, config-driven mapping the DynamoDB backend uses. Register it via the
-    DI module rather than constructing it directly so the resource is shared.
+    DI module rather than constructing it directly so the client is shared.
 
     Args:
-        dynamo_resource: Shared boto3 ``dynamodb`` service resource.
+        dynamo_client: Shared boto3 low-level ``dynamodb`` client.
         table_name: Name of the DynamoDB table backing every model.
     """
 
-    dynamo_resource: Any
+    dynamo_client: Any
     table_name: str
 
     def __call__(self, context: RepositoryBuildContext) -> Any:
@@ -55,13 +55,14 @@ class DynamoDBDefaultRepositoryBuilder:
                 f"for non-persistible type {context.model.__qualname__}"
             )
         return RepositoryDynamoDB(
-            table=self.dynamo_resource.Table(self.table_name),
+            client=self.dynamo_client,
+            table_name=self.table_name,
             model=context.model,
         )
 
 
 def build_dynamodb_repository_registration_module(
-    dynamo_resource: Any,
+    dynamo_client: Any,
     table_name: str,
     models: Sequence[type[BaseModel]],
     *,
@@ -72,7 +73,7 @@ def build_dynamodb_repository_registration_module(
     Mirrors
     :func:`~loom.core.repository.sqlalchemy.registry.build_sqlalchemy_repository_registration_module`:
     the module self-declares its infrastructure by registering a
-    ``DefaultRepositoryBuilder`` bound to the shared boto3 resource, so the
+    ``DefaultRepositoryBuilder`` bound to the shared boto3 client, so the
     bootstrap needs no knowledge of DynamoDB internals.
 
     To swap the default builder, register your own ``DefaultRepositoryBuilder``
@@ -80,7 +81,7 @@ def build_dynamodb_repository_registration_module(
     overwrite an existing registration.
 
     Args:
-        dynamo_resource: Shared boto3 ``dynamodb`` service resource.
+        dynamo_client: Shared boto3 low-level ``dynamodb`` client.
         table_name: Name of the DynamoDB table backing every model.
         models: Persistible models to register repositories for.
         logical_models: Extra models with explicit ``repository_for`` registrations.
@@ -100,7 +101,8 @@ def build_dynamodb_repository_registration_module(
             )
         if issubclass(repository_type, RepositoryDynamoDB):
             return repository_type(
-                table=dynamo_resource.Table(table_name),
+                client=dynamo_client,
+                table_name=table_name,
                 model=context.model,
             )
         return repository_type()
@@ -111,15 +113,15 @@ def build_dynamodb_repository_registration_module(
         build_registered_repository=_registered_builder,
     )
 
-    def _register_with_resource(container: LoomContainer) -> None:
+    def _register_with_client(container: LoomContainer) -> None:
         if not container.is_registered(DefaultRepositoryBuilder):
             container.register_instance(
                 DefaultRepositoryBuilder,
                 DynamoDBDefaultRepositoryBuilder(
-                    dynamo_resource=dynamo_resource,
+                    dynamo_client=dynamo_client,
                     table_name=table_name,
                 ),
             )
         register(container)
 
-    return _register_with_resource
+    return _register_with_client

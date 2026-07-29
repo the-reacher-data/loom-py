@@ -91,6 +91,7 @@ class _DynamoDBConfig(msgspec.Struct, kw_only=True):
     region: str
     table: str
     endpoint_url: str | None = None
+    max_pool_connections: int = 32
 
 
 class _PersistenceConfig(msgspec.Struct, kw_only=True):
@@ -248,9 +249,11 @@ def _build_bootstrap(
     metrics: Any | None = None,
 ) -> tuple[KernelRuntime, _PersistenceWiring, DiscoveryResult]:
     discovered = _discover_components(app_cfg)
-    wiring = _resolve_persistence(ctx, discovered)
-    if wiring.requires_relational_models and not discovered.models:
+    # Fail before any backend allocates resources (e.g. a SQLAlchemy engine):
+    # resolving persistence is what creates them, so this guard runs first.
+    if _requires_relational_models(ctx) and not discovered.models:
         raise RuntimeError("No BaseModel classes discovered.")
+    wiring = _resolve_persistence(ctx, discovered)
     _compile_discovered_models(discovered)
     result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
     return result, wiring, discovered
@@ -265,19 +268,31 @@ def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
     return discovered
 
 
+def _load_persistence_config(ctx: ConfigContext) -> _PersistenceConfig:
+    return ctx.section_or_default(ConfigKey.PERSISTENCE, _PersistenceConfig, _PersistenceConfig())
+
+
+def _requires_relational_models(ctx: ConfigContext) -> bool:
+    """Whether the configured backend needs at least one discovered ``BaseModel``.
+
+    Read from config alone so the caller can enforce the requirement *before*
+    :func:`_resolve_persistence` allocates any backend resource (e.g. an engine).
+    """
+    return _load_persistence_config(ctx).backend == "sqlalchemy"
+
+
 def _resolve_persistence(
     ctx: ConfigContext,
     discovered: DiscoveryResult,
 ) -> _PersistenceWiring:
     """Select the persistence wiring for the configured backend.
 
-    The ``if/elif`` is deliberate while SQLAlchemy is the only backend: a
-    second backend should promote this to a dispatch/abstraction rather than
-    grow the chain.
+    The two-branch ``if/elif`` is deliberate for exactly two backends: with so
+    few, an explicit branch is clearer than the indirection of a dispatch
+    table. Promote this to a ``dict`` mapping ``backend -> wiring_fn`` when a
+    third backend arrives.
     """
-    persistence_cfg = ctx.section_or_default(
-        ConfigKey.PERSISTENCE, _PersistenceConfig, _PersistenceConfig()
-    )
+    persistence_cfg = _load_persistence_config(ctx)
     backend = persistence_cfg.backend
     if backend == "sqlalchemy":
         return _sqlalchemy_wiring(ctx, discovered)
@@ -322,34 +337,43 @@ def _dynamodb_wiring(
             "section (region, table) is missing."
         )
     dynamo_cfg = persistence_cfg.dynamodb
-    resource = _build_dynamodb_resource(dynamo_cfg)
+    client = _build_dynamodb_client(dynamo_cfg)
 
     return _PersistenceWiring(
         uow_factory=DynamoUnitOfWorkFactory(),
         repo_registration_module=build_dynamodb_repository_registration_module(
-            resource, dynamo_cfg.table, discovered.models
+            client, dynamo_cfg.table, discovered.models
         ),
         lifespan_init=_noop_lifespan,
         requires_relational_models=False,
     )
 
 
-def _build_dynamodb_resource(dynamo_cfg: _DynamoDBConfig) -> Any:
-    """Construct a boto3 ``dynamodb`` service resource from config.
+def _build_dynamodb_client(dynamo_cfg: _DynamoDBConfig) -> Any:
+    """Construct a boto3 low-level ``dynamodb`` client from config.
 
-    Credentials are never taken from config: the resource is created without
+    The low-level client (not the resource) is used because it is thread-safe:
+    repository operations run under ``asyncio.to_thread`` and share one client
+    across worker threads. ``max_pool_connections`` sizes the underlying
+    connection pool to that concurrency.
+
+    Credentials are never taken from config: the client is created without
     explicit keys so boto3's default credential chain applies — the task role
     on ECS, or ``endpoint_url`` plus environment credentials against a local /
     fake DynamoDB in tests.
     """
-    # Local import: boto3 is an optional dependency (loom[dynamodb]) and must
-    # not be required by apps using the default SQLAlchemy backend.
+    # Local import: boto3/botocore are optional dependencies (loom[dynamodb])
+    # and must not be required by apps using the default SQLAlchemy backend.
     import boto3  # type: ignore[import-untyped]
+    from botocore.config import Config  # type: ignore[import-untyped]
 
-    kwargs: dict[str, Any] = {"region_name": dynamo_cfg.region}
+    kwargs: dict[str, Any] = {
+        "region_name": dynamo_cfg.region,
+        "config": Config(max_pool_connections=dynamo_cfg.max_pool_connections),
+    }
     if dynamo_cfg.endpoint_url is not None:
         kwargs["endpoint_url"] = dynamo_cfg.endpoint_url
-    return boto3.resource("dynamodb", **kwargs)
+    return boto3.client("dynamodb", **kwargs)
 
 
 @asynccontextmanager
