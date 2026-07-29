@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 import warnings
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.uow.abc import UnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
@@ -79,6 +81,32 @@ class _DatabaseConfig(msgspec.Struct, kw_only=True):
     url: str
     echo: bool | None = None
     pool_pre_ping: bool = True
+
+
+class _PersistenceConfig(msgspec.Struct, kw_only=True):
+    backend: str = "sqlalchemy"
+
+
+@dataclass(frozen=True)
+class _PersistenceWiring:
+    """Resolved persistence choice for the auto-bootstrap REST app.
+
+    Groups everything ``create_app`` needs from a persistence backend so the
+    orchestration stays backend-agnostic:
+
+    Args:
+        uow_factory: Unit-of-work factory bound to the kernel.
+        repo_registration_module: DI module registering model repositories.
+        lifespan_init: Async context manager driving backend startup/shutdown
+            (schema creation, resource disposal, ...).
+        requires_relational_models: Whether the backend needs at least one
+            ``BaseModel`` discovered and a ``database`` config section.
+    """
+
+    uow_factory: UnitOfWorkFactory
+    repo_registration_module: Callable[[LoomContainer], None]
+    lifespan_init: Callable[[], AbstractAsyncContextManager[None]]
+    requires_relational_models: bool
 
 
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
@@ -205,15 +233,16 @@ def _load_observability_config(ctx: ConfigContext) -> ObservabilityConfig:
 
 def _build_bootstrap(
     app_cfg: _AppConfig,
-    db_cfg: _DatabaseConfig,
-    echo: bool,
+    ctx: ConfigContext,
     metrics: Any | None = None,
-) -> tuple[KernelRuntime, SessionManager, DiscoveryResult]:
+) -> tuple[KernelRuntime, _PersistenceWiring, DiscoveryResult]:
     discovered = _discover_components(app_cfg)
-    session_manager = _build_sqlalchemy_session_manager(db_cfg, echo)
+    wiring = _resolve_persistence(ctx, discovered)
+    if wiring.requires_relational_models and not discovered.models:
+        raise RuntimeError("No BaseModel classes discovered.")
     _compile_discovered_models(discovered)
-    result = _build_kernel_runtime(app_cfg, discovered, session_manager, metrics=metrics)
-    return result, session_manager, discovered
+    result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
+    return result, wiring, discovered
 
 
 def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
@@ -222,9 +251,52 @@ def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
         raise RuntimeError("No UseCase classes discovered.")
     if not discovered.interfaces:
         raise RuntimeError("No RestInterface classes discovered.")
-    if not discovered.models:
-        raise RuntimeError("No BaseModel classes discovered.")
     return discovered
+
+
+def _resolve_persistence(
+    ctx: ConfigContext,
+    discovered: DiscoveryResult,
+) -> _PersistenceWiring:
+    """Select the persistence wiring for the configured backend.
+
+    The ``if/elif`` is deliberate while SQLAlchemy is the only backend: a
+    second backend should promote this to a dispatch/abstraction rather than
+    grow the chain.
+    """
+    persistence_cfg = ctx.section_or_default(
+        ConfigKey.PERSISTENCE, _PersistenceConfig, _PersistenceConfig()
+    )
+    backend = persistence_cfg.backend
+    if backend == "sqlalchemy":
+        return _sqlalchemy_wiring(ctx, discovered)
+    raise ValueError(f"Unsupported persistence backend: {backend!r}")
+
+
+def _sqlalchemy_wiring(
+    ctx: ConfigContext,
+    discovered: DiscoveryResult,
+) -> _PersistenceWiring:
+    db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
+    echo = db_cfg.echo if db_cfg.echo is not None else False
+    session_manager = _build_sqlalchemy_session_manager(db_cfg, echo)
+
+    @asynccontextmanager
+    async def _lifespan() -> AsyncIterator[None]:
+        async with session_manager.engine.begin() as connection:
+            await connection.run_sync(get_metadata().create_all)
+        try:
+            yield
+        finally:
+            await session_manager.dispose()
+            reset_registry()
+
+    return _PersistenceWiring(
+        uow_factory=SQLAlchemyUnitOfWorkFactory(session_manager),
+        repo_registration_module=_register_repositories(session_manager, discovered.models),
+        lifespan_init=_lifespan,
+        requires_relational_models=True,
+    )
 
 
 def _compile_discovered_models(discovered: DiscoveryResult) -> None:
@@ -251,15 +323,14 @@ def _build_sqlalchemy_session_manager(
 def _build_kernel_runtime(
     app_cfg: _AppConfig,
     discovered: DiscoveryResult,
-    session_manager: SessionManager,
+    wiring: _PersistenceWiring,
     metrics: Any | None = None,
 ) -> KernelRuntime:
-    uow_factory = SQLAlchemyUnitOfWorkFactory(session_manager)
     return create_kernel(
         config=app_cfg,
         use_cases=discovered.use_cases,
-        modules=[_register_repositories(session_manager, discovered.models)],
-        uow_factory=uow_factory,
+        modules=[wiring.repo_registration_module],
+        uow_factory=wiring.uow_factory,
         metrics=metrics,
     )
 
@@ -388,7 +459,6 @@ def create_app(
 
     ctx = ConfigContext.from_yaml(*config_paths)
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
-    db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
@@ -399,26 +469,19 @@ def create_app(
         effective_code_path = (config_file.parent / effective_code_path).resolve()
     _ensure_code_path(effective_code_path)
 
-    effective_echo = db_cfg.echo if db_cfg.echo is not None else False
     metrics_adapter = _build_metrics_adapter(metrics_cfg, metrics_registry)
 
-    result, session_manager, discovered = _build_bootstrap(
+    result, wiring, discovered = _build_bootstrap(
         app_cfg,
-        db_cfg,
-        effective_echo,
+        ctx,
         metrics=metrics_adapter,
     )
     _configure_job_service(ctx, result, observability_runtime)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        async with session_manager.engine.begin() as connection:
-            await connection.run_sync(get_metadata().create_all)
-        try:
+        async with wiring.lifespan_init():
             yield
-        finally:
-            await session_manager.dispose()
-            reset_registry()
 
     app = create_fastapi_app(
         result,

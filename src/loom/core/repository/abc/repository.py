@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import msgspec
 
@@ -145,6 +145,7 @@ class RepositoryWrite(Protocol[OutputT, CreateT, UpdateT, IdT]):
         ...
 
 
+@runtime_checkable
 class Repository(
     RepositoryRead[OutputT, IdT],
     RepositoryWrite[OutputT, CreateT, UpdateT, IdT],

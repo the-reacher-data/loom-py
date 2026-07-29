@@ -14,9 +14,13 @@ class PaginationMode(StrEnum):
     """Pagination strategy for list and query operations.
 
     Attributes:
-        OFFSET: Classic page+limit pagination.  Compatible with all backends.
-        CURSOR: Keyset (cursor) pagination.  Performant at scale; requires a
-            stable sort order with a tie-breaker.
+        OFFSET: Classic page+limit pagination with a total count.  Convenient
+            but optional: computing ``total_count`` and skipping to arbitrary
+            offsets is not efficiently supported by every backend, so a backend
+            may decline this mode.
+        CURSOR: Keyset (cursor) pagination.  The portable mode — supported by
+            every backend and performant at scale; requires a stable sort order
+            with a tie-breaker.
     """
 
     OFFSET = "offset"
@@ -34,11 +38,11 @@ class FilterOp(StrEnum):
         LT: Less than.
         LTE: Less than or equal.
         IN: Value is in a collection.
-        LIKE: SQL LIKE pattern (case-sensitive).
-        ILIKE: SQL LIKE pattern (case-insensitive).
-        IS_NULL: Field is NULL.
-        EXISTS: Related collection is non-empty (subquery).
-        NOT_EXISTS: Related collection is empty (subquery).
+        LIKE: Text pattern match (case-sensitive).
+        ILIKE: Text pattern match (case-insensitive).
+        IS_NULL: Field has no value.
+        EXISTS: Related collection is non-empty.
+        NOT_EXISTS: Related collection is empty.
     """
 
     EQ = "eq"
@@ -191,7 +195,9 @@ class FilterParams(LoomFrozenStruct, frozen=True, kw_only=True):
     """Generic filter container for list queries.
 
     Attributes:
-        filters: Flat key-value mapping passed as ``filter_by`` kwargs to SQLAlchemy.
+        filters: Flat mapping of field name to expected value; each entry is an
+            equality match combined with AND.  The backend translates it into
+            its own query mechanism.
     """
 
     filters: dict[str, Any] = msgspec.field(default_factory=dict)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -73,23 +75,27 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
 
     def _fake_build_bootstrap(
         app_cfg: Any,
-        db_cfg: Any,
-        echo: bool,
+        ctx: Any,
         metrics: Any | None = None,
     ) -> tuple[Any, Any, Any]:
-        del app_cfg, db_cfg, echo, metrics
+        del app_cfg, ctx, metrics
         result = SimpleNamespace(
             compiler=object(),
             factory=object(),
             container=SimpleNamespace(),
         )
-        session_manager = SimpleNamespace(engine=SimpleNamespace())
+
+        @asynccontextmanager
+        async def _lifespan() -> AsyncIterator[None]:
+            yield
+
+        wiring = SimpleNamespace(lifespan_init=_lifespan)
         discovered = SimpleNamespace(
             use_cases=(object(),),
             interfaces=(type("DummyRestInterface", (), {}),),
             models=(object(),),
         )
-        return result, session_manager, discovered
+        return result, wiring, discovered
 
     def _fake_configure_job_service(
         raw_cfg: Any, result: Any, observability_runtime: ObservabilityRuntime | None

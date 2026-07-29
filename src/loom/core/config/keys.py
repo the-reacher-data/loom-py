@@ -18,6 +18,7 @@ class ConfigKey(StrEnum):
 
     APP = "app"
     DATABASE = "database"
+    PERSISTENCE = "persistence"
     CELERY = "celery"
     KAFKA = "kafka"
     MONGO = "mongo"

@@ -44,7 +44,7 @@ def test_manifest_discovery_rejects_invalid_repository_type() -> None:
     sys.modules[module_name] = module
 
     try:
-        with pytest.raises(TypeError, match="must inherit RepositorySQLAlchemy"):
+        with pytest.raises(TypeError, match="must implement the Repository protocol"):
             ManifestDiscoveryEngine(module_name).discover()
     finally:
         sys.modules.pop(module_name, None)
