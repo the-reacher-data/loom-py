@@ -32,6 +32,10 @@ from loom.core.job.service import InlineJobService, JobService
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.repository.dynamodb import (
+    DynamoUnitOfWorkFactory,
+    build_dynamodb_repository_registration_module,
+)
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
@@ -83,8 +87,15 @@ class _DatabaseConfig(msgspec.Struct, kw_only=True):
     pool_pre_ping: bool = True
 
 
+class _DynamoDBConfig(msgspec.Struct, kw_only=True):
+    region: str
+    table: str
+    endpoint_url: str | None = None
+
+
 class _PersistenceConfig(msgspec.Struct, kw_only=True):
     backend: str = "sqlalchemy"
+    dynamodb: _DynamoDBConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -270,6 +281,8 @@ def _resolve_persistence(
     backend = persistence_cfg.backend
     if backend == "sqlalchemy":
         return _sqlalchemy_wiring(ctx, discovered)
+    elif backend == "dynamodb":
+        return _dynamodb_wiring(persistence_cfg, discovered)
     raise ValueError(f"Unsupported persistence backend: {backend!r}")
 
 
@@ -297,6 +310,52 @@ def _sqlalchemy_wiring(
         lifespan_init=_lifespan,
         requires_relational_models=True,
     )
+
+
+def _dynamodb_wiring(
+    persistence_cfg: _PersistenceConfig,
+    discovered: DiscoveryResult,
+) -> _PersistenceWiring:
+    if persistence_cfg.dynamodb is None:
+        raise ConfigError(
+            "persistence.backend is 'dynamodb' but the 'persistence.dynamodb' "
+            "section (region, table) is missing."
+        )
+    dynamo_cfg = persistence_cfg.dynamodb
+    resource = _build_dynamodb_resource(dynamo_cfg)
+
+    return _PersistenceWiring(
+        uow_factory=DynamoUnitOfWorkFactory(),
+        repo_registration_module=build_dynamodb_repository_registration_module(
+            resource, dynamo_cfg.table, discovered.models
+        ),
+        lifespan_init=_noop_lifespan,
+        requires_relational_models=False,
+    )
+
+
+def _build_dynamodb_resource(dynamo_cfg: _DynamoDBConfig) -> Any:
+    """Construct a boto3 ``dynamodb`` service resource from config.
+
+    Credentials are never taken from config: the resource is created without
+    explicit keys so boto3's default credential chain applies — the task role
+    on ECS, or ``endpoint_url`` plus environment credentials against a local /
+    fake DynamoDB in tests.
+    """
+    # Local import: boto3 is an optional dependency (loom[dynamodb]) and must
+    # not be required by apps using the default SQLAlchemy backend.
+    import boto3  # type: ignore[import-untyped]
+
+    kwargs: dict[str, Any] = {"region_name": dynamo_cfg.region}
+    if dynamo_cfg.endpoint_url is not None:
+        kwargs["endpoint_url"] = dynamo_cfg.endpoint_url
+    return boto3.resource("dynamodb", **kwargs)
+
+
+@asynccontextmanager
+async def _noop_lifespan() -> AsyncIterator[None]:
+    """No-op lifespan for backends that manage no shared startup resource."""
+    yield
 
 
 def _compile_discovered_models(discovered: DiscoveryResult) -> None:
