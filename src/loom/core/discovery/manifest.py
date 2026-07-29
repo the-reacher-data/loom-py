@@ -9,7 +9,7 @@ from loom.core.contracts.manifest import AppManifestAttr
 from loom.core.discovery._utils import _append_unique, collect_use_cases_from_interfaces
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel
-from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+from loom.core.repository.abc import Repository
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface
 
@@ -50,9 +50,7 @@ class ManifestDiscoveryEngine:
         models = [cast(type[BaseModel], item) for item in raw_models]
         use_cases = [cast(type[UseCase[object, object]], item) for item in raw_use_cases]
         interfaces = [cast(type[RestInterface[object]], item) for item in raw_interfaces]
-        repositories = [
-            cast(type[RepositorySQLAlchemy[Any, Any]], item) for item in raw_repositories
-        ]
+        repositories = [cast(type[Any], item) for item in raw_repositories]
 
         self._validate_repositories(repositories)
 
@@ -78,10 +76,10 @@ class ManifestDiscoveryEngine:
 
     def _validate_repositories(
         self,
-        repositories: list[type[RepositorySQLAlchemy[Any, Any]]],
+        repositories: list[type[Any]],
     ) -> None:
         for repository in repositories:
-            if not issubclass(repository, RepositorySQLAlchemy):
+            if not (isinstance(repository, type) and issubclass(repository, Repository)):
                 raise TypeError(
-                    f"Manifest repository {repository!r} must inherit RepositorySQLAlchemy."
+                    f"Manifest repository {repository!r} must implement the Repository protocol."
                 )
