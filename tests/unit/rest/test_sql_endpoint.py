@@ -22,8 +22,15 @@ from tests.unit.core.sql._fakes import (
 
 
 def _endpoint_connection(**overrides: Any) -> SqlConnectionConfig:
-    """Connection with its endpoint enabled in auth 'external' mode."""
+    """Connection with its endpoint enabled in the single-role 'external' shape.
+
+    These tests cover the envelope, the input edge and the error bodies; role
+    binding to verified claims has its own suite
+    (``test_sql_endpoint_roles_claim.py``), so the connection here uses the
+    only shape ``auth: external`` admits: empty allowlist plus ``default_role``.
+    """
     params: dict[str, Any] = {
+        "allowed_roles": (),
         "sql_endpoint": SqlEndpointConfig(enabled=True, auth="external"),
     }
     params.update(overrides)
@@ -142,7 +149,9 @@ def test_does_not_mount_enabled_connections_without_auth_field() -> None:
     """``enabled: true`` without an explicit ``auth`` does NOT mount (B2 resolved)."""
     config = make_sql_config(
         analytics=_endpoint_connection(),
-        reporting=make_connection_config(sql_endpoint=SqlEndpointConfig(enabled=True)),
+        reporting=make_connection_config(
+            allowed_roles=(), sql_endpoint=SqlEndpointConfig(enabled=True)
+        ),
     )
     app = _make_app(config, {"analytics": FakeSqlExecutor(), "reporting": FakeSqlExecutor()})
     client = TestClient(app, raise_server_exceptions=False)
@@ -153,7 +162,7 @@ def test_does_not_mount_enabled_connections_without_auth_field() -> None:
 def test_returns_403_with_standard_body_when_role_is_not_allowed() -> None:
     """A role outside the allowlist responds 403 with the HttpErrorMapper body."""
     client = _client(FakeSqlExecutor())
-    response = client.post("/sql/analytics", json={"sql": "SELECT 1", "role": "role_intruder"})
+    response = client.post("/sql/analytics", json={"sql": "SELECT 1", "roles": ["role_intruder"]})
     detail = response.json()["detail"]
     assert (response.status_code, detail["code"], "trace_id" in detail) == (
         403,
@@ -162,11 +171,12 @@ def test_returns_403_with_standard_body_when_role_is_not_allowed() -> None:
     )
 
 
-def test_returns_403_when_there_is_no_effective_role() -> None:
-    """Without a role in the body and no default_role the endpoint denies execution."""
-    client = _client(FakeSqlExecutor(), default_role=None)
-    response = client.post("/sql/analytics", json={"sql": "SELECT 1"})
-    assert response.status_code == 403
+def test_single_role_endpoint_always_applies_the_pinned_default_role() -> None:
+    """With no allowlist every query runs with the one pinned ``default_role``."""
+    executor = FakeSqlExecutor()
+    client = _client(executor)
+    client.post("/sql/analytics", json={"sql": "SELECT 1"})
+    assert executor.calls[0].options.roles == ("role_viz_reader",)
 
 
 def test_returns_422_with_standard_body_when_backend_rejects_the_sql() -> None:
@@ -268,7 +278,7 @@ def test_rejects_body_with_settings_without_executing_it() -> None:
     assert (response.status_code, executor.calls) == (422, [])
 
 
-def test_forwards_sql_role_parameters_limit_and_offset_to_the_service() -> None:
+def test_forwards_sql_parameters_limit_and_offset_to_the_service() -> None:
     """The allowed body fields reach the SQL service untouched."""
     executor = FakeSqlExecutor()
     client = _client(executor)
@@ -276,7 +286,6 @@ def test_forwards_sql_role_parameters_limit_and_offset_to_the_service() -> None:
         "/sql/analytics",
         json={
             "sql": "SELECT {x:Int64}",
-            "role": "role_viz_sales",
             "parameters": {"x": 1},
             "limit": 5,
             "offset": 2,
@@ -286,10 +295,10 @@ def test_forwards_sql_role_parameters_limit_and_offset_to_the_service() -> None:
     assert (
         call.sql,
         dict(call.parameters or {}),
-        call.options.role,
+        call.options.roles,
         call.options.limit,
         call.options.offset,
-    ) == ("SELECT {x:Int64}", {"x": 1}, "role_viz_sales", 5, 2)
+    ) == ("SELECT {x:Int64}", {"x": 1}, ("role_viz_reader",), 5, 2)
 
 
 def test_endpoint_stays_out_of_openapi_by_default() -> None:

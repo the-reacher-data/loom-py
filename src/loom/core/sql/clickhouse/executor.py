@@ -99,11 +99,22 @@ class ClickHouseSqlExecutor:
             max_result_rows=self._config.max_limit + 1,
             result_overflow_mode="throw",
         )
-        if options.role is not None:
-            settings["role"] = options.role
+        if options.roles:
+            settings["role"] = _role_setting(options.roles)
         if options.readonly:
             settings["readonly"] = 1
         return settings
+
+
+def _role_setting(roles: tuple[str, ...]) -> str | tuple[str, ...]:
+    """Render the roles as the driver expects them for one query.
+
+    A single role keeps the plain scalar form (one ``role=`` parameter, the
+    only shape older drivers ever supported); several roles travel as a
+    sequence, which the driver boundary serializes into repeated ``role=``
+    parameters — the only form ClickHouse accepts for multiple roles.
+    """
+    return roles[0] if len(roles) == 1 else roles
 
 
 def _build_result(

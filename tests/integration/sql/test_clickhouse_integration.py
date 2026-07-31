@@ -42,8 +42,8 @@ URL_ENV_VAR = "LOOM_CLICKHOUSE_IT_URL"
 DEFAULT_URL = "http://loom_api:loom_api_pw@localhost:18123"
 CONNECTION = "analytics"
 
-ROLE_A = "loom_reader_a"  # in the allowlist, granted to loom_api
-ROLE_B = "loom_reader_b"  # granted to loom_api, NOT in the allowlist
+ROLE_A = "loom_reader_a"  # granted to loom_api; reads loom_it only
+ROLE_B = "loom_reader_b"  # granted to loom_api; the only role reading loom_it_b
 ROLE_UNGRANTED = "loom_ungranted"  # exists, NOT granted to loom_api
 ROLE_UNKNOWN = "loom_role_that_does_not_exist"
 SENTINEL_ROLE = "loom_probe_sentinel_role_does_not_exist"
@@ -84,12 +84,12 @@ def clickhouse_url() -> str:
     return url
 
 
-def _connection_config(url: str) -> dict[str, Any]:
+def _connection_config(url: str, allowed_roles: list[str]) -> dict[str, Any]:
     """Connection mapping shaped exactly like spec §3 ``sql.connections.<name>``."""
     return {
         "backend": "clickhouse",
         "url": url,
-        "allowed_roles": [ROLE_A],
+        "allowed_roles": allowed_roles,
         "default_role": ROLE_A,
         "readonly": True,
         "default_limit": 100,
@@ -98,10 +98,10 @@ def _connection_config(url: str) -> dict[str, Any]:
     }
 
 
-def _registry(url: str) -> ClickHouseConnectionRegistry:
+def _registry(url: str, *, allowed_roles: list[str] | None = None) -> ClickHouseConnectionRegistry:
     """Build the registry (async CM, spec §3) from the raw ``sql:`` section mapping."""
     return ClickHouseConnectionRegistry.from_config(
-        {"connections": {CONNECTION: _connection_config(url)}}
+        {"connections": {CONNECTION: _connection_config(url, allowed_roles or [ROLE_A])}}
     )
 
 
@@ -120,7 +120,7 @@ class TestPerQueryRole:
             executor = registry.executor(CONNECTION)
             result = await executor.execute(
                 "SELECT currentRoles(), toUInt8(getSetting('readonly'))",
-                options=_options(role=ROLE_A),
+                options=_options(roles=(ROLE_A,)),
             )
         current_roles, readonly = result.rows[0]
         assert list(current_roles) == [ROLE_A]
@@ -130,14 +130,14 @@ class TestPerQueryRole:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
             result = await executor.execute(
-                "SELECT count() FROM loom_it.events", options=_options(role=ROLE_A)
+                "SELECT count() FROM loom_it.events", options=_options(roles=(ROLE_A,))
             )
         assert result.rows[0][0] == 5
 
     async def test_unknown_role_fails_closed_with_code_511(self, clickhouse_url: str) -> None:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
-            options = _options(role=ROLE_UNKNOWN)
+            options = _options(roles=(ROLE_UNKNOWN,))
             with pytest.raises(SqlExecutionError) as excinfo:
                 await executor.execute("SELECT 1", options=options)
         assert UNKNOWN_ROLE_CODE in str(excinfo.value)
@@ -145,7 +145,56 @@ class TestPerQueryRole:
     async def test_non_granted_role_rejected_with_code_512(self, clickhouse_url: str) -> None:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
-            options = _options(role=ROLE_UNGRANTED)
+            options = _options(roles=(ROLE_UNGRANTED,))
+            with pytest.raises(SqlExecutionError) as excinfo:
+                await executor.execute("SELECT 1", options=options)
+        assert NON_GRANTED_ROLE_CODE in str(excinfo.value)
+
+
+class TestMultipleRolesPerQuery:
+    """Several roles in ONE query: repeated ``role`` HTTP parameters (spec §2/§3).
+
+    ClickHouse activates one role per repeated parameter; a comma-joined value
+    is read as a single role name and rejected with code 511. These tests are
+    the end-to-end proof of the driver transport workaround in
+    ``loom.core.sql.clickhouse._client``.
+    """
+
+    async def test_both_roles_are_active_in_the_same_query(self, clickhouse_url: str) -> None:
+        async with _registry(clickhouse_url, allowed_roles=[ROLE_A, ROLE_B]) as registry:
+            result = await registry.executor(CONNECTION).execute(
+                "SELECT currentRoles()", options=_options(roles=(ROLE_A, ROLE_B))
+            )
+        assert sorted(result.rows[0][0]) == sorted([ROLE_A, ROLE_B])
+
+    async def test_query_gets_the_union_of_both_role_privileges(self, clickhouse_url: str) -> None:
+        """Only the union reads both databases: ROLE_A owns loom_it, ROLE_B loom_it_b."""
+        sql = (
+            "SELECT (SELECT count() FROM loom_it.events) + (SELECT count() FROM loom_it_b.events_b)"
+        )
+        async with _registry(clickhouse_url, allowed_roles=[ROLE_A, ROLE_B]) as registry:
+            result = await registry.executor(CONNECTION).execute(
+                sql, options=_options(roles=(ROLE_A, ROLE_B))
+            )
+        assert result.rows[0][0] == 7
+
+    async def test_single_role_cannot_read_the_other_roles_database(
+        self, clickhouse_url: str
+    ) -> None:
+        """The union is real: ROLE_A alone is denied on the ROLE_B database."""
+        async with _registry(clickhouse_url, allowed_roles=[ROLE_A, ROLE_B]) as registry:
+            executor = registry.executor(CONNECTION)
+            options = _options(roles=(ROLE_A,))
+            with pytest.raises(SqlExecutionError):
+                await executor.execute("SELECT count() FROM loom_it_b.events_b", options=options)
+
+    async def test_a_non_granted_role_still_fails_closed_with_code_512(
+        self, clickhouse_url: str
+    ) -> None:
+        """One bad role poisons the whole query: no partial privilege activation."""
+        async with _registry(clickhouse_url, allowed_roles=[ROLE_A, ROLE_B]) as registry:
+            executor = registry.executor(CONNECTION)
+            options = _options(roles=(ROLE_A, ROLE_UNGRANTED))
             with pytest.raises(SqlExecutionError) as excinfo:
                 await executor.execute("SELECT 1", options=options)
         assert NON_GRANTED_ROLE_CODE in str(excinfo.value)
@@ -159,7 +208,7 @@ class TestConcurrentIsolation:
 
             async def run(role: str) -> tuple[str, Any]:
                 result = await executor.execute(
-                    "SELECT currentRoles()", options=_options(role=role)
+                    "SELECT currentRoles()", options=_options(roles=(role,))
                 )
                 return role, result.rows[0][0]
 
@@ -173,9 +222,13 @@ class TestPagination:
         sql = "SELECT id FROM loom_it.events ORDER BY id"
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
-            first = await executor.execute(sql, options=_options(role=ROLE_A, limit=2, offset=0))
-            middle = await executor.execute(sql, options=_options(role=ROLE_A, limit=2, offset=2))
-            last = await executor.execute(sql, options=_options(role=ROLE_A, limit=2, offset=4))
+
+            async def page(offset: int) -> Any:
+                return await executor.execute(
+                    sql, options=_options(roles=(ROLE_A,), limit=2, offset=offset)
+                )
+
+            first, middle, last = await page(0), await page(2), await page(4)
 
         assert [row[0] for row in first.rows] == [1, 2]
         assert (first.limit, first.offset, first.row_count) == (2, 0, 2)
@@ -193,7 +246,7 @@ class TestStartupProbe:
     async def test_registry_probe_passes_against_real_server(self, clickhouse_url: str) -> None:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
-            result = await executor.execute("SELECT 1", options=_options(role=ROLE_A))
+            result = await executor.execute("SELECT 1", options=_options(roles=(ROLE_A,)))
         assert result.rows[0][0] == 1
 
     async def test_sentinel_role_rejected_even_for_privilege_free_query(
@@ -207,7 +260,7 @@ class TestStartupProbe:
         """
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
-            options = _options(role=SENTINEL_ROLE)
+            options = _options(roles=(SENTINEL_ROLE,))
             with pytest.raises(SqlExecutionError) as excinfo:
                 await executor.execute("SELECT 1", options=options)
         assert UNKNOWN_ROLE_CODE in str(excinfo.value)
@@ -220,7 +273,7 @@ class TestHeterogeneousTypes:
             executor = registry.executor(CONNECTION)
             result = await executor.execute(
                 "SELECT id, created_at, amount, note, flags FROM loom_it.events ORDER BY id",
-                options=_options(role=ROLE_A),
+                options=_options(roles=(ROLE_A,)),
             )
 
         assert tuple(column.name for column in result.columns) == (

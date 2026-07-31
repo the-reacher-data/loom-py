@@ -24,6 +24,7 @@ from loom.core.sql.clickhouse._client import (
     create_driver_client,
     pool_manager,
     sanitize_backend_error,
+    supports_repeated_query_params,
 )
 from loom.core.sql.clickhouse.executor import ClickHouseSqlExecutor
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
@@ -152,6 +153,7 @@ class ClickHouseConnectionRegistry:
         client = await factory(**_client_kwargs(connection))
         self._clients[name] = client
         _require_role_transport_setting(name, client)
+        _require_multi_role_transport(name, connection)
         if _roles_configured(connection):
             await _probe_role_enforcement(name, client)
         self._executors[name] = ClickHouseSqlExecutor(client=client, config=connection)
@@ -198,6 +200,26 @@ def _require_role_transport_setting(name: str, client: AsyncClickHouseClient) ->
     raise ConfigError(
         f"SQL connection {name!r}: the ClickHouse client does not accept 'role' "
         "as a per-query transport setting (requires clickhouse-connect >= 0.9.2)"
+    )
+
+
+def _require_multi_role_transport(name: str, connection: SqlConnectionConfig) -> None:
+    """Fail-closed check for connections that can ever apply more than one role.
+
+    ClickHouse only accepts several roles as repeated HTTP parameters. A driver
+    that cannot emit them would send an invalid single role, so a multi-role
+    allowlist aborts startup instead of failing at the first such query.
+    """
+    if len(connection.allowed_roles) <= 1:
+        return
+    if supports_repeated_query_params():
+        return
+    raise ConfigError(
+        f"SQL connection {name!r}: 'allowed_roles' declares "
+        f"{len(connection.allowed_roles)} roles but the installed "
+        "clickhouse-connect cannot send one 'role' HTTP parameter per role, "
+        "which is the only form ClickHouse accepts for multiple roles; "
+        "aborting startup fail-closed"
     )
 
 

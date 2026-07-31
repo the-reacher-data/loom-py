@@ -11,11 +11,11 @@ from uuid import UUID
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from loom.core.sql.abc import SqlColumn, SqlQueryResult
 from loom.core.sql.config import SqlEndpointConfig
 from loom.core.sql.service import SqlQueryService
 from loom.rest.fastapi.sql import bind_sql_endpoints
-
 from tests.unit.core.sql._fakes import (
     FakeSqlExecutor,
     make_connection_config,
@@ -46,7 +46,8 @@ def _post(result: SqlQueryResult) -> Any:
     """Mount the endpoint with a fake executor returning *result* and POST to it."""
     config = make_sql_config(
         analytics=make_connection_config(
-            sql_endpoint=SqlEndpointConfig(enabled=True, auth="external")
+            allowed_roles=(),
+            sql_endpoint=SqlEndpointConfig(enabled=True, auth="external"),
         )
     )
     app = FastAPI()

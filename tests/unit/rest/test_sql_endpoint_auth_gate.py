@@ -55,11 +55,16 @@ class SqlGatePingInterface(RestInterface[str]):
 
 
 def _sql_section(endpoint: dict[str, Any], **conn_overrides: Any) -> dict[str, Any]:
-    """SQL section with a single 'analytics' connection and the given endpoint."""
+    """SQL section with a single 'analytics' connection and the given endpoint.
+
+    The default connection is the single-role shape (empty allowlist plus a
+    fixed ``default_role``): an allowlist is only representable on a mounted
+    endpoint together with ``sql_endpoint.roles_claim`` (spec §4).
+    """
     connection: dict[str, Any] = {
         "backend": "clickhouse",
         "url": "http://localhost:8123",
-        "allowed_roles": ["role_viz_reader"],
+        "allowed_roles": [],
         "default_role": "role_viz_reader",
         "sql_endpoint": endpoint,
     }
@@ -99,7 +104,11 @@ def _route_paths(app: FastAPI) -> set[str]:
     return {str(getattr(route, "path", "")) for route in app.routes}
 
 
-_JWT_SECTION: dict[str, Any] = {"secret": "unit-test-secret", "algorithms": ["HS256"]}
+_JWT_SECTION: dict[str, Any] = {
+    "secret": "unit-test-secret",
+    "algorithms": ["HS256"],
+    "audience": "loom-api",
+}
 
 
 def test_auth_jwt_without_jwt_section_fails_at_startup(tmp_path: Path) -> None:
@@ -129,22 +138,68 @@ def test_auth_external_warns_at_startup(tmp_path: Path) -> None:
         create_app(config_path)
 
 
-def test_multi_role_endpoint_warns_about_missing_privilege_separation(tmp_path: Path) -> None:
-    """The startup warning must state that any caller may pick any allowlisted role.
+def test_multi_role_endpoint_warns_naming_the_claim_that_binds_the_roles(tmp_path: Path) -> None:
+    """The startup warning must name the verified claim the roles are bound to.
 
-    ``allowed_roles`` is a shared ceiling for the connection, not a per-caller
-    permission, so the warning may never read as if authentication restricted
-    the requested role (threat model in ``docs/rest/sql.md``).
+    ``allowed_roles`` is the ceiling of the connection; the effective roles come
+    from the claim, so the warning states both (threat model in
+    ``docs/rest/sql.md``).
     """
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section(
-            {"enabled": True, "auth": "jwt"},
+            {"enabled": True, "auth": "jwt", "roles_claim": "loom_sql_roles"},
             allowed_roles=["role_viz_reader", "role_viz_sales"],
         ),
         jwt_section=_JWT_SECTION,
     )
-    with pytest.warns(UserWarning, match="NO privilege separation per identity"):
+    with pytest.warns(UserWarning, match="loom_sql_roles"):
+        create_app(config_path)
+
+
+def test_single_role_endpoint_warns_that_every_caller_shares_the_default_role(
+    tmp_path: Path,
+) -> None:
+    """Without an allowlist there is no per-caller distinction: say so explicitly."""
+    config_path = _write_project(
+        tmp_path, sql_section=_sql_section({"enabled": True, "auth": "external"})
+    )
+    with pytest.warns(UserWarning, match="default_role"):
+        create_app(config_path)
+
+
+def test_auth_jwt_without_audience_fails_at_startup(tmp_path: Path) -> None:
+    """Binding roles to a claim is void if tokens minted for other services pass."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
+        jwt_section={"secret": "unit-test-secret", "algorithms": ["HS256"]},
+    )
+    with pytest.raises(ConfigError, match="audience"):
+        create_app(config_path)
+
+
+def test_sql_path_excluded_from_jwt_authentication_fails_at_startup(tmp_path: Path) -> None:
+    """A mounted SQL path listed in ``exclude_paths`` would bypass authentication."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
+        jwt_section={**_JWT_SECTION, "exclude_paths": ["/docs", "/sql/analytics"]},
+    )
+    with pytest.raises(ConfigError, match="exclude_paths"):
+        create_app(config_path)
+
+
+def test_custom_sql_path_excluded_from_jwt_authentication_fails_at_startup(
+    tmp_path: Path,
+) -> None:
+    """The check follows the configured ``path``, not only the default one."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section({"enabled": True, "auth": "jwt", "path": "/query/analytics"}),
+        jwt_section={**_JWT_SECTION, "exclude_paths": ["/query/analytics"]},
+    )
+    with pytest.raises(ConfigError, match="exclude_paths"):
         create_app(config_path)
 
 

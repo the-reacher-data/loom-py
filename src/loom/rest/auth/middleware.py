@@ -42,8 +42,9 @@ class JwtAuthMiddleware:
     On each HTTP request whose path is not in ``config.exclude_paths``:
 
     1. Extracts the token from the ``Authorization: Bearer`` header.
-    2. Verifies signature and ``exp`` (required) plus ``nbf``, honouring
-       ``leeway_seconds``; ``aud``/``iss`` are validated only when configured.
+    2. Verifies signature, ``exp`` and ``sub`` (both required) plus ``nbf``,
+       honouring ``leeway_seconds``; ``aud``/``iss`` are validated only when
+       configured.
     3. On success, attaches the verified claims to
        ``scope["state"]["jwt_claims"]`` and forwards the request.
     4. On failure, responds ``401`` with the framework's standard error body
@@ -78,7 +79,9 @@ class JwtAuthMiddleware:
         self._algorithms = list(config.algorithms)
         self._exclude_paths = frozenset(config.exclude_paths)
         self._decode_options: dict[str, Any] = {
-            "require": ["exp"],
+            # 'sub' is required: a token without a subject carries no identity
+            # to bind an authorization decision to, nor to audit afterwards.
+            "require": ["exp", "sub"],
             "verify_aud": config.audience is not None,
         }
 

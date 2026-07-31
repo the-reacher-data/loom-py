@@ -146,3 +146,78 @@ def test_fails_when_auth_has_an_unknown_value() -> None:
     )
     with pytest.raises(ConfigError):
         _parse(connection)
+
+
+# ---------------------------------------------------------------------------
+# Identity binding: the insecure shape must be unrepresentable (spec §4)
+# ---------------------------------------------------------------------------
+
+
+def test_parses_the_roles_claim_when_declared() -> None:
+    """``roles_claim`` names the verified claim carrying the caller roles."""
+    conn = _parse(
+        _minimal(
+            allowed_roles=["role_viz_reader"],
+            sql_endpoint={"enabled": True, "auth": "jwt", "roles_claim": "loom_sql_roles"},
+        )
+    ).connections["analytics"]
+    assert conn.sql_endpoint.roles_claim == "loom_sql_roles"
+
+
+def test_roles_claim_defaults_to_none_when_not_declared() -> None:
+    """No binding is declared by default; the other rules then constrain the shape."""
+    conn = _parse(_minimal()).connections["analytics"]
+    assert conn.sql_endpoint.roles_claim is None
+
+
+def test_fails_when_an_enabled_endpoint_has_an_allowlist_without_roles_claim() -> None:
+    """A mounted multi-role endpoint without identity binding is unrepresentable."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader", "role_viz_sales"],
+        default_role="role_viz_reader",
+        sql_endpoint={"enabled": True, "auth": "jwt"},
+    )
+    with pytest.raises(ConfigError, match="roles_claim"):
+        _parse(connection)
+
+
+def test_allows_an_enabled_endpoint_with_an_empty_allowlist_and_default_role() -> None:
+    """The single-role shape stays valid: no allowlist means no role to escalate to."""
+    conn = _parse(
+        _minimal(
+            allowed_roles=[],
+            default_role="role_viz_reader",
+            sql_endpoint={"enabled": True, "auth": "external"},
+        )
+    ).connections["analytics"]
+    assert (conn.sql_endpoint.enabled, conn.sql_endpoint.roles_claim) == (True, None)
+
+
+def test_fails_when_roles_claim_is_paired_with_external_auth() -> None:
+    """External auth exposes no verified claims, so it can never bind roles."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader"],
+        sql_endpoint={"enabled": True, "auth": "external", "roles_claim": "loom_sql_roles"},
+    )
+    with pytest.raises(ConfigError, match="roles_claim"):
+        _parse(connection)
+
+
+def test_fails_when_roles_claim_is_declared_without_auth() -> None:
+    """Binding roles to claims requires the framework JWT auth to produce them."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader"],
+        sql_endpoint={"enabled": True, "roles_claim": "loom_sql_roles"},
+    )
+    with pytest.raises(ConfigError, match="roles_claim"):
+        _parse(connection)
+
+
+def test_fails_when_roles_claim_is_blank() -> None:
+    """An empty claim name would silently read nothing: rejected fail-fast."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader"],
+        sql_endpoint={"enabled": True, "auth": "jwt", "roles_claim": "  "},
+    )
+    with pytest.raises(ConfigError, match="roles_claim"):
+        _parse(connection)

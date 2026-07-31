@@ -4,9 +4,13 @@ Implements the optional REST surface of the SQL subsystem
 (``specs/sql_api_clickhouse_spec.md`` §3/§4): one ``POST`` route per
 connection that opted in with ``sql_endpoint.enabled`` **and** an explicit
 ``sql_endpoint.auth`` value (double opt-in, B2). The request body only admits
-``{sql, role?, parameters?, limit?, offset?}`` — backend settings are rejected
+``{sql, roles?, parameters?, limit?, offset?}`` — backend settings are rejected
 by schema — and the response is the single :class:`SqlQueryResult` envelope
 encoded in one pass by a module-level ``msgspec`` encoder.
+
+Roles are bound to the authenticated identity: when the connection declares
+``sql_endpoint.roles_claim`` the effective roles come from that verified claim
+intersected with the allowlist, and the body ``roles`` can only narrow them.
 
 Errors reuse the framework standard body (``code``/``message``/``trace_id``)
 through :class:`~loom.rest.errors.HttpErrorMapper`, exactly as the router
@@ -30,10 +34,11 @@ from loom.core.errors import LoomError, RuleViolation
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.sql.config import SqlConfig, SqlConnectionConfig
+from loom.core.sql.config import SqlConfig, SqlConnectionConfig, SqlEndpointConfig
 from loom.core.sql.service import SqlQueryService
 from loom.core.tracing import get_trace_id
 from loom.rest.errors import ErrorField, HttpErrorMapper
+from loom.rest.fastapi._sql_roles import resolve_identity
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _logger = logging.getLogger(__name__)
@@ -47,37 +52,36 @@ _BODY_OVERHEAD_BYTES = 64 * 1024
 
 
 class _SqlQueryRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    """Body accepted by the SQL endpoint — never backend settings (spec §3)."""
+    """Body accepted by the SQL endpoint — never backend settings (spec §3).
+
+    ``roles`` may only narrow the roles the verified identity already holds;
+    it never selects a role on its own.
+    """
 
     sql: str
-    role: str | None = None
+    roles: tuple[str, ...] | None = None
     parameters: dict[str, Any] | None = None
     limit: int | None = None
     offset: int = 0
 
 
-def _role_exposure_notice(allowed_role_count: int) -> str:
-    """State plainly who may request which role on a mounted endpoint.
+def _role_exposure_notice(endpoint: SqlEndpointConfig, allowed_role_count: int) -> str:
+    """State plainly which roles a caller of this endpoint can obtain.
 
-    ``allowed_roles`` is a shared ceiling for the connection, not a per-caller
-    permission: authentication proves an identity but never binds it to a role,
-    so the wording must not suggest otherwise (threat model in
-    ``docs/rest/sql.md``).
+    ``allowed_roles`` is the ceiling of the connection; the effective roles are
+    the ones the verified ``roles_claim`` grants inside that ceiling. Without a
+    claim binding, a mounted endpoint is necessarily single-role by config
+    (threat model in ``docs/rest/sql.md``).
     """
-    if allowed_role_count == 0:
+    if endpoint.roles_claim is None:
         return (
             "the allowlist is empty, so every caller-supplied role is rejected and "
-            "queries run only with 'default_role' — single-role endpoint"
-        )
-    if allowed_role_count == 1:
-        return (
-            "any caller that reaches this route may request its single allowed role; "
-            "authentication does not bind an identity to a role"
+            "queries run only with 'default_role' — one shared role for every caller"
         )
     return (
-        f"any caller that reaches this route may request ANY of these "
-        f"{allowed_role_count} roles, so there is NO privilege separation per identity — "
-        "every caller effectively holds the union of their privileges"
+        f"the effective roles come from the verified {endpoint.roles_claim!r} claim "
+        f"intersected with these {allowed_role_count} allowed roles; a caller whose "
+        "claim carries none of them is refused"
     )
 
 
@@ -194,9 +198,22 @@ def _make_sql_handler(
     """Build the async handler serving SQL queries for one connection."""
     handler_name = f"execute_sql_{name}"
     max_body_bytes = connection.max_sql_bytes + _BODY_OVERHEAD_BYTES
+    allowed_roles = frozenset(connection.allowed_roles)
+    roles_claim = connection.sql_endpoint.roles_claim
 
     async def _handler(request: Request) -> Response:
         try:
+            body = await _read_body_capped(request, max_bytes=max_body_bytes)
+            query = _decode_request(body, max_sql_bytes=connection.max_sql_bytes)
+            # Resolved before the span so it can label who runs the query with
+            # which privileges — the audit trail the endpoint is judged on.
+            identity = resolve_identity(
+                request.scope,
+                connection=name,
+                roles_claim=roles_claim,
+                allowed_roles=allowed_roles,
+                requested_roles=query.roles,
+            )
             with observability_runtime.span(
                 Scope.USE_CASE,
                 handler_name,
@@ -205,13 +222,13 @@ def _make_sql_handler(
                 method="POST",
                 status_code=200,
                 read_only=connection.readonly,
+                roles=",".join(identity.roles),
+                subject=identity.subject,
             ):
-                body = await _read_body_capped(request, max_bytes=max_body_bytes)
-                query = _decode_request(body, max_sql_bytes=connection.max_sql_bytes)
                 result = await service.execute(
                     query.sql,
                     connection=name,
-                    role=query.role,
+                    roles=identity.roles,
                     parameters=query.parameters,
                     limit=query.limit,
                     offset=query.offset,
@@ -250,14 +267,14 @@ def _mount_endpoint(
     )
     _logger.warning(
         "SQL endpoint mounted: path=%s connection=%s readonly=%s auth=%s allowed_roles=%d. "
-        "'auth' only authenticates the caller, it never restricts the role the caller asks "
-        "for: %s",
+        "'auth' only authenticates the caller; the roles it may use come from the "
+        "identity binding: %s",
         path,
         name,
         connection.readonly,
         endpoint.auth,
         len(connection.allowed_roles),
-        _role_exposure_notice(len(connection.allowed_roles)),
+        _role_exposure_notice(endpoint, len(connection.allowed_roles)),
     )
 
 

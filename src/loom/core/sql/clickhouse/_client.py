@@ -2,8 +2,9 @@
 
 Centralizes every touch point with ``clickhouse-connect``: the guarded import
 with the install hint, the structural client contract shared by the executor
-and the registry, the adapter over the driver ``AsyncClient`` and the
-sanitization of driver error messages (no host, DSN or stack trace).
+and the registry, the adapter over the driver ``AsyncClient``, the multi-role
+transport workaround and the sanitization of driver error messages (no host,
+DSN or stack trace).
 """
 
 from __future__ import annotations
@@ -12,8 +13,10 @@ import re
 import warnings
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from functools import partial
 from types import ModuleType
 from typing import Any, Protocol, cast
+from urllib.parse import urlencode
 
 _INSTALL_HINT = (
     "The ClickHouse SQL backend requires 'clickhouse-connect'. "
@@ -21,7 +24,7 @@ _INSTALL_HINT = (
 )
 
 try:
-    from clickhouse_connect.driver import httputil  # type: ignore[import-untyped]
+    from clickhouse_connect.driver import httpclient, httputil  # type: ignore[import-untyped]
     from clickhouse_connect.driver.exceptions import (  # type: ignore[import-untyped]
         DatabaseError,
         OperationalError,
@@ -39,10 +42,52 @@ __all__ = [
     "create_driver_client",
     "pool_manager",
     "sanitize_backend_error",
+    "supports_repeated_query_params",
 ]
 
 _CODE_LINE_RE = re.compile(r"Code:\s*\d+[^\n]*")
 _URL_RE = re.compile(r"https?://\S+")
+
+# --- Multi-role transport workaround (pending upstream) ----------------------
+#
+# ClickHouse activates several roles only through REPEATED HTTP parameters
+# ("role=a&role=b"); a comma-joined value is parsed as one role name and
+# rejected with code 511. clickhouse-connect 0.15.1 builds the request URL in
+# ``HttpClient._raw_request`` with ``urlencode(final_params)`` — without
+# ``doseq=True`` — so a sequence value would be sent as its repr
+# ("role=%5B%27a%27%2C+%27b%27%5D"), an invalid role name. Upstream ``main``
+# still encodes it the same way, so this is not fixed by a version bump.
+#
+# Rebinding the encoder the driver looks up is the smallest correct seam:
+# ``doseq=True`` produces byte-identical output for the ``str``/``int``/``bool``
+# values the driver builds today and only changes sequences, whose current
+# encoding is invalid anyway. Overriding ``_raw_request`` instead would mean
+# duplicating ~80 lines of driver internals (retry loop, session guard, error
+# handling) with no way to reuse the URL building alone.
+#
+# ``supports_repeated_query_params`` re-checks the outcome so the registry can
+# fail closed on a driver that stops honouring it, and
+# ``tests/unit/core/sql/test_clickhouse_transport.py`` pins the patch point so
+# the workaround can never degrade silently.
+_MULTI_ROLE_PROBE: Mapping[str, Any] = {"role": ("loom_probe_a", "loom_probe_b")}
+_MULTI_ROLE_PROBE_ENCODED = "role=loom_probe_a&role=loom_probe_b"
+
+httpclient.urlencode = partial(urlencode, doseq=True)
+
+
+def supports_repeated_query_params() -> bool:
+    """Report whether the driver emits one HTTP parameter per sequence value.
+
+    Probes the very encoder the driver uses to build the request URL, so a
+    future driver version that bypasses it is detected instead of silently
+    sending an invalid single role.
+
+    Returns:
+        ``True`` when a sequence-valued setting is serialized as repeated
+        parameters, which is what multi-role queries require.
+    """
+    encoded: str = httpclient.urlencode(_MULTI_ROLE_PROBE)
+    return encoded == _MULTI_ROLE_PROBE_ENCODED
 
 
 class ClickHouseColumnType(Protocol):

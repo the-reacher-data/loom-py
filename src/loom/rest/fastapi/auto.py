@@ -467,17 +467,42 @@ def _build_sql_registry(sql_cfg: SqlConfig) -> ClickHouseConnectionRegistry:
 
 
 def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, jwt_cfg: JwtAuthConfig | None) -> None:
-    """Enforce the startup gate: ``auth: jwt`` requires ``app.rest.auth.jwt`` (§4)."""
-    if jwt_cfg is not None:
-        return
+    """Enforce the startup gates of every mounted ``auth: jwt`` endpoint (§4)."""
     for name, connection in sql_cfg.connections.items():
         endpoint = connection.sql_endpoint
-        if endpoint.enabled and endpoint.auth == "jwt":
+        if not endpoint.enabled or endpoint.auth != "jwt":
+            continue
+        if jwt_cfg is None:
             raise ConfigError(
                 f"SQL connection {name!r}: sql_endpoint.auth is 'jwt' but the "
                 "'app.rest.auth.jwt' section is not configured. Add the JWT "
                 "section or switch the endpoint to auth: external."
             )
+        _require_jwt_audience(name, jwt_cfg)
+        _require_authenticated_path(name, endpoint.path or f"/sql/{name}", jwt_cfg)
+
+
+def _require_jwt_audience(name: str, jwt_cfg: JwtAuthConfig) -> None:
+    """Binding roles to a claim is void without a validated ``aud`` (§4)."""
+    if jwt_cfg.audience is not None:
+        return
+    raise ConfigError(
+        f"SQL connection {name!r}: sql_endpoint.auth is 'jwt' but "
+        "'app.rest.auth.jwt.audience' is not set. Without a validated 'aud' any "
+        "token signed by the same key — including tokens minted for another "
+        "service — would be accepted and could carry the roles claim."
+    )
+
+
+def _require_authenticated_path(name: str, path: str, jwt_cfg: JwtAuthConfig) -> None:
+    """A mounted SQL path listed in ``exclude_paths`` would bypass auth (§4)."""
+    if path not in jwt_cfg.exclude_paths:
+        return
+    raise ConfigError(
+        f"SQL connection {name!r}: the endpoint path {path!r} is listed in "
+        "'app.rest.auth.jwt.exclude_paths', which would serve SQL without "
+        "authentication. Remove it from the exclusion list."
+    )
 
 
 def _register_sql_service(container: LoomContainer, service: SqlQueryService) -> None:
@@ -504,8 +529,8 @@ def _warn_sql_endpoints(sql_cfg: SqlConfig) -> None:
             f"SQL endpoint mounted at {path} (connection={name!r}, "
             f"readonly={connection.readonly}, auth={endpoint.auth}, "
             f"allowed_roles={len(connection.allowed_roles)}). "
-            "'auth' only authenticates the caller, it never restricts the role the caller "
-            f"asks for: {_role_exposure_notice(len(connection.allowed_roles))}.",
+            "'auth' only authenticates the caller; the roles it may use come from the "
+            f"identity binding: {_role_exposure_notice(endpoint, len(connection.allowed_roles))}.",
             stacklevel=3,
         )
 

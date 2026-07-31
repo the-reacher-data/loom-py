@@ -22,8 +22,9 @@ class SqlExecutionOptions(LoomFrozenStruct, frozen=True, kw_only=True):
     connection-level settings can never override them.
 
     Attributes:
-        role: Effective role for this single query, already validated against
-            the connection allowlist. ``None`` only for internal probes.
+        roles: Effective roles for this single query, already validated against
+            the connection allowlist. Several roles apply the union of their
+            privileges; empty means no role at all (internal probes only).
         readonly: Whether the query must run in read-only mode.
         limit: Maximum number of rows to return. The executor requests
             ``limit + 1`` rows to compute ``has_more``.
@@ -31,7 +32,7 @@ class SqlExecutionOptions(LoomFrozenStruct, frozen=True, kw_only=True):
         max_execution_time: Per-query execution timeout in seconds.
     """
 
-    role: str | None = None
+    roles: tuple[str, ...] = ()
     readonly: bool = True
     limit: int | None = None
     offset: int = 0

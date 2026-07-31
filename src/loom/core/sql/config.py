@@ -33,14 +33,36 @@ class SqlEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         auth: Mandatory when ``enabled``: ``"jwt"`` (requires the framework
             JWT middleware configured) or ``"external"`` (explicit
             acknowledgement that the operator provides auth).
+        roles_claim: Name of the verified JWT claim carrying the roles the
+            caller is authorized to use. Requires ``auth: "jwt"``. When set,
+            the effective roles are the claim values intersected with
+            ``allowed_roles``; the request body can only narrow that set and
+            never falls back to ``default_role``.
         path: Mount path override. Defaults to ``/sql/{name}`` when ``None``.
         include_in_schema: Whether the endpoint appears in the OpenAPI schema.
+
+    Raises:
+        ValueError: When ``roles_claim`` is blank or declared without
+            ``auth: "jwt"``. Surfaced as ``ConfigError`` through the loader.
     """
 
     enabled: bool = False
     auth: Literal["jwt", "external"] | None = None
+    roles_claim: str | None = None
     path: str | None = None
     include_in_schema: bool = False
+
+    def __post_init__(self) -> None:
+        if self.roles_claim is None:
+            return
+        if not self.roles_claim.strip():
+            raise ValueError("sql_endpoint.roles_claim must not be blank")
+        if self.auth != "jwt":
+            raise ValueError(
+                "sql_endpoint.roles_claim requires sql_endpoint.auth: jwt — only the "
+                "framework JWT middleware produces the verified claims a role can be "
+                f"bound to (got auth={self.auth!r})"
+            )
 
 
 class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -51,10 +73,14 @@ class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             other value fails the parse.
         url: Backend DSN. Canonically injected via environment or secret
             resolver, never inline.
-        allowed_roles: Allowlist of roles a caller may request. Empty means
-            every caller-provided role is rejected (fail-closed).
+        allowed_roles: Ceiling of roles this connection may ever apply — the
+            last barrier, not a per-caller permission. Empty means every
+            caller-provided role is rejected (fail-closed). A mounted endpoint
+            with a non-empty allowlist must bind roles to identity through
+            ``sql_endpoint.roles_claim``.
         default_role: Role applied when the request carries none. Without it,
-            a request without role is refused.
+            a request without role is refused. Never a fallback for a request
+            whose roles are bound to verified claims.
         readonly: Whether queries run in read-only mode. Defaults to ``True``.
         default_limit: Row limit applied when the request brings none.
         max_limit: Hard cap for any requested limit.
@@ -148,4 +174,12 @@ def _validate_endpoint(
         raise ValueError(
             "sql_endpoint.enabled requires a 'default_role' or a non-empty "
             "'allowed_roles' on the connection"
+        )
+    if allowed_roles and endpoint.roles_claim is None:
+        raise ValueError(
+            "sql_endpoint.enabled with a non-empty 'allowed_roles' requires "
+            "'sql_endpoint.roles_claim': without it the endpoint would let any "
+            "authenticated caller pick any allowlisted role. Either declare the "
+            "verified claim carrying the caller roles, or leave 'allowed_roles' "
+            "empty and pin a single 'default_role'"
         )

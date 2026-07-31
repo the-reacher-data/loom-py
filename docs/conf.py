@@ -59,6 +59,7 @@ _SQL_PACKAGE = "loom.core.sql"
 _SQL_REEXPORTED_NAMES = (
     "RoleNotAllowedError",
     "RoleRequiredError",
+    "RolesNotBoundError",
     "SqlColumn",
     "SqlConfig",
     "SqlConnectionConfig",

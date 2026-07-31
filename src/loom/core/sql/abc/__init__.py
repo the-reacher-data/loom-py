@@ -9,6 +9,7 @@ from loom.core.sql.abc.contracts import (
 from loom.core.sql.abc.errors import (
     RoleNotAllowedError,
     RoleRequiredError,
+    RolesNotBoundError,
     SqlExecutionError,
     UnknownConnectionError,
 )
@@ -16,6 +17,7 @@ from loom.core.sql.abc.errors import (
 __all__ = [
     "RoleNotAllowedError",
     "RoleRequiredError",
+    "RolesNotBoundError",
     "SqlColumn",
     "SqlExecutionError",
     "SqlExecutionOptions",

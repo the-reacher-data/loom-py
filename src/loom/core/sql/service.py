@@ -7,7 +7,7 @@ last: connection-level settings can never override it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from loom.core.config.errors import ConfigError
@@ -37,7 +37,7 @@ class SqlQueryService:
 
         service = SqlQueryService(executors=executors, config=sql_config)
         result = await service.execute(
-            "SELECT * FROM sales", connection="analytics", role="role_viz_reader"
+            "SELECT * FROM sales", connection="analytics", roles=["role_viz_reader"]
         )
     """
 
@@ -56,7 +56,7 @@ class SqlQueryService:
         sql: str,
         *,
         connection: str,
-        role: str | None = None,
+        roles: Sequence[str] | None = None,
         parameters: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
@@ -65,8 +65,9 @@ class SqlQueryService:
 
         Args:
             sql: SQL statement with native parameter placeholders.
-            role: Caller role, validated against the connection allowlist.
-                ``None`` falls back to the connection ``default_role``.
+            roles: Caller roles, each validated against the connection
+                allowlist; the query runs with the union of their privileges.
+                Empty or ``None`` falls back to the connection ``default_role``.
             connection: Name of the configured connection to use.
             parameters: Values bound server-side by the backend.
             limit: Requested row limit; clamped to the connection ``max_limit``
@@ -78,12 +79,13 @@ class SqlQueryService:
 
         Raises:
             UnknownConnectionError: When *connection* is not configured.
-            RoleNotAllowedError: When *role* is outside the allowlist.
+            RoleNotAllowedError: When any requested role is outside the
+                allowlist — the whole request is refused, never filtered.
             RoleRequiredError: When no effective role can be resolved.
         """
         conn = self._connection_config(connection)
         options = SqlExecutionOptions(
-            role=_resolve_role(role, self._allowed_roles[connection], conn, connection),
+            roles=_resolve_roles(roles, self._allowed_roles[connection], conn, connection),
             readonly=conn.readonly,
             limit=_effective_limit(limit, conn),
             offset=offset,
@@ -115,7 +117,7 @@ class NullSqlQueryService(SqlQueryService):
         sql: str,
         *,
         connection: str,
-        role: str | None = None,
+        roles: Sequence[str] | None = None,
         parameters: Mapping[str, Any] | None = None,
         limit: int | None = None,
         offset: int = 0,
@@ -132,19 +134,25 @@ class NullSqlQueryService(SqlQueryService):
         )
 
 
-def _resolve_role(
-    role: str | None,
+def _resolve_roles(
+    roles: Sequence[str] | None,
     allowed_roles: frozenset[str],
     config: SqlConnectionConfig,
     connection: str,
-) -> str:
-    """Resolve the effective role fail-closed: allowlist, then default_role."""
-    if role is not None:
-        if role not in allowed_roles:
-            raise RoleNotAllowedError(role, connection=connection)
-        return role
+) -> tuple[str, ...]:
+    """Resolve the effective roles fail-closed: allowlist, then default_role.
+
+    The allowlist is the last barrier of the whole chain: it is checked per
+    role (O(1) each) and a single rejected role refuses the request instead of
+    silently narrowing it.
+    """
+    if roles:
+        for role in roles:
+            if role not in allowed_roles:
+                raise RoleNotAllowedError(role, connection=connection)
+        return tuple(roles)
     if config.default_role is not None:
-        return config.default_role
+        return (config.default_role,)
     raise RoleRequiredError(connection)
 
 

@@ -34,15 +34,25 @@ INSERT INTO loom_it.events VALUES
     (4, '2026-03-01 23:59:59.999', 0.0001, 'fourth', [0, 128]),
     (5, '2026-07-04 16:20:00.500', 123.4567, NULL, [42]);
 
+-- Second database readable ONLY by loom_reader_b, so a query carrying both roles
+-- can be proven to get the UNION of their privileges (neither role alone reads both).
+
+CREATE DATABASE IF NOT EXISTS loom_it_b;
+
+CREATE TABLE IF NOT EXISTS loom_it_b.events_b (id UInt32) ENGINE = MergeTree ORDER BY id;
+
+INSERT INTO loom_it_b.events_b VALUES (10), (20);
+
 -- ── Data roles (each gets EXACTLY the grant from the matrix) ──────────────────
 
 -- In the connection allowlist AND granted to the connection user.
 CREATE ROLE IF NOT EXISTS loom_reader_a;
 GRANT SELECT ON loom_it.* TO loom_reader_a;
 
--- Granted to the connection user but NOT in the allowlist (allowlist-rejection tests).
+-- Also granted to the connection user; the only role that reads loom_it_b.
 CREATE ROLE IF NOT EXISTS loom_reader_b;
 GRANT SELECT ON loom_it.* TO loom_reader_b;
+GRANT SELECT ON loom_it_b.* TO loom_reader_b;
 
 -- Exists (with data access) but NOT granted to the connection user:
 -- the server must reject it per query (SET_NON_GRANTED_ROLE, code 512).

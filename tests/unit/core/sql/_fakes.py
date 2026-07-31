@@ -217,15 +217,18 @@ class FakeClickHouseClient:
         self.closed = True
 
     def _enforce_role(self, settings: Mapping[str, Any] | None) -> None:
-        role = settings.get("role") if settings else None
-        if role is None or self._ignore_role:
+        """Reject unknown roles like the server does, one per repeated parameter."""
+        setting = settings.get("role") if settings else None
+        if setting is None or self._ignore_role:
             return
-        if role not in self._known_roles:
-            raise DatabaseError(
-                f"HTTPDriver for {DEFAULT_URL} received ClickHouse error code 511\n"
-                f"Code: 511. DB::Exception: There is no role `{role}` "
-                "in user directories. (UNKNOWN_ROLE)"
-            )
+        roles = (setting,) if isinstance(setting, str) else tuple(setting)
+        for role in roles:
+            if role not in self._known_roles:
+                raise DatabaseError(
+                    f"HTTPDriver for {DEFAULT_URL} received ClickHouse error code 511\n"
+                    f"Code: 511. DB::Exception: There is no role `{role}` "
+                    "in user directories. (UNKNOWN_ROLE)"
+                )
 
     def _apply_window(self, settings: Mapping[str, Any] | None) -> list[tuple[Any, ...]]:
         rows = list(self._rows)

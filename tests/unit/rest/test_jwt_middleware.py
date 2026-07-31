@@ -168,6 +168,13 @@ def test_matching_audience_passes() -> None:
     assert response.status_code == 200
 
 
+def test_token_without_subject_returns_401() -> None:
+    """A token with no ``sub`` carries no identity to bind or audit: rejected."""
+    token = pyjwt.encode({"exp": int(time.time()) + 3600}, _SECRET, algorithm="HS256")
+    response = _get(_client(_config()), token)
+    assert response.status_code == 401
+
+
 def test_missing_authorization_header_returns_401() -> None:
     """No ``Authorization`` header means no access (fail-closed)."""
     response = _get(_client(_config()), None)
