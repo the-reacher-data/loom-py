@@ -49,8 +49,9 @@ async def test_missing_clickhouse_connect_raises_import_error_with_hint(
     """Without the extra installed, startup fails with a 'loom-kernel[clickhouse]' hint."""
     _hide_modules(monkeypatch, "clickhouse_connect")
     config = make_sql_config(analytics=make_connection_config())
+    registry = ClickHouseConnectionRegistry(config=config)
     with pytest.raises(ImportError, match=r"loom-kernel\[clickhouse\]"):
-        async with ClickHouseConnectionRegistry(config=config):
+        async with registry:
             pass
 
 
@@ -183,8 +184,10 @@ async def test_backend_error_is_sanitized_into_sql_execution_error() -> None:
             "Stack trace:\n0. Poco::Net::HTTPServerConnection::run()"
         )
     )
+    executor = _executor(client)
+    options = _options()
     with pytest.raises(SqlExecutionError) as exc_info:
-        await _executor(client).execute("SELEC 1", options=_options())
+        await executor.execute("SELEC 1", options=options)
     assert ("62" in str(exc_info.value), "Stack trace" not in str(exc_info.value)) == (
         True,
         True,
@@ -198,8 +201,10 @@ async def test_unreachable_backend_does_not_leak_the_url_in_the_error() -> None:
             "Error executing HTTP request http://secret-host:8123 (connection refused)"
         )
     )
+    executor = _executor(client)
+    options = _options()
     with pytest.raises(LoomSystemError) as exc_info:
-        await _executor(client).execute("SELECT 1", options=_options())
+        await executor.execute("SELECT 1", options=options)
     assert "secret-host" not in str(exc_info.value)
 
 

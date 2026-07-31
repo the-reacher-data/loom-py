@@ -53,6 +53,35 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
 
+# loom.core.sql re-exports: canonical docs live in loom.core.sql.abc
+# and loom.core.sql.config, both listed in reference/api/core.rst.
+_SQL_PACKAGE = "loom.core.sql"
+_SQL_REEXPORTED_NAMES = (
+    "RoleNotAllowedError",
+    "RoleRequiredError",
+    "SqlColumn",
+    "SqlConfig",
+    "SqlConnectionConfig",
+    "SqlEndpointConfig",
+    "SqlExecutionError",
+    "SqlExecutionOptions",
+    "SqlExecutor",
+    "SqlQueryResult",
+    "UnknownConnectionError",
+)
+
+_DUPLICATED_REEXPORTS = {
+    ("loom.core.errors", "RuleViolation"),
+    ("loom.core.errors", "RuleViolations"),
+    ("loom.core.use_case", "RuleViolation"),
+    ("loom.core.use_case", "RuleViolations"),
+    ("loom.etl.lineage", "ETLObservabilityConfig"),
+    ("loom.testing", "CompilationError"),
+    ("loom.rest.model", "PaginationMode"),
+    *((_SQL_PACKAGE, symbol) for symbol in _SQL_REEXPORTED_NAMES),
+}
+
+
 def _skip_duplicate_reexports(
     app: Any,
     what: str,
@@ -64,29 +93,7 @@ def _skip_duplicate_reexports(
     """Skip known re-exported symbols that duplicate canonical API objects."""
     del what, obj, options
     current_module = app.env.temp_data.get("autodoc:module")
-    duplicated_reexports = {
-        ("loom.core.errors", "RuleViolation"),
-        ("loom.core.errors", "RuleViolations"),
-        ("loom.core.use_case", "RuleViolation"),
-        ("loom.core.use_case", "RuleViolations"),
-        ("loom.etl.lineage", "ETLObservabilityConfig"),
-        ("loom.testing", "CompilationError"),
-        ("loom.rest.model", "PaginationMode"),
-        # loom.core.sql re-exports: canonical docs live in loom.core.sql.abc
-        # and loom.core.sql.config, both listed in reference/api/core.rst.
-        ("loom.core.sql", "RoleNotAllowedError"),
-        ("loom.core.sql", "RoleRequiredError"),
-        ("loom.core.sql", "SqlColumn"),
-        ("loom.core.sql", "SqlConfig"),
-        ("loom.core.sql", "SqlConnectionConfig"),
-        ("loom.core.sql", "SqlEndpointConfig"),
-        ("loom.core.sql", "SqlExecutionError"),
-        ("loom.core.sql", "SqlExecutionOptions"),
-        ("loom.core.sql", "SqlExecutor"),
-        ("loom.core.sql", "SqlQueryResult"),
-        ("loom.core.sql", "UnknownConnectionError"),
-    }
-    if (current_module, name) in duplicated_reexports:
+    if (current_module, name) in _DUPLICATED_REEXPORTS:
         return True
     return skip
 

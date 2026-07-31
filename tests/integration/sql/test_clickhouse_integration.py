@@ -137,15 +137,17 @@ class TestPerQueryRole:
     async def test_unknown_role_fails_closed_with_code_511(self, clickhouse_url: str) -> None:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
+            options = _options(role=ROLE_UNKNOWN)
             with pytest.raises(SqlExecutionError) as excinfo:
-                await executor.execute("SELECT 1", options=_options(role=ROLE_UNKNOWN))
+                await executor.execute("SELECT 1", options=options)
         assert UNKNOWN_ROLE_CODE in str(excinfo.value)
 
     async def test_non_granted_role_rejected_with_code_512(self, clickhouse_url: str) -> None:
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
+            options = _options(role=ROLE_UNGRANTED)
             with pytest.raises(SqlExecutionError) as excinfo:
-                await executor.execute("SELECT 1", options=_options(role=ROLE_UNGRANTED))
+                await executor.execute("SELECT 1", options=options)
         assert NON_GRANTED_ROLE_CODE in str(excinfo.value)
 
 
@@ -205,8 +207,9 @@ class TestStartupProbe:
         """
         async with _registry(clickhouse_url) as registry:
             executor = registry.executor(CONNECTION)
+            options = _options(role=SENTINEL_ROLE)
             with pytest.raises(SqlExecutionError) as excinfo:
-                await executor.execute("SELECT 1", options=_options(role=SENTINEL_ROLE))
+                await executor.execute("SELECT 1", options=options)
         assert UNKNOWN_ROLE_CODE in str(excinfo.value)
 
 

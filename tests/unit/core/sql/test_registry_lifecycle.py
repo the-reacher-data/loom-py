@@ -82,8 +82,9 @@ async def test_probe_failure_with_an_incidental_511_still_aborts_startup() -> No
     """Only the ``Code: 511`` marker satisfies the probe — an incidental 511 does not."""
     error = DatabaseError("Code: 241. DB::Exception: Memory limit exceeded: would use 511 MiB")
     factory = RecordingClientFactory(FakeClickHouseClient(error=error))
+    registry = _registry(factory, analytics=make_connection_config())
     with pytest.raises(ConfigError, match="probe failed unexpectedly"):
-        async with _registry(factory, analytics=make_connection_config()):
+        async with registry:
             pass
 
 
@@ -99,8 +100,9 @@ async def test_startup_probe_sends_a_sentinel_role_in_settings() -> None:
 async def test_aborts_startup_when_the_backend_ignores_the_role() -> None:
     """If the sentinel role does NOT produce error 511, the probe aborts (fail-closed)."""
     factory = RecordingClientFactory(FakeClickHouseClient(ignore_role=True))
+    registry = _registry(factory, analytics=make_connection_config())
     with pytest.raises(ConfigError):
-        async with _registry(factory, analytics=make_connection_config()):
+        async with registry:
             pass
 
 
@@ -109,8 +111,9 @@ async def test_aborts_startup_when_role_is_not_a_transport_setting() -> None:
     factory = RecordingClientFactory(
         FakeClickHouseClient(transport_settings=frozenset({"readonly", "limit"}))
     )
+    registry = _registry(factory, analytics=make_connection_config())
     with pytest.raises(ConfigError):
-        async with _registry(factory, analytics=make_connection_config()):
+        async with registry:
             pass
 
 

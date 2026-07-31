@@ -14,7 +14,9 @@ import msgspec
 
 from loom.core.model import LoomFrozenStruct
 
-_ROLE_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
+# re.ASCII keeps the exact [A-Za-z0-9_] charset: without it \w would also
+# accept Unicode word characters, widening this security allowlist.
+_ROLE_PATTERN = re.compile(r"^\w+$", re.ASCII)
 _URL_CREDENTIALS_RE = re.compile(r"://[^@]+@")
 
 
@@ -124,7 +126,10 @@ def _validate_roles(allowed_roles: tuple[str, ...], default_role: str | None) ->
 
 def _validate_role_format(role: str) -> None:
     if not _ROLE_PATTERN.fullmatch(role):
-        raise ValueError(f"Invalid SQL role {role!r}: roles must match ^[A-Za-z0-9_]+$")
+        raise ValueError(
+            f"Invalid SQL role {role!r}: roles must contain only "
+            "ASCII letters, digits or underscores"
+        )
 
 
 def _validate_limits(default_limit: int, max_limit: int) -> None:

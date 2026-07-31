@@ -88,32 +88,44 @@ def test_fails_when_url_is_missing() -> None:
 
 def test_fails_when_an_allowlist_role_has_invalid_format() -> None:
     """Roles outside ``^[A-Za-z0-9_]+$`` are rejected fail-fast (anti-injection)."""
+    connection = _minimal(allowed_roles=["role-bad!"])
     with pytest.raises(ConfigError):
-        _parse(_minimal(allowed_roles=["role-bad!"]))
+        _parse(connection)
+
+
+def test_fails_when_an_allowlist_role_has_unicode_word_characters() -> None:
+    """Role validation is ASCII-only: Unicode word characters are rejected."""
+    connection = _minimal(allowed_roles=["señor"])
+    with pytest.raises(ConfigError):
+        _parse(connection)
 
 
 def test_fails_when_default_role_has_invalid_format() -> None:
     """``default_role`` follows the same format validation as the allowlist."""
+    connection = _minimal(default_role="bad role;drop")
     with pytest.raises(ConfigError):
-        _parse(_minimal(default_role="bad role;drop"))
+        _parse(connection)
 
 
 def test_fails_when_backend_is_unknown() -> None:
     """Only ``clickhouse`` is supported: any other backend => ConfigError."""
+    connection = _minimal(backend="postgres")
     with pytest.raises(ConfigError):
-        _parse(_minimal(backend="postgres"))
+        _parse(connection)
 
 
 def test_fails_when_default_limit_exceeds_max_limit() -> None:
     """``default_limit <= max_limit`` is validated at parse time, not at runtime."""
+    connection = _minimal(default_limit=100, max_limit=10)
     with pytest.raises(ConfigError):
-        _parse(_minimal(default_limit=100, max_limit=10))
+        _parse(connection)
 
 
 def test_fails_when_endpoint_enabled_without_default_role_or_allowlist() -> None:
     """``enabled: true`` without any role cannot mount an endpoint (fail-closed)."""
+    connection = _minimal(sql_endpoint={"enabled": True, "auth": "external"})
     with pytest.raises(ConfigError):
-        _parse(_minimal(sql_endpoint={"enabled": True, "auth": "external"}))
+        _parse(connection)
 
 
 def test_repr_redacts_the_dsn_credentials() -> None:
@@ -127,11 +139,10 @@ def test_repr_redacts_the_dsn_credentials() -> None:
 
 def test_fails_when_auth_has_an_unknown_value() -> None:
     """``auth`` only admits 'jwt' or 'external'; any other value => ConfigError."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader"],
+        default_role="role_viz_reader",
+        sql_endpoint={"enabled": True, "auth": "basic"},
+    )
     with pytest.raises(ConfigError):
-        _parse(
-            _minimal(
-                allowed_roles=["role_viz_reader"],
-                default_role="role_viz_reader",
-                sql_endpoint={"enabled": True, "auth": "basic"},
-            )
-        )
+        _parse(connection)
