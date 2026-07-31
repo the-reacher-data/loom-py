@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import sys
 import warnings
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 import prometheus_client
@@ -39,11 +39,17 @@ from loom.core.repository.dynamodb import (
 from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
+from loom.rest.auth import JwtAuthConfig, JwtAuthMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.fastapi.sql import bind_sql_endpoints
 from loom.rest.middleware import TraceIdMiddleware
+
+if TYPE_CHECKING:
+    from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -66,12 +72,17 @@ class _DiscoveryConfig(msgspec.Struct, kw_only=True):
     manifest: _DiscoveryManifest = msgspec.field(default_factory=_DiscoveryManifest)
 
 
+class _RestAuthConfig(msgspec.Struct, kw_only=True):
+    jwt: JwtAuthConfig | None = None
+
+
 class _RestConfig(msgspec.Struct, kw_only=True):
     backend: str = "fastapi"
     title: str = "Loom API"
     version: str = "0.1.0"
     docs_url: str | None = "/docs"
     redoc_url: str | None = "/redoc"
+    auth: _RestAuthConfig = msgspec.field(default_factory=_RestAuthConfig)
 
 
 class _AppConfig(msgspec.Struct, kw_only=True):
@@ -382,6 +393,133 @@ async def _noop_lifespan() -> AsyncIterator[None]:
     yield
 
 
+@dataclass(frozen=True)
+class _SqlWiring:
+    """Resolved SQL subsystem pieces for the auto-bootstrap REST app.
+
+    Args:
+        config: Parsed ``sql:`` section, or ``None`` when absent.
+        registry: ClickHouse connection registry entered by the app lifespan,
+            or ``None`` when no section is configured.
+        service: Query service registered in the container — the null
+            implementation when *config* is ``None`` (spec M5).
+    """
+
+    config: SqlConfig | None
+    registry: ClickHouseConnectionRegistry | None
+    service: SqlQueryService
+
+
+class _RegistryExecutors(Mapping[str, SqlExecutor]):
+    """Lazy executor view over the ClickHouse connection registry.
+
+    Lets ``create_app`` construct the SQL service and bind endpoints without
+    opening any connection: executors resolve on first access, once the app
+    lifespan has entered the registry.
+    """
+
+    def __init__(self, registry: ClickHouseConnectionRegistry, names: tuple[str, ...]) -> None:
+        self._registry = registry
+        self._names = names
+
+    def __getitem__(self, name: str) -> SqlExecutor:
+        if name not in self._names:
+            raise KeyError(name)
+        return self._registry.executor(name)
+
+    def __contains__(self, name: object) -> bool:
+        # Membership from config alone: never touches the registry, so the
+        # service policy checks work outside the lifespan as well.
+        return name in self._names
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
+
+    def __len__(self) -> int:
+        return len(self._names)
+
+
+def _resolve_sql(ctx: ConfigContext, jwt_cfg: JwtAuthConfig | None) -> _SqlWiring:
+    """Load the optional ``sql:`` section into its registry and service.
+
+    Absent section → no registry and the null service, keeping
+    ``SqlQueryService`` always resolvable with an actionable error (spec M5).
+    Present section → startup auth gate (spec §4) plus a registry whose
+    connections only open inside the app lifespan.
+    """
+    sql_cfg = ctx.section_optional(ConfigKey.SQL, SqlConfig)
+    if sql_cfg is None:
+        return _SqlWiring(config=None, registry=None, service=NullSqlQueryService())
+    _validate_sql_endpoint_auth(sql_cfg, jwt_cfg)
+    registry = _build_sql_registry(sql_cfg)
+    executors = _RegistryExecutors(registry, tuple(sql_cfg.connections))
+    service = SqlQueryService(executors=executors, config=sql_cfg)
+    return _SqlWiring(config=sql_cfg, registry=registry, service=service)
+
+
+def _build_sql_registry(sql_cfg: SqlConfig) -> ClickHouseConnectionRegistry:
+    """Construct the ClickHouse registry — no connection is opened here."""
+    # Local import: clickhouse-connect is an optional dependency
+    # (loom-kernel[clickhouse]) and must not be required without a 'sql' section.
+    from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
+
+    return ClickHouseConnectionRegistry(config=sql_cfg)
+
+
+def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, jwt_cfg: JwtAuthConfig | None) -> None:
+    """Enforce the startup gate: ``auth: jwt`` requires ``app.rest.auth.jwt`` (§4)."""
+    if jwt_cfg is not None:
+        return
+    for name, connection in sql_cfg.connections.items():
+        endpoint = connection.sql_endpoint
+        if endpoint.enabled and endpoint.auth == "jwt":
+            raise ConfigError(
+                f"SQL connection {name!r}: sql_endpoint.auth is 'jwt' but the "
+                "'app.rest.auth.jwt' section is not configured. Add the JWT "
+                "section or switch the endpoint to auth: external."
+            )
+
+
+def _register_sql_service(container: LoomContainer, service: SqlQueryService) -> None:
+    """Register ``SqlQueryService`` (APPLICATION scope) — always present (M5)."""
+    container.register(SqlQueryService, lambda: service, scope=Scope.APPLICATION)
+
+
+def _warn_sql_endpoints(sql_cfg: SqlConfig) -> None:
+    """Emit the spec §4 startup warnings for enabled SQL endpoints."""
+    for name, connection in sql_cfg.connections.items():
+        endpoint = connection.sql_endpoint
+        if not endpoint.enabled:
+            continue
+        if not connection.readonly:
+            warnings.warn(
+                f"SQL connection {name!r} has an enabled endpoint with 'readonly: false' — "
+                "callers can mutate data through it. Ensure this is intentional.",
+                stacklevel=3,
+            )
+        if endpoint.auth is None:
+            continue
+        path = endpoint.path or f"/sql/{name}"
+        warnings.warn(
+            f"SQL endpoint mounted at {path} (connection={name!r}, "
+            f"readonly={connection.readonly}, allowed_roles={len(connection.allowed_roles)}, "
+            f"auth={endpoint.auth})",
+            stacklevel=3,
+        )
+
+
+def _mount_jwt_middleware(app: FastAPI, jwt_cfg: JwtAuthConfig | None) -> None:
+    """Mount :class:`JwtAuthMiddleware` when ``app.rest.auth.jwt`` is configured.
+
+    Mounted before the optional middlewares so ``TraceIdMiddleware`` wraps it
+    and 401 bodies carry a trace id. A missing ``pyjwt`` extra surfaces at app
+    startup as an ``ImportError`` with an install hint (fail-closed).
+    """
+    if jwt_cfg is None:
+        return
+    app.add_middleware(JwtAuthMiddleware, config=jwt_cfg)
+
+
 def _compile_discovered_models(discovered: DiscoveryResult) -> None:
     reset_registry()
     compile_all(*discovered.models)
@@ -507,6 +645,14 @@ def create_app(
     middleware is mounted when ``observability.prometheus.enabled`` is
     ``true``.
 
+    The optional ``sql:`` section wires the SQL subsystem: its connections
+    open inside the app lifespan and ``SqlQueryService`` is registered in the
+    container (a null implementation raising an actionable ``ConfigError``
+    when the section is absent). Connections opting in with
+    ``sql_endpoint.enabled`` plus an explicit ``sql_endpoint.auth`` mount a
+    ``POST /sql/{name}`` endpoint; ``auth: jwt`` additionally requires the
+    ``app.rest.auth.jwt`` section, which mounts ``JwtAuthMiddleware``.
+
     Args:
         *config_paths: One or more paths to YAML configuration files.
         code_path: Optional override for ``app.code_path``.  Resolved relative
@@ -542,6 +688,7 @@ def create_app(
 
     ctx = ConfigContext.from_yaml(*config_paths)
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
+    sql = _resolve_sql(ctx, app_cfg.rest.auth.jwt)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
@@ -560,10 +707,16 @@ def create_app(
         metrics=metrics_adapter,
     )
     _configure_job_service(ctx, result, observability_runtime)
+    _register_sql_service(result.container, sql.service)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        async with wiring.lifespan_init():
+        async with AsyncExitStack() as stack:
+            # Registry first (outermost): its clients close even when the
+            # persistence lifespan fails to start or to shut down.
+            if sql.registry is not None:
+                await stack.enter_async_context(sql.registry)
+            await stack.enter_async_context(wiring.lifespan_init())
             yield
 
     app = create_fastapi_app(
@@ -576,5 +729,14 @@ def create_app(
         redoc_url=app_cfg.rest.redoc_url,
         lifespan=lifespan,
     )
+    _mount_jwt_middleware(app, app_cfg.rest.auth.jwt)
     _mount_optional_middlewares(app, metrics_cfg, metrics_registry)
+    if sql.config is not None:
+        bind_sql_endpoints(
+            app,
+            service=sql.service,
+            config=sql.config,
+            observability_runtime=observability_runtime,
+        )
+        _warn_sql_endpoints(sql.config)
     return app

@@ -28,6 +28,29 @@ services:
     environment:
       PREFECT_UI_API_URL: http://localhost:4200/api
 
+  # ClickHouse for the SQL API integration tests (tests/integration/sql).
+  # Init SQL creates the canonical users/roles grants matrix (spec §2).
+  # HTTP interface exposed on host port 18123 to avoid colliding with other services.
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3
+    ports:
+      - "18123:8123"
+    networks: [loom_net]
+    environment:
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./tests/integration/sql/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   prefect-worker:
     image: prefecthq/prefect:3-latest
     command: >

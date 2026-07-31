@@ -72,6 +72,19 @@ def _skip_duplicate_reexports(
         ("loom.etl.lineage", "ETLObservabilityConfig"),
         ("loom.testing", "CompilationError"),
         ("loom.rest.model", "PaginationMode"),
+        # loom.core.sql re-exports: canonical docs live in loom.core.sql.abc
+        # and loom.core.sql.config, both listed in reference/api/core.rst.
+        ("loom.core.sql", "RoleNotAllowedError"),
+        ("loom.core.sql", "RoleRequiredError"),
+        ("loom.core.sql", "SqlColumn"),
+        ("loom.core.sql", "SqlConfig"),
+        ("loom.core.sql", "SqlConnectionConfig"),
+        ("loom.core.sql", "SqlEndpointConfig"),
+        ("loom.core.sql", "SqlExecutionError"),
+        ("loom.core.sql", "SqlExecutionOptions"),
+        ("loom.core.sql", "SqlExecutor"),
+        ("loom.core.sql", "SqlQueryResult"),
+        ("loom.core.sql", "UnknownConnectionError"),
     }
     if (current_module, name) in duplicated_reexports:
         return True
