@@ -96,14 +96,14 @@ jobs:
           set -euo pipefail
           while IFS= read -r path; do
             case "${path}" in
-              pyproject.toml|uv.lock) ;;
+              pyproject.toml|uv.lock|CHANGELOG.md) ;;
               *)
                 echo "Release actions modified unexpected tracked file: ${path}"
                 exit 1
                 ;;
             esac
           done < <(git diff --name-only HEAD)
-          git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock
+          git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock CHANGELOG.md
           if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
             echo "Tracked checkout remains dirty after restoring known action side effects."
             git status --short --untracked-files=no
