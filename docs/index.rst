@@ -63,6 +63,7 @@ Companion demo application:
    rest/autocrud
    rest/use-case-dsl
    rest/celery
+   rest/sql
    rest/examples
    rest/testing
 

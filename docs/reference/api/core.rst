@@ -38,3 +38,14 @@ Config
    :toctree: generated
 
    loom.core.config
+
+SQL
+---
+
+.. autosummary::
+   :toctree: generated
+
+   loom.core.sql
+   loom.core.sql.abc
+   loom.core.sql.config
+   loom.core.sql.clickhouse
