@@ -45,7 +45,7 @@ from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest.auth import JwtAuthConfig, JwtAuthMiddleware
 from loom.rest.fastapi.app import create_fastapi_app
-from loom.rest.fastapi.sql import bind_sql_endpoints
+from loom.rest.fastapi.sql import _role_exposure_notice, bind_sql_endpoints
 from loom.rest.middleware import TraceIdMiddleware
 
 if TYPE_CHECKING:
@@ -502,8 +502,10 @@ def _warn_sql_endpoints(sql_cfg: SqlConfig) -> None:
         path = endpoint.path or f"/sql/{name}"
         warnings.warn(
             f"SQL endpoint mounted at {path} (connection={name!r}, "
-            f"readonly={connection.readonly}, allowed_roles={len(connection.allowed_roles)}, "
-            f"auth={endpoint.auth})",
+            f"readonly={connection.readonly}, auth={endpoint.auth}, "
+            f"allowed_roles={len(connection.allowed_roles)}). "
+            "'auth' only authenticates the caller, it never restricts the role the caller "
+            f"asks for: {_role_exposure_notice(len(connection.allowed_roles))}.",
             stacklevel=3,
         )
 

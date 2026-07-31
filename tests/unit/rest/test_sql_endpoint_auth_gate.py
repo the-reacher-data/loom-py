@@ -129,6 +129,25 @@ def test_auth_external_warns_at_startup(tmp_path: Path) -> None:
         create_app(config_path)
 
 
+def test_multi_role_endpoint_warns_about_missing_privilege_separation(tmp_path: Path) -> None:
+    """The startup warning must state that any caller may pick any allowlisted role.
+
+    ``allowed_roles`` is a shared ceiling for the connection, not a per-caller
+    permission, so the warning may never read as if authentication restricted
+    the requested role (threat model in ``docs/rest/sql.md``).
+    """
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section(
+            {"enabled": True, "auth": "jwt"},
+            allowed_roles=["role_viz_reader", "role_viz_sales"],
+        ),
+        jwt_section=_JWT_SECTION,
+    )
+    with pytest.warns(UserWarning, match="NO privilege separation per identity"):
+        create_app(config_path)
+
+
 def test_enabled_endpoint_without_auth_field_does_not_mount(tmp_path: Path) -> None:
     """``enabled: true`` without ``auth`` boots the app but mounts nothing (B2)."""
     config_path = _write_project(tmp_path, sql_section=_sql_section({"enabled": True}))
