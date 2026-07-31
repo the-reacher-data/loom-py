@@ -1,3 +1,18 @@
+# 🚀 Release 0.16.1 ([#92](https://github.com/the-reacher-data/loom-py/pull/92)) ([`91e73c5`](https://github.com/the-reacher-data/loom-py/commit/91e73c5adfdc2646c6f6180286130ab0282f2a19))
+
+
+
+## 🐛 Fixes
+### ci
+- **ci:** allow CHANGELOG.md as a known release action side effect
+
+
+
+
+
+
+
+
 # 🚀 Release 0.16.0 ([#88](https://github.com/the-reacher-data/loom-py/pull/88)) ([`c04d61e`](https://github.com/the-reacher-data/loom-py/commit/c04d61ed88d9d46f954e9b851290e7cce22fbf46))
 
 
