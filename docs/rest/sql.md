@@ -2,8 +2,15 @@
 
 `loom-kernel` provides an injectable `SqlQueryService` for running SQL through named,
 config-driven connections, plus an **optional** generic REST endpoint
-(`POST /sql/{connection}`). Every query runs with a per-request role validated against a
-per-connection allowlist — role isolation is enforced per query, never per session.
+(`POST /sql/{connection}`). Every query carries the role requested by the caller,
+validated against a per-connection allowlist and applied as a per-query setting, so
+roles never leak across queries sharing the connection pool.
+
+```{important}
+The allowlist is a **shared ceiling for the connection**, not a per-caller permission.
+The framework does **not** yet bind an authenticated identity to a role — read
+{ref}`sql-threat-model` before exposing the REST endpoint.
+```
 
 The first supported backend is ClickHouse. The `sql:` section is backend-agnostic:
 each connection declares its `backend` explicitly.
@@ -14,7 +21,7 @@ each connection declares its `backend` explicitly.
 
 ```bash
 pip install "loom-kernel[clickhouse]"
-# and, if you protect the endpoint with the native JWT middleware:
+# and, if you authenticate the endpoint with the native JWT middleware:
 pip install "loom-kernel[jwt]"
 ```
 
@@ -27,8 +34,9 @@ Minimum versions (enforced fail-closed at startup):
 
 At startup the registry asserts driver support and runs a sentinel-role probe
 (`SELECT 1` with a nonexistent role must be rejected with code 511). If the server
-silently accepts the sentinel role, startup **aborts** — role enforcement is never
-assumed.
+silently accepts the sentinel role, startup **aborts** — the server's role enforcement
+is never assumed. The probe only proves that roles are applied; it says nothing about
+which caller may ask for which role.
 
 ---
 
@@ -44,6 +52,8 @@ sql:
     analytics:
       backend: clickhouse
       url: ${oc.env:CLICKHOUSE_ANALYTICS_URL}   # secret via env/SSM — never inline
+      # Shared ceiling for the CONNECTION, never a per-caller permission: read the
+      # threat model before listing more than one role behind a mounted endpoint.
       allowed_roles: [role_viz_reader, role_viz_sales]
       default_role: role_viz_reader   # required if sql_endpoint.enabled and no allowlist
       readonly: true                  # default: readonly=1 on every query
@@ -113,6 +123,9 @@ A connection mounts `POST /sql/{connection}` only with **double opt-in**:
 |--------------|---------|
 | `jwt` | Requires the `app.rest.auth.jwt` section; startup fails with `ConfigError` if it is missing |
 | `external` | Explicit acknowledgement that the operator provides authentication in front of the app |
+
+Both values only decide **who gets in**. Neither restricts which role a caller that got
+in may request — that is the subject of {ref}`sql-threat-model`.
 
 Request body — backend settings are rejected by schema:
 
@@ -185,8 +198,13 @@ The role policy is fail-closed:
    rejects every caller-provided role.
 2. Without a request role, `default_role` applies; without `default_role` the request
    is refused (403). Queries never run with the connection user's full default roles.
-3. The effective role is sent as a per-query setting — isolation across the
-   connection pool is guaranteed per query.
+3. The effective role is sent as a per-query setting — no role leaks from one query
+   to the next across the shared connection pool.
+
+What this policy does **not** do: it never compares the requested role against the
+caller's identity. `role` arrives in the request body and is checked only against the
+connection allowlist, so the allowlist bounds what the *connection* can ever do, not
+what a *given caller* is entitled to. See {ref}`sql-threat-model`.
 
 Provision ClickHouse with exactly these statements per data role and connection user:
 
@@ -207,14 +225,88 @@ ALTER USER <user> DEFAULT ROLE NONE;    -- no privileges when no role is applied
 | Connection user | `ALTER USER ... DEFAULT ROLE NONE` | Fail-closed: no privileges without an explicit role |
 | Startup probe | — | Needs no grant (sentinel role must not exist) |
 
+Note the direct consequence of row two: the connection user must hold **every**
+allowlisted role for any of them to be assumable, so ClickHouse will happily grant a
+caller the most privileged one it is asked for. Keep the allowlist as small as the
+threat model below demands.
+
+---
+
+(sql-threat-model)=
+
+## Threat model
+
+```{danger}
+**`allowed_roles` is a shared ceiling, not a per-caller permission, and
+`auth: jwt` authenticates without authorizing.** Read this section in full before
+mounting the REST endpoint.
+```
+
+**1. The allowlist bounds the connection, never the caller.** The `role` field travels
+in the request body and is validated only against `allowed_roles` for that connection.
+Listing three roles means every caller reaching the route may pick any of the three —
+including the most privileged one.
+
+**2. `auth: jwt` proves identity and stops there.** The middleware verifies the
+signature, `exp`/`nbf` and the configured `aud`/`iss`, then attaches the claims to
+`scope["state"]["jwt_claims"]`. **Nothing in the framework reads those claims to decide
+which role a caller may request.** Any bearer of any valid token is therefore
+indistinguishable from any other: authentication is not authorization.
+
+**3. There is no per-route authorization.** `JwtAuthMiddleware` is mounted for the
+whole application, not per endpoint. A token valid for one SQL route is valid for every
+SQL route mounted in the same app, so a caller effectively holds the **union of the
+allowlists of all mounted endpoints**. Deploying one connection per business role does
+**not** isolate anything as long as the endpoints share the app and its middleware.
+
+**4. ClickHouse cannot rescue this.** The server rejects unknown roles (511
+`UNKNOWN_ROLE`) and non-granted roles (512 `SET_NON_GRANTED_ROLE`), which protects
+against typos and role injection. It does **not** protect against a caller choosing a
+more privileged role, because the connection user is granted *every* role in the
+allowlist by design — that is exactly what makes them assumable. From the server's
+point of view, the escalated query is a legitimate `SET ROLE` by a user who holds it.
+
+**Measured, not theoretical.** Against ClickHouse 25.3 with a single credential and
+only the `role` parameter changed: the default role returned 497 `ACCESS_DENIED`, while
+`role=role_viz_reader` returned 1,171,206 rows from a table holding PII.
+
+```{warning}
+**Only defensible configuration today: a single-role endpoint.** Until the framework
+binds role selection to verified identity claims, mount **one** SQL endpoint with an
+empty `allowed_roles: []` (which makes the service reject every caller-supplied role)
+and a fixed `default_role`. Every caller then runs with exactly that one role: no
+escalation is possible — and no per-caller distinction exists either. Any
+`allowed_roles` with more than one entry is an accepted privilege-escalation risk that
+must be compensated outside the framework (per-route authorization in a gateway, one
+deployment per role, or network isolation).
+```
+
+```yaml
+sql:
+  connections:
+    analytics:
+      backend: clickhouse
+      url: ${oc.env:CLICKHOUSE_ANALYTICS_URL}
+      allowed_roles: []                # rejects every caller-supplied role
+      default_role: role_viz_reader    # the only role queries ever run with
+      sql_endpoint:
+        enabled: true
+        auth: jwt
+```
+
 ---
 
 ## Hardening
 
 - **Never expose the endpoint without authentication.** The `auth` field is
   mandatory to mount; `external` is an explicit acknowledgement, not a bypass. Every
-  mounted endpoint emits a startup warning with its path, connection, readonly flag,
-  role count and auth mode.
+  mounted endpoint emits a startup warning naming its path, connection, readonly flag,
+  auth mode and role count — and spelling out that any caller reaching the route can
+  request any of those roles.
+- **Prefer one role per endpoint.** With more than one allowlisted role there is no
+  privilege separation per identity (see {ref}`sql-threat-model`); the role count in
+  the startup warning is the number of distinct privilege sets any single caller can
+  obtain.
 - **No SOURCES grants for the connection user.** Table functions such as `url()`,
   `s3()`, `remote()`, `mysql()` and `postgresql()` enable SSRF and data exfiltration
   even under `readonly=1`. Do not grant them.
@@ -261,7 +353,14 @@ app:
 - On success the verified claims are attached to `scope["state"]["jwt_claims"]`; on
   failure the response is a 401 with the standard error body and no hint about the
   cryptographic reason.
+- **The claims are exposed, not enforced.** No framework component reads
+  `jwt_claims` to authorize a request, a route or a SQL role — see
+  {ref}`sql-threat-model`.
 - `exclude_paths` bypasses authentication for exact paths (docs, scrape endpoints).
-- When the section is present, `create_app` mounts the middleware for the whole app;
-  a missing `pyjwt` extra fails at startup with an install hint — the API never
-  starts silently unprotected.
+- When the section is present, `create_app` mounts the middleware for the **whole
+  app** — authentication is all-or-nothing, there is no per-route authorization. A
+  missing `pyjwt` extra fails at startup with an install hint, so the API never starts
+  silently unauthenticated.
+- Set `audience` (and `issuer`) whenever the endpoint is reachable by tokens minted for
+  other services: without them, any token signed by the same key or issuer is accepted,
+  whatever it was issued for.

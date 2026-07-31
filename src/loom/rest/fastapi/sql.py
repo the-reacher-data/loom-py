@@ -56,6 +56,31 @@ class _SqlQueryRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unkno
     offset: int = 0
 
 
+def _role_exposure_notice(allowed_role_count: int) -> str:
+    """State plainly who may request which role on a mounted endpoint.
+
+    ``allowed_roles`` is a shared ceiling for the connection, not a per-caller
+    permission: authentication proves an identity but never binds it to a role,
+    so the wording must not suggest otherwise (threat model in
+    ``docs/rest/sql.md``).
+    """
+    if allowed_role_count == 0:
+        return (
+            "the allowlist is empty, so every caller-supplied role is rejected and "
+            "queries run only with 'default_role' — single-role endpoint"
+        )
+    if allowed_role_count == 1:
+        return (
+            "any caller that reaches this route may request its single allowed role; "
+            "authentication does not bind an identity to a role"
+        )
+    return (
+        f"any caller that reaches this route may request ANY of these "
+        f"{allowed_role_count} roles, so there is NO privilege separation per identity — "
+        "every caller effectively holds the union of their privileges"
+    )
+
+
 def _encode_exotic(obj: Any) -> str:
     """Encode backend types msgspec does not handle natively (spec §3 matrix).
 
@@ -224,12 +249,15 @@ def _mount_endpoint(
         include_in_schema=endpoint.include_in_schema,
     )
     _logger.warning(
-        "SQL endpoint mounted: path=%s connection=%s readonly=%s allowed_roles=%d auth=%s",
+        "SQL endpoint mounted: path=%s connection=%s readonly=%s auth=%s allowed_roles=%d. "
+        "'auth' only authenticates the caller, it never restricts the role the caller asks "
+        "for: %s",
         path,
         name,
         connection.readonly,
-        len(connection.allowed_roles),
         endpoint.auth,
+        len(connection.allowed_roles),
+        _role_exposure_notice(len(connection.allowed_roles)),
     )
 
 
