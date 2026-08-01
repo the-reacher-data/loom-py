@@ -14,6 +14,7 @@ import msgspec
 import prometheus_client
 from fastapi import FastAPI
 from prometheus_client import CollectorRegistry
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
@@ -44,6 +45,7 @@ from loom.core.sql.config import roles_need_identity_binding
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
+from loom.rest._body import DEFAULT_MAX_BODY_BYTES, BodySizeLimitMiddleware
 from loom.rest.auth import (
     AuthenticationMiddleware,
     Authenticator,
@@ -51,6 +53,8 @@ from loom.rest.auth import (
     JwtAuthenticator,
 )
 from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
+from loom.rest.cors import CorsConfig
+from loom.rest.fastapi._exclusions import verify_exclusion_paths
 from loom.rest.fastapi.app import create_fastapi_app
 from loom.rest.fastapi.sql import (
     _connection_mechanism,
@@ -95,7 +99,10 @@ class _RestConfig(msgspec.Struct, kw_only=True):
     version: str = "0.1.0"
     docs_url: str | None = "/docs"
     redoc_url: str | None = "/redoc"
+    openapi_url: str | None = "/openapi.json"
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     auth: _RestAuthConfig = msgspec.field(default_factory=_RestAuthConfig)
+    cors: CorsConfig | None = None
 
 
 class _AppConfig(msgspec.Struct, kw_only=True):
@@ -473,8 +480,15 @@ class _AuthWiring:
 def _resolve_authentication(
     app_cfg: _AppConfig,
     authenticator: Authenticator | None,
+    documentation_paths: tuple[str, ...],
 ) -> _AuthWiring:
     """Pick the single authentication mechanism of the application.
+
+    Args:
+        app_cfg: Parsed ``app`` section.
+        authenticator: Mechanism supplied by the composition root, if any.
+        documentation_paths: Effective docs/schema/metrics paths, used as the
+            default exclusion list.
 
     Raises:
         ConfigError: When both a custom authenticator and the built-in JWT
@@ -492,16 +506,43 @@ def _resolve_authentication(
     if authenticator is not None:
         return _AuthWiring(
             authenticator=authenticator,
-            exclude_paths=auth_cfg.exclude_paths,
+            exclude_paths=_effective_exclusions(auth_cfg.exclude_paths, documentation_paths),
             jwt_config=None,
         )
     if jwt_cfg is not None:
         return _AuthWiring(
             authenticator=JwtAuthenticator(jwt_cfg),
-            exclude_paths=jwt_cfg.exclude_paths,
+            exclude_paths=_effective_exclusions(jwt_cfg.exclude_paths, documentation_paths),
             jwt_config=jwt_cfg,
         )
     return _AuthWiring(authenticator=None, exclude_paths=(), jwt_config=None)
+
+
+def _effective_exclusions(
+    configured: tuple[str, ...],
+    documentation_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Resolve which paths are served without authentication.
+
+    Left at its default, the exclusion list follows the paths the application
+    actually publishes: a hardcoded ``/docs`` excludes nothing when the operator
+    moved Swagger elsewhere, while still opening a hole if a route captures it.
+    An explicit list is honoured as written.
+    """
+    if configured != DEFAULT_EXCLUDE_PATHS:
+        return tuple(dict.fromkeys(configured))
+    return documentation_paths
+
+
+def _documentation_paths(
+    rest_cfg: _RestConfig,
+    metrics_cfg: PrometheusObservabilityConfig,
+) -> tuple[str, ...]:
+    """Return the effective docs, schema and metrics paths of the application."""
+    candidates = [rest_cfg.docs_url, rest_cfg.redoc_url, rest_cfg.openapi_url]
+    if metrics_cfg.enabled:
+        candidates.append(_metrics_path(metrics_cfg))
+    return tuple(dict.fromkeys(path for path in candidates if path))
 
 
 def _resolve_sql(ctx: ConfigContext, auth: _AuthWiring) -> _SqlWiring:
@@ -723,19 +764,50 @@ def _metrics_path(cfg: PrometheusObservabilityConfig) -> str:
 
 def _mount_optional_middlewares(
     app: FastAPI,
+    rest_cfg: _RestConfig,
     metrics_cfg: PrometheusObservabilityConfig,
     registry: CollectorRegistry | None,
 ) -> None:
-    """Mount request tracing and metrics middlewares.
+    """Mount the body cap, request tracing, CORS and metrics middlewares.
+
+    Order matters and is the reason this lives in one place.  Each call wraps
+    the previous one, so the body cap ends up outside authentication (an
+    oversized body is refused before any token is verified) while tracing wraps
+    the cap (its ``413`` still carries a trace id).  CORS goes outermost so a
+    preflight ``OPTIONS`` is answered without ever reaching the authentication
+    middleware, which would refuse it for carrying no credentials.
 
     Args:
         app: FastAPI application to mutate.
+        rest_cfg: Parsed ``app.rest`` section.
         metrics_cfg: Metrics feature config.
         registry: Optional Prometheus registry override.
     """
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=rest_cfg.max_body_bytes)
     app.add_middleware(TraceIdMiddleware)
     if metrics_cfg.enabled:
         _mount_metrics(app, metrics_cfg, registry)
+    _mount_cors(app, rest_cfg.cors)
+
+
+def _mount_cors(app: FastAPI, cors_cfg: CorsConfig | None) -> None:
+    """Mount the CORS middleware when ``app.rest.cors`` is configured.
+
+    Absent section means no middleware at all: an application that never
+    intended to be called cross-origin does not start answering preflights.
+    """
+    if cors_cfg is None:
+        return
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(cors_cfg.allow_origins),
+        allow_origin_regex=cors_cfg.allow_origin_regex,
+        allow_methods=list(cors_cfg.allow_methods),
+        allow_headers=list(cors_cfg.allow_headers),
+        allow_credentials=cors_cfg.allow_credentials,
+        expose_headers=list(cors_cfg.expose_headers),
+        max_age=cors_cfg.max_age,
+    )
 
 
 def _mount_metrics(
@@ -847,11 +919,16 @@ def create_app(
 
     ctx = ConfigContext.from_yaml(*config_paths)
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
-    auth = _resolve_authentication(app_cfg, authenticator)
-    sql = _resolve_sql(ctx, auth)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
+
+    auth = _resolve_authentication(
+        app_cfg,
+        authenticator,
+        _documentation_paths(app_cfg.rest, metrics_cfg),
+    )
+    sql = _resolve_sql(ctx, auth)
 
     config_file = Path(config_paths[0]).resolve()
     effective_code_path = Path(code_path) if code_path is not None else Path(app_cfg.code_path)
@@ -887,10 +964,11 @@ def create_app(
         version=app_cfg.rest.version,
         docs_url=app_cfg.rest.docs_url,
         redoc_url=app_cfg.rest.redoc_url,
+        openapi_url=app_cfg.rest.openapi_url,
         lifespan=lifespan,
     )
     _mount_authentication(app, auth)
-    _mount_optional_middlewares(app, metrics_cfg, metrics_registry)
+    _mount_optional_middlewares(app, app_cfg.rest, metrics_cfg, metrics_registry)
     if sql.config is not None:
         bind_sql_endpoints(
             app,
@@ -900,4 +978,34 @@ def create_app(
             observability_runtime=observability_runtime,
         )
         _warn_sql_endpoints(sql.config, auth)
+    # Last: every route the application will ever serve is registered by now,
+    # which is what makes the exclusion check meaningful.
+    verify_exclusion_paths(app, auth.exclude_paths)
+    _warn_anonymous_schema(app_cfg.rest, auth)
     return app
+
+
+def _warn_anonymous_schema(rest_cfg: _RestConfig, auth: _AuthWiring) -> None:
+    """Warn when an authenticated application publishes its schema anonymously.
+
+    The OpenAPI document lists every route, parameter and field: it is the map
+    of the attack surface. An application that bothers to authenticate and then
+    serves that map without credentials is almost always an oversight.
+    """
+    if auth.authenticator is None:
+        return
+    anonymous = [
+        path
+        for path in (rest_cfg.openapi_url, rest_cfg.docs_url, rest_cfg.redoc_url)
+        if path and path in auth.exclude_paths
+    ]
+    if not anonymous:
+        return
+    warnings.warn(
+        f"Authentication is enabled but {', '.join(anonymous)} "
+        f"{'are' if len(anonymous) > 1 else 'is'} served without it: the API schema "
+        "describes every route, parameter and field of this service. Set "
+        "'app.rest.openapi_url: null' (and the docs urls) in production, or remove "
+        "them from the authentication 'exclude_paths'.",
+        stacklevel=3,
+    )

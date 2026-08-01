@@ -208,6 +208,54 @@ app = create_app("config/app.yaml", authenticator=ApiKeyAuthenticator(store))
 Everything else — `requires_roles`, `Caller()`, SQL role resolution — works unchanged,
 because none of it knows what a token is.
 
+### Paths served without authentication
+
+Left unset, `exclude_paths` follows the paths the application actually publishes —
+`docs_url`, `redoc_url`, `openapi_url` and the metrics endpoint when enabled — instead
+of a hardcoded list that goes stale the moment an operator moves Swagger.
+
+```{warning}
+Exclusions are matched by the **router**, not by string comparison. A route declared
+as `/{tenant}` answers `/openapi.json` too, so excluding the schema would serve a
+business route with no credentials at all. `create_app` walks the registered routes at
+startup and refuses to boot when an exclusion is captured that way.
+```
+
+An authenticated application that still publishes its OpenAPI document anonymously
+gets a startup warning: the schema lists every route, parameter and field. Set
+`app.rest.openapi_url: null` (with `docs_url` and `redoc_url`) in production.
+
+---
+
+## Request limits and CORS
+
+```yaml
+app:
+  rest:
+    max_body_bytes: 1048576        # 1 MiB, applied to every route
+    cors:
+      allow_origins: ["https://app.example.com"]
+      allow_credentials: true
+      allow_methods: [GET, POST]
+```
+
+- **Body size.** Neither uvicorn nor Starlette caps a request body, so a chunked upload
+  with no end takes the worker down. The cap is enforced by a middleware — it covers
+  routes the application mounted by hand too — and endpoints with a stricter budget,
+  such as the SQL one, apply theirs on top.
+- **Pagination.** `?limit=` is clamped to `RestApiDefaults.max_limit` (1000 by
+  default) and `?page=` must be a positive integer; anything else answers `400`
+  instead of reaching the database as a full scan.
+- **CORS** is only mounted when the section exists. `allow_origins: ["*"]` together
+  with `allow_credentials: true` fails at config parse: Starlette does not reject that
+  pair, it starts reflecting the caller's `Origin` and allowing credentials, which
+  turns the wildcard into "any site, with cookies". Preflight `OPTIONS` requests are
+  answered before authentication — they carry no credentials by definition — while the
+  request that follows is authenticated normally.
+- **Trace ids** supplied by the caller are accepted only when they match
+  `[A-Za-z0-9._-]{1,128}`; anything else is replaced by a generated one, because the
+  value is echoed back and reaches every log line.
+
 ---
 
 ## Identity in jobs

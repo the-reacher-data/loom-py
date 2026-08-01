@@ -65,6 +65,8 @@ class CompiledRoute:
         effective_requires_roles: Resolved roles granting access to this
             route, after applying route → interface precedence.  Empty means
             the route declares no role requirement.
+        effective_max_limit: Ceiling applied to the ``?limit=`` query
+            parameter of this route.
         read_only: ``True`` for GET routes — instructs the executor to skip
             the ``UnitOfWork`` transaction for this request.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
@@ -82,6 +84,7 @@ class CompiledRoute:
     interface_tags: tuple[str, ...] = ()
     execute_param_types: tuple[tuple[str, Any], ...] = ()
     effective_requires_roles: tuple[str, ...] = ()
+    effective_max_limit: int = 1000
 
 
 class RestInterfaceCompiler:
@@ -182,6 +185,7 @@ class RestInterfaceCompiler:
                     interface_tags=interface.tags,
                     execute_param_types=self._resolve_execute_param_types(route.use_case),
                     effective_requires_roles=self._resolve_requires_roles(route, interface),
+                    effective_max_limit=self._defaults.max_limit,
                 )
             )
 

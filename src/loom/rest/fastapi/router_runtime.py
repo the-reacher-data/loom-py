@@ -50,6 +50,7 @@ from loom.core.repository.abc.query import (
 )
 from loom.core.tracing import get_trace_id
 from loom.core.use_case.factory import UseCaseFactory
+from loom.rest._body import BodyTooLarge
 from loom.rest.compiler import CompiledRoute
 from loom.rest.constants import QueryParam
 from loom.rest.errors import ErrorField, HttpErrorMapper
@@ -261,15 +262,42 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
     return filters
 
 
+def _positive_int(query_params: QueryParams, name: str, default: int) -> int:
+    """Read a positive integer query parameter, refusing anything else.
+
+    A non-numeric value used to raise inside the handler and surface as a 500;
+    it is a client error and must read as one.
+    """
+    raw = query_params.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query parameter {name!r} must be an integer, got {raw!r}.",
+        ) from exc
+    if value < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query parameter {name!r} must be greater than or equal to 1.",
+        )
+    return value
+
+
 def _build_query_spec(
     request: Request,
     *,
     default_pagination_mode: PaginationMode,
     allow_pagination_override: bool,
+    max_limit: int,
 ) -> QuerySpec:
     query_params = request.query_params
-    page = int(query_params.get(QueryParam.PAGE, _DEFAULT_PAGE))
-    limit = int(query_params.get(QueryParam.LIMIT, _DEFAULT_LIMIT))
+    page = _positive_int(query_params, QueryParam.PAGE, _DEFAULT_PAGE)
+    # Clamped rather than refused: a caller asking for more rows than the API
+    # serves gets the maximum, but never turns one request into a full scan.
+    limit = min(_positive_int(query_params, QueryParam.LIMIT, _DEFAULT_LIMIT), max_limit)
     cursor = query_params.get(QueryParam.AFTER) or query_params.get(QueryParam.CURSOR)
     pagination = _parse_pagination_mode(
         query_params.get(QueryParam.PAGINATION),
@@ -403,6 +431,7 @@ def _make_handler(
                         request,
                         default_pagination_mode=compiled_route.effective_pagination_mode,
                         allow_pagination_override=compiled_route.effective_allow_pagination_override,
+                        max_limit=compiled_route.effective_max_limit,
                     )
                 payload: dict[str, Any] | None = None
                 if has_input_binding:
@@ -421,10 +450,24 @@ def _make_handler(
             return MsgspecJSONResponse(content=result, status_code=status_code)
         except HTTPException:
             raise
+        except BodyTooLarge:
+            # Answered as 413 by BodySizeLimitMiddleware: swallowing it here
+            # would report a 500 for a perfectly diagnosable client error.
+            raise
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
         except Exception:
-            return _internal_error_response(get_trace_id() or "")
+            trace_id = get_trace_id() or ""
+            # Without this the caller holds a trace id with no counterpart in
+            # the logs: an untraceable 500, and an attacker who triggers one
+            # leaves no record at all.
+            _logger.exception(
+                "Unhandled error in %s (route=%s trace_id=%s)",
+                uc_type.__name__,
+                compiled_route.full_path,
+                trace_id,
+            )
+            return _internal_error_response(trace_id)
 
     sig_params: list[inspect.Parameter] = [
         inspect.Parameter(

@@ -213,12 +213,15 @@ class RestApiDefaults:
         allow_pagination_override: Whether query parameters may override the
             configured pagination mode.  Defaults to ``True`` for backwards
             compatibility.
+        max_limit: Ceiling applied to ``?limit=``.  A larger request is clamped
+            to this value, so no single call can turn into a full scan.
 
     Example::
 
         defaults = RestApiDefaults(
             pagination_mode=PaginationMode.CURSOR,
             profile_default="summary",
+            max_limit=200,
         )
     """
 
@@ -226,3 +229,4 @@ class RestApiDefaults:
     allow_pagination_override: bool = True
     profile_default: str = "default"
     allowed_profiles: tuple[str, ...] = field(default_factory=tuple)
+    max_limit: int = 1000
