@@ -38,6 +38,7 @@ Identity
    :toctree: generated
 
    loom.core.identity
+   loom.core.identity.wire
 
 Config
 ------
