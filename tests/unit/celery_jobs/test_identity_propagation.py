@@ -181,6 +181,7 @@ async def test_a_job_declaring_a_caller_fails_closed_on_a_legacy_envelope() -> N
     compiler = UseCaseCompiler()
     compiler.compile(_ReportJob)
     executor = RuntimeExecutor(compiler)
+    job = _ReportJob()
 
     with pytest.raises(Unauthenticated, match="_ReportJob"):
-        await executor.execute(_ReportJob())
+        await executor.execute(job)

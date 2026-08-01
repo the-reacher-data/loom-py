@@ -95,16 +95,19 @@ def test_an_unreadable_envelope_decodes_to_no_identity(payload: Any) -> None:
 def test_non_string_roles_are_dropped() -> None:
     """A tampered envelope cannot smuggle a non-string role into an allowlist check."""
     identity = decode_identity({"subject": _SUBJECT, "roles": ["role_a", 7, None]})
-    assert identity is not None and identity.roles == ("role_a",)
+    assert identity is not None
+    assert identity.roles == ("role_a",)
 
 
 def test_non_string_attributes_are_dropped() -> None:
     """Attributes are string-valued by contract, on the wire as much as in memory."""
     identity = decode_identity({"subject": _SUBJECT, "attributes": {"a": "1", "b": 2}})
-    assert identity is not None and dict(identity.attributes) == {"a": "1"}
+    assert identity is not None
+    assert dict(identity.attributes) == {"a": "1"}
 
 
 def test_a_missing_mechanism_decodes_to_an_empty_label() -> None:
     """The mechanism is an audit label, not an authorization input: never mandatory."""
     identity = decode_identity({"subject": _SUBJECT})
-    assert identity is not None and identity.mechanism == ""
+    assert identity is not None
+    assert identity.mechanism == ""

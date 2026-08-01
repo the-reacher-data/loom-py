@@ -62,7 +62,7 @@ def _templated_matches(app: FastAPI, path: str) -> list[str]:
         template = getattr(route, "path", None)
         if template is None or template == path:
             continue
-        if route.matches(scope)[0] is not Match.NONE:
+        if route.matches(scope)[0] != Match.NONE:
             matched.append(template)
     return matched
 

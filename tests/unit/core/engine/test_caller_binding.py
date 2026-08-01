@@ -64,7 +64,8 @@ async def _run(use_case_type: type[UseCase[object, str]], **kwargs: object) -> s
 def test_the_marker_compiles_into_a_caller_binding() -> None:
     """``Caller()`` is recognised at startup, exactly like the other markers."""
     plan = UseCaseCompiler().compile(WhoAmIUseCase)
-    assert plan.caller_binding is not None and plan.caller_binding.name == "caller"
+    assert plan.caller_binding is not None
+    assert plan.caller_binding.name == "caller"
 
 
 def test_the_caller_parameter_is_not_a_primitive_parameter() -> None:
@@ -123,8 +124,10 @@ async def test_a_missing_identity_is_refused_instead_of_defaulted() -> None:
     compiler = UseCaseCompiler()
     compiler.compile(WhoAmIUseCase)
     executor = RuntimeExecutor(compiler)
+    use_case = WhoAmIUseCase()
+
     with pytest.raises(Unauthenticated):
-        await executor.execute(WhoAmIUseCase())
+        await executor.execute(use_case)
 
 
 async def test_the_refusal_names_the_use_case_and_the_parameter() -> None:
@@ -132,8 +135,10 @@ async def test_the_refusal_names_the_use_case_and_the_parameter() -> None:
     compiler = UseCaseCompiler()
     compiler.compile(WhoAmIUseCase)
     executor = RuntimeExecutor(compiler)
+    use_case = WhoAmIUseCase()
+
     with pytest.raises(Unauthenticated, match="WhoAmIUseCase"):
-        await executor.execute(WhoAmIUseCase())
+        await executor.execute(use_case)
 
 
 async def test_an_identity_passed_to_a_use_case_that_declares_none_is_ignored() -> None:
