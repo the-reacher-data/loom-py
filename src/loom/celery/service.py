@@ -32,6 +32,8 @@ from celery import Celery  # type: ignore[import-untyped]
 
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.identity import current_identity
+from loom.core.identity.wire import encode_identity
 from loom.core.job.context import add_pending_dispatch
 from loom.core.job.handle import JobGroup, JobHandle
 from loom.core.job.job import Job
@@ -69,6 +71,7 @@ class _PendingCeleryDispatch:
     payload: dict[str, Any]
     params: dict[str, Any] | None
     trace_id: str | None
+    identity: dict[str, Any] | None
     queue: str
     countdown: int
     priority: int
@@ -95,6 +98,7 @@ class _PendingCeleryDispatch:
                     "payload": self.payload,
                     "params": self.params,
                     "trace_id": self.trace_id,
+                    "identity": self.identity,
                 },
                 task_id=self.task_id,
                 queue=self.queue,
@@ -283,7 +287,9 @@ class CeleryJobService:
                 "Pass them at construction or use InlineJobService."
             )
         instance = self._factory.build(job_type)
-        return await self._executor.execute(instance, params=params, payload=payload)
+        return await self._executor.execute(
+            instance, params=params, payload=payload, identity=current_identity()
+        )
 
     def dispatch(
         self,
@@ -305,8 +311,10 @@ class CeleryJobService:
         the current Unit of Work commits.  If the UoW rolls back, the
         pending entry is discarded and no task reaches the broker.
 
-        The current trace ID is captured at registration time so it is
-        propagated to the Celery worker even though the send happens later.
+        The current trace ID and caller identity are captured at registration
+        time so they are propagated to the Celery worker even though the send
+        happens later.  Both travel inside the envelope: no context variable
+        crosses a broker.
 
         Args:
             job_type: Concrete ``Job`` subclass to dispatch.
@@ -327,6 +335,7 @@ class CeleryJobService:
         """
         task_id = str(uuid.uuid4())
         trace_id = get_trace_id()
+        identity = encode_identity(current_identity())
         eff_queue = queue or job_type.__queue__
         eff_countdown = countdown if countdown is not None else job_type.__countdown__
         eff_priority = priority if priority is not None else job_type.__priority__
@@ -349,6 +358,7 @@ class CeleryJobService:
             payload=payload or {},
             params=params,
             trace_id=trace_id,
+            identity=identity,
             queue=eff_queue,
             countdown=eff_countdown,
             priority=eff_priority,
