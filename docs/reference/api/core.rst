@@ -38,7 +38,6 @@ Identity
    :toctree: generated
 
    loom.core.identity
-   loom.core.identity.context
 
 Config
 ------

@@ -27,6 +27,7 @@ from loom.core.di.scope import Scope
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
+from loom.core.identity import Identity
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.use_case import UseCase
 
@@ -91,8 +92,10 @@ def serialize_plan(plan: ExecutionPlan) -> dict[str, Any]:
     ]
     compute_steps = [{"fn": _qname(cs.fn)} for cs in plan.compute_steps]
     rule_steps = [{"fn": _qname(rs.fn)} for rs in plan.rule_steps]
+    caller_binding = {"name": plan.caller_binding.name} if plan.caller_binding is not None else None
 
     return {
+        "caller_binding": caller_binding,
         "compute_steps": compute_steps,
         "exists_steps": exists_steps,
         "input_binding": input_binding,
@@ -223,6 +226,7 @@ class GoldenHarness:
         *,
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
+        identity: Identity | None = None,
     ) -> Any:
         """Execute a use case with injected fake repositories.
 
@@ -230,16 +234,24 @@ class GoldenHarness:
             use_case_type: UseCase subclass to execute.
             params: Primitive parameter values keyed by name.
             payload: Raw dict for ``Input()`` command construction.
+            identity: Caller the execution runs as.  Required by use cases
+                declaring ``Caller()``; pass
+                :data:`~loom.core.identity.identity.ANONYMOUS` to pin the
+                unauthenticated path.
 
         Returns:
             Result produced by the use case.
+
+        Raises:
+            loom.core.errors.Unauthenticated: If the use case declares
+                ``Caller()`` and no *identity* is given.
         """
         self._compiler.compile(use_case_type)
         container = self._build_container()
         factory = UseCaseFactory(container)
         executor = RuntimeExecutor(self._compiler)
         uc = factory.build(use_case_type)
-        return await executor.execute(uc, params=params, payload=payload)
+        return await executor.execute(uc, params=params, payload=payload, identity=identity)
 
     async def run_with_baseline(
         self,
@@ -247,6 +259,7 @@ class GoldenHarness:
         *,
         params: dict[str, Any] | None = None,
         payload: dict[str, Any] | None = None,
+        identity: Identity | None = None,
         name: str,
         max_ms: float,
         baseline_dir: Path,
@@ -261,6 +274,7 @@ class GoldenHarness:
             use_case_type: UseCase subclass to execute.
             params: Primitive parameter values keyed by name.
             payload: Raw dict for ``Input()`` command construction.
+            identity: Caller the execution runs as.
             name: Baseline identifier used as the filename.
             max_ms: Maximum allowed execution duration in milliseconds.
             baseline_dir: Directory where baseline JSON files are written.
@@ -272,7 +286,7 @@ class GoldenHarness:
             AssertionError: If elapsed time exceeds ``max_ms``.
         """
         start = time.perf_counter()
-        result = await self.run(use_case_type, params=params, payload=payload)
+        result = await self.run(use_case_type, params=params, payload=payload, identity=identity)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         baseline_dir.mkdir(parents=True, exist_ok=True)

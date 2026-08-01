@@ -31,7 +31,3 @@ Authentication
    :toctree: generated
 
    loom.rest.auth
-   loom.rest.auth.abc
-   loom.rest.auth.config
-   loom.rest.auth.jwt
-   loom.rest.auth.middleware
