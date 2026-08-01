@@ -57,7 +57,7 @@ sql:
       backend: clickhouse
       url: ${oc.env:CLICKHOUSE_ANALYTICS_URL}   # secret via env/SSM — never inline
       # Ceiling for the CONNECTION, never a per-caller permission: the effective
-      # roles are these intersected with the caller's verified roles_claim.
+      # roles are these intersected with the caller's verified roles claim.
       allowed_roles: [role_viz_reader, role_viz_sales]
       default_role: role_viz_reader   # required if sql_endpoint.enabled and no allowlist
       readonly: true                  # default: readonly=1 on every query
@@ -73,10 +73,21 @@ sql:
       sql_endpoint:
         enabled: true                 # opt-in (default false)
         auth: jwt                     # REQUIRED to mount: 'jwt' or 'external'
-        roles_claim: loom_sql_roles   # verified claim carrying the caller's roles;
-                                      # REQUIRED whenever allowed_roles is non-empty
         path: /sql/analytics          # default: /sql/{connection}
         include_in_schema: false
+```
+
+The claim carrying the caller's roles belongs to the authentication mechanism, not
+to the connection — it is declared once for the whole app and is **required**
+whenever a mounted endpoint has a non-empty `allowed_roles`:
+
+```yaml
+app:
+  rest:
+    auth:
+      jwt:
+        audience: loom-api
+        roles_claim: loom_sql_roles   # verified claim carrying the caller's roles
 ```
 
 Connections open inside the app lifespan and close on shutdown. A connection that
@@ -87,8 +98,8 @@ at startup, never at request time:
 
 | Rule | Why |
 |------|-----|
-| A mounted endpoint with a non-empty `allowed_roles` requires `roles_claim` | Otherwise any authenticated caller could pick any allowlisted role |
-| `roles_claim` requires `auth: jwt` | `external` auth produces no verified claims to read |
+| A mounted endpoint with a non-empty `allowed_roles` requires `auth: jwt` | It is the only mode carrying a verified identity to bind the roles to |
+| That endpoint also requires `app.rest.auth.jwt.roles_claim` | Otherwise any authenticated caller could pick any allowlisted role |
 | `auth: jwt` requires `app.rest.auth.jwt.audience`, and the mounted path must not appear in `jwt.exclude_paths` | A claim-bound role is worthless if tokens minted for another service are accepted, or if the path skips authentication altogether |
 
 ```{note}
@@ -144,10 +155,11 @@ A connection mounts `POST /sql/{connection}` only with **double opt-in**:
 
 | `auth` value | Meaning |
 |--------------|---------|
-| `jwt` | Requires the `app.rest.auth.jwt` section with a validated `audience`; startup fails with `ConfigError` otherwise. The only mode that can bind roles to an identity (`roles_claim`) |
+| `jwt` | Requires the `app.rest.auth.jwt` section with a validated `audience`; startup fails with `ConfigError` otherwise. The only mode that can bind roles to an identity |
 | `external` | Explicit acknowledgement that the operator provides authentication in front of the app. No verified claims, therefore no allowlist: single-role endpoint only |
 
-`auth` decides **who gets in**; `roles_claim` decides **what they may become** once in.
+`auth` decides **who gets in**; `app.rest.auth.jwt.roles_claim` decides **what they
+may become** once in.
 
 Request body — backend settings are rejected by schema:
 
@@ -224,7 +236,7 @@ connection, subject and cause — is logged server-side at WARNING.
 ## Role model and grants
 
 The policy is fail-closed and resolves in this order for a request reaching a mounted
-endpoint with `roles_claim`:
+endpoint whose app declares a `roles_claim`:
 
 1. **Identity.** No verified claims in the request → 403. The claim must be a string
    or a list of non-empty strings; absent, empty or otherwise typed → 403. Nothing is
@@ -317,15 +329,16 @@ before mounting the REST endpoint.
 
 **1. Roles come from verified claims.** The middleware verifies signature, `exp`/`nbf`,
 `sub` and the configured `aud`/`iss`, then publishes the claims in
-`scope["state"]["jwt_claims"]`. The endpoint reads `roles_claim` from there and
-intersects it with `allowed_roles`. The request body cannot select a role: it can only
-narrow the result. A caller whose claim carries no allowlisted role gets a 403 — never
-`default_role`.
+`scope["state"]["jwt_claims"]`. The endpoint reads the configured `roles_claim` from
+there and intersects it with `allowed_roles`. The request body cannot select a role: it
+can only narrow the result. A caller whose claim carries no allowlisted role gets a 403
+— never `default_role`.
 
 **2. The unsafe shapes are unrepresentable.** A mounted endpoint with a non-empty
-allowlist and no `roles_claim` fails at config parse; `roles_claim` without `auth: jwt`
-fails at parse; `auth: jwt` without `audience`, or a mounted path listed in
-`jwt.exclude_paths`, fails at startup. There is no runtime path into the old behaviour.
+allowlist and an auth mode other than `jwt` fails at config parse; the same endpoint
+without `app.rest.auth.jwt.roles_claim`, without `audience`, or with a mounted path
+listed in `jwt.exclude_paths`, fails at startup. There is no runtime path into the old
+behaviour.
 
 **3. `audience` is mandatory.** Without a validated `aud`, any token signed by the same
 key — including one minted for a different service, carrying its own idea of a roles
@@ -363,6 +376,13 @@ framework applies the intersection above.
 individual data roles — so the union any caller can reach matches a declared profile.
 
 ```yaml
+app:
+  rest:
+    auth:
+      jwt:
+        audience: loom-analytics
+        roles_claim: loom_sql_roles                   # what each caller may use
+
 sql:
   connections:
     analytics:
@@ -372,7 +392,6 @@ sql:
       sql_endpoint:
         enabled: true
         auth: jwt
-        roles_claim: loom_sql_roles                   # what each caller may use
 ```
 
 Without an identity provider that can issue the claim, the single-role shape stays
@@ -429,6 +448,8 @@ app:
         issuer: null                        # validated only when set
         leeway_seconds: 0
         exclude_paths: [/docs, /redoc, /openapi.json, /metrics]
+        roles_claim: loom_sql_roles         # REQUIRED by any mounted sql_endpoint whose
+                                            # connection has a non-empty allowed_roles
 ```
 
 - **Stateless** — signature, `exp` and `sub` (both required) plus `nbf`, and `aud`/`iss`
@@ -441,7 +462,7 @@ app:
 - On success the verified claims are attached to `scope["state"]["jwt_claims"]`; on
   failure the response is a 401 with the standard error body and no hint about the
   cryptographic reason.
-- **The claims are consumed** by any SQL endpoint declaring `roles_claim`: that is
+- **The claims are consumed** by the SQL endpoints when `roles_claim` is set: that is
   where an authenticated identity becomes a set of ClickHouse roles
   ({ref}`sql-threat-model`). No other framework component authorizes on them.
 - `exclude_paths` bypasses authentication for exact paths (docs, scrape endpoints). A

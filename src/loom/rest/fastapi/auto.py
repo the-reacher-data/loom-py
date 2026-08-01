@@ -479,6 +479,7 @@ def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, jwt_cfg: JwtAuthConfig | Non
                 "section or switch the endpoint to auth: external."
             )
         _require_jwt_audience(name, jwt_cfg)
+        _require_roles_claim(name, connection.allowed_roles, jwt_cfg)
         _require_authenticated_path(name, endpoint.path or f"/sql/{name}", jwt_cfg)
 
 
@@ -491,6 +492,19 @@ def _require_jwt_audience(name: str, jwt_cfg: JwtAuthConfig) -> None:
         "'app.rest.auth.jwt.audience' is not set. Without a validated 'aud' any "
         "token signed by the same key — including tokens minted for another "
         "service — would be accepted and could carry the roles claim."
+    )
+
+
+def _require_roles_claim(name: str, allowed_roles: tuple[str, ...], jwt_cfg: JwtAuthConfig) -> None:
+    """A mounted multi-role endpoint must bind its roles to a claim (§4)."""
+    if not allowed_roles or jwt_cfg.roles_claim is not None:
+        return
+    raise ConfigError(
+        f"SQL connection {name!r}: 'allowed_roles' is not empty but "
+        "'app.rest.auth.jwt.roles_claim' is not set. Without it the endpoint would "
+        "let any authenticated caller pick any allowlisted role. Either declare the "
+        "verified claim carrying the caller roles, or leave 'allowed_roles' empty and "
+        "pin a single 'default_role'."
     )
 
 
@@ -510,7 +524,7 @@ def _register_sql_service(container: LoomContainer, service: SqlQueryService) ->
     container.register(SqlQueryService, lambda: service, scope=Scope.APPLICATION)
 
 
-def _warn_sql_endpoints(sql_cfg: SqlConfig) -> None:
+def _warn_sql_endpoints(sql_cfg: SqlConfig, roles_claim: str | None) -> None:
     """Emit the spec §4 startup warnings for enabled SQL endpoints."""
     for name, connection in sql_cfg.connections.items():
         endpoint = connection.sql_endpoint
@@ -530,7 +544,8 @@ def _warn_sql_endpoints(sql_cfg: SqlConfig) -> None:
             f"readonly={connection.readonly}, auth={endpoint.auth}, "
             f"allowed_roles={len(connection.allowed_roles)}). "
             "'auth' only authenticates the caller; the roles it may use come from the "
-            f"identity binding: {_role_exposure_notice(endpoint, len(connection.allowed_roles))}.",
+            "identity binding: "
+            f"{_role_exposure_notice(roles_claim, len(connection.allowed_roles))}.",
             stacklevel=3,
         )
 
@@ -678,7 +693,9 @@ def create_app(
     when the section is absent). Connections opting in with
     ``sql_endpoint.enabled`` plus an explicit ``sql_endpoint.auth`` mount a
     ``POST /sql/{name}`` endpoint; ``auth: jwt`` additionally requires the
-    ``app.rest.auth.jwt`` section, which mounts ``JwtAuthMiddleware``.
+    ``app.rest.auth.jwt`` section, which mounts ``JwtAuthMiddleware``, and a
+    non-empty ``allowed_roles`` also requires ``app.rest.auth.jwt.roles_claim``
+    to bind the roles to the verified caller identity.
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -715,7 +732,8 @@ def create_app(
 
     ctx = ConfigContext.from_yaml(*config_paths)
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
-    sql = _resolve_sql(ctx, app_cfg.rest.auth.jwt)
+    jwt_cfg = app_cfg.rest.auth.jwt
+    sql = _resolve_sql(ctx, jwt_cfg)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
@@ -756,14 +774,16 @@ def create_app(
         redoc_url=app_cfg.rest.redoc_url,
         lifespan=lifespan,
     )
-    _mount_jwt_middleware(app, app_cfg.rest.auth.jwt)
+    _mount_jwt_middleware(app, jwt_cfg)
     _mount_optional_middlewares(app, metrics_cfg, metrics_registry)
     if sql.config is not None:
+        roles_claim = jwt_cfg.roles_claim if jwt_cfg is not None else None
         bind_sql_endpoints(
             app,
             service=sql.service,
             config=sql.config,
+            roles_claim=roles_claim,
             observability_runtime=observability_runtime,
         )
-        _warn_sql_endpoints(sql.config)
+        _warn_sql_endpoints(sql.config, roles_claim)
     return app

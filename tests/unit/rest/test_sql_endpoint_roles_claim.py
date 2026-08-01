@@ -65,7 +65,7 @@ class _RecordingObserver:
 
 
 def _endpoint(**overrides: Any) -> SqlEndpointConfig:
-    params: dict[str, Any] = {"enabled": True, "auth": "jwt", "roles_claim": ROLES_CLAIM}
+    params: dict[str, Any] = {"enabled": True, "auth": "jwt"}
     params.update(overrides)
     return SqlEndpointConfig(**params)
 
@@ -83,6 +83,7 @@ def _app(
         app,
         service=SqlQueryService(executors={"analytics": executor}, config=config),
         config=config,
+        roles_claim=ROLES_CLAIM,
         observability_runtime=runtime,
     )
     return app

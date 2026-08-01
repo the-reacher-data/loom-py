@@ -59,7 +59,7 @@ def _sql_section(endpoint: dict[str, Any], **conn_overrides: Any) -> dict[str, A
 
     The default connection is the single-role shape (empty allowlist plus a
     fixed ``default_role``): an allowlist is only representable on a mounted
-    endpoint together with ``sql_endpoint.roles_claim`` (spec §4).
+    endpoint under ``sql_endpoint.auth: jwt`` (spec §4).
     """
     connection: dict[str, Any] = {
         "backend": "clickhouse",
@@ -148,12 +148,28 @@ def test_multi_role_endpoint_warns_naming_the_claim_that_binds_the_roles(tmp_pat
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section(
-            {"enabled": True, "auth": "jwt", "roles_claim": "loom_sql_roles"},
+            {"enabled": True, "auth": "jwt"},
+            allowed_roles=["role_viz_reader", "role_viz_sales"],
+        ),
+        jwt_section={**_JWT_SECTION, "roles_claim": "loom_sql_roles"},
+    )
+    with pytest.warns(UserWarning, match="loom_sql_roles"):
+        create_app(config_path)
+
+
+def test_multi_role_endpoint_without_a_configured_roles_claim_fails_at_startup(
+    tmp_path: Path,
+) -> None:
+    """A non-empty allowlist needs a claim to bind it to, or startup aborts."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section(
+            {"enabled": True, "auth": "jwt"},
             allowed_roles=["role_viz_reader", "role_viz_sales"],
         ),
         jwt_section=_JWT_SECTION,
     )
-    with pytest.warns(UserWarning, match="loom_sql_roles"):
+    with pytest.raises(ConfigError, match="roles_claim"):
         create_app(config_path)
 
 

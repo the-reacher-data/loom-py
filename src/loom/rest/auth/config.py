@@ -32,9 +32,14 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         issuer: Expected ``iss`` claim.  Validated only when set.
         leeway_seconds: Clock-skew tolerance applied to time-based claims.
         exclude_paths: Exact request paths that bypass authentication.
+        roles_claim: Name of the verified claim carrying the roles the caller
+            is authorized to use.  Consumed by the SQL endpoint: the effective
+            roles are the claim values intersected with the connection
+            allowlist, and the request body can only narrow that set.
 
     Raises:
-        ConfigError: If key sources, algorithms, or leeway are invalid.
+        ConfigError: If key sources, algorithms, leeway, or the roles claim
+            name are invalid.
 
     Example YAML::
 
@@ -44,6 +49,7 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
               jwt:
                 secret: ${oc.env:LOOM_JWT_SECRET}
                 algorithms: [HS256]
+                roles_claim: loom_sql_roles
     """
 
     secret: str | None = None
@@ -53,6 +59,7 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     issuer: str | None = None
     leeway_seconds: int = 0
     exclude_paths: tuple[str, ...] = _DEFAULT_EXCLUDE_PATHS
+    roles_claim: str | None = None
 
     def __repr__(self) -> str:
         secret = "***" if self.secret is not None else None
@@ -63,7 +70,8 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             f" audience={self.audience!r},"
             f" issuer={self.issuer!r},"
             f" leeway_seconds={self.leeway_seconds!r},"
-            f" exclude_paths={self.exclude_paths!r})"
+            f" exclude_paths={self.exclude_paths!r},"
+            f" roles_claim={self.roles_claim!r})"
         )
 
     def __post_init__(self) -> None:
@@ -73,6 +81,8 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             raise ConfigError("JWT auth requires a non-empty 'algorithms' allowlist.")
         if self.leeway_seconds < 0:
             raise ConfigError("JWT auth 'leeway_seconds' must be >= 0.")
+        if self.roles_claim is not None and not self.roles_claim.strip():
+            raise ConfigError("JWT auth 'roles_claim' must not be blank.")
         for algorithm in self.algorithms:
             self._validate_algorithm(algorithm)
 

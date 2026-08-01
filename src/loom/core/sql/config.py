@@ -19,6 +19,10 @@ from loom.core.model import LoomFrozenStruct
 _ROLE_PATTERN = re.compile(r"^\w+$", re.ASCII)
 _URL_CREDENTIALS_RE = re.compile(r"://[^@]+@")
 
+# The only ``sql_endpoint.auth`` mode carrying a verified caller identity, and
+# therefore the only one able to bind a request to a subset of the allowlist.
+_IDENTITY_BOUND_AUTH = "jwt"
+
 
 def _redact_url(url: str) -> str:
     return _URL_CREDENTIALS_RE.sub("://***@", url)
@@ -30,39 +34,19 @@ class SqlEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     Attributes:
         enabled: Whether to mount the generic ``POST /sql/{name}`` endpoint.
             Defaults to ``False`` (double opt-in).
-        auth: Mandatory when ``enabled``: ``"jwt"`` (requires the framework
-            JWT middleware configured) or ``"external"`` (explicit
-            acknowledgement that the operator provides auth).
-        roles_claim: Name of the verified JWT claim carrying the roles the
-            caller is authorized to use. Requires ``auth: "jwt"``. When set,
-            the effective roles are the claim values intersected with
-            ``allowed_roles``; the request body can only narrow that set and
-            never falls back to ``default_role``.
+        auth: Mandatory when ``enabled``: ``"jwt"`` (the framework
+            authenticates the caller and binds roles to their verified
+            identity) or ``"external"`` (explicit acknowledgement that the
+            operator provides authentication, with no identity the framework
+            can read).
         path: Mount path override. Defaults to ``/sql/{name}`` when ``None``.
         include_in_schema: Whether the endpoint appears in the OpenAPI schema.
-
-    Raises:
-        ValueError: When ``roles_claim`` is blank or declared without
-            ``auth: "jwt"``. Surfaced as ``ConfigError`` through the loader.
     """
 
     enabled: bool = False
     auth: Literal["jwt", "external"] | None = None
-    roles_claim: str | None = None
     path: str | None = None
     include_in_schema: bool = False
-
-    def __post_init__(self) -> None:
-        if self.roles_claim is None:
-            return
-        if not self.roles_claim.strip():
-            raise ValueError("sql_endpoint.roles_claim must not be blank")
-        if self.auth != "jwt":
-            raise ValueError(
-                "sql_endpoint.roles_claim requires sql_endpoint.auth: jwt — only the "
-                "framework JWT middleware produces the verified claims a role can be "
-                f"bound to (got auth={self.auth!r})"
-            )
 
 
 class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -76,8 +60,8 @@ class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         allowed_roles: Ceiling of roles this connection may ever apply — the
             last barrier, not a per-caller permission. Empty means every
             caller-provided role is rejected (fail-closed). A mounted endpoint
-            with a non-empty allowlist must bind roles to identity through
-            ``sql_endpoint.roles_claim``.
+            with a non-empty allowlist requires the ``sql_endpoint.auth`` mode
+            that binds roles to a verified identity.
         default_role: Role applied when the request carries none. Without it,
             a request without role is refused. Never a fallback for a request
             whose roles are bound to verified claims.
@@ -97,8 +81,10 @@ class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Raises:
         ValueError: On invalid role format, ``default_limit`` above
-            ``max_limit``, or an enabled endpoint without role/auth. Surfaced
-            as ``ConfigError`` when parsed through the config loader.
+            ``max_limit``, or an enabled endpoint without role/auth, including
+            a non-empty allowlist under an auth mode that carries no verified
+            identity. Surfaced as ``ConfigError`` when parsed through the
+            config loader.
     """
 
     backend: Literal["clickhouse"]
@@ -175,11 +161,12 @@ def _validate_endpoint(
             "sql_endpoint.enabled requires a 'default_role' or a non-empty "
             "'allowed_roles' on the connection"
         )
-    if allowed_roles and endpoint.roles_claim is None:
+    if allowed_roles and endpoint.auth != _IDENTITY_BOUND_AUTH:
         raise ValueError(
             "sql_endpoint.enabled with a non-empty 'allowed_roles' requires "
-            "'sql_endpoint.roles_claim': without it the endpoint would let any "
-            "authenticated caller pick any allowlisted role. Either declare the "
-            "verified claim carrying the caller roles, or leave 'allowed_roles' "
+            f"'sql_endpoint.auth: {_IDENTITY_BOUND_AUTH}': it is the only mode whose "
+            "verified identity can bind a caller to a subset of the allowlist. With "
+            f"auth={endpoint.auth!r} the endpoint would let any caller pick any "
+            "allowlisted role. Either switch the auth mode, or leave 'allowed_roles' "
             "empty and pin a single 'default_role'"
         )
