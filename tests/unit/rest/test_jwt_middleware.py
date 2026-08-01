@@ -11,12 +11,13 @@ from typing import Any
 
 import jwt as pyjwt
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from loom.core.config import ConfigContext
 from loom.core.config.errors import ConfigError
-from loom.rest.auth import JwtAuthConfig, JwtAuthMiddleware
+from loom.core.identity import current_identity
+from loom.rest.auth import JwtAuthConfig, JwtAuthenticator, JwtAuthMiddleware, RequestCredentials
 
 _SECRET = "unit-test-secret"
 
@@ -55,12 +56,18 @@ def _unsigned_token(**claims: Any) -> str:
 
 
 def _client(config: JwtAuthConfig) -> TestClient:
-    """FastAPI app exposing the middleware-attached claims at GET /claims."""
+    """FastAPI app exposing the authenticated identity at GET /identity."""
     app = FastAPI()
 
-    @app.get("/claims")
-    async def read_claims(request: Request) -> dict[str, Any]:
-        return dict(request.scope["state"]["jwt_claims"])
+    @app.get("/identity")
+    async def read_identity() -> dict[str, Any]:
+        identity = current_identity()
+        return {
+            "subject": identity.subject,
+            "roles": list(identity.roles),
+            "mechanism": identity.mechanism,
+            "attributes": dict(identity.attributes),
+        }
 
     app.add_middleware(JwtAuthMiddleware, config=config)
     return TestClient(app, raise_server_exceptions=False)
@@ -68,7 +75,7 @@ def _client(config: JwtAuthConfig) -> TestClient:
 
 def _get(client: TestClient, token: str | None) -> Any:
     headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
-    return client.get("/claims", headers=headers)
+    return client.get("/identity", headers=headers)
 
 
 def _hide_modules(monkeypatch: pytest.MonkeyPatch, prefix: str) -> None:
@@ -138,10 +145,10 @@ def test_config_fails_when_rs_algorithm_is_paired_with_secret() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_valid_token_passes_and_claims_land_in_scope_state() -> None:
-    """A valid HS256 token reaches the route with claims in scope['state']."""
+def test_valid_token_passes_and_publishes_the_identity() -> None:
+    """A valid HS256 token reaches the route as an identity, not as raw claims."""
     response = _get(_client(_config()), _token())
-    assert (response.status_code, response.json()["sub"]) == (200, "user-1")
+    assert (response.status_code, response.json()["subject"]) == (200, "user-1")
 
 
 def test_expired_token_returns_401() -> None:
@@ -232,3 +239,89 @@ def test_missing_pyjwt_extra_fails_at_startup_with_hint(
     _hide_modules(monkeypatch, "jwt")
     with pytest.raises(ImportError, match=r"loom-kernel\[jwt\]"):
         JwtAuthMiddleware(_noop_asgi_app, config=config)
+
+
+# ---------------------------------------------------------------------------
+# Claims → Identity projection
+# ---------------------------------------------------------------------------
+
+
+async def _authenticate(config: JwtAuthConfig, token: str) -> Any:
+    credentials = RequestCredentials(headers={"authorization": f"Bearer {token}"}, path="/")
+    return await JwtAuthenticator(config).authenticate(credentials)
+
+
+async def test_the_subject_claim_becomes_the_identity_subject() -> None:
+    """``sub`` is the only claim the framework insists on: it is the caller."""
+    identity = await _authenticate(_config(), _token(sub="user-7"))
+    assert identity.subject == "user-7"
+
+
+async def test_the_mechanism_is_recorded_on_the_identity() -> None:
+    """The audit trail must state how the caller was authenticated."""
+    identity = await _authenticate(_config(), _token())
+    assert identity.mechanism == "jwt"
+
+
+async def test_the_roles_claim_becomes_the_identity_roles() -> None:
+    """Roles are read from the configured claim, never from a fixed name."""
+    config = _config(roles_claim="loom_roles")
+    identity = await _authenticate(config, _token(loom_roles=["a", "b"]))
+    assert identity.roles == ("a", "b")
+
+
+async def test_a_scalar_roles_claim_is_the_one_role_form() -> None:
+    """A string claim is the single-role shape of the same contract."""
+    config = _config(roles_claim="loom_roles")
+    identity = await _authenticate(config, _token(loom_roles="a"))
+    assert identity.roles == ("a",)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [123, True, {"role": "a"}, ["a", 7], [["a"]], None, []],
+    ids=["int", "bool", "mapping", "mixed-list", "nested-list", "null", "empty"],
+)
+async def test_a_malformed_roles_claim_grants_no_role_at_all(value: Any) -> None:
+    """A broken claim is not a partially authorized caller: it grants nothing."""
+    config = _config(roles_claim="loom_roles")
+    identity = await _authenticate(config, _token(loom_roles=value))
+    assert identity.roles == ()
+
+
+async def test_no_configured_roles_claim_yields_no_roles() -> None:
+    """Without a declared claim the mechanism binds no role, whatever the token says."""
+    identity = await _authenticate(_config(), _token(loom_roles=["a"]))
+    assert identity.roles == ()
+
+
+async def test_string_custom_claims_become_identity_attributes() -> None:
+    """Business claims travel as attributes so policies never parse a token."""
+    identity = await _authenticate(_config(), _token(email="ada@example.com"))
+    assert identity.attribute("email") == "ada@example.com"
+
+
+async def test_registered_claims_never_become_attributes() -> None:
+    """``exp``/``iat``/``sub`` describe the token, not the caller."""
+    identity = await _authenticate(_config(audience="loom-api"), _token(aud="loom-api"))
+    assert set(identity.attributes) == set()
+
+
+async def test_the_roles_claim_never_leaks_into_the_attributes() -> None:
+    """Roles have their own field; duplicating them invites divergent checks."""
+    config = _config(roles_claim="loom_roles")
+    identity = await _authenticate(config, _token(loom_roles="a"))
+    assert "loom_roles" not in identity.attributes
+
+
+async def test_non_string_custom_claims_are_dropped() -> None:
+    """Only string-valued claims cross into the identity attributes."""
+    identity = await _authenticate(_config(), _token(seats=3, tags=["x"], email="a@b.com"))
+    assert set(identity.attributes) == {"email"}
+
+
+async def test_provides_roles_reflects_the_configured_claim() -> None:
+    """Startup gates rely on this flag to refuse role-based endpoints."""
+    with_roles = JwtAuthenticator(_config(roles_claim="loom_roles")).provides_roles
+    without_roles = JwtAuthenticator(_config()).provides_roles
+    assert (with_roles, without_roles) == (True, False)

@@ -17,10 +17,25 @@ import yaml
 from fastapi import FastAPI
 
 from loom.core.config.errors import ConfigError
-from loom.rest.auth import JwtAuthMiddleware
+from loom.core.identity import Identity
+from loom.rest.auth import AuthenticationMiddleware, RequestCredentials
 from loom.rest.fastapi.auto import create_app
 
 _APP_MODULE = "loom_sqlgate_fixture_app"
+
+
+class _StubAuthenticator:
+    """Minimal non-JWT mechanism used to drive the composition-root gates."""
+
+    name = "stub"
+
+    def __init__(self, *, provides_roles: bool = True) -> None:
+        self.provides_roles = provides_roles
+
+    async def authenticate(self, credentials: RequestCredentials) -> Identity | None:
+        del credentials
+        return Identity(subject="stub-user", mechanism=self.name)
+
 
 _APP_SOURCE = '''\
 """Minimal discoverable app used by the SQL endpoint auth-gate tests."""
@@ -111,12 +126,12 @@ _JWT_SECTION: dict[str, Any] = {
 }
 
 
-def test_auth_jwt_without_jwt_section_fails_at_startup(tmp_path: Path) -> None:
-    """``auth: jwt`` demands ``app.rest.auth.jwt``: its absence aborts create_app."""
+def test_auth_identity_without_any_mechanism_fails_at_startup(tmp_path: Path) -> None:
+    """``auth: identity`` demands an authentication mechanism: its absence aborts."""
     config_path = _write_project(
-        tmp_path, sql_section=_sql_section({"enabled": True, "auth": "jwt"})
+        tmp_path, sql_section=_sql_section({"enabled": True, "auth": "identity"})
     )
-    with pytest.raises(ConfigError, match="jwt"):
+    with pytest.raises(ConfigError, match="authentication"):
         create_app(config_path)
 
 
@@ -148,7 +163,7 @@ def test_multi_role_endpoint_warns_naming_the_claim_that_binds_the_roles(tmp_pat
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section(
-            {"enabled": True, "auth": "jwt"},
+            {"enabled": True, "auth": "identity"},
             allowed_roles=["role_viz_reader", "role_viz_sales"],
         ),
         jwt_section={**_JWT_SECTION, "roles_claim": "loom_sql_roles"},
@@ -164,7 +179,7 @@ def test_multi_role_endpoint_without_a_configured_roles_claim_fails_at_startup(
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section(
-            {"enabled": True, "auth": "jwt"},
+            {"enabled": True, "auth": "identity"},
             allowed_roles=["role_viz_reader", "role_viz_sales"],
         ),
         jwt_section=_JWT_SECTION,
@@ -188,7 +203,7 @@ def test_auth_jwt_without_audience_fails_at_startup(tmp_path: Path) -> None:
     """Binding roles to a claim is void if tokens minted for other services pass."""
     config_path = _write_project(
         tmp_path,
-        sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
+        sql_section=_sql_section({"enabled": True, "auth": "identity"}),
         jwt_section={"secret": "unit-test-secret", "algorithms": ["HS256"]},
     )
     with pytest.raises(ConfigError, match="audience"):
@@ -199,7 +214,7 @@ def test_sql_path_excluded_from_jwt_authentication_fails_at_startup(tmp_path: Pa
     """A mounted SQL path listed in ``exclude_paths`` would bypass authentication."""
     config_path = _write_project(
         tmp_path,
-        sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
+        sql_section=_sql_section({"enabled": True, "auth": "identity"}),
         jwt_section={**_JWT_SECTION, "exclude_paths": ["/docs", "/sql/analytics"]},
     )
     with pytest.raises(ConfigError, match="exclude_paths"):
@@ -212,7 +227,7 @@ def test_custom_sql_path_excluded_from_jwt_authentication_fails_at_startup(
     """The check follows the configured ``path``, not only the default one."""
     config_path = _write_project(
         tmp_path,
-        sql_section=_sql_section({"enabled": True, "auth": "jwt", "path": "/query/analytics"}),
+        sql_section=_sql_section({"enabled": True, "auth": "identity", "path": "/query/analytics"}),
         jwt_section={**_JWT_SECTION, "exclude_paths": ["/query/analytics"]},
     )
     with pytest.raises(ConfigError, match="exclude_paths"):
@@ -226,26 +241,86 @@ def test_enabled_endpoint_without_auth_field_does_not_mount(tmp_path: Path) -> N
     assert not any(path.startswith("/sql") for path in _route_paths(app))
 
 
-def test_auth_jwt_with_jwt_section_mounts_the_endpoint(tmp_path: Path) -> None:
-    """``auth: jwt`` plus a configured ``app.rest.auth.jwt`` mounts the route."""
+def test_auth_identity_with_a_jwt_section_mounts_the_endpoint(tmp_path: Path) -> None:
+    """``auth: identity`` plus a configured mechanism mounts the route."""
     config_path = _write_project(
         tmp_path,
-        sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
+        sql_section=_sql_section({"enabled": True, "auth": "identity"}),
         jwt_section=_JWT_SECTION,
     )
     app = create_app(config_path)
     assert "/sql/analytics" in _route_paths(app)
 
 
-def test_jwt_section_mounts_the_jwt_middleware(tmp_path: Path) -> None:
-    """A present ``app.rest.auth.jwt`` section wires JwtAuthMiddleware into the app."""
+def test_the_deprecated_jwt_auth_mode_still_mounts_the_endpoint(tmp_path: Path) -> None:
+    """Existing configs keep working: ``auth: jwt`` is an alias of ``auth: identity``."""
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section({"enabled": True, "auth": "jwt"}),
         jwt_section=_JWT_SECTION,
     )
+    with pytest.warns(DeprecationWarning, match="identity"):
+        app = create_app(config_path)
+    assert "/sql/analytics" in _route_paths(app)
+
+
+def test_a_configured_mechanism_mounts_the_authentication_middleware(tmp_path: Path) -> None:
+    """A present ``app.rest.auth.jwt`` section wires authentication into the app."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section({"enabled": True, "auth": "identity"}),
+        jwt_section=_JWT_SECTION,
+    )
     app = create_app(config_path)
-    assert any(m.cls is JwtAuthMiddleware for m in app.user_middleware)
+    assert any(m.cls is AuthenticationMiddleware for m in app.user_middleware)
+
+
+def test_a_custom_authenticator_satisfies_the_identity_gate(tmp_path: Path) -> None:
+    """Agnosticism at the composition root: any mechanism unlocks the endpoint."""
+    config_path = _write_project(
+        tmp_path, sql_section=_sql_section({"enabled": True, "auth": "identity"})
+    )
+    app = create_app(config_path, authenticator=_StubAuthenticator())
+    assert "/sql/analytics" in _route_paths(app)
+
+
+def test_a_custom_authenticator_binds_the_allowlisted_roles(tmp_path: Path) -> None:
+    """A mechanism declaring ``provides_roles`` unlocks a multi-role endpoint."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section(
+            {"enabled": True, "auth": "identity"},
+            allowed_roles=["role_viz_reader", "role_viz_sales"],
+        ),
+    )
+    app = create_app(config_path, authenticator=_StubAuthenticator())
+    assert "/sql/analytics" in _route_paths(app)
+
+
+def test_a_custom_authenticator_without_roles_fails_the_multi_role_gate(tmp_path: Path) -> None:
+    """A mechanism binding no role would let any caller pick any allowlisted one."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section(
+            {"enabled": True, "auth": "identity"},
+            allowed_roles=["role_viz_reader", "role_viz_sales"],
+        ),
+    )
+    authenticator = _StubAuthenticator(provides_roles=False)
+    with pytest.raises(ConfigError, match="binds no role"):
+        create_app(config_path, authenticator=authenticator)
+
+
+def test_two_authentication_mechanisms_at_once_fail_at_startup(tmp_path: Path) -> None:
+    """Two mechanisms mean two sources of truth for the caller: refuse to boot."""
+    config_path = _write_project(
+        tmp_path,
+        sql_section=_sql_section({"enabled": True, "auth": "identity"}),
+        jwt_section=_JWT_SECTION,
+    )
+    authenticator = _StubAuthenticator()
+    with pytest.raises(ConfigError, match="Exactly one authentication mechanism"):
+        create_app(config_path, authenticator=authenticator)
 
 
 def test_non_readonly_enabled_endpoint_warns_at_startup(tmp_path: Path) -> None:
@@ -280,7 +355,7 @@ def test_binder_refuses_a_multi_role_endpoint_without_an_identity_binding() -> N
                 backend="clickhouse",
                 url="clickhouse://user:pw@host:8123/default",
                 allowed_roles=("role_a", "role_b"),
-                sql_endpoint=SqlEndpointConfig(enabled=True, auth="jwt"),
+                sql_endpoint=SqlEndpointConfig(enabled=True, auth="identity"),
             )
         }
     )

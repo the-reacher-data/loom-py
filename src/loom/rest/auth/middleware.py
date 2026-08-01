@@ -1,24 +1,28 @@
-"""Stateless JWT bearer authentication middleware.
+"""Mechanism-agnostic authentication middleware.
 
-Pure ASGI middleware — no FastAPI or Starlette dependency.  Compatible
-with any ASGI-compliant framework and server.
+Pure ASGI middleware — no FastAPI or Starlette dependency.  Compatible with
+any ASGI-compliant framework and server.
 
-Install the optional dependency with::
-
-    pip install "loom-kernel[jwt]"
+The middleware owns the request-scoped concerns (path exclusions, the ``401``
+response, and the identity context lifecycle) while the mechanism owns
+verification.  Splitting them is what lets an application swap JWT for mutual
+TLS without touching a single authorization rule.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable
-from types import ModuleType
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import msgspec
 
+from loom.core.errors.codes import ErrorCode
+from loom.core.identity import reset_identity, set_identity
 from loom.core.tracing import get_trace_id
+from loom.rest.auth.abc import Authenticator, RequestCredentials
 from loom.rest.auth.config import JwtAuthConfig
+from loom.rest.auth.jwt import JwtAuthenticator
+from loom.rest.constants import BEARER_CHALLENGE
 
 # ASGI type aliases
 _Scope = dict[str, Any]
@@ -26,39 +30,80 @@ _Receive = Callable[[], Awaitable[dict[str, Any]]]
 _Send = Callable[[dict[str, Any]], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
 
-_logger = logging.getLogger(__name__)
-
-_UNAUTHORIZED_CODE = "unauthorized"
+_HTTP_SCOPE = "http"
 _UNAUTHORIZED_MESSAGE = "Authentication required: missing or invalid credentials."
-_PYJWT_HINT = (
-    "JwtAuthMiddleware requires the optional dependency 'pyjwt'. "
-    "Install it with: pip install 'loom-kernel[jwt]'"
-)
 
 
-class JwtAuthMiddleware:
-    """Pure ASGI middleware enforcing stateless JWT bearer authentication.
+class AuthenticationMiddleware:
+    """Authenticates every HTTP request through a pluggable mechanism.
 
-    On each HTTP request whose path is not in ``config.exclude_paths``:
+    On each HTTP request whose path is not excluded:
 
-    1. Extracts the token from the ``Authorization: Bearer`` header.
-    2. Verifies signature, ``exp`` and ``sub`` (both required) plus ``nbf``,
-       honouring ``leeway_seconds``; ``aud``/``iss`` are validated only when
-       configured.
-    3. On success, attaches the verified claims to
-       ``scope["state"]["jwt_claims"]`` and forwards the request.
-    4. On failure, responds ``401`` with the framework's standard error body
-       (``code``, ``message``, ``trace_id``).  The message is deliberately
-       generic for every failure mode (no oracle); the cryptographic reason
-       is only logged at DEBUG and tokens/secrets are never logged.
+    1. Builds :class:`~loom.rest.auth.abc.RequestCredentials` from the ASGI
+       scope.
+    2. Asks the :class:`~loom.rest.auth.abc.Authenticator` for an identity.
+    3. On refusal, answers ``401`` with the framework's standard error body
+       and a ``WWW-Authenticate`` challenge.  The message is deliberately
+       generic for every failure mode (no oracle).
+    4. On success, installs the identity for the duration of the request and
+       restores the previous one in a ``finally`` — without it, a reused
+       worker task would inherit the previous caller.
 
-    Verification is fully stateless: no server-side session storage and no
-    remote JWKS fetch.  Non-HTTP scopes (WebSocket, lifespan) are passed
-    through unchanged.
+    Non-HTTP scopes (WebSocket, lifespan) are passed through unchanged.
 
     Args:
         app: The ASGI application to wrap.
-        config: Validated :class:`~loom.rest.auth.JwtAuthConfig`.
+        authenticator: Mechanism that verifies callers.
+        exclude_paths: Exact request paths served without authentication.
+
+    Example::
+
+        app.add_middleware(
+            AuthenticationMiddleware,
+            authenticator=MyApiKeyAuthenticator(store),
+            exclude_paths=("/health",),
+        )
+    """
+
+    def __init__(
+        self,
+        app: _ASGIApp,
+        *,
+        authenticator: Authenticator,
+        exclude_paths: Sequence[str] = (),
+    ) -> None:
+        self._app = app
+        self._authenticator = authenticator
+        self._exclude_paths = frozenset(exclude_paths)
+
+    async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
+        """Authenticate the request, then delegate to the wrapped application."""
+        if scope["type"] != _HTTP_SCOPE or scope["path"] in self._exclude_paths:
+            await self._app(scope, receive, send)
+            return
+
+        identity = await self._authenticator.authenticate(_credentials(scope))
+        if identity is None:
+            await send_unauthorized(send)
+            return
+
+        token = set_identity(identity)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            reset_identity(token)
+
+
+class JwtAuthMiddleware:
+    """Stateless JWT bearer authentication, as a ready-made middleware.
+
+    Thin composition over :class:`AuthenticationMiddleware` and
+    :class:`~loom.rest.auth.jwt.JwtAuthenticator`: it exists so applications
+    that only need JWT wire one class instead of two.
+
+    Args:
+        app: The ASGI application to wrap.
+        config: Validated :class:`~loom.rest.auth.config.JwtAuthConfig`.
 
     Raises:
         ImportError: If the optional ``pyjwt`` dependency is not installed.
@@ -72,108 +117,40 @@ class JwtAuthMiddleware:
     """
 
     def __init__(self, app: _ASGIApp, *, config: JwtAuthConfig) -> None:
-        self._app = app
-        self._config = config
-        self._jwt = _load_pyjwt()
-        self._key = config.verification_key
-        self._algorithms = list(config.algorithms)
-        self._exclude_paths = frozenset(config.exclude_paths)
-        self._decode_options: dict[str, Any] = {
-            # 'sub' is required: a token without a subject carries no identity
-            # to bind an authorization decision to, nor to audit afterwards.
-            "require": ["exp", "sub"],
-            "verify_aud": config.audience is not None,
-        }
+        self._delegate = AuthenticationMiddleware(
+            app,
+            authenticator=JwtAuthenticator(config),
+            exclude_paths=config.exclude_paths,
+        )
 
     async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
-        if scope["type"] != "http" or scope["path"] in self._exclude_paths:
-            await self._app(scope, receive, send)
-            return
-
-        claims = self._authenticate(scope)
-        if claims is None:
-            await _send_unauthorized(send)
-            return
-
-        state: dict[str, Any] = scope.setdefault("state", {})
-        state["jwt_claims"] = claims
-        await self._app(scope, receive, send)
-
-    def _authenticate(self, scope: _Scope) -> dict[str, Any] | None:
-        """Return the verified claims for the request, or ``None`` on failure."""
-        token = _bearer_token(scope.get("headers", []))
-        if token is None:
-            return None
-        return self._decode_claims(token)
-
-    def _decode_claims(self, token: str) -> dict[str, Any] | None:
-        """Verify *token* and return its claims; ``None`` when verification fails."""
-        try:
-            claims: dict[str, Any] = self._jwt.decode(
-                token,
-                self._key,
-                algorithms=self._algorithms,
-                audience=self._config.audience,
-                issuer=self._config.issuer,
-                leeway=self._config.leeway_seconds,
-                options=self._decode_options,
-            )
-        except self._jwt.PyJWTError as exc:
-            # DEBUG only, and never the token itself: no oracle in responses/logs.
-            _logger.debug("JWT verification failed: %s: %s", type(exc).__name__, exc)
-            return None
-        return claims
+        """Delegate to the generic authentication middleware."""
+        await self._delegate(scope, receive, send)
 
 
-def _load_pyjwt() -> ModuleType:
-    """Import and return :mod:`jwt`, failing fast with an actionable hint.
-
-    The import is local on purpose: ``pyjwt`` is an optional extra, and
-    resolving it at middleware construction turns a missing dependency into
-    a startup error instead of a broken API at first request.
-
-    Returns:
-        The imported ``jwt`` module.
-
-    Raises:
-        ImportError: If ``pyjwt`` is not installed.
-    """
-    try:
-        import jwt
-    except ImportError as exc:
-        raise ImportError(_PYJWT_HINT) from exc
-    return jwt
+def _credentials(scope: _Scope) -> RequestCredentials:
+    """Adapt an ASGI scope to the transport-free credentials contract."""
+    headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+    client = scope.get("client")
+    return RequestCredentials(
+        headers={key.decode("latin-1"): value.decode("latin-1") for key, value in headers},
+        path=scope.get("path", ""),
+        client_host=client[0] if client else None,
+    )
 
 
-def _bearer_token(headers: list[tuple[bytes, bytes]]) -> str | None:
-    """Return the ``Bearer`` token from ASGI *headers*, or ``None``.
-
-    Args:
-        headers: Raw ASGI headers list of ``(name_bytes, value_bytes)`` pairs.
-
-    Returns:
-        The token string, or ``None`` when the ``Authorization`` header is
-        absent, uses another scheme, or carries no token.
-    """
-    header = next((value for key, value in headers if key.lower() == b"authorization"), None)
-    if header is None:
-        return None
-    scheme, _, token = header.decode(errors="replace").strip().partition(" ")
-    token = token.strip()
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token
-
-
-async def _send_unauthorized(send: _Send) -> None:
-    """Send a 401 response using the framework's standard error body shape.
+async def send_unauthorized(send: _Send) -> None:
+    """Send a ``401`` using the framework's standard error body shape.
 
     The body mirrors :class:`~loom.rest.errors.HttpErrorMapper` details
-    (``code``, ``message``, ``trace_id``) without importing the FastAPI
-    layer, keeping this module pure ASGI.
+    (``code``, ``message``, ``trace_id``) without importing the FastAPI layer,
+    keeping this module pure ASGI.
+
+    Args:
+        send: ASGI send callable of the request being refused.
     """
     detail = {
-        "code": _UNAUTHORIZED_CODE,
+        "code": ErrorCode.UNAUTHENTICATED.value,
         "message": _UNAUTHORIZED_MESSAGE,
         "trace_id": get_trace_id(),
     }
@@ -181,7 +158,10 @@ async def _send_unauthorized(send: _Send) -> None:
     headers = [
         (b"content-type", b"application/json"),
         (b"content-length", str(len(body)).encode("ascii")),
-        (b"www-authenticate", b"Bearer"),
+        *(
+            (name.lower().encode("ascii"), value.encode("ascii"))
+            for name, value in BEARER_CHALLENGE.items()
+        ),
     ]
     await send({"type": "http.response.start", "status": 401, "headers": headers})
     await send({"type": "http.response.body", "body": body})

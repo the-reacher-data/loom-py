@@ -5,7 +5,9 @@ from __future__ import annotations
 from loom.core.config.errors import ConfigError
 from loom.core.model import LoomFrozenStruct
 
-_DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json", "/metrics")
+DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json", "/metrics")
+"""Paths served without authentication unless the application says otherwise."""
+
 _FORBIDDEN_ALGORITHM = "none"
 
 
@@ -58,7 +60,7 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     audience: str | None = None
     issuer: str | None = None
     leeway_seconds: int = 0
-    exclude_paths: tuple[str, ...] = _DEFAULT_EXCLUDE_PATHS
+    exclude_paths: tuple[str, ...] = DEFAULT_EXCLUDE_PATHS
     roles_claim: str | None = None
 
     def __repr__(self) -> str:

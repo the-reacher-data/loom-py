@@ -1,10 +1,14 @@
 """Identity-bound role resolution for the SQL endpoint (spec §4).
 
-The effective roles of a query are derived from the VERIFIED JWT claims the
-authentication middleware left in ``scope["state"]["jwt_claims"]``, never from
-the request body. The body may only narrow the resulting set. Resolution is
-fail-closed: absent, empty or wrongly typed claims deny the request, and
-``default_role`` is never a fallback once a connection binds roles to identity.
+The effective roles of a query are derived from the VERIFIED identity the
+authentication middleware published, never from the request body.  The body may
+only narrow the resulting set.  Resolution is fail-closed: an anonymous caller
+or one holding no allowlisted role is denied, and ``default_role`` is never a
+fallback once a connection binds roles to identity.
+
+This module knows nothing about tokens or claims: whichever mechanism
+authenticated the caller, it sees the same
+:class:`~loom.core.identity.identity.Identity`.
 
 Internal module: the resolved values are consumed by
 :mod:`loom.rest.fastapi.sql` and are not part of the public API.
@@ -13,127 +17,67 @@ Internal module: the resolved values are consumed by
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, NoReturn
+from collections.abc import Sequence
+from typing import NoReturn
 
+from loom.core.identity import Identity
 from loom.core.sql.abc import RoleNotAllowedError, RolesNotBoundError
 
 _logger = logging.getLogger(__name__)
 
-_STATE_KEY = "state"
-_CLAIMS_KEY = "jwt_claims"
-_SUBJECT_CLAIM = "sub"
 
-
-@dataclass(frozen=True)
-class RequestIdentity:
-    """Authenticated caller of one SQL request.
-
-    Attributes:
-        subject: Value of the ``sub`` claim, or ``None`` without verified
-            claims (only reachable when the connection binds no claim).
-        roles: Roles this request may use, already narrowed by the body.
-    """
-
-    subject: str | None
-    roles: tuple[str, ...]
-
-
-def resolve_identity(
-    scope: Mapping[str, Any],
+def resolve_query_roles(
+    identity: Identity,
     *,
     connection: str,
-    roles_claim: str | None,
+    roles_bound: bool,
     allowed_roles: frozenset[str],
     requested_roles: Sequence[str] | None,
-) -> RequestIdentity:
-    """Resolve the caller identity and the roles their query may use.
+) -> tuple[str, ...]:
+    """Resolve the roles one query may use.
 
     Args:
-        scope: ASGI scope of the request, carrying the verified claims.
+        identity: Verified caller published by the authentication middleware.
         connection: Name of the SQL connection being queried.
-        roles_claim: Claim binding roles to the identity, or ``None`` when the
-            connection declares no binding (single-role endpoint).
+        roles_bound: Whether the configured authentication mechanism binds
+            roles to the identity.  ``False`` means the connection declares no
+            binding and is single-role by config.
         allowed_roles: Connection allowlist, the ceiling of the intersection.
         requested_roles: Roles asked for in the body; they may only narrow.
 
     Returns:
-        The caller subject and the effective roles for this single request.
+        The effective roles for this single request.
 
     Raises:
         RolesNotBoundError: When no allowed role can be derived from the
-            verified claims.
+            verified identity.
         RoleNotAllowedError: When the body asks for a role the identity does
             not hold.
     """
-    claims = _verified_claims(scope)
-    subject = _subject(claims)
-    if roles_claim is None:
+    if not roles_bound:
         # No binding declared: the connection allowlist (empty by config rule
         # for a mounted endpoint) stays the only barrier in the service.
-        return RequestIdentity(subject=subject, roles=tuple(requested_roles or ()))
-    authorized = _authorized_roles(
-        claims,
-        connection=connection,
-        roles_claim=roles_claim,
-        allowed_roles=allowed_roles,
-        subject=subject,
-    )
-    return RequestIdentity(
-        subject=subject,
-        roles=_narrow(authorized, requested_roles, connection),
-    )
+        return tuple(requested_roles or ())
 
-
-def _verified_claims(scope: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    state = scope.get(_STATE_KEY)
-    if not isinstance(state, Mapping):
-        return None
-    claims = state.get(_CLAIMS_KEY)
-    return claims if isinstance(claims, Mapping) else None
-
-
-def _subject(claims: Mapping[str, Any] | None) -> str | None:
-    if claims is None:
-        return None
-    subject = claims.get(_SUBJECT_CLAIM)
-    return subject if isinstance(subject, str) else None
+    authorized = _authorized_roles(identity, connection=connection, allowed_roles=allowed_roles)
+    return _narrow(authorized, requested_roles, connection)
 
 
 def _authorized_roles(
-    claims: Mapping[str, Any] | None,
+    identity: Identity,
     *,
     connection: str,
-    roles_claim: str,
     allowed_roles: frozenset[str],
-    subject: str | None,
 ) -> tuple[str, ...]:
-    """Intersect the claimed roles with the allowlist, fail-closed."""
-    if claims is None:
-        _deny(connection, subject, "the request carries no verified claims")
-    claimed = _claimed_roles(claims.get(roles_claim))
-    if claimed is None:
-        _deny(connection, subject, f"claim {roles_claim!r} is absent, empty or not string-typed")
-    authorized = tuple(role for role in claimed if role in allowed_roles)
+    """Intersect the roles the identity holds with the allowlist, fail-closed."""
+    if not identity.is_authenticated:
+        _deny(connection, identity, "the request carries no verified identity")
+    if not identity.roles:
+        _deny(connection, identity, "the verified identity carries no role")
+    authorized = tuple(role for role in identity.roles if role in allowed_roles)
     if not authorized:
-        _deny(connection, subject, f"no role in claim {roles_claim!r} is allowlisted")
+        _deny(connection, identity, "no role held by the identity is allowlisted")
     return authorized
-
-
-def _claimed_roles(value: Any) -> tuple[str, ...] | None:
-    """Read the claim as ``str`` or ``list[str]``; anything else is a denial.
-
-    Values are never coerced: a number, a mapping or a list holding anything
-    but non-empty strings returns ``None`` so the caller denies the request.
-    """
-    if isinstance(value, str):
-        return (value,) if value else None
-    if not isinstance(value, (list, tuple)) or not value:
-        return None
-    if not all(isinstance(item, str) and item for item in value):
-        return None
-    return tuple(dict.fromkeys(value))
 
 
 def _narrow(
@@ -150,16 +94,17 @@ def _narrow(
     return tuple(dict.fromkeys(requested))
 
 
-def _deny(connection: str, subject: str | None, reason: str) -> NoReturn:
+def _deny(connection: str, identity: Identity, reason: str) -> NoReturn:
     """Log the audit trail of a denial and refuse the request.
 
     The response message stays generic on purpose (no oracle about which part
-    of the token failed); the precise reason is only recorded server-side.
+    of the credentials failed); the precise reason is only recorded server-side.
     """
     _logger.warning(
-        "SQL role authorization denied: connection=%s subject=%s reason=%s",
+        "SQL role authorization denied: connection=%s subject=%s mechanism=%s reason=%s",
         connection,
-        subject,
+        identity.subject,
+        identity.mechanism,
         reason,
     )
     raise RolesNotBoundError(connection)

@@ -8,6 +8,7 @@ invalid values abort the parse and surface as
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any, Literal
 
 import msgspec
@@ -21,7 +22,11 @@ _URL_CREDENTIALS_RE = re.compile(r"://[^@]+@")
 
 # The only ``sql_endpoint.auth`` mode carrying a verified caller identity, and
 # therefore the only one able to bind a request to a subset of the allowlist.
-_IDENTITY_BOUND_AUTH = "jwt"
+# ``jwt`` is the deprecated spelling of the same mode, kept because it named a
+# mechanism where the contract only ever needed "the framework knows the caller".
+_IDENTITY_BOUND_AUTH = "identity"
+_DEPRECATED_AUTH_ALIAS = "jwt"
+_IDENTITY_BOUND_AUTH_MODES = frozenset({_IDENTITY_BOUND_AUTH, _DEPRECATED_AUTH_ALIAS})
 
 
 def _redact_url(url: str) -> str:
@@ -34,19 +39,40 @@ class SqlEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     Attributes:
         enabled: Whether to mount the generic ``POST /sql/{name}`` endpoint.
             Defaults to ``False`` (double opt-in).
-        auth: Mandatory when ``enabled``: ``"jwt"`` (the framework
-            authenticates the caller and binds roles to their verified
-            identity) or ``"external"`` (explicit acknowledgement that the
-            operator provides authentication, with no identity the framework
-            can read).
+        auth: Mandatory when ``enabled``: ``"identity"`` (the framework
+            authenticates the caller with the configured mechanism and binds
+            roles to their verified identity) or ``"external"`` (explicit
+            acknowledgement that the operator provides authentication, with no
+            identity the framework can read).  ``"jwt"`` is a deprecated alias
+            of ``"identity"``.
         path: Mount path override. Defaults to ``/sql/{name}`` when ``None``.
         include_in_schema: Whether the endpoint appears in the OpenAPI schema.
     """
 
     enabled: bool = False
-    auth: Literal["jwt", "external"] | None = None
+    auth: Literal["identity", "jwt", "external"] | None = None
     path: str | None = None
     include_in_schema: bool = False
+
+    def __post_init__(self) -> None:
+        if self.auth != _DEPRECATED_AUTH_ALIAS:
+            return
+        warnings.warn(
+            f"sql_endpoint.auth: {_DEPRECATED_AUTH_ALIAS!r} is deprecated because it names "
+            f"a mechanism instead of a contract. Use {_IDENTITY_BOUND_AUTH!r}: the endpoint "
+            "requires a verified caller, whichever authenticator provides it.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+    @property
+    def binds_identity(self) -> bool:
+        """Whether this endpoint requires an identity the framework can read.
+
+        Returns:
+            ``True`` for ``"identity"`` and its deprecated ``"jwt"`` alias.
+        """
+        return self.auth in _IDENTITY_BOUND_AUTH_MODES
 
 
 class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -161,7 +187,7 @@ def _validate_endpoint(
             "sql_endpoint.enabled requires a 'default_role' or a non-empty "
             "'allowed_roles' on the connection"
         )
-    if allowed_roles and endpoint.auth != _IDENTITY_BOUND_AUTH:
+    if allowed_roles and not endpoint.binds_identity:
         raise ValueError(
             "sql_endpoint.enabled with a non-empty 'allowed_roles' requires "
             f"'sql_endpoint.auth: {_IDENTITY_BOUND_AUTH}': it is the only mode whose "

@@ -43,9 +43,15 @@ from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryS
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
-from loom.rest.auth import JwtAuthConfig, JwtAuthMiddleware
+from loom.rest.auth import (
+    AuthenticationMiddleware,
+    Authenticator,
+    JwtAuthConfig,
+    JwtAuthenticator,
+)
+from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
 from loom.rest.fastapi.app import create_fastapi_app
-from loom.rest.fastapi.sql import _role_exposure_notice, bind_sql_endpoints
+from loom.rest.fastapi.sql import _role_exposure_notice, _roles_mechanism, bind_sql_endpoints
 from loom.rest.middleware import TraceIdMiddleware
 
 if TYPE_CHECKING:
@@ -74,6 +80,7 @@ class _DiscoveryConfig(msgspec.Struct, kw_only=True):
 
 class _RestAuthConfig(msgspec.Struct, kw_only=True):
     jwt: JwtAuthConfig | None = None
+    exclude_paths: tuple[str, ...] = DEFAULT_EXCLUDE_PATHS
 
 
 class _RestConfig(msgspec.Struct, kw_only=True):
@@ -439,7 +446,59 @@ class _RegistryExecutors(Mapping[str, SqlExecutor]):
         return len(self._names)
 
 
-def _resolve_sql(ctx: ConfigContext, jwt_cfg: JwtAuthConfig | None) -> _SqlWiring:
+@dataclass(frozen=True)
+class _AuthWiring:
+    """Resolved authentication for the auto-bootstrap REST app.
+
+    Args:
+        authenticator: Mechanism authenticating callers, or ``None`` when the
+            application configures none.
+        exclude_paths: Paths served without authentication.
+        jwt_config: JWT settings when the built-in mechanism is the one in use.
+            Kept so the JWT-specific startup gates stay where the JWT contract
+            is known, instead of leaking into the agnostic layers.
+    """
+
+    authenticator: Authenticator | None
+    exclude_paths: tuple[str, ...]
+    jwt_config: JwtAuthConfig | None
+
+
+def _resolve_authentication(
+    app_cfg: _AppConfig,
+    authenticator: Authenticator | None,
+) -> _AuthWiring:
+    """Pick the single authentication mechanism of the application.
+
+    Raises:
+        ConfigError: When both a custom authenticator and the built-in JWT
+            section are supplied — two mechanisms would mean two sources of
+            truth for the caller identity.
+    """
+    auth_cfg = app_cfg.rest.auth
+    jwt_cfg = auth_cfg.jwt
+    if authenticator is not None and jwt_cfg is not None:
+        raise ConfigError(
+            "create_app received an 'authenticator' but 'app.rest.auth.jwt' is also "
+            "configured. Exactly one authentication mechanism may be active: drop the "
+            "JWT section, or drop the authenticator argument."
+        )
+    if authenticator is not None:
+        return _AuthWiring(
+            authenticator=authenticator,
+            exclude_paths=auth_cfg.exclude_paths,
+            jwt_config=None,
+        )
+    if jwt_cfg is not None:
+        return _AuthWiring(
+            authenticator=JwtAuthenticator(jwt_cfg),
+            exclude_paths=jwt_cfg.exclude_paths,
+            jwt_config=jwt_cfg,
+        )
+    return _AuthWiring(authenticator=None, exclude_paths=(), jwt_config=None)
+
+
+def _resolve_sql(ctx: ConfigContext, auth: _AuthWiring) -> _SqlWiring:
     """Load the optional ``sql:`` section into its registry and service.
 
     Absent section → no registry and the null service, keeping
@@ -450,7 +509,7 @@ def _resolve_sql(ctx: ConfigContext, jwt_cfg: JwtAuthConfig | None) -> _SqlWirin
     sql_cfg = ctx.section_optional(ConfigKey.SQL, SqlConfig)
     if sql_cfg is None:
         return _SqlWiring(config=None, registry=None, service=NullSqlQueryService())
-    _validate_sql_endpoint_auth(sql_cfg, jwt_cfg)
+    _validate_sql_endpoint_auth(sql_cfg, auth)
     registry = _build_sql_registry(sql_cfg)
     executors = _RegistryExecutors(registry, tuple(sql_cfg.connections))
     service = SqlQueryService(executors=executors, config=sql_cfg)
@@ -466,55 +525,67 @@ def _build_sql_registry(sql_cfg: SqlConfig) -> ClickHouseConnectionRegistry:
     return ClickHouseConnectionRegistry(config=sql_cfg)
 
 
-def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, jwt_cfg: JwtAuthConfig | None) -> None:
-    """Enforce the startup gates of every mounted ``auth: jwt`` endpoint (§4)."""
+def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
+    """Enforce the startup gates of every mounted identity-bound endpoint (§4)."""
     for name, connection in sql_cfg.connections.items():
         endpoint = connection.sql_endpoint
-        if not endpoint.enabled or endpoint.auth != "jwt":
+        if not endpoint.enabled or not endpoint.binds_identity:
             continue
-        if jwt_cfg is None:
-            raise ConfigError(
-                f"SQL connection {name!r}: sql_endpoint.auth is 'jwt' but the "
-                "'app.rest.auth.jwt' section is not configured. Add the JWT "
-                "section or switch the endpoint to auth: external."
-            )
-        _require_jwt_audience(name, jwt_cfg)
-        _require_roles_claim(name, connection.allowed_roles, jwt_cfg)
-        _require_authenticated_path(name, endpoint.path or f"/sql/{name}", jwt_cfg)
+        authenticator = _require_authenticator(name, auth)
+        if auth.jwt_config is not None:
+            _require_jwt_audience(name, auth.jwt_config)
+        _require_role_binding(name, connection.allowed_roles, authenticator)
+        _require_authenticated_path(name, endpoint.path or f"/sql/{name}", auth.exclude_paths)
+
+
+def _require_authenticator(name: str, auth: _AuthWiring) -> Authenticator:
+    """An identity-bound endpoint without a mechanism has no identity to bind (§4)."""
+    if auth.authenticator is not None:
+        return auth.authenticator
+    raise ConfigError(
+        f"SQL connection {name!r}: sql_endpoint.auth requires a verified caller but the "
+        "application configures no authentication. Add the 'app.rest.auth.jwt' section, "
+        "pass create_app(authenticator=...), or switch the endpoint to auth: external."
+    )
 
 
 def _require_jwt_audience(name: str, jwt_cfg: JwtAuthConfig) -> None:
-    """Binding roles to a claim is void without a validated ``aud`` (§4)."""
+    """Binding roles to a token is void without a validated ``aud`` (§4)."""
     if jwt_cfg.audience is not None:
         return
     raise ConfigError(
-        f"SQL connection {name!r}: sql_endpoint.auth is 'jwt' but "
+        f"SQL connection {name!r}: the endpoint requires a verified caller but "
         "'app.rest.auth.jwt.audience' is not set. Without a validated 'aud' any "
         "token signed by the same key — including tokens minted for another "
         "service — would be accepted and could carry the roles claim."
     )
 
 
-def _require_roles_claim(name: str, allowed_roles: tuple[str, ...], jwt_cfg: JwtAuthConfig) -> None:
-    """A mounted multi-role endpoint must bind its roles to a claim (§4)."""
-    if not allowed_roles or jwt_cfg.roles_claim is not None:
+def _require_role_binding(
+    name: str,
+    allowed_roles: tuple[str, ...],
+    authenticator: Authenticator,
+) -> None:
+    """A mounted multi-role endpoint must bind its roles to the identity (§4)."""
+    if not allowed_roles or authenticator.provides_roles:
         return
     raise ConfigError(
-        f"SQL connection {name!r}: 'allowed_roles' is not empty but "
-        "'app.rest.auth.jwt.roles_claim' is not set. Without it the endpoint would "
-        "let any authenticated caller pick any allowlisted role. Either declare the "
-        "verified claim carrying the caller roles, or leave 'allowed_roles' empty and "
+        f"SQL connection {name!r}: 'allowed_roles' is not empty but the "
+        f"{authenticator.name!r} authentication mechanism binds no role to the caller "
+        "identity. Without that binding the endpoint would let any authenticated caller "
+        "pick any allowlisted role. Either configure the mechanism to provide roles "
+        "(for JWT: 'app.rest.auth.jwt.roles_claim'), or leave 'allowed_roles' empty and "
         "pin a single 'default_role'."
     )
 
 
-def _require_authenticated_path(name: str, path: str, jwt_cfg: JwtAuthConfig) -> None:
-    """A mounted SQL path listed in ``exclude_paths`` would bypass auth (§4)."""
-    if path not in jwt_cfg.exclude_paths:
+def _require_authenticated_path(name: str, path: str, exclude_paths: tuple[str, ...]) -> None:
+    """A mounted SQL path listed in the exclusions would bypass auth (§4)."""
+    if path not in exclude_paths:
         return
     raise ConfigError(
-        f"SQL connection {name!r}: the endpoint path {path!r} is listed in "
-        "'app.rest.auth.jwt.exclude_paths', which would serve SQL without "
+        f"SQL connection {name!r}: the endpoint path {path!r} is listed in the "
+        "authentication 'exclude_paths', which would serve SQL without "
         "authentication. Remove it from the exclusion list."
     )
 
@@ -524,8 +595,9 @@ def _register_sql_service(container: LoomContainer, service: SqlQueryService) ->
     container.register(SqlQueryService, lambda: service, scope=Scope.APPLICATION)
 
 
-def _warn_sql_endpoints(sql_cfg: SqlConfig, roles_claim: str | None) -> None:
+def _warn_sql_endpoints(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
     """Emit the spec §4 startup warnings for enabled SQL endpoints."""
+    mechanism = _roles_mechanism(auth.authenticator)
     for name, connection in sql_cfg.connections.items():
         endpoint = connection.sql_endpoint
         if not endpoint.enabled:
@@ -545,21 +617,38 @@ def _warn_sql_endpoints(sql_cfg: SqlConfig, roles_claim: str | None) -> None:
             f"allowed_roles={len(connection.allowed_roles)}). "
             "'auth' only authenticates the caller; the roles it may use come from the "
             "identity binding: "
-            f"{_role_exposure_notice(roles_claim, len(connection.allowed_roles))}.",
+            f"{_role_exposure_notice(mechanism, len(connection.allowed_roles))}"
+            f"{_roles_source_detail(auth)}.",
             stacklevel=3,
         )
 
 
-def _mount_jwt_middleware(app: FastAPI, jwt_cfg: JwtAuthConfig | None) -> None:
-    """Mount :class:`JwtAuthMiddleware` when ``app.rest.auth.jwt`` is configured.
+def _roles_source_detail(auth: _AuthWiring) -> str:
+    """Name the JWT claim carrying the roles, when the JWT mechanism is in use.
+
+    The agnostic layers only know "the mechanism binds roles"; the composition
+    root knows which claim, and operators need that to debug a denied caller.
+    """
+    jwt_cfg = auth.jwt_config
+    if jwt_cfg is None or jwt_cfg.roles_claim is None:
+        return ""
+    return f" (JWT roles claim: {jwt_cfg.roles_claim!r})"
+
+
+def _mount_authentication(app: FastAPI, auth: _AuthWiring) -> None:
+    """Mount :class:`AuthenticationMiddleware` when a mechanism is configured.
 
     Mounted before the optional middlewares so ``TraceIdMiddleware`` wraps it
     and 401 bodies carry a trace id. A missing ``pyjwt`` extra surfaces at app
     startup as an ``ImportError`` with an install hint (fail-closed).
     """
-    if jwt_cfg is None:
+    if auth.authenticator is None:
         return
-    app.add_middleware(JwtAuthMiddleware, config=jwt_cfg)
+    app.add_middleware(
+        AuthenticationMiddleware,
+        authenticator=auth.authenticator,
+        exclude_paths=auth.exclude_paths,
+    )
 
 
 def _compile_discovered_models(discovered: DiscoveryResult) -> None:
@@ -674,6 +763,7 @@ def create_app(
     *config_paths: str,
     code_path: str | None = None,
     metrics_registry: CollectorRegistry | None = None,
+    authenticator: Authenticator | None = None,
 ) -> FastAPI:
     """Create a FastAPI application from one or more YAML config files.
 
@@ -687,15 +777,19 @@ def create_app(
     middleware is mounted when ``observability.prometheus.enabled`` is
     ``true``.
 
+    Authentication is mechanism-agnostic: configure ``app.rest.auth.jwt`` for
+    the built-in stateless JWT mechanism, or pass *authenticator* for any
+    other.  Exactly one of the two may be active.
+
     The optional ``sql:`` section wires the SQL subsystem: its connections
     open inside the app lifespan and ``SqlQueryService`` is registered in the
     container (a null implementation raising an actionable ``ConfigError``
     when the section is absent). Connections opting in with
     ``sql_endpoint.enabled`` plus an explicit ``sql_endpoint.auth`` mount a
-    ``POST /sql/{name}`` endpoint; ``auth: jwt`` additionally requires the
-    ``app.rest.auth.jwt`` section, which mounts ``JwtAuthMiddleware``, and a
-    non-empty ``allowed_roles`` also requires ``app.rest.auth.jwt.roles_claim``
-    to bind the roles to the verified caller identity.
+    ``POST /sql/{name}`` endpoint; ``auth: identity`` additionally requires a
+    configured authentication mechanism, and a non-empty ``allowed_roles``
+    also requires that mechanism to bind roles to the verified caller
+    identity (for JWT, ``app.rest.auth.jwt.roles_claim``).
 
     Args:
         *config_paths: One or more paths to YAML configuration files.
@@ -707,13 +801,23 @@ def create_app(
             avoid ``ValueError: Duplicated timeseries`` when multiple apps with
             ``observability.prometheus.enabled: true`` are created in the same
             process.
+        authenticator: Custom authentication mechanism.  Mutually exclusive
+            with the ``app.rest.auth.jwt`` config section.
 
     Returns:
         Configured :class:`fastapi.FastAPI` application, ready to serve.
 
+    Raises:
+        ConfigError: When no config path is given, or when both *authenticator*
+            and ``app.rest.auth.jwt`` are supplied.
+
     Example — single config::
 
         app = create_app("config/app.yaml")
+
+    Example — a mechanism of your own::
+
+        app = create_app("config/app.yaml", authenticator=MyMtlsAuthenticator())
 
     Example — base + environment override::
 
@@ -732,8 +836,8 @@ def create_app(
 
     ctx = ConfigContext.from_yaml(*config_paths)
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
-    jwt_cfg = app_cfg.rest.auth.jwt
-    sql = _resolve_sql(ctx, jwt_cfg)
+    auth = _resolve_authentication(app_cfg, authenticator)
+    sql = _resolve_sql(ctx, auth)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)
     metrics_cfg = observability_cfg.prometheus
@@ -774,16 +878,15 @@ def create_app(
         redoc_url=app_cfg.rest.redoc_url,
         lifespan=lifespan,
     )
-    _mount_jwt_middleware(app, jwt_cfg)
+    _mount_authentication(app, auth)
     _mount_optional_middlewares(app, metrics_cfg, metrics_registry)
     if sql.config is not None:
-        roles_claim = jwt_cfg.roles_claim if jwt_cfg is not None else None
         bind_sql_endpoints(
             app,
             service=sql.service,
             config=sql.config,
-            roles_claim=roles_claim,
+            authenticator=auth.authenticator,
             observability_runtime=observability_runtime,
         )
-        _warn_sql_endpoints(sql.config, roles_claim)
+        _warn_sql_endpoints(sql.config, auth)
     return app
