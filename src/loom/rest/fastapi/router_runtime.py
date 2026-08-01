@@ -36,6 +36,7 @@ from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.errors import LoomError
+from loom.core.identity import current_identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc.query import (
@@ -348,6 +349,9 @@ def _make_handler(
 
     async def _handler(request: Request, **kwargs: Any) -> Response:
         try:
+            # The only ambient identity read of the REST layer: from here on
+            # the caller travels as an explicit argument, never as a global.
+            identity = current_identity()
             with observability_runtime.span(
                 Scope.USE_CASE,
                 uc_type.__name__,
@@ -375,7 +379,11 @@ def _make_handler(
 
                 uc = factory.build(uc_type)
                 result = await executor.execute(
-                    uc, params=params, payload=payload, read_only=route_read_only
+                    uc,
+                    params=params,
+                    payload=payload,
+                    read_only=route_read_only,
+                    identity=identity,
                 )
             return MsgspecJSONResponse(content=result, status_code=status_code)
         except HTTPException:

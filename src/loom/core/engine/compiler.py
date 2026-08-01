@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import inspect
 import typing
+from dataclasses import dataclass, field
 from typing import Any
 
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import (
+    CallerBinding,
     ComputeStep,
     ExecutionPlan,
     ExistsStep,
@@ -20,6 +22,7 @@ from loom.core.logger import LoggerPort, get_logger
 from loom.core.use_case.markers import (
     LookupKind,
     SourceKind,
+    _CallerMarker,
     _ExistsMarker,
     _InputMarker,
     _LoadByIdMarker,
@@ -33,6 +36,21 @@ class CompilationError(Exception):
     Args:
         message: Human-readable description of the compilation failure.
     """
+
+
+@dataclass
+class _SignatureBindings:
+    """Mutable accumulator filled while walking an ``execute`` signature.
+
+    Keeps the per-parameter dispatch to a single argument instead of one
+    positional accumulator per binding kind.
+    """
+
+    param_bindings: list[ParamBinding] = field(default_factory=list)
+    load_steps: list[LoadStep] = field(default_factory=list)
+    exists_steps: list[ExistsStep] = field(default_factory=list)
+    input_binding: InputBinding | None = None
+    caller_binding: CallerBinding | None = None
 
 
 class UseCaseCompiler:
@@ -107,9 +125,7 @@ class UseCaseCompiler:
         self._logger.info(f"[BOOT] Compiling UseCase: {uc_name}", usecase=uc_name)
         self._emit(RuntimeEvent(kind=EventKind.COMPILE_START, use_case_name=uc_name))
 
-        param_bindings, input_binding, load_steps, exists_steps = self._inspect_execute(
-            use_case_type
-        )
+        bindings = self._inspect_execute(use_case_type)
         compute_steps = tuple(
             ComputeStep(fn=fn, accepts_context=_fn_accepts_context(fn))
             for fn in use_case_type.computes
@@ -127,7 +143,12 @@ class UseCaseCompiler:
             usecase=uc_name,
         )
 
-        total = len(load_steps) + len(exists_steps) + len(compute_steps) + len(rule_steps)
+        total = (
+            len(bindings.load_steps)
+            + len(bindings.exists_steps)
+            + len(compute_steps)
+            + len(rule_steps)
+        )
         self._logger.info(
             f"[BOOT]  - ExecutionPlan built ({total} steps)",
             usecase=uc_name,
@@ -136,21 +157,19 @@ class UseCaseCompiler:
 
         plan = ExecutionPlan(
             use_case_type=use_case_type,
-            param_bindings=tuple(param_bindings),
-            input_binding=input_binding,
-            load_steps=tuple(load_steps),
-            exists_steps=tuple(exists_steps),
+            param_bindings=tuple(bindings.param_bindings),
+            input_binding=bindings.input_binding,
+            load_steps=tuple(bindings.load_steps),
+            exists_steps=tuple(bindings.exists_steps),
             compute_steps=compute_steps,
             rule_steps=rule_steps,
             read_only=bool(getattr(use_case_type, "read_only", False)),
+            caller_binding=bindings.caller_binding,
         )
         use_case_type.__execution_plan__ = plan
         return plan
 
-    def _inspect_execute(
-        self,
-        use_case_type: type[Compilable],
-    ) -> tuple[list[ParamBinding], InputBinding | None, list[LoadStep], list[ExistsStep]]:
+    def _inspect_execute(self, use_case_type: type[Compilable]) -> _SignatureBindings:
         execute_fn = use_case_type.execute
 
         if getattr(execute_fn, "__isabstractmethod__", False):
@@ -163,40 +182,20 @@ class UseCaseCompiler:
         except Exception:
             hints = {}
 
-        sig = inspect.signature(execute_fn)
-
-        param_bindings: list[ParamBinding] = []
-        input_binding: InputBinding | None = None
-        load_steps: list[LoadStep] = []
-        exists_steps: list[ExistsStep] = []
-        input_count = 0
-
-        _variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-
-        for name, param in sig.parameters.items():
+        bindings = _SignatureBindings()
+        for name, param in inspect.signature(execute_fn).parameters.items():
             if self._should_skip_parameter(name, param):
                 continue
-
-            input_binding, input_count = self._collect_binding_from_parameter(
+            self._collect_binding_from_parameter(
                 use_case_type=use_case_type,
                 name=name,
                 param=param,
                 annotation=hints.get(name, Any),
-                input_binding=input_binding,
-                input_count=input_count,
-                param_bindings=param_bindings,
-                load_steps=load_steps,
-                exists_steps=exists_steps,
+                bindings=bindings,
             )
 
-        self._validate_marker_refs(
-            use_case_type,
-            param_bindings,
-            input_binding,
-            load_steps,
-            exists_steps,
-        )
-        return param_bindings, input_binding, load_steps, exists_steps
+        self._validate_marker_refs(use_case_type, bindings)
+        return bindings
 
     def _collect_binding_from_parameter(
         self,
@@ -205,105 +204,48 @@ class UseCaseCompiler:
         name: str,
         param: inspect.Parameter,
         annotation: Any,
-        input_binding: InputBinding | None,
-        input_count: int,
-        param_bindings: list[ParamBinding],
-        load_steps: list[LoadStep],
-        exists_steps: list[ExistsStep],
-    ) -> tuple[InputBinding | None, int]:
-        marker_default = param.default
-
-        if isinstance(marker_default, _InputMarker):
-            return self._handle_input_marker(
-                use_case_type=use_case_type,
-                name=name,
-                annotation=annotation,
-                input_binding=input_binding,
-                input_count=input_count,
-            )
-
-        if isinstance(marker_default, _LoadByIdMarker):
-            self._handle_load_by_id_marker(
-                name=name,
-                marker=marker_default,
-                load_steps=load_steps,
-                exists_steps=exists_steps,
-            )
-            return input_binding, input_count
-
-        if isinstance(marker_default, _LoadMarker):
-            self._handle_load_marker(
-                name=name,
-                marker=marker_default,
-                load_steps=load_steps,
-                exists_steps=exists_steps,
-            )
-            return input_binding, input_count
-
-        if isinstance(marker_default, _ExistsMarker):
-            self._handle_exists_marker(
-                name=name,
-                marker=marker_default,
-                load_steps=load_steps,
-                exists_steps=exists_steps,
-            )
-            return input_binding, input_count
-
-        param_bindings.append(ParamBinding(name=name, annotation=annotation))
-        return input_binding, input_count
-
-    def _handle_load_by_id_marker(
-        self,
-        *,
-        name: str,
-        marker: _LoadByIdMarker[Any],
-        load_steps: list[LoadStep],
-        exists_steps: list[ExistsStep],
+        bindings: _SignatureBindings,
     ) -> None:
-        del exists_steps
-        load_steps.append(self._build_load_by_id_step(name, marker))
-        self._log_load_by_id(marker)
+        marker = param.default
 
-    def _handle_load_marker(
-        self,
-        *,
-        name: str,
-        marker: _LoadMarker[Any],
-        load_steps: list[LoadStep],
-        exists_steps: list[ExistsStep],
-    ) -> None:
-        del exists_steps
-        load_steps.append(self._build_load_step(name, marker))
-        self._log_load(marker)
+        if isinstance(marker, _InputMarker):
+            self._collect_input(use_case_type, name, annotation, bindings)
+            return
 
-    def _handle_exists_marker(
-        self,
-        *,
-        name: str,
-        marker: _ExistsMarker[Any],
-        load_steps: list[LoadStep],
-        exists_steps: list[ExistsStep],
-    ) -> None:
-        del load_steps
-        exists_steps.append(self._build_exists_step(name, marker))
-        self._log_exists(marker)
+        if isinstance(marker, _CallerMarker):
+            self._collect_caller(use_case_type, name, bindings)
+            return
+
+        if isinstance(marker, _LoadByIdMarker):
+            bindings.load_steps.append(self._build_load_by_id_step(name, marker))
+            self._log_load_by_id(marker)
+            return
+
+        if isinstance(marker, _LoadMarker):
+            bindings.load_steps.append(self._build_load_step(name, marker))
+            self._log_load(marker)
+            return
+
+        if isinstance(marker, _ExistsMarker):
+            bindings.exists_steps.append(self._build_exists_step(name, marker))
+            self._log_exists(marker)
+            return
+
+        bindings.param_bindings.append(ParamBinding(name=name, annotation=annotation))
 
     @staticmethod
     def _should_skip_parameter(name: str, param: inspect.Parameter) -> bool:
         variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         return name == "self" or param.kind in variadic
 
-    def _handle_input_marker(
+    def _collect_input(
         self,
-        *,
         use_case_type: type[Compilable],
         name: str,
         annotation: Any,
-        input_binding: InputBinding | None,
-        input_count: int,
-    ) -> tuple[InputBinding, int]:
-        next_count = input_count + 1
-        if next_count > 1:
+        bindings: _SignatureBindings,
+    ) -> None:
+        if bindings.input_binding is not None:
             raise CompilationError(
                 f"{use_case_type.__qualname__}.execute: only one Input() parameter is allowed"
             )
@@ -313,10 +255,22 @@ class UseCaseCompiler:
                 f"{use_case_type.__qualname__}.execute: "
                 f"Input() parameter '{name}' type must implement from_payload(payload)"
             )
-        next_binding = InputBinding(name=name, command_type=annotation)
+        bindings.input_binding = InputBinding(name=name, command_type=annotation)
         cmd_name = getattr(annotation, "__name__", repr(annotation))
         self._logger.info(f"[BOOT]  - Detected Input: {cmd_name}")
-        return next_binding, next_count
+
+    def _collect_caller(
+        self,
+        use_case_type: type[Compilable],
+        name: str,
+        bindings: _SignatureBindings,
+    ) -> None:
+        if bindings.caller_binding is not None:
+            raise CompilationError(
+                f"{use_case_type.__qualname__}.execute: only one Caller() parameter is allowed"
+            )
+        bindings.caller_binding = CallerBinding(name=name)
+        self._logger.info(f"[BOOT]  - Detected Caller: {name}")
 
     @staticmethod
     def _build_load_by_id_step(name: str, marker: _LoadByIdMarker[Any]) -> LoadStep:
@@ -375,33 +329,31 @@ class UseCaseCompiler:
     def _validate_marker_refs(
         self,
         use_case_type: type[Compilable],
-        param_bindings: list[ParamBinding],
-        input_binding: InputBinding | None,
-        load_steps: list[LoadStep],
-        exists_steps: list[ExistsStep],
+        bindings: _SignatureBindings,
     ) -> None:
-        param_names = {pb.name for pb in param_bindings}
-        for ls in load_steps:
+        param_names = {pb.name for pb in bindings.param_bindings}
+        has_input = bindings.input_binding is not None
+        for ls in bindings.load_steps:
             if ls.source_kind is SourceKind.PARAM and ls.source_name not in param_names:
                 raise CompilationError(
                     f"{use_case_type.__qualname__}.execute: "
                     f"LoadById({ls.entity_type.__name__}): "
                     f"parameter '{ls.source_name}' not found in execute signature"
                 )
-            if ls.source_kind is SourceKind.COMMAND and input_binding is None:
+            if ls.source_kind is SourceKind.COMMAND and not has_input:
                 raise CompilationError(
                     f"{use_case_type.__qualname__}.execute: "
                     f"LoadById({ls.entity_type.__name__}): from_command requires Input() parameter"
                 )
 
-        for es in exists_steps:
+        for es in bindings.exists_steps:
             if es.source_kind is SourceKind.PARAM and es.source_name not in param_names:
                 raise CompilationError(
                     f"{use_case_type.__qualname__}.execute: "
                     f"Exists({es.entity_type.__name__}): "
                     f"parameter '{es.source_name}' not found in execute signature"
                 )
-            if es.source_kind is SourceKind.COMMAND and input_binding is None:
+            if es.source_kind is SourceKind.COMMAND and not has_input:
                 raise CompilationError(
                     f"{use_case_type.__qualname__}.execute: "
                     f"Exists({es.entity_type.__name__}): from_command requires Input() parameter"

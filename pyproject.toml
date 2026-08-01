@@ -187,14 +187,17 @@ select = [
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = [
+    "Caller",
     "Exists",
     "Input",
     "Load",
     "LoadById",
+    "loom.core.use_case.Caller",
     "loom.core.use_case.Exists",
     "loom.core.use_case.Input",
     "loom.core.use_case.Load",
     "loom.core.use_case.LoadById",
+    "loom.core.use_case.markers.Caller",
     "loom.core.use_case.markers.Exists",
     "loom.core.use_case.markers.Input",
     "loom.core.use_case.markers.Load",
