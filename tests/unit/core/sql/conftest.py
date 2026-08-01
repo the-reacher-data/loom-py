@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import pytest
+
 from loom.core.sql.config import SqlConnectionConfig
 from loom.core.sql.service import SqlQueryService
-
 from tests.unit.core.sql._fakes import FakeSqlExecutor, make_sql_config
 
 ServiceFactory = Callable[[FakeSqlExecutor, SqlConnectionConfig], SqlQueryService]

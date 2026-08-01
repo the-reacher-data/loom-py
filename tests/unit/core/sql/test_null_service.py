@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 
 from loom.core.config.errors import ConfigError
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
+from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 
 
 async def test_null_service_raises_actionable_config_error_on_first_use() -> None:

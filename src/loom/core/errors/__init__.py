@@ -7,6 +7,7 @@ from loom.core.errors.errors import (
     RuleViolation,
     RuleViolations,
     SystemError,
+    Unauthenticated,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "RuleViolation",
     "RuleViolations",
     "SystemError",
+    "Unauthenticated",
 ]

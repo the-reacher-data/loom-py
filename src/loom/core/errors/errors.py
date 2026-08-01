@@ -73,6 +73,25 @@ class NotFound(DomainError):
         super().__init__(f"{entity} with id={id!r} not found", code=ErrorCode.NOT_FOUND)
 
 
+class Unauthenticated(DomainError):
+    """Raised when an action requires a verified caller and there is none.
+
+    Distinct from :class:`Forbidden`: the caller can fix an ``Unauthenticated``
+    by presenting credentials, but cannot fix a ``Forbidden`` at all.  Transport
+    adapters map it to ``401`` with an authentication challenge.
+
+    Args:
+        message: Description of the missing authentication.
+
+    Example::
+
+        raise Unauthenticated("This endpoint requires an authenticated caller.")
+    """
+
+    def __init__(self, message: str = "Authentication required") -> None:
+        super().__init__(message, code=ErrorCode.UNAUTHENTICATED)
+
+
 class Forbidden(DomainError):
     """Raised when an action is not permitted for the caller.
 

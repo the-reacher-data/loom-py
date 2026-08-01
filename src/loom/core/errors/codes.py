@@ -25,6 +25,7 @@ class ErrorCode(StrEnum):
     """
 
     NOT_FOUND = "not_found"
+    UNAUTHENTICATED = "unauthenticated"
     FORBIDDEN = "forbidden"
     CONFLICT = "conflict"
     RULE_VIOLATION = "rule_violation"

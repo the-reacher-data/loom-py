@@ -14,6 +14,7 @@ from loom.core.errors import (
     NotFound,
     RuleViolation,
     RuleViolations,
+    Unauthenticated,
 )
 from loom.core.errors.codes import ErrorCode
 from loom.core.repository.abc.query import CursorResult, PageResult
@@ -108,6 +109,20 @@ class TestHttpErrorMapper:
     def test_forbidden_maps_to_403(self) -> None:
         exc = self._mapper().to_http(Forbidden())
         assert exc.status_code == 403
+
+    def test_unauthenticated_maps_to_401(self) -> None:
+        exc = self._mapper().to_http(Unauthenticated())
+        assert exc.status_code == 401
+
+    def test_unauthenticated_carries_the_bearer_challenge(self) -> None:
+        """RFC 9110 §11.6.1: a 401 without a challenge is not a valid response."""
+        exc = self._mapper().to_http(Unauthenticated())
+        assert exc.headers == {"WWW-Authenticate": "Bearer"}
+
+    def test_non_401_errors_carry_no_challenge(self) -> None:
+        """Only a 401 challenges the caller; a 403 is final."""
+        exc = self._mapper().to_http(Forbidden())
+        assert exc.headers is None
 
     def test_conflict_maps_to_409(self) -> None:
         exc = self._mapper().to_http(Conflict("duplicate"))

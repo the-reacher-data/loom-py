@@ -31,6 +31,15 @@ Engine and Errors
    loom.core.engine
    loom.core.errors
 
+Identity
+--------
+
+.. autosummary::
+   :toctree: generated
+
+   loom.core.identity
+   loom.core.identity.context
+
 Config
 ------
 

@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from loom.core.errors import LoomError, NotFound, RuleViolations
 from loom.core.errors.codes import ErrorCode
 from loom.core.tracing import get_trace_id
+from loom.rest.constants import BEARER_CHALLENGE
 
 
 class ErrorField(StrEnum):
@@ -62,6 +63,7 @@ class HttpErrorMapper:
 
     _STATUS: ClassVar[dict[str, int]] = {
         ErrorCode.NOT_FOUND: 404,
+        ErrorCode.UNAUTHENTICATED: 401,
         ErrorCode.FORBIDDEN: 403,
         ErrorCode.CONFLICT: 409,
         ErrorCode.RULE_VIOLATIONS: 422,
@@ -77,7 +79,9 @@ class HttpErrorMapper:
 
         Returns:
             ``HTTPException`` with the appropriate status code and a
-            structured detail body keyed by :class:`ErrorField`.
+            structured detail body keyed by :class:`ErrorField`.  A ``401``
+            also carries the ``WWW-Authenticate`` challenge required by
+            RFC 9110 §11.6.1.
         """
         status = self._STATUS.get(error.code, 500)
         detail: dict[str, Any] = {
@@ -95,4 +99,9 @@ class HttpErrorMapper:
                 {ErrorField.FIELD: v.field, ErrorField.MESSAGE: v.message} for v in error.violations
             ]
 
-        return HTTPException(status_code=status, detail=detail)
+        return HTTPException(status_code=status, detail=detail, headers=_challenge(status))
+
+
+def _challenge(status: int) -> dict[str, str] | None:
+    """Return the ``WWW-Authenticate`` header a ``401`` must carry, else ``None``."""
+    return dict(BEARER_CHALLENGE) if status == 401 else None
