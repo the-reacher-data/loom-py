@@ -5,6 +5,10 @@ configs plus a minimal discoverable app package, mirroring the structure used by
 ``tests/integration/celery_bootstrap``. ``create_app`` must not open any network
 connection: the ClickHouse registry is only entered during the app lifespan,
 which these tests never start.
+
+The last test drives :func:`loom.rest.fastapi.sql.bind_sql_endpoints` directly:
+the same invariant must hold for a hand-written composition root, where no YAML
+gate ever runs.
 """
 
 from __future__ import annotations
@@ -18,8 +22,11 @@ from fastapi import FastAPI
 
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity
+from loom.core.sql.config import SqlConfig, SqlConnectionConfig, SqlEndpointConfig
+from loom.core.sql.service import NullSqlQueryService
 from loom.rest.auth import AuthenticationMiddleware, RequestCredentials
 from loom.rest.fastapi.auto import create_app
+from loom.rest.fastapi.sql import bind_sql_endpoints
 
 _APP_MODULE = "loom_sqlgate_fixture_app"
 
@@ -341,14 +348,12 @@ def test_without_sql_section_no_sql_routes_are_mounted(tmp_path: Path) -> None:
 
 
 def test_binder_refuses_a_multi_role_endpoint_without_an_identity_binding() -> None:
-    """The invariant holds for any composition root, not only for create_app."""
-    from fastapi import FastAPI
+    """The invariant holds for any composition root, not only for create_app.
 
-    from loom.core.config.errors import ConfigError
-    from loom.core.sql.config import SqlConfig, SqlConnectionConfig, SqlEndpointConfig
-    from loom.core.sql.service import NullSqlQueryService
-    from loom.rest.fastapi.sql import bind_sql_endpoints
-
+    The two guards run at different moments and this one is load-bearing: the
+    "no binding" branch of role resolution is only safe because the binder
+    refuses to mount a non-empty allowlist without one.
+    """
     config = SqlConfig(
         connections={
             "analytics": SqlConnectionConfig(
@@ -359,7 +364,6 @@ def test_binder_refuses_a_multi_role_endpoint_without_an_identity_binding() -> N
             )
         }
     )
-
     app = FastAPI()
     service = NullSqlQueryService()
 

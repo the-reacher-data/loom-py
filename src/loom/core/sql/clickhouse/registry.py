@@ -22,6 +22,7 @@ from loom.core.sql.clickhouse._client import (
     ClickHouseClientFactory,
     DatabaseError,
     create_driver_client,
+    enable_repeated_query_params,
     pool_manager,
     sanitize_backend_error,
     supports_repeated_query_params,
@@ -212,6 +213,9 @@ def _require_multi_role_transport(name: str, connection: SqlConnectionConfig) ->
     """
     if len(connection.allowed_roles) <= 1:
         return
+    # Enabled here and nowhere else: the driver workaround is a process-wide
+    # mutation, so it only happens for an application that actually needs it.
+    enable_repeated_query_params()
     if supports_repeated_query_params():
         return
     raise ConfigError(

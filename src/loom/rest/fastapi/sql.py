@@ -37,7 +37,7 @@ from loom.core.identity import current_identity
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.sql.config import SqlConfig, SqlConnectionConfig
+from loom.core.sql.config import SqlConfig, SqlConnectionConfig, roles_need_identity_binding
 from loom.core.sql.service import SqlQueryService
 from loom.core.tracing import get_trace_id
 from loom.rest.auth.abc import Authenticator
@@ -94,6 +94,19 @@ def _roles_mechanism(authenticator: Authenticator | None) -> str | None:
     if authenticator is None or not authenticator.provides_roles:
         return None
     return authenticator.name
+
+
+def _connection_mechanism(connection: SqlConnectionConfig, mechanism: str | None) -> str | None:
+    """Narrow the application-wide mechanism to what *this* connection binds.
+
+    The authentication mechanism is global, ``allowed_roles`` is per connection.
+    A connection with an empty allowlist is single-role by config — every
+    caller-supplied role is rejected and ``default_role`` applies — so binding
+    its roles to the identity would intersect against nothing and deny every
+    request. Mixing a multi-role and a single-role connection in one
+    application must not break the second.
+    """
+    return mechanism if connection.allowed_roles else None
 
 
 def _encode_exotic(obj: Any) -> str:
@@ -198,6 +211,19 @@ def _unexpected_error_response() -> MsgspecJSONResponse:
     )
 
 
+def _effective_roles_label(roles: tuple[str, ...], connection: SqlConnectionConfig) -> str:
+    """Label the roles the query actually runs with.
+
+    An empty resolution is not "no role": it is the documented meaning of
+    ``default_role``, applied by the service when the request carries none. The
+    audit span must say which privileges ran the query, so it names that role
+    instead of claiming there was none.
+    """
+    if roles:
+        return ",".join(roles)
+    return connection.default_role or ""
+
+
 def _make_sql_handler(
     service: SqlQueryService,
     name: str,
@@ -234,7 +260,7 @@ def _make_sql_handler(
                 method="POST",
                 status_code=200,
                 read_only=connection.readonly,
-                roles=",".join(roles),
+                roles=_effective_roles_label(roles, connection),
                 subject=identity.subject,
                 mechanism=identity.mechanism,
             ):
@@ -271,7 +297,9 @@ def _require_identity_binding(
     any composition root — including a manual one — must obey it. Without the
     binding the caller would pick their own privilege out of the allowlist.
     """
-    if not connection.allowed_roles or mechanism is not None:
+    if not roles_need_identity_binding(
+        connection.allowed_roles, mechanism_binds_roles=mechanism is not None
+    ):
         return
     raise ConfigError(
         f"SQL connection {name!r} allows {len(connection.allowed_roles)} roles but no "
@@ -297,7 +325,8 @@ def _mount_endpoint(
             binds them to the caller identity.
     """
     endpoint = connection.sql_endpoint
-    _require_identity_binding(name, connection, mechanism)
+    bound_mechanism = _connection_mechanism(connection, mechanism)
+    _require_identity_binding(name, connection, bound_mechanism)
     path = endpoint.path or f"/sql/{name}"
     app.add_api_route(
         path,
@@ -306,7 +335,7 @@ def _mount_endpoint(
             name,
             connection,
             path=path,
-            roles_bound=mechanism is not None,
+            roles_bound=bound_mechanism is not None,
             observability_runtime=observability_runtime,
         ),
         methods=["POST"],
@@ -321,7 +350,7 @@ def _mount_endpoint(
         connection.readonly,
         endpoint.auth,
         len(connection.allowed_roles),
-        _role_exposure_notice(mechanism, len(connection.allowed_roles)),
+        _role_exposure_notice(bound_mechanism, len(connection.allowed_roles)),
     )
 
 

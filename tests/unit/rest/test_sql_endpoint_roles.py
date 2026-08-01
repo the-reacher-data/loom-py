@@ -378,6 +378,84 @@ def test_span_labels_the_effective_roles_the_subject_and_the_mechanism() -> None
 
 
 # ---------------------------------------------------------------------------
+# The binding is per connection, the mechanism is per application
+# ---------------------------------------------------------------------------
+
+
+def _single_role_app(executor: FakeSqlExecutor) -> FastAPI:
+    """One single-role connection (empty allowlist + default_role) and a mechanism."""
+    connection = make_connection_config(
+        allowed_roles=(),
+        default_role=ROLE_A,
+        sql_endpoint=SqlEndpointConfig(enabled=True, auth="identity"),
+    )
+    config = make_sql_config(analytics=connection)
+    app = FastAPI()
+    bind_sql_endpoints(
+        app,
+        service=SqlQueryService(executors={"analytics": executor}, config=config),
+        config=config,
+        authenticator=_RoleAuthenticator(),
+    )
+    return app
+
+
+def test_a_single_role_connection_still_serves_under_a_role_binding_mechanism() -> None:
+    """The mechanism is global, ``allowed_roles`` is per connection.
+
+    Binding a connection with an empty allowlist would intersect against nothing
+    and deny every request — a silent deployment trap for any application mixing
+    a multi-role connection with a single-role one.
+    """
+    executor = FakeSqlExecutor()
+    app = _single_role_app(executor)
+    app.add_middleware(_IdentityMiddleware, identity=_identity((ROLE_B,)))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = _post(client)
+
+    assert (response.status_code, executor.calls[0].options.roles) == (200, (ROLE_A,))
+
+
+def test_a_single_role_connection_still_rejects_caller_supplied_roles() -> None:
+    """The empty allowlist stays the barrier: the body may not pick a role."""
+    executor = FakeSqlExecutor()
+    app = _single_role_app(executor)
+    app.add_middleware(_IdentityMiddleware, identity=_identity((ROLE_B,)))
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = _post(client, roles=[ROLE_B])
+
+    assert (response.status_code, executor.calls) == (403, [])
+
+
+def test_the_span_names_the_default_role_of_a_single_role_connection() -> None:
+    """The audit label must state the privileges the query really ran with."""
+    observer = _RecordingObserver()
+    executor = FakeSqlExecutor()
+    connection = make_connection_config(
+        allowed_roles=(),
+        default_role=ROLE_A,
+        sql_endpoint=SqlEndpointConfig(enabled=True, auth="identity"),
+    )
+    config = make_sql_config(analytics=connection)
+    app = FastAPI()
+    bind_sql_endpoints(
+        app,
+        service=SqlQueryService(executors={"analytics": executor}, config=config),
+        config=config,
+        authenticator=_RoleAuthenticator(),
+        observability_runtime=ObservabilityRuntime([observer]),
+    )
+    app.add_middleware(_IdentityMiddleware, identity=_identity((ROLE_B,)))
+
+    response = _post(TestClient(app, raise_server_exceptions=False))
+
+    assert response.status_code == 200
+    assert observer.events[0].meta["roles"] == ROLE_A
+
+
+# ---------------------------------------------------------------------------
 # Deprecated auth spelling
 # ---------------------------------------------------------------------------
 

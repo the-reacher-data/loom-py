@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from collections.abc import Sequence
 from typing import Any, Literal
 
 import msgspec
@@ -31,6 +32,30 @@ _IDENTITY_BOUND_AUTH_MODES = frozenset({_IDENTITY_BOUND_AUTH, _DEPRECATED_AUTH_A
 
 def _redact_url(url: str) -> str:
     return _URL_CREDENTIALS_RE.sub("://***@", url)
+
+
+def roles_need_identity_binding(
+    allowed_roles: Sequence[str],
+    *,
+    mechanism_binds_roles: bool,
+) -> bool:
+    """Report whether an allowlist would be left for the caller to pick from.
+
+    A connection allowing several roles only makes sense when something binds a
+    caller to a subset of them.  Without that binding the allowlist stops being
+    a ceiling and becomes a menu, so every layer that can mount such an endpoint
+    refuses to.  The predicate lives here, next to the config it judges; each
+    layer phrases its own error.
+
+    Args:
+        allowed_roles: Connection allowlist.
+        mechanism_binds_roles: Whether the configured authentication mechanism
+            binds roles to the verified caller identity.
+
+    Returns:
+        ``True`` when the configuration is unsafe as it stands.
+    """
+    return bool(allowed_roles) and not mechanism_binds_roles
 
 
 class SqlEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):

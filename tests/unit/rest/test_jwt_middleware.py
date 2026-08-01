@@ -20,6 +20,8 @@ from loom.core.identity import current_identity
 from loom.rest.auth import JwtAuthConfig, JwtAuthenticator, JwtAuthMiddleware, RequestCredentials
 
 _SECRET = "unit-test-secret"
+_ROLES_CLAIM = "loom_roles"
+_EMAIL = "ada@example.com"
 
 _Scope = dict[str, Any]
 _Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -265,15 +267,15 @@ async def test_the_mechanism_is_recorded_on_the_identity() -> None:
 
 async def test_the_roles_claim_becomes_the_identity_roles() -> None:
     """Roles are read from the configured claim, never from a fixed name."""
-    config = _config(roles_claim="loom_roles")
-    identity = await _authenticate(config, _token(loom_roles=["a", "b"]))
+    config = _config(roles_claim=_ROLES_CLAIM)
+    identity = await _authenticate(config, _token(**{_ROLES_CLAIM: ["a", "b"]}))
     assert identity.roles == ("a", "b")
 
 
 async def test_a_scalar_roles_claim_is_the_one_role_form() -> None:
     """A string claim is the single-role shape of the same contract."""
-    config = _config(roles_claim="loom_roles")
-    identity = await _authenticate(config, _token(loom_roles="a"))
+    config = _config(roles_claim=_ROLES_CLAIM)
+    identity = await _authenticate(config, _token(**{_ROLES_CLAIM: "a"}))
     assert identity.roles == ("a",)
 
 
@@ -284,21 +286,21 @@ async def test_a_scalar_roles_claim_is_the_one_role_form() -> None:
 )
 async def test_a_malformed_roles_claim_grants_no_role_at_all(value: Any) -> None:
     """A broken claim is not a partially authorized caller: it grants nothing."""
-    config = _config(roles_claim="loom_roles")
-    identity = await _authenticate(config, _token(loom_roles=value))
+    config = _config(roles_claim=_ROLES_CLAIM)
+    identity = await _authenticate(config, _token(**{_ROLES_CLAIM: value}))
     assert identity.roles == ()
 
 
 async def test_no_configured_roles_claim_yields_no_roles() -> None:
     """Without a declared claim the mechanism binds no role, whatever the token says."""
-    identity = await _authenticate(_config(), _token(loom_roles=["a"]))
+    identity = await _authenticate(_config(), _token(**{_ROLES_CLAIM: ["a"]}))
     assert identity.roles == ()
 
 
 async def test_string_custom_claims_become_identity_attributes() -> None:
     """Business claims travel as attributes so policies never parse a token."""
-    identity = await _authenticate(_config(), _token(email="ada@example.com"))
-    assert identity.attribute("email") == "ada@example.com"
+    identity = await _authenticate(_config(), _token(email=_EMAIL))
+    assert identity.attribute("email") == _EMAIL
 
 
 async def test_registered_claims_never_become_attributes() -> None:
@@ -309,9 +311,9 @@ async def test_registered_claims_never_become_attributes() -> None:
 
 async def test_the_roles_claim_never_leaks_into_the_attributes() -> None:
     """Roles have their own field; duplicating them invites divergent checks."""
-    config = _config(roles_claim="loom_roles")
-    identity = await _authenticate(config, _token(loom_roles="a"))
-    assert "loom_roles" not in identity.attributes
+    config = _config(roles_claim=_ROLES_CLAIM)
+    identity = await _authenticate(config, _token(**{_ROLES_CLAIM: "a"}))
+    assert _ROLES_CLAIM not in identity.attributes
 
 
 async def test_non_string_custom_claims_are_dropped() -> None:
@@ -322,6 +324,6 @@ async def test_non_string_custom_claims_are_dropped() -> None:
 
 async def test_provides_roles_reflects_the_configured_claim() -> None:
     """Startup gates rely on this flag to refuse role-based endpoints."""
-    with_roles = JwtAuthenticator(_config(roles_claim="loom_roles")).provides_roles
+    with_roles = JwtAuthenticator(_config(roles_claim=_ROLES_CLAIM)).provides_roles
     without_roles = JwtAuthenticator(_config()).provides_roles
     assert (with_roles, without_roles) == (True, False)

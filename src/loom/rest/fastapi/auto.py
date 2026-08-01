@@ -40,6 +40,7 @@ from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registra
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
+from loom.core.sql.config import roles_need_identity_binding
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
@@ -51,7 +52,12 @@ from loom.rest.auth import (
 )
 from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
 from loom.rest.fastapi.app import create_fastapi_app
-from loom.rest.fastapi.sql import _role_exposure_notice, _roles_mechanism, bind_sql_endpoints
+from loom.rest.fastapi.sql import (
+    _connection_mechanism,
+    _role_exposure_notice,
+    _roles_mechanism,
+    bind_sql_endpoints,
+)
 from loom.rest.middleware import TraceIdMiddleware
 
 if TYPE_CHECKING:
@@ -567,7 +573,9 @@ def _require_role_binding(
     authenticator: Authenticator,
 ) -> None:
     """A mounted multi-role endpoint must bind its roles to the identity (§4)."""
-    if not allowed_roles or authenticator.provides_roles:
+    if not roles_need_identity_binding(
+        allowed_roles, mechanism_binds_roles=authenticator.provides_roles
+    ):
         return
     raise ConfigError(
         f"SQL connection {name!r}: 'allowed_roles' is not empty but the "
@@ -611,26 +619,29 @@ def _warn_sql_endpoints(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
         if endpoint.auth is None:
             continue
         path = endpoint.path or f"/sql/{name}"
+        # Narrowed per connection: a global mechanism does not bind the roles of
+        # a connection whose allowlist is empty (see _connection_mechanism).
+        bound = _connection_mechanism(connection, mechanism)
         warnings.warn(
             f"SQL endpoint mounted at {path} (connection={name!r}, "
             f"readonly={connection.readonly}, auth={endpoint.auth}, "
             f"allowed_roles={len(connection.allowed_roles)}). "
             "'auth' only authenticates the caller; the roles it may use come from the "
             "identity binding: "
-            f"{_role_exposure_notice(mechanism, len(connection.allowed_roles))}"
-            f"{_roles_source_detail(auth)}.",
+            f"{_role_exposure_notice(bound, len(connection.allowed_roles))}"
+            f"{_roles_source_detail(auth, bound)}.",
             stacklevel=3,
         )
 
 
-def _roles_source_detail(auth: _AuthWiring) -> str:
+def _roles_source_detail(auth: _AuthWiring, bound_mechanism: str | None) -> str:
     """Name the JWT claim carrying the roles, when the JWT mechanism is in use.
 
     The agnostic layers only know "the mechanism binds roles"; the composition
     root knows which claim, and operators need that to debug a denied caller.
     """
     jwt_cfg = auth.jwt_config
-    if jwt_cfg is None or jwt_cfg.roles_claim is None:
+    if bound_mechanism is None or jwt_cfg is None or jwt_cfg.roles_claim is None:
         return ""
     return f" (JWT roles claim: {jwt_cfg.roles_claim!r})"
 

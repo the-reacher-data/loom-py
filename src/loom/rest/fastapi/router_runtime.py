@@ -22,6 +22,7 @@ status codes, tags) are taken from the ``CompiledRoute`` produced at startup.
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 import types
 import typing
@@ -35,8 +36,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.errors import LoomError
-from loom.core.identity import current_identity
+from loom.core.errors import Forbidden, LoomError
+from loom.core.identity import Identity, current_identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc.query import (
@@ -60,10 +61,40 @@ from loom.rest.fastapi.openapi import (
 )
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
+_logger = logging.getLogger(__name__)
 _error_mapper = HttpErrorMapper()
 
 _DEFAULT_PAGE = 1
 _DEFAULT_LIMIT = 50
+_NOT_AUTHORIZED_MESSAGE = "You are not authorized to access this route."
+
+
+def _authorize_route(identity: Identity, required_roles: tuple[str, ...], route: str) -> None:
+    """Refuse callers holding none of the roles the route declares.
+
+    Holding **any** declared role grants access.  The refusal is a ``403`` for
+    an anonymous caller too: whether authenticating would have helped is part
+    of the route's policy, and the response must not become an oracle for it.
+    The message stays generic; the audit trail is server-side.
+
+    Args:
+        identity: Verified caller of the request.
+        required_roles: Roles resolved for the route at compile time.
+        route: Full path, recorded in the audit log.
+
+    Raises:
+        Forbidden: When the caller holds none of *required_roles*.
+    """
+    if not required_roles or any(identity.has_role(role) for role in required_roles):
+        return
+    _logger.warning(
+        "Route authorization denied: route=%s subject=%s mechanism=%s required_roles=%s",
+        route,
+        identity.subject,
+        identity.mechanism,
+        ",".join(required_roles),
+    )
+    raise Forbidden(_NOT_AUTHORIZED_MESSAGE)
 
 
 def _internal_error_response(trace_id: str) -> MsgspecJSONResponse:
@@ -323,6 +354,7 @@ def _make_handler(
     execute_sig = inspect.signature(uc_type.execute)
     accepts_profile_param = "profile" in execute_sig.parameters
     query_param_name = _resolve_query_param_name(uc_type)
+    required_roles = compiled_route.effective_requires_roles
 
     # Resolved at startup — avoids per-request attribute lookup.
     plan = getattr(uc_type, "__execution_plan__", None)
@@ -361,6 +393,7 @@ def _make_handler(
                 status_code=status_code,
                 read_only=route_read_only,
             ):
+                _authorize_route(identity, required_roles, compiled_route.full_path)
                 params: dict[str, Any] = {p: kwargs[p] for p in path_params}
                 selected_profile = _resolve_profile(request)
                 if accepts_profile_param:

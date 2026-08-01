@@ -69,6 +69,11 @@ class RestRoute:
         allow_pagination_override: Whether callers may override the resolved
             pagination mode using query parameters.  When ``None``, inherits
             from the interface or global default.
+        requires_roles: Roles that grant access to this route.  A caller
+            holding **any** of them is served; anyone else is refused before
+            the use case is constructed.  Empty inherits the interface
+            declaration, and an empty interface declaration leaves the route
+            open.
 
     Example::
 
@@ -78,6 +83,7 @@ class RestRoute:
             path="/{user_id}",
             summary="Partial update user",
             status_code=200,
+            requires_roles=("user_admin",),
         )
     """
 
@@ -92,6 +98,7 @@ class RestRoute:
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
+    requires_roles: tuple[str, ...] = ()
 
 
 def _extract_model_type(cls: type[Any]) -> type[Any] | None:
@@ -141,6 +148,9 @@ class RestInterface(Generic[T]):
             ``?profile=...`` by default. Can be overridden per-route.
         allow_pagination_override: Whether list endpoints may switch
             pagination mode from query parameters by default.
+        requires_roles: Roles granting access to every route of this
+            interface.  Overridden per-route by
+            :attr:`RestRoute.requires_roles`.
 
     Example::
 
@@ -166,6 +176,7 @@ class RestInterface(Generic[T]):
     profile_default: str = ""
     allowed_profiles: tuple[str, ...] = ()
     expose_profile: bool = False
+    requires_roles: tuple[str, ...] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Auto-populate routes when ``auto=True`` and no routes are declared.

@@ -40,6 +40,7 @@ __all__ = [
     "DatabaseError",
     "OperationalError",
     "create_driver_client",
+    "enable_repeated_query_params",
     "pool_manager",
     "sanitize_backend_error",
     "supports_repeated_query_params",
@@ -65,28 +66,50 @@ _URL_RE = re.compile(r"https?://\S+")
 # duplicating ~80 lines of driver internals (retry loop, session guard, error
 # handling) with no way to reuse the URL building alone.
 #
+# The rebinding is NOT applied at import: mutating a third-party namespace for
+# the whole process — including consumers that never touch Loom — as a side
+# effect of an import is exactly the hidden global state this framework
+# forbids. The registry enables it explicitly, and only for a connection that
+# can ever apply more than one role.
+#
 # ``supports_repeated_query_params`` re-checks the outcome so the registry can
-# fail closed on a driver that stops honouring it, and
+# fail closed on a driver that stops exposing the seam, and
 # ``tests/unit/core/sql/test_clickhouse_transport.py`` pins the patch point so
 # the workaround can never degrade silently.
 _MULTI_ROLE_PROBE: Mapping[str, Any] = {"role": ("loom_probe_a", "loom_probe_b")}
 _MULTI_ROLE_PROBE_ENCODED = "role=loom_probe_a&role=loom_probe_b"
+_URLENCODE_ATTR = "urlencode"
 
-httpclient.urlencode = partial(urlencode, doseq=True)
+
+def enable_repeated_query_params() -> None:
+    """Make the driver emit one HTTP parameter per sequence-valued setting.
+
+    Idempotent and explicit: rebinds the ``urlencode`` the driver looks up when
+    building a request URL, so a tuple of roles travels as ``role=a&role=b``
+    instead of its ``repr``.  Does nothing when the driver no longer exposes
+    that symbol — callers must then check
+    :func:`supports_repeated_query_params` and fail closed.
+    """
+    if getattr(httpclient, _URLENCODE_ATTR, None) is None:
+        return
+    httpclient.urlencode = partial(urlencode, doseq=True)
 
 
 def supports_repeated_query_params() -> bool:
     """Report whether the driver emits one HTTP parameter per sequence value.
 
-    Probes the very encoder the driver uses to build the request URL, so a
-    future driver version that bypasses it is detected instead of silently
-    sending an invalid single role.
+    Checks that the driver still exposes the encoder seam *and* that it now
+    produces repeated parameters, so a future driver version that drops the
+    symbol is detected instead of silently sending an invalid single role.
 
     Returns:
         ``True`` when a sequence-valued setting is serialized as repeated
         parameters, which is what multi-role queries require.
     """
-    encoded: str = httpclient.urlencode(_MULTI_ROLE_PROBE)
+    encoder = getattr(httpclient, _URLENCODE_ATTR, None)
+    if encoder is None:
+        return False
+    encoded: str = encoder(_MULTI_ROLE_PROBE)
     return encoded == _MULTI_ROLE_PROBE_ENCODED
 
 
