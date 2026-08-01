@@ -31,6 +31,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
+from loom.core.config.errors import ConfigError
 from loom.core.errors import LoomError, RuleViolation
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
@@ -247,6 +248,27 @@ def _make_sql_handler(
     return _handler
 
 
+def _require_identity_binding(
+    name: str,
+    connection: SqlConnectionConfig,
+    roles_claim: str | None,
+) -> None:
+    """Refuse to mount a multi-role endpoint whose roles are not bound to an identity.
+
+    ``create_app`` reports this earlier and with more context, but the rule is
+    enforced here too: this is the point where the route becomes reachable, so
+    any composition root — including a manual one — must obey it. Without the
+    binding the caller would pick their own privilege out of the allowlist.
+    """
+    if not connection.allowed_roles or roles_claim is not None:
+        return
+    raise ConfigError(
+        f"SQL connection {name!r} allows {len(connection.allowed_roles)} roles but no "
+        "claim binds them to the caller identity: set the roles claim on the "
+        "authentication config, or leave 'allowed_roles' empty and use 'default_role'."
+    )
+
+
 def _mount_endpoint(
     app: FastAPI,
     *,
@@ -256,8 +278,14 @@ def _mount_endpoint(
     roles_claim: str | None,
     observability_runtime: ObservabilityRuntime,
 ) -> None:
-    """Register the POST route for *name* and emit the startup WARNING (§4)."""
+    """Register the POST route for *name* and emit the startup WARNING (§4).
+
+    Raises:
+        ConfigError: When the connection allows several roles but no claim
+            binds them to the caller identity.
+    """
     endpoint = connection.sql_endpoint
+    _require_identity_binding(name, connection, roles_claim)
     path = endpoint.path or f"/sql/{name}"
     app.add_api_route(
         path,

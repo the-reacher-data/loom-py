@@ -263,3 +263,27 @@ def test_without_sql_section_no_sql_routes_are_mounted(tmp_path: Path) -> None:
     config_path = _write_project(tmp_path, sql_section=None)
     app = create_app(config_path)
     assert not any(path.startswith("/sql") for path in _route_paths(app))
+
+
+def test_binder_refuses_a_multi_role_endpoint_without_an_identity_binding() -> None:
+    """The invariant holds for any composition root, not only for create_app."""
+    from fastapi import FastAPI
+
+    from loom.core.config.errors import ConfigError
+    from loom.core.sql.config import SqlConfig, SqlConnectionConfig, SqlEndpointConfig
+    from loom.core.sql.service import NullSqlQueryService
+    from loom.rest.fastapi.sql import bind_sql_endpoints
+
+    config = SqlConfig(
+        connections={
+            "analytics": SqlConnectionConfig(
+                backend="clickhouse",
+                url="clickhouse://user:pw@host:8123/default",
+                allowed_roles=("role_a", "role_b"),
+                sql_endpoint=SqlEndpointConfig(enabled=True, auth="jwt"),
+            )
+        }
+    )
+
+    with pytest.raises(ConfigError, match="binds them to the caller identity"):
+        bind_sql_endpoints(FastAPI(), service=NullSqlQueryService(), config=config)
