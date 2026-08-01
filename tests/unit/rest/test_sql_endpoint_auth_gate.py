@@ -285,5 +285,8 @@ def test_binder_refuses_a_multi_role_endpoint_without_an_identity_binding() -> N
         }
     )
 
+    app = FastAPI()
+    service = NullSqlQueryService()
+
     with pytest.raises(ConfigError, match="binds them to the caller identity"):
-        bind_sql_endpoints(FastAPI(), service=NullSqlQueryService(), config=config)
+        bind_sql_endpoints(app, service=service, config=config)
