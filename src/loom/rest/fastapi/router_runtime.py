@@ -22,6 +22,7 @@ status codes, tags) are taken from the ``CompiledRoute`` produced at startup.
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 import types
 import typing
@@ -35,7 +36,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from loom.core.engine.executor import RuntimeExecutor
-from loom.core.errors import LoomError
+from loom.core.errors import Forbidden, LoomError
+from loom.core.identity import Identity, current_identity
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc.query import (
@@ -48,6 +50,7 @@ from loom.core.repository.abc.query import (
 )
 from loom.core.tracing import get_trace_id
 from loom.core.use_case.factory import UseCaseFactory
+from loom.rest._body import BodyTooLarge
 from loom.rest.compiler import CompiledRoute
 from loom.rest.constants import QueryParam
 from loom.rest.errors import ErrorField, HttpErrorMapper
@@ -59,10 +62,40 @@ from loom.rest.fastapi.openapi import (
 )
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
+_logger = logging.getLogger(__name__)
 _error_mapper = HttpErrorMapper()
 
 _DEFAULT_PAGE = 1
 _DEFAULT_LIMIT = 50
+_NOT_AUTHORIZED_MESSAGE = "You are not authorized to access this route."
+
+
+def _authorize_route(identity: Identity, required_roles: tuple[str, ...], route: str) -> None:
+    """Refuse callers holding none of the roles the route declares.
+
+    Holding **any** declared role grants access.  The refusal is a ``403`` for
+    an anonymous caller too: whether authenticating would have helped is part
+    of the route's policy, and the response must not become an oracle for it.
+    The message stays generic; the audit trail is server-side.
+
+    Args:
+        identity: Verified caller of the request.
+        required_roles: Roles resolved for the route at compile time.
+        route: Full path, recorded in the audit log.
+
+    Raises:
+        Forbidden: When the caller holds none of *required_roles*.
+    """
+    if not required_roles or any(identity.has_role(role) for role in required_roles):
+        return
+    _logger.warning(
+        "Route authorization denied: route=%s subject=%s mechanism=%s required_roles=%s",
+        route,
+        identity.subject,
+        identity.mechanism,
+        ",".join(required_roles),
+    )
+    raise Forbidden(_NOT_AUTHORIZED_MESSAGE)
 
 
 def _internal_error_response(trace_id: str) -> MsgspecJSONResponse:
@@ -229,15 +262,42 @@ def _parse_filter_specs(query_params: QueryParams) -> list[FilterSpec]:
     return filters
 
 
+def _positive_int(query_params: QueryParams, name: str, default: int) -> int:
+    """Read a positive integer query parameter, refusing anything else.
+
+    A non-numeric value used to raise inside the handler and surface as a 500;
+    it is a client error and must read as one.
+    """
+    raw = query_params.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query parameter {name!r} must be an integer, got {raw!r}.",
+        ) from exc
+    if value < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query parameter {name!r} must be greater than or equal to 1.",
+        )
+    return value
+
+
 def _build_query_spec(
     request: Request,
     *,
     default_pagination_mode: PaginationMode,
     allow_pagination_override: bool,
+    max_limit: int,
 ) -> QuerySpec:
     query_params = request.query_params
-    page = int(query_params.get(QueryParam.PAGE, _DEFAULT_PAGE))
-    limit = int(query_params.get(QueryParam.LIMIT, _DEFAULT_LIMIT))
+    page = _positive_int(query_params, QueryParam.PAGE, _DEFAULT_PAGE)
+    # Clamped rather than refused: a caller asking for more rows than the API
+    # serves gets the maximum, but never turns one request into a full scan.
+    limit = min(_positive_int(query_params, QueryParam.LIMIT, _DEFAULT_LIMIT), max_limit)
     cursor = query_params.get(QueryParam.AFTER) or query_params.get(QueryParam.CURSOR)
     pagination = _parse_pagination_mode(
         query_params.get(QueryParam.PAGINATION),
@@ -322,6 +382,7 @@ def _make_handler(
     execute_sig = inspect.signature(uc_type.execute)
     accepts_profile_param = "profile" in execute_sig.parameters
     query_param_name = _resolve_query_param_name(uc_type)
+    required_roles = compiled_route.effective_requires_roles
 
     # Resolved at startup — avoids per-request attribute lookup.
     plan = getattr(uc_type, "__execution_plan__", None)
@@ -348,6 +409,9 @@ def _make_handler(
 
     async def _handler(request: Request, **kwargs: Any) -> Response:
         try:
+            # The only ambient identity read of the REST layer: from here on
+            # the caller travels as an explicit argument, never as a global.
+            identity = current_identity()
             with observability_runtime.span(
                 Scope.USE_CASE,
                 uc_type.__name__,
@@ -357,6 +421,7 @@ def _make_handler(
                 status_code=status_code,
                 read_only=route_read_only,
             ):
+                _authorize_route(identity, required_roles, compiled_route.full_path)
                 params: dict[str, Any] = {p: kwargs[p] for p in path_params}
                 selected_profile = _resolve_profile(request)
                 if accepts_profile_param:
@@ -366,6 +431,7 @@ def _make_handler(
                         request,
                         default_pagination_mode=compiled_route.effective_pagination_mode,
                         allow_pagination_override=compiled_route.effective_allow_pagination_override,
+                        max_limit=compiled_route.effective_max_limit,
                     )
                 payload: dict[str, Any] | None = None
                 if has_input_binding:
@@ -375,15 +441,33 @@ def _make_handler(
 
                 uc = factory.build(uc_type)
                 result = await executor.execute(
-                    uc, params=params, payload=payload, read_only=route_read_only
+                    uc,
+                    params=params,
+                    payload=payload,
+                    read_only=route_read_only,
+                    identity=identity,
                 )
             return MsgspecJSONResponse(content=result, status_code=status_code)
         except HTTPException:
             raise
+        except BodyTooLarge:
+            # Answered as 413 by BodySizeLimitMiddleware: swallowing it here
+            # would report a 500 for a perfectly diagnosable client error.
+            raise
         except LoomError as exc:
             raise _error_mapper.to_http(exc) from exc
         except Exception:
-            return _internal_error_response(get_trace_id() or "")
+            trace_id = get_trace_id() or ""
+            # Without this the caller holds a trace id with no counterpart in
+            # the logs: an untraceable 500, and an attacker who triggers one
+            # leaves no record at all.
+            _logger.exception(
+                "Unhandled error in %s (route=%s trace_id=%s)",
+                uc_type.__name__,
+                compiled_route.full_path,
+                trace_id,
+            )
+            return _internal_error_response(trace_id)
 
     sig_params: list[inspect.Parameter] = [
         inspect.Parameter(

@@ -4,9 +4,14 @@ Implements the optional REST surface of the SQL subsystem
 (``specs/sql_api_clickhouse_spec.md`` §3/§4): one ``POST`` route per
 connection that opted in with ``sql_endpoint.enabled`` **and** an explicit
 ``sql_endpoint.auth`` value (double opt-in, B2). The request body only admits
-``{sql, role?, parameters?, limit?, offset?}`` — backend settings are rejected
+``{sql, roles?, parameters?, limit?, offset?}`` — backend settings are rejected
 by schema — and the response is the single :class:`SqlQueryResult` envelope
 encoded in one pass by a module-level ``msgspec`` encoder.
+
+Roles are bound to the authenticated identity: when the configured
+authentication mechanism binds roles to the caller, the effective roles are the
+ones that identity holds intersected with the allowlist, and the body ``roles``
+can only narrow them.  The endpoint never learns which mechanism that was.
 
 Errors reuse the framework standard body (``code``/``message``/``trace_id``)
 through :class:`~loom.rest.errors.HttpErrorMapper`, exactly as the router
@@ -26,14 +31,18 @@ from fastapi import FastAPI, HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
+from loom.core.config.errors import ConfigError
 from loom.core.errors import LoomError, RuleViolation
+from loom.core.identity import current_identity
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.sql.config import SqlConfig, SqlConnectionConfig
+from loom.core.sql.config import SqlConfig, SqlConnectionConfig, roles_need_identity_binding
 from loom.core.sql.service import SqlQueryService
 from loom.core.tracing import get_trace_id
+from loom.rest.auth.abc import Authenticator
 from loom.rest.errors import ErrorField, HttpErrorMapper
+from loom.rest.fastapi._sql_roles import resolve_query_roles
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _logger = logging.getLogger(__name__)
@@ -47,38 +56,57 @@ _BODY_OVERHEAD_BYTES = 64 * 1024
 
 
 class _SqlQueryRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    """Body accepted by the SQL endpoint — never backend settings (spec §3)."""
+    """Body accepted by the SQL endpoint — never backend settings (spec §3).
+
+    ``roles`` may only narrow the roles the verified identity already holds;
+    it never selects a role on its own.
+    """
 
     sql: str
-    role: str | None = None
+    roles: tuple[str, ...] | None = None
     parameters: dict[str, Any] | None = None
     limit: int | None = None
     offset: int = 0
 
 
-def _role_exposure_notice(allowed_role_count: int) -> str:
-    """State plainly who may request which role on a mounted endpoint.
+def _role_exposure_notice(mechanism: str | None, allowed_role_count: int) -> str:
+    """State plainly which roles a caller of this endpoint can obtain.
 
-    ``allowed_roles`` is a shared ceiling for the connection, not a per-caller
-    permission: authentication proves an identity but never binds it to a role,
-    so the wording must not suggest otherwise (threat model in
-    ``docs/rest/sql.md``).
+    ``allowed_roles`` is the ceiling of the connection; the effective roles are
+    the ones the verified identity holds inside that ceiling. Without a
+    role-binding mechanism, a mounted endpoint is necessarily single-role by
+    config (threat model in ``docs/rest/sql.md``).
     """
-    if allowed_role_count == 0:
+    if mechanism is None:
         return (
             "the allowlist is empty, so every caller-supplied role is rejected and "
-            "queries run only with 'default_role' — single-role endpoint"
-        )
-    if allowed_role_count == 1:
-        return (
-            "any caller that reaches this route may request its single allowed role; "
-            "authentication does not bind an identity to a role"
+            "queries run only with 'default_role' — one shared role for every caller"
         )
     return (
-        f"any caller that reaches this route may request ANY of these "
-        f"{allowed_role_count} roles, so there is NO privilege separation per identity — "
-        "every caller effectively holds the union of their privileges"
+        f"the effective roles are the ones the {mechanism!r} mechanism binds to the "
+        f"verified identity, intersected with these {allowed_role_count} allowed roles; "
+        "a caller holding none of them is refused"
     )
+
+
+def _roles_mechanism(authenticator: Authenticator | None) -> str | None:
+    """Return the name of the mechanism binding roles, or ``None`` when none does."""
+    if authenticator is None or not authenticator.provides_roles:
+        return None
+    return authenticator.name
+
+
+def _connection_mechanism(connection: SqlConnectionConfig, mechanism: str | None) -> str | None:
+    """Narrow the application-wide mechanism to what *this* connection binds.
+
+    The authentication mechanism is global, ``allowed_roles`` is per connection.
+    A connection with an empty allowlist is single-role by config — every
+    caller-supplied role is rejected and ``default_role`` applies — so binding
+    its roles to the identity would intersect against nothing and deny every
+    request. Mixing a multi-role and a single-role connection in one
+    application must not break the second.
+    """
+    return mechanism if connection.allowed_roles else None
 
 
 def _encode_exotic(obj: Any) -> str:
@@ -183,20 +211,47 @@ def _unexpected_error_response() -> MsgspecJSONResponse:
     )
 
 
+def _effective_roles_label(roles: tuple[str, ...], connection: SqlConnectionConfig) -> str:
+    """Label the roles the query actually runs with.
+
+    An empty resolution is not "no role": it is the documented meaning of
+    ``default_role``, applied by the service when the request carries none. The
+    audit span must say which privileges ran the query, so it names that role
+    instead of claiming there was none.
+    """
+    if roles:
+        return ",".join(roles)
+    return connection.default_role or ""
+
+
 def _make_sql_handler(
     service: SqlQueryService,
     name: str,
     connection: SqlConnectionConfig,
     *,
     path: str,
+    roles_bound: bool,
     observability_runtime: ObservabilityRuntime,
 ) -> Callable[[Request], Coroutine[Any, Any, Response]]:
     """Build the async handler serving SQL queries for one connection."""
     handler_name = f"execute_sql_{name}"
     max_body_bytes = connection.max_sql_bytes + _BODY_OVERHEAD_BYTES
+    allowed_roles = frozenset(connection.allowed_roles)
 
     async def _handler(request: Request) -> Response:
         try:
+            body = await _read_body_capped(request, max_bytes=max_body_bytes)
+            query = _decode_request(body, max_sql_bytes=connection.max_sql_bytes)
+            identity = current_identity()
+            # Resolved before the span so it can label who runs the query with
+            # which privileges — the audit trail the endpoint is judged on.
+            roles = resolve_query_roles(
+                identity,
+                connection=name,
+                roles_bound=roles_bound,
+                allowed_roles=allowed_roles,
+                requested_roles=query.roles,
+            )
             with observability_runtime.span(
                 Scope.USE_CASE,
                 handler_name,
@@ -205,13 +260,14 @@ def _make_sql_handler(
                 method="POST",
                 status_code=200,
                 read_only=connection.readonly,
+                roles=_effective_roles_label(roles, connection),
+                subject=identity.subject,
+                mechanism=identity.mechanism,
             ):
-                body = await _read_body_capped(request, max_bytes=max_body_bytes)
-                query = _decode_request(body, max_sql_bytes=connection.max_sql_bytes)
                 result = await service.execute(
                     query.sql,
                     connection=name,
-                    role=query.role,
+                    roles=roles,
                     parameters=query.parameters,
                     limit=query.limit,
                     offset=query.offset,
@@ -229,35 +285,72 @@ def _make_sql_handler(
     return _handler
 
 
+def _require_identity_binding(
+    name: str,
+    connection: SqlConnectionConfig,
+    mechanism: str | None,
+) -> None:
+    """Refuse to mount a multi-role endpoint whose roles are not bound to an identity.
+
+    ``create_app`` reports this earlier and with more context, but the rule is
+    enforced here too: this is the point where the route becomes reachable, so
+    any composition root — including a manual one — must obey it. Without the
+    binding the caller would pick their own privilege out of the allowlist.
+    """
+    if not roles_need_identity_binding(
+        connection.allowed_roles, mechanism_binds_roles=mechanism is not None
+    ):
+        return
+    raise ConfigError(
+        f"SQL connection {name!r} allows {len(connection.allowed_roles)} roles but no "
+        "authentication mechanism binds them to the caller identity: pass an "
+        "authenticator that provides roles, or leave 'allowed_roles' empty and use "
+        "'default_role'."
+    )
+
+
 def _mount_endpoint(
     app: FastAPI,
     *,
     service: SqlQueryService,
     name: str,
     connection: SqlConnectionConfig,
+    mechanism: str | None,
     observability_runtime: ObservabilityRuntime,
 ) -> None:
-    """Register the POST route for *name* and emit the startup WARNING (§4)."""
+    """Register the POST route for *name* and emit the startup WARNING (§4).
+
+    Raises:
+        ConfigError: When the connection allows several roles but no mechanism
+            binds them to the caller identity.
+    """
     endpoint = connection.sql_endpoint
+    bound_mechanism = _connection_mechanism(connection, mechanism)
+    _require_identity_binding(name, connection, bound_mechanism)
     path = endpoint.path or f"/sql/{name}"
     app.add_api_route(
         path,
         _make_sql_handler(
-            service, name, connection, path=path, observability_runtime=observability_runtime
+            service,
+            name,
+            connection,
+            path=path,
+            roles_bound=bound_mechanism is not None,
+            observability_runtime=observability_runtime,
         ),
         methods=["POST"],
         include_in_schema=endpoint.include_in_schema,
     )
     _logger.warning(
         "SQL endpoint mounted: path=%s connection=%s readonly=%s auth=%s allowed_roles=%d. "
-        "'auth' only authenticates the caller, it never restricts the role the caller asks "
-        "for: %s",
+        "'auth' only authenticates the caller; the roles it may use come from the "
+        "identity binding: %s",
         path,
         name,
         connection.readonly,
         endpoint.auth,
         len(connection.allowed_roles),
-        _role_exposure_notice(len(connection.allowed_roles)),
+        _role_exposure_notice(bound_mechanism, len(connection.allowed_roles)),
     )
 
 
@@ -266,6 +359,7 @@ def bind_sql_endpoints(
     *,
     service: SqlQueryService,
     config: SqlConfig,
+    authenticator: Authenticator | None = None,
     observability_runtime: ObservabilityRuntime | None = None,
 ) -> None:
     """Mount one generic SQL endpoint per opted-in connection.
@@ -280,6 +374,10 @@ def bind_sql_endpoints(
         app: FastAPI application to mount the routes on.
         service: Policy-applying SQL query service shared by every endpoint.
         config: Parsed ``sql:`` section with the named connections.
+        authenticator: Mechanism authenticating callers of the application.
+            Its ``provides_roles`` flag decides whether roles are bound to the
+            identity; ``None`` (or a mechanism binding no role) means no
+            binding, and the endpoint is then single-role by config.
         observability_runtime: Runtime emitting one span per request, with the
             same labels the router runtime uses. ``None`` falls back to a
             no-op runtime.
@@ -292,10 +390,16 @@ def bind_sql_endpoints(
     runtime = (
         observability_runtime if observability_runtime is not None else ObservabilityRuntime.noop()
     )
+    mechanism = _roles_mechanism(authenticator)
     for name, connection in config.connections.items():
         endpoint = connection.sql_endpoint
         if not endpoint.enabled or endpoint.auth is None:
             continue
         _mount_endpoint(
-            app, service=service, name=name, connection=connection, observability_runtime=runtime
+            app,
+            service=service,
+            name=name,
+            connection=connection,
+            mechanism=mechanism,
+            observability_runtime=runtime,
         )

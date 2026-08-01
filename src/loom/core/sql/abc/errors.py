@@ -55,6 +55,26 @@ class RoleRequiredError(Forbidden):
         )
 
 
+class RolesNotBoundError(Forbidden):
+    """Raised when the verified identity yields no allowed role.
+
+    Covers every fail-closed outcome of identity binding — no verified claims,
+    a missing, empty or wrongly typed roles claim, or an empty intersection
+    with the connection allowlist. The message is deliberately uniform so the
+    response never reveals which part of the token failed; the precise reason
+    is logged server-side.
+
+    Args:
+        connection: Name of the connection that refused the request.
+    """
+
+    def __init__(self, connection: str) -> None:
+        super().__init__(
+            f"SQL connection {connection!r} derives its roles from the verified "
+            "identity, which carries no allowed role for this connection"
+        )
+
+
 class SqlExecutionError(RuleViolation):
     """Raised when the backend rejects a SQL statement.
 

@@ -8,7 +8,7 @@ import pytest
 
 from loom.core.config import ConfigContext, ConfigKey
 from loom.core.config.errors import ConfigError
-from loom.core.sql.config import SqlConfig
+from loom.core.sql.config import SqlConfig, SqlEndpointConfig
 
 
 def _minimal(**overrides: Any) -> dict[str, Any]:
@@ -146,3 +146,58 @@ def test_fails_when_auth_has_an_unknown_value() -> None:
     )
     with pytest.raises(ConfigError):
         _parse(connection)
+
+
+# ---------------------------------------------------------------------------
+# Identity binding: the insecure shape must be unrepresentable (spec §4)
+# ---------------------------------------------------------------------------
+
+
+def test_parses_an_endpoint_with_an_allowlist_under_identity_bound_auth() -> None:
+    """An allowlist is representable under the auth mode that carries an identity."""
+    conn = _parse(
+        _minimal(
+            allowed_roles=["role_viz_reader"],
+            sql_endpoint={"enabled": True, "auth": "jwt"},
+        )
+    ).connections["analytics"]
+    assert (conn.sql_endpoint.enabled, conn.sql_endpoint.auth) == (True, "jwt")
+
+
+def test_allows_an_enabled_endpoint_with_an_empty_allowlist_and_default_role() -> None:
+    """The single-role shape stays valid: no allowlist means no role to escalate to."""
+    conn = _parse(
+        _minimal(
+            allowed_roles=[],
+            default_role="role_viz_reader",
+            sql_endpoint={"enabled": True, "auth": "external"},
+        )
+    ).connections["analytics"]
+    assert (conn.sql_endpoint.enabled, conn.sql_endpoint.auth) == (True, "external")
+
+
+def test_fails_when_an_allowlisted_endpoint_uses_external_auth() -> None:
+    """External auth exposes no verified identity, so it can never bind roles."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader", "role_viz_sales"],
+        default_role="role_viz_reader",
+        sql_endpoint={"enabled": True, "auth": "external"},
+    )
+    with pytest.raises(ConfigError, match="allowed_roles"):
+        _parse(connection)
+
+
+def test_fails_when_an_allowlisted_endpoint_declares_no_auth() -> None:
+    """Without an auth mode there is no identity to bind the allowlist to."""
+    connection = _minimal(
+        allowed_roles=["role_viz_reader"],
+        default_role="role_viz_reader",
+        sql_endpoint={"enabled": True},
+    )
+    with pytest.raises(ConfigError, match="allowed_roles"):
+        _parse(connection)
+
+
+def test_endpoint_config_does_not_expose_a_roles_claim_field() -> None:
+    """The claim name belongs to the auth mechanism, not to the ``sql:`` section."""
+    assert "roles_claim" not in SqlEndpointConfig.__struct_fields__

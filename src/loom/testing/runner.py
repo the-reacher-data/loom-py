@@ -7,6 +7,7 @@ import msgspec
 from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.plan import ExecutionPlan
+from loom.core.identity import Identity
 from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
 
@@ -39,6 +40,7 @@ class UseCaseTest(Generic[ResultT]):
         self._payload: dict[str, Any] | None = None
         self._load_overrides: dict[type[Any], Any] = {}
         self._dependencies: dict[type[Any], Any] = {}
+        self._identity: Identity | None = None
 
     # ------------------------------------------------------------------
     # Builder methods
@@ -118,6 +120,23 @@ class UseCaseTest(Generic[ResultT]):
         self._dependencies[entity_type] = repo
         return self
 
+    def with_caller(self, identity: Identity) -> UseCaseTest[ResultT]:
+        """Run the use case as *identity*, filling its ``Caller()`` parameter.
+
+        Without this call a use case declaring ``Caller()`` fails closed, which
+        is the point: an authorization test must state whose request it is.
+
+        Args:
+            identity: Caller the execution runs as.  Pass
+                :data:`~loom.core.identity.identity.ANONYMOUS` to exercise the
+                unauthenticated path explicitly.
+
+        Returns:
+            ``self`` for chaining.
+        """
+        self._identity = identity
+        return self
+
     def with_main_repo(self, repo: RepoFor[Any]) -> UseCaseTest[ResultT]:
         """Inject the main repository dependency into the UseCase instance.
 
@@ -146,6 +165,8 @@ class UseCaseTest(Generic[ResultT]):
         Raises:
             loom.core.errors.RuleViolations: If one or more rule steps fail.
             NotFound: If a Load step finds no entity.
+            loom.core.errors.Unauthenticated: If the UseCase declares
+                ``Caller()`` and no :meth:`with_caller` was set.
             loom.core.engine.compiler.CompilationError: If the UseCase fails
                 structural validation.
         """
@@ -157,6 +178,7 @@ class UseCaseTest(Generic[ResultT]):
             payload=self._payload,
             dependencies=self._dependencies if self._dependencies else None,
             load_overrides=self._load_overrides if self._load_overrides else None,
+            identity=self._identity,
         )
 
     # ------------------------------------------------------------------

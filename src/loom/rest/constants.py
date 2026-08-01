@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 
 
 class QueryParam(StrEnum):
@@ -27,3 +29,9 @@ class QueryParam(StrEnum):
 
 
 PROFILE_DEFAULT = "default"
+
+WWW_AUTHENTICATE_HEADER = "WWW-Authenticate"
+"""Header carrying the authentication challenge of a ``401`` response."""
+
+BEARER_CHALLENGE: Mapping[str, str] = MappingProxyType({WWW_AUTHENTICATE_HEADER: "Bearer"})
+"""The single challenge the framework issues, shared by every 401 producer."""

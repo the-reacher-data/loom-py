@@ -24,6 +24,15 @@ FastAPI adapter
    loom.rest.fastapi.response
    loom.rest.fastapi.sql
 
+Request edge
+------------
+
+.. autosummary::
+   :toctree: generated
+
+   loom.rest.middleware
+   loom.rest.cors
+
 Authentication
 --------------
 

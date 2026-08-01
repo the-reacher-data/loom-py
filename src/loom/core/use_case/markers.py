@@ -42,6 +42,19 @@ class _InputMarker:
     __slots__ = ()
 
 
+class _CallerMarker:
+    """Marks a parameter as the verified identity running the execution.
+
+    Carries no configuration — it is a pure marker, like ``_InputMarker``.
+
+    Example::
+
+        async def execute(self, caller: Identity = Caller()) -> Report: ...
+    """
+
+    __slots__ = ()
+
+
 class _LoadByIdMarker(Generic[EntityT]):
     """Marks a parameter as a prefetched entity loaded by id.
 
@@ -140,6 +153,26 @@ def Input() -> Any:
     ``cmd: Command = Input()``.
     """
     return _InputMarker()
+
+
+def Caller() -> Any:
+    """Factory returning the runtime marker for the caller-identity parameter.
+
+    The executor injects the
+    :class:`~loom.core.identity.identity.Identity` the transport verified for
+    this execution.  It is a declaration, not an ambient read: the identity
+    travels with the execution instead of hiding in a global.
+
+    Returned value is intentionally typed as ``Any`` in overloads to avoid
+    ``mypy`` default-argument incompatibility in signatures like:
+    ``caller: Identity = Caller()``.
+
+    Example::
+
+        async def execute(self, query: QuerySpec, caller: Identity = Caller()) -> Report:
+            return await self._reports.for_owner(caller.require_subject(), query)
+    """
+    return _CallerMarker()
 
 
 def LoadById(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 
 from loom.core.engine.compilable import Compilable
@@ -10,7 +11,8 @@ from loom.core.engine.compiler import UseCaseCompiler
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.engine.metrics import MetricsAdapter
 from loom.core.engine.plan import ExecutionPlan, ExistsStep, LoadStep
-from loom.core.errors import NotFound
+from loom.core.errors import NotFound, Unauthenticated
+from loom.core.identity import Identity
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.logger import LoggerPort, get_logger
 from loom.core.tracing import get_trace_id
@@ -35,6 +37,21 @@ _STATUS_RULE_FAILURE = "rule_failure"
 
 class ParameterBindingError(ValueError):
     """Raised when a primitive execute parameter cannot be coerced to its declared type."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ExecutionInputs:
+    """Everything one execution receives from the caller, as a single value.
+
+    Groups the per-call inputs so the internal pipeline stages take one
+    argument instead of one positional per input kind.
+    """
+
+    params: dict[str, Any] | None = None
+    payload: dict[str, Any] | None = None
+    dependencies: dict[type[Any], Any] | None = None
+    load_overrides: dict[type[Any], Any] | None = None
+    identity: Identity | None = None
 
 
 class RuntimeExecutor:
@@ -113,6 +130,7 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None = ...,
         load_overrides: dict[type[Any], Any] | None = ...,
         read_only: bool = ...,
+        identity: Identity | None = ...,
     ) -> ResultT: ...
 
     @overload
@@ -125,6 +143,7 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None = ...,
         load_overrides: dict[type[Any], Any] | None = ...,
         read_only: bool = ...,
+        identity: Identity | None = ...,
     ) -> ResultT: ...
 
     @overload
@@ -137,6 +156,7 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None = ...,
         load_overrides: dict[type[Any], Any] | None = ...,
         read_only: bool = ...,
+        identity: Identity | None = ...,
     ) -> Any: ...
 
     async def execute(
@@ -148,6 +168,7 @@ class RuntimeExecutor:
         dependencies: dict[type[Any], Any] | None = None,
         load_overrides: dict[type[Any], Any] | None = None,
         read_only: bool = False,
+        identity: Identity | None = None,
     ) -> Any:
         """Execute a compiled instance via its ExecutionPlan.
 
@@ -172,6 +193,11 @@ class RuntimeExecutor:
                 transaction even if a ``uow_factory`` was provided.
                 Automatically set to ``True`` by the HTTP layer for GET
                 routes.  Also honoured when ``plan.read_only`` is ``True``.
+            identity: Verified caller for this execution, supplied by the
+                transport.  Required when the plan declares a ``Caller()``
+                parameter; pass
+                :data:`~loom.core.identity.identity.ANONYMOUS` explicitly to
+                run a declared-identity use case without a caller.
 
         Returns:
             The result produced by ``execute()``.
@@ -179,6 +205,8 @@ class RuntimeExecutor:
         Raises:
             loom.core.errors.RuleViolations: If one or more rule steps fail.
             NotFound: If a Load step finds no entity in the repository.
+            Unauthenticated: If the plan declares ``Caller()`` and no identity
+                was supplied.
         """
         uc_type = type(compilable)
         plan = uc_type.__execution_plan__
@@ -187,6 +215,13 @@ class RuntimeExecutor:
         uc_name = uc_type.__qualname__
 
         start = time.perf_counter()
+        inputs = _ExecutionInputs(
+            params=params,
+            payload=payload,
+            dependencies=dependencies,
+            load_overrides=load_overrides,
+            identity=identity,
+        )
 
         _is_read_only = read_only or plan.read_only
         _owns_uow = (
@@ -194,17 +229,13 @@ class RuntimeExecutor:
         )
 
         if not _owns_uow:
-            return await self._run_pipeline(
-                plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
-            )
+            return await self._run_pipeline(plan, compilable, uc_name, start, inputs)
 
         uow = self._uow_factory.create()  # type: ignore[union-attr]
         token = _active_uow.set(uow)
         try:
             await uow.begin()
-            result: Any = await self._run_pipeline(
-                plan, compilable, uc_name, start, params, payload, dependencies, load_overrides
-            )
+            result: Any = await self._run_pipeline(plan, compilable, uc_name, start, inputs)
             await uow.commit()
             await flush_pending_dispatches()
             return result
@@ -225,22 +256,12 @@ class RuntimeExecutor:
         compilable: Compilable,
         uc_name: str,
         start: float,
-        params: dict[str, Any] | None,
-        payload: dict[str, Any] | None,
-        dependencies: dict[type[Any], Any] | None,
-        load_overrides: dict[type[Any], Any] | None,
+        inputs: _ExecutionInputs,
     ) -> Any:
         trace_id, logger = self._begin_execution(uc_name)
 
         try:
-            result = await self._run_core_pipeline(
-                plan=plan,
-                compilable=compilable,
-                params=params,
-                payload=payload,
-                dependencies=dependencies,
-                load_overrides=load_overrides,
-            )
+            result = await self._run_core_pipeline(plan, compilable, inputs)
 
         except RuleViolations as exc:
             self._handle_rule_failure(
@@ -285,19 +306,18 @@ class RuntimeExecutor:
 
     async def _run_core_pipeline(
         self,
-        *,
         plan: ExecutionPlan,
         compilable: Compilable,
-        params: dict[str, Any] | None,
-        payload: dict[str, Any] | None,
-        dependencies: dict[type[Any], Any] | None,
-        load_overrides: dict[type[Any], Any] | None,
+        inputs: _ExecutionInputs,
     ) -> Any:
         bound: dict[str, Any] = {}
-        self._bind_params(plan, params or {}, bound)
-        fields_set = self._build_command(plan, payload, bound)
-        await self._execute_loads(plan, compilable, bound, dependencies, load_overrides)
-        await self._execute_exists(plan, compilable, bound, dependencies)
+        self._bind_params(plan, inputs.params or {}, bound)
+        self._bind_caller(plan, inputs.identity, bound)
+        fields_set = self._build_command(plan, inputs.payload, bound)
+        await self._execute_loads(
+            plan, compilable, bound, inputs.dependencies, inputs.load_overrides
+        )
+        await self._execute_exists(plan, compilable, bound, inputs.dependencies)
         self._apply_computes(plan, bound, fields_set)
         self._check_rules(plan, bound, fields_set)
         return await self._invoke_execute(compilable, bound)
@@ -415,6 +435,31 @@ class RuntimeExecutor:
                 raw=raw,
                 use_case_name=plan.use_case_type.__qualname__,
             )
+
+    @staticmethod
+    def _bind_caller(
+        plan: ExecutionPlan,
+        identity: Identity | None,
+        bound: dict[str, Any],
+    ) -> None:
+        """Inject the declared caller identity, refusing to invent one.
+
+        Substituting the anonymous identity for a missing one would turn a
+        transport that forgot to propagate the caller into a silently
+        unauthenticated execution.  The transport must say ``ANONYMOUS``
+        explicitly for that to happen.
+        """
+        binding = plan.caller_binding
+        if binding is None:
+            return
+        if identity is None:
+            raise Unauthenticated(
+                f"{plan.use_case_type.__qualname__}.execute declares "
+                f"'{binding.name}: Identity = Caller()' but this execution carried no "
+                "identity. The transport must pass identity=... to the executor "
+                "(pass ANONYMOUS explicitly to run without a caller)."
+            )
+        bound[binding.name] = identity
 
     @staticmethod
     def _coerce_param(

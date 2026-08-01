@@ -33,6 +33,8 @@ from celery.result import AsyncResult  # type: ignore[import-untyped]
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.async_bridge import AsyncBridge
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.identity import Identity, reset_identity, set_identity
+from loom.core.identity.wire import decode_identity
 from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
@@ -141,6 +143,21 @@ def _uninstall_trace(token: Token[str | None] | None) -> None:
         reset_trace_id(token)
 
 
+def _install_identity(identity: Identity | None) -> Token[Identity] | None:
+    """Publish the envelope's caller for the duration of the task.
+
+    Returns ``None`` when the envelope carried no identity, so the caller can
+    skip the matching :func:`reset_identity` call.
+    """
+    return set_identity(identity) if identity is not None else None
+
+
+def _uninstall_identity(token: Token[Identity] | None) -> None:
+    """Restore the identity context to its prior value using *token*."""
+    if token is not None:
+        reset_identity(token)
+
+
 def _is_eager_request(task_self: Any) -> bool:
     request = getattr(task_self, "request", None)
     is_eager = getattr(request, "is_eager", None)
@@ -158,6 +175,7 @@ async def _run_job(
     payload: dict[str, Any],
     params: dict[str, Any] | None,
     executor: RuntimeExecutor,
+    identity: Identity | None = None,
 ) -> Any:
     """Execute a Job through the executor and flush pending dispatches.
 
@@ -172,12 +190,15 @@ async def _run_job(
         payload: Raw payload dict for command construction.
         params: Optional primitive params.
         executor: RuntimeExecutor that drives the ExecutionPlan.
+        identity: Caller decoded from the job envelope, or ``None`` when the
+            envelope carried none.  A job declaring ``Caller()`` then fails
+            closed rather than running as an unknown caller.
 
     Returns:
         The value returned by ``execute()``.
     """
     try:
-        result = await executor.execute(instance, params=params, payload=payload)
+        result = await executor.execute(instance, params=params, payload=payload, identity=identity)
         await flush_pending_dispatches()
         return result
     except Exception:
@@ -243,9 +264,12 @@ def _make_job_task(
         payload: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         trace_id: str | None = None,
+        identity: dict[str, Any] | None = None,
     ) -> Any:
         name = job_type.__qualname__
         token = _install_trace(trace_id)
+        caller = decode_identity(identity)
+        identity_token = _install_identity(caller)
         _emit(metrics, _job_event(EventKind.JOB_STARTED, name, trace_id))
         t0 = time.monotonic()
         try:
@@ -263,6 +287,7 @@ def _make_job_task(
                         payload=payload or {},
                         params=params,
                         executor=executor,
+                        identity=caller,
                     ),
                     timeout=run_timeout,
                     eager_fallback=_is_eager_request(self),
@@ -301,6 +326,7 @@ def _make_job_task(
             )
             raise
         finally:
+            _uninstall_identity(identity_token)
             _uninstall_trace(token)
 
     return _job_task

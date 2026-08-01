@@ -9,6 +9,7 @@ No FastAPI or Starlette types are imported here.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -22,6 +23,11 @@ _Receive = Callable[[], Awaitable[dict[str, Any]]]
 _Send = Callable[[dict[str, Any]], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
 
+# The trace id is echoed back and lands in every structured log line, so its
+# charset is an allowlist: ``re.ASCII`` keeps ``\w`` from also accepting Unicode
+# word characters, which would let a caller forge look-alike identifiers.
+_TRACE_ID_RE = re.compile(r"^[\w.-]{1,128}$", re.ASCII)
+
 
 class TraceIdMiddleware:
     """ASGI middleware that propagates a trace identifier per request.
@@ -29,8 +35,10 @@ class TraceIdMiddleware:
     On each HTTP request:
 
     1. Reads the configured header (default ``x-request-id``).
-    2. Uses its value as the trace-id if present; generates a UUID4
-       otherwise.
+    2. Uses its value as the trace-id when it matches the accepted charset
+       (``[A-Za-z0-9._-]``, 1-128 chars); generates a UUID4 otherwise. A
+       client-supplied identifier is echoed back and reaches every log line,
+       so an unvalidated one is a log-forging primitive.
     3. Activates the trace-id in the current async context via
        :func:`~loom.core.tracing.set_trace_id`.
     4. Injects the trace-id into the response headers so clients can
@@ -66,9 +74,7 @@ class TraceIdMiddleware:
             await self._app(scope, receive, send)
             return
 
-        tid = _extract_header(scope.get("headers", []), self._header_bytes)
-        if not tid:
-            tid = generate_trace_id()
+        tid = _accepted_trace_id(_extract_header(scope.get("headers", []), self._header_bytes))
 
         token = set_trace_id(tid)
         context_tokens = bind_contextvars(trace_id=tid)
@@ -88,6 +94,21 @@ class TraceIdMiddleware:
         finally:
             reset_contextvars(**context_tokens)
             reset_trace_id(token)
+
+
+def _accepted_trace_id(candidate: str | None) -> str:
+    """Return the caller's trace id when it is safe to echo, else a fresh one.
+
+    Args:
+        candidate: Raw header value, or ``None`` when absent.
+
+    Returns:
+        The candidate when it matches the accepted charset, otherwise a newly
+        generated identifier.
+    """
+    if candidate and _TRACE_ID_RE.match(candidate):
+        return candidate
+    return generate_trace_id()
 
 
 def _extract_header(

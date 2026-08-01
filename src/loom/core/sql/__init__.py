@@ -10,6 +10,7 @@ enforcement and pagination. Concrete backends implement the
 from loom.core.sql.abc import (
     RoleNotAllowedError,
     RoleRequiredError,
+    RolesNotBoundError,
     SqlColumn,
     SqlExecutionError,
     SqlExecutionOptions,
@@ -24,6 +25,7 @@ __all__ = [
     "NullSqlQueryService",
     "RoleNotAllowedError",
     "RoleRequiredError",
+    "RolesNotBoundError",
     "SqlColumn",
     "SqlConfig",
     "SqlConnectionConfig",

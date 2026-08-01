@@ -26,7 +26,7 @@ def _executor(client: FakeClickHouseClient, **overrides: Any) -> ClickHouseSqlEx
 
 def _options(**overrides: Any) -> SqlExecutionOptions:
     params: dict[str, Any] = {
-        "role": "role_viz_reader",
+        "roles": ("role_viz_reader",),
         "readonly": True,
         "limit": 3,
         "offset": 0,
@@ -146,6 +146,34 @@ async def test_connection_settings_do_not_override_the_policy() -> None:
         settings["offset"],
         settings["max_result_rows"],
     ) == ("role_viz_reader", 1, 4, 2, 51)
+
+
+async def test_one_role_travels_as_a_scalar_setting() -> None:
+    """A single role keeps the plain scalar form the driver has always sent."""
+    client = FakeClickHouseClient()
+    await _executor(client).execute("SELECT 1", options=_options())
+    settings = client.queries[0].settings or {}
+    assert settings["role"] == "role_viz_reader"
+
+
+async def test_several_roles_travel_as_a_sequence_setting() -> None:
+    """Several roles reach the driver as a sequence: one HTTP parameter each."""
+    client = FakeClickHouseClient()
+    await _executor(client).execute(
+        "SELECT 1", options=_options(roles=("role_viz_reader", "role_viz_sales"))
+    )
+    settings = client.queries[0].settings or {}
+    assert settings["role"] == ("role_viz_reader", "role_viz_sales")
+
+
+async def test_without_roles_no_role_setting_is_sent() -> None:
+    """No effective role means no ``role`` setting at all (fail-closed)."""
+    client = FakeClickHouseClient()
+    await _executor(client, settings={"role": "role_admin_evil"}).execute(
+        "SELECT 1", options=_options(roles=())
+    )
+    settings = client.queries[0].settings or {}
+    assert "role" not in settings
 
 
 async def test_benign_connection_settings_do_reach_the_driver() -> None:

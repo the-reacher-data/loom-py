@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 # The type annotation is kept in TYPE_CHECKING only.
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+from loom.core.identity import ANONYMOUS, Identity, current_identity
 from loom.core.job.callback import JobCallback
 from loom.core.job.context import add_pending_dispatch
 from loom.core.job.handle import JobGroup, JobHandle
@@ -80,13 +81,17 @@ class _PendingDispatch:
     result_holder: list[Any]
     factory: UseCaseFactory
     executor: RuntimeExecutor = field(repr=False)
+    identity: Identity = ANONYMOUS
 
     async def run(self) -> None:
         """Build the job, execute it, store the result, and invoke callbacks."""
         instance = self.factory.build(self.job_type)
         try:
             result: Any = await self.executor.execute(
-                instance, params=self.params, payload=self.payload
+                instance,
+                params=self.params,
+                payload=self.payload,
+                identity=self.identity,
             )
             self.result_holder.append(result)
             if self.on_success is not None:
@@ -242,7 +247,9 @@ class InlineJobService:
             The value returned by ``Job.execute()``.
         """
         instance = self._factory.build(job_type)
-        return await self._executor.execute(instance, params=params, payload=payload)
+        return await self._executor.execute(
+            instance, params=params, payload=payload, identity=current_identity()
+        )
 
     def dispatch(
         self,
@@ -290,6 +297,9 @@ class InlineJobService:
             result_holder=result_holder,
             factory=self._factory,
             executor=self._executor,
+            # Captured now, not at flush time: the dispatch belongs to the
+            # caller that requested it, whatever runs the queue afterwards.
+            identity=current_identity(),
         )
         add_pending_dispatch(pending.run)
         return JobHandle(

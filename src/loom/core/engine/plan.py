@@ -41,6 +41,21 @@ class InputBinding:
 
 
 @dataclass(frozen=True)
+class CallerBinding:
+    """The caller-identity parameter marked with ``Caller()``.
+
+    The executor injects the identity the transport verified for this
+    execution.  Unlike :class:`ParamBinding`, the value never comes from the
+    request payload or the URL, so it cannot be forged by the caller.
+
+    Args:
+        name: Parameter name as declared in the signature.
+    """
+
+    name: str
+
+
+@dataclass(frozen=True)
 class LoadStep:
     """An entity prefetch step marked with ``LoadById`` or ``Load``.
 
@@ -128,6 +143,8 @@ class ExecutionPlan:
         use_case_type: The ``UseCase`` subclass this plan was compiled from.
         param_bindings: Primitive parameters bound from the caller.
         input_binding: Command payload binding, or ``None`` if absent.
+        caller_binding: Caller-identity binding, or ``None`` when the use case
+            declares no ``Caller()`` parameter.
         load_steps: Entity prefetch steps, in declaration order.
         exists_steps: Boolean existence checks, in declaration order.
         compute_steps: Compute transformations, in declaration order.
@@ -167,3 +184,4 @@ class ExecutionPlan:
     compute_steps: tuple[ComputeStep, ...]
     rule_steps: tuple[RuleStep, ...]
     read_only: bool = False
+    caller_binding: CallerBinding | None = None

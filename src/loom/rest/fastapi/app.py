@@ -36,6 +36,7 @@ from loom.core.bootstrap.bootstrap import BootstrapResult
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.rest.compiler import RestInterfaceCompiler
+from loom.rest.fastapi._errors import register_error_handlers
 from loom.rest.fastapi.router_runtime import bind_interfaces
 from loom.rest.model import RestApiDefaults, RestInterface
 
@@ -120,6 +121,7 @@ def create_fastapi_app(
     """
     runtime = observability_runtime or ObservabilityRuntime.noop()
     app = FastAPI(**fastapi_kwargs)
+    register_error_handlers(app)
 
     for mw_class in middleware:
         app.add_middleware(mw_class)

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
+
+from loom.core.errors import Forbidden, NotFound
 from loom.core.sql.abc import (
     RoleNotAllowedError,
     RoleRequiredError,
     UnknownConnectionError,
 )
-
-from loom.core.errors import Forbidden, NotFound
 from tests.unit.core.sql._fakes import FakeSqlExecutor, make_connection_config
 from tests.unit.core.sql.conftest import ServiceFactory
 
@@ -22,7 +22,7 @@ async def test_rejects_external_role_when_there_is_no_allowlist(
         fake_executor, make_connection_config(allowed_roles=(), default_role=None)
     )
     with pytest.raises(RoleNotAllowedError):
-        await service.execute("SELECT 1", connection="analytics", role="role_viz_reader")
+        await service.execute("SELECT 1", connection="analytics", roles=["role_viz_reader"])
 
 
 async def test_rejects_role_when_outside_the_allowlist(
@@ -31,7 +31,7 @@ async def test_rejects_role_when_outside_the_allowlist(
     """A role not present in ``allowed_roles`` produces RoleNotAllowedError."""
     service = make_service(fake_executor, make_connection_config())
     with pytest.raises(RoleNotAllowedError):
-        await service.execute("SELECT 1", connection="analytics", role="role_intruder")
+        await service.execute("SELECT 1", connection="analytics", roles=["role_intruder"])
 
 
 async def test_accepts_role_when_it_belongs_to_the_allowlist(
@@ -39,8 +39,8 @@ async def test_accepts_role_when_it_belongs_to_the_allowlist(
 ) -> None:
     """An allowlisted role travels untouched in the executor options."""
     service = make_service(fake_executor, make_connection_config())
-    await service.execute("SELECT 1", connection="analytics", role="role_viz_sales")
-    assert fake_executor.calls[0].options.role == "role_viz_sales"
+    await service.execute("SELECT 1", connection="analytics", roles=["role_viz_sales"])
+    assert fake_executor.calls[0].options.roles == ("role_viz_sales",)
 
 
 async def test_uses_default_role_when_the_request_brings_no_role(
@@ -49,7 +49,7 @@ async def test_uses_default_role_when_the_request_brings_no_role(
     """Without a role in the request the connection ``default_role`` applies."""
     service = make_service(fake_executor, make_connection_config())
     await service.execute("SELECT 1", connection="analytics")
-    assert fake_executor.calls[0].options.role == "role_viz_reader"
+    assert fake_executor.calls[0].options.roles == ("role_viz_reader",)
 
 
 async def test_fails_role_required_when_no_role_and_no_default(
@@ -67,7 +67,7 @@ async def test_does_not_execute_query_when_role_is_rejected(
     """Role rejection happens before touching the executor (fail-closed)."""
     service = make_service(fake_executor, make_connection_config())
     with pytest.raises(RoleNotAllowedError):
-        await service.execute("SELECT 1", connection="analytics", role="role_intruder")
+        await service.execute("SELECT 1", connection="analytics", roles=["role_intruder"])
     assert fake_executor.calls == []
 
 
@@ -89,7 +89,39 @@ async def test_connection_settings_do_not_override_the_policy_role(
         fake_executor, make_connection_config(settings={"role": "role_admin_evil"})
     )
     await service.execute("SELECT 1", connection="analytics")
-    assert fake_executor.calls[0].options.role == "role_viz_reader"
+    assert fake_executor.calls[0].options.roles == ("role_viz_reader",)
+
+
+async def test_accepts_several_allowlisted_roles_in_one_query(
+    fake_executor: FakeSqlExecutor, make_service: ServiceFactory
+) -> None:
+    """A query may carry several roles: the backend applies their union."""
+    service = make_service(fake_executor, make_connection_config())
+    await service.execute(
+        "SELECT 1", connection="analytics", roles=["role_viz_reader", "role_viz_sales"]
+    )
+    assert fake_executor.calls[0].options.roles == ("role_viz_reader", "role_viz_sales")
+
+
+async def test_rejects_the_whole_request_when_one_role_is_outside_the_allowlist(
+    fake_executor: FakeSqlExecutor, make_service: ServiceFactory
+) -> None:
+    """The allowlist is validated per element and never silently filters."""
+    service = make_service(fake_executor, make_connection_config())
+    with pytest.raises(RoleNotAllowedError):
+        await service.execute(
+            "SELECT 1", connection="analytics", roles=["role_viz_reader", "role_intruder"]
+        )
+    assert fake_executor.calls == []
+
+
+async def test_empty_roles_fall_back_to_the_default_role(
+    fake_executor: FakeSqlExecutor, make_service: ServiceFactory
+) -> None:
+    """An empty role sequence is 'no role requested', never 'all roles'."""
+    service = make_service(fake_executor, make_connection_config())
+    await service.execute("SELECT 1", connection="analytics", roles=[])
+    assert fake_executor.calls[0].options.roles == ("role_viz_reader",)
 
 
 async def test_unknown_connection_raises_unknown_connection_error(

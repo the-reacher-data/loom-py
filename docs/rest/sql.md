@@ -2,14 +2,16 @@
 
 `loom-kernel` provides an injectable `SqlQueryService` for running SQL through named,
 config-driven connections, plus an **optional** generic REST endpoint
-(`POST /sql/{connection}`). Every query carries the role requested by the caller,
-validated against a per-connection allowlist and applied as a per-query setting, so
-roles never leak across queries sharing the connection pool.
+(`POST /sql/{connection}`). Every query carries one or more roles derived from the
+caller's **verified JWT claims**, intersected with a per-connection allowlist and
+applied as per-query settings, so roles never leak across queries sharing the
+connection pool.
 
 ```{important}
-The allowlist is a **shared ceiling for the connection**, not a per-caller permission.
-The framework does **not** yet bind an authenticated identity to a role — read
-{ref}`sql-threat-model` before exposing the REST endpoint.
+Through the REST endpoint the roles come from the identity, never from the request
+body: the body can only **narrow** what the claim already grants. The allowlist is the
+ceiling of the connection — the last barrier, not a per-caller permission. Read
+{ref}`sql-threat-model` before exposing the endpoint.
 ```
 
 The first supported backend is ClickHouse. The `sql:` section is backend-agnostic:
@@ -35,8 +37,10 @@ Minimum versions (enforced fail-closed at startup):
 At startup the registry asserts driver support and runs a sentinel-role probe
 (`SELECT 1` with a nonexistent role must be rejected with code 511). If the server
 silently accepts the sentinel role, startup **aborts** — the server's role enforcement
-is never assumed. The probe only proves that roles are applied; it says nothing about
-which caller may ask for which role.
+is never assumed. A connection whose `allowed_roles` holds more than one role also
+verifies that the driver can emit repeated `role` HTTP parameters (see
+{ref}`sql-multi-role`); if it cannot, startup aborts instead of sending an invalid
+single role.
 
 ---
 
@@ -52,8 +56,8 @@ sql:
     analytics:
       backend: clickhouse
       url: ${oc.env:CLICKHOUSE_ANALYTICS_URL}   # secret via env/SSM — never inline
-      # Shared ceiling for the CONNECTION, never a per-caller permission: read the
-      # threat model before listing more than one role behind a mounted endpoint.
+      # Ceiling for the CONNECTION, never a per-caller permission: the effective
+      # roles are these intersected with the caller's verified roles claim.
       allowed_roles: [role_viz_reader, role_viz_sales]
       default_role: role_viz_reader   # required if sql_endpoint.enabled and no allowlist
       readonly: true                  # default: readonly=1 on every query
@@ -68,13 +72,35 @@ sql:
       settings: {}                    # extra ClickHouse settings — can never override policy
       sql_endpoint:
         enabled: true                 # opt-in (default false)
-        auth: jwt                     # REQUIRED to mount: 'jwt' or 'external'
+        auth: identity                # REQUIRED to mount: 'identity' or 'external'
         path: /sql/analytics          # default: /sql/{connection}
         include_in_schema: false
 ```
 
+The claim carrying the caller's roles belongs to the authentication mechanism, not
+to the connection — it is declared once for the whole app and is **required**
+whenever a mounted endpoint has a non-empty `allowed_roles`:
+
+```yaml
+app:
+  rest:
+    auth:
+      jwt:
+        audience: loom-api
+        roles_claim: loom_sql_roles   # verified claim carrying the caller's roles
+```
+
 Connections open inside the app lifespan and close on shutdown. A connection that
 fails its startup probe aborts the whole app start (explicit fail-fast).
+
+Three config rules make the unsafe shapes **unrepresentable** — they fail at parse or
+at startup, never at request time:
+
+| Rule | Why |
+|------|-----|
+| A mounted endpoint with a non-empty `allowed_roles` requires `auth: identity` | It is the only mode carrying a verified identity to bind the roles to |
+| That endpoint also requires a mechanism that binds roles (for JWT, `app.rest.auth.jwt.roles_claim`) | Otherwise any authenticated caller could pick any allowlisted role |
+| `auth: identity` requires an authentication mechanism, `app.rest.auth.jwt.audience` when that mechanism is JWT, and the mounted path must not appear in the auth `exclude_paths` | An identity-bound role is worthless if tokens minted for another service are accepted, or if the path skips authentication altogether |
 
 ```{note}
 The `sql:` section is independent from the ETL `storage.clickhouse` section — they
@@ -101,7 +127,7 @@ class TopProductsUseCase(UseCase[Product, dict]):
             "SELECT product, sum(amount) AS total FROM sales "
             "WHERE day >= {start:Date} GROUP BY product ORDER BY total DESC",
             connection="analytics",
-            role="role_viz_reader",
+            roles=["role_viz_reader"],
             parameters={"start": "2026-01-01"},
             limit=100,
         )
@@ -110,6 +136,14 @@ class TopProductsUseCase(UseCase[Product, dict]):
 
 Parameters are always bound **server-side** (`{name:Type}` placeholders) — never
 interpolated into the SQL string.
+
+```{note}
+`roles` takes a sequence: a query may carry several roles and runs with the **union**
+of their privileges. Each one is validated against `allowed_roles`; a single rejected
+role refuses the whole call instead of silently narrowing it. Used directly from a use
+case, the service applies no identity binding — that lives at the REST edge, and the
+allowlist remains the barrier.
+```
 
 ---
 
@@ -121,23 +155,28 @@ A connection mounts `POST /sql/{connection}` only with **double opt-in**:
 
 | `auth` value | Meaning |
 |--------------|---------|
-| `jwt` | Requires the `app.rest.auth.jwt` section; startup fails with `ConfigError` if it is missing |
-| `external` | Explicit acknowledgement that the operator provides authentication in front of the app |
+| `identity` | Requires a configured authentication mechanism — the built-in `app.rest.auth.jwt` section (with a validated `audience`) or a `create_app(authenticator=...)` of your own; startup fails with `ConfigError` otherwise. The only mode that can bind roles to an identity |
+| `external` | Explicit acknowledgement that the operator provides authentication in front of the app. No identity the framework can read, therefore no allowlist: single-role endpoint only |
+| `jwt` | Deprecated alias of `identity`, kept for existing configs. It named a mechanism where the contract only needs "the framework knows the caller" |
 
-Both values only decide **who gets in**. Neither restricts which role a caller that got
-in may request — that is the subject of {ref}`sql-threat-model`.
+`auth` decides **who gets in**; the authentication mechanism decides **what they may
+become** once in — for JWT, through `app.rest.auth.jwt.roles_claim`.
 
 Request body — backend settings are rejected by schema:
 
 ```json
 {
   "sql": "SELECT id, name FROM products ORDER BY id",
-  "role": "role_viz_reader",
+  "roles": ["role_viz_reader"],
   "parameters": {"start": "2026-01-01"},
   "limit": 100,
   "offset": 0
 }
 ```
+
+`roles` is optional and can only **narrow**: it must be a subset of the roles the
+verified claim already grants. Omitting it runs the query with all of them. Asking for
+a role the identity does not hold is a 403, even if the role is allowlisted.
 
 ### Response envelope
 
@@ -183,28 +222,42 @@ Errors use the standard framework body (`detail.code`, `detail.message`,
 
 | Status | When |
 |--------|------|
+| 401 | Missing, expired or otherwise invalid token (emitted by the JWT middleware, before the endpoint) |
 | 404 | Unknown connection name |
-| 403 | Role outside the allowlist, or no effective role (no `role` and no `default_role`) |
+| 403 | The verified identity grants no allowed role, the body asks for a role the identity does not hold, or the role is outside the allowlist |
 | 422 | SQL rejected by the backend (sanitized first line, no host/DSN), invalid body, or SQL larger than `max_sql_bytes` |
 | 500 | Backend unreachable — generic message, no URL leaked |
+
+Every 403 caused by identity binding carries the same generic message on purpose (no
+oracle telling an attacker which part of their token failed); the precise reason —
+connection, subject and cause — is logged server-side at WARNING.
 
 ---
 
 ## Role model and grants
 
-The role policy is fail-closed:
+The policy is fail-closed and resolves in this order for a request reaching a mounted
+endpoint whose app declares a `roles_claim`:
 
-1. A caller role must be in `allowed_roles`, otherwise 403. An empty allowlist
-   rejects every caller-provided role.
-2. Without a request role, `default_role` applies; without `default_role` the request
-   is refused (403). Queries never run with the connection user's full default roles.
-3. The effective role is sent as a per-query setting — no role leaks from one query
+1. **Identity.** No verified claims in the request → 403. The claim must be a string
+   or a list of non-empty strings; absent, empty or otherwise typed → 403. Nothing is
+   coerced.
+2. **Intersection.** The authorized set is the claim values ∩ `allowed_roles`. Roles
+   the caller claims but the connection does not allow are dropped; if nothing
+   survives → 403. `default_role` is **never** a fallback here.
+3. **Narrowing.** A `roles` list in the body must be a subset of the authorized set;
+   anything else → 403. Absent, it runs with the whole authorized set.
+4. **Allowlist, again.** The service re-validates every effective role against
+   `allowed_roles` before the executor is touched — the last barrier, independent of
+   how the roles were resolved.
+5. The effective roles are sent as per-query settings — nothing leaks from one query
    to the next across the shared connection pool.
 
-What this policy does **not** do: it never compares the requested role against the
-caller's identity. `role` arrives in the request body and is checked only against the
-connection allowlist, so the allowlist bounds what the *connection* can ever do, not
-what a *given caller* is entitled to. See {ref}`sql-threat-model`.
+The invariant, stated once: **identity and body may only ever restrict the set of
+roles, never widen it.**
+
+Connections used directly from a use case (no HTTP) skip steps 1-3: there is no
+identity to bind, and `allowed_roles` plus `default_role` are the whole policy.
 
 Provision ClickHouse with exactly these statements per data role and connection user:
 
@@ -226,9 +279,40 @@ ALTER USER <user> DEFAULT ROLE NONE;    -- no privileges when no role is applied
 | Startup probe | — | Needs no grant (sentinel role must not exist) |
 
 Note the direct consequence of row two: the connection user must hold **every**
-allowlisted role for any of them to be assumable, so ClickHouse will happily grant a
-caller the most privileged one it is asked for. Keep the allowlist as small as the
-threat model below demands.
+allowlisted role for any of them to be assumable, so ClickHouse alone would happily
+grant a caller the most privileged role it is asked for. What stops that is the claim
+binding above, not the server. Keep the allowlist as small as the roles your identity
+provider actually issues.
+
+---
+
+(sql-multi-role)=
+
+## Several roles in one query
+
+A caller whose claim grants more than one role runs each query with the **union** of
+their privileges — ClickHouse activates every role sent with the query:
+
+```json
+{"sql": "SELECT * FROM sales JOIN customers USING (id)", "roles": ["role_sales", "role_crm"]}
+```
+
+Mechanically, roles travel as **repeated HTTP parameters** (`role=a&role=b`); a
+comma-joined value is read as a single role name and rejected with code 511.
+
+```{note}
+`clickhouse-connect` 0.15.1 (and upstream `main`) builds the request URL with
+`urlencode(params)` without `doseq=True`, so a sequence value would be sent as its
+Python repr. The driver boundary
+(`loom.core.sql.clickhouse._client`) rebinds that encoder to the `doseq=True` variant:
+output is byte-identical for the scalar settings the driver builds today and only
+sequences change — and their current encoding is invalid anyway. A startup check
+(`ConfigError`) and a unit test pinning the patch point make sure the workaround can
+never degrade silently, and it is removed as soon as upstream encodes lists correctly.
+```
+
+Single-role connections never depend on that workaround: one role is sent as a plain
+scalar, exactly as before.
 
 ---
 
@@ -237,62 +321,86 @@ threat model below demands.
 ## Threat model
 
 ```{danger}
-**`allowed_roles` is a shared ceiling, not a per-caller permission, and
-`auth: jwt` authenticates without authorizing.** Read this section in full before
-mounting the REST endpoint.
+**`allowed_roles` is the ceiling of the connection, not a per-caller permission.**
+What makes it safe is the identity binding described here. Read this section in full
+before mounting the REST endpoint.
 ```
 
-**1. The allowlist bounds the connection, never the caller.** The `role` field travels
-in the request body and is validated only against `allowed_roles` for that connection.
-Listing three roles means every caller reaching the route may pick any of the three —
-including the most privileged one.
+### What the framework now guarantees
 
-**2. `auth: jwt` proves identity and stops there.** The middleware verifies the
-signature, `exp`/`nbf` and the configured `aud`/`iss`, then attaches the claims to
-`scope["state"]["jwt_claims"]`. **Nothing in the framework reads those claims to decide
-which role a caller may request.** Any bearer of any valid token is therefore
-indistinguishable from any other: authentication is not authorization.
+**1. Roles come from a verified identity.** The JWT mechanism verifies signature,
+`exp`/`nbf`, `sub` and the configured `aud`/`iss`, then projects the claims onto an
+{class}`~loom.core.identity.Identity` — roles from `roles_claim`, string
+claims as attributes. The endpoint intersects the roles that identity holds with
+`allowed_roles`. The request body cannot select a role: it can only narrow the result.
+A caller holding no allowlisted role gets a 403 — never `default_role`. Swapping the
+mechanism changes nothing here: the endpoint sees an identity, not a token.
 
-**3. There is no per-route authorization.** `JwtAuthMiddleware` is mounted for the
-whole application, not per endpoint. A token valid for one SQL route is valid for every
-SQL route mounted in the same app, so a caller effectively holds the **union of the
-allowlists of all mounted endpoints**. Deploying one connection per business role does
-**not** isolate anything as long as the endpoints share the app and its middleware.
+**2. The unsafe shapes are unrepresentable.** A mounted endpoint with a non-empty
+allowlist and an auth mode other than `identity` fails at config parse; the same
+endpoint without a role-binding mechanism, without `audience` under JWT, or with a
+mounted path listed in the auth `exclude_paths`, fails at startup. There is no runtime
+path into the old behaviour.
 
-**4. ClickHouse cannot rescue this.** The server rejects unknown roles (511
-`UNKNOWN_ROLE`) and non-granted roles (512 `SET_NON_GRANTED_ROLE`), which protects
-against typos and role injection. It does **not** protect against a caller choosing a
-more privileged role, because the connection user is granted *every* role in the
-allowlist by design — that is exactly what makes them assumable. From the server's
-point of view, the escalated query is a legitimate `SET ROLE` by a user who holds it.
+**3. `audience` is mandatory.** Without a validated `aud`, any token signed by the same
+key — including one minted for a different service, carrying its own idea of a roles
+claim — would be accepted and could name your ClickHouse roles.
 
-**Measured, not theoretical.** Against ClickHouse 25.3 with a single credential and
+**4. Auditability.** Each request emits a span labelled with the effective `roles` and
+the caller `subject`; denials are logged at WARNING with connection, subject and cause.
+
+**Where this comes from.** Measured on ClickHouse 25.3 with a single credential and
 only the `role` parameter changed: the default role returned 497 `ACCESS_DENIED`, while
-`role=role_viz_reader` returned 1,171,206 rows from a table holding PII.
+`role=role_viz_reader` returned 1,171,206 rows from a table holding PII. When `role`
+travelled in the request body, that was one JSON edit away for any bearer of any valid
+token.
 
-```{warning}
-**Only defensible configuration today: a single-role endpoint.** Until the framework
-binds role selection to verified identity claims, mount **one** SQL endpoint with an
-empty `allowed_roles: []` (which makes the service reject every caller-supplied role)
-and a fixed `default_role`. Every caller then runs with exactly that one role: no
-escalation is possible — and no per-caller distinction exists either. Any
-`allowed_roles` with more than one entry is an accepted privilege-escalation risk that
-must be compensated outside the framework (per-route authorization in a gateway, one
-deployment per role, or network isolation).
-```
+### What is still on you
+
+**1. The claim is only as good as its issuer.** The framework verifies the signature
+and the audience; it cannot tell whether your identity provider was right to put
+`role_viz_sales` in that token. Issue the claim from the same system that owns the
+business authorization, and keep token lifetimes short — verification is stateless, so
+a role revoked at the IdP stays usable until the token expires.
+
+**2. There is still no per-route authorization.** `JwtAuthMiddleware` is mounted for the
+whole application. A valid token reaches every mounted SQL route; what it can *do*
+there is now bounded per route by that connection's allowlist ∩ the claim, but the
+authentication decision itself remains all-or-nothing.
+
+**3. ClickHouse is the floor, not the ceiling.** The server rejects unknown roles (511
+`UNKNOWN_ROLE`) and non-granted roles (512 `SET_NON_GRANTED_ROLE`), which protects
+against typos and role injection. It cannot distinguish callers: the connection user
+holds every allowlisted role by design. Identity separation exists only because the
+framework applies the intersection above.
+
+**4. `allowed_roles` should list composite roles**, one per exposed profile, not
+individual data roles — so the union any caller can reach matches a declared profile.
 
 ```yaml
+app:
+  rest:
+    auth:
+      jwt:
+        audience: loom-analytics
+        roles_claim: loom_sql_roles                   # what each caller may use
+
 sql:
   connections:
     analytics:
       backend: clickhouse
       url: ${oc.env:CLICKHOUSE_ANALYTICS_URL}
-      allowed_roles: []                # rejects every caller-supplied role
-      default_role: role_viz_reader    # the only role queries ever run with
+      allowed_roles: [role_api_viz, role_api_sales]   # ceiling of the connection
       sql_endpoint:
         enabled: true
-        auth: jwt
+        auth: identity
 ```
+
+Without an identity provider that can issue the claim, the single-role shape stays
+valid and needs no binding: `allowed_roles: []` plus a fixed `default_role` runs every
+caller with exactly one role — no escalation, and no per-caller distinction either.
+The binding is decided **per connection**: a single-role connection keeps working
+unchanged in an application that also serves a multi-role one.
 
 ---
 
@@ -301,12 +409,13 @@ sql:
 - **Never expose the endpoint without authentication.** The `auth` field is
   mandatory to mount; `external` is an explicit acknowledgement, not a bypass. Every
   mounted endpoint emits a startup warning naming its path, connection, readonly flag,
-  auth mode and role count — and spelling out that any caller reaching the route can
-  request any of those roles.
-- **Prefer one role per endpoint.** With more than one allowlisted role there is no
-  privilege separation per identity (see {ref}`sql-threat-model`); the role count in
-  the startup warning is the number of distinct privilege sets any single caller can
-  obtain.
+  auth mode, role count and the mechanism its roles are bound to.
+- **Keep the allowlist to the roles your IdP actually issues.** It is the ceiling of
+  what any claim can unlock on that connection: a role nobody should reach through
+  HTTP does not belong in it (see {ref}`sql-threat-model`).
+- **Issue the roles claim from the system that owns the authorization**, and keep
+  token lifetimes short: verification is stateless, so a revoked role remains usable
+  until the token expires.
 - **No SOURCES grants for the connection user.** Table functions such as `url()`,
   `s3()`, `remote()`, `mysql()` and `postgresql()` enable SSRF and data exfiltration
   even under `readonly=1`. Do not grant them.
@@ -326,10 +435,12 @@ sql:
 
 ---
 
-## JWT middleware
+## Authentication
 
-`sql_endpoint.auth: jwt` relies on the framework's native stateless JWT middleware,
-configured under `app.rest.auth.jwt`:
+`sql_endpoint.auth: identity` requires an authentication mechanism. Any
+{class}`~loom.rest.auth.Authenticator` satisfies it — see
+{doc}`identity` for a non-JWT one. The batteries-included mechanism is the
+framework's native stateless JWT, configured under `app.rest.auth.jwt`:
 
 ```yaml
 app:
@@ -339,28 +450,51 @@ app:
         secret: ${oc.env:LOOM_JWT_SECRET}   # HS256 — mutually exclusive with public_key
         # public_key: ${oc.env:LOOM_JWT_PUBLIC_KEY_PEM}  # RS256/ES256 static PEM
         algorithms: [HS256]                 # explicit allowlist; 'none' always rejected
-        audience: null                      # validated only when set
+        audience: loom-api                  # REQUIRED by any sql_endpoint with auth: identity
         issuer: null                        # validated only when set
         leeway_seconds: 0
         exclude_paths: [/docs, /redoc, /openapi.json, /metrics]
+        roles_claim: loom_sql_roles         # REQUIRED by any mounted sql_endpoint whose
+                                            # connection has a non-empty allowed_roles
 ```
 
-- **Stateless** — signature + `exp` (+`nbf`, and `aud`/`iss` when configured) are
-  verified per request. No Redis or server-side session store is needed; early token
-  revocation is out of scope.
+- **Stateless** — signature, `exp` and `sub` (both required) plus `nbf`, and `aud`/`iss`
+  when configured, are verified per request. No Redis or server-side session store is
+  needed; early token revocation is out of scope.
+- **`sub` is mandatory.** A token without a subject carries no identity to authorize
+  against, nor to audit afterwards, so it is rejected with 401.
 - Exactly one of `secret` (HS*) or `public_key` (RS*/ES* static PEM) must be set, and
   the algorithm allowlist must match the key type — validated fail-fast at startup.
-- On success the verified claims are attached to `scope["state"]["jwt_claims"]`; on
-  failure the response is a 401 with the standard error body and no hint about the
-  cryptographic reason.
-- **The claims are exposed, not enforced.** No framework component reads
-  `jwt_claims` to authorize a request, a route or a SQL role — see
-  {ref}`sql-threat-model`.
-- `exclude_paths` bypasses authentication for exact paths (docs, scrape endpoints).
+- On success the verified claims are projected onto an
+  {class}`~loom.core.identity.Identity` published for the request; on failure
+  the response is a 401 with the standard error body, a `WWW-Authenticate` challenge
+  and no hint about the cryptographic reason. Read the caller anywhere with
+  `current_identity()` — the raw claims are deliberately not exposed.
+- **The identity roles are consumed** by the SQL endpoints when `roles_claim` is set:
+  that is where an authenticated caller becomes a set of ClickHouse roles
+  ({ref}`sql-threat-model`).
+- `exclude_paths` bypasses authentication for exact paths (docs, scrape endpoints). A
+  mounted SQL path listed there aborts startup — it would serve SQL unauthenticated.
 - When the section is present, `create_app` mounts the middleware for the **whole
   app** — authentication is all-or-nothing, there is no per-route authorization. A
   missing `pyjwt` extra fails at startup with an install hint, so the API never starts
   silently unauthenticated.
-- Set `audience` (and `issuer`) whenever the endpoint is reachable by tokens minted for
-  other services: without them, any token signed by the same key or issuer is accepted,
-  whatever it was issued for.
+- `audience` is **required** by any `sql_endpoint` with `auth: identity` (startup fails
+  otherwise): without a validated `aud`, any token signed by the same key is accepted
+  whatever it was issued for, and could carry the roles claim. Set `issuer` too when
+  several issuers share the key material.
+
+### Example token
+
+```json
+{
+  "sub": "svc-reporting@example.com",
+  "aud": "loom-api",
+  "exp": 1785600000,
+  "loom_sql_roles": ["role_api_viz"]
+}
+```
+
+The claim may also be a single string (`"loom_sql_roles": "role_api_viz"`). Anything
+else — a number, an object, a list holding non-strings — is refused with 403 rather
+than coerced.

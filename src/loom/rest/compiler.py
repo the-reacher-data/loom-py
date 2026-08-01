@@ -62,6 +62,11 @@ class CompiledRoute:
             accepted for this route.
         effective_allow_pagination_override: Whether callers may override
             pagination mode via query parameters for this route.
+        effective_requires_roles: Resolved roles granting access to this
+            route, after applying route → interface precedence.  Empty means
+            the route declares no role requirement.
+        effective_max_limit: Ceiling applied to the ``?limit=`` query
+            parameter of this route.
         read_only: ``True`` for GET routes — instructs the executor to skip
             the ``UnitOfWork`` transaction for this request.
         interface_tags: OpenAPI tags inherited from the parent ``RestInterface``.
@@ -78,6 +83,8 @@ class CompiledRoute:
     read_only: bool = False
     interface_tags: tuple[str, ...] = ()
     execute_param_types: tuple[tuple[str, Any], ...] = ()
+    effective_requires_roles: tuple[str, ...] = ()
+    effective_max_limit: int = 1000
 
 
 class RestInterfaceCompiler:
@@ -177,6 +184,8 @@ class RestInterfaceCompiler:
                     read_only=route.method.upper() == "GET",
                     interface_tags=interface.tags,
                     execute_param_types=self._resolve_execute_param_types(route.use_case),
+                    effective_requires_roles=self._resolve_requires_roles(route, interface),
+                    effective_max_limit=self._defaults.max_limit,
                 )
             )
 
@@ -232,6 +241,13 @@ class RestInterfaceCompiler:
         if interface.allowed_profiles:
             return interface.allowed_profiles
         return self._defaults.allowed_profiles
+
+    def _resolve_requires_roles(
+        self, route: RestRoute, interface: type[RestInterface[Any]]
+    ) -> tuple[str, ...]:
+        if route.requires_roles:
+            return route.requires_roles
+        return interface.requires_roles
 
     def _resolve_expose_profile(
         self, route: RestRoute, interface: type[RestInterface[Any]]
