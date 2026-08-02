@@ -1,3 +1,254 @@
+# 🚀 Release 0.17.0 ([#95](https://github.com/the-reacher-data/loom-py/pull/95)) ([`308c2b6`](https://github.com/the-reacher-data/loom-py/commit/308c2b6307bc681b16e5da12b1462a5bf1c7e783))
+
+
+## ✨ Features
+### identity
+- **identity:** add the Identity value object, its context guard and 401 mapping<br>
+  > The framework had no way to name the caller of an execution: authorization
+  > decisions were taken from raw JWT claims left in the ASGI scope, a
+  > transport-specific shape that only the HTTP layer could produce.
+  > `loom.core.identity` introduces the domain-level answer to "who is running
+  > this?": an immutable `Identity` (subject, roles, verified string attributes,
+  > mechanism), the explicit `ANONYMOUS` instead of `None`, and a contextvar
+  > guard mirroring `loom.core.tracing.context`. `require_subject()` and
+  > `require_attribute()` fail closed, and `__repr__` exposes attribute *names*
+  > but never their values, which are personal data.
+  > `Unauthenticated` completes the error taxonomy — the caller can fix it by
+  > authenticating, unlike `Forbidden` — and maps to 401 with the
+  > `WWW-Authenticate: Bearer` challenge RFC 9110 §11.6.1 requires.
+  > Additive only: no existing behaviour changes.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### engine
+- **engine:** declare the caller identity with the Caller() marker<br>
+  > Reading the identity from a global inside `execute()` is hidden state, and
+  > taking it in `__init__` breaks the moment the use case runs behind a broker:
+  > use cases are built per request, but a contextvar does not cross Celery.
+  > `Caller()` joins `Input()`/`LoadById()` as a declarative marker: the compiler
+  > turns it into a `CallerBinding` and the executor injects the identity the
+  > transport handed it for that single execution. Being its own binding, it
+  > never falls through to `ParamBinding`, so the caller can neither supply nor
+  > forge it from the request.
+  > Binding is fail-closed: a plan declaring `Caller()` with no identity raises
+  > `Unauthenticated` naming the use case and the parameter, instead of quietly
+  > substituting ANONYMOUS. A transport that wants an anonymous execution must
+  > say so explicitly.
+  > `router_runtime` becomes the single ambient identity read of the REST layer.
+  > Two contained refactors keep the added binding from inflating signatures:
+  > `_SignatureBindings` in the compiler and `_ExecutionInputs` in the executor
+  > replace the growing positional accumulator lists.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### rest
+- **rest:** declarative route authorization and per-connection role binding<br>
+  > Two things land together because the review found the second while the first
+  > was being wired.
+  > `requires_roles` on `RestRoute` and `RestInterface` states which roles reach a
+  > route, resolved at compile time with the route → interface precedence the
+  > other policy fields already use. The router enforces it before `factory.build`,
+  > so a denied caller never causes a use case — or the repositories its
+  > constructor resolves — to exist. Holding any declared role is enough; no
+  > identity is a 403 like any other denial, because whether authenticating would
+  > have helped is part of the route's policy and the response must not say.
+  > Per-connection role binding fixes a real deployment trap: the authentication
+  > mechanism is application-wide but `allowed_roles` is per connection, so a
+  > single-role connection (empty allowlist plus `default_role`) sitting next to a
+  > multi-role one was intersecting against an empty allowlist and returning 403
+  > forever. The binding is now decided per connection, and the audit span names
+  > the effective roles including the `default_role` actually applied.
+  > The ClickHouse multi-role workaround no longer mutates the driver namespace at
+  > import time — a process-wide side effect hitting consumers that never touch
+  > Loom. The registry enables it explicitly, only for a connection that can apply
+  > more than one role, and the capability probe now checks the encoder seam still
+  > exists instead of re-reading what it just assigned.
+  > The duplicated "allowlist without a binding" predicate becomes one shared
+  > `roles_need_identity_binding`; both guards stay, since they run at different
+  > moments and the binder one is load-bearing.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### jobs
+- **jobs:** propagate the caller identity through the job envelope<br>
+  > A context variable does not cross a broker, so a job dispatched by an
+  > authenticated caller arrived at the worker with no idea who asked for it. The
+  > identity now travels inside the envelope, as an explicit part of the wire
+  > contract — designed now, because adding it later would be a second break.
+  > `encode_identity`/`decode_identity` speak plain JSON types so any broker
+  > serializer carries them. Decoding treats the envelope as untrusted: a blank or
+  > non-string subject, a tampered role list or a non-string attribute yields no
+  > identity rather than a partially decoded one.
+  > `CeleryJobService.dispatch` captures the caller at registration time, when it
+  > is still known, and the worker publishes it for the whole task — so a job that
+  > dispatches another job propagates the same caller onward — resetting it in a
+  > `finally` because worker processes reuse their threads.
+  > Old envelopes stay compatible: without the field the job simply runs with no
+  > caller, and a job declaring `Caller()` fails closed with a message naming what
+  > is missing.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+## 🐛 Fixes
+### sql
+- **sql:** enforce the identity binding in the binder, not only in create_app<br>
+  > Moving the rule to the startup gate left the unsafe shape representable
+  > through the public bind_sql_endpoints: a connection with several allowed
+  > roles and no claim binding them would mount an endpoint where the caller
+  > picks their own privilege. The binder is where the route becomes
+  > reachable, so the invariant is enforced there too — create_app still
+  > reports it earlier and with more context.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### identity
+- **identity:** use default_factory for the empty attribute mapping<br>
+  > Python 3.11 dataclasses reject an unhashable default and a mappingproxy
+  > is unhashable, so importing loom.core.identity crashed on the minimum
+  > supported interpreter — caught by the strict docs build in CI, which runs
+  > 3.11 while the local venv is 3.12. The factory returns the same frozen
+  > empty mapping, so nothing is allocated per instance.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+## 📖 Documentation
+### identity
+- **identity:** document the caller contract and teach the harnesses about it<br>
+  > `UseCaseTest.with_caller` and `GoldenHarness.run(identity=...)` let an
+  > authorization test state whose request it is, and the plan snapshot records the
+  > caller binding so a golden pins that a use case reads its caller. Neither
+  > harness softens the fail-closed rule: omitting the caller on a use case that
+  > declares `Caller()` raises, because an authorization test that forgot to say
+  > who is calling would be vacuous.
+  > `docs/rest/identity.md` walks the whole contract — reading an attribute from a
+  > use case, narrowing a QuerySpec to the caller's own rows, declarative
+  > `requires_roles`, and a non-JWT authenticator — plus the `jwt_claims` migration
+  > table. `docs/rest/sql.md` follows the rename to `auth: identity` and stops
+  > promising raw claims.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### reference
+- **reference:** publish the identity wire codec and the request-edge modules<br>
+  > The job envelope codec and the middlewares that now guard the request edge are
+  > part of the public contract: an application implementing its own transport
+  > needs `encode_identity`/`decode_identity`, and an operator configuring CORS or
+  > the trace-id header needs their reference pages.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+## ♻️ Refactor
+### sql
+- **sql:** move roles_claim to the auth section, out of sql_endpoint<br>
+  > The claim name is a property of the authentication mechanism, not of a SQL
+
+
+
+
+## ✅ Tests
+### sql
+- **sql:** hoist fixture setup out of the pytest.raises block<br>
+  > Sonar S5915 wants a single throwing invocation inside the block; the app
+  > and service construction are setup, not the behaviour under test.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### identity
+- **identity:** clear the sonar smells on the new code<br>
+  > Split composite assertions so a failure names the condition that broke,
+  > hoist setup out of pytest.raises blocks (S5915), and compare the route
+  > match with != instead of the identity operator.
+  > The remaining four issues are deliberate: the three coroutines without
+  > await are required by their interfaces (Authenticator.authenticate is
+  > async by protocol; sync Starlette exception handlers would run in a
+  > threadpool), and Caller() keeps the PascalCase of the other markers.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+## 🔖 Other
+- feat(sql)!: derive SQL roles from verified JWT claims and allow several per query<br>
+  > The SQL endpoint took the role from the request BODY and validated it only
+  > against the connection allowlist, so any bearer of a valid token could pick any
+  > allowlisted role: authentication proved an identity but never bound it to a
+  > privilege. Measured on ClickHouse 25.3 with one credential and only `role`
+
+- feat(rest)!: make authentication pluggable and drop the jwt_claims scope key<br>
+  > Authorization was reading raw JWT claims out of `scope["state"]["jwt_claims"]`,
+  > which nailed every downstream rule to one mechanism and kept a second,
+  > transport-shaped source of truth for a security decision next to the identity
+  > context. Two sources of truth for who the caller is was the actual defect.
+  > The REST layer now speaks one contract: an `Authenticator` turns
+  > `RequestCredentials` (headers, path, peer) into an `Identity` or refuses.
+  > `AuthenticationMiddleware` owns the request-scoped concerns — exclusions, the
+  > 401 with its challenge, and the set/reset of the identity context in a
+  > `finally` so a reused task cannot inherit the previous caller. `JwtAuthenticator`
+  > verifies the token and projects its claims; `JwtAuthMiddleware` stays as a thin
+  > composition with the same public signature.
+  > `_sql_roles` now consumes an `Identity`: it no longer knows what a claim is,
+  > while every invariant holds unchanged — intersection with the allowlist, body
+  > narrowing only, no `default_role` fallback, 403 fail-closed, and an audit
+  > WARNING now carrying the mechanism as well as the subject. A malformed roles
+  > claim still grants nothing rather than a filtered subset.
+  > `sql_endpoint.auth: jwt` becomes `identity` — the contract was never "a JWT",
+  > it was "the framework knows the caller"; `jwt` keeps working as a deprecated
+  > alias. `create_app(authenticator=...)` wires any other mechanism and is
+  > mutually exclusive with `app.rest.auth.jwt`.
+  > BREAKING CHANGE: `scope["state"]["jwt_claims"]` is gone. Read the caller with
+  > `loom.core.identity.current_identity()`:
+  > `jwt_claims["email"]` becomes `current_identity().attribute("email")`.
+  > The 401 error code is now `unauthenticated`, matching `ErrorCode`.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- fix(rest)!: close the request-edge holes found in review<br>
+  > Five findings, all reproduced, all at the boundary where a request first
+  > reaches the application.
+
+- Authentication exclusions were matched by string while Starlette routes by<br>
+  > template.** A route declared `/{tenant}` answers `/metrics` and `/openapi.json`
+  > too, so any application with a first-segment path parameter was serving a
+  > business route with no credentials at all. `create_app` now asks the router
+  > itself which routes each exclusion reaches, and refuses to boot when one is
+  > captured. The exclusion list also follows the effective `docs_url`/`redoc_url`/
+  > `openapi_url`/metrics paths instead of a hardcoded tuple that goes stale as
+  > soon as an operator moves Swagger.
+
+- Request bodies were unbounded.** uvicorn has no body-size option, so an<br>
+  > endless chunked POST was an out-of-memory away. A middleware caps every route —
+  > including ones the application mounted by hand — refusing a declared
+  > Content-Length outright and cutting a lying or chunked one as it arrives. Since
+  > FastAPI rewrites body-parsing failures into its own 400, the middleware
+  > replaces whatever the application answers with the 413 once the cap is crossed.
+
+- Three narrower ones.** The router's catch-all returned a trace id with no<br>
+  > counterpart in the logs, so a 500 was untraceable and triggering one left no
+  > record; `?limit=` and `?page=` reached the query unbounded and unvalidated,
+  > turning `?limit=100000000` into a full scan and `?limit=abc` into a 500; and
+  > the trace id header was echoed back and written to every log line exactly as
+  > the caller wrote it.
+  > `openapi_url` becomes configurable — disabling the docs no longer leaves the
+  > full schema published — and an authenticated application serving it anonymously
+  > now says so at startup. CORS becomes config-driven for one reason: Starlette
+  > does not reject `allow_origins: ["*"]` with `allow_credentials: true`, it
+  > starts reflecting the caller's Origin, so the wildcard quietly becomes "any
+  > site, with cookies". That shape now fails at config parse.
+  > Error bodies are finally uniform: validation failures used to answer FastAPI's
+  > own shape, without a trace id, echoing the rejected input and linking to the
+  > Pydantic docs.
+  > BREAKING CHANGE: an application whose routes capture a default exclusion path
+  > (for example `GET /{tenant}` at the root) no longer starts; narrow the route or
+  > the exclusion list. `?limit=` above `RestApiDefaults.max_limit` is clamped, and
+  > non-positive or non-numeric pagination values answer 400 instead of 500.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 # 🚀 Release 0.16.1 ([#92](https://github.com/the-reacher-data/loom-py/pull/92)) ([`91e73c5`](https://github.com/the-reacher-data/loom-py/commit/91e73c5adfdc2646c6f6180286130ab0282f2a19))
 
 
