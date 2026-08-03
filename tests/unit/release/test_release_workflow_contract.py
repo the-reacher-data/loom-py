@@ -217,7 +217,8 @@ def test_tags_and_github_release_complete_before_irreversible_pypi_publish() -> 
 def test_release_tooling_versions_are_pinned() -> None:
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert 'pip install --force-reinstall "uv==0.10.2"' in workflow_text
+    assert 'pip install --only-binary :all: --force-reinstall "uv==0.10.2"' in workflow_text
+    assert 'pip install --only-binary :all: "uv==0.10.2"' in workflow_text
     assert workflow_text.index("Generate release changelog") < workflow_text.index(
         "Install pinned uv after release actions"
     )

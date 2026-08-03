@@ -201,12 +201,12 @@ jobs:
           set -euo pipefail
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
-          # Pinned build/twine. --frozen is deliberately not used here because
-          # the version was just rewritten in pyproject.toml, so the checkout no
-          # longer matches uv.lock. --no-build is not usable for the same reason
-          # as the test job (antlr4-python3-runtime has no wheel).
-          uv run --with "build==1.3.0" python -m build
-          uv run --with "twine==6.2.0" twine upload \
+          # --frozen keeps the locked resolution even though the version was
+          # just rewritten in pyproject.toml; uv treats uv.lock as the source of
+          # truth instead of re-resolving. --no-build is not usable for the same
+          # reason as the test job (antlr4-python3-runtime has no wheel).
+          uv run --frozen --with "build==1.3.0" python -m build
+          uv run --frozen --with "twine==6.2.0" twine upload \
             --repository-url https://test.pypi.org/legacy/ \
             -u __token__ -p "${TEST_PYPI_TOKEN}" \
             --skip-existing dist/*
