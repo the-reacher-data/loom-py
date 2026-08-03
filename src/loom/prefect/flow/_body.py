@@ -141,7 +141,7 @@ def _invoke_runner(
         if not proc_pending:
             continue
 
-        @prefect.flow(name=proc.process_type.__name__)
+        @prefect.task(name=proc.process_type.__name__)
         def _run_proc(steps: list[str] = proc_pending) -> None:
             runner.run(
                 pipeline,

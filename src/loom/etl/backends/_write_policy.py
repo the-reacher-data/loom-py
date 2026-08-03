@@ -11,6 +11,7 @@ from abc import abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
 
+from loom.core.logger import get_logger
 from loom.etl.declarative.target import (
     AppendSpec,
     ClientSpec,
@@ -32,6 +33,8 @@ from loom.etl.storage.routing import ResolvedTarget, TableRouteResolver
 
 if TYPE_CHECKING:
     from loom.etl.lineage._records import WriteContext
+
+_log = get_logger(__name__)
 
 InputFrameT = TypeVar("InputFrameT")
 WriteFrameT = TypeVar("WriteFrameT")
@@ -239,11 +242,11 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize_for_write(frame, streaming)
+            materialized = self._materialize_checked(frame, target, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_for_write(aligned, streaming)
+        materialized = self._materialize_checked(aligned, target, streaming)
         self._append(materialized, target, schema_mode=spec.schema_mode)
 
     def _do_replace(
@@ -261,11 +264,11 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize_for_write(frame, streaming)
+            materialized = self._materialize_checked(frame, target, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_for_write(aligned, streaming)
+        materialized = self._materialize_checked(aligned, target, streaming)
         self._replace(materialized, target, schema_mode=spec.schema_mode)
 
     def _do_replace_partitions(
@@ -283,7 +286,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize_for_write(frame, streaming)
+            materialized = self._materialize_checked(frame, target, streaming)
             self._create(
                 materialized,
                 target,
@@ -292,7 +295,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             )
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_for_write(aligned, streaming)
+        materialized = self._materialize_checked(aligned, target, streaming)
         self._replace_partitions(
             materialized,
             target,
@@ -316,12 +319,12 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize_for_write(frame, streaming)
+            materialized = self._materialize_checked(frame, target, streaming)
             self._create(materialized, target, schema_mode=spec.schema_mode)
             return
         predicate = self._predicate_to_sql(spec.replace_predicate, params_instance)
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_for_write(aligned, streaming)
+        materialized = self._materialize_checked(aligned, target, streaming)
         self._replace_where(
             materialized,
             target,
@@ -344,7 +347,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-            materialized = self._materialize_for_write(frame, streaming=False)
+            materialized = self._materialize_checked(frame, target, streaming=False)
             self._create(
                 materialized,
                 target,
@@ -353,7 +356,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             )
             return
         aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_for_write(aligned, streaming=False)
+        materialized = self._materialize_checked(aligned, target, streaming=False)
         self._upsert(
             materialized,
             target,
@@ -392,7 +395,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 schema_mode=spec.schema_mode,
                 missing_table_policy=self._missing_table_policy,
             )
-        materialized = self._materialize_for_write(frame, streaming=False)
+        materialized = self._materialize_checked(frame, target, streaming=False)
         return self._historify(
             materialized, existing, target, spec=spec, params_instance=params_instance
         )
@@ -471,6 +474,23 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         mode: SchemaMode,
     ) -> InputFrameT:
         """Align frame schema with existing."""
+
+    def _row_count_if_cheap(self, frame: WriteFrameT) -> int | None:
+        """Rows in *frame*, or ``None`` when the backend cannot tell without a scan."""
+        _ = frame
+        return None
+
+    def _materialize_checked(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        streaming: bool,
+    ) -> WriteFrameT:
+        """Materialise *frame*, warning when the write carries no rows."""
+        materialized = self._materialize_for_write(frame, streaming)
+        if self._row_count_if_cheap(materialized) == 0:
+            _log.warning("write_produced_no_rows", target=target.logical_ref.ref)
+        return materialized
 
     @abstractmethod
     def _materialize_for_write(self, frame: InputFrameT, streaming: bool) -> WriteFrameT:
