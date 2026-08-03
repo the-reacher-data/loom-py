@@ -1,3 +1,32 @@
+# 🚀 Release 1.0.0 ([#106](https://github.com/the-reacher-data/loom-py/pull/106)) ([`f8fe343`](https://github.com/the-reacher-data/loom-py/commit/f8fe3433a841711f2393c0def0c1796c1f3b05d8))
+
+
+
+
+
+
+
+
+
+
+## 🔖 Other
+- and* signs. Public keys stay inline -- they only verify.<br>
+  > The signing key is probed once at construction, so a malformed PEM or a key that
+  > cannot serve the configured algorithm fails startup. Reading the key is not
+  > parsing it: `cryptography` raises a plain `ValueError`, which is neither a
+  > `PyJWTError` nor what the port documents `ValueError` to mean, so without the
+  > probe a broken deployment surfaced at the first login disguised as a bad login.
+  > Verification accepts a map of public keys selected by the token's `kid`, so a
+  > key can be rotated with an overlap window instead of a restart that invalidates
+  > every live token. The key is chosen by `kid` and never by trying each in turn:
+  > exhaustive trial would decouple every algorithm from its key family, which is
+  > what keeps algorithm confusion impossible.
+  > BREAKING CHANGE: `JwtAuthConfig.public_key: str` is now
+  > `public_keys: dict[str, str]`, keyed by `kid`; `JwtAuthConfig.secret: str` is
+  > now `secret_path: str`, the path of a file holding the secret; and
+  > `verification_key` is a method taking a `kid` instead of a property. Config
+
+
 # 🚀 Release 0.18.2 ([#105](https://github.com/the-reacher-data/loom-py/pull/105)) ([`833a45d`](https://github.com/the-reacher-data/loom-py/commit/833a45db6cb8f2870f131eb54a80b12fbf06dd30))
 
 
