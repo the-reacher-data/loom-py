@@ -115,9 +115,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Wheels only: no sdist setup script can run while installing uv.
       - name: Install pinned uv after release actions
         if: ${{ steps.version.outputs.deploy == 'true' }}
-        run: pip install --force-reinstall "uv==0.10.2"
+        run: |
+          pip install --only-binary :all: --force-reinstall "uv==0.10.2"
 
       - name: Configure uv environment path
         if: ${{ steps.version.outputs.deploy == 'true' }}
@@ -248,9 +250,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Wheels only: no sdist setup script can run while installing uv.
       - name: Install pinned uv
-        run: pip install "uv==0.10.2"
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
 
+      # "--no-build" is intentionally omitted below: omegaconf (a runtime
+      # dependency) requires antlr4-python3-runtime 4.9.3, which ships no wheel
+      # on PyPI, so the environment cannot be created from binaries only.
       - name: Build package
         shell: bash
         run: |
