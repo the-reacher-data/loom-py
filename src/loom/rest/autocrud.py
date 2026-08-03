@@ -130,7 +130,7 @@ def _field_tuple(
     name: str,
     typ: Any,
     sf: msgspec.structs.FieldInfo,
-) -> tuple[Any, ...]:
+) -> tuple[str, Any, Any]:
     """Build a ``defstruct`` field specification from a struct field's default.
 
     ``UNSET`` and ``NODEFAULT`` are both treated as "no default" (required field),
@@ -143,11 +143,11 @@ def _field_tuple(
         sf: Struct field info from ``msgspec.structs.fields``.
 
     Returns:
-        ``(name, type)`` for required fields, ``(name, type, default)`` or
-        ``(name, type, msgspec.field(...))`` for fields with a default.
+        ``(name, type, default)``, where the default is ``msgspec.NODEFAULT`` for
+        required fields and a ``msgspec.field(...)`` wrapper for default factories.
     """
     if sf.default is msgspec.NODEFAULT or sf.default is msgspec.UNSET:
-        return (name, typ)
+        return (name, typ, msgspec.NODEFAULT)
     if sf.default_factory is not msgspec.NODEFAULT:
         return (name, typ, msgspec.field(default_factory=sf.default_factory))
     return (name, typ, sf.default)
@@ -175,7 +175,7 @@ def _derive_create_struct(model: type[Any]) -> type[Command]:
     excluded = _server_generated_names(model)
     writable_names = set(get_column_fields(model).keys()) - excluded
     hints = get_type_hints(model)
-    field_defs: list[tuple[Any, ...]] = [
+    field_defs: list[tuple[str, Any, Any]] = [
         _field_tuple(name, hints[name], sf)
         for sf in msgspec.structs.fields(model)
         for name in (sf.name,)
@@ -215,7 +215,7 @@ def _derive_update_struct(model: type[Any]) -> type[Command]:
     excluded = _server_generated_names(model)
     writable_names = set(get_column_fields(model).keys()) - excluded
     hints = get_type_hints(model)
-    field_defs: list[tuple[Any, ...]] = [
+    field_defs: list[tuple[str, Any, Any]] = [
         (name, hints[name] | msgspec.UnsetType, msgspec.UNSET)
         for sf in msgspec.structs.fields(model)
         for name in (sf.name,)

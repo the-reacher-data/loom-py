@@ -20,6 +20,12 @@ _EXPECTED_BASE_REF = "master"
 _ALLOWED_RELEASE_FILES = frozenset({"CHANGELOG.md", "pyproject.toml", "uv.lock"})
 _ALLOWED_UNTRACKED_FILES = frozenset({"CHANGELOG_RELEASE.md"})
 _PENDING_MERGE_STATES = frozenset({"BLOCKED", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"})
+_CLOSED_STATE_ERRORS = {"CLOSED": "release PR closed without being merged"}
+_BLOCKED_MERGE_STATE_ERRORS = {
+    "DIRTY": "release PR has conflicts (merge state DIRTY)",
+    "BEHIND": "release PR base advanced after the release snapshot",
+    "DRAFT": "release PR is a draft and cannot be merged",
+}
 _PASSED_CHECK_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 _PENDING_STATUS_STATES = frozenset({"PENDING", "EXPECTED"})
 _COMPLETED_CHECK_STATUS = "COMPLETED"
@@ -194,6 +200,31 @@ def _is_ready_to_merge(merge_state: str, check_outcomes: Sequence[CheckOutcome])
     )
 
 
+def _validate_polling_bounds(timeout_seconds: float, poll_interval_seconds: float) -> None:
+    if timeout_seconds < 0:
+        raise ReleaseCheckoutError("merge timeout must not be negative")
+    if poll_interval_seconds <= 0:
+        raise ReleaseCheckoutError("poll interval must be greater than zero")
+
+
+def _require_open_pull_request(snapshot: PullRequestSnapshot) -> None:
+    """Refuse any PR state other than OPEN — MERGED is handled by the caller."""
+    state = snapshot.state.upper()
+    if state == "OPEN":
+        return
+    message = _CLOSED_STATE_ERRORS.get(state)
+    if message is not None:
+        raise ReleaseCheckoutError(message)
+    raise ReleaseCheckoutError(f"release PR has unexpected state {snapshot.state!r}")
+
+
+def _require_mergeable_state(snapshot: PullRequestSnapshot) -> None:
+    """Refuse merge states that can never become mergeable on their own."""
+    message = _BLOCKED_MERGE_STATE_ERRORS.get(snapshot.merge_state_status.upper())
+    if message is not None:
+        raise ReleaseCheckoutError(message)
+
+
 def _wait_for_merge(
     release_branch: str,
     expected_owner: str,
@@ -206,10 +237,7 @@ def _wait_for_merge(
     monotonic: MonotonicClock,
     sleep: Sleeper,
 ) -> tuple[str, str | None]:
-    if timeout_seconds < 0:
-        raise ReleaseCheckoutError("merge timeout must not be negative")
-    if poll_interval_seconds <= 0:
-        raise ReleaseCheckoutError("poll interval must be greater than zero")
+    _validate_polling_bounds(timeout_seconds, poll_interval_seconds)
 
     deadline = monotonic() + timeout_seconds
     expected_head_sha: str | None = None
@@ -224,25 +252,16 @@ def _wait_for_merge(
             get_pull_requests,
         )
         expected_head_sha = head_sha
-        state = snapshot.state.upper()
         merge_state = snapshot.merge_state_status.upper()
 
-        if state == "MERGED":
+        if snapshot.state.upper() == "MERGED":
             return (
                 _normalise_sha(snapshot.merge_sha, label="release PR merge SHA"),
                 expected_base_sha,
             )
-        if state == "CLOSED":
-            raise ReleaseCheckoutError("release PR closed without being merged")
-        if state != "OPEN":
-            raise ReleaseCheckoutError(f"release PR has unexpected state {snapshot.state!r}")
+        _require_open_pull_request(snapshot)
+        _require_mergeable_state(snapshot)
 
-        if merge_state == "DIRTY":
-            raise ReleaseCheckoutError("release PR has conflicts (merge state DIRTY)")
-        if merge_state == "BEHIND":
-            raise ReleaseCheckoutError("release PR base advanced after the release snapshot")
-        if merge_state == "DRAFT":
-            raise ReleaseCheckoutError("release PR is a draft and cannot be merged")
         if not merge_requested and _is_ready_to_merge(merge_state, snapshot.check_outcomes):
             expected_base_sha = validate_pull_request_head(head_sha)
             merge_pull_request(snapshot.number, head_sha)

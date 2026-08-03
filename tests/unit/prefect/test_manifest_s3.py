@@ -18,8 +18,6 @@ from datetime import UTC, datetime
 from io import BytesIO
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from loom.etl.lineage._records import RunStatus
 from loom.prefect.manifest import RunManifest, S3JsonManifestStore, StepEntry
 
@@ -182,8 +180,6 @@ def test_s3_store_delete_does_not_raise_when_not_found() -> None:
     mock_fs.rm.side_effect = FileNotFoundError("already gone")
 
     with patch("fsspec.filesystem", return_value=mock_fs):
-        # Must not raise
-        try:
-            store.delete("corr-missing")
-        except FileNotFoundError:
-            pytest.fail("delete() must not propagate FileNotFoundError")
+        store.delete("corr-missing")
+
+    mock_fs.rm.assert_called_once()

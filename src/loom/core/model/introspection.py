@@ -8,7 +8,7 @@ from typing import Any, ClassVar, Union, cast, get_args, get_origin, get_type_hi
 
 import msgspec
 
-from loom.core.model.field import ColumnType, Field
+from loom.core.model.field import ColumnFieldSpec, ColumnType, Field
 from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
 from loom.core.model.types import JSON, Boolean, DateTime, Float, Integer, Numeric, String
@@ -38,57 +38,69 @@ def get_column_fields(cls: type) -> dict[str, ColumnFieldInfo]:
     """Extract column fields from a model class."""
     declared_columns = _collect_inherited_dict_metadata(cls, "__loom_columns__")
     hints = get_type_hints(cls, include_extras=True)
-    struct_fields = {field.name: field for field in msgspec.structs.fields(cls)}
-    relations = set(get_relations(cls))
-    projections = set(get_projections(cls))
+    non_columns = set(get_relations(cls)) | set(get_projections(cls))
+
     result: dict[str, ColumnFieldInfo] = {}
-
-    for name, struct_field in struct_fields.items():
-        if name in relations or name in projections:
-            continue
+    for struct_field in msgspec.structs.fields(cls):
+        name = struct_field.name
         annotation = hints.get(name, Any)
-        if _is_classvar(annotation):
+        if name in non_columns or _is_classvar(annotation):
             continue
-
-        declared = declared_columns.get(name)
-        if declared is not None:
-            field = declared.field
-            column_type = declared.column_type or _infer_column_type(annotation, field=field)
-            result[name] = ColumnFieldInfo(
-                name=name,
-                python_type=_extract_origin_type(annotation),
-                column_type=column_type,
-                field=_with_struct_default(field, struct_field.default),
-            )
-            continue
-
-        metadata = _extract_metadata(annotation)
-        if metadata:
-            annotated_column_type: ColumnType | None = None
-            field = Field()
-
-            for entry in metadata:
-                if isinstance(entry, ColumnType):
-                    annotated_column_type = entry
-                elif isinstance(entry, Field):
-                    field = entry
-            if annotated_column_type is not None:
-                result[name] = ColumnFieldInfo(
-                    name=name,
-                    python_type=_extract_origin_type(annotation),
-                    column_type=annotated_column_type,
-                    field=_with_struct_default(field, struct_field.default),
-                )
-                continue
-
-        inferred_field = _with_struct_default(Field(), struct_field.default)
-        result[name] = ColumnFieldInfo(
-            name=name,
-            python_type=_extract_origin_type(annotation),
-            column_type=_infer_column_type(annotation, field=inferred_field),
-            field=inferred_field,
+        result[name] = _resolve_column_field(
+            name,
+            annotation,
+            struct_default=struct_field.default,
+            declared=declared_columns.get(name),
         )
     return result
+
+
+def _resolve_column_field(
+    name: str,
+    annotation: Any,
+    *,
+    struct_default: Any,
+    declared: ColumnFieldSpec | None,
+) -> ColumnFieldInfo:
+    """Build the column metadata for one field, declared or inferred."""
+    python_type = _extract_origin_type(annotation)
+    if declared is not None:
+        return ColumnFieldInfo(
+            name=name,
+            python_type=python_type,
+            column_type=declared.column_type
+            or _infer_column_type(annotation, field=declared.field),
+            field=_with_struct_default(declared.field, struct_default),
+        )
+
+    annotated_type, annotated_field = _extract_annotated_column(annotation)
+    if annotated_type is not None:
+        return ColumnFieldInfo(
+            name=name,
+            python_type=python_type,
+            column_type=annotated_type,
+            field=_with_struct_default(annotated_field, struct_default),
+        )
+
+    inferred_field = _with_struct_default(Field(), struct_default)
+    return ColumnFieldInfo(
+        name=name,
+        python_type=python_type,
+        column_type=_infer_column_type(annotation, field=inferred_field),
+        field=inferred_field,
+    )
+
+
+def _extract_annotated_column(annotation: Any) -> tuple[ColumnType | None, Field]:
+    """Read the ``ColumnType`` and ``Field`` carried by ``Annotated[T, ...]``."""
+    column_type: ColumnType | None = None
+    field = Field()
+    for entry in _extract_metadata(annotation):
+        if isinstance(entry, ColumnType):
+            column_type = entry
+        elif isinstance(entry, Field):
+            field = entry
+    return column_type, field
 
 
 def _with_struct_default(field: Field, struct_default: Any) -> Field:

@@ -90,25 +90,24 @@ class LoomStructMeta(_StructMeta):
 
         eval_ns = _build_eval_namespace(namespace)
 
-        for attr_name in list(namespace):
-            value = namespace[attr_name]
-
+        defaults: dict[str, Any] = {}
+        for attr_name, value in namespace.items():
             if isinstance(value, ColumnFieldSpec):
                 columns[attr_name] = value
-                namespace[attr_name] = _resolve_column_default(value)
+                defaults[attr_name] = _resolve_column_default(value)
                 continue
 
             if isinstance(value, Relation):
                 relations[attr_name] = value
-                namespace[attr_name] = UNSET
-                _mark_optional_unset(attr_name, annotations, eval_ns)
+            elif isinstance(value, Projection):
+                projections[attr_name] = value
+            else:
                 continue
 
-            if isinstance(value, Projection):
-                projections[attr_name] = value
-                namespace[attr_name] = UNSET
-                _mark_optional_unset(attr_name, annotations, eval_ns)
+            defaults[attr_name] = UNSET
+            _mark_optional_unset(attr_name, annotations, eval_ns)
 
+        namespace.update(defaults)
         namespace["__annotations__"] = annotations
         struct_cls: Any = super().__new__(cls, name, bases, namespace, **kwargs)
         struct_cls.__loom_columns__ = columns

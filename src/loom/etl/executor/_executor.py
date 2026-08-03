@@ -34,7 +34,6 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any
 
 from loom.core.observability.event import Scope
@@ -199,7 +198,7 @@ class ETLExecutor:
             process_run_id,
             len(plan.nodes),
         )
-        process_ctx: RunContext = replace(ctx, process_run_id=process_run_id)
+        process_ctx = ctx.for_process(process_run_id)
         with self._observability.span(
             Scope.PROCESS,
             plan.process_type.__name__,

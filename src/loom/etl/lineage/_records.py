@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final
@@ -64,6 +64,17 @@ class RunContext:
     attempt: int = 1
     last_attempt: bool = True
     process_run_id: str | None = None
+
+    def for_process(self, process_run_id: str) -> RunContext:
+        """Return this context narrowed to one process run.
+
+        Args:
+            process_run_id: Identifier generated for the process about to run.
+
+        Returns:
+            A copy carrying *process_run_id*; every other field is preserved.
+        """
+        return replace(self, process_run_id=process_run_id)
 
 
 @dataclass(frozen=True)

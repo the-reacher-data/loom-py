@@ -77,17 +77,15 @@ def _make_raw_config(extra: dict[str, Any] | None = None) -> Any:
 
 
 class TestApplyJobConfigIfPresent:
-    def test_applies_override_when_section_exists(self) -> None:
+    def test_applies_override_when_section_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
         raw = _make_raw_config(extra={"jobs": {"_SyncJob": {"queue": "override", "retries": 5}}})
-        original_queue = _SyncJob.__queue__
-        original_retries = _SyncJob.__retries__
-        try:
-            _apply_job_config_if_present(raw, _SyncJob)
-            assert _SyncJob.__queue__ == "override"
-            assert _SyncJob.__retries__ == 5
-        finally:
-            _SyncJob.__queue__ = original_queue
-            _SyncJob.__retries__ = original_retries
+        monkeypatch.setattr(_SyncJob, "__queue__", _SyncJob.__queue__, raising=False)
+        monkeypatch.setattr(_SyncJob, "__retries__", _SyncJob.__retries__, raising=False)
+
+        _apply_job_config_if_present(raw, _SyncJob)
+
+        assert _SyncJob.__queue__ == "override"
+        assert _SyncJob.__retries__ == 5
 
     def test_does_not_raise_when_section_absent(self) -> None:
         raw = _make_raw_config()
@@ -200,7 +198,9 @@ class TestBootstrapWorkerTaskRegistration:
         result = self._run(tmp_path)
         assert isinstance(result, WorkerBootstrapResult)
 
-    def test_applies_job_config_before_registration(self, tmp_path: Any) -> None:
+    def test_applies_job_config_before_registration(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """JobConfig overrides must be applied before task registration.
 
         Verifies ordering by spying on _make_job_task and capturing the value
@@ -208,22 +208,20 @@ class TestBootstrapWorkerTaskRegistration:
         """
         import loom.celery.runner as _runner
 
-        original_retries = _SyncJob.__retries__
+        monkeypatch.setattr(_SyncJob, "__retries__", _SyncJob.__retries__, raising=False)
         captured_retries: list[int] = []
 
         def _spy(celery_app: Any, job_type: Any, *args: Any, **kwargs: Any) -> Any:
             captured_retries.append(job_type.__retries__)
             return _runner._make_job_task(celery_app, job_type, *args, **kwargs)
 
-        try:
-            with patch.object(boot, "_make_job_task", side_effect=_spy):
-                self._run(tmp_path, extra_cfg={"jobs": {"_SyncJob": {"retries": 7}}})
-            assert captured_retries == [7], (
-                f"_make_job_task saw __retries__={captured_retries}; expected [7]"
-            )
-            assert _SyncJob.__retries__ == 7
-        finally:
-            _SyncJob.__retries__ = original_retries
+        with patch.object(boot, "_make_job_task", side_effect=_spy):
+            self._run(tmp_path, extra_cfg={"jobs": {"_SyncJob": {"retries": 7}}})
+
+        assert captured_retries == [7], (
+            f"_make_job_task saw __retries__={captured_retries}; expected [7]"
+        )
+        assert _SyncJob.__retries__ == 7
 
     def test_pure_job_bootstrap_without_database_section(self, tmp_path: Any) -> None:
         """Database config is optional for jobs that do not access repositories."""

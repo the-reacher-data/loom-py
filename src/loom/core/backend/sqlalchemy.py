@@ -179,42 +179,49 @@ def compile_model(struct_cls: type) -> Any:
 
 def _configure_relationships() -> None:
     """Resolve and attach deferred relationships to compiled SA classes."""
-    for struct_cls, relations in list(_pending_relations.items()):
-        if not relations:
-            continue
-        sa_cls = _registry[struct_cls]
+    for struct_cls, relations in _pending_relations.items():
+        if relations:
+            _attach_relations(_registry[struct_cls], struct_cls, relations)
+    _pending_relations.clear()
 
-        try:
-            hints = get_type_hints(struct_cls)
-        except Exception:
-            hints = {}
 
-        for rel_name, rel in relations.items():
-            target_sa = _resolve_relation_target(rel, hints.get(rel_name))
-            if target_sa is None:
-                continue
+def _relation_hints(struct_cls: type) -> dict[str, Any]:
+    """Return resolved annotations, or none when a forward reference is unresolvable.
 
-            kwargs: dict[str, Any] = {
-                "lazy": "noload",
-                "uselist": _CARDINALITY_USELIST.get(rel.cardinality, True),
-                "info": {
-                    "profiles": rel.profiles,
-                    "depends_on": rel.depends_on,
-                },
-            }
+    An unresolved annotation is not fatal: the caller then falls back to the
+    column-name and table-name scans in :func:`_resolve_relation_target`.
+    """
+    try:
+        return get_type_hints(struct_cls)
+    except Exception:
+        return {}
 
-            if rel.back_populates:
-                kwargs["back_populates"] = rel.back_populates
 
-            if rel.secondary:
-                kwargs["secondary"] = _resolve_secondary_table(rel.secondary)
-
+def _attach_relations(sa_cls: Any, struct_cls: type, relations: dict[str, Relation]) -> None:
+    hints = _relation_hints(struct_cls)
+    for rel_name, rel in relations.items():
+        target_sa = _resolve_relation_target(rel, hints.get(rel_name))
+        if target_sa is not None:
             sa_cls.__mapper__.add_property(
                 rel_name,
-                relationship(target_sa, **kwargs),
+                relationship(target_sa, **_relationship_kwargs(rel)),
             )
 
-    _pending_relations.clear()
+
+def _relationship_kwargs(rel: Relation) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "lazy": "noload",
+        "uselist": _CARDINALITY_USELIST.get(rel.cardinality, True),
+        "info": {
+            "profiles": rel.profiles,
+            "depends_on": rel.depends_on,
+        },
+    }
+    if rel.back_populates:
+        kwargs["back_populates"] = rel.back_populates
+    if rel.secondary:
+        kwargs["secondary"] = _resolve_secondary_table(rel.secondary)
+    return kwargs
 
 
 def _resolve_relation_target(rel: Relation, hint: Any) -> Any:
