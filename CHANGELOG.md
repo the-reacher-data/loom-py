@@ -1,3 +1,74 @@
+# 🚀 Release 0.18.1 ([#103](https://github.com/the-reacher-data/loom-py/pull/103)) ([`c15f1b5`](https://github.com/the-reacher-data/loom-py/commit/c15f1b55439a272d09ecfbd17a78bfa353f29d1b))
+
+
+
+## 🐛 Fixes
+### tests
+- **tests:** assert what the tautological tests meant to assert<br>
+  > Six assertions compared an expression with itself, so they verified
+
+
+### lineage,tests
+- **lineage,tests:** drop the two defects the cleanup introduced<br>
+  > for_process built its copy with dataclasses.replace, which analysers
+  > still model as returning an untyped dataclass; constructing the context
+  > explicitly states the type the signature promises.
+  > The determinism test compared two textually identical expressions again,
+  > which is the very shape it was meant to leave behind.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+
+## ♻️ Refactor
+### rest,core,etl,release
+- **rest,core,etl,release:** cut cognitive complexity and fix real type/shape smells<br>
+  > Cognitive complexity (SonarCloud python:S3776, limit 15):
+  > rest/fastapi/router_runtime._make_handler 27 -> 0: the per-route facts resolved
+  > at startup move into a frozen _RouteRuntime, and profile resolution, parameter
+  > building, payload decoding, execution, failure mapping and signature building
+  > become named module-level functions instead of closures.
+  > core/model/introspection.get_column_fields 22 -> 4: the three ways a column can
+  > be described (declared, Annotated, inferred) move to _resolve_column_field.
+  > scripts/release/checkout_merged_release._wait_for_merge 22 -> 10: state and
+  > merge-state refusals become dispatch maps behind two named guards.
+  > core/backend/sqlalchemy._configure_relationships 16 -> 3: relationship building
+  > splits into _attach_relations and _relationship_kwargs.
+  > Other src smells:
+  > python:S8495: _parse_sort and _field_tuple now return one tuple shape.
+  > msgspec.NODEFAULT as the third element keeps defstruct fields required.
+  > python:S5890/S5655: RunContext.for_process replaces the bare dataclasses.replace,
+  > so the process context is typed as RunContext at every call site.
+  > pythonenterprise:S7181: the dedup_priority window states its frame explicitly.
+  > It is the frame Spark already used (verified identical on a live session); an
+  > orderBy added later would otherwise silently turn it into a running max.
+  > python:S7504: neither loop mutates the container it iterates, so the defensive
+  > list() copies go; the metaclass now collects defaults and applies them after.
+  > python:S7500: pass the iterable straight to tuple().
+
+
+
+
+## ✅ Tests
+- import pytest as a module, split composite asserts, drop empty decorator parens<br>
+  > Addresses SonarCloud python:S9084 (19), python:S9073 (19) and python:S9083 (15).
+  > Assertion splits keep the exact same conditions, one per statement.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- keep a single throwing invocation inside every pytest.raises block<br>
+  > Hoists construction of subjects, arguments and context managers out of the
+  > `with pytest.raises(...)` body so the block contains only the call under test.
+  > Where the setup must run inside a patch context it is hoisted to a plain local
+  > before the combined `with`, since none of those constructors touch the patched
+  > module attribute. Addresses SonarCloud python:S5778 (217 of 218).
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
 # 🚀 Release 0.18.0 ([#99](https://github.com/the-reacher-data/loom-py/pull/99)) ([`90d0bd9`](https://github.com/the-reacher-data/loom-py/commit/90d0bd95845e1b7c67b4e6d9476f9450faa401a6))
 
 
