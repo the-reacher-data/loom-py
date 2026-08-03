@@ -1,3 +1,18 @@
+# 🚀 Release 0.18.0 ([#99](https://github.com/the-reacher-data/loom-py/pull/99)) ([`90d0bd9`](https://github.com/the-reacher-data/loom-py/commit/90d0bd95845e1b7c67b4e6d9476f9450faa401a6))
+
+
+## ✨ Features
+### etl,prefect
+- **etl,prefect:** warn on empty writes and group processes as tasks
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.17.1 ([#97](https://github.com/the-reacher-data/loom-py/pull/97)) ([`a69930f`](https://github.com/the-reacher-data/loom-py/commit/a69930f61d3960250b9a22af8c3d292def8459b2))
 
 
