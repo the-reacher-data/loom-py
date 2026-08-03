@@ -1,3 +1,30 @@
+# 🚀 Release 0.18.2 ([#105](https://github.com/the-reacher-data/loom-py/pull/105)) ([`833a45d`](https://github.com/the-reacher-data/loom-py/commit/833a45db6cb8f2870f131eb54a80b12fbf06dd30))
+
+
+
+## 🐛 Fixes
+### ci
+- **ci:** fail when the SonarQube scan cannot be configured<br>
+  > The scan step is guarded by three variables and one of them,
+  > SONAR_PROJECT_KEY, was never defined, so the step silently skipped on
+  > every run. With no CI analysis, the only thing left analysing the project
+  > was SonarCloud Automatic Analysis, which ignores sonar-project.properties
+
+- **ci:** declare the SonarCloud organization<br>
+  > SonarCloud rejects the analysis without sonar.organization, and the
+  > property was never needed while the scan step silently skipped.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
 # 🚀 Release 0.18.1 ([#103](https://github.com/the-reacher-data/loom-py/pull/103)) ([`c15f1b5`](https://github.com/the-reacher-data/loom-py/commit/c15f1b55439a272d09ecfbd17a78bfa353f29d1b))
 
 
