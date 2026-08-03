@@ -8,6 +8,7 @@ that hands credentials to every origin.
 
 from __future__ import annotations
 
+import tempfile
 import warnings
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,11 @@ from loom.core.config.errors import ConfigError
 from loom.rest.fastapi.auto import create_app
 from tests.unit.rest._fixture_app import write_project
 
+_SECRET_PATH = str(Path(tempfile.mkdtemp()) / "hs.key")
+Path(_SECRET_PATH).write_text("unit-test-secret")
+
 _JWT_SECTION: dict[str, Any] = {
-    "secret": "unit-test-secret",
+    "secret_path": _SECRET_PATH,
     "algorithms": ["HS256"],
     "audience": "loom-api",
 }

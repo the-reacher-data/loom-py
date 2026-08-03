@@ -13,6 +13,7 @@ gate ever runs.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,9 @@ from loom.core.sql.service import NullSqlQueryService
 from loom.rest.auth import AuthenticationMiddleware, RequestCredentials
 from loom.rest.fastapi.auto import create_app
 from loom.rest.fastapi.sql import bind_sql_endpoints
+
+_SECRET_PATH = str(Path(tempfile.mkdtemp()) / "hs.key")
+Path(_SECRET_PATH).write_text("unit-test-secret")
 
 _APP_MODULE = "loom_sqlgate_fixture_app"
 
@@ -127,7 +131,7 @@ def _route_paths(app: FastAPI) -> set[str]:
 
 
 _JWT_SECTION: dict[str, Any] = {
-    "secret": "unit-test-secret",
+    "secret_path": _SECRET_PATH,
     "algorithms": ["HS256"],
     "audience": "loom-api",
 }
@@ -211,7 +215,7 @@ def test_auth_jwt_without_audience_fails_at_startup(tmp_path: Path) -> None:
     config_path = _write_project(
         tmp_path,
         sql_section=_sql_section({"enabled": True, "auth": "identity"}),
-        jwt_section={"secret": "unit-test-secret", "algorithms": ["HS256"]},
+        jwt_section={"secret_path": _SECRET_PATH, "algorithms": ["HS256"]},
     )
     with pytest.raises(ConfigError, match="audience"):
         create_app(config_path)

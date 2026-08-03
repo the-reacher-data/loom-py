@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import base64
 import json
+import pathlib
 import sys
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import jwt as pyjwt
+import msgspec
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,6 +23,10 @@ from loom.core.identity import current_identity
 from loom.rest.auth import JwtAuthConfig, JwtAuthenticator, JwtAuthMiddleware, RequestCredentials
 
 _SECRET = "unit-test-secret"
+# The secret is a path now: a msgspec struct emits its fields, so holding the
+# value would publish the key that both verifies and signs.
+_SECRET_PATH = str(pathlib.Path(tempfile.mkdtemp()) / "hs.key")
+pathlib.Path(_SECRET_PATH).write_text(_SECRET)
 _ROLES_CLAIM = "loom_roles"
 _EMAIL = "ada@example.com"
 
@@ -34,7 +41,7 @@ async def _noop_asgi_app(scope: _Scope, receive: _Receive, send: _Send) -> None:
 
 def _config(**overrides: Any) -> JwtAuthConfig:
     """Build a valid HS256 config with targeted overrides."""
-    params: dict[str, Any] = {"secret": _SECRET, "algorithms": ("HS256",)}
+    params: dict[str, Any] = {"secret_path": _SECRET_PATH, "algorithms": ("HS256",)}
     params.update(overrides)
     return JwtAuthConfig(**params)
 
@@ -96,24 +103,24 @@ def _hide_modules(monkeypatch: pytest.MonkeyPatch, prefix: str) -> None:
 def test_config_parses_from_the_app_rest_auth_jwt_section() -> None:
     """The YAML section binds with the documented defaults (leeway 0, docs excluded)."""
     ctx = ConfigContext.from_dict(
-        {"app": {"rest": {"auth": {"jwt": {"secret": _SECRET, "algorithms": ["HS256"]}}}}}
+        {"app": {"rest": {"auth": {"jwt": {"secret_path": _SECRET_PATH, "algorithms": ["HS256"]}}}}}
     )
     config = ctx.section("app.rest.auth.jwt", JwtAuthConfig)
     assert (config.leeway_seconds, "/openapi.json" in config.exclude_paths) == (0, True)
 
 
-def test_config_fails_when_secret_and_public_key_are_both_set() -> None:
-    """Exactly one of ``secret``/``public_key`` is allowed (fail-fast)."""
+def test_config_fails_when_secret_and_public_keys_are_both_set() -> None:
+    """Exactly one of ``secret_path``/``public_keys`` is allowed (fail-fast)."""
     with pytest.raises(ConfigError):
         JwtAuthConfig(
-            secret=_SECRET,
-            public_key="-----BEGIN PUBLIC KEY-----",
+            secret_path=_SECRET_PATH,
+            public_keys={"k1": "-----BEGIN PUBLIC KEY-----"},
             algorithms=("HS256",),
         )
 
 
-def test_config_fails_when_neither_secret_nor_public_key_is_set() -> None:
-    """A key source is mandatory: no ``secret`` and no ``public_key`` => ConfigError."""
+def test_config_fails_when_neither_secret_nor_public_keys_is_set() -> None:
+    """A key source is mandatory: neither ``secret_path`` nor ``public_keys``."""
     with pytest.raises(ConfigError):
         JwtAuthConfig(algorithms=("HS256",))
 
@@ -121,25 +128,25 @@ def test_config_fails_when_neither_secret_nor_public_key_is_set() -> None:
 def test_config_fails_when_algorithms_is_empty() -> None:
     """An empty ``algorithms`` allowlist is rejected fail-fast."""
     with pytest.raises(ConfigError):
-        JwtAuthConfig(secret=_SECRET, algorithms=())
+        JwtAuthConfig(secret_path=_SECRET_PATH, algorithms=())
 
 
 def test_config_forbids_the_none_algorithm_even_alongside_others() -> None:
     """``none`` is always forbidden in the allowlist, even mixed with HS256."""
     with pytest.raises(ConfigError):
-        JwtAuthConfig(secret=_SECRET, algorithms=("HS256", "none"))
+        JwtAuthConfig(secret_path=_SECRET_PATH, algorithms=("HS256", "none"))
 
 
-def test_config_fails_when_hs_algorithm_is_paired_with_public_key() -> None:
-    """HS* requires ``secret``: pairing it with ``public_key`` is incoherent."""
+def test_config_fails_when_hs_algorithm_is_paired_with_public_keys() -> None:
+    """HS* requires ``secret``: pairing it with ``public_keys`` is incoherent."""
     with pytest.raises(ConfigError):
-        JwtAuthConfig(public_key="-----BEGIN PUBLIC KEY-----", algorithms=("HS256",))
+        JwtAuthConfig(public_keys={"k1": "-----BEGIN PUBLIC KEY-----"}, algorithms=("HS256",))
 
 
 def test_config_fails_when_rs_algorithm_is_paired_with_secret() -> None:
-    """RS*/ES* require ``public_key``: pairing them with ``secret`` is incoherent."""
+    """RS*/ES* require ``public_keys``: pairing them with ``secret`` is incoherent."""
     with pytest.raises(ConfigError):
-        JwtAuthConfig(secret=_SECRET, algorithms=("RS256",))
+        JwtAuthConfig(secret_path=_SECRET_PATH, algorithms=("RS256",))
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +234,19 @@ def test_401_message_does_not_leak_the_cryptographic_reason() -> None:
     assert (expired == bad_signature, "signature" in expired.lower()) == (True, False)
 
 
-def test_repr_redacts_the_shared_secret() -> None:
-    """``repr(JwtAuthConfig)`` never exposes the shared secret."""
-    rendered = repr(_config())
-    assert (_SECRET in rendered, "'***'" in rendered) == (False, True)
+def test_the_config_never_holds_the_shared_secret() -> None:
+    """Redaction is not the guarantee: the value is never in the struct at all.
+
+    A ``repr`` that hides the secret still leaves ``json.encode`` and
+    ``to_builtins`` free to publish it, and those are what a config dump uses.
+    Holding a path makes every serializer safe by construction.
+    """
+    config = _config()
+
+    assert _SECRET not in repr(config)
+    assert _SECRET.encode() not in msgspec.json.encode(config)
+    assert _SECRET not in str(msgspec.to_builtins(config))
+    assert config.verification_key(None) == _SECRET
 
 
 def test_missing_pyjwt_extra_fails_at_startup_with_hint(
@@ -327,3 +343,23 @@ async def test_provides_roles_reflects_the_configured_claim() -> None:
     with_roles = JwtAuthenticator(_config(roles_claim=_ROLES_CLAIM)).provides_roles
     without_roles = JwtAuthenticator(_config()).provides_roles
     assert (with_roles, without_roles) == (True, False)
+
+
+def test_an_unreadable_secret_path_fails_without_naming_the_path() -> None:
+    """A missing secret file is a ConfigError whose message carries no filesystem detail.
+
+    The path is the one thing an attacker probing config errors would want: it
+    names where the signing material lives. ``from None`` also matters — an
+    ``OSError`` in a chained traceback would print it anyway.
+    """
+    config = JwtAuthConfig(
+        secret_path=str(pathlib.Path(tempfile.mkdtemp()) / "absent.key"),
+        algorithms=("HS256",),
+        roles_claim="roles",
+    )
+
+    with pytest.raises(ConfigError) as caught:
+        config.verification_key(None)
+
+    assert "absent.key" not in str(caught.value)
+    assert caught.value.__cause__ is None
