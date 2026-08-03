@@ -109,6 +109,14 @@ def test_validates_release_after_pr_preparation_and_before_build() -> None:
     assert preparation_step_index < validation_step_index < build_step_index
 
 
+def test_release_merge_wait_timeout_is_explicit_and_configurable() -> None:
+    _, step = _step_named("Check out validated release commit")
+    environment = cast(dict[str, Any], step["env"])
+
+    assert "--timeout-seconds" in cast(str, step["run"])
+    assert "RELEASE_MERGE_TIMEOUT_SECONDS" in cast(str, environment["MERGE_TIMEOUT_SECONDS"])
+
+
 def test_workflow_delegates_all_merge_decisions_to_validated_helper() -> None:
     run_scripts = "\n".join(cast(str, step.get("run", "")) for step in _steps())
 
@@ -217,7 +225,8 @@ def test_tags_and_github_release_complete_before_irreversible_pypi_publish() -> 
 def test_release_tooling_versions_are_pinned() -> None:
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    assert 'pip install --force-reinstall "uv==0.10.2"' in workflow_text
+    assert 'pip install --only-binary :all: --force-reinstall "uv==0.10.2"' in workflow_text
+    assert 'pip install --only-binary :all: "uv==0.10.2"' in workflow_text
     assert workflow_text.index("Generate release changelog") < workflow_text.index(
         "Install pinned uv after release actions"
     )

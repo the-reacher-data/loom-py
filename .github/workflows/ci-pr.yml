@@ -28,8 +28,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      # uv is pinned to the same version in every workflow to avoid drift, and
+      # installed from wheels only so no sdist setup script can run.
       - name: Install uv
-        run: pip install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
 
       - name: Configure uv environment path
         shell: bash
@@ -91,11 +94,17 @@ jobs:
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
           body-file: ${{ steps.changelog.outputs.output_path }}
 
+      # --frozen forces the committed uv.lock resolution and pytest-cov is
+      # pinned to the version already locked in the dev group.
+      # "--no-build" is intentionally omitted: omegaconf (a runtime dependency)
+      # requires antlr4-python3-runtime 4.9.3, which ships no wheel on PyPI, so
+      # the environment cannot be created from binaries only.
       - name: Run pytest with coverage and JUnit output
         shell: bash
         run: |
           set -euo pipefail
-          uv run --with pytest-cov pytest --cov --junitxml=junit.xml -o junit_family=legacy
+          uv run --frozen --with "pytest-cov==7.1.0" \
+            pytest --cov --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov
         if: ${{ always() && hashFiles('coverage.xml') != '' }}
@@ -138,25 +147,35 @@ jobs:
           MANIFEST_DIR="$RUNNER_TEMP/snyk-manifests"
           mkdir -p "$MANIFEST_DIR"
 
+          # Two exports of the same locked resolution: Snyk reads the plain
+          # manifest, pip installs the hashed twin so every downloaded artifact
+          # is verified against uv.lock.
           uv export --frozen --no-default-groups --no-dev --no-hashes --no-emit-project \
             -o "$MANIFEST_DIR/requirements-core.txt"
+          uv export --frozen --no-default-groups --no-dev --no-emit-project \
+            -o "$MANIFEST_DIR/hashed-core.txt"
           uv export --frozen --only-group dev --no-hashes --no-emit-project \
             -o "$MANIFEST_DIR/requirements-dev.txt"
+          uv export --frozen --only-group dev --no-emit-project \
+            -o "$MANIFEST_DIR/hashed-dev.txt"
 
           for extra in rest sqlalchemy config cache pyspark prometheus celery streaming; do
             uv export --frozen --no-default-groups --no-dev --extra "$extra" \
               --no-hashes --no-emit-project \
               -o "$MANIFEST_DIR/requirements-extra-${extra}.txt"
+            uv export --frozen --no-default-groups --no-dev --extra "$extra" \
+              --no-emit-project \
+              -o "$MANIFEST_DIR/hashed-extra-${extra}.txt"
           done
 
-          python -m pip install -r "$MANIFEST_DIR/requirements-core.txt"
+          python -m pip install --require-hashes -r "$MANIFEST_DIR/hashed-core.txt"
           snyk test --severity-threshold=high \
             --skip-unresolved \
             --file="$MANIFEST_DIR/requirements-core.txt" \
             --package-manager=pip \
             --project-name="loom-py/core"
 
-          python -m pip install -r "$MANIFEST_DIR/requirements-dev.txt"
+          python -m pip install --require-hashes -r "$MANIFEST_DIR/hashed-dev.txt"
           snyk test --severity-threshold=high \
             --skip-unresolved \
             --file="$MANIFEST_DIR/requirements-dev.txt" \
@@ -164,7 +183,7 @@ jobs:
             --project-name="loom-py/dev"
 
           for extra in rest sqlalchemy config cache pyspark prometheus celery streaming; do
-            python -m pip install -r "$MANIFEST_DIR/requirements-extra-${extra}.txt"
+            python -m pip install --require-hashes -r "$MANIFEST_DIR/hashed-extra-${extra}.txt"
             snyk test --severity-threshold=high \
               --skip-unresolved \
               --file="$MANIFEST_DIR/requirements-extra-${extra}.txt" \
@@ -182,8 +201,12 @@ jobs:
           set -euo pipefail
           sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
           sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
-          uv run --with build python -m build
-          uv run --with twine twine upload \
+          # --frozen keeps the locked resolution even though the version was
+          # just rewritten in pyproject.toml; uv treats uv.lock as the source of
+          # truth instead of re-resolving. --no-build is not usable for the same
+          # reason as the test job (antlr4-python3-runtime has no wheel).
+          uv run --frozen --with "build==1.3.0" python -m build
+          uv run --frozen --with "twine==6.2.0" twine upload \
             --repository-url https://test.pypi.org/legacy/ \
             -u __token__ -p "${TEST_PYPI_TOKEN}" \
             --skip-existing dist/*
