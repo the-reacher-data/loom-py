@@ -61,8 +61,9 @@ class TestRepositorySessionScope:
             session_manager=cast(SessionManager, mock_session_manager), model=dummy_model
         )
 
+        scope = repo._session_scope(None)
         with pytest.raises(RuntimeError, match="boom"):
-            async with repo._session_scope(None):
+            async with scope:
                 raise RuntimeError("boom")
 
         mock_session.rollback.assert_awaited_once()

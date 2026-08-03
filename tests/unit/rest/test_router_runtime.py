@@ -731,11 +731,12 @@ def test_create_fastapi_app_uncompiled_use_case_raises() -> None:
 
     # bootstrap with NO use cases — PingUseCase not compiled
     result = _bootstrap()
+    observability_runtime = ObservabilityRuntime.noop()
     with pytest.raises(InterfaceCompilationError, match="not been compiled"):
         create_fastapi_app(
             result,
             interfaces=[IFace],
-            observability_runtime=ObservabilityRuntime.noop(),
+            observability_runtime=observability_runtime,
         )
 
 

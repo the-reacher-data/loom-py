@@ -88,14 +88,16 @@ def test_file_target_not_validated_against_catalog() -> None:
 
 def test_missing_source_table_raises() -> None:
     catalog = StubCatalog({"staging.orders": ()})  # raw.orders missing
+    compiler = ETLCompiler(catalog=catalog)
     with pytest.raises(ETLCompilationError, match="unknown table 'raw.orders'"):
-        ETLCompiler(catalog=catalog).compile_step(OrdersStep)
+        compiler.compile_step(OrdersStep)
 
 
 def test_missing_target_table_raises() -> None:
     catalog = StubCatalog({"raw.orders": ("id",)})  # staging.orders missing
+    compiler = ETLCompiler(catalog=catalog)
     with pytest.raises(ETLCompilationError, match="unknown table 'staging.orders'"):
-        ETLCompiler(catalog=catalog).compile_step(OrdersStep)
+        compiler.compile_step(OrdersStep)
 
 
 def test_missing_one_of_multiple_sources_raises() -> None:
@@ -106,14 +108,16 @@ def test_missing_one_of_multiple_sources_raises() -> None:
             "staging.out": (),
         }
     )
+    compiler = ETLCompiler(catalog=catalog)
     with pytest.raises(ETLCompilationError, match="unknown table 'raw.customers'"):
-        ETLCompiler(catalog=catalog).compile_step(MultiSourceStep)
+        compiler.compile_step(MultiSourceStep)
 
 
 def test_error_message_includes_step_name() -> None:
     catalog = StubCatalog({"staging.orders": ()})
+    compiler = ETLCompiler(catalog=catalog)
     with pytest.raises(ETLCompilationError, match="OrdersStep"):
-        ETLCompiler(catalog=catalog).compile_step(OrdersStep)
+        compiler.compile_step(OrdersStep)
 
 
 def test_compiler_reuses_catalog_across_compile_calls() -> None:

@@ -104,8 +104,9 @@ class TestFromTable:
         assert spec.table_ref == TableRef("raw.orders")
 
     def test_columns_empty_raises(self) -> None:
+        table = FromTable("raw.orders")
         with pytest.raises(ValueError, match="at least one"):
-            FromTable("raw.orders").columns()
+            table.columns()
 
     def test_columns_preserves_schema(self, table_schema: tuple[ColumnSchema, ...]) -> None:
         spec = FromTable("raw.orders").with_schema(table_schema).columns("id")._to_spec("orders")
@@ -166,8 +167,9 @@ class TestFromFile:
         assert spec.columns == ()
 
     def test_columns_empty_raises(self) -> None:
+        file = FromFile("s3://raw/data.csv", format=Format.CSV)
         with pytest.raises(ValueError, match="at least one"):
-            FromFile("s3://raw/data.csv", format=Format.CSV).columns()
+            file.columns()
 
 
 class TestFromFileAlias:
@@ -257,8 +259,9 @@ class TestSourceSet:
         class Base(SourceSet[object]):
             orders = FromTable("raw.orders")
 
+        orders_v2 = FromTable("raw.orders_v2")
         with pytest.raises(ValueError, match="conflicting source names"):
-            Base.extended(orders=FromTable("raw.orders_v2"))
+            Base.extended(orders=orders_v2)
 
     def test_subclassing_concrete_source_set_raises(self) -> None:
         class Base(SourceSet[object]):

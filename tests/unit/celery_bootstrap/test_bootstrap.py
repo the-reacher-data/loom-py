@@ -113,8 +113,10 @@ class TestWorkerBootstrapResult:
             factory=MagicMock(),
             celery_app=MagicMock(),
         )
+        untyped_result = cast(Any, result)
+        new_container = MagicMock()
         with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
-            cast(Any, result).container = MagicMock()
+            untyped_result.container = new_container
 
 
 # ---------------------------------------------------------------------------

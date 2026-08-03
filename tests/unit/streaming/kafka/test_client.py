@@ -315,8 +315,9 @@ class TestKafkaConsumerClient:
             ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
         )
 
+        partitions = [TopicPartition("orders", 1, 12)]
         with pytest.raises(KafkaCommitError, match="commit-boom"):
-            consumer.commit_offset([TopicPartition("orders", 1, 12)])
+            consumer.commit_offset(partitions)
 
     def test_raw_consumer_commit_wraps_backend_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         installer = install_raw_consumer_stub(monkeypatch)

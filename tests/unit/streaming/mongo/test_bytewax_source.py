@@ -140,8 +140,9 @@ def test_build_mongo_client_raises_helpful_import_error(monkeypatch: Any) -> Non
 
     monkeypatch.setattr(builtins, "__import__", _fake_import)
 
+    source = _compiled_source()
     with pytest.raises(ImportError, match="optional 'pymongo' dependency"):
-        _build_mongo_client(_compiled_source())
+        _build_mongo_client(source)
 
 
 def _build_partition(

@@ -326,8 +326,10 @@ class TestValidateParamExprsHistorify:
 
     def test_unknown_param_field_raises(self) -> None:
         spec = _history_spec(effective_date=p.snapshot_date)  # not in _DailyParams
+        sources = _no_sources()
+        target = _target(spec)
         with pytest.raises(ETLCompilationError) as exc_info:
-            validate_param_exprs(object, _DailyParams, _no_sources(), _target(spec))  # type: ignore[arg-type]
+            validate_param_exprs(object, _DailyParams, sources, target)  # type: ignore[arg-type]
         assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
         assert exc_info.value.field == "snapshot_date"
 

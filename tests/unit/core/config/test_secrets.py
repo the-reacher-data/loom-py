@@ -54,8 +54,9 @@ class TestSecretsManagerResolverResolve:
 
     def test_raises_config_error_on_binary_secret(self, mock_client: MagicMock) -> None:
         mock_client.get_secret_value.return_value = {"SecretBinary": b"bytes"}
+        resolver = SecretsManagerResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("/prod/token")
+            resolver.resolve("/prod/token")
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +75,9 @@ class TestSecretsManagerResolverEnvVarExpansion:
 
     def test_raises_on_missing_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("MISSING_VAR", raising=False)
+        resolver = SecretsManagerResolver()
         with patch("boto3.client"), pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("/path/%MISSING_VAR%/token")
+            resolver.resolve("/path/%MISSING_VAR%/token")
 
     def test_percent_syntax_parses_from_omegaconf_yaml(
         self, mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -123,13 +125,15 @@ class TestSecretsManagerResolverDotNotation:
 
     def test_raises_on_invalid_json(self, mock_client: MagicMock) -> None:
         mock_client.get_secret_value.return_value = {"SecretString": "not-json-at-all"}
+        resolver = SecretsManagerResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("/prod/db.host")
+            resolver.resolve("/prod/db.host")
 
     def test_raises_on_missing_json_key(self, mock_client: MagicMock) -> None:
         mock_client.get_secret_value.return_value = {"SecretString": json.dumps({"host": "db"})}
+        resolver = SecretsManagerResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("/prod/db.missing_key")
+            resolver.resolve("/prod/db.missing_key")
 
     def test_env_var_expansion_then_dot_navigation(
         self, mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -213,17 +217,20 @@ class TestSecretsManagerResolverLogging:
 class TestSecretsManagerResolverErrors:
     def test_raises_config_error_on_api_exception(self, mock_client: MagicMock) -> None:
         mock_client.get_secret_value.side_effect = Exception("AccessDenied")
+        resolver = SecretsManagerResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("/missing/secret")
+            resolver.resolve("/missing/secret")
 
     def test_raises_config_error_on_empty_key(self) -> None:
+        resolver = SecretsManagerResolver()
         with patch("boto3.client") as mock_factory, pytest.raises(ConfigError):
-            SecretsManagerResolver().resolve("")
+            resolver.resolve("")
         mock_factory.assert_not_called()
 
     def test_raises_config_error_when_boto3_not_installed(self) -> None:
+        resolver = SecretsManagerResolver()
         with (
             patch("loom.core.config.secrets._boto3_module", None),
             pytest.raises(ConfigError, match="boto3 is required"),
         ):
-            SecretsManagerResolver().resolve("/some/secret")
+            resolver.resolve("/some/secret")

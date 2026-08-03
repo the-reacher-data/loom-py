@@ -251,8 +251,9 @@ class TestErrors:
             prefix = "/users"
             routes = (RestRoute(use_case=UncompiledUseCase, method="POST", path="/"),)
 
+        compiler = RestInterfaceCompiler(use_case_compiler)
         with pytest.raises(InterfaceCompilationError, match="not been compiled"):
-            RestInterfaceCompiler(use_case_compiler).compile(IFace)
+            compiler.compile(IFace)
 
     def test_compile_duplicate_method_path_raises(
         self,

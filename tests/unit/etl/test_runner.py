@@ -169,8 +169,10 @@ class TestFilterPlan:
         assert top_node.process_type is ProcC
 
     def test_filter_no_match_raises(self) -> None:
+        plan = _compile(PipelineAll)
+        stages = frozenset({"NonExistent"})
         with pytest.raises(InvalidStageError):
-            _filter_plan(_compile(PipelineAll), frozenset({"NonExistent"}))
+            _filter_plan(plan, stages)
 
 
 class TestRunnerRun:
@@ -199,8 +201,9 @@ class TestRunnerRun:
         params: P,
         runner_factory: RunnerFactory,
     ) -> None:
+        factory = runner_factory()
         with pytest.raises(InvalidStageError):
-            runner_factory().run(PipelineAll, params, include=["DoesNotExist"])
+            factory.run(PipelineAll, params, include=["DoesNotExist"])
 
     def test_runner_run_flushes_prometheus_observers_after_success(
         self,
@@ -278,8 +281,9 @@ class TestRunnerRun:
 
 class TestRunnerFromConfig:
     def test_from_config_spark_engine_without_spark_raises(self) -> None:
+        config = StorageConfig(engine="spark")
         with pytest.raises(ValueError, match="SparkSession"):
-            ETLRunner.from_config(StorageConfig(engine="spark"))
+            ETLRunner.from_config(config)
 
     def test_from_config_spark_engine_with_spark_builds_spark_backends(self) -> None:
         pytest.importorskip("pyspark")
@@ -581,7 +585,8 @@ class TestRunnerCleaner:
         class _Pipeline(ETLPipeline[_P]):
             processes = [_Proc]
 
+        params = _P()
         with pytest.raises(RuntimeError, match="intentional failure"):
-            runner.run(_Pipeline, _P(), run_id="fail-run-xyz")
+            runner.run(_Pipeline, params, run_id="fail-run-xyz")
 
         assert any("fail-run-xyz" in path for path in deleted)

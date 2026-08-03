@@ -374,8 +374,9 @@ class TestCompileStep:
         step_type: type[ETLStep[Any]],
         error: str,
     ) -> None:
+        compiler = ETLCompiler()
         with pytest.raises(ETLCompilationError, match=error):
-            ETLCompiler().compile_step(step_type)
+            compiler.compile_step(step_type)
 
 
 class TestCompileProcessAndPipeline:
@@ -387,8 +388,9 @@ class TestCompileProcessAndPipeline:
         assert len(plan.nodes[1].plans) == 2
 
     def test_compile_process_invalid_item_raises(self) -> None:
+        compiler = ETLCompiler()
         with pytest.raises(ETLCompilationError, match="ETLStep subclass"):
-            ETLCompiler().compile_process(BadProcess)
+            compiler.compile_process(BadProcess)
 
     @pytest.mark.parametrize(
         "pipeline_type,is_parallel",
@@ -409,8 +411,9 @@ class TestCompileProcessAndPipeline:
         assert isinstance(plan.nodes[0], ParallelProcessGroup) is is_parallel
 
     def test_compile_pipeline_invalid_process_raises(self) -> None:
+        compiler = ETLCompiler()
         with pytest.raises(ETLCompilationError, match="ETLProcess subclass"):
-            ETLCompiler().compile(BadPipeline)
+            compiler.compile(BadPipeline)
 
 
 class TestParamsCompatibility:
@@ -437,12 +440,14 @@ class TestParamsCompatibility:
         process_type: type[ETLProcess[RunParams]],
         error: str,
     ) -> None:
+        compiler = ETLCompiler()
         with pytest.raises(ETLCompilationError, match=error):
-            ETLCompiler().compile_process(process_type)
+            compiler.compile_process(process_type)
 
     def test_pipeline_params_incompatible(self) -> None:
+        compiler = ETLCompiler()
         with pytest.raises(ETLCompilationError, match="region"):
-            ETLCompiler().compile(MixedPipeline)
+            compiler.compile(MixedPipeline)
 
 
 class TestCatalogValidation:

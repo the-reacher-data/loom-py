@@ -190,8 +190,9 @@ async def test_context_manager_rolls_back_on_exception() -> None:
     session = _make_session()
     sm = _make_session_manager(session)
 
+    uow = SQLAlchemyUnitOfWork(sm)
     with pytest.raises(RuntimeError):
-        async with SQLAlchemyUnitOfWork(sm):
+        async with uow:
             raise RuntimeError("oops")
 
     session.rollback.assert_awaited_once()

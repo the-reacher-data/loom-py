@@ -339,8 +339,9 @@ def test_require_message_rejects_non_message() -> None:
 
 
 def test_replace_payloads_rejects_mismatched_lengths() -> None:
+    messages = [_message("a")]
     with pytest.raises(RuntimeError, match="must match input length"):
-        _shared._replace_payloads([_message("a")], [])
+        _shared._replace_payloads(messages, [])
 
 
 def test_wire_node_dispatches_registered_handler(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -465,14 +466,16 @@ def test_execute_record_step_binds_flow_context() -> None:
 def test_execute_record_step_propagates_business_error_and_observes() -> None:
     observer = _RecordingObserver()
     runtime = ObservabilityRuntime([observer])
+    step = _BoomRecordStep()
+    message = _message("abc")
     with pytest.raises(RuleViolation, match="value: boom"):
         _steps._execute_record_step(
             runtime,
             "orders",
             1,
             "Boom",
-            _BoomRecordStep(),
-            _message("abc"),
+            step,
+            message,
         )
 
     assert observer.events == [
@@ -501,14 +504,17 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
 
 
 def test_execute_batch_step_rejects_non_list_result() -> None:
+    noop = ObservabilityRuntime.noop()
+    step = _InvalidBatchStep()
+    messages = [_message("a"), _message("b")]
     with pytest.raises(TypeError, match="UpperBatch must return a list of payloads."):
         _steps._execute_batch_step(
-            ObservabilityRuntime.noop(),
+            noop,
             "orders",
             2,
             "UpperBatch",
-            _InvalidBatchStep(),
-            [_message("a"), _message("b")],
+            step,
+            messages,
         )
 
 
@@ -532,14 +538,17 @@ def test_execute_expand_step_replaces_payloads_and_observes() -> None:
 
 
 def test_execute_expand_step_rejects_non_iterable_result() -> None:
+    noop = ObservabilityRuntime.noop()
+    step = _InvalidExpandStep()
+    message = _message("ab")
     with pytest.raises(TypeError, match="UpperExpand must return an iterable of payloads."):
         _steps._execute_expand_step(
-            ObservabilityRuntime.noop(),
+            noop,
             "orders",
             3,
             "UpperExpand",
-            _InvalidExpandStep(),
-            _message("ab"),
+            step,
+            message,
         )
 
 
@@ -581,17 +590,20 @@ def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
 
 
 def test_execute_batch_expand_step_rejects_non_iterable_result() -> None:
+    noop = ObservabilityRuntime.noop()
+    step = _InvalidBatchExpandStep()
+    messages = [_message("a"), _message("b")]
     with pytest.raises(
         TypeError,
         match="UpperBatchExpand must return an iterable of payloads.",
     ):
         _steps._execute_batch_expand_step(
-            ObservabilityRuntime.noop(),
+            noop,
             "orders",
             4,
             "UpperBatchExpand",
-            _InvalidBatchExpandStep(),
-            [_message("a"), _message("b")],
+            step,
+            messages,
         )
 
 
@@ -676,17 +688,16 @@ def test_execute_inner_process_completes_without_sink_partition() -> None:
 def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
     tracker = _CommitTracker()
 
+    process = _scopes._execute_inner_process(
+        _message("abc", message_id="m-1"),
+        [_UpperRecordStep()],
+        _FailingSinkPartition(),
+        tracker,
+        {},
+        None,
+    )
     with pytest.raises(RuntimeError, match="sink-boom"):
-        asyncio.run(
-            _scopes._execute_inner_process(
-                _message("abc", message_id="m-1"),
-                [_UpperRecordStep()],
-                _FailingSinkPartition(),
-                tracker,
-                {},
-                None,
-            )
-        )
+        asyncio.run(process)
 
     assert tracker.completes == []
 

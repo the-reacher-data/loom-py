@@ -128,8 +128,10 @@ class TestCompilerTempValidation:
         pipeline_builder: Callable[[], type[ETLPipeline[P]]],
         error: str,
     ) -> None:
+        compiler = ETLCompiler(catalog)
+        pipeline = pipeline_builder()
         with pytest.raises(ETLCompilationError, match=error):
-            ETLCompiler(catalog).compile(pipeline_builder())
+            compiler.compile(pipeline)
 
     def test_compile_pipeline_sequential_step_sees_prior_parallel_temp(
         self,
@@ -191,8 +193,9 @@ class TestCheckpointStore:
             store.put("x", run_id="r", correlation_id=None, scope=scope, data=data)
 
     def test_store_get_raises_when_missing(self, tmp_path: Path) -> None:
+        store = CheckpointStore(root=str(tmp_path))
         with pytest.raises(FileNotFoundError):
-            CheckpointStore(root=str(tmp_path)).get("missing", run_id="r", correlation_id=None)
+            store.get("missing", run_id="r", correlation_id=None)
 
 
 class TestRunnerTempCleanup:

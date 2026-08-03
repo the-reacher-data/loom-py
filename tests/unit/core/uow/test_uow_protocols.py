@@ -132,8 +132,9 @@ async def test_uow_context_manager_rollback_on_exception() -> None:
             if exc_type is not None:
                 await self.rollback()
 
+    uow = TrackingUoW()
     with pytest.raises(ValueError):
-        async with TrackingUoW():
+        async with uow:
             raise ValueError("boom")
 
     assert rolled_back is True

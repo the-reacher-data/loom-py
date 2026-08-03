@@ -129,5 +129,6 @@ class TestCompileUpsertSpecs:
         step_type: type[ETLStep[_Params]],
         error: str,
     ) -> None:
+        compiler = _compiler()
         with pytest.raises(ETLCompilationError, match=error):
-            _compiler().compile_step(step_type)
+            compiler.compile_step(step_type)

@@ -226,13 +226,15 @@ class TestExecuteNoMarkers:
 
     async def test_missing_param_raises(self) -> None:
         ex = _make_executor()
+        use_case = _NoMarkersUseCase()
         with pytest.raises(ValueError, match="missing required parameter"):
-            await ex.execute(_NoMarkersUseCase(), params={})
+            await ex.execute(use_case, params={})
 
     async def test_invalid_param_type_raises_binding_error(self) -> None:
         ex = _make_executor()
+        use_case = _NoMarkersUseCase()
         with pytest.raises(ParameterBindingError, match="invalid value for parameter 'value'"):
-            await ex.execute(_NoMarkersUseCase(), params={"value": "not-an-int"})
+            await ex.execute(use_case, params={"value": "not-an-int"})
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +253,9 @@ class TestExecuteWithInput:
 
     async def test_missing_payload_raises(self) -> None:
         ex = _make_executor()
+        use_case = _InputOnlyUseCase()
         with pytest.raises(ValueError, match="payload is required"):
-            await ex.execute(_InputOnlyUseCase())
+            await ex.execute(use_case)
 
     async def test_params_and_input_together(self) -> None:
         ex = _make_executor()
@@ -347,9 +350,10 @@ class TestExecuteWithLoad:
         repo = _fake_repo(None)
         ex = _make_executor()
 
+        use_case = _WithLoadUseCase()
         with pytest.raises(NotFound) as exc_info:
             await ex.execute(
-                _WithLoadUseCase(),
+                use_case,
                 params={"user_id": 99},
                 dependencies={User: repo},
             )
@@ -359,17 +363,19 @@ class TestExecuteWithLoad:
 
     async def test_no_dependencies_raises(self) -> None:
         ex = _make_executor()
+        use_case = _WithLoadUseCase()
         with pytest.raises(RuntimeError, match="No dependencies provided"):
             await ex.execute(
-                _WithLoadUseCase(),
+                use_case,
                 params={"user_id": 1},
             )
 
     async def test_missing_repo_type_raises(self) -> None:
         ex = _make_executor()
+        use_case = _WithLoadUseCase()
         with pytest.raises(RuntimeError, match="No repository registered"):
             await ex.execute(
-                _WithLoadUseCase(),
+                use_case,
                 params={"user_id": 1},
                 dependencies={},
             )
@@ -385,8 +391,9 @@ class TestExecuteWithLoad:
             logger=_RecordingLogger(),
             repo_resolver=_resolver,
         )
+        use_case = _WithLoadUseCase()
         with pytest.raises(RuntimeError, match="resolver exploded"):
-            await ex.execute(_WithLoadUseCase(), params={"user_id": 1})
+            await ex.execute(use_case, params={"user_id": 1})
 
 
 class TestExecuteWithExists:
@@ -419,9 +426,10 @@ class TestExecuteWithExists:
         repo = _fake_repo(None)
         ex = _make_executor()
 
+        use_case = _WithExistsRaiseUseCase()
         with pytest.raises(NotFound):
             await ex.execute(
-                _WithExistsRaiseUseCase(),
+                use_case,
                 params={"email": "missing@corp.com"},
                 dependencies={User: repo},
             )
@@ -479,9 +487,10 @@ class TestExecuteFullPipeline:
                 called.append(True)
 
         ex = _make_executor()
+        use_case = _RuleUseCase()
         with pytest.raises(RuleViolations) as exc_info:
             await ex.execute(
-                _RuleUseCase(),
+                use_case,
                 payload={"email": "bad@corp.com", "name": "X"},
             )
 
@@ -503,9 +512,10 @@ class TestExecuteFullPipeline:
                 pass
 
         ex = _make_executor()
+        use_case = _MultiRuleUseCase()
         with pytest.raises(RuleViolations) as exc_info:
             await ex.execute(
-                _MultiRuleUseCase(),
+                use_case,
                 payload={"email": "x@x.com", "name": "X"},
             )
 
@@ -627,9 +637,10 @@ class TestExecutorLogging:
         log = _RecordingLogger()
         ex = _make_executor(debug=False, logger=log)
 
+        use_case = _RuleUseCase()
         with pytest.raises(RuleViolations):
             await ex.execute(
-                _RuleUseCase(),
+                use_case,
                 payload={"email": "x@x.com", "name": "X"},
             )
 
@@ -699,9 +710,10 @@ class TestParallelLoads:
         order_repo = _fake_repo(order)
         ex = _make_executor()
 
+        use_case = _MultiLoadUseCase()
         with pytest.raises(NotFound):
             await ex.execute(
-                _MultiLoadUseCase(),
+                use_case,
                 params={"user_id": 1, "order_id": 5},
                 dependencies={User: user_repo, Order: order_repo},
             )

@@ -97,9 +97,10 @@ class TestRule:
 
     def test_raises_violation_on_invalid_input(self) -> None:
         cmd = CreateUser(email="test@throwaway.com", name="Bob")
+        fields_set = frozenset({"email", "name"})
 
         with pytest.raises(RuleViolation) as exc_info:
-            email_not_disposable(cmd, frozenset({"email", "name"}))
+            email_not_disposable(cmd, fields_set)
 
         assert exc_info.value.field == "email"
         assert exc_info.value.message == "Disposable emails not allowed"
@@ -119,8 +120,11 @@ class TestRuleDsl:
             via=email_format_error_or_none,
         )
 
+        cmd = CreateUser(email="invalid", name="Alice")
+        fields_set = frozenset({"email", "name"})
+
         with pytest.raises(RuleViolation) as exc_info:
-            rule(CreateUser(email="invalid", name="Alice"), frozenset({"email", "name"}))
+            rule(cmd, fields_set)
 
         assert exc_info.value.field == "email"
 
@@ -156,11 +160,11 @@ class TestRuleDsl:
             message="Disposable emails not allowed",
         )
 
+        cmd = CreateUser(email="spam@throwaway.com", name="Spammer")
+        fields_set = frozenset({"email", "name"})
+
         with pytest.raises(RuleViolation):
-            rule(
-                CreateUser(email="spam@throwaway.com", name="Spammer"),
-                frozenset({"email", "name"}),
-            )
+            rule(cmd, fields_set)
 
     def test_forbid_from_params_uses_runtime_context(self) -> None:
         rule = Rule.forbid(
@@ -168,12 +172,11 @@ class TestRuleDsl:
             message="user id is blocked",
         ).from_params("user_id")
 
+        cmd = CreateUser(email="ok@example.com", name="Alice")
+        fields_set = frozenset({"email", "name"})
+
         with pytest.raises(RuleViolation) as exc_info:
-            rule(
-                CreateUser(email="ok@example.com", name="Alice"),
-                frozenset({"email", "name"}),
-                {"user_id": "1"},
-            )
+            rule(cmd, fields_set, {"user_id": "1"})
 
         assert exc_info.value.field == "user_id"
 
@@ -183,11 +186,11 @@ class TestRuleDsl:
             message="user id is blocked",
         ).from_params("user_id")
 
+        cmd = CreateUser(email="ok@example.com", name="Alice")
+        fields_set = frozenset({"email", "name"})
+
         with pytest.raises(ValueError, match="runtime context"):
-            rule(
-                CreateUser(email="ok@example.com", name="Alice"),
-                frozenset({"email", "name"}),
-            )
+            rule(cmd, fields_set)
 
     def test_require_present_for_non_patch_field(self) -> None:
         rule = Rule.require_present(F(CreateUser).email)
@@ -209,8 +212,8 @@ class TestRuleDsl:
             via=email_format_error_or_none,
         )
 
+        cmd = CreateUser(email="invalid", name="Alice")
+        fields_set = frozenset({"email", "name"})
+
         with pytest.raises(RuleViolation):
-            rule(
-                CreateUser(email="invalid", name="Alice"),
-                frozenset({"email", "name"}),
-            )
+            rule(cmd, fields_set)

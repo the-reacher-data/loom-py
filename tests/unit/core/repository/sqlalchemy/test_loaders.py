@@ -91,8 +91,9 @@ class TestMemoryLoadersSafetyCheck:
         class _Bare:
             pass
 
+        bare = _Bare()
         with pytest.raises(RuntimeError, match="relation 'notes' on _Bare"):
-            loader.load_from_object(_Bare())
+            loader.load_from_object(bare)
 
     def test_error_includes_model_class_name(self) -> None:
         loader = _MemoryCountLoader(relation="items")
@@ -100,8 +101,9 @@ class TestMemoryLoadersSafetyCheck:
         class MyEntity:
             pass
 
+        entity = MyEntity()
         with pytest.raises(RuntimeError, match="MyEntity"):
-            loader.load_from_object(MyEntity())
+            loader.load_from_object(entity)
 
     def test_error_includes_relation_name(self) -> None:
         loader = _MemoryCountLoader(relation="attachments")
@@ -109,5 +111,6 @@ class TestMemoryLoadersSafetyCheck:
         class SomeModel:
             pass
 
+        model = SomeModel()
         with pytest.raises(RuntimeError, match="attachments"):
-            loader.load_from_object(SomeModel())
+            loader.load_from_object(model)

@@ -86,5 +86,6 @@ class TestResolveParamExpr:
         assert resolve_param_expr(expr, run_params) == expected
 
     def test_resolve_missing_field_raises(self, run_params: RunParams) -> None:
+        expr = ParamExpr(("nonexistent",))
         with pytest.raises(AttributeError):
-            resolve_param_expr(ParamExpr(("nonexistent",)), run_params)
+            resolve_param_expr(expr, run_params)

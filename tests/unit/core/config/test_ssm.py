@@ -79,8 +79,9 @@ class TestSsmResolverEnvVarExpansion:
 
     def test_raises_on_missing_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("MISSING_VAR", raising=False)
+        resolver = SsmResolver()
         with patch("boto3.client"), pytest.raises(ConfigError):
-            SsmResolver().resolve("/path/%MISSING_VAR%/token")
+            resolver.resolve("/path/%MISSING_VAR%/token")
 
     def test_percent_syntax_parses_from_omegaconf_yaml(
         self, mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -121,8 +122,9 @@ class TestSsmResolverClientLifecycle:
 class TestSsmResolverErrors:
     def test_raises_config_error_on_ssm_exception(self, mock_client: MagicMock) -> None:
         mock_client.get_parameter.side_effect = Exception("ParameterNotFound")
+        resolver = SsmResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SsmResolver().resolve("/missing/param")
+            resolver.resolve("/missing/param")
 
 
 class TestSsmResolverDotNotation:
@@ -153,13 +155,15 @@ class TestSsmResolverDotNotation:
 
     def test_raises_config_error_on_invalid_json(self, mock_client: MagicMock) -> None:
         mock_client.get_parameter.return_value = {"Parameter": {"Value": "not-json-at-all"}}
+        resolver = SsmResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SsmResolver().resolve("/prod/db.host")
+            resolver.resolve("/prod/db.host")
 
     def test_raises_config_error_on_missing_key(self, mock_client: MagicMock) -> None:
         mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db"}'}}
+        resolver = SsmResolver()
         with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError):
-            SsmResolver().resolve("/prod/db.missing_key")
+            resolver.resolve("/prod/db.missing_key")
 
     def test_env_var_expansion_then_dot_navigation(
         self, mock_client: MagicMock, monkeypatch: pytest.MonkeyPatch

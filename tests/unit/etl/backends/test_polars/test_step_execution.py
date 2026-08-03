@@ -170,12 +170,14 @@ def test_run_step_emits_error_event_on_failure(
     observer = StubRunObserver()
     plan = ETLCompiler().compile_step(DoubleAmountStep)
 
+    executor = ETLExecutor(
+        FailingReader(),
+        polars_writer,
+        observability=ObservabilityRuntime([observer]),
+    )
+    params = NoParams()
     with pytest.raises(RuntimeError, match="read failure"):
-        ETLExecutor(
-            FailingReader(),
-            polars_writer,
-            observability=ObservabilityRuntime([observer]),
-        ).run_step(plan, NoParams())
+        executor.run_step(plan, params)
 
     assert EventName.STEP_ERROR in observer.event_names
     assert observer.step_statuses == [RunStatus.FAILED]

@@ -158,8 +158,9 @@ class TestHappyPath:
 class TestNoClient:
     def test_read_without_client_raises(self) -> None:
         reader = DynamoDbSourceReader()
+        spec = _spec()
         with pytest.raises(RuntimeError, match="no client configured"):
-            reader.read(_spec(), None)
+            reader.read(spec, None)
 
 
 # ---------------------------------------------------------------------------
@@ -367,11 +368,12 @@ class TestSchemaPaths:
             {"order_id": {"S": "o1"}, "status": {"S": "active"}, "extra_col": {"S": "surprise"}}
         ]
         reader, _ = _reader(items)
+        frame = reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="error"), None)
         with pytest.raises(
             (ValueError, pl.exceptions.ComputeError),
             match=r"DynamoDbSourceReader.*extra_col",
         ):
-            reader.read(_spec(schema=_ORDER_SCHEMA, extra_fields_mode="error"), None).collect()
+            frame.collect()
 
     def test_ignore_mode_drops_extra_field(self) -> None:
         items = [

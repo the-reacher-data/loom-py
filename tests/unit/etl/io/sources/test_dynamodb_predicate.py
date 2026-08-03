@@ -130,8 +130,9 @@ class TestInExpr:
         assert result.attribute_values == {":v0": {"S": "active"}, ":v1": {"S": "pending"}}
 
     def test_in_empty_values_raises(self) -> None:
+        predicate = col("status").isin(())
         with pytest.raises(ValueError, match="at least one value"):
-            predicate_to_dynamo(col("status").isin(()), NO_PARAMS)
+            predicate_to_dynamo(predicate, NO_PARAMS)
 
     def test_in_source_ref_raises_before_materialize(self) -> None:
         ref = SourceRef(FromTemp("order_ids"), col="order_id")

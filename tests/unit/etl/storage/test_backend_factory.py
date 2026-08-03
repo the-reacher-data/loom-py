@@ -191,8 +191,9 @@ def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.M
 
 def test_make_lineage_writer_rejects_database_destination_for_polars_engine() -> None:
     lineage = LineageConfig(enabled=True, database="ops")
+    config = StorageConfig(engine="polars")
     with pytest.raises(ValueError, match="observability.lineage.database"):
-        make_lineage_writer(StorageConfig(engine="polars"), lineage)
+        make_lineage_writer(config, lineage)
 
 
 def test_make_lineage_writer_polars_root_returns_writer() -> None:
@@ -204,8 +205,9 @@ def test_make_lineage_writer_polars_root_returns_writer() -> None:
 
 def test_make_lineage_writer_spark_database_requires_session() -> None:
     lineage = LineageConfig(enabled=True, database="ops")
+    config = StorageConfig(engine="spark")
     with pytest.raises(ValueError, match="SparkSession"):
-        make_lineage_writer(StorageConfig(engine="spark"), lineage, spark=None)
+        make_lineage_writer(config, lineage, spark=None)
 
 
 def test_spark_provider_lineage_writer_root_returns_target_writer_wrapper() -> None:

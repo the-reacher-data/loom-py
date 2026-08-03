@@ -143,8 +143,9 @@ class TestWithAsync:
         assert adapter.max_concurrency == 3
 
     def test_with_async_rejects_non_positive_max_concurrency(self) -> None:
+        process = _make_process(_AsyncStep())
         with pytest.raises(ValueError, match="max_concurrency"):
-            WithAsync(process=_make_process(_AsyncStep()), max_concurrency=0)
+            WithAsync(process=process, max_concurrency=0)
 
     def test_with_async_defaults_task_timeout_to_none(self) -> None:
         adapter: WithAsync[_Payload, _Result] = WithAsync(process=_make_process(_AsyncStep()))
@@ -158,20 +159,26 @@ class TestWithAsync:
         assert adapter.task_timeout_ms == 500
 
     def test_with_async_rejects_zero_task_timeout(self) -> None:
+        process = _make_process(_SyncStep())
         with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
-            WithAsync(process=_make_process(_SyncStep()), task_timeout_ms=0)
+            WithAsync(process=process, task_timeout_ms=0)
 
     def test_with_async_rejects_negative_task_timeout(self) -> None:
+        process = _make_process(_SyncStep())
         with pytest.raises(ValueError, match="task_timeout_ms must be greater than zero"):
-            WithAsync(process=_make_process(_SyncStep()), task_timeout_ms=-100)
+            WithAsync(process=process, task_timeout_ms=-100)
 
     def test_with_rejects_async_context_manager(self) -> None:
+        process = _make_process(_AsyncStep())
+        client = _FakeAsyncClient()
         with pytest.raises(TypeError, match="sync context managers"):
-            With(process=_make_process(_AsyncStep()), client=_FakeAsyncClient())
+            With(process=process, client=client)
 
     def test_with_async_rejects_sync_context_manager(self) -> None:
+        process = _make_process(_SyncStep())
+        client = _FakeSyncClient()
         with pytest.raises(TypeError, match="async context managers"):
-            WithAsync(process=_make_process(_SyncStep()), client=_FakeSyncClient())
+            WithAsync(process=process, client=client)
 
 
 class TestWith:

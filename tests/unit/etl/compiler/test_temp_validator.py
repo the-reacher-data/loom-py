@@ -73,8 +73,9 @@ class ConsumeFirstPipeline(ETLPipeline[P]):
 
 
 def test_forward_temp_reference_raises() -> None:
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError, match="orders_temp"):
-        ETLCompiler().compile(ConsumeFirstPipeline)
+        compiler.compile(ConsumeFirstPipeline)
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +92,9 @@ class OrphanConsumePipeline(ETLPipeline[P]):
 
 
 def test_orphan_temp_reference_raises() -> None:
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError, match="orders_temp"):
-        ETLCompiler().compile(OrphanConsumePipeline)
+        compiler.compile(OrphanConsumePipeline)
 
 
 # ---------------------------------------------------------------------------
@@ -117,15 +119,17 @@ class DuplicateStrictPipeline(ETLPipeline[P]):
 
 
 def test_duplicate_strict_temp_raises() -> None:
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError, match="already written"):
-        ETLCompiler().compile(DuplicateStrictPipeline)
+        compiler.compile(DuplicateStrictPipeline)
 
 
 def test_duplicate_strict_temp_error_code() -> None:
     from loom.etl.compiler._errors import ETLErrorCode
 
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError) as exc_info:
-        ETLCompiler().compile(DuplicateStrictPipeline)
+        compiler.compile(DuplicateStrictPipeline)
     assert exc_info.value.code == ETLErrorCode.DUPLICATE_TEMP_NAME
 
 
@@ -193,13 +197,15 @@ class MixedModePipeline(ETLPipeline[P]):
 
 
 def test_mixed_append_modes_raises() -> None:
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError, match="mixes append"):
-        ETLCompiler().compile(MixedModePipeline)
+        compiler.compile(MixedModePipeline)
 
 
 def test_mixed_append_modes_error_code() -> None:
     from loom.etl.compiler._errors import ETLErrorCode
 
+    compiler = ETLCompiler()
     with pytest.raises(ETLCompilationError) as exc_info:
-        ETLCompiler().compile(MixedModePipeline)
+        compiler.compile(MixedModePipeline)
     assert exc_info.value.code == ETLErrorCode.INVALID_TEMP_APPEND_MIX

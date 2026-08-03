@@ -39,8 +39,9 @@ class TestMaintainTable:
         assert spec.ops == (ZOrderSpec(columns=["date", "id"]),)
 
     def test_z_order_empty_columns_raises(self) -> None:
+        table = MaintainTable("raw.events")
         with pytest.raises(ValueError, match="at least one column"):
-            MaintainTable("raw.events").z_order_by([])
+            table.z_order_by([])
 
     def test_compact_and_z_order_mutually_exclusive(self) -> None:
         builder = MaintainTable("raw.events").compact().z_order_by(["date"])

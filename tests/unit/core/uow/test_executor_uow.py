@@ -115,8 +115,9 @@ async def test_uow_rollback_called_on_failure() -> None:
     compiler = _compiler(_FailingUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
+    failing_uc = _FailingUC()
     with pytest.raises(RuntimeError, match="intentional"):
-        await executor.execute(_FailingUC())
+        await executor.execute(failing_uc)
 
     uow.rollback.assert_awaited_once()
     uow.commit.assert_not_awaited()
@@ -162,8 +163,9 @@ async def test_active_uow_reset_after_failed_execution() -> None:
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     assert _active_uow.get() is None
+    failing_uc = _FailingUC()
     with pytest.raises(RuntimeError):
-        await executor.execute(_FailingUC())
+        await executor.execute(failing_uc)
     assert _active_uow.get() is None
 
 

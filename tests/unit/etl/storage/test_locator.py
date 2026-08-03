@@ -65,8 +65,9 @@ def test_mapping_locator_uses_default_for_unmapped_refs() -> None:
 def test_mapping_locator_raises_when_ref_is_missing_and_no_default() -> None:
     locator = MappingLocator(mapping={})
 
+    table_ref = TableRef("raw.missing")
     with pytest.raises(KeyError, match="No storage location configured"):
-        locator.locate(TableRef("raw.missing"))
+        locator.locate(table_ref)
 
 
 def test_as_locator_coerces_pathlike_and_keeps_custom_locator() -> None:

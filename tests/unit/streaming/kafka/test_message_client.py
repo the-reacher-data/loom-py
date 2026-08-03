@@ -361,8 +361,9 @@ class TestKafkaMessageConsumer:
             payload_type=OrderCreated,
         )
 
+        partitions = [TopicPartition("orders", 1, 12)]
         with pytest.raises(RuntimeError, match="commit-boom"):
-            consumer.commit_offset([TopicPartition("orders", 1, 12)])
+            consumer.commit_offset(partitions)
 
     def test_emits_decode_metrics(
         self,

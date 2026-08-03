@@ -55,8 +55,9 @@ def test_path_override_resolves_to_physical_location() -> None:
 def test_missing_polars_route_raises_actionable_key_error() -> None:
     resolver = build_table_resolver(StorageConfig())
 
+    table_ref = TableRef("raw.missing")
     with pytest.raises(KeyError, match="storage.defaults.table_path"):
-        resolver.resolve(TableRef("raw.missing"))
+        resolver.resolve(table_ref)
 
 
 def test_composite_resolver_prefers_override_over_default_path() -> None:
@@ -128,8 +129,9 @@ def test_routed_catalog_requires_path_catalog_for_path_targets() -> None:
         catalog=_SpyCatalog(),
     )
 
+    table_ref = TableRef("raw.orders")
     with pytest.raises(RuntimeError, match="path mode"):
-        routed.exists(TableRef("raw.orders"))
+        routed.exists(table_ref)
 
 
 def test_routed_catalog_dispatches_path_targets_to_path_catalog() -> None:

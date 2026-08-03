@@ -256,8 +256,9 @@ def test_reload_checkpoint_store_module_and_helpers() -> None:
     class _SparkUnexpected:
         read = _ReaderUnexpected()
 
+    unexpected = _SparkUnexpected()
     with pytest.raises(RuntimeError, match="boom"):
-        spark_temp_mod._probe_spark(_SparkUnexpected(), "/var/lib/loom/missing")
+        spark_temp_mod._probe_spark(unexpected, "/var/lib/loom/missing")
 
 
 @pytest.mark.parametrize(

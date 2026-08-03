@@ -107,8 +107,9 @@ class _MissingFrameStep(ETLStep[BaseParams]):
 
 
 def test_missing_frame_raises() -> None:
+    bindings = _bindings_for(_MissingFrameStep)
     with pytest.raises(ETLCompilationError, match="orders"):
-        validate_execute_signature(_MissingFrameStep, BaseParams, _bindings_for(_MissingFrameStep))
+        validate_execute_signature(_MissingFrameStep, BaseParams, bindings)
 
 
 class _ExtraFrameStep(ETLStep[BaseParams]):

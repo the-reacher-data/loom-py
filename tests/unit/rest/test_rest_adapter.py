@@ -270,23 +270,29 @@ class TestLoomRestAdapterErrors:
     async def test_loom_error_mapped_to_http_exception(self) -> None:
         executor = self._make_failing_executor(NotFound("Item", id=99))
         adapter = LoomRestAdapter(executor)
+        use_case = _SimpleUseCase()
+        request = AdapterRequest(params={})
         with pytest.raises(HTTPException) as exc_info:
-            await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+            await adapter.handle(use_case, request)
         assert exc_info.value.status_code == 404
 
     async def test_rule_violations_mapped_to_422(self) -> None:
         err = RuleViolations([RuleViolation("email", "bad")])
         executor = self._make_failing_executor(err)
         adapter = LoomRestAdapter(executor)
+        use_case = _SimpleUseCase()
+        request = AdapterRequest(params={})
         with pytest.raises(HTTPException) as exc_info:
-            await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+            await adapter.handle(use_case, request)
         assert exc_info.value.status_code == 422
 
     async def test_non_loom_error_not_caught(self) -> None:
         executor = self._make_failing_executor(RuntimeError("unexpected"))
         adapter = LoomRestAdapter(executor)
+        use_case = _SimpleUseCase()
+        request = AdapterRequest(params={})
         with pytest.raises(RuntimeError, match="unexpected"):
-            await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+            await adapter.handle(use_case, request)
 
     async def test_custom_error_mapper_used(self) -> None:
         class _AlwaysTeapot(HttpErrorMapper):
@@ -295,6 +301,8 @@ class TestLoomRestAdapterErrors:
 
         executor = self._make_failing_executor(NotFound("X", id=1))
         adapter = LoomRestAdapter(executor, error_mapper=_AlwaysTeapot())
+        use_case = _SimpleUseCase()
+        request = AdapterRequest(params={})
         with pytest.raises(HTTPException) as exc_info:
-            await adapter.handle(_SimpleUseCase(), AdapterRequest(params={}))
+            await adapter.handle(use_case, request)
         assert exc_info.value.status_code == 418

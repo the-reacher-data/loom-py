@@ -94,5 +94,6 @@ def test_fold_predicate_composition_and_param_resolution() -> None:
 
 
 def test_fold_predicate_unsupported_node_raises() -> None:
+    params = _params()
     with pytest.raises(TypeError, match="unsupported node type"):
-        fold_predicate(object(), _params(), _DIALECT)  # type: ignore[arg-type]
+        fold_predicate(object(), params, _DIALECT)  # type: ignore[arg-type]
