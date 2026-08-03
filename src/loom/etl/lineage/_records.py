@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final
@@ -74,7 +74,13 @@ class RunContext:
         Returns:
             A copy carrying *process_run_id*; every other field is preserved.
         """
-        return replace(self, process_run_id=process_run_id)
+        return RunContext(
+            run_id=self.run_id,
+            correlation_id=self.correlation_id,
+            attempt=self.attempt,
+            last_attempt=self.last_attempt,
+            process_run_id=process_run_id,
+        )
 
 
 @dataclass(frozen=True)
