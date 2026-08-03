@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
-from pytest import fixture
+import pytest
 
 from loom.core.logger import configure_logger_factory, get_logger, reset_logger_factory
 from loom.core.logger.abc import LoggerPort
@@ -35,7 +35,7 @@ class _FakeLogger(LoggerPort):
         self.events.append(("exception", event, fields))
 
 
-@fixture(autouse=True)
+@pytest.fixture(autouse=True)
 def reset_factory() -> Iterator[None]:
     reset_logger_factory()
     yield

@@ -12,7 +12,7 @@ from loom.etl.maintenance.backends._delta_rs import DeltaRsMaintainer
 from loom.etl.storage._locator import TableLocation
 
 
-@pytest.fixture()
+@pytest.fixture
 def delta_table_uri(tmp_path: object) -> str:
     """Create a small Delta table and return its URI."""
     uri = str(tmp_path) + "/test_table"
@@ -21,7 +21,7 @@ def delta_table_uri(tmp_path: object) -> str:
     return uri
 
 
-@pytest.fixture()
+@pytest.fixture
 def delta_location(delta_table_uri: str) -> TableLocation:
     return TableLocation(uri=delta_table_uri)
 

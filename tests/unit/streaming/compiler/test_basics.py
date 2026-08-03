@@ -36,8 +36,9 @@ def test_compile_fails_when_binding_path_missing() -> None:
         process=Process(binding, IntoTopic("out", payload=Result)),
     )
 
+    config = OmegaConf.create({})
     with pytest.raises(CompilationError) as exc_info:
-        compile_flow(flow, config=OmegaConf.create({}))
+        compile_flow(flow, config=config)
 
     assert "tasks.missing" in str(exc_info.value)
 
@@ -49,8 +50,9 @@ def test_compile_fails_when_kafka_missing_for_topic_flow() -> None:
         process=Process(FakeStep(), IntoTopic("out", payload=Result)),
     )
 
+    config = OmegaConf.create({})
     with pytest.raises(CompilationError) as exc_info:
-        compile_flow(flow, config=OmegaConf.create({}))
+        compile_flow(flow, config=config)
 
     assert "kafka" in str(exc_info.value)
 

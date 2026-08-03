@@ -32,7 +32,7 @@ class _Worker(Configurable):
         self.concurrency = concurrency
 
 
-@pytest.fixture()
+@pytest.fixture
 def ctx() -> ConfigContext:
     cfg = OmegaConf.create(
         {

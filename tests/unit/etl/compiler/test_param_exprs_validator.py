@@ -86,16 +86,19 @@ def test_nested_attribute_on_valid_field_passes() -> None:
 
 def test_unknown_field_in_source_predicate_raises() -> None:
     pred = col("year") == p.bad_field
+    bindings = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _P, bindings, target)
     assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "bad_field"
 
 
 def test_unknown_field_in_replace_where_raises() -> None:
     pred = col("region") == p.unknown_region
+    target = _replace_where_target(pred)
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _P, (), _replace_where_target(pred))
+        validate_param_exprs(_Step, _P, (), target)
     assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
     assert exc_info.value.field == "unknown_region"
 
@@ -107,21 +110,27 @@ def test_unknown_field_in_replace_where_raises() -> None:
 
 def test_and_predicate_both_sides_traversed() -> None:
     pred = (col("year") == p.run_date.year) & (col("country") == p.bad_field)
+    bindings = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _P, bindings, target)
     assert exc_info.value.field == "bad_field"
 
 
 def test_or_predicate_traversed() -> None:
     pred = (col("a") == p.run_date) | (col("b") == p.nope)
+    bindings = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError):
-        validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _P, bindings, target)
 
 
 def test_not_predicate_traversed() -> None:
     pred = ~(col("a") == p.missing)
+    bindings = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError):
-        validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _P, bindings, target)
 
 
 def test_in_predicate_ref_traversed() -> None:
@@ -131,8 +140,10 @@ def test_in_predicate_ref_traversed() -> None:
 
 def test_in_predicate_unknown_ref_raises() -> None:
     pred = col("x").isin(p.bad)  # type: ignore[arg-type]
+    bindings = (_source_binding(pred),)
+    target = _append_target()
     with pytest.raises(ETLCompilationError) as exc_info:
-        validate_param_exprs(_Step, _P, (_source_binding(pred),), _append_target())
+        validate_param_exprs(_Step, _P, bindings, target)
     assert exc_info.value.field == "bad"
 
 

@@ -142,5 +142,6 @@ class TestStepResult:
         with pytest.raises(AssertionError, match="expected String"):
             result.assert_schema({"id": LoomDtype.UTF8})
 
+        empty_result = StepResult(pl.DataFrame({"id": []}))
         with pytest.raises(AssertionError, match="Expected non-empty"):
-            StepResult(pl.DataFrame({"id": []})).assert_not_empty()
+            empty_result.assert_not_empty()

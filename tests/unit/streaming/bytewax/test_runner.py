@@ -9,7 +9,6 @@ import msgspec
 import pytest
 import uvloop
 from bytewax.dataflow import Dataflow
-from pytest import MonkeyPatch
 
 from loom.core.async_bridge import build_backend_options as _build_backend_options
 from loom.core.config import ConfigContext
@@ -33,7 +32,7 @@ class TestStreamingRunner:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         events: list[LifecycleEvent] = []
 
@@ -77,7 +76,7 @@ class TestStreamingRunner:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
         dataflow = Dataflow("test")
@@ -115,7 +114,7 @@ class TestStreamingRunner:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
         dataflow = Dataflow("test")
@@ -229,7 +228,7 @@ class TestPrepareRun:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
         shutdown_calls: list[str] = []
@@ -301,7 +300,7 @@ class TestRunFlowSpan:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         events: list[LifecycleEvent] = []
 
@@ -335,7 +334,7 @@ class TestRunFlowSpan:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         events: list[LifecycleEvent] = []
 
@@ -371,7 +370,7 @@ class TestRunFlowSpan:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         events: list[LifecycleEvent] = []
 
@@ -404,7 +403,7 @@ class TestPrepareRunErrorSinks:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from loom.streaming.core._errors import ErrorKind
 
@@ -492,7 +491,7 @@ class TestRegisterSink:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         """AC-2: when a YAML config path is given, resolved sinks are passed to _prepare_run."""
@@ -545,7 +544,7 @@ streaming:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
         """AC-5: explicitly passed error_sinks take precedence over registry-resolved ones."""
@@ -598,7 +597,7 @@ streaming:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
-        monkeypatch: MonkeyPatch,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """AC-4 + AC-6: calling prepare_run() directly (not via run()) skips registry resolution."""
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)

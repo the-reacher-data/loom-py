@@ -103,12 +103,14 @@ class TestProject:
         assert spec.projection == ("pk", "status", "total")
 
     def test_project_rejects_empty_field(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="non-empty"):
-            FromDynamoDb("orders").project("pk", "")
+            source.project("pk", "")
 
     def test_project_rejects_blank_field(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="non-empty"):
-            FromDynamoDb("orders").project("   ")
+            source.project("   ")
 
     def test_project_is_immutable(self) -> None:
         base = FromDynamoDb("orders")
@@ -149,8 +151,9 @@ class TestOnExtraFields:
         assert spec.extra_fields_mode == mode
 
     def test_invalid_mode_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="not valid"):
-            FromDynamoDb("orders").on_extra_fields("bad")  # type: ignore[arg-type]
+            source.on_extra_fields("bad")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +171,14 @@ class TestBatchSize:
         assert spec.batch_size == 500
 
     def test_batch_size_zero_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="between 1 and 10000"):
-            FromDynamoDb("orders").batch_size(0)
+            source.batch_size(0)
 
     def test_batch_size_too_high_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="between 1 and 10000"):
-            FromDynamoDb("orders").batch_size(10_001)
+            source.batch_size(10_001)
 
     def test_batch_size_boundary_values(self) -> None:
         assert FromDynamoDb("orders").batch_size(1)._batch_size == 1
@@ -191,8 +196,9 @@ class TestLimit:
         assert spec.limit == 100
 
     def test_limit_zero_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match=">= 1"):
-            FromDynamoDb("orders").limit(0)
+            source.limit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -226,12 +232,14 @@ class TestParallelScan:
         assert spec.total_segments == 8
 
     def test_below_minimum_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="between 2 and 64"):
-            FromDynamoDb("orders").parallel_scan(1)
+            source.parallel_scan(1)
 
     def test_above_maximum_raises(self) -> None:
+        source = FromDynamoDb("orders")
         with pytest.raises(ValueError, match="between 2 and 64"):
-            FromDynamoDb("orders").parallel_scan(65)
+            source.parallel_scan(65)
 
     def test_boundary_values(self) -> None:
         assert FromDynamoDb("orders").parallel_scan(2)._total_segments == 2

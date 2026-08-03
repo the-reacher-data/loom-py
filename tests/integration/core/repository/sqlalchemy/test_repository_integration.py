@@ -4,7 +4,6 @@ from typing import Any
 
 import msgspec
 import pytest
-from pytest import mark
 
 from loom.core.repository.abc import (
     FilterGroup,
@@ -38,7 +37,7 @@ class _CustomProductRepository(RepositorySQLAlchemy[Product, int]):
 
 
 class TestRepositorySQLAlchemyIntegration:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_crud_flow_with_real_sqlite(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -64,7 +63,7 @@ class TestRepositorySQLAlchemyIntegration:
         missing = await integration_context.product.repository.get_by_id(1)
         assert missing is None
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_paginated_list_with_filters(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -81,7 +80,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert len(page.items) == 2
         assert {item.name for item in page.items} == {"b", "c"}
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_with_query_offset_supports_filters_and_pagination(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -119,7 +118,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert page_2.has_next is False
         assert [item.name for item in page_2.items] == ["c"]
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_with_query_cursor_supports_filters_and_next_cursor(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -152,7 +151,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert second_page.next_cursor is None
         assert [item.name for item in second_page.items] == ["c"]
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_profile_default_omits_unloaded_fields(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -170,7 +169,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert "hasReviews" not in data
         assert "reviewSnippets" not in data
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_with_details_loads_orm_and_projection_fields(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -190,7 +189,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert isinstance(loaded.review_snippets, list)
         assert {snippet["comment"] for snippet in loaded.review_snippets} == {"great", "solid"}
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_count_returns_zero_on_empty_table(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -198,7 +197,7 @@ class TestRepositorySQLAlchemyIntegration:
         total = await integration_context.product.repository.count()
         assert total == 0
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_count_returns_exact_row_count(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -208,7 +207,7 @@ class TestRepositorySQLAlchemyIntegration:
         total = await integration_context.product.repository.count()
         assert total == 3
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_update_returns_updated_entity_in_single_roundtrip(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -225,7 +224,7 @@ class TestRepositorySQLAlchemyIntegration:
         assert float(updated.price) == pytest.approx(150.0)
         assert updated.name == "desk"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_update_returns_none_for_missing_id(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -233,7 +232,7 @@ class TestRepositorySQLAlchemyIntegration:
         result = await integration_context.product.repository.update(9999, UpdateProduct(price=1.0))
         assert result is None
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_count_after_delete_reflects_removal(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -244,7 +243,7 @@ class TestRepositorySQLAlchemyIntegration:
         await integration_context.product.repository.delete(1)
         assert await integration_context.product.repository.count() == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_custom_repository_can_use_core_model_for_custom_read(
         self,
         integration_context: RepositoryIntegrationHarness,

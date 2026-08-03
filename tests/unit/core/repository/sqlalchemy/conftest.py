@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 from unittest.mock import AsyncMock
 
-from pytest import fixture
+import pytest
 
 from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.model import BaseModel, Field, Integer
@@ -24,7 +24,7 @@ class MockSessionManager:
         yield self._session
 
 
-@fixture(autouse=True)
+@pytest.fixture(autouse=True)
 def _compiled_dummy_model() -> Any:
     reset_registry()
     compile_all(_DummyModel)
@@ -32,12 +32,12 @@ def _compiled_dummy_model() -> Any:
     reset_registry()
 
 
-@fixture
+@pytest.fixture
 def dummy_model() -> type:
     return _DummyModel
 
 
-@fixture
+@pytest.fixture
 def mock_session() -> AsyncMock:
     session = AsyncMock()
     session.new = set()
@@ -46,6 +46,6 @@ def mock_session() -> AsyncMock:
     return session
 
 
-@fixture
+@pytest.fixture
 def mock_session_manager(mock_session: AsyncMock) -> MockSessionManager:
     return MockSessionManager(mock_session)

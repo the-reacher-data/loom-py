@@ -85,8 +85,9 @@ def _fork_by_flow() -> StreamFlow[_Order, Any]:
 
 class TestForkDSL:
     def test_fork_by_rejects_empty_branches(self) -> None:
+        selector = _ChannelSelector()
         with pytest.raises(ValueError, match="Fork.by requires at least one keyed route"):
-            Fork.by(_ChannelSelector(), {})
+            Fork.by(selector, {})
 
     def test_fork_when_rejects_empty_routes(self) -> None:
         with pytest.raises(ValueError, match="Fork.when requires at least one predicate route"):

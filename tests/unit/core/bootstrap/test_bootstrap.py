@@ -154,16 +154,18 @@ def test_bootstrap_compilation_error_raises_bootstrap_error() -> None:
         # abstract — not overriding execute
         pass
 
+    config = _FakeConfig()
     with pytest.raises(BootstrapError):
-        bootstrap_app(config=_FakeConfig(), use_cases=[BrokenUseCase])  # type: ignore[type-abstract]
+        bootstrap_app(config=config, use_cases=[BrokenUseCase])  # type: ignore[type-abstract]
 
 
 def test_bootstrap_module_exception_raises_bootstrap_error() -> None:
     def bad_module(c: LoomContainer) -> None:
         raise RuntimeError("db connection refused")
 
+    config = _FakeConfig()
     with pytest.raises(BootstrapError, match="Bootstrap failed"):
-        bootstrap_app(config=_FakeConfig(), use_cases=[], modules=[bad_module])
+        bootstrap_app(config=config, use_cases=[], modules=[bad_module])
 
 
 def test_bootstrap_with_metrics_adapter() -> None:

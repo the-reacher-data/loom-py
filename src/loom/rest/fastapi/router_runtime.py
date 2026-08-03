@@ -26,7 +26,8 @@ import logging
 import re
 import types
 import typing
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import msgspec
@@ -224,10 +225,10 @@ def _parse_sort(sort_field: str | None, direction_raw: str) -> tuple[SortSpec, .
     direction = direction_raw.upper()
     if direction not in {"ASC", "DESC"}:
         raise HTTPException(status_code=400, detail="direction must be 'ASC' or 'DESC'.")
-    if sort_field is None or sort_field == "":
-        return ()
-    return (
-        SortSpec(field=_normalize_field_name(sort_field), direction=typing.cast(Any, direction)),
+    requested_fields = (sort_field,) if sort_field else ()
+    return tuple(
+        SortSpec(field=_normalize_field_name(field), direction=typing.cast(Any, direction))
+        for field in requested_fields
     )
 
 
@@ -354,6 +355,169 @@ def _route_docs(compiled_route: CompiledRoute) -> tuple[str | None, str | None]:
     return auto_summary, auto_description
 
 
+@dataclass(frozen=True, slots=True)
+class _RouteRuntime:
+    """Per-route facts resolved once at startup and read on every request."""
+
+    compiled_route: CompiledRoute
+    path_params: tuple[str, ...]
+    accepts_profile_param: bool
+    query_param_name: str | None
+    has_input_binding: bool
+
+    @property
+    def use_case_type(self) -> type[Any]:
+        return self.compiled_route.route.use_case
+
+
+def _build_route_runtime(compiled_route: CompiledRoute) -> _RouteRuntime:
+    uc_type = compiled_route.route.use_case
+    plan = getattr(uc_type, "__execution_plan__", None)
+    return _RouteRuntime(
+        compiled_route=compiled_route,
+        path_params=tuple(_extract_path_params(compiled_route.route.path)),
+        accepts_profile_param="profile" in inspect.signature(uc_type.execute).parameters,
+        query_param_name=_resolve_query_param_name(uc_type),
+        has_input_binding=plan is not None and plan.input_binding is not None,
+    )
+
+
+def _resolve_profile(request: Request, compiled_route: CompiledRoute) -> str:
+    """Return the profile the request runs under, refusing values the route bans."""
+    requested = request.query_params.get(QueryParam.PROFILE)
+    if requested is None:
+        return compiled_route.effective_profile_default
+
+    if not compiled_route.effective_expose_profile:
+        raise HTTPException(
+            status_code=400,
+            detail="Query parameter 'profile' is not allowed for this route.",
+        )
+
+    allowed = compiled_route.effective_allowed_profiles
+    if allowed and requested not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Invalid profile {requested!r}. Allowed: {', '.join(allowed)}"),
+        )
+    return requested
+
+
+def _build_execution_params(
+    request: Request, path_kwargs: Mapping[str, Any], runtime: _RouteRuntime
+) -> dict[str, Any]:
+    compiled_route = runtime.compiled_route
+    params: dict[str, Any] = {name: path_kwargs[name] for name in runtime.path_params}
+    selected_profile = _resolve_profile(request, compiled_route)
+    if runtime.accepts_profile_param:
+        params["profile"] = selected_profile
+    if runtime.query_param_name is not None:
+        params[runtime.query_param_name] = _build_query_spec(
+            request,
+            default_pagination_mode=compiled_route.effective_pagination_mode,
+            allow_pagination_override=compiled_route.effective_allow_pagination_override,
+            max_limit=compiled_route.effective_max_limit,
+        )
+    return params
+
+
+async def _decode_payload(request: Request, has_input_binding: bool) -> dict[str, Any] | None:
+    if not has_input_binding:
+        return None
+    body = await request.body()
+    if not body:
+        return None
+    return typing.cast("dict[str, Any]", msgspec.json.decode(body))
+
+
+async def _execute_route(
+    request: Request,
+    path_kwargs: Mapping[str, Any],
+    runtime: _RouteRuntime,
+    factory: UseCaseFactory,
+    executor: RuntimeExecutor,
+    observability_runtime: ObservabilityRuntime,
+) -> Response:
+    compiled_route = runtime.compiled_route
+    status_code = compiled_route.route.status_code
+    # The only ambient identity read of the REST layer: from here on
+    # the caller travels as an explicit argument, never as a global.
+    identity = current_identity()
+    with observability_runtime.span(
+        Scope.USE_CASE,
+        runtime.use_case_type.__name__,
+        trace_id=get_trace_id(),
+        route=compiled_route.full_path,
+        method=compiled_route.route.method.upper(),
+        status_code=status_code,
+        read_only=compiled_route.read_only,
+    ):
+        _authorize_route(
+            identity, compiled_route.effective_requires_roles, compiled_route.full_path
+        )
+        result = await executor.execute(
+            factory.build(runtime.use_case_type),
+            params=_build_execution_params(request, path_kwargs, runtime),
+            payload=await _decode_payload(request, runtime.has_input_binding),
+            read_only=compiled_route.read_only,
+            identity=identity,
+        )
+    return MsgspecJSONResponse(content=result, status_code=status_code)
+
+
+async def _dispatch_route(
+    request: Request,
+    path_kwargs: Mapping[str, Any],
+    runtime: _RouteRuntime,
+    factory: UseCaseFactory,
+    executor: RuntimeExecutor,
+    observability_runtime: ObservabilityRuntime,
+) -> Response:
+    """Run a route and translate any failure into the response the caller sees."""
+    try:
+        return await _execute_route(
+            request, path_kwargs, runtime, factory, executor, observability_runtime
+        )
+    except HTTPException:
+        raise
+    except BodyTooLarge:
+        # Answered as 413 by BodySizeLimitMiddleware: swallowing it here
+        # would report a 500 for a perfectly diagnosable client error.
+        raise
+    except LoomError as exc:
+        raise _error_mapper.to_http(exc) from exc
+    except Exception:
+        trace_id = get_trace_id() or ""
+        # Without this the caller holds a trace id with no counterpart in
+        # the logs: an untraceable 500, and an attacker who triggers one
+        # leaves no record at all.
+        _logger.exception(
+            "Unhandled error in %s (route=%s trace_id=%s)",
+            runtime.use_case_type.__name__,
+            runtime.compiled_route.full_path,
+            trace_id,
+        )
+        return _internal_error_response(trace_id)
+
+
+def _handler_signature(
+    path_params: Sequence[str], execute_param_types: Mapping[str, Any]
+) -> inspect.Signature:
+    """Expose ``request`` plus every path parameter so FastAPI validates them."""
+    sig_params = [
+        inspect.Parameter("request", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Request)
+    ]
+    sig_params.extend(
+        inspect.Parameter(
+            name,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            annotation=_normalize_path_param_annotation(execute_param_types.get(name, str)),
+        )
+        for name in path_params
+    )
+    return inspect.Signature(sig_params, return_annotation=Response)
+
+
 def _make_handler(
     compiled_route: CompiledRoute,
     factory: UseCaseFactory,
@@ -374,121 +538,17 @@ def _make_handler(
     Returns:
         Async callable suitable for ``FastAPI.add_api_route``.
     """
-    path_params = _extract_path_params(compiled_route.route.path)
-    execute_param_types = dict(compiled_route.execute_param_types)
-    uc_type = compiled_route.route.use_case
-    status_code = compiled_route.route.status_code
-    route_read_only = compiled_route.read_only
-    execute_sig = inspect.signature(uc_type.execute)
-    accepts_profile_param = "profile" in execute_sig.parameters
-    query_param_name = _resolve_query_param_name(uc_type)
-    required_roles = compiled_route.effective_requires_roles
-
-    # Resolved at startup — avoids per-request attribute lookup.
-    plan = getattr(uc_type, "__execution_plan__", None)
-    has_input_binding = plan is not None and plan.input_binding is not None
-
-    def _resolve_profile(request: Request) -> str:
-        requested = request.query_params.get(QueryParam.PROFILE)
-        if requested is None:
-            return compiled_route.effective_profile_default
-
-        if not compiled_route.effective_expose_profile:
-            raise HTTPException(
-                status_code=400,
-                detail="Query parameter 'profile' is not allowed for this route.",
-            )
-
-        allowed = compiled_route.effective_allowed_profiles
-        if allowed and requested not in allowed:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Invalid profile {requested!r}. Allowed: {', '.join(allowed)}"),
-            )
-        return requested
+    runtime = _build_route_runtime(compiled_route)
 
     async def _handler(request: Request, **kwargs: Any) -> Response:
-        try:
-            # The only ambient identity read of the REST layer: from here on
-            # the caller travels as an explicit argument, never as a global.
-            identity = current_identity()
-            with observability_runtime.span(
-                Scope.USE_CASE,
-                uc_type.__name__,
-                trace_id=get_trace_id(),
-                route=compiled_route.full_path,
-                method=compiled_route.route.method.upper(),
-                status_code=status_code,
-                read_only=route_read_only,
-            ):
-                _authorize_route(identity, required_roles, compiled_route.full_path)
-                params: dict[str, Any] = {p: kwargs[p] for p in path_params}
-                selected_profile = _resolve_profile(request)
-                if accepts_profile_param:
-                    params["profile"] = selected_profile
-                if query_param_name is not None:
-                    params[query_param_name] = _build_query_spec(
-                        request,
-                        default_pagination_mode=compiled_route.effective_pagination_mode,
-                        allow_pagination_override=compiled_route.effective_allow_pagination_override,
-                        max_limit=compiled_route.effective_max_limit,
-                    )
-                payload: dict[str, Any] | None = None
-                if has_input_binding:
-                    body = await request.body()
-                    if body:
-                        payload = msgspec.json.decode(body)
-
-                uc = factory.build(uc_type)
-                result = await executor.execute(
-                    uc,
-                    params=params,
-                    payload=payload,
-                    read_only=route_read_only,
-                    identity=identity,
-                )
-            return MsgspecJSONResponse(content=result, status_code=status_code)
-        except HTTPException:
-            raise
-        except BodyTooLarge:
-            # Answered as 413 by BodySizeLimitMiddleware: swallowing it here
-            # would report a 500 for a perfectly diagnosable client error.
-            raise
-        except LoomError as exc:
-            raise _error_mapper.to_http(exc) from exc
-        except Exception:
-            trace_id = get_trace_id() or ""
-            # Without this the caller holds a trace id with no counterpart in
-            # the logs: an untraceable 500, and an attacker who triggers one
-            # leaves no record at all.
-            _logger.exception(
-                "Unhandled error in %s (route=%s trace_id=%s)",
-                uc_type.__name__,
-                compiled_route.full_path,
-                trace_id,
-            )
-            return _internal_error_response(trace_id)
-
-    sig_params: list[inspect.Parameter] = [
-        inspect.Parameter(
-            "request",
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            annotation=Request,
+        return await _dispatch_route(
+            request, kwargs, runtime, factory, executor, observability_runtime
         )
-    ]
-    for p_name in path_params:
-        annotation = _normalize_path_param_annotation(execute_param_types.get(p_name, str))
-        sig_params.append(
-            inspect.Parameter(
-                p_name,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                annotation=annotation,
-            )
-        )
-    _handler.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
-        sig_params, return_annotation=Response
+
+    _handler.__signature__ = _handler_signature(  # type: ignore[attr-defined]
+        runtime.path_params, dict(compiled_route.execute_param_types)
     )
-    _handler.__name__ = f"handle_{uc_type.__name__}"
+    _handler.__name__ = f"handle_{runtime.use_case_type.__name__}"
 
     return _handler
 

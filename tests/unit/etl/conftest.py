@@ -19,7 +19,7 @@ class CustomersParams(ETLParams):
     run_date: date
 
 
-@pytest.fixture()
+@pytest.fixture
 def orders_params() -> OrdersParams:
     return OrdersParams(run_date=date(2024, 1, 5), countries=("ES", "FR"))
 

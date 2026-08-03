@@ -55,7 +55,7 @@ class _UpperJob(Job[str]):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def worker_config(tmp_path: Path) -> str:
     """Write a minimal worker YAML with task_always_eager enabled."""
     cfg: dict[str, Any] = {
@@ -173,39 +173,40 @@ class TestBootstrapWorkerTaskExecution:
 
 
 class TestBootstrapWorkerJobConfigOverride:
-    def test_job_config_override_applied_before_task_registration(self, tmp_path: Path) -> None:
+    def test_job_config_override_applied_before_task_registration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Retries override from YAML is visible to _make_job_task at registration.
 
         Querying celery_app.tasks[name].max_retries is unreliable when multiple
         Celery instances share the global task registry across tests.  Instead,
         spy on _make_job_task to capture job_type.__retries__ at call time.
         """
-        original_retries = _DoubleSyncJob.__retries__
+        monkeypatch.setattr(
+            _DoubleSyncJob, "__retries__", _DoubleSyncJob.__retries__, raising=False
+        )
         captured_retries: list[int] = []
 
         def _spy(celery_app: Any, job_type: Any, *args: Any, **kwargs: Any) -> Any:
             captured_retries.append(job_type.__retries__)
             return _runner._make_job_task(celery_app, job_type, *args, **kwargs)
 
-        try:
-            cfg: dict[str, Any] = {
-                "celery": {
-                    "broker_url": "memory://",
-                    "result_backend": "cache+memory://",
-                    "task_always_eager": True,
-                },
-                "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
-                "jobs": {"_DoubleSyncJob": {"retries": 3}},
-            }
-            config_file = tmp_path / "worker_with_override.yaml"
-            config_file.write_text(yaml.dump(cfg))
+        cfg: dict[str, Any] = {
+            "celery": {
+                "broker_url": "memory://",
+                "result_backend": "cache+memory://",
+                "task_always_eager": True,
+            },
+            "database": {"url": f"sqlite+aiosqlite:///{tmp_path / 'test_worker.db'}"},
+            "jobs": {"_DoubleSyncJob": {"retries": 3}},
+        }
+        config_file = tmp_path / "worker_with_override.yaml"
+        config_file.write_text(yaml.dump(cfg))
 
-            with patch.object(boot, "_make_job_task", side_effect=_spy):
-                bootstrap_worker(str(config_file), jobs=[_DoubleSyncJob])
+        with patch.object(boot, "_make_job_task", side_effect=_spy):
+            bootstrap_worker(str(config_file), jobs=[_DoubleSyncJob])
 
-            assert captured_retries == [3], (
-                f"_make_job_task saw __retries__={captured_retries}; expected [3]"
-            )
-            assert _DoubleSyncJob.__retries__ == 3
-        finally:
-            _DoubleSyncJob.__retries__ = original_retries
+        assert captured_retries == [3], (
+            f"_make_job_task saw __retries__={captured_retries}; expected [3]"
+        )
+        assert _DoubleSyncJob.__retries__ == 3

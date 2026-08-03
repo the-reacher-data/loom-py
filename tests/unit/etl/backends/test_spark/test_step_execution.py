@@ -117,8 +117,9 @@ def test_writer_append_first_write_requires_create_policy(
     spark_writer: SparkTargetWriter,
 ) -> None:
     frame = spark.createDataFrame([(1, 10.0)], ["id", "v"])
+    table_ref = TableRef("staging.append_first")
     with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
-        spark_writer.append(frame, TableRef("staging.append_first"), None)
+        spark_writer.append(frame, table_ref, None)
 
 
 class TestRunStepDataFlow:
@@ -230,12 +231,14 @@ class TestRunStepEvents:
         observer = StubRunObserver()
         plan = ETLCompiler().compile_step(DoubleAmountStep)
 
+        executor = ETLExecutor(
+            FailingReader(),
+            spark_writer,
+            observability=ObservabilityRuntime([observer]),
+        )
+        params = NoParams()
         with pytest.raises(RuntimeError, match="spark read failure"):
-            ETLExecutor(
-                FailingReader(),
-                spark_writer,
-                observability=ObservabilityRuntime([observer]),
-            ).run_step(plan, NoParams())
+            executor.run_step(plan, params)
 
         assert observer.step_statuses == [RunStatus.FAILED]
 
@@ -254,8 +257,10 @@ class TestRunStepContracts:
         )
 
         plan = ETLCompiler().compile_step(DoubleAmountStep)
+        executor = ETLExecutor(spark_reader, spark_writer)
+        params = NoParams()
         with pytest.raises(SchemaNotFoundError):
-            ETLExecutor(spark_reader, spark_writer).run_step(plan, NoParams())
+            executor.run_step(plan, params)
 
     def test_writer_overwrite_creates_table_on_first_write(
         self,

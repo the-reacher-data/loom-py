@@ -96,8 +96,9 @@ class TestSpecKind:
 
 class TestColumnsValidation:
     def test_columns_empty_raises(self) -> None:
+        source = FromClickHouse("cdc_events")
         with pytest.raises(ValueError, match="at least one"):
-            FromClickHouse("cdc_events").columns()
+            source.columns()
 
 
 class TestRepr:

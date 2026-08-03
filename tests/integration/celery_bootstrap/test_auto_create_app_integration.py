@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
-from pytest import fixture
+import pytest
 
 from loom.celery.auto import create_app
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
@@ -301,7 +301,7 @@ async def _drop_schema(db_url: str) -> None:
         await manager.dispose()
 
 
-@fixture()
+@pytest.fixture
 def celery_files(tmp_path: Path, monkeypatch: Any) -> Any:
     reset_registry()
     compile_all(_Record)

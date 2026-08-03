@@ -15,8 +15,9 @@ def _frame(**cols: object) -> pl.LazyFrame:
 
 @pytest.mark.parametrize("mode", [SchemaMode.STRICT, SchemaMode.EVOLVE])
 def test_apply_schema_none_raises_schema_not_found(mode: SchemaMode) -> None:
+    frame = _frame(id=[1])
     with pytest.raises(SchemaNotFoundError):
-        apply_schema_polars(_frame(id=[1]), None, mode)
+        apply_schema_polars(frame, None, mode)
 
 
 def test_overwrite_passthrough_identity() -> None:

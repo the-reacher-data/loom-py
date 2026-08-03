@@ -124,6 +124,5 @@ def test_every_workflow_installs_the_same_pinned_uv() -> None:
         name: specifiers for name, specifiers in installed_uv.items() if specifiers
     }
 
-    assert workflows_installing_uv and all(
-        specifiers == {PINNED_UV} for specifiers in workflows_installing_uv.values()
-    )
+    assert workflows_installing_uv
+    assert all(specifiers == {PINNED_UV} for specifiers in workflows_installing_uv.values())

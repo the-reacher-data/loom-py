@@ -127,5 +127,6 @@ class TestRouterCompiler:
             ),
         )
 
+        config = OmegaConf.create({})
         with pytest.raises(CompilationError, match="not supported in Router branches"):
-            compile_flow(flow, config=OmegaConf.create({}))
+            compile_flow(flow, config=config)

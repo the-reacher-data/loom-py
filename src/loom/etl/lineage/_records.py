@@ -65,6 +65,23 @@ class RunContext:
     last_attempt: bool = True
     process_run_id: str | None = None
 
+    def for_process(self, process_run_id: str) -> RunContext:
+        """Return this context narrowed to one process run.
+
+        Args:
+            process_run_id: Identifier generated for the process about to run.
+
+        Returns:
+            A copy carrying *process_run_id*; every other field is preserved.
+        """
+        return RunContext(
+            run_id=self.run_id,
+            correlation_id=self.correlation_id,
+            attempt=self.attempt,
+            last_attempt=self.last_attempt,
+            process_run_id=process_run_id,
+        )
+
 
 @dataclass(frozen=True)
 class WriteContext:

@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from pytest import mark
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.bootstrap.kernel import create_kernel
@@ -106,7 +105,7 @@ async def sa_env(tmp_path: Path):  # type: ignore[no-untyped-def]
 
 
 class TestTransactionCommit:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_successful_use_case_persists_entity(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)
@@ -123,7 +122,7 @@ class TestTransactionCommit:
         assert found is not None
         assert found.name == "keyboard"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_data_survives_across_separate_executor_calls(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)
@@ -148,7 +147,7 @@ class TestTransactionCommit:
 
 
 class TestTransactionRollback:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_exception_in_use_case_rolls_back_write(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)
@@ -169,7 +168,7 @@ class TestTransactionRollback:
         found = await runtime.app.invoke(_GetProductUC, params={"product_id": 1})
         assert found is None
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_rollback_does_not_affect_prior_committed_rows(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)
@@ -206,7 +205,7 @@ class TestTransactionRollback:
 
 
 class TestLoadByIdMarker:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_load_by_id_raises_not_found_for_missing_entity(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)
@@ -223,7 +222,7 @@ class TestLoadByIdMarker:
         assert exc_info.value.entity == "Product"
         assert exc_info.value.id == 99
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_load_by_id_returns_entity_when_present(self, sa_env) -> None:  # type: ignore[no-untyped-def]
         manager, repo_module = sa_env
         uow_factory = SQLAlchemyUnitOfWorkFactory(manager)

@@ -119,8 +119,9 @@ class TestDlqRouting:
 
         sink = _runtime_io._KafkaMessageSinkPartition(build_compiled_sink())
 
+        messages = [build_order_message("123", None)]
         with pytest.raises(KafkaDeliveryError):
-            sink.write_batch([build_order_message("123", None)])
+            sink.write_batch(messages)
 
     def test_close_delegates_to_raw_message_producer(
         self,

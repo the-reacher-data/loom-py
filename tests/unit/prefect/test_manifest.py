@@ -188,7 +188,7 @@ def test_mark_step_preserves_other_steps() -> None:
     m = _manifest(_success("StepA"), _success("StepB"))
     updated = mark_step(m, "StepC", RunStatus.SUCCESS)
     step_names = {e.step for e in updated.steps}
-    assert {"StepA", "StepB", "StepC"} == step_names
+    assert step_names == {"StepA", "StepB", "StepC"}
 
 
 def test_mark_step_updates_updated_at() -> None:

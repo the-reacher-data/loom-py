@@ -46,8 +46,9 @@ class TestWithCompiler:
             ),
         )
 
+        config = OmegaConf.create({})
         with pytest.raises(CompilationError, match="ContextFactory"):
-            compile_flow(flow, config=OmegaConf.create({}))
+            compile_flow(flow, config=config)
 
     def test_compile_succeeds_on_batch_scope_with_context_factory(
         self,

@@ -58,7 +58,8 @@ def test_compile_fails_when_mongo_config_is_missing() -> None:
         process=Process(Drain()),
     )
 
+    config = OmegaConf.create({})
     with pytest.raises(CompilationError) as exc_info:
-        compile_flow(flow, config=OmegaConf.create({}))
+        compile_flow(flow, config=config)
 
     assert "mongo source 'domain_events'" in str(exc_info.value)

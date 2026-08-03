@@ -173,8 +173,9 @@ class TestRuleViolations:
         assert "name" in err.message
 
     def test_catchable_as_domain_error(self) -> None:
+        error = RuleViolations([RuleViolation("f", "m")])
         with pytest.raises(DomainError):
-            raise RuleViolations([RuleViolation("f", "m")])
+            raise error
 
     def test_backward_compat_import_from_rule_module(self) -> None:
         from loom.core.use_case.rule import RuleViolations as RVFromRule
@@ -211,9 +212,10 @@ class TestExecutorUsesNotFound:
         repo.get_by_id = AsyncMock(return_value=None)
 
         executor = RuntimeExecutor(UseCaseCompiler())
+        uc = _UC()
         with pytest.raises(NotFound) as exc_info:
             await executor.execute(
-                _UC(),
+                uc,
                 params={"eid": 7},
                 dependencies={_Entity: repo},
             )

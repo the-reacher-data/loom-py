@@ -51,8 +51,9 @@ class TestAsyncBridgeRun:
     def test_run_propagates_exception(self) -> None:
         bridge = AsyncBridge()
         try:
+            coro = _raise_error()
             with pytest.raises(ValueError, match="boom"):
-                bridge.run(_raise_error())
+                bridge.run(coro)
         finally:
             bridge.shutdown()
 
@@ -60,8 +61,9 @@ class TestAsyncBridgeRun:
         bridge = AsyncBridge()
         bridge.shutdown()
 
+        coro = _return_value(1)
         with pytest.raises(RuntimeError, match="shut down"):
-            bridge.run(_return_value(1))
+            bridge.run(coro)
 
     def test_run_with_timeout_raises_on_slow_coro(self) -> None:
         import anyio
@@ -72,8 +74,9 @@ class TestAsyncBridgeRun:
 
         bridge = AsyncBridge()
         try:
+            coro = _slow()
             with pytest.raises(TimeoutError):
-                bridge.run(_slow(), timeout=0.05)
+                bridge.run(coro, timeout=0.05)
         finally:
             bridge.shutdown()
 

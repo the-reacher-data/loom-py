@@ -39,8 +39,9 @@ def test_resolve_sql_interpolates_nested_params_as_safe_literals() -> None:
 
     # list index access is intentionally disallowed (non-identifier);
     # only attribute chains are valid by design.
+    params = _params()
     with pytest.raises(ValueError, match="invalid expression"):
-        resolve_sql(query, _params())
+        resolve_sql(query, params)
 
     valid = (
         "SELECT * FROM orders "
@@ -61,8 +62,9 @@ def test_resolve_sql_interpolates_nested_params_as_safe_literals() -> None:
     ],
 )
 def test_resolve_sql_errors(sql: str, exc: type[Exception], match: str) -> None:
+    params = _params()
     with pytest.raises(exc, match=match):
-        resolve_sql(sql, _params())
+        resolve_sql(sql, params)
 
 
 def test_predicate_to_sql_supports_composition_and_param_resolution() -> None:
@@ -93,8 +95,9 @@ def test_predicate_to_sql_binary_and_unary_forms(node: Any, expected: str) -> No
 
 
 def test_predicate_to_sql_raises_on_unsupported_node() -> None:
+    params = _params()
     with pytest.raises(TypeError, match="unsupported node type"):
-        predicate_to_sql(object(), _params())  # type: ignore[arg-type]
+        predicate_to_sql(object(), params)  # type: ignore[arg-type]
 
 
 class _StaticStep(StepSQL[_SqlParams, pl.LazyFrame]):
@@ -178,7 +181,9 @@ def test_stepsql_extract_types_on_non_stepsql_class_returns_none() -> None:
 
 
 def test_base_stepsql_execute_raises_not_implemented() -> None:
+    step_sql = StepSQL()
+    params = _params()
     with pytest.raises(
         NotImplementedError, match="executed by ETLExecutor via SQLExecutor.execute_sql"
     ):
-        StepSQL().execute(_params())  # type: ignore[misc]
+        step_sql.execute(params)  # type: ignore[misc]

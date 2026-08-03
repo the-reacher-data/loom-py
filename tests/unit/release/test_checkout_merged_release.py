@@ -440,12 +440,14 @@ def test_unstable_pr_is_never_merged_unless_all_checks_passed(
     )
     merger = MergeRecorder()
 
+    reader = _reader(repository, unstable)
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="timed out"):
         _checkout(
             repository,
-            _reader(repository, unstable),
+            reader,
             merger,
-            FakeClock(),
+            clock,
             timeout_seconds=2.0,
         )
 
@@ -461,8 +463,10 @@ def test_fails_closed_unless_exactly_one_release_pr_candidate_exists(
     candidate = _snapshot(head_sha=repository.head_sha, merge_sha=repository.merge_sha)
     reader = PullRequestReader([(candidate,) * candidate_count])
 
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="exactly one"):
-        _checkout(repository, reader, MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_release_pr_is_closed(tmp_path: Path) -> None:
@@ -474,8 +478,11 @@ def test_fails_closed_when_release_pr_is_closed(tmp_path: Path) -> None:
         merge_sha=None,
     )
 
+    reader = _reader(repository, closed)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="closed"):
-        _checkout(repository, _reader(repository, closed), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_release_pr_has_conflicts(tmp_path: Path) -> None:
@@ -487,8 +494,11 @@ def test_fails_closed_when_release_pr_has_conflicts(tmp_path: Path) -> None:
         merge_sha=None,
     )
 
+    reader = _reader(repository, conflicting)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="conflict|DIRTY"):
-        _checkout(repository, _reader(repository, conflicting), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_release_pr_base_is_behind(tmp_path: Path) -> None:
@@ -500,8 +510,11 @@ def test_fails_closed_when_release_pr_base_is_behind(tmp_path: Path) -> None:
         merge_sha=None,
     )
 
+    reader = _reader(repository, behind)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="base advanced"):
-        _checkout(repository, _reader(repository, behind), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_before_merge_when_origin_master_advanced(
@@ -524,8 +537,10 @@ def test_fails_before_merge_when_origin_master_advanced(
     merger = MergeRecorder()
     _install_fake_uv(tmp_path, monkeypatch)
 
+    reader = _reader(repository, clean)
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="origin/master advanced"):
-        _checkout(repository, _reader(repository, clean), merger, FakeClock())
+        _checkout(repository, reader, merger, clock)
 
     assert merger.calls == []
 
@@ -539,12 +554,15 @@ def test_fails_closed_when_pending_pr_times_out(tmp_path: Path) -> None:
         merge_sha=None,
     )
 
+    reader = _reader(repository, pending)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="timed out"):
         _checkout(
             repository,
-            _reader(repository, pending),
-            MergeRecorder(),
-            FakeClock(),
+            reader,
+            recorder,
+            clock,
             timeout_seconds=2.0,
         )
 
@@ -564,12 +582,15 @@ def test_fails_closed_when_pr_head_mutates_during_polling(tmp_path: Path) -> Non
         merge_sha=None,
     )
 
+    reader = _reader(repository, pending, mutated)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="head.*changed|mutat"):
         _checkout(
             repository,
-            _reader(repository, pending, mutated),
-            MergeRecorder(),
-            FakeClock(),
+            reader,
+            recorder,
+            clock,
         )
 
 
@@ -595,8 +616,11 @@ def test_fails_closed_when_pr_identity_or_files_are_unexpected(
         **{field: value},
     )
 
+    reader = _reader(repository, candidate)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match=message):
-        _checkout(repository, _reader(repository, candidate), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_release_pr_omits_a_required_file(tmp_path: Path) -> None:
@@ -607,8 +631,11 @@ def test_fails_closed_when_release_pr_omits_a_required_file(tmp_path: Path) -> N
         files=("CHANGELOG.md", "pyproject.toml"),
     )
 
+    reader = _reader(repository, candidate)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="files"):
-        _checkout(repository, _reader(repository, candidate), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_validates_open_pr_metadata_before_requesting_merge(
@@ -630,12 +657,14 @@ def test_validates_open_pr_metadata_before_requesting_merge(
     merger = MergeRecorder()
     _install_fake_uv(tmp_path, monkeypatch)
 
+    reader = _reader(repository, clean, merged)
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="project"):
         _checkout(
             repository,
-            _reader(repository, clean, merged),
+            reader,
             merger,
-            FakeClock(),
+            clock,
         )
 
     assert merger.calls == []
@@ -664,8 +693,11 @@ def test_fails_closed_when_pr_contains_an_invalid_sha(
         values.update(merge_state_status="CLEAN", merge_sha=None)
     candidate = _snapshot(**values)
 
+    reader = _reader(repository, candidate)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="SHA"):
-        _checkout(repository, _reader(repository, candidate), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 @pytest.mark.parametrize(
@@ -686,8 +718,11 @@ def test_fails_closed_when_release_metadata_versions_differ(
     repository = _create_remote_repository(tmp_path, **versions)
     _install_fake_uv(tmp_path, monkeypatch)
 
+    reader = _reader(repository)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match=message):
-        _checkout(repository, _reader(repository), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_merge_sha_is_not_on_origin_master(
@@ -697,8 +732,11 @@ def test_fails_closed_when_merge_sha_is_not_on_origin_master(
     repository = _create_remote_repository(tmp_path, merge_on_master=False)
     _install_fake_uv(tmp_path, monkeypatch)
 
+    reader = _reader(repository)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="origin/master"):
-        _checkout(repository, _reader(repository), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_allows_only_changelog_release_as_untracked_file(
@@ -721,16 +759,22 @@ def test_fails_closed_when_an_unexpected_untracked_file_exists(tmp_path: Path) -
     repository = _create_remote_repository(tmp_path)
     (repository.checkout / "unexpected.txt").write_text("unsafe\n", encoding="utf-8")
 
+    reader = _reader(repository)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="untracked"):
-        _checkout(repository, _reader(repository), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_fails_closed_when_checkout_has_dirty_tracked_files(tmp_path: Path) -> None:
     repository = _create_remote_repository(tmp_path)
     (repository.checkout / "tracked.txt").write_text("dirty\n", encoding="utf-8")
 
+    reader = _reader(repository)
+    recorder = MergeRecorder()
+    clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="dirty"):
-        _checkout(repository, _reader(repository), MergeRecorder(), FakeClock())
+        _checkout(repository, reader, recorder, clock)
 
 
 def test_github_merge_adapter_uses_number_and_match_head_without_auto(
@@ -790,7 +834,8 @@ def test_github_reader_adapter_requests_the_status_check_rollup(
 
     snapshots = release._read_pull_requests(RELEASE_BRANCH)
 
-    assert snapshots == () and "statusCheckRollup" in captured[0][-1]
+    assert snapshots == ()
+    assert "statusCheckRollup" in captured[0][-1]
 
 
 def test_github_payload_adapter_parses_complete_release_pr_identity() -> None:

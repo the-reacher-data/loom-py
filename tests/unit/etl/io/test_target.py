@@ -75,12 +75,14 @@ class TestIntoTableModes:
             assert spec.upsert_keys == ("order_id",)
 
     def test_replace_partitions_raises_when_no_cols(self) -> None:
+        table = IntoTable("staging.orders")
         with pytest.raises(ValueError, match="at least one partition column"):
-            IntoTable("staging.orders").replace_partitions()
+            table.replace_partitions()
 
     def test_replace_partition_raises_when_no_pairs(self) -> None:
+        table = IntoTable("staging.orders")
         with pytest.raises(ValueError, match="at least one column=value pair"):
-            IntoTable("staging.orders").replace_partition()
+            table.replace_partition()
 
     def test_write_methods_return_new_instance(self) -> None:
         base = IntoTable("staging.orders")

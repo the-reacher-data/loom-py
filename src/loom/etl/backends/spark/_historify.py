@@ -75,7 +75,13 @@ class SparkHistorifyBackend:
         return frame.drop(*cols)
 
     def dedup_priority(self, frame: DataFrame, subset: list[str], priority_col: str) -> DataFrame:
-        window = Window.partitionBy(subset)
+        # Whole partition, stated explicitly: the max must be taken over every row
+        # of the key group. Spark only defaults to that frame while the window
+        # stays unordered — adding an orderBy later would silently turn it into a
+        # running max and keep the wrong row.
+        window = Window.partitionBy(subset).rowsBetween(
+            Window.unboundedPreceding, Window.unboundedFollowing
+        )
         return (
             frame.withColumn("__max_priority__", F.max(priority_col).over(window))
             .filter(F.col(priority_col) == F.col("__max_priority__"))

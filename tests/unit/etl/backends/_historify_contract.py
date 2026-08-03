@@ -927,11 +927,14 @@ class HistorifyContractTests:
             _snapshot_spec(),
             _Params(run_date=date(2024, 6, 1)),
         )
+        frame = make_frame([{"player_id": 1, "team_id": "RM"}])
+        spec = _snapshot_spec(allow_temporal_rerun=False)
+        params = _Params(run_date=date(2024, 1, 1))
         with pytest.raises(HistorifyTemporalConflictError):
             writer.write(
-                make_frame([{"player_id": 1, "team_id": "RM"}]),
-                _snapshot_spec(allow_temporal_rerun=False),
-                _Params(run_date=date(2024, 1, 1)),
+                frame,
+                spec,
+                params,
             )
 
     def test_backfill_allowed_when_flag_set(
@@ -1116,8 +1119,9 @@ class HistorifyContractTests:
                 {"subscription_id": 1, "plan": "pro", "event_date": date(2024, 1, 1)},
             ]
         )
+        spec = _log_spec()
         with pytest.raises(HistorifyKeyConflictError):
-            writer.write(frame, _log_spec(), None)
+            writer.write(frame, spec, None)
 
     def test_log_same_date_correction_replaces_event(
         self,

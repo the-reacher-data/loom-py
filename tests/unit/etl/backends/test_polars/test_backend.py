@@ -100,7 +100,8 @@ def test_reader_dispatches_clickhouse_source_through_base_reader(tmp_path: Path)
     reader = PolarsSourceReader(tmp_path, clickhouse_reader=reader_impl)
     result = reader.read(spec, None).collect()
 
-    assert reader_impl.calls and reader_impl.calls[0][0] == spec
+    assert reader_impl.calls
+    assert reader_impl.calls[0][0] == spec
     assert result.columns == ["id", "amount"]
 
 
@@ -126,8 +127,9 @@ def test_writer_strict_drops_extra_column(tmp_path: Path) -> None:
 def test_writer_raises_schema_not_found_when_table_missing(tmp_path: Path) -> None:
     writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1]}).lazy()
+    spec = _spec("staging.new", schema_mode=SchemaMode.STRICT)
     with pytest.raises(SchemaNotFoundError):
-        writer.write(frame, _spec("staging.new", schema_mode=SchemaMode.STRICT), None)
+        writer.write(frame, spec, None)
 
 
 def test_writer_overwrite_creates_table_when_missing(tmp_path: Path) -> None:
@@ -238,8 +240,9 @@ def test_writer_append_first_write_requires_create_policy(tmp_path: Path) -> Non
     writer = PolarsTargetWriter(tmp_path)
     frame = pl.DataFrame({"id": [1], "v": [10.0]}).lazy()
 
+    table_ref = TableRef("staging.append_first")
     with pytest.raises(SchemaNotFoundError, match="missing_table_policy='create'"):
-        writer.append(frame, TableRef("staging.append_first"), None)
+        writer.append(frame, table_ref, None)
 
 
 def test_writer_error_policy_blocks_creation_even_with_overwrite_schema(tmp_path: Path) -> None:
@@ -423,8 +426,9 @@ def test_writer_replace_partitions_first_run_missing_partition_cols_raises_loom_
         schema_mode=SchemaMode.OVERWRITE,
     )
 
+    lazy_frame = frame.lazy()
     with pytest.raises(ValueError, match="partition columns.*not found.*year"):
-        writer.write(frame.lazy(), spec, None)
+        writer.write(lazy_frame, spec, None)
 
 
 def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:

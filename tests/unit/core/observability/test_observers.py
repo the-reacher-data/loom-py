@@ -39,9 +39,11 @@ class TestLifecycleEventHelpers:
 
         assert start.kind is EventKind.START
         assert end.kind is EventKind.END
-        assert end.status is not None and end.status.value == "success"
+        assert end.status is not None
+        assert end.status.value == "success"
         assert error.kind is EventKind.ERROR
-        assert error.status is not None and error.status.value == "failure"
+        assert error.status is not None
+        assert error.status.value == "failure"
 
     def test_otel_helpers_use_plain_event_data(self) -> None:
         event = LifecycleEvent.start(

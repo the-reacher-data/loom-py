@@ -75,18 +75,21 @@ class TestValidatePlanCatalogValid:
 class TestValidatePlanCatalogErrors:
     def test_missing_source_raises(self) -> None:
         catalog = StubCatalog({"staging.out": (), "mart.summary": ()})
+        plan = _plan(ReplacePipeline)
         with pytest.raises(ETLCompilationError, match="raw.orders"):
-            validate_plan_catalog(_plan(ReplacePipeline), catalog)
+            validate_plan_catalog(plan, catalog)
 
     def test_missing_non_overwrite_target_raises(self) -> None:
         catalog = StubCatalog({"raw.orders": (), "mart.summary": ()})
+        plan = _plan(ReplacePipeline)
         with pytest.raises(ETLCompilationError, match="staging.out"):
-            validate_plan_catalog(_plan(ReplacePipeline), catalog)
+            validate_plan_catalog(plan, catalog)
 
     def test_error_message_includes_table_name(self) -> None:
         catalog = StubCatalog({"staging.out": (), "mart.summary": ()})
+        plan = _plan(ReplacePipeline)
         with pytest.raises(ETLCompilationError) as exc_info:
-            validate_plan_catalog(_plan(ReplacePipeline), catalog)
+            validate_plan_catalog(plan, catalog)
         message = str(exc_info.value)
         assert "source 'orders'" in message
         assert "raw.orders" in message

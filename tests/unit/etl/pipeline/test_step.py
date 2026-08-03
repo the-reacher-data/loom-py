@@ -91,12 +91,16 @@ def test_params_type_none_for_base_class() -> None:
 
 
 def test_mixing_inline_and_grouped_raises() -> None:
+    inline_source = FromTable("raw.orders")
+    grouped_sources = Sources(customers=FromTable("raw.customers"))
+    out_target = IntoTable("staging.out").replace()
+
     with pytest.raises(TypeError, match="cannot mix inline source attributes"):
 
         class _BadStep(ETLStep[RunParams]):  # NOSONAR
-            orders = FromTable("raw.orders")
-            sources = Sources(customers=FromTable("raw.customers"))
-            target = IntoTable("staging.out").replace()
+            orders = inline_source
+            sources = grouped_sources
+            target = out_target
 
             def execute(self, params: RunParams, *, orders: Any, customers: Any) -> Any:
                 return orders
@@ -106,27 +110,34 @@ def test_execute_raises_not_implemented_on_base() -> None:
     class Bare(ETLStep[RunParams]):
         target = IntoTable("staging.x").replace()
 
+    bare = Bare()
+    params = RunParams(run_date=date(2024, 1, 1), countries=())
     with pytest.raises(NotImplementedError):
-        Bare().execute(RunParams(run_date=date(2024, 1, 1), countries=()))
+        bare.execute(params)
 
 
 def test_streaming_flag_must_be_bool() -> None:
+    out_target = IntoTable("staging.out").replace()
+
     with pytest.raises(TypeError, match="'streaming' must be bool"):
 
         class _BadStreamingType(ETLStep[RunParams]):  # NOSONAR
             streaming = "yes"
-            target = IntoTable("staging.out").replace()
+            target = out_target
 
             def execute(self, params: RunParams) -> Any:
                 return None
 
 
 def test_streaming_name_is_not_treated_as_inline_source() -> None:
+    orders_source = FromTable("raw.orders")
+    out_target = IntoTable("staging.out").replace()
+
     with pytest.raises(TypeError, match="'streaming' must be bool"):
 
         class _BadStreamingSource(ETLStep[RunParams]):  # NOSONAR
-            streaming = FromTable("raw.orders")
-            target = IntoTable("staging.out").replace()
+            streaming = orders_source
+            target = out_target
 
             def execute(self, params: RunParams) -> Any:
                 return None

@@ -106,16 +106,22 @@ def test_flush_runner_suppresses_exception_and_logs_warning(
 
 
 def test_original_exception_is_preserved_when_shutdown_raises_in_finally() -> None:
-    with pytest.raises(ValueError, match="pipeline error"):
+    def _pipeline_fails_then_shuts_down() -> None:
         try:
             raise ValueError("pipeline error")
         finally:
             shutdown_runner(_BrokenShutdown())
 
+    with pytest.raises(ValueError, match="pipeline error"):
+        _pipeline_fails_then_shuts_down()
+
 
 def test_original_exception_is_preserved_when_flush_raises_in_finally() -> None:
-    with pytest.raises(ValueError, match="pipeline error"):
+    def _pipeline_fails_then_flushes() -> None:
         try:
             raise ValueError("pipeline error")
         finally:
             flush_runner(_BrokenFlush())
+
+    with pytest.raises(ValueError, match="pipeline error"):
+        _pipeline_fails_then_flushes()

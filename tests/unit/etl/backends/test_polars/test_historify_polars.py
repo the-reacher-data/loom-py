@@ -89,8 +89,9 @@ class TestAssertUniqueEntityState:
 
     def test_duplicate_raises(self) -> None:
         frame = pl.DataFrame({"player_id": [1, 1], "team_id": ["RM", "RM"]})
+        backend = PolarsHistorifyBackend()
         with pytest.raises(HistorifyKeyConflictError):
-            PolarsHistorifyBackend().assert_unique_keys(frame, ["player_id", "team_id"])
+            backend.assert_unique_keys(frame, ["player_id", "team_id"])
 
 
 class TestAssertNoDateCollisions:
@@ -114,9 +115,11 @@ class TestAssertNoDateCollisions:
                 "event_date": [date(2024, 1, 1), date(2024, 1, 1)],
             }
         )
+        backend = PolarsHistorifyBackend()
+        spec = _log_spec()
         with pytest.raises(HistorifyDateCollisionError):
-            PolarsHistorifyBackend().assert_no_date_collisions(
-                frame, ["subscription_id", "plan"], "event_date", _log_spec()
+            backend.assert_no_date_collisions(
+                frame, ["subscription_id", "plan"], "event_date", spec
             )
 
     def test_skipped_for_timestamp(self) -> None:

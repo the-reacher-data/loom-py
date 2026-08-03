@@ -368,11 +368,12 @@ def test_etl_flow_rejects_non_struct_params_type(tmp_path: Path) -> None:
     class NotAStruct:
         pass
 
+    config_path = str(_write_cfg(tmp_path))
     with pytest.raises((TypeError, ValueError)):
         etl_flow(
             name="bad-etl",
             pipeline=_SamplePipeline,
             params_type=NotAStruct,  # type: ignore[arg-type]
-            config_path=str(_write_cfg(tmp_path)),
+            config_path=config_path,
             source_file=__file__,
         )

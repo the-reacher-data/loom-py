@@ -217,5 +217,6 @@ def test_apply_step_rejects_unknown_shape(
     raw: object,
     message: str,
 ) -> None:
+    ctx = _ctx()
     with pytest.raises(UnsupportedNodeError, match=message):
-        handler("input-stream", raw, 1, _ctx())
+        handler("input-stream", raw, 1, ctx)

@@ -193,16 +193,18 @@ class TestExecutorEventsFailure:
         adapter = _RecordingAdapter()
         compiler = _make_compiler()
         executor = _make_executor(compiler, adapter)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         assert EventKind.EXEC_ERROR in adapter.kinds()
 
     async def test_exec_error_has_failure_status(self) -> None:
         adapter = _RecordingAdapter()
         compiler = _make_compiler()
         executor = _make_executor(compiler, adapter)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert err.status == "failure"
 
@@ -210,8 +212,9 @@ class TestExecutorEventsFailure:
         adapter = _RecordingAdapter()
         compiler = _make_compiler()
         executor = _make_executor(compiler, adapter)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert isinstance(err.error, RuntimeError)
 
@@ -219,15 +222,17 @@ class TestExecutorEventsFailure:
         adapter = _RecordingAdapter()
         compiler = _make_compiler()
         executor = _make_executor(compiler, adapter)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert err.duration_ms is not None
 
     async def test_exception_is_reraised(self) -> None:
         executor = _make_executor(_make_compiler())
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
 
 
 # ---------------------------------------------------------------------------
@@ -239,23 +244,26 @@ class TestExecutorEventsRuleFailure:
     async def test_rule_failure_emits_exec_error(self) -> None:
         adapter = _RecordingAdapter()
         executor = _make_executor(_make_compiler(), adapter)
+        use_case = _RuleFailUseCase()
         with pytest.raises(RuleViolations):
-            await executor.execute(_RuleFailUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         assert EventKind.EXEC_ERROR in adapter.kinds()
 
     async def test_rule_failure_status_is_rule_failure(self) -> None:
         adapter = _RecordingAdapter()
         executor = _make_executor(_make_compiler(), adapter)
+        use_case = _RuleFailUseCase()
         with pytest.raises(RuleViolations):
-            await executor.execute(_RuleFailUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert err.status == "rule_failure"
 
     async def test_rule_failure_carries_rule_violations(self) -> None:
         adapter = _RecordingAdapter()
         executor = _make_executor(_make_compiler(), adapter)
+        use_case = _RuleFailUseCase()
         with pytest.raises(RuleViolations):
-            await executor.execute(_RuleFailUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         err = adapter.by_kind(EventKind.EXEC_ERROR)[0]
         assert isinstance(err.error, RuleViolations)
 
@@ -271,9 +279,10 @@ class TestExecutorEventsNotFound:
         executor = _make_executor(_make_compiler(), adapter)
         repo = AsyncMock()
         repo.get_by_id = AsyncMock(return_value=None)
+        use_case = _LoadUseCase()
         with pytest.raises(NotFound):
             await executor.execute(
-                _LoadUseCase(),
+                use_case,
                 params={"eid": 1},
                 dependencies={Entity: repo},
             )
@@ -338,8 +347,9 @@ class TestStructuredLogs:
         log = _RecordingLogger()
         compiler = UseCaseCompiler(logger=log)
         executor = RuntimeExecutor(compiler, logger=log)
+        use_case = _FailingUseCase()
         with pytest.raises(RuntimeError):
-            await executor.execute(_FailingUseCase(), payload={"value": "x"})
+            await executor.execute(use_case, payload={"value": "x"})
         fields = log.fields_for("[FAIL]")
         assert fields.get("status") == "failure"
 

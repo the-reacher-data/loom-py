@@ -500,7 +500,9 @@ class TestHistorifySpecDataclass:
             spec.keys = ("other",)  # type: ignore[misc]
 
     def test_equality_by_value(self) -> None:
-        assert _make_player_dim()._to_spec() == _make_player_dim()._to_spec()
+        first = _make_player_dim()._to_spec()
+        second = _make_player_dim()._to_spec()
+        assert first == second
 
     def test_inequality_on_different_keys(self) -> None:
         a = IntoHistory("t", keys=("id",), effective_date=params.run_date)._to_spec()
@@ -508,8 +510,10 @@ class TestHistorifySpecDataclass:
         assert a != b
 
     def test_hashable(self) -> None:
-        spec = _make_player_dim()._to_spec()
-        assert hash(spec) == hash(spec)
+        first = _make_player_dim()._to_spec()
+        second = _make_player_dim()._to_spec()
+        assert hash(first) == hash(second)
+        assert len({first, second}) == 1
 
     def test_required_duck_type_fields_present(self) -> None:
         """table_ref and schema_mode required for _is_table_target_spec detection."""

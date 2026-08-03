@@ -44,7 +44,8 @@ def test_manifest_discovery_rejects_invalid_repository_type() -> None:
     sys.modules[module_name] = module
 
     try:
+        engine = ManifestDiscoveryEngine(module_name)
         with pytest.raises(TypeError, match="must implement the Repository protocol"):
-            ManifestDiscoveryEngine(module_name).discover()
+            engine.discover()
     finally:
         sys.modules.pop(module_name, None)

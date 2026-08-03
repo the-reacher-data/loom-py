@@ -70,5 +70,6 @@ def test_table_lineage_store_rejects_unknown_record_types() -> None:
     writer = _RecordingWriter()
     store = TableLineageStore(writer)
 
+    record = cast(Any, _UnknownRecord())
     with pytest.raises(TypeError, match="unrecognised record type"):
-        store.write_record(cast(Any, _UnknownRecord()))
+        store.write_record(record)

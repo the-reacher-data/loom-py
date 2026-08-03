@@ -23,10 +23,12 @@ class TestMaintenanceStepDefinition:
         assert EmptyStep.operations == []
 
     def test_operations_not_list_raises(self) -> None:
+        single_operation = MaintainTable("raw.events").vacuum()
+
         with pytest.raises(TypeError, match="must be a list"):
 
             class _StepNonListOps(MaintenanceStep[None]):  # type: ignore[type-arg]  # NOSONAR
-                operations = MaintainTable("raw.events").vacuum()  # type: ignore[assignment]
+                operations = single_operation  # type: ignore[assignment]
 
     def test_operations_wrong_element_type_raises(self) -> None:
         with pytest.raises(TypeError, match="MaintainTable or MaintainSchema"):

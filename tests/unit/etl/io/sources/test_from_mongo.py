@@ -93,8 +93,9 @@ class TestProject:
         assert spec.projection == ("_id", "status", "total")
 
     def test_project_rejects_dollar_operators(self) -> None:
+        source = FromMongo("orders")
         with pytest.raises(ValueError, match=r"\$"):
-            FromMongo("orders").project("$elemMatch")
+            source.project("$elemMatch")
 
     def test_project_is_immutable(self) -> None:
         base = FromMongo("orders")
@@ -129,8 +130,9 @@ class TestOnExtraFields:
         assert spec.extra_fields_mode == mode
 
     def test_invalid_mode_raises(self) -> None:
+        source = FromMongo("orders")
         with pytest.raises(ValueError, match="not valid"):
-            FromMongo("orders").on_extra_fields("bad")  # type: ignore[arg-type]
+            source.on_extra_fields("bad")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +150,14 @@ class TestBatchSize:
         assert spec.batch_size == 500
 
     def test_batch_size_zero_raises(self) -> None:
+        source = FromMongo("orders")
         with pytest.raises(ValueError, match="between 1 and 50000"):
-            FromMongo("orders").batch_size(0)
+            source.batch_size(0)
 
     def test_batch_size_too_high_raises(self) -> None:
+        source = FromMongo("orders")
         with pytest.raises(ValueError, match="between 1 and 50000"):
-            FromMongo("orders").batch_size(50_001)
+            source.batch_size(50_001)
 
     def test_batch_size_boundary_values(self) -> None:
         assert FromMongo("orders").batch_size(1)._batch_size == 1
@@ -171,8 +175,9 @@ class TestLimit:
         assert spec.limit == 100
 
     def test_limit_zero_raises(self) -> None:
+        source = FromMongo("orders")
         with pytest.raises(ValueError, match=">= 1"):
-            FromMongo("orders").limit(0)
+            source.limit(0)
 
 
 # ---------------------------------------------------------------------------

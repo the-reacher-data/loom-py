@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pytest import fixture
+import pytest
 
 from loom.testing import ScenarioDict
 from tests.integration.fake_repo.product.category.schemas import CreateCategory
@@ -9,7 +9,7 @@ from tests.integration.fake_repo.product.review.schemas import CreateProductRevi
 from tests.integration.fake_repo.product.schemas import CreateProduct
 
 
-@fixture
+@pytest.fixture
 def scenario_one_product() -> ScenarioDict:
     return {
         "product": [
@@ -18,7 +18,7 @@ def scenario_one_product() -> ScenarioDict:
     }
 
 
-@fixture
+@pytest.fixture
 def scenario_two_products() -> ScenarioDict:
     return {
         "product": [
@@ -28,7 +28,7 @@ def scenario_two_products() -> ScenarioDict:
     }
 
 
-@fixture
+@pytest.fixture
 def scenario_catalog_with_price_20() -> ScenarioDict:
     return {
         "product": [
@@ -39,7 +39,7 @@ def scenario_catalog_with_price_20() -> ScenarioDict:
     }
 
 
-@fixture
+@pytest.fixture
 def scenario_one_product_with_details() -> ScenarioDict:
     return {
         "product": [

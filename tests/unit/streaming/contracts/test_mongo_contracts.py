@@ -208,8 +208,9 @@ class TestMongoNormalizationContracts:
             database = None
             id = None
 
+        db_ref = DBRef()
         with pytest.raises(TypeError, match="non-None 'id'"):
-            normalize_bson_value(DBRef())
+            normalize_bson_value(db_ref)
 
     def test_normalize_objectid_without_generation_time_sets_created_at_ms_to_none(self) -> None:
         # Class must be named "ObjectId" so the type-name dispatch routes it to _normalize_objectid.

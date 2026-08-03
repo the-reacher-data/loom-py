@@ -958,7 +958,7 @@ def create_app(
 
     app = create_fastapi_app(
         result,
-        interfaces=tuple(type_i for type_i in discovered.interfaces),
+        interfaces=tuple(discovered.interfaces),
         observability_runtime=observability_runtime,
         title=app_cfg.rest.title,
         version=app_cfg.rest.version,

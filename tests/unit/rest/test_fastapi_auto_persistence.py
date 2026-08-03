@@ -43,8 +43,10 @@ def test_resolve_persistence_honours_explicit_sqlalchemy_backend() -> None:
 
 
 def test_resolve_persistence_rejects_unknown_backend() -> None:
+    ctx = _ctx(persistence={"backend": "mongodb"})
+    models = _no_models()
     with pytest.raises(ValueError, match="Unsupported persistence backend: 'mongodb'"):
-        _resolve_persistence(_ctx(persistence={"backend": "mongodb"}), _no_models())
+        _resolve_persistence(ctx, models)
 
 
 def test_resolve_persistence_selects_dynamodb_backend(
@@ -96,5 +98,7 @@ def test_resolve_persistence_dynamodb_needs_no_database_section(
 
 
 def test_resolve_persistence_dynamodb_requires_config_section() -> None:
+    ctx = _ctx(persistence={"backend": "dynamodb"})
+    models = _no_models()
     with pytest.raises(ConfigError, match="persistence.dynamodb"):
-        _resolve_persistence(_ctx(persistence={"backend": "dynamodb"}), _no_models())
+        _resolve_persistence(ctx, models)

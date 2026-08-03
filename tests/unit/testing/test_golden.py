@@ -181,8 +181,9 @@ class TestSerializePlan:
         assert result["input_binding"] is None
 
     def test_deterministic_same_plan_same_output(self) -> None:
-        plan = self._make_plan()
-        assert serialize_plan(plan) == serialize_plan(plan)
+        first = serialize_plan(self._make_plan())
+        second = serialize_plan(self._make_plan())
+        assert first == second
 
     def test_keys_are_sorted(self) -> None:
         plan = self._make_plan()

@@ -158,10 +158,11 @@ def test_runtime_detects_projection_cycles() -> None:
 @pytest.mark.asyncio
 async def test_runtime_backend_loader_requires_backend_context() -> None:
     plan = build_projection_plan({"base": Projection(loader=_BackendLoader())})
+    objs = [_Obj(id=1, value=0, rel=[])]
     with pytest.raises(RuntimeError, match="requires backend context"):
         await execute_projection_plan(
             plan,
-            objs=[_Obj(id=1, value=0, rel=[])],
+            objs=objs,
             id_attr="id",
             backend_context=None,
         )

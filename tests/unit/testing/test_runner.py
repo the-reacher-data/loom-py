@@ -138,14 +138,16 @@ class TestUseCaseTestRun:
 
 class TestUseCaseTestErrors:
     async def test_rule_violation_propagated(self) -> None:
+        test_case = UseCaseTest(_RuleFailUseCase()).with_input(email="bad@corp.com", name="X")
         with pytest.raises(RuleViolations):
-            await UseCaseTest(_RuleFailUseCase()).with_input(email="bad@corp.com", name="X").run()
+            await test_case.run()
 
     async def test_not_found_propagated(self) -> None:
         repo = AsyncMock()
         repo.get_by_id = AsyncMock(return_value=None)
+        test_case = UseCaseTest(_LoadUseCase()).with_params(eid=99).with_deps(Entity, repo)
         with pytest.raises(NotFound):
-            await UseCaseTest(_LoadUseCase()).with_params(eid=99).with_deps(Entity, repo).run()
+            await test_case.run()
 
 
 # ---------------------------------------------------------------------------

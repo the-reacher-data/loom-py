@@ -80,10 +80,12 @@ class TestClientStepDefinition:
     def test_target_override_rejected_at_definition_time(self) -> None:
         from loom.etl import IntoTable
 
+        table_target = IntoTable("some.table").replace()
+
         with pytest.raises(TypeError, match="target.*must remain IntoClient"):
 
             class _BadStep(ClientStep[SimpleParams]):
-                target = IntoTable("some.table").replace()  # type: ignore[assignment]
+                target = table_target  # type: ignore[assignment]
 
                 def execute(self, params: SimpleParams, *, client: Any) -> None:  # type: ignore[override]
                     pass
@@ -100,8 +102,9 @@ class TestClientStepDefinition:
             pass
 
         step = _AbstractClientStep()
+        params = SimpleParams(value=1)
         with pytest.raises(NotImplementedError):
-            step.execute(SimpleParams(value=1))
+            step.execute(params)
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +239,9 @@ class TestClientStepExecution:
         executor = _make_executor(client_executor=None)
         plan = ETLCompiler().compile_step(_ConcreteClientStep)
 
+        params = SimpleParams(value=1)
         with pytest.raises(TypeError, match="ClientCommandExecutor"):
-            executor.run_step(plan, SimpleParams(value=1))
+            executor.run_step(plan, params)
 
     def test_from_config_runner_runs_client_step_without_missing_executor_error(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
@@ -331,5 +335,7 @@ class TestClientSpecWriteGuards:
         writer = ClickHouseTargetWriter.__new__(ClickHouseTargetWriter)
         writer._client = MagicMock()  # type: ignore[attr-defined]
 
+        spec = ClientSpec()
+        params = SimpleParams(value=1)
         with pytest.raises(TypeError, match="ClientSpec"):
-            writer.write(object(), ClientSpec(), SimpleParams(value=1))
+            writer.write(object(), spec, params)

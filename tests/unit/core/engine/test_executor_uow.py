@@ -139,6 +139,7 @@ async def test_clear_called_after_rollback() -> None:
     uow = _StubUoW()
     executor = _make_executor(uow)
 
+    use_case = _FailingUseCase()
     with (
         patch(
             "loom.core.engine.executor.flush_pending_dispatches", new_callable=AsyncMock
@@ -146,7 +147,7 @@ async def test_clear_called_after_rollback() -> None:
         patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
         pytest.raises(ValueError, match="boom"),
     ):
-        await executor.execute(_FailingUseCase())
+        await executor.execute(use_case)
 
     mock_clear.assert_called_once()
     mock_flush.assert_not_awaited()
@@ -157,8 +158,9 @@ async def test_rollback_called_on_failure() -> None:
     uow = _StubUoW()
     executor = _make_executor(uow)
 
+    use_case = _FailingUseCase()
     with pytest.raises(ValueError):
-        await executor.execute(_FailingUseCase())
+        await executor.execute(use_case)
 
     assert uow.begun
     assert uow.rolled_back
@@ -177,8 +179,9 @@ async def test_dispatches_registered_during_failed_execution_are_cleared() -> No
             add_pending_dispatch(lambda: flushed.append("ran"))
             raise RuntimeError("fail")
 
+    use_case = _DispatchAndFail()
     with pytest.raises(RuntimeError):
-        await executor.execute(_DispatchAndFail())
+        await executor.execute(use_case)
 
     assert flushed == [], "dispatch must not run after rollback"
 

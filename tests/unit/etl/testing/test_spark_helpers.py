@@ -163,5 +163,7 @@ class TestSparkStepRunner:
             spark_testing.ETLExecutor, "run_step", lambda _self, _plan, _params: None
         )
 
+        step_type = type("DummyStep", (), {})
+        params = object()
         with pytest.raises(RuntimeError, match="Step produced no output"):
-            runner.run(type("DummyStep", (), {}), object())
+            runner.run(step_type, params)

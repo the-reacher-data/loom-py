@@ -209,8 +209,9 @@ class TestCompileWithInput:
         assert "cmd" not in names
 
     def test_input_type_must_implement_from_payload(self) -> None:
+        compiler = UseCaseCompiler()
         with pytest.raises(CompilationError, match="must implement from_payload"):
-            UseCaseCompiler().compile(_InputWithoutFromPayloadUseCase)
+            compiler.compile(_InputWithoutFromPayloadUseCase)
 
 
 # ---------------------------------------------------------------------------
@@ -339,8 +340,9 @@ class TestCompilationErrors:
             ) -> str:
                 return "ok"
 
+        compiler = UseCaseCompiler()
         with pytest.raises(CompilationError, match="only one Input"):
-            UseCaseCompiler().compile(_TwoInputs)
+            compiler.compile(_TwoInputs)
 
     def test_load_by_unknown_param_raises(self) -> None:
         class _BadLoad(UseCase[Any, str]):
@@ -350,12 +352,14 @@ class TestCompilationErrors:
             ) -> str:
                 return "ok"
 
+        compiler = UseCaseCompiler()
         with pytest.raises(CompilationError, match="nonexistent"):
-            UseCaseCompiler().compile(_BadLoad)
+            compiler.compile(_BadLoad)
 
     def test_abstract_execute_raises(self) -> None:
+        compiler = UseCaseCompiler()
         with pytest.raises(CompilationError, match="must override execute"):
-            UseCaseCompiler().compile(UseCase)  # type: ignore[type-abstract]
+            compiler.compile(UseCase)  # type: ignore[type-abstract]
 
     def test_load_by_references_input_param_raises(self) -> None:
         """Input binding params are not primitive params — LoadById cannot ref them."""
@@ -368,8 +372,9 @@ class TestCompilationErrors:
             ) -> str:
                 return "ok"
 
+        compiler = UseCaseCompiler()
         with pytest.raises(CompilationError, match="'cmd' not found"):
-            UseCaseCompiler().compile(_BadRef)
+            compiler.compile(_BadRef)
 
 
 # ---------------------------------------------------------------------------
