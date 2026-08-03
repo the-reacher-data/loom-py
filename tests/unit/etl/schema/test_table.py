@@ -23,8 +23,10 @@ class TestTableRefAndColumns:
         assert bound.name == "year"
 
     def test_table_ref_equality_hash_and_repr(self) -> None:
-        assert TableRef("raw.orders") == TableRef("raw.orders")
-        assert TableRef("raw.orders") != TableRef("raw.customers")
+        orders = TableRef("raw.orders")
+        same_orders = TableRef("raw.orders")
+        assert orders == same_orders
+        assert orders != TableRef("raw.customers")
         assert len({TableRef("raw.orders"), TableRef("raw.orders"), TableRef("raw.customers")}) == 2
         assert repr(TableRef("raw.orders")) == "TableRef('raw.orders')"
 
@@ -56,8 +58,11 @@ class TestPredicatesAndHashes:
         assert isinstance(bound_pred.left, ColumnRef)
 
     def test_hash_and_repr_contract(self) -> None:
+        """Equality cannot be asserted directly: ``__eq__`` builds a DSL predicate."""
         table = TableRef("raw.orders")
-        assert hash(col("year")) == hash(col("year"))
-        assert hash(col("year")) != hash(col("month"))
-        assert hash(table.c.year) == hash(table.c.year)
+        year, same_year = col("year"), col("year")
+        bound_year, same_bound_year = table.c.year, table.c.year
+        assert hash(year) == hash(same_year)
+        assert hash(year) != hash(col("month"))
+        assert hash(bound_year) == hash(same_bound_year)
         assert repr(col("year")) == "col('year')"
