@@ -215,13 +215,17 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           EXPECTED_OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Safety net only: the helper merges as soon as the release PR checks
+          # pass. Override with the RELEASE_MERGE_TIMEOUT_SECONDS variable.
+          MERGE_TIMEOUT_SECONDS: ${{ vars.RELEASE_MERGE_TIMEOUT_SECONDS || '1800' }}
         shell: bash
         run: |
           set -euo pipefail
           RELEASE_SHA=$(python scripts/release/checkout_merged_release.py \
             --release-branch "docs/release-v${VERSION}" \
             --expected-version "${VERSION}" \
-            --expected-owner "${EXPECTED_OWNER}")
+            --expected-owner "${EXPECTED_OWNER}" \
+            --timeout-seconds "${MERGE_TIMEOUT_SECONDS}")
           echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Store release notes

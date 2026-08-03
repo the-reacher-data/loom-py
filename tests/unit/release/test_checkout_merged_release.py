@@ -218,6 +218,7 @@ def _snapshot(**overrides: Any) -> release.PullRequestSnapshot:
         "files": EXPECTED_FILES,
         "merge_state_status": "CLEAN",
         "merge_sha": "b" * 40,
+        "check_outcomes": (),
     }
     values.update(overrides)
     expected_fields = set(values)
@@ -385,6 +386,70 @@ def test_pending_pr_is_polled_until_clean_then_merged(
         3,
         [(clean.number, repository.head_sha)],
     )
+
+
+def test_unstable_pr_is_merged_once_every_reported_check_passed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _create_remote_repository(tmp_path, merge_on_master=False)
+    unstable = _snapshot(
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="UNSTABLE",
+        merge_sha=None,
+        check_outcomes=(release.CheckOutcome.PASSED, release.CheckOutcome.PASSED),
+    )
+    merged = _snapshot(head_sha=repository.head_sha, merge_sha=repository.merge_sha)
+    merger = MergeRecorder(repository)
+    _install_fake_uv(tmp_path, monkeypatch)
+
+    resolved_sha = _checkout(repository, _reader(repository, unstable, merged), merger, FakeClock())
+
+    assert (resolved_sha, merger.calls) == (
+        repository.merge_sha,
+        [(unstable.number, repository.head_sha)],
+    )
+
+
+@pytest.mark.parametrize(
+    "check_outcomes",
+    [
+        pytest.param((), id="no-check-reported"),
+        pytest.param(
+            (release.CheckOutcome.PASSED, release.CheckOutcome.PENDING),
+            id="check-still-running",
+        ),
+        pytest.param(
+            (release.CheckOutcome.PASSED, release.CheckOutcome.FAILED),
+            id="check-failed",
+        ),
+    ],
+)
+def test_unstable_pr_is_never_merged_unless_all_checks_passed(
+    tmp_path: Path,
+    check_outcomes: tuple[release.CheckOutcome, ...],
+) -> None:
+    repository = _create_remote_repository(tmp_path)
+    unstable = _snapshot(
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="UNSTABLE",
+        merge_sha=None,
+        check_outcomes=check_outcomes,
+    )
+    merger = MergeRecorder()
+
+    with pytest.raises(release.ReleaseCheckoutError, match="timed out"):
+        _checkout(
+            repository,
+            _reader(repository, unstable),
+            merger,
+            FakeClock(),
+            timeout_seconds=2.0,
+        )
+
+    assert merger.calls == []
 
 
 @pytest.mark.parametrize("candidate_count", [0, 2])
@@ -705,6 +770,29 @@ def test_github_merge_adapter_uses_number_and_match_head_without_auto(
     ]
 
 
+def test_github_reader_adapter_requests_the_status_check_rollup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str]] = []
+
+    def run(
+        command: Sequence[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert (check, capture_output, text) == (True, True, True)
+        captured.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "[]", "")
+
+    monkeypatch.setattr(release.subprocess, "run", run)
+
+    snapshots = release._read_pull_requests(RELEASE_BRANCH)
+
+    assert snapshots == () and "statusCheckRollup" in captured[0][-1]
+
+
 def test_github_payload_adapter_parses_complete_release_pr_identity() -> None:
     payload = {
         "number": 89,
@@ -722,6 +810,61 @@ def test_github_payload_adapter_parses_complete_release_pr_identity() -> None:
     snapshot = release._snapshot_from_payload(payload)
 
     assert snapshot == _snapshot(state="OPEN", merge_sha=None)
+
+
+def test_github_payload_adapter_normalises_every_reported_status_check() -> None:
+    payload = {
+        "number": 89,
+        "state": "OPEN",
+        "baseRefName": "master",
+        "headRefName": RELEASE_BRANCH,
+        "headRepositoryOwner": {"login": EXPECTED_OWNER},
+        "headRefOid": "a" * 40,
+        "changedFiles": 3,
+        "files": [{"path": path} for path in EXPECTED_FILES],
+        "mergeStateStatus": "UNSTABLE",
+        "mergeCommit": None,
+        "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
+            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": ""},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"__typename": "StatusContext", "context": "codecov/patch", "state": "SUCCESS"},
+            {"__typename": "StatusContext", "context": "codecov/project", "state": "PENDING"},
+            {"__typename": "StatusContext", "context": "legacy/gate", "state": "ERROR"},
+        ],
+    }
+
+    snapshot = release._snapshot_from_payload(payload)
+
+    assert snapshot.check_outcomes == (
+        release.CheckOutcome.PASSED,
+        release.CheckOutcome.PASSED,
+        release.CheckOutcome.PENDING,
+        release.CheckOutcome.FAILED,
+        release.CheckOutcome.PASSED,
+        release.CheckOutcome.PENDING,
+        release.CheckOutcome.FAILED,
+    )
+
+
+def test_github_payload_adapter_rejects_an_unknown_status_check_type() -> None:
+    payload = {
+        "number": 89,
+        "state": "OPEN",
+        "baseRefName": "master",
+        "headRefName": RELEASE_BRANCH,
+        "headRepositoryOwner": {"login": EXPECTED_OWNER},
+        "headRefOid": "a" * 40,
+        "changedFiles": 3,
+        "files": [{"path": path} for path in EXPECTED_FILES],
+        "mergeStateStatus": "UNSTABLE",
+        "mergeCommit": None,
+        "statusCheckRollup": [{"__typename": "DeploymentStatus", "state": "SUCCESS"}],
+    }
+
+    with pytest.raises(release.ReleaseCheckoutError, match="unknown status check type"):
+        release._snapshot_from_payload(payload)
 
 
 def test_github_payload_adapter_rejects_truncated_file_list() -> None:

@@ -11,6 +11,7 @@ import time
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -19,10 +20,21 @@ _EXPECTED_BASE_REF = "master"
 _ALLOWED_RELEASE_FILES = frozenset({"CHANGELOG.md", "pyproject.toml", "uv.lock"})
 _ALLOWED_UNTRACKED_FILES = frozenset({"CHANGELOG_RELEASE.md"})
 _PENDING_MERGE_STATES = frozenset({"BLOCKED", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"})
+_PASSED_CHECK_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+_PENDING_STATUS_STATES = frozenset({"PENDING", "EXPECTED"})
+_COMPLETED_CHECK_STATUS = "COMPLETED"
 
 
 class ReleaseCheckoutError(RuntimeError):
     """Raised when a release commit cannot be resolved and validated safely."""
+
+
+class CheckOutcome(StrEnum):
+    """Normalised outcome of a single status check reported on a commit."""
+
+    PASSED = "PASSED"
+    PENDING = "PENDING"
+    FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -38,6 +50,7 @@ class PullRequestSnapshot:
     files: tuple[str, ...]
     merge_state_status: str
     merge_sha: str | None
+    check_outcomes: tuple[CheckOutcome, ...] = ()
 
 
 PullRequestReader = Callable[[str], Sequence[PullRequestSnapshot]]
@@ -166,6 +179,21 @@ def _read_one_validated_snapshot(
     return snapshot, head_sha
 
 
+def _is_ready_to_merge(merge_state: str, check_outcomes: Sequence[CheckOutcome]) -> bool:
+    if merge_state == "CLEAN":
+        return True
+    if merge_state != "UNSTABLE":
+        return False
+    # GitHub reports UNSTABLE while the head commit has no successful legacy
+    # commit status. That is the permanent state of a release PR: Codecov only
+    # reports through the Checks API, and no workflow runs on a branch pushed by
+    # GITHUB_TOKEN, so no coverage is ever uploaded for it. Merging is still
+    # safe as long as every check that did report has passed.
+    return bool(check_outcomes) and all(
+        outcome is CheckOutcome.PASSED for outcome in check_outcomes
+    )
+
+
 def _wait_for_merge(
     release_branch: str,
     expected_owner: str,
@@ -215,7 +243,7 @@ def _wait_for_merge(
             raise ReleaseCheckoutError("release PR base advanced after the release snapshot")
         if merge_state == "DRAFT":
             raise ReleaseCheckoutError("release PR is a draft and cannot be merged")
-        if merge_state == "CLEAN" and not merge_requested:
+        if not merge_requested and _is_ready_to_merge(merge_state, snapshot.check_outcomes):
             expected_base_sha = validate_pull_request_head(head_sha)
             merge_pull_request(snapshot.number, head_sha)
             merge_requested = True
@@ -360,7 +388,13 @@ def checkout_merged_release(
     monotonic: MonotonicClock = time.monotonic,
     sleep: Sleeper = time.sleep,
 ) -> str:
-    """Merge if needed, then check out and validate the remote merge commit."""
+    """Merge if needed, then check out and validate the remote merge commit.
+
+    The pull request is merged when GitHub reports it as CLEAN, or as UNSTABLE
+    with every reported status check passing. A release PR never reaches CLEAN
+    because its head commit carries no legacy commit status, so requiring CLEAN
+    alone would always time out.
+    """
 
     _ensure_checkout_is_clean(repository)
 
@@ -430,6 +464,44 @@ def _extract_string(payload: Mapping[Any, Any], key: str, *, context: str) -> st
     return value
 
 
+def _status_context_outcome(payload: Mapping[Any, Any]) -> CheckOutcome:
+    state = _extract_string(payload, "state", context="status check state").upper()
+    if state == "SUCCESS":
+        return CheckOutcome.PASSED
+    if state in _PENDING_STATUS_STATES:
+        return CheckOutcome.PENDING
+    return CheckOutcome.FAILED
+
+
+def _check_run_outcome(payload: Mapping[Any, Any]) -> CheckOutcome:
+    status = _extract_string(payload, "status", context="check run status").upper()
+    if status != _COMPLETED_CHECK_STATUS:
+        return CheckOutcome.PENDING
+    conclusion = _extract_string(payload, "conclusion", context="check run conclusion").upper()
+    if conclusion in _PASSED_CHECK_CONCLUSIONS:
+        return CheckOutcome.PASSED
+    return CheckOutcome.FAILED
+
+
+def _check_outcome_from_payload(payload: object) -> CheckOutcome:
+    if not isinstance(payload, Mapping):
+        raise ReleaseCheckoutError("GitHub returned an invalid status check")
+    kind = _extract_string(payload, "__typename", context="status check type")
+    if kind == "StatusContext":
+        return _status_context_outcome(payload)
+    if kind == "CheckRun":
+        return _check_run_outcome(payload)
+    raise ReleaseCheckoutError(f"GitHub returned an unknown status check type {kind!r}")
+
+
+def _check_outcomes_from_payload(payload: object) -> tuple[CheckOutcome, ...]:
+    if payload is None:
+        return ()
+    if not isinstance(payload, list):
+        raise ReleaseCheckoutError("GitHub returned an invalid status check list")
+    return tuple(_check_outcome_from_payload(entry) for entry in payload)
+
+
 def _snapshot_from_payload(payload: object) -> PullRequestSnapshot:
     if not isinstance(payload, Mapping):
         raise ReleaseCheckoutError("GitHub returned an invalid release PR")
@@ -476,6 +548,7 @@ def _snapshot_from_payload(payload: object) -> PullRequestSnapshot:
             context="release PR merge state",
         ),
         merge_sha=merge_sha,
+        check_outcomes=_check_outcomes_from_payload(payload.get("statusCheckRollup")),
     )
 
 
@@ -491,7 +564,7 @@ def _read_pull_requests(release_branch: str) -> Sequence[PullRequestSnapshot]:
         "--json",
         (
             "number,state,baseRefName,headRefName,headRepositoryOwner,headRefOid,changedFiles,"
-            "files,mergeStateStatus,mergeCommit"
+            "files,mergeStateStatus,mergeCommit,statusCheckRollup"
         ),
     ]
     try:
