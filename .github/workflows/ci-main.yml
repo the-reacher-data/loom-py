@@ -66,6 +66,22 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Require SonarQube analysis configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${SONAR_TOKEN}" ] || missing="${missing} SONAR_TOKEN(secret)"
+          [ -n "${SONAR_HOST_URL}" ] || missing="${missing} SONAR_HOST_URL(secret)"
+          [ -n "${SONAR_PROJECT_KEY}" ] || missing="${missing} SONAR_PROJECT_KEY(variable)"
+          if [ -n "${missing}" ]; then
+            echo "SonarQube scan cannot run, missing:${missing}"
+            echo "Without it the scan is skipped and the only analysis left is"
+            echo "SonarCloud Automatic Analysis, which ignores sonar-project.properties:"
+            echo "exclusions and issue suppressions silently stop applying."
+            exit 1
+          fi
+
       - name: SonarQube scan
         if: ${{ env.SONAR_TOKEN != '' && env.SONAR_HOST_URL != '' && env.SONAR_PROJECT_KEY != '' }}
         uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703 # v5
