@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-from pytest import fixture
+import pytest
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -14,7 +14,7 @@ from tests.integration.fake_repo.product.relations import ProductCategoryLink
 from tests.integration.fake_repo.product.review.model import ProductReview
 
 
-@fixture
+@pytest.fixture
 async def integration_context(tmp_path: Path) -> AsyncGenerator[RepositoryIntegrationHarness, None]:
     reset_registry()
     compile_all(Category, ProductReview, ProductCategoryLink, Product)

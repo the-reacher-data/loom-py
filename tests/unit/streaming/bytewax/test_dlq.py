@@ -108,7 +108,8 @@ def test_send_batch_to_dlq_swallows_per_item_errors(
         KafkaDeliveryError("broker down"),
     )
 
-    assert warnings and warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
+    assert warnings
+    assert warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
 
 
 def test_send_error_batch_to_dlq_handles_original_and_missing_messages() -> None:
@@ -195,7 +196,8 @@ def test_send_error_batch_to_dlq_swallows_per_item_errors(
         KafkaDeliveryError("broker down"),
     )
 
-    assert warnings and warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
+    assert warnings
+    assert warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
 
 
 def test_send_decode_error_batch_to_dlq_uses_original_headers_and_trace_id() -> None:
@@ -256,4 +258,5 @@ def test_send_decode_error_batch_to_dlq_swallows_per_item_errors(
         KafkaDeliveryError("broker down"),
     )
 
-    assert warnings and warnings[0]["extra"]["dlq_topic"] == "orders.dlq"
+    assert warnings
+    assert warnings[0]["extra"]["dlq_topic"] == "orders.dlq"

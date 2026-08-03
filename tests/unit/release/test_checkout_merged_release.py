@@ -790,7 +790,8 @@ def test_github_reader_adapter_requests_the_status_check_rollup(
 
     snapshots = release._read_pull_requests(RELEASE_BRANCH)
 
-    assert snapshots == () and "statusCheckRollup" in captured[0][-1]
+    assert snapshots == ()
+    assert "statusCheckRollup" in captured[0][-1]
 
 
 def test_github_payload_adapter_parses_complete_release_pr_identity() -> None:

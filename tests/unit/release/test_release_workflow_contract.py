@@ -75,9 +75,8 @@ def test_syncs_project_version_only_when_creating_a_new_release_pr() -> None:
         )
     ]
 
-    assert sync_steps == [create_step_index] and "steps.pr-state.outputs.create == 'true'" in cast(
-        str, create_step["if"]
-    )
+    assert sync_steps == [create_step_index]
+    assert "steps.pr-state.outputs.create == 'true'" in cast(str, create_step["if"])
 
 
 def test_regenerates_and_commits_lockfile_only_when_creating_release_pr() -> None:
@@ -94,11 +93,9 @@ def test_regenerates_and_commits_lockfile_only_when_creating_release_pr() -> Non
         "release metadata staging",
     )
 
-    assert (
-        uv_lock_index < git_add_index
-        and "uv.lock" in lines[git_add_index].split()
-        and "GH_TOKEN" not in cast(dict[str, Any], create_step.get("env", {}))
-    )
+    assert uv_lock_index < git_add_index
+    assert "uv.lock" in lines[git_add_index].split()
+    assert "GH_TOKEN" not in cast(dict[str, Any], create_step.get("env", {}))
 
 
 def test_validates_release_after_pr_preparation_and_before_build() -> None:
@@ -120,7 +117,8 @@ def test_release_merge_wait_timeout_is_explicit_and_configurable() -> None:
 def test_workflow_delegates_all_merge_decisions_to_validated_helper() -> None:
     run_scripts = "\n".join(cast(str, step.get("run", "")) for step in _steps())
 
-    assert "gh pr merge" not in run_scripts and "--auto" not in run_scripts
+    assert "gh pr merge" not in run_scripts
+    assert "--auto" not in run_scripts
 
 
 def test_build_uses_frozen_lockfile_and_checks_tracked_cleanliness_afterwards() -> None:
@@ -136,7 +134,8 @@ def test_build_uses_frozen_lockfile_and_checks_tracked_cleanliness_afterwards() 
         "post-build tracked-cleanliness check",
     )
 
-    assert "--frozen" in shlex.split(lines[build_index]) and build_index < cleanliness_index
+    assert "--frozen" in shlex.split(lines[build_index])
+    assert build_index < cleanliness_index
 
 
 def test_passes_validated_release_sha_to_both_tag_commands() -> None:
@@ -151,30 +150,27 @@ def test_automatic_and_manual_releases_share_stable_concurrency_group() -> None:
     concurrency = cast(dict[str, Any], workflow["concurrency"])
     group = cast(str, concurrency["group"])
 
-    assert "github.ref" not in group and group == "release-${{ github.workflow }}"
+    assert "github.ref" not in group
+    assert group == "release-${{ github.workflow }}"
 
 
 def test_regression_v0160_attempt_two_checks_remote_immutable_tag_exactly() -> None:
     tag_script = _step_run("Create immutable version tag")
 
-    assert (
-        "git/matching-refs/tags/v${VERSION}" in tag_script
-        and "REMOTE_VERSION_SHA" in tag_script
-        and '"${REMOTE_VERSION_SHA}" != "${RELEASE_SHA}"' in tag_script
-        and "exit 1" in tag_script
-        and 'ref="${TAG_REF}"' in tag_script
-    )
+    assert "git/matching-refs/tags/v${VERSION}" in tag_script
+    assert "REMOTE_VERSION_SHA" in tag_script
+    assert '"${REMOTE_VERSION_SHA}" != "${RELEASE_SHA}"' in tag_script
+    assert "exit 1" in tag_script
+    assert 'ref="${TAG_REF}"' in tag_script
 
 
 def test_updates_floating_major_tag_without_remote_delete_window() -> None:
     tag_script = _step_run("Update floating major tag")
 
-    assert (
-        "--method PATCH" in tag_script
-        and '-f sha="${RELEASE_SHA}"' in tag_script
-        and "-F force=true" in tag_script
-        and "--method DELETE" not in tag_script
-    )
+    assert "--method PATCH" in tag_script
+    assert '-f sha="${RELEASE_SHA}"' in tag_script
+    assert "-F force=true" in tag_script
+    assert "--method DELETE" not in tag_script
 
 
 def test_build_and_publish_jobs_use_minimum_permissions_and_no_persisted_credentials() -> None:
@@ -244,12 +240,11 @@ def test_manual_release_is_restricted_to_master_checkout() -> None:
 def test_restores_only_known_release_action_side_effects_before_pr_handling() -> None:
     restore_script = _step_run("Restore action side effects")
 
+    assert "pyproject.toml|uv.lock" in restore_script
     assert (
-        "pyproject.toml|uv.lock" in restore_script
-        and "git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock"
-        in restore_script
-        and "unexpected tracked file" in restore_script
+        "git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock" in restore_script
     )
+    assert "unexpected tracked file" in restore_script
 
 
 def test_lockfile_validation_runs_only_in_unprivileged_build_job() -> None:
@@ -272,7 +267,5 @@ def test_automatic_release_checkout_is_bound_to_triggering_merge_sha() -> None:
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
     helper_script = _step_run("Check out validated release commit")
 
-    assert (
-        "github.event.pull_request.merge_commit_sha" in workflow_text
-        and "--expected-base-sha" not in helper_script
-    )
+    assert "github.event.pull_request.merge_commit_sha" in workflow_text
+    assert "--expected-base-sha" not in helper_script

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import pytest
 from botocore.exceptions import ClientError
-from pytest import fixture
 
 from loom.core.model import BaseModel, Field, Float, Integer, String
 
@@ -94,11 +94,11 @@ class FakeClient:
         )
 
 
-@fixture
+@pytest.fixture
 def product_model() -> type[Product]:
     return Product
 
 
-@fixture
+@pytest.fixture
 def fake_client() -> FakeClient:
     return FakeClient(key_name="id")

@@ -177,7 +177,7 @@ def _build_logical_app(db_path: Path) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     app = _build_app(tmp_path / "auto_test.sqlite")
     with TestClient(app) as c:

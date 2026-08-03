@@ -56,12 +56,12 @@ assert isinstance(StubMaintainer(), DeltaTableMaintainer), (
 )
 
 
-@pytest.fixture()
+@pytest.fixture
 def stub_maintainer() -> StubMaintainer:
     return StubMaintainer()
 
 
-@pytest.fixture()
+@pytest.fixture
 def simple_config(tmp_path: Any) -> StorageConfig:
     """StorageConfig with a PrefixLocator rooted at a tmp dir."""
     return StorageConfig(
@@ -69,7 +69,7 @@ def simple_config(tmp_path: Any) -> StorageConfig:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def routed_config(tmp_path: Any) -> StorageConfig:
     """StorageConfig with explicit table routes under raw.* and staging.*."""
     return StorageConfig(
@@ -87,7 +87,7 @@ def routed_config(tmp_path: Any) -> StorageConfig:
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def maintenance_config(tmp_path: Any) -> StorageConfig:
     """StorageConfig with a maintenance block."""
     return StorageConfig(

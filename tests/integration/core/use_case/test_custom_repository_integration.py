@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from pytest import mark
+import pytest
 
 from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.di.container import LoomContainer
@@ -129,7 +129,7 @@ def _builder_logical_repo_module(
 
 
 class TestCustomRepositoryIntegration:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_main_repo_uses_registered_custom_repository(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -152,7 +152,7 @@ class TestCustomRepositoryIntegration:
 
         assert created.name == "keyboard"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_constructor_contract_resolves_custom_repository(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -176,7 +176,7 @@ class TestCustomRepositoryIntegration:
         assert found is not None
         assert found.name == "Desk"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_job_constructor_contract_resolves_custom_repository(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -199,7 +199,7 @@ class TestCustomRepositoryIntegration:
         assert isinstance(job._product_repo, ProductRepository)
         assert product_id == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_main_repo_can_resolve_custom_repository_for_non_base_model(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -218,7 +218,7 @@ class TestCustomRepositoryIntegration:
         assert found is not None
         assert found.state == "done"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_main_repo_builder_can_resolve_custom_repository_dependencies(
         self,
         integration_context: RepositoryIntegrationHarness,

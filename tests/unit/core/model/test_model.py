@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import msgspec
-from pytest import raises
+import pytest
 
 from loom.core.model import (
     BaseModel,
@@ -67,7 +67,7 @@ class TestStructBehavior:
         # Non-default column fields are present
         assert set(data.keys()) == {"id", "name", "price", "active"}
         # Frozen
-        with raises(AttributeError):
+        with pytest.raises(AttributeError):
             p.name = "y"
 
     def test_camel_rename_and_loaded_fields(self) -> None:

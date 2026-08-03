@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
-from pytest import fixture, mark
+import pytest
 
 from loom.core.cache import (
     CacheConfig,
@@ -22,7 +22,7 @@ from tests.integration.fake_repo.product.review.schemas import CreateProductRevi
 from tests.integration.fake_repo.product.schemas import CreateProduct, UpdateProduct
 
 
-@fixture
+@pytest.fixture
 async def cached_integration_repo(
     integration_context: RepositoryIntegrationHarness,
     cache_backend_kind: str,
@@ -102,7 +102,7 @@ async def cached_integration_repo(
         await counter_gateway.close()
 
 
-@fixture(params=["memory", "redis-fake"])
+@pytest.fixture(params=["memory", "redis-fake"])
 def cache_backend_kind(request: Any) -> str:
     return cast(str, request.param)
 
@@ -118,7 +118,7 @@ class TestCacheIntegration:
         mocked = AsyncMock(wraps=original)
         return patch.object(base_repo, method_name, mocked)
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_get_by_id_cached_and_invalidated_on_update(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
@@ -150,7 +150,7 @@ class TestCacheIntegration:
             assert after_update.name == "seed-updated"
             assert get_by_id_spy.await_count == 2
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_paginated_cache_hit_and_invalidation_on_create(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
@@ -176,7 +176,7 @@ class TestCacheIntegration:
             assert third.total_count == 4
             assert list_spy.await_count == 2
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_delete_invalidates_cached_entity(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],
@@ -201,7 +201,7 @@ class TestCacheIntegration:
 
 
 class TestRelatedInvalidationIntegration:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_with_details_profile_is_invalidated_from_review_repository(
         self,
         cached_integration_repo: CachedRepository[Product, CreateProduct, UpdateProduct, int],

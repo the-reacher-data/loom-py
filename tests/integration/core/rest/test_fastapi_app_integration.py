@@ -5,12 +5,11 @@ from pathlib import Path
 import prometheus_client
 import pytest
 from fastapi.testclient import TestClient
-from pytest import MonkeyPatch, mark
 
 from tests.integration.fake_repo.main import create_app_from_config
 
 
-@mark.parametrize(
+@pytest.mark.parametrize(
     "config_relpath",
     [
         "tests/integration/fake_repo/config/conf.modules.yaml",
@@ -19,7 +18,7 @@ from tests.integration.fake_repo.main import create_app_from_config
 )
 def test_fake_repo_app_bootstrap_without_metrics(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
     config_relpath: str,
 ) -> None:
     db_path = tmp_path / "fake-repo-app.sqlite"
@@ -79,7 +78,7 @@ def test_fake_repo_app_bootstrap_without_metrics(
 
 def test_fake_repo_app_bootstrap_with_metrics(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db_path = tmp_path / "fake-repo-app.sqlite"
     database_url = f"sqlite+aiosqlite:///{db_path}"
@@ -140,7 +139,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
         assert metrics_trailing_slash_response.status_code == 404
 
 
-@mark.parametrize(
+@pytest.mark.parametrize(
     "config_relpath",
     [
         "tests/integration/fake_repo/config/conf.modules.yaml",
@@ -149,7 +148,7 @@ def test_fake_repo_app_bootstrap_with_metrics(
 )
 def test_fake_repo_list_query_cursor_and_profile_controls(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
     config_relpath: str,
 ) -> None:
     db_path = tmp_path / "fake-repo-query.sqlite"

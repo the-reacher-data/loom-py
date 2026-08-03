@@ -353,7 +353,7 @@ class TestBootstrapWorkerTaskRegistration:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def isolated_celery_signals() -> Any:
     """Save and restore Celery worker signal receivers around each test.
 

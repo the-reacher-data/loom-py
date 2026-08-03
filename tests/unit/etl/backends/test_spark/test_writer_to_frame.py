@@ -46,7 +46,8 @@ def test_to_frame_uses_spark_create_dataframe(tmp_path: Path) -> None:
 
     frame = writer.to_frame([record])
     assert isinstance(frame, dict)
-    assert "rows" in frame and "schema" in frame
+    assert "rows" in frame
+    assert "schema" in frame
     assert len(spark.calls) == 1
     rows, schema = next(iter(spark.calls))
     assert rows[0]["status"] == "success"

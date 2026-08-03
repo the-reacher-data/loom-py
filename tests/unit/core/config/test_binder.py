@@ -62,7 +62,7 @@ class _MixedTarget:
         self.label = label
 
 
-@pytest.fixture()
+@pytest.fixture
 def binder() -> StructBinder:
     return StructBinder()
 

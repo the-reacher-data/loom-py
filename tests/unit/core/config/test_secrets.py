@@ -16,7 +16,7 @@ from loom.core.config.resolver import ConfigResolver
 from loom.core.config.secrets import SecretsManagerResolver
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_client() -> MagicMock:
     client = MagicMock()
     client.get_secret_value.return_value = {"SecretString": "mysecret"}

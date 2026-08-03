@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, TypeVar
 
 import msgspec
-from pytest import fixture, mark, raises
+import pytest
 
 from loom.core.cache import (
     CacheConfig,
@@ -339,12 +339,12 @@ class _FqAutoParentRepo(_FakeRepository):
     model = _FqAutoParent
 
 
-@fixture
+@pytest.fixture
 def cache_config() -> CacheConfig:
     return CacheConfig(enabled=True, default_ttl=100, default_list_ttl=50)
 
 
-@fixture
+@pytest.fixture
 def wrapped_repository(
     cache_config: CacheConfig,
 ) -> CachedRepository[_EntityOut, _Create, _Update, int]:
@@ -362,7 +362,7 @@ class TestCachedDecorator:
 
 
 class TestCachedRepository:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_get_by_id_uses_cache_aside(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -380,7 +380,7 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.get_calls == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_custom_method_cache_for_developer_function(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -397,7 +397,7 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_delete_invalidates_entity_cache(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -415,7 +415,7 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.get_calls == 2
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_custom_method_cache_is_invalidated_by_external_event(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -442,7 +442,7 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.custom_calls == 2
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_paginated_refills_missing_entity_from_repository(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -474,7 +474,7 @@ class TestCachedRepository:
         assert repo.list_calls == 1
         assert repo.get_calls == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_with_query_offset_uses_cache_aside(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -492,7 +492,7 @@ class TestCachedRepository:
         assert isinstance(repo, _FakeRepository)
         assert repo.query_calls == 1
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_list_with_query_cursor_caches_only_first_page(
         self,
         wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
@@ -535,7 +535,7 @@ class TestDependencySpecs:
         cache = _MemoryCacheBackend()
         resolver = GenerationalDependencyResolver(cache)
 
-        with raises(ValueError, match="Invalid dependency spec"):
+        with pytest.raises(ValueError, match="Invalid dependency spec"):
             CachedRepository(
                 repository, config=cache_config, cache=cache, dependency_resolver=resolver
             )

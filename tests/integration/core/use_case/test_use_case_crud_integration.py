@@ -6,7 +6,6 @@ from typing import cast
 
 import msgspec
 import pytest
-from pytest import mark
 
 from loom.core.bootstrap.bootstrap import bootstrap_app
 from loom.core.command import Command, Patch
@@ -149,7 +148,7 @@ def _repo_module(
 
 
 class TestUseCaseCrudIntegration:
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_crud_flow_with_main_repo_injected(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -196,7 +195,7 @@ class TestUseCaseCrudIntegration:
         missing = await executor.execute(get_uc, params={"product_id": 1})
         assert missing is None
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_compute_and_rules_success_path(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -217,7 +216,7 @@ class TestUseCaseCrudIntegration:
         assert created.name == "HEADSET"
         assert float(created.price) == pytest.approx(42.0)
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_compute_and_rules_rejects_invalid_input(
         self,
         integration_context: RepositoryIntegrationHarness,
@@ -236,7 +235,7 @@ class TestUseCaseCrudIntegration:
                 payload={"name": "bad", "price": -1.0},
             )
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_can_resolve_typed_config_from_bootstrap(self) -> None:
         config = _IntegrationAppConfig(
             env="integration",
@@ -259,7 +258,7 @@ class TestUseCaseCrudIntegration:
         assert snapshot.timeout_ms == 750
         assert snapshot.pagination_mode == "offset"
 
-    @mark.asyncio
+    @pytest.mark.asyncio
     async def test_use_case_can_resolve_typed_config_loaded_from_yaml(
         self,
         tmp_path: Path,

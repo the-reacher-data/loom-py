@@ -14,7 +14,6 @@ Response shape: FastAPI wraps HTTPException detail under the ``detail`` key.
 from __future__ import annotations
 
 import pytest
-from pytest import mark
 
 from loom.core.errors import Conflict, Forbidden, NotFound
 from loom.testing import HttpTestHarness, InMemoryRepository
@@ -214,7 +213,7 @@ class TestSuccessfulOperations:
 # ---------------------------------------------------------------------------
 
 
-@mark.parametrize(
+@pytest.mark.parametrize(
     "error,method,path,http_method,payload,expected_status",
     [
         (NotFound("Product", id=1), "get_by_id", "/products/1", "GET", None, 404),

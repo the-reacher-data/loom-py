@@ -55,7 +55,7 @@ class _UpperJob(Job[str]):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def worker_config(tmp_path: Path) -> str:
     """Write a minimal worker YAML with task_always_eager enabled."""
     cfg: dict[str, Any] = {

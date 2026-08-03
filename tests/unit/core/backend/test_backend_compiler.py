@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from typing import Any, cast
 
-from pytest import fixture
+import pytest
 
 from loom.core.backend.sqlalchemy import (
     compile_all,
@@ -114,7 +114,7 @@ class _LegacyAuditEntity(BaseModel):
     updated_at: str = ColumnField(server_onupdate="now", nullable=True)
 
 
-@fixture(autouse=True)
+@pytest.fixture(autouse=True)
 def _clean_registry() -> Generator[None, None, None]:
     reset_registry()
     yield

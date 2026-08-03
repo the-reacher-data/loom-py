@@ -100,7 +100,8 @@ def test_reader_dispatches_clickhouse_source_through_base_reader(tmp_path: Path)
     reader = PolarsSourceReader(tmp_path, clickhouse_reader=reader_impl)
     result = reader.read(spec, None).collect()
 
-    assert reader_impl.calls and reader_impl.calls[0][0] == spec
+    assert reader_impl.calls
+    assert reader_impl.calls[0][0] == spec
     assert result.columns == ["id", "amount"]
 
 

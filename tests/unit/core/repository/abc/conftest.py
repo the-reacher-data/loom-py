@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pytest import fixture
+import pytest
 
 from loom.core.repository.abc import PageParams
 
 
-@fixture
+@pytest.fixture
 def page_params() -> PageParams:
     return PageParams(page=2, limit=10)
