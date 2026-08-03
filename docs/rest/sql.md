@@ -447,8 +447,9 @@ app:
   rest:
     auth:
       jwt:
-        secret: ${oc.env:LOOM_JWT_SECRET}   # HS256 — mutually exclusive with public_key
-        # public_key: ${oc.env:LOOM_JWT_PUBLIC_KEY_PEM}  # RS256/ES256 static PEM
+        secret_path: ${oc.env:LOOM_JWT_SECRET_PATH}   # HS256 — a path, not the value
+        # public_keys:                      # RS256/ES256/EdDSA — one PEM per key id
+        #   "2026-08": ${oc.env:LOOM_JWT_PUBLIC_KEY_PEM}
         algorithms: [HS256]                 # explicit allowlist; 'none' always rejected
         audience: loom-api                  # REQUIRED by any sql_endpoint with auth: identity
         issuer: null                        # validated only when set
@@ -463,8 +464,21 @@ app:
   needed; early token revocation is out of scope.
 - **`sub` is mandatory.** A token without a subject carries no identity to authorize
   against, nor to audit afterwards, so it is rejected with 401.
-- Exactly one of `secret` (HS*) or `public_key` (RS*/ES* static PEM) must be set, and
-  the algorithm allowlist must match the key type — validated fail-fast at startup.
+- Exactly one of `secret_path` (HS*) or `public_keys` (RS*/ES*/EdDSA static PEMs, keyed by
+  key id) must be set, and the algorithm allowlist must match the key type — validated
+  fail-fast at startup.
+- **`secret_path` is a path, not the value.** The config is a `msgspec.Struct`, so any
+  serializer emits its fields verbatim: holding an HS secret would let a config dump
+  publish the key that both verifies *and* signs. Public keys are safe to inline
+  because they only verify. The container has to materialize the value to a file:
+  Kubernetes mounts a `Secret` as a volume directly, while ECS/Fargate injects
+  task-definition secrets as **environment variables only**, so there an entrypoint
+  must write the value to a path on a `tmpfs` volume before the app starts.
+- With `public_keys`, the key is chosen by the token's `kid` header, never by trying
+  each key in turn: exhaustive trial would decouple every algorithm from its key
+  family, which is what makes algorithm confusion impossible here. A token with no
+  `kid` verifies only when a single key is configured, so a rotation overlap needs the
+  issuer to stamp one.
 - On success the verified claims are projected onto an
   {class}`~loom.core.identity.Identity` published for the request; on failure
   the response is a 401 with the standard error body, a `WWW-Authenticate` challenge

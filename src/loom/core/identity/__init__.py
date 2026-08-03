@@ -8,10 +8,13 @@ no transport and no infrastructure.
 
 from loom.core.identity.context import current_identity, reset_identity, set_identity
 from loom.core.identity.identity import ANONYMOUS, Identity
+from loom.core.identity.issuer import IssuedToken, TokenIssuer
 
 __all__ = [
     "ANONYMOUS",
     "Identity",
+    "IssuedToken",
+    "TokenIssuer",
     "current_identity",
     "reset_identity",
     "set_identity",

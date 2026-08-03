@@ -13,6 +13,8 @@ authenticator that has never heard of a token.
 
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import time
 from typing import Any
 
@@ -44,6 +46,8 @@ ROLE_A = "role_viz_reader"
 ROLE_B = "role_viz_sales"
 ROLE_FORBIDDEN = "role_admin_evil"
 SECRET = "unit-test-secret"
+SECRET_PATH = str(pathlib.Path(tempfile.mkdtemp()) / "hs.key")
+pathlib.Path(SECRET_PATH).write_text(SECRET)
 AUDIENCE = "loom-api"
 SUBJECT_HEADER = "x-subject"
 ROLES_HEADER = "x-roles"
@@ -274,7 +278,7 @@ def _jwt_client(executor: FakeSqlExecutor) -> TestClient:
         AuthenticationMiddleware,
         authenticator=JwtAuthenticator(
             JwtAuthConfig(
-                secret=SECRET,
+                secret_path=SECRET_PATH,
                 algorithms=("HS256",),
                 audience=AUDIENCE,
                 roles_claim=ROLES_CLAIM,
