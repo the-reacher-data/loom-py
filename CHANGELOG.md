@@ -1,3 +1,64 @@
+# 🚀 Release 0.17.1 ([#97](https://github.com/the-reacher-data/loom-py/pull/97)) ([`a69930f`](https://github.com/the-reacher-data/loom-py/commit/a69930f61d3960250b9a22af8c3d292def8459b2))
+
+
+
+## 🐛 Fixes
+### ci
+- **ci:** lock and verify every dependency installed by workflows<br>
+  > Close the SonarCloud supply-chain findings raised on the workflow files:
+  > Pin uv to 0.10.2 in ci-pr, ci-main and docs (release.yml already did) and
+  > install it with --only-binary :all: so no sdist setup script can run.
+  > Pin every ephemeral tool installed by uv: pytest-cov==7.1.0, build==1.3.0,
+  > twine==6.2.0 and the Sphinx documentation toolchain.
+  > Run the pytest and docs environments with --frozen so the committed uv.lock
+  > resolution is used verbatim.
+  > Export a hashed twin of every Snyk manifest and install it with
+  > pip --require-hashes, so downloaded artifacts are verified against uv.lock
+  > while Snyk keeps reading the plain manifest it can parse.
+  > -no-build cannot be enabled for uv: omegaconf, a runtime dependency, requires
+  > antlr4-python3-runtime 4.9.3, which publishes no wheel on PyPI. The reason is
+  > documented next to each affected command.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+### release
+- **release:** merge the version bump PR when its checks pass<br>
+  > The release PR never reached mergeStateStatus CLEAN, so the prepare job always
+  > timed out waiting for a merge that could not happen. GitHub reports CLEAN only
+  > when the head commit carries a successful legacy commit status, and a release
+  > PR has none: no workflow runs on a branch pushed with GITHUB_TOKEN, so no
+  > coverage is uploaded and Codecov (which now reports through the Checks API)
+  > never posts anything. Verified on PR #96: combined status "pending" with zero
+  > statuses, while the check rollup was fully successful.
+  > The helper now merges on CLEAN, or on UNSTABLE when every check reported on the
+  > head commit has passed. A pending, failing or missing check still blocks the
+  > merge, so the protection added in #90 is preserved rather than relaxed.
+  > The release job also passes an explicit merge timeout, overridable through the
+  > RELEASE_MERGE_TIMEOUT_SECONDS repository variable, as a safety net.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+## ✅ Tests
+### ci
+- **ci:** guard the workflow supply-chain contract<br>
+  > Add contract tests over every workflow so the locking rules cannot regress:
+  > pip installs must be hash-verified or pinned and wheels-only, uv --with specs
+  > must be exact, and every workflow must install the same pinned uv.
+  > Also run the TestPyPI build and upload with --frozen. uv treats uv.lock as the
+  > source of truth under --frozen, so the version rewritten in pyproject.toml
+  > before the build does not invalidate the locked resolution.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
 # 🚀 Release 0.17.0 ([#95](https://github.com/the-reacher-data/loom-py/pull/95)) ([`308c2b6`](https://github.com/the-reacher-data/loom-py/commit/308c2b6307bc681b16e5da12b1462a5bf1c7e783))
 
 
