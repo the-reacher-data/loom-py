@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,9 +14,10 @@ try:
 except ImportError:
     _clickhouse_connect = None
 
+from loom.core.logger import get_logger
 from loom.etl.declarative.target._client import ClientSpec
 
-_log = logging.getLogger(__name__)
+_log = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -143,22 +143,22 @@ class ClickHouseTargetWriter:
             frame.collect(engine=engine) if isinstance(frame, pl.LazyFrame) else frame
         )
         if df.is_empty():
-            _log.debug("clickhouse write skipped — empty frame table=%s", spec.table)
+            _log.warning("write_produced_no_rows", target=spec.table)
             return
 
         qualified = f"{spec.database}.{spec.table}" if spec.database else spec.table
 
         if spec.write_mode == "replace":
-            _log.debug("clickhouse TRUNCATE TABLE IF EXISTS %s", qualified)
+            _log.debug("clickhouse_truncate_table", table=qualified)
             self._client.command(f"TRUNCATE TABLE IF EXISTS {qualified}")
 
         column_names = df.columns
         data = [df[col].to_list() for col in column_names]
         _log.debug(
-            "clickhouse INSERT rows=%d cols=%d table=%s",
-            len(df),
-            len(column_names),
-            qualified,
+            "clickhouse_insert",
+            rows=len(df),
+            cols=len(column_names),
+            table=qualified,
         )
         self._client.insert(
             qualified,

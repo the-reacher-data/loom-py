@@ -209,6 +209,10 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         schema = existing_schema.schema if existing_schema is not None else None
         return apply_schema_polars(frame, schema, mode)
 
+    def _row_count_if_cheap(self, frame: pl.DataFrame) -> int | None:
+        """Rows in the collected frame."""
+        return frame.height
+
     def _materialize_for_write(self, frame: pl.LazyFrame, streaming: bool) -> pl.DataFrame:
         """Collect lazy frame to DataFrame before Delta write."""
         df = frame.collect(engine="streaming" if streaming else "auto")
