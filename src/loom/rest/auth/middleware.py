@@ -11,6 +11,7 @@ TLS without touching a single authorization rule.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -32,6 +33,9 @@ _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
 
 _HTTP_SCOPE = "http"
 _UNAUTHORIZED_MESSAGE = "Authentication required: missing or invalid credentials."
+_UNKNOWN_CLIENT = "unknown"
+
+_logger = logging.getLogger(__name__)
 
 
 class AuthenticationMiddleware:
@@ -44,7 +48,10 @@ class AuthenticationMiddleware:
     2. Asks the :class:`~loom.rest.auth.abc.Authenticator` for an identity.
     3. On refusal, answers ``401`` with the framework's standard error body
        and a ``WWW-Authenticate`` challenge.  The message is deliberately
-       generic for every failure mode (no oracle).
+       generic for every failure mode (no oracle), and the refusal is logged at
+       ``INFO`` — the response and the log have different audiences, and only the
+       response has an attacker in it.  Never the credential: a log holding a
+       bearer token turns log access into API access.
     4. On success, installs the identity for the duration of the request and
        restores the previous one in a ``finally`` — without it, a reused
        worker task would inherit the previous caller.
@@ -84,6 +91,15 @@ class AuthenticationMiddleware:
 
         identity = await self._authenticator.authenticate(_credentials(scope))
         if identity is None:
+            # Without this the only trace is the mechanism's own DEBUG line, which
+            # no production log level keeps -- so a replayed token or someone
+            # walking the endpoints leaves nothing to correlate.
+            _logger.info(
+                "authentication refused method=%s path=%s client=%s",
+                scope.get("method", _UNKNOWN_CLIENT),
+                scope.get("path", _UNKNOWN_CLIENT),
+                _client_host(scope),
+            )
             await send_unauthorized(send)
             return
 
@@ -112,7 +128,7 @@ class JwtAuthMiddleware:
 
         from loom.rest.auth import JwtAuthConfig, JwtAuthMiddleware
 
-        config = JwtAuthConfig(secret="...", algorithms=("HS256",))
+        config = JwtAuthConfig(secret_path="/run/secrets/jwt", algorithms=("HS256",))
         app.add_middleware(JwtAuthMiddleware, config=config)
     """
 
@@ -137,6 +153,14 @@ def _credentials(scope: _Scope) -> RequestCredentials:
         path=scope.get("path", ""),
         client_host=client[0] if client else None,
     )
+
+
+def _client_host(scope: _Scope) -> str:
+    """The caller's address, or a placeholder: ASGI allows ``client`` to be absent."""
+    client = scope.get("client")
+    if not client:
+        return _UNKNOWN_CLIENT
+    return str(client[0])
 
 
 async def send_unauthorized(send: _Send) -> None:
