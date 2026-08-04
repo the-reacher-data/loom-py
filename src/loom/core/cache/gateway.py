@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _SIMPLE_MEMORY_CACHE = "SimpleMemoryCache"
+_DEFAULT_ALIAS = "default"
+_MEMORY_FALLBACK = {"cache": "aiocache.SimpleMemoryCache"}
 
 
 def _is_raw_backend(cache: Any) -> bool:
@@ -116,6 +118,13 @@ class CacheGateway:
             if config.max_size is not None and _SIMPLE_MEMORY_CACHE in str(entry.get("cache", "")):
                 entry.setdefault("max_size", config.max_size)
             raw[alias] = entry
+        # ``aiocache.caches.set_config`` rejects any mapping without a literal
+        # ``default`` entry, so a config that names its aliases -- as the example
+        # above does -- could not be applied at all. Point ``default`` at the data
+        # alias instead of inventing a backend, so a gateway built with no alias
+        # reaches the configured cache rather than an unserialized one.
+        if _DEFAULT_ALIAS not in raw:
+            raw[_DEFAULT_ALIAS] = dict(raw.get(config.aiocache_alias) or _MEMORY_FALLBACK)
         cls.configure(raw)
 
     # ------------------------------------------------------------------

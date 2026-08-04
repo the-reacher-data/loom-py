@@ -46,7 +46,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
           ttl:
             user: 600
             user_list: 300
-          aiocache:
+          aiocache_config:
             cache:
               cache: aiocache.RedisCache
               endpoint: ${oc.env:REDIS_HOST,redis}
@@ -67,7 +67,7 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
           aiocache_alias: cache
           counter_alias: counters
           max_size: 500
-          aiocache:
+          aiocache_config:
             cache:
               cache: aiocache.SimpleMemoryCache
               serializer:
@@ -107,7 +107,11 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             enabled=bool(data.get("enabled", True)),
             aiocache_alias=str(data.get("aiocache_alias", "default")),
             counter_alias=str(raw_counter_alias) if raw_counter_alias is not None else None,
-            aiocache_config=dict(data.get("aiocache", {})),
+            # Both keys: the field name, which is what ``section()`` and
+            # ``msgspec.convert`` require, and the shorter one earlier docs used.
+            # A config carrying only ``aiocache`` converted to an empty mapping and
+            # then failed on first use, never at startup.
+            aiocache_config=dict(data.get("aiocache_config") or data.get("aiocache") or {}),
             default_ttl=int(data.get("default_ttl", 200)),
             default_list_ttl=int(data.get("default_list_ttl", 120)),
             ttl={str(k): int(v) for k, v in dict(data.get("ttl", {})).items()},
