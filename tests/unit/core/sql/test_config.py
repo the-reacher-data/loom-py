@@ -137,6 +137,26 @@ def test_repr_redacts_the_dsn_credentials() -> None:
     assert ("s3cr3t_pw" in rendered, "://***@ch.internal" in rendered) == (False, True)
 
 
+def test_credentials_default_to_none_when_not_declared() -> None:
+    """Without explicit credentials the driver keeps whatever the DSN carries."""
+    conn = _parse(_minimal()).connections["analytics"]
+    assert (conn.username, conn.password) == (None, None)
+
+
+def test_parses_explicit_credentials_when_declared() -> None:
+    """``username``/``password`` arrive typed, whatever characters they carry."""
+    conn = _parse(_minimal(username="mcp_reader", password="p4ss#with%23hash")).connections[
+        "analytics"
+    ]
+    assert (conn.username, conn.password) == ("mcp_reader", "p4ss#with%23hash")
+
+
+def test_repr_never_exposes_the_explicit_password() -> None:
+    """The hand-written ``repr`` omits the credential fields entirely."""
+    conn = _parse(_minimal(username="mcp_reader", password="s3cr3t_pw")).connections["analytics"]
+    assert "s3cr3t_pw" not in repr(conn)
+
+
 def test_fails_when_auth_has_an_unknown_value() -> None:
     """``auth`` only admits 'jwt' or 'external'; any other value => ConfigError."""
     connection = _minimal(

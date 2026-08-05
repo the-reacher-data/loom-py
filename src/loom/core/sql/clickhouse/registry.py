@@ -181,6 +181,10 @@ def _client_kwargs(connection: SqlConnectionConfig) -> dict[str, Any]:
         # Never rely on the driver's mutable global default (spec §2).
         "autogenerate_session_id": False,
     }
+    if connection.username is not None:
+        kwargs["username"] = connection.username
+    if connection.password is not None:
+        kwargs["password"] = connection.password
     if not connection.readonly:
         # Driver retries could re-run non-idempotent statements (re-INSERT).
         kwargs["query_retries"] = 0
