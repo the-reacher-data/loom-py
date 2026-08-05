@@ -149,6 +149,30 @@ async def test_passes_explicit_connection_timeouts_to_the_driver() -> None:
     ) == (5, 42)
 
 
+async def test_passes_explicit_credentials_to_the_driver() -> None:
+    """``username``/``password`` travel as driver arguments, never inside the DSN."""
+    factory = RecordingClientFactory()
+    registry = _registry(
+        factory,
+        analytics=make_connection_config(username="mcp_reader", password="p4ss#hash"),
+    )
+    async with registry:
+        pass
+    assert (
+        factory.calls[0]["username"],
+        factory.calls[0]["password"],
+    ) == ("mcp_reader", "p4ss#hash")
+
+
+async def test_omits_credential_arguments_when_not_configured() -> None:
+    """Absent credentials are not forwarded, so the DSN's own ones still apply."""
+    factory = RecordingClientFactory()
+    registry = _registry(factory, analytics=make_connection_config())
+    async with registry:
+        pass
+    assert ("username" in factory.calls[0], "password" in factory.calls[0]) == (False, False)
+
+
 async def test_using_the_registry_outside_the_context_fails_explicitly() -> None:
     """Requesting an executor without entering the context is an explicit error."""
     registry = _registry(RecordingClientFactory(), analytics=make_connection_config())

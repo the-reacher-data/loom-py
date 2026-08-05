@@ -74,7 +74,11 @@ class JwtAuthenticator:
     Example::
 
         authenticator = JwtAuthenticator(
-            JwtAuthConfig(secret="...", algorithms=("HS256",), roles_claim="loom_sql_roles")
+            JwtAuthConfig(
+                secret_path="/run/secrets/jwt",
+                algorithms=("HS256",),
+                roles_claim="loom_sql_roles",
+            )
         )
     """
 

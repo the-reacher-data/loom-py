@@ -108,6 +108,14 @@ class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             other value fails the parse.
         url: Backend DSN. Canonically injected via environment or secret
             resolver, never inline.
+        username: Driver username, handed to the driver as an explicit
+            argument. Takes precedence over any credential embedded in
+            ``url``.
+        password: Driver password, handed to the driver as an explicit
+            argument. Unlike a DSN credential it is never URL-parsed, so any
+            character is safe (a ``#`` inside a DSN password truncates it as
+            a fragment delimiter and the driver does not unescape quoted
+            ones), and it never appears in ``repr`` or in dumps of ``url``.
         allowed_roles: Ceiling of roles this connection may ever apply — the
             last barrier, not a per-caller permission. Empty means every
             caller-provided role is rejected (fail-closed). A mounted endpoint
@@ -140,6 +148,8 @@ class SqlConnectionConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 
     backend: Literal["clickhouse"]
     url: str
+    username: str | None = None
+    password: str | None = None
     allowed_roles: tuple[str, ...] = ()
     default_role: str | None = None
     readonly: bool = True

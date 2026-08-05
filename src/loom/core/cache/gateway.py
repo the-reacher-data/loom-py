@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _SIMPLE_MEMORY_CACHE = "SimpleMemoryCache"
+_DEFAULT_ALIAS = "default"
+_MEMORY_FALLBACK = {"cache": "aiocache.SimpleMemoryCache"}
 
 
 def _is_raw_backend(cache: Any) -> bool:
@@ -116,6 +118,8 @@ class CacheGateway:
             if config.max_size is not None and _SIMPLE_MEMORY_CACHE in str(entry.get("cache", "")):
                 entry.setdefault("max_size", config.max_size)
             raw[alias] = entry
+        if _DEFAULT_ALIAS not in raw:
+            raw[_DEFAULT_ALIAS] = dict(raw.get(config.aiocache_alias) or _MEMORY_FALLBACK)
         cls.configure(raw)
 
     # ------------------------------------------------------------------
