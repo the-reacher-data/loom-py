@@ -107,10 +107,6 @@ class CacheConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             enabled=bool(data.get("enabled", True)),
             aiocache_alias=str(data.get("aiocache_alias", "default")),
             counter_alias=str(raw_counter_alias) if raw_counter_alias is not None else None,
-            # Both keys: the field name, which is what ``section()`` and
-            # ``msgspec.convert`` require, and the shorter one earlier docs used.
-            # A config carrying only ``aiocache`` converted to an empty mapping and
-            # then failed on first use, never at startup.
             aiocache_config=dict(data.get("aiocache_config") or data.get("aiocache") or {}),
             default_ttl=int(data.get("default_ttl", 200)),
             default_list_ttl=int(data.get("default_list_ttl", 120)),

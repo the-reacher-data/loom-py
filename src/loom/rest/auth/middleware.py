@@ -91,9 +91,6 @@ class AuthenticationMiddleware:
 
         identity = await self._authenticator.authenticate(_credentials(scope))
         if identity is None:
-            # Without this the only trace is the mechanism's own DEBUG line, which
-            # no production log level keeps -- so a replayed token or someone
-            # walking the endpoints leaves nothing to correlate.
             _logger.info(
                 "authentication refused method=%s path=%s client=%s",
                 scope.get("method", _UNKNOWN_CLIENT),

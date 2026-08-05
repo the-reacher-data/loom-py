@@ -60,9 +60,6 @@ def test_an_empty_config_can_still_be_applied() -> None:
     assert CacheGateway() is not None
 
 
-# ── leer la config de YAML ───────────────────────────────────────────────────
-
-
 def test_a_yaml_section_keeps_its_backends() -> None:
     """``section()`` converts by field name, so the YAML key has to match one."""
     parsed = {
