@@ -1,3 +1,66 @@
+# 🚀 Release 1.0.1 ([#112](https://github.com/the-reacher-data/loom-py/pull/112)) ([`8b6fe1a`](https://github.com/the-reacher-data/loom-py/commit/8b6fe1ac1e455d8e96aaa240baa3e4b556862254))
+
+
+## ✨ Features
+### rest
+- **rest:** log an authentication refusal, and fix two stale config examples<br>
+  > A refused request left no trace any production log level keeps: the mechanism's
+  > own line is DEBUG, and the middleware said nothing at all. So a replayed token, or
+  > someone walking the endpoints, was invisible after the fact -- measured against a
+  > consumer, where a rejected refresh was logged by the use-case executor but a
+  > rejected *token* was not logged anywhere.
+  > The 401 body stays generic on purpose, and that is not in tension with logging:
+  > the response and the log have different audiences, and only the response has an
+  > attacker in it. The log carries method, path and client address, and never the
+  > credential -- a log holding a bearer token turns log access into API access, which
+  > a test pins.
+  > Also updates two docstring examples that still built `JwtAuthConfig(secret=...)`,
+  > the field renamed to `secret_path` in 1.0.0. They would raise if copied.
+  > Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+
+
+### sql
+- **sql:** accept explicit username/password on a SQL connection<br>
+  > A DSN credential is URL-parsed, so a password holding '#' is truncated
+  > at the fragment delimiter and the driver does not unescape a quoted
+  > one; it also rides the connection string into any config dump or
+  > driver exception. Explicit fields bypass parsing entirely, take
+  > precedence over whatever the DSN carries, and never appear in repr.
+
+
+
+## 🐛 Fixes
+### cache
+- **cache:** make a named-alias config appliable and a YAML one survive section()<br>
+  > Two failures that only surfaced at runtime, found while wiring a consumer.
+  > `apply_config` forwarded the alias mapping verbatim to `aiocache.caches.set_config`,
+  > which rejects any mapping without a literal `default` entry. So a config that names
+  > its aliases could not be applied at all -- including the example in `CacheConfig`'s
+  > own docstring, which uses `cache`/`counters` and raised `ValueError: default config
+  > must be provided`. `default` is now filled in from the data alias rather than an
+  > invented backend, so a gateway built with no alias reaches the configured cache and
+  > not an unserialized one.
+  > The docstring also documented the backend block as `aiocache:`, while the field is
+  > `aiocache_config`. `section()` and `msgspec.convert` go by field name, so a config
+  > loaded that way lost every backend definition in silence, and the miss showed up as
+  > `ValidationError: Expected object, got str` on the first cached read -- never at
+  > startup, because an empty mapping is valid. The examples now use the field name and
+  > `from_mapping` accepts either key, so configs already written against the old docs
+  > keep working.
+
+
+
+
+## 🎨 Style
+- drop narrative comments from the cache wiring and auth logging<br>
+  > The one-line test docstrings stay: they name the case each test covers.
+
+
+
+
+
+
+
 # 🚀 Release 1.0.0 ([#106](https://github.com/the-reacher-data/loom-py/pull/106)) ([`f8fe343`](https://github.com/the-reacher-data/loom-py/commit/f8fe3433a841711f2393c0def0c1796c1f3b05d8))
 
 
