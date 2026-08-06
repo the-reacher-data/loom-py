@@ -2,15 +2,32 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from loom.core.config.errors import ConfigError
+from loom.core.config.secrets import SecretsManagerResolver
+from loom.core.config.ssm import SsmResolver
 from loom.core.model import LoomFrozenStruct
 
 DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json", "/metrics")
 """Paths served without authentication unless the application says otherwise."""
 
 _FORBIDDEN_ALGORITHM = "none"
+
+_KEY_REF_RESOLVER_FACTORIES: dict[str, Callable[[str | None], Any]] = {
+    "secrets": SecretsManagerResolver,
+    "ssm": SsmResolver,
+}
+"""Resolver constructors by ``private_key_ref`` prefix, taking the AWS region.
+
+Importing them is safe without boto3: both modules guard the import and fail
+with the install hint when the resolver is actually used.
+"""
+
+KEY_REF_RESOLVERS: tuple[str, ...] = tuple(sorted(_KEY_REF_RESOLVER_FACTORIES))
+"""Resolver prefixes a ``private_key_ref`` may name, derived from the factories."""
 
 MAX_ISSUER_TTL_SECONDS = 3600
 """Ceiling for a minted token: signing is reading, so a long-lived token is a
@@ -212,10 +229,20 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Attributes:
         private_key_path: Filesystem path of the PEM signing key, for
-            asymmetric algorithms. Mutually exclusive with ``secret``.
+            asymmetric algorithms. Mutually exclusive with the other sources.
+        private_key_ref: Managed-store reference of the PEM signing key, as
+            ``"<resolver>:<key>"`` with resolver one of ``secrets`` or ``ssm``
+            (e.g. ``"secrets:/myapp/prod/jwt-signing-key"``). Resolved once,
+            when the issuer loads the key, so the material never touches disk
+            or config — and rotating the stored value requires a restart. The
+            Secrets Manager resolver navigates dots as JSON paths, so the key
+            name must not contain ``.``. Mutually exclusive with the other
+            sources.
+        key_ref_region: AWS region the ref resolver is built with. Defaults to
+            boto3's own resolution chain. Requires ``private_key_ref``.
         secret_path: Filesystem path of the shared secret for HS* algorithms.
-            Requires ``allow_symmetric_signing``. Mutually exclusive with
-            ``private_key_path``.
+            Requires ``allow_symmetric_signing``. Mutually exclusive with the
+            other sources.
         algorithm: The single algorithm tokens are signed with. Issuing chooses
             one; only verification negotiates an allowlist.
         audience: ``aud`` stamped on every token. Mandatory: a token without an
@@ -255,6 +282,8 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """
 
     private_key_path: str | None = None
+    private_key_ref: str | None = None
+    key_ref_region: str | None = None
     secret_path: str | None = None
     algorithm: str = ""
     audience: str = ""
@@ -265,10 +294,20 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     allow_symmetric_signing: bool = False
 
     def __post_init__(self) -> None:
-        if (self.private_key_path is None) == (self.secret_path is None):
+        sources = [
+            source
+            for source in (self.private_key_path, self.private_key_ref, self.secret_path)
+            if source is not None
+        ]
+        if len(sources) != 1:
             raise ConfigError(
-                "JWT issuer requires exactly one of 'private_key_path' or 'secret_path'."
+                "JWT issuer requires exactly one of 'private_key_path', "
+                "'private_key_ref' or 'secret_path'."
             )
+        if self.private_key_ref is not None:
+            _require_valid_key_ref(self.private_key_ref)
+        if self.key_ref_region is not None and self.private_key_ref is None:
+            raise ConfigError("JWT issuer 'key_ref_region' requires 'private_key_ref'.")
         _require_supported(self.algorithm, setting="JWT issuer 'algorithm'")
         if not self.audience.strip():
             raise ConfigError("JWT issuer requires a non-blank 'audience'.")
@@ -295,9 +334,10 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             raise ConfigError(
                 f"JWT algorithm {self.algorithm!r} requires 'secret_path', not 'private_key_path'."
             )
-        if not symmetric and self.private_key_path is None:
+        if not symmetric and self.private_key_path is None and self.private_key_ref is None:
             raise ConfigError(
-                f"JWT algorithm {self.algorithm!r} requires 'private_key_path', not 'secret_path'."
+                f"JWT algorithm {self.algorithm!r} requires 'private_key_path' or "
+                "'private_key_ref', not 'secret_path'."
             )
 
     def load_signing_key(self) -> str:
@@ -311,7 +351,55 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
                 cause is never chained: an OS error carries the path, and a
                 ``UnicodeDecodeError`` carries the file contents on ``exc.object``.
         """
+        if self.private_key_ref is not None:
+            return _fetch_key_ref(self.private_key_ref, region=self.key_ref_region)
         source = self.secret_path or self.private_key_path
         if source is None:  # pragma: no cover - __post_init__ rules this out
             raise ConfigError("JWT issuer has no signing key configured.")
         return _read_key_file(source, setting="the JWT issuer signing key")
+
+
+def _require_valid_key_ref(ref: str) -> None:
+    """Reject a malformed key ref at construction, not on the first load.
+
+    Args:
+        ref: Candidate ``"<resolver>:<key>"`` reference.
+
+    Raises:
+        ConfigError: If the resolver prefix is unknown or the key is blank.
+    """
+    name, separator, key = ref.partition(":")
+    if not separator or name not in _KEY_REF_RESOLVER_FACTORIES or not key.strip():
+        raise ConfigError(
+            "JWT issuer 'private_key_ref' must be '<resolver>:<key>' with resolver "
+            f"in {sorted(KEY_REF_RESOLVERS)}."
+        )
+
+
+def _fetch_key_ref(ref: str, *, region: str | None) -> str:
+    """Resolve a signing key reference into the key material.
+
+    Args:
+        ref: Validated ``"<resolver>:<key>"`` reference.
+        region: AWS region the resolver is built with, or ``None`` for
+            boto3's own resolution chain.
+
+    Returns:
+        The key material held by the managed store.
+
+    Raises:
+        ConfigError: If the store cannot answer or answers with something
+            other than non-empty text. The cause is chained: resolver errors
+            name the parameter, never the material.
+    """
+    name, _, key = ref.partition(":")
+    resolver = _KEY_REF_RESOLVER_FACTORIES[name](region)
+    try:
+        value = resolver.resolve(key)
+    except ConfigError:
+        raise
+    except Exception as exc:
+        raise ConfigError(f"Could not resolve the JWT signing key ref via {name!r}.") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("The resolved JWT signing key is not non-empty text.")
+    return value
