@@ -714,3 +714,67 @@ class TestSigningKeyRef:
         with pytest.raises(ConfigError, match="'secrets'") as excinfo:
             _ref_config().load_signing_key()
         assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# Verifier derived from the signing key
+# ---------------------------------------------------------------------------
+
+
+class TestFromSigningKey:
+    def test_derives_the_public_key(self, tmp_path: Path) -> None:
+        private, public = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(
+            str(key_file),
+            kid=_KID,
+            algorithms=("EdDSA",),
+            audience=_AUDIENCE,
+            issuer=_ISSUER,
+            roles_claim=_ROLES_CLAIM,
+        )
+        assert config.public_keys == {_KID: public}
+
+    def test_derives_from_a_managed_store_ref(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        private, public = _keypair()
+        _patch_factory(monkeypatch, lambda region: _StaticResolver(private))
+        config = JwtAuthConfig.from_signing_key(
+            private_key_ref="secrets:/myapp/jwt-signing-key",
+            kid=_KID,
+            algorithms=("EdDSA",),
+        )
+        assert config.public_keys == {_KID: public}
+
+    def test_requires_exactly_one_source(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="exactly one of"):
+            JwtAuthConfig.from_signing_key(kid=_KID, algorithms=("EdDSA",))
+
+    def test_previous_key_stays_published(self, tmp_path: Path) -> None:
+        private, public = _keypair()
+        _, previous_public = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(
+            str(key_file),
+            kid="2026-09",
+            algorithms=("EdDSA",),
+            additional_public_keys={"2026-08": previous_public},
+        )
+        assert config.public_keys == {"2026-09": public, "2026-08": previous_public}
+
+    def test_private_material_is_not_retained(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(str(key_file), kid=_KID, algorithms=("EdDSA",))
+        private_body = private.splitlines()[1]
+        assert private_body not in repr(config)
+        assert private_body.encode() not in msgspec.json.encode(config)
+
+    def test_unparseable_key_chains_the_reason(self, tmp_path: Path) -> None:
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text("not a pem")
+        with pytest.raises(ConfigError, match="derive") as excinfo:
+            JwtAuthConfig.from_signing_key(str(key_file), kid=_KID, algorithms=("EdDSA",))
+        assert excinfo.value.__cause__ is not None

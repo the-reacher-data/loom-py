@@ -163,6 +163,45 @@ subset.
 
 See {doc}`sql` for the full JWT reference and the SQL endpoint startup gates.
 
+### Signing keys from a managed store
+
+`JwtIssuerConfig` accepts the signing key as a filesystem path or as a managed-store
+reference — exactly one of the two:
+
+```python
+config = JwtIssuerConfig(
+    private_key_ref="secrets:/myapp/prod/jwt-signing-key",  # or "ssm:/..."
+    algorithm="EdDSA",
+    audience="my-api",
+    issuer="my-gateway",
+    roles_claim="loom_sql_roles",
+    kid="2026-08",
+)
+```
+
+The reference is resolved once, when the issuer loads the key, so the material never
+touches disk or config dumps. Rotating the stored value therefore requires a restart.
+`key_ref_region` pins the AWS region when it is not in boto3's own chain. Requires the
+`loom-kernel[config-ssm]` extra.
+
+### Deriving the verifier from the signing key
+
+The service that both issues and verifies should not configure the public key by hand:
+two values that must match are two values that can disagree, and a stale public key
+does not fail loudly. Derive it instead:
+
+```python
+auth = JwtAuthConfig.from_signing_key(
+    "/run/secrets/jwt-signing-key.pem",   # or private_key_ref="secrets:/..."
+    kid="2026-09",
+    algorithms=["EdDSA"],
+    additional_public_keys={"2026-08": previous_public_pem},
+)
+```
+
+`additional_public_keys` keeps the previous `kid` published for one rotation window —
+public material, so unlike the signing key it is safe to carry as a value.
+
 ### A mechanism of your own
 
 Implement {class}`~loom.rest.auth.Authenticator` and hand it to `create_app`:

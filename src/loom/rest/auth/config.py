@@ -166,6 +166,97 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             f" roles_claim={self.roles_claim!r})"
         )
 
+    @classmethod
+    def from_signing_key(
+        cls,
+        private_key_path: str | None = None,
+        *,
+        private_key_ref: str | None = None,
+        key_ref_region: str | None = None,
+        kid: str,
+        algorithms: tuple[str, ...],
+        audience: str | None = None,
+        issuer: str | None = None,
+        leeway_seconds: int = 0,
+        exclude_paths: tuple[str, ...] = DEFAULT_EXCLUDE_PATHS,
+        roles_claim: str | None = None,
+        additional_public_keys: dict[str, str] | None = None,
+    ) -> JwtAuthConfig:
+        """Build a verifier whose public key is derived from the signing key.
+
+        For the service that both issues and verifies. Two configured values
+        that must match are two values that can disagree, and a stale public
+        key does not fail loudly — it accepts nothing, or accepts what a
+        rotated key signed. Deriving removes the second value.
+
+        Args:
+            private_key_path: Filesystem path of the PEM signing key. Only
+                the derived public key is kept; the private material is
+                dropped. Mutually exclusive with ``private_key_ref``.
+            private_key_ref: Managed-store reference of the PEM signing key,
+                as accepted by :attr:`JwtIssuerConfig.private_key_ref`.
+                Mutually exclusive with ``private_key_path``.
+            key_ref_region: AWS region for the ref resolver. Requires
+                ``private_key_ref``.
+            kid: Key identifier the derived public key is published under.
+            algorithms: Explicit allowlist of accepted JWT algorithms.
+            audience: Expected ``aud`` claim. Validated only when set.
+            issuer: Expected ``iss`` claim. Validated only when set.
+            leeway_seconds: Clock-skew tolerance for time-based claims.
+            exclude_paths: Exact request paths that bypass authentication.
+            roles_claim: Verified claim carrying the caller roles.
+            additional_public_keys: Extra public keys by ``kid``, so the
+                previous key stays published for one rotation window. Public
+                material, so unlike the signing key it is safe to carry as a
+                value.
+
+        Returns:
+            A validated ``JwtAuthConfig`` publishing the derived key.
+
+        Raises:
+            ConfigError: If the sources are not exactly one, or the signing
+                key cannot be read or parsed. The cause is chained: parser
+                errors name the reason and never carry the material.
+        """
+        if (private_key_path is None) == (private_key_ref is None):
+            raise ConfigError(
+                "from_signing_key requires exactly one of 'private_key_path' or 'private_key_ref'."
+            )
+        if key_ref_region is not None and private_key_ref is None:
+            raise ConfigError("from_signing_key 'key_ref_region' requires 'private_key_ref'.")
+        try:
+            from cryptography.exceptions import UnsupportedAlgorithm
+            from cryptography.hazmat.primitives import serialization
+        except ImportError as exc:  # pragma: no cover - jwt extra ships it
+            raise ConfigError(
+                "cryptography is required to derive the JWT public key. "
+                "Install it with: pip install loom-kernel[jwt]"
+            ) from exc
+        if private_key_ref is not None:
+            _require_valid_key_ref(private_key_ref)
+            material = _fetch_key_ref(private_key_ref, region=key_ref_region)
+        else:
+            material = _read_key_file(private_key_path or "", setting="the JWT signing key")
+        try:
+            private = serialization.load_pem_private_key(material.encode(), password=None)
+            public = private.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+            raise ConfigError("Could not derive the JWT public key from the signing key.") from exc
+        keys = {kid: public.decode()}
+        keys.update(additional_public_keys or {})
+        return cls(
+            public_keys=keys,
+            algorithms=algorithms,
+            audience=audience,
+            issuer=issuer,
+            leeway_seconds=leeway_seconds,
+            exclude_paths=exclude_paths,
+            roles_claim=roles_claim,
+        )
+
     def __post_init__(self) -> None:
         if (self.secret_path is None) == (not self.public_keys):
             raise ConfigError("JWT auth requires exactly one of 'secret_path' or 'public_keys'.")
