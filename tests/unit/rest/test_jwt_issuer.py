@@ -778,3 +778,25 @@ class TestFromSigningKey:
         with pytest.raises(ConfigError, match="derive") as excinfo:
             JwtAuthConfig.from_signing_key(str(key_file), kid=_KID, algorithms=("EdDSA",))
         assert excinfo.value.__cause__ is not None
+
+    def test_reusing_the_derived_kid_is_refused(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        _, other_public = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        with pytest.raises(ConfigError, match="derived kid"):
+            JwtAuthConfig.from_signing_key(
+                str(key_file),
+                kid=_KID,
+                algorithms=("EdDSA",),
+                additional_public_keys={_KID: other_public},
+            )
+
+    def test_region_requires_a_ref(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        with pytest.raises(ConfigError, match="key_ref_region"):
+            JwtAuthConfig.from_signing_key(
+                str(key_file), key_ref_region="eu-west-1", kid=_KID, algorithms=("EdDSA",)
+            )

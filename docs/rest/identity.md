@@ -194,7 +194,7 @@ does not fail loudly. Derive it instead:
 auth = JwtAuthConfig.from_signing_key(
     "/run/secrets/jwt-signing-key.pem",   # or private_key_ref="secrets:/..."
     kid="2026-09",
-    algorithms=["EdDSA"],
+    algorithms=("EdDSA",),
     additional_public_keys={"2026-08": previous_public_pem},
 )
 ```
