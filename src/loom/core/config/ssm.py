@@ -103,7 +103,7 @@ class SsmResolver:
             if _boto3_module is None:
                 raise ConfigError(
                     "boto3 is required for SsmResolver."
-                    " Install it with: pip install loom[config-ssm]"
+                    " Install it with: pip install loom-kernel[config-ssm]"
                 )
             self._client = _boto3_module.client("ssm", region_name=self._region)
         return self._client
