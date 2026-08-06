@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 import msgspec
 
 from loom.core.cache.serializer import MsgspecSerializer
+from loom.core.config.errors import ConfigError
 
 if TYPE_CHECKING:
     from loom.core.cache.abc.config import CacheConfig
@@ -109,6 +110,11 @@ class CacheGateway:
             )
             CacheGateway.apply_config(cache_cfg)
         """
+        for declared in (config.aiocache_alias, config.effective_counter_alias):
+            if declared != _DEFAULT_ALIAS and declared not in config.aiocache_config:
+                raise ConfigError(
+                    f"Cache alias {declared!r} is declared but missing from 'aiocache_config'."
+                )
         raw: dict[str, Any] = {}
         for alias, backend_cfg in config.aiocache_config.items():
             if not isinstance(backend_cfg, dict):

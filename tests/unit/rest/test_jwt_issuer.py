@@ -613,3 +613,168 @@ def test_the_construction_probe_reports_an_algorithm_the_key_cannot_serve(tmp_pa
 
     with pytest.raises(ConfigError, match="RS256"):
         JwtIssuer(config)
+
+
+# ---------------------------------------------------------------------------
+# Signing key by managed-store reference
+# ---------------------------------------------------------------------------
+
+
+class _StaticResolver:
+    def __init__(self, value: object) -> None:
+        self._value = value
+        self.asked: str | None = None
+
+    def resolve(self, key: str) -> object:
+        self.asked = key
+        return self._value
+
+
+def _ref_config(**overrides: Any) -> JwtIssuerConfig:
+    params: dict[str, Any] = {
+        "private_key_ref": "secrets:/myapp/jwt-signing-key",
+        "algorithm": "EdDSA",
+        "audience": _AUDIENCE,
+        "issuer": _ISSUER,
+        "roles_claim": _ROLES_CLAIM,
+        "kid": _KID,
+    }
+    params.update(overrides)
+    return JwtIssuerConfig(**params)
+
+
+def _patch_factory(monkeypatch: pytest.MonkeyPatch, resolver_factory: Any) -> None:
+    from loom.rest.auth import config as auth_config
+
+    monkeypatch.setitem(auth_config._KEY_REF_RESOLVER_FACTORIES, "secrets", resolver_factory)
+
+
+class TestSigningKeyRef:
+    def test_requires_exactly_one_source(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        with pytest.raises(ConfigError, match="exactly one of"):
+            _issuer_config(tmp_path, private, private_key_ref="secrets:/myapp/jwt-signing-key")
+
+    @pytest.mark.parametrize("ref", ["vault:/myapp/key", "secrets:", "secrets", " :key"])
+    def test_rejects_malformed_ref(self, ref: str) -> None:
+        with pytest.raises(ConfigError, match="private_key_ref"):
+            _ref_config(private_key_ref=ref)
+
+    def test_region_requires_a_ref(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        with pytest.raises(ConfigError, match="key_ref_region"):
+            _issuer_config(tmp_path, private, key_ref_region="eu-west-1")
+
+    def test_symmetric_algorithms_reject_a_ref(self) -> None:
+        with pytest.raises(ConfigError, match="secret_path"):
+            _ref_config(algorithm="HS256", allow_symmetric_signing=True)
+
+    def test_loads_key_through_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        private, _ = _keypair()
+        resolver = _StaticResolver(private)
+        _patch_factory(monkeypatch, lambda region: resolver)
+        assert _ref_config().load_signing_key() == private
+        assert resolver.asked == "/myapp/jwt-signing-key"
+
+    def test_region_reaches_the_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        private, _ = _keypair()
+        seen: list[str | None] = []
+
+        def factory(region: str | None) -> _StaticResolver:
+            seen.append(region)
+            return _StaticResolver(private)
+
+        _patch_factory(monkeypatch, factory)
+        _ref_config(key_ref_region="eu-west-1").load_signing_key()
+        assert seen == ["eu-west-1"]
+
+    @pytest.mark.parametrize("value", [{"pem": "not text"}, "", "   ", None])
+    def test_non_text_resolution_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, value: object
+    ) -> None:
+        _patch_factory(monkeypatch, lambda region: _StaticResolver(value))
+        with pytest.raises(ConfigError, match="non-empty text"):
+            _ref_config().load_signing_key()
+
+    def test_resolver_config_errors_pass_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _Refusing:
+            def resolve(self, key: str) -> object:
+                raise ConfigError("boto3 is required")
+
+        _patch_factory(monkeypatch, lambda region: _Refusing())
+        with pytest.raises(ConfigError, match="boto3 is required"):
+            _ref_config().load_signing_key()
+
+    def test_resolver_failure_names_the_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _Failing:
+            def resolve(self, key: str) -> object:
+                raise RuntimeError("store unavailable")
+
+        _patch_factory(monkeypatch, lambda region: _Failing())
+        with pytest.raises(ConfigError, match="'secrets'") as excinfo:
+            _ref_config().load_signing_key()
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# Verifier derived from the signing key
+# ---------------------------------------------------------------------------
+
+
+class TestFromSigningKey:
+    def test_derives_the_public_key(self, tmp_path: Path) -> None:
+        private, public = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(
+            str(key_file),
+            kid=_KID,
+            algorithms=("EdDSA",),
+            audience=_AUDIENCE,
+            issuer=_ISSUER,
+            roles_claim=_ROLES_CLAIM,
+        )
+        assert config.public_keys == {_KID: public}
+
+    def test_derives_from_a_managed_store_ref(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        private, public = _keypair()
+        _patch_factory(monkeypatch, lambda region: _StaticResolver(private))
+        config = JwtAuthConfig.from_signing_key(
+            private_key_ref="secrets:/myapp/jwt-signing-key",
+            kid=_KID,
+            algorithms=("EdDSA",),
+        )
+        assert config.public_keys == {_KID: public}
+
+    def test_requires_exactly_one_source(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigError, match="exactly one of"):
+            JwtAuthConfig.from_signing_key(kid=_KID, algorithms=("EdDSA",))
+
+    def test_previous_key_stays_published(self, tmp_path: Path) -> None:
+        private, public = _keypair()
+        _, previous_public = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(
+            str(key_file),
+            kid="2026-09",
+            algorithms=("EdDSA",),
+            additional_public_keys={"2026-08": previous_public},
+        )
+        assert config.public_keys == {"2026-09": public, "2026-08": previous_public}
+
+    def test_private_material_is_not_retained(self, tmp_path: Path) -> None:
+        private, _ = _keypair()
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text(private)
+        config = JwtAuthConfig.from_signing_key(str(key_file), kid=_KID, algorithms=("EdDSA",))
+        private_body = private.splitlines()[1]
+        assert private_body not in repr(config)
+        assert private_body.encode() not in msgspec.json.encode(config)
+
+    def test_unparseable_key_chains_the_reason(self, tmp_path: Path) -> None:
+        key_file = tmp_path / "signing.pem"
+        key_file.write_text("not a pem")
+        with pytest.raises(ConfigError, match="derive") as excinfo:
+            JwtAuthConfig.from_signing_key(str(key_file), kid=_KID, algorithms=("EdDSA",))
+        assert excinfo.value.__cause__ is not None

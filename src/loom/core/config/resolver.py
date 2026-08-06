@@ -22,7 +22,7 @@ rotation takes effect on the next run without redeployment.
 Built-in resolvers
 ------------------
 :class:`~loom.core.config.ssm.SsmResolver` is the bundled implementation
-for AWS SSM Parameter Store.  Install ``loom[config-ssm]`` to use it::
+for AWS SSM Parameter Store.  Install ``loom-kernel[config-ssm]`` to use it::
 
     from loom.core.config import load_config, SsmResolver
 

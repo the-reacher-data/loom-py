@@ -88,7 +88,8 @@ def _ensure_omegaconf() -> Any:
         return OmegaConf
     except ImportError as exc:
         raise ConfigError(
-            "omegaconf is required for load_config. Install it with: pip install loom[config]"
+            "omegaconf is required for load_config. "
+            "Install it with: pip install loom-kernel[config]"
         ) from exc
 
 
