@@ -1,3 +1,42 @@
+# 🚀 Release 1.1.0 ([#115](https://github.com/the-reacher-data/loom-py/pull/115)) ([`a02872d`](https://github.com/the-reacher-data/loom-py/commit/a02872d756c7ca07fc031a106cea45f062e9f870))
+
+
+## ✨ Features
+### auth
+- **auth:** accept a managed-store reference as the signing key source<br>
+  > JwtIssuerConfig gains private_key_ref ("secrets:/..." or "ssm:/...") as a
+  > third mutually exclusive key source, resolved once when the issuer loads the
+
+- **auth:** derive the verifier from the signing key<br>
+  > JwtAuthConfig.from_signing_key builds the verifying side of the same key, from
+  > a file path or a managed-store ref: two configured values that must match are
+  > two values that can disagree, and a stale public key does not fail loudly — it
+  > accepts nothing, or accepts what a rotated key signed. additional_public_keys
+  > keeps the previous kid published for one rotation window.
+
+
+
+## 🐛 Fixes
+### cache
+- **cache:** refuse a declared alias missing from the config at startup<br>
+  > A declared alias absent from aiocache_config only surfaced on the first cache
+  > hit, as a KeyError far from the typo that caused it. apply_config now refuses
+  > it before touching aiocache. The default alias keeps the sanctioned fallback.
+
+
+### config
+- **config:** name the real distribution in the install hints<br>
+  > The hints said 'pip install loom[config-ssm]', but the distribution is
+  > loom-kernel — copying the command installs an unrelated PyPI package.
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.0.1 ([#112](https://github.com/the-reacher-data/loom-py/pull/112)) ([`8b6fe1a`](https://github.com/the-reacher-data/loom-py/commit/8b6fe1ac1e455d8e96aaa240baa3e4b556862254))
 
 
