@@ -10,6 +10,7 @@ from loom.core.cache.serializer import MsgspecSerializer
 
 if TYPE_CHECKING:
     from loom.core.cache.abc.config import CacheConfig
+from loom.core.config.errors import ConfigError
 
 T = TypeVar("T")
 
@@ -116,6 +117,14 @@ class CacheGateway:
             if config.max_size is not None and _SIMPLE_MEMORY_CACHE in str(entry.get("cache", "")):
                 entry.setdefault("max_size", config.max_size)
             raw[alias] = entry
+        # aiocache.caches.set_config refuses any mapping without a literal
+        # "default" entry, so a config that only declares its own aliases fails.
+        raw.setdefault("default", {"cache": "aiocache.SimpleMemoryCache"})
+        for declared in (config.aiocache_alias, config.counter_alias):
+            if declared and declared not in raw:
+                raise ConfigError(
+                    f"Cache alias {declared!r} is declared but missing from 'aiocache_config'."
+                )
         cls.configure(raw)
 
     # ------------------------------------------------------------------

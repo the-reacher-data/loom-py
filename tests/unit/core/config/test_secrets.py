@@ -234,3 +234,17 @@ class TestSecretsManagerResolverErrors:
             pytest.raises(ConfigError, match="boto3 is required"),
         ):
             resolver.resolve("/some/secret")
+
+
+# ---------------------------------------------------------------------------
+# Missing optional dependency
+# ---------------------------------------------------------------------------
+
+
+class TestSecretsManagerResolverWithoutBoto3:
+    def test_construction_fails_with_install_hint(self) -> None:
+        with (
+            patch("loom.core.config.secrets._boto3_module", None),
+            pytest.raises(ConfigError, match=r"loom\[config-ssm\]"),
+        ):
+            SecretsManagerResolver()

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from loom.core.config.errors import ConfigError
 from loom.core.model import LoomFrozenStruct
@@ -11,6 +13,9 @@ DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json", "/
 """Paths served without authentication unless the application says otherwise."""
 
 _FORBIDDEN_ALGORITHM = "none"
+
+KEY_REF_RESOLVERS: tuple[str, ...] = ("secrets", "ssm")
+"""Resolver prefixes a ``private_key_ref`` may name: AWS Secrets Manager and SSM."""
 
 MAX_ISSUER_TTL_SECONDS = 3600
 """Ceiling for a minted token: signing is reading, so a long-lived token is a
@@ -149,6 +154,78 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             f" roles_claim={self.roles_claim!r})"
         )
 
+    @classmethod
+    def from_signing_key(
+        cls,
+        private_key_path: str,
+        *,
+        kid: str,
+        algorithms: tuple[str, ...],
+        audience: str | None = None,
+        issuer: str | None = None,
+        leeway_seconds: int = 0,
+        exclude_paths: tuple[str, ...] = DEFAULT_EXCLUDE_PATHS,
+        roles_claim: str | None = None,
+        additional_public_keys: dict[str, str] | None = None,
+    ) -> JwtAuthConfig:
+        """Build a verifier whose public key is derived from the signing key.
+
+        For the service that both issues and verifies. Two configured values
+        that must match are two values that can disagree, and a stale public
+        key does not fail loudly — it accepts nothing, or accepts what a
+        rotated key signed. Deriving removes the second value.
+
+        Args:
+            private_key_path: Filesystem path of the PEM signing key. Only the
+                derived public key is kept; the private material is dropped.
+            kid: Key identifier the derived public key is published under.
+            algorithms: Explicit allowlist of accepted JWT algorithms.
+            audience: Expected ``aud`` claim. Validated only when set.
+            issuer: Expected ``iss`` claim. Validated only when set.
+            leeway_seconds: Clock-skew tolerance for time-based claims.
+            exclude_paths: Exact request paths that bypass authentication.
+            roles_claim: Verified claim carrying the caller roles.
+            additional_public_keys: Extra public keys by ``kid``, so the
+                previous key stays published for one rotation window. Public
+                material, so unlike the signing key it is safe to carry as a
+                value.
+
+        Returns:
+            A validated ``JwtAuthConfig`` publishing the derived key.
+
+        Raises:
+            ConfigError: If the signing key cannot be read or parsed. The
+                cause is never chained: a parse error carries the file
+                contents on ``exc.object``.
+        """
+        try:
+            from cryptography.hazmat.primitives import serialization
+        except ImportError as exc:  # pragma: no cover - jwt extra ships it
+            raise ConfigError(
+                "cryptography is required to derive the JWT public key. "
+                "Install it with: pip install loom[jwt]"
+            ) from exc
+        material = _read_key_file(private_key_path, setting="the JWT signing key")
+        try:
+            private = serialization.load_pem_private_key(material.encode(), password=None)
+            public = private.public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        except Exception:
+            raise ConfigError("Could not derive the JWT public key from the signing key.") from None
+        keys = {kid: public.decode()}
+        keys.update(additional_public_keys or {})
+        return cls(
+            public_keys=keys,
+            algorithms=algorithms,
+            audience=audience,
+            issuer=issuer,
+            leeway_seconds=leeway_seconds,
+            exclude_paths=exclude_paths,
+            roles_claim=roles_claim,
+        )
+
     def __post_init__(self) -> None:
         if (self.secret_path is None) == (not self.public_keys):
             raise ConfigError("JWT auth requires exactly one of 'secret_path' or 'public_keys'.")
@@ -212,10 +289,15 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Attributes:
         private_key_path: Filesystem path of the PEM signing key, for
-            asymmetric algorithms. Mutually exclusive with ``secret``.
+            asymmetric algorithms. Mutually exclusive with the other sources.
+        private_key_ref: Managed-store reference of the PEM signing key, as
+            ``"<resolver>:<key>"`` with resolver one of ``secrets`` or ``ssm``
+            (e.g. ``"secrets:/myapp/prod/jwt-signing-key"``). Resolved when the
+            issuer loads the key, so the material never touches disk or config.
+            Mutually exclusive with the other sources.
         secret_path: Filesystem path of the shared secret for HS* algorithms.
-            Requires ``allow_symmetric_signing``. Mutually exclusive with
-            ``private_key_path``.
+            Requires ``allow_symmetric_signing``. Mutually exclusive with the
+            other sources.
         algorithm: The single algorithm tokens are signed with. Issuing chooses
             one; only verification negotiates an allowlist.
         audience: ``aud`` stamped on every token. Mandatory: a token without an
@@ -255,6 +337,7 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """
 
     private_key_path: str | None = None
+    private_key_ref: str | None = None
     secret_path: str | None = None
     algorithm: str = ""
     audience: str = ""
@@ -265,10 +348,18 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     allow_symmetric_signing: bool = False
 
     def __post_init__(self) -> None:
-        if (self.private_key_path is None) == (self.secret_path is None):
+        sources = [
+            source
+            for source in (self.private_key_path, self.private_key_ref, self.secret_path)
+            if source is not None
+        ]
+        if len(sources) != 1:
             raise ConfigError(
-                "JWT issuer requires exactly one of 'private_key_path' or 'secret_path'."
+                "JWT issuer requires exactly one of 'private_key_path', "
+                "'private_key_ref' or 'secret_path'."
             )
+        if self.private_key_ref is not None:
+            _require_valid_key_ref(self.private_key_ref)
         _require_supported(self.algorithm, setting="JWT issuer 'algorithm'")
         if not self.audience.strip():
             raise ConfigError("JWT issuer requires a non-blank 'audience'.")
@@ -295,9 +386,10 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             raise ConfigError(
                 f"JWT algorithm {self.algorithm!r} requires 'secret_path', not 'private_key_path'."
             )
-        if not symmetric and self.private_key_path is None:
+        if not symmetric and self.private_key_path is None and self.private_key_ref is None:
             raise ConfigError(
-                f"JWT algorithm {self.algorithm!r} requires 'private_key_path', not 'secret_path'."
+                f"JWT algorithm {self.algorithm!r} requires 'private_key_path' or "
+                "'private_key_ref', not 'secret_path'."
             )
 
     def load_signing_key(self) -> str:
@@ -311,7 +403,65 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
                 cause is never chained: an OS error carries the path, and a
                 ``UnicodeDecodeError`` carries the file contents on ``exc.object``.
         """
+        if self.private_key_ref is not None:
+            return _fetch_key_ref(self.private_key_ref)
         source = self.secret_path or self.private_key_path
         if source is None:  # pragma: no cover - __post_init__ rules this out
             raise ConfigError("JWT issuer has no signing key configured.")
         return _read_key_file(source, setting="the JWT issuer signing key")
+
+
+def _require_valid_key_ref(ref: str) -> None:
+    """Reject a malformed key ref at construction, not on the first load.
+
+    Args:
+        ref: Candidate ``"<resolver>:<key>"`` reference.
+
+    Raises:
+        ConfigError: If the resolver prefix is unknown or the key is blank.
+    """
+    name, separator, key = ref.partition(":")
+    if not separator or name not in KEY_REF_RESOLVERS or not key.strip():
+        raise ConfigError(
+            "JWT issuer 'private_key_ref' must be '<resolver>:<key>' with resolver "
+            f"in {sorted(KEY_REF_RESOLVERS)}."
+        )
+
+
+def _key_ref_resolver_factories() -> dict[str, Callable[[], Any]]:
+    """Resolver constructors by prefix, imported here so boto3 stays optional.
+
+    Returns:
+        Mapping from resolver prefix to a zero-argument constructor.
+    """
+    from loom.core.config.secrets import SecretsManagerResolver
+    from loom.core.config.ssm import SsmResolver
+
+    return {"secrets": SecretsManagerResolver, "ssm": SsmResolver}
+
+
+def _fetch_key_ref(ref: str) -> str:
+    """Resolve a signing key reference into the key material.
+
+    Args:
+        ref: Validated ``"<resolver>:<key>"`` reference.
+
+    Returns:
+        The key material held by the managed store.
+
+    Raises:
+        ConfigError: If the store cannot answer or answers with something
+            other than non-empty text. The cause is chained: resolver errors
+            name the parameter, never the material.
+    """
+    name, _, key = ref.partition(":")
+    resolver = _key_ref_resolver_factories()[name]()
+    try:
+        value = resolver.resolve(key)
+    except ConfigError:
+        raise
+    except Exception as exc:
+        raise ConfigError(f"Could not resolve the JWT signing key ref via {name!r}.") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError("The resolved JWT signing key is not non-empty text.")
+    return value

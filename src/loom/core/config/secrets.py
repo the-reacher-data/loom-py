@@ -78,6 +78,11 @@ class SecretsManagerResolver:
     """
 
     def __init__(self, region: str | None = None) -> None:
+        if _boto3_module is None:
+            raise ConfigError(
+                "boto3 is required for SecretsManagerResolver. "
+                "Install it with: pip install loom[config-ssm]"
+            )
         self._region = region
         self._client: Any = None
 

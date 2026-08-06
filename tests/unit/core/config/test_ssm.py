@@ -217,3 +217,17 @@ class TestSsmResolverLogging:
         assert all("%STAGE%" not in msg for msg in messages), (
             f"Log must not contain the unexpanded placeholder '%STAGE%', got: {messages}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Missing optional dependency
+# ---------------------------------------------------------------------------
+
+
+class TestSsmResolverWithoutBoto3:
+    def test_construction_fails_with_install_hint(self) -> None:
+        with (
+            patch("loom.core.config.ssm._boto3_module", None),
+            pytest.raises(ConfigError, match=r"loom\[config-ssm\]"),
+        ):
+            SsmResolver()

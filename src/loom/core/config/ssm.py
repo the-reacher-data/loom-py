@@ -77,6 +77,10 @@ class SsmResolver:
         *,
         with_decryption: bool = True,
     ) -> None:
+        if _boto3_module is None:
+            raise ConfigError(
+                "boto3 is required for SsmResolver. Install it with: pip install loom[config-ssm]"
+            )
         self._region = region
         self._with_decryption = with_decryption
         self._client: Any = None
