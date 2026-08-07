@@ -1,3 +1,14 @@
+# 🚀 Release 1.1.1 ([#117](https://github.com/the-reacher-data/loom-py/pull/117)) ([`bd5550b`](https://github.com/the-reacher-data/loom-py/commit/bd5550b3a222a5642994466a84d42d96d768f8eb))
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.1.0 ([#115](https://github.com/the-reacher-data/loom-py/pull/115)) ([`a02872d`](https://github.com/the-reacher-data/loom-py/commit/a02872d756c7ca07fc031a106cea45f062e9f870))
 
 
