@@ -208,7 +208,9 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             additional_public_keys: Extra public keys by ``kid``, so the
                 previous key stays published for one rotation window. Public
                 material, so unlike the signing key it is safe to carry as a
-                value.
+                value. Reusing the derived ``kid`` here is refused: this
+                method exists so the published key cannot drift from the
+                signing key, and an override would reintroduce the drift.
 
         Returns:
             A validated ``JwtAuthConfig`` publishing the derived key.
@@ -236,7 +238,9 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             _require_valid_key_ref(private_key_ref)
             material = _fetch_key_ref(private_key_ref, region=key_ref_region)
         else:
-            material = _read_key_file(private_key_path or "", setting="the JWT signing key")
+            source = private_key_path
+            assert source is not None  # narrowed by the exactly-one check above
+            material = _read_key_file(source, setting="the JWT signing key")
         try:
             private = serialization.load_pem_private_key(material.encode(), password=None)
             public = private.public_key().public_bytes(
@@ -245,8 +249,13 @@ class JwtAuthConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             )
         except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
             raise ConfigError("Could not derive the JWT public key from the signing key.") from exc
-        keys = {kid: public.decode()}
-        keys.update(additional_public_keys or {})
+        extra = additional_public_keys or {}
+        if kid in extra:
+            raise ConfigError(
+                f"additional_public_keys reuses the derived kid {kid!r}; the derived "
+                "key cannot be overridden."
+            )
+        keys = {kid: public.decode(), **extra}
         return cls(
             public_keys=keys,
             algorithms=algorithms,
@@ -432,15 +441,18 @@ class JwtIssuerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             )
 
     def load_signing_key(self) -> str:
-        """Read the signing key, so it lives in the issuer and not in the config.
+        """Load the signing key, so it lives in the issuer and not in the config.
 
         Returns:
-            The key material read from disk.
+            The key material, read from disk or resolved from the managed
+            store when ``private_key_ref`` is set.
 
         Raises:
-            ConfigError: If the file cannot be read or is not UTF-8 text. The
+            ConfigError: If the file cannot be read or is not UTF-8 text (the
                 cause is never chained: an OS error carries the path, and a
-                ``UnicodeDecodeError`` carries the file contents on ``exc.object``.
+                ``UnicodeDecodeError`` carries the file contents on
+                ``exc.object``), or if the managed store cannot answer (that
+                cause is chained: resolver errors never carry the material).
         """
         if self.private_key_ref is not None:
             return _fetch_key_ref(self.private_key_ref, region=self.key_ref_region)
@@ -462,8 +474,8 @@ def _require_valid_key_ref(ref: str) -> None:
     name, separator, key = ref.partition(":")
     if not separator or name not in _KEY_REF_RESOLVER_FACTORIES or not key.strip():
         raise ConfigError(
-            "JWT issuer 'private_key_ref' must be '<resolver>:<key>' with resolver "
-            f"in {sorted(KEY_REF_RESOLVERS)}."
+            "'private_key_ref' must be '<resolver>:<key>' with resolver "
+            f"in {list(KEY_REF_RESOLVERS)}."
         )
 
 
