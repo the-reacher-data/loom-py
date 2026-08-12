@@ -37,6 +37,7 @@ class ETLErrorCode(StrEnum):
     DUPLICATE_TEMP_NAME = "DUPLICATE_TEMP_NAME"
     INVALID_TEMP_APPEND_MIX = "INVALID_TEMP_APPEND_MIX"
     UNKNOWN_PARAM_FIELD = "UNKNOWN_PARAM_FIELD"
+    UNKNOWN_TEMPLATE_FIELD = "UNKNOWN_TEMPLATE_FIELD"
 
 
 class ETLCompilationError(Exception):
@@ -298,6 +299,21 @@ class ETLCompilationError(Exception):
                 "All writers for the same intermediate must use the same mode."
             ),
             field=name,
+        )
+
+    @classmethod
+    def unknown_template_field(
+        cls, step: type, field_name: str, path: str, params_type: type
+    ) -> ETLCompilationError:
+        """A file path template references a field not declared on the params type."""
+        return cls(
+            code=ETLErrorCode.UNKNOWN_TEMPLATE_FIELD,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: file path template {path!r} references unknown "
+                f"field '{field_name}' on {params_type.__name__}"
+            ),
+            field=field_name,
         )
 
     @classmethod

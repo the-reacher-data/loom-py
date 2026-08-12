@@ -11,11 +11,14 @@ from typing import Any, Protocol, cast
 import msgspec
 
 from loom.core.model import LoomFrozenStruct
+from loom.etl.backends._path_template import extract_template_fields
 from loom.etl.compiler._errors import ETLCompilationError, ETLErrorCode
 from loom.etl.compiler._plan import SourceBinding, TargetBinding
 from loom.etl.declarative.expr._params import ParamExpr
 from loom.etl.declarative.expr._predicate import PredicateNode
+from loom.etl.declarative.source import FileSourceSpec
 from loom.etl.declarative.target import TargetSpec
+from loom.etl.declarative.target._file import FileSpec
 from loom.etl.pipeline._step_client import ClientStep
 from loom.etl.pipeline._step_sql import StepSQL
 
@@ -88,6 +91,9 @@ def validate_step(ctx: StepCompilationContext) -> None:
     validate_execute_signature(ctx.step_type, ctx.params_type, ctx.source_bindings)
     validate_upsert_spec(ctx.step_type, ctx.target_binding.spec)
     validate_param_exprs(ctx.step_type, ctx.params_type, ctx.source_bindings, ctx.target_binding)
+    validate_file_path_templates(
+        ctx.step_type, ctx.params_type, ctx.source_bindings, ctx.target_binding
+    )
 
 
 def validate_execute_signature(
@@ -204,6 +210,39 @@ def validate_param_exprs(
         field_name = expr.path[0]
         if field_name not in known:
             raise ETLCompilationError.unknown_param_field(step_type, field_name, params_type)
+
+
+def validate_file_path_templates(
+    step_type: type[Any],
+    params_type: type[Any],
+    source_bindings: tuple[SourceBinding, ...],
+    target_binding: TargetBinding,
+) -> None:
+    """Raise when a literal file path template references an undeclared field.
+
+    Only non-alias paths are validated: alias URIs live in environment
+    config (``storage.files``) and are resolved — and template-checked —
+    at runtime.
+    """
+    known = _known_fields(params_type)
+    if known is None:
+        return
+
+    paths: list[str] = []
+    for binding in source_bindings:
+        spec = binding.spec
+        if isinstance(spec, FileSourceSpec) and not spec.is_alias:
+            paths.append(spec.path)
+    target_spec = target_binding.spec
+    if isinstance(target_spec, FileSpec) and not target_spec.is_alias:
+        paths.append(target_spec.path)
+
+    for path in paths:
+        for field_name in extract_template_fields(path):
+            if field_name not in known:
+                raise ETLCompilationError.unknown_template_field(
+                    step_type, field_name, path, params_type
+                )
 
 
 def _known_fields(params_type: type[Any]) -> frozenset[str] | None:
