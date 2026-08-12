@@ -10,7 +10,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl.backends._format_registry import resolve_format_handler
-from loom.etl.backends._path_template import resolve_path_template
+from loom.etl.backends._path_template import resolve_file_uri
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.declarative._format import Format
@@ -93,20 +93,14 @@ class SparkSourceReader(SourceReader):
         return self._finalize_source_frame(df, spec)
 
     def _resolve_file_path(self, spec: FileSourceSpec, params_instance: Any) -> str:
-        """Return the physical URI for *spec*, resolving alias and template.
-
-        Alias resolution happens first (``storage.files`` lookup), then
-        ``{field}`` placeholders are substituted from *params_instance*.
-        """
-        if not spec.is_alias:
-            return resolve_path_template(spec.path, params_instance)
-        if self._file_locator is None:
-            raise ValueError(
-                f"FromFile.alias({spec.path!r}) requires storage.files to be configured. "
-                "Set storage.files in your config YAML."
-            )
-        uri_template = self._file_locator.locate(spec.path).uri_template
-        return resolve_path_template(uri_template, params_instance)
+        """Return the physical URI for *spec*, resolving alias and template."""
+        return resolve_file_uri(
+            spec.path,
+            is_alias=spec.is_alias,
+            locator=self._file_locator,
+            params_instance=params_instance,
+            role="FromFile",
+        )
 
     def _finalize_source_frame(
         self,

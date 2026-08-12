@@ -9,7 +9,11 @@ import msgspec
 import polars as pl
 import pytest
 
-from loom.etl.backends._path_template import extract_template_fields, resolve_path_template
+from loom.etl.backends._path_template import (
+    extract_template_fields,
+    resolve_file_uri,
+    resolve_path_template,
+)
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
 from loom.etl.declarative._format import Format
@@ -59,6 +63,24 @@ class TestResolvePathTemplate:
     def test_template_without_params_instance_raises(self) -> None:
         with pytest.raises(ValueError, match="no params instance"):
             resolve_path_template("s3://raw/{run_date}.csv", None)
+
+
+class TestResolveFileUri:
+    def test_alias_without_locator_names_the_declaration(self) -> None:
+        with pytest.raises(ValueError, match=r"IntoFile\.alias\('exports'\) requires"):
+            resolve_file_uri(
+                "exports", is_alias=True, locator=None, params_instance=PARAMS, role="IntoFile"
+            )
+
+    def test_literal_path_resolves_template(self) -> None:
+        uri = resolve_file_uri(
+            "s3://raw/{run_date:%Y}.csv",
+            is_alias=False,
+            locator=None,
+            params_instance=PARAMS,
+            role="FromFile",
+        )
+        assert uri == "s3://raw/2026.csv"
 
 
 class TestPolarsFileTemplating:

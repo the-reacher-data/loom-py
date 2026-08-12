@@ -22,7 +22,7 @@ from loom.etl.backends._merge import (
     _log_partition_combos,
     _warn_no_partition_cols,
 )
-from loom.etl.backends._path_template import resolve_path_template
+from loom.etl.backends._path_template import resolve_file_uri
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.spark._dtype import loom_type_to_spark
@@ -418,22 +418,15 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         raise TypeError("Spark backend does not support XLSX format.")
 
     def _resolve_file_spec(self, spec: FileSpec, params_instance: Any) -> FileSpec:
-        """Return a FileSpec with a physical URI, resolving alias and template.
-
-        Alias resolution happens first (``storage.files`` lookup), then
-        ``{field}`` placeholders are substituted from *params_instance*.
-        """
-        if spec.is_alias:
-            if self._file_locator is None:
-                raise ValueError(
-                    f"IntoFile.alias({spec.path!r}) requires storage.files to be configured. "
-                    "Set storage.files in your config YAML."
-                )
-            path = self._file_locator.locate(spec.path).uri_template
-        else:
-            path = spec.path
+        """Return a FileSpec with a physical URI, resolving alias and template."""
         return FileSpec(
-            path=resolve_path_template(path, params_instance),
+            path=resolve_file_uri(
+                spec.path,
+                is_alias=spec.is_alias,
+                locator=self._file_locator,
+                params_instance=params_instance,
+                role="IntoFile",
+            ),
             format=spec.format,
             is_alias=False,
             write_options=spec.write_options,

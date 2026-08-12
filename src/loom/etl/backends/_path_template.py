@@ -14,7 +14,10 @@ backend behavior.
 from __future__ import annotations
 
 import string
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from loom.etl.storage._file_locator import FileLocator
 
 
 def extract_template_fields(path: str) -> tuple[str, ...]:
@@ -82,4 +85,40 @@ def resolve_path_template(path: str, params_instance: Any) -> str:
     return path.format(**mapping)
 
 
-__all__ = ["extract_template_fields", "resolve_path_template"]
+def resolve_file_uri(
+    path: str,
+    *,
+    is_alias: bool,
+    locator: FileLocator | None,
+    params_instance: Any,
+    role: str,
+) -> str:
+    """Return the physical URI for a file source/target spec.
+
+    Alias resolution happens first (``storage.files`` lookup via *locator*),
+    then ``{field}`` placeholders are substituted from *params_instance* —
+    so environment-specific URI templates can also be parameterized.
+
+    Args:
+        path:            Literal path/template, or logical alias name.
+        is_alias:        Whether *path* is a ``storage.files`` alias.
+        locator:         :class:`~loom.etl.storage.FileLocator` or ``None``.
+        params_instance: Concrete params for the current run.
+        role:            Declaration name for error messages
+                         (``"FromFile"`` / ``"IntoFile"``).
+
+    Raises:
+        ValueError: When the alias has no configured locator, or template
+            resolution fails (see :func:`resolve_path_template`).
+    """
+    if is_alias:
+        if locator is None:
+            raise ValueError(
+                f"{role}.alias({path!r}) requires storage.files to be configured. "
+                "Set storage.files in your config YAML."
+            )
+        path = locator.locate(path).uri_template
+    return resolve_path_template(path, params_instance)
+
+
+__all__ = ["extract_template_fields", "resolve_file_uri", "resolve_path_template"]
