@@ -1,3 +1,48 @@
+# 🚀 Release 1.2.0 ([#119](https://github.com/the-reacher-data/loom-py/pull/119)) ([`5afa8ff`](https://github.com/the-reacher-data/loom-py/commit/5afa8ff5f1d3c87e0cef82095a86bc9d400a0782))
+
+
+## ✨ Features
+### etl
+- **etl:** resolve {field} path templates in FromFile/IntoFile from params<br>
+  > FromFile and IntoFile docstrings promised {field_name} placeholders
+  > resolved from params at runtime, but no substitution existed: readers
+  > dropped params_instance on the file branch and writers passed the path
+  > through verbatim, so a templated path either crashed or silently
+  > overwrote the same file on every run.
+  > New loom.etl.backends._path_template: extract_template_fields +
+  > resolve_path_template, str.format semantics (attribute access and
+  > format specs work: {run_date:%Y%m%d}, {run_date.month}).
+  > Polars and Spark readers/writers resolve alias first (storage.files),
+  > then substitute placeholders — env URI templates can be parameterized.
+  > _WritePolicy._write_file now receives params_instance.
+  > Compile-time validation: literal source/target file paths whose
+  > placeholders reference fields missing from the params type fail with
+  > UNKNOWN_TEMPLATE_FIELD; alias paths stay runtime-checked.
+
+
+
+## 🐛 Fixes
+### ci
+- **ci:** dedupe file-uri resolution and accept Metadata-Version 2.5 uploads<br>
+  > Extract resolve_file_uri into backends._path_template: the four
+  > alias-then-template blocks in the polars/spark readers and writers
+  > were byte-identical (Sonar flagged 68.8% duplication on new code);
+  > each site is now a single call with a role label for error messages.
+  > Bump TestPyPI twine to 7.0.0: python -m build resolves hatchling
+  > fresh in its isolated env and current hatchling emits
+  > Metadata-Version 2.5, which twine 6.x rejects ("'2.5' is not a valid
+  > metadata version"). Reproduced locally: 6.2.0 fails, 7.0.0 passes.
+  > Advance the pinned gh-action-pypi-publish to the current release/v1
+  > head (2026-07-28) so the real PyPI publish accepts 2.5 as well.
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.1.1 ([#117](https://github.com/the-reacher-data/loom-py/pull/117)) ([`bd5550b`](https://github.com/the-reacher-data/loom-py/commit/bd5550b3a222a5642994466a84d42d96d768f8eb))
 
 
