@@ -10,6 +10,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.etl.backends._format_registry import resolve_format_handler
+from loom.etl.backends._path_template import resolve_file_uri
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends.spark._dtype import loom_type_to_spark
 from loom.etl.declarative._format import Format
@@ -59,7 +60,7 @@ class SparkSourceReader(SourceReader):
             return self._read_table(spec, params_instance)
 
         if isinstance(spec, FileSourceSpec):
-            return self._read_file(spec)
+            return self._read_file(spec, params_instance)
 
         raise TypeError(
             f"SparkSourceReader does not support source kind {spec.kind!r}. "
@@ -85,22 +86,21 @@ class SparkSourceReader(SourceReader):
 
         return self._finalize_source_frame(df, spec)
 
-    def _read_file(self, spec: FileSourceSpec) -> DataFrame:
+    def _read_file(self, spec: FileSourceSpec, params_instance: Any) -> DataFrame:
         """Read file (CSV, JSON, Parquet), resolving alias if needed."""
-        path = self._resolve_file_path(spec)
+        path = self._resolve_file_path(spec, params_instance)
         df = self._read_file_by_format(path, spec.format, spec.read_options)
         return self._finalize_source_frame(df, spec)
 
-    def _resolve_file_path(self, spec: FileSourceSpec) -> str:
-        """Return the physical URI for *spec*, resolving alias when required."""
-        if not spec.is_alias:
-            return spec.path
-        if self._file_locator is None:
-            raise ValueError(
-                f"FromFile.alias({spec.path!r}) requires storage.files to be configured. "
-                "Set storage.files in your config YAML."
-            )
-        return self._file_locator.locate(spec.path).uri_template
+    def _resolve_file_path(self, spec: FileSourceSpec, params_instance: Any) -> str:
+        """Return the physical URI for *spec*, resolving alias and template."""
+        return resolve_file_uri(
+            spec.path,
+            is_alias=spec.is_alias,
+            locator=self._file_locator,
+            params_instance=params_instance,
+            role="FromFile",
+        )
 
     def _finalize_source_frame(
         self,

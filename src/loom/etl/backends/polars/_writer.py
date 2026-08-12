@@ -18,6 +18,7 @@ from loom.etl.backends._merge import (
     _log_partition_combos,
     _warn_no_partition_cols,
 )
+from loom.etl.backends._path_template import resolve_file_uri
 from loom.etl.backends._predicate import predicate_to_sql
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.backends.polars._historify import PolarsHistorifyBackend
@@ -602,25 +603,25 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         self,
         frame: pl.LazyFrame,
         spec: FileSpec,
+        params_instance: Any,
+        /,
         *,
         streaming: bool,
     ) -> None:
-        """Write to file (CSV, JSON, Parquet), resolving alias if needed."""
-        resolved = self._resolve_file_spec(spec)
+        """Write to file (CSV, JSON, Parquet), resolving alias and template."""
+        resolved = self._resolve_file_spec(spec, params_instance)
         self._file_writer.write(frame, resolved, streaming=streaming)
 
-    def _resolve_file_spec(self, spec: FileSpec) -> FileSpec:
-        """Return a FileSpec with a physical URI, resolving alias when required."""
-        if not spec.is_alias:
-            return spec
-        if self._file_locator is None:
-            raise ValueError(
-                f"IntoFile.alias({spec.path!r}) requires storage.files to be configured. "
-                "Set storage.files in your config YAML."
-            )
-        location = self._file_locator.locate(spec.path)
+    def _resolve_file_spec(self, spec: FileSpec, params_instance: Any) -> FileSpec:
+        """Return a FileSpec with a physical URI, resolving alias and template."""
         return FileSpec(
-            path=location.uri_template,
+            path=resolve_file_uri(
+                spec.path,
+                is_alias=spec.is_alias,
+                locator=self._file_locator,
+                params_instance=params_instance,
+                role="IntoFile",
+            ),
             format=spec.format,
             is_alias=False,
             write_options=spec.write_options,

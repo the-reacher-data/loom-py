@@ -118,7 +118,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                              ``None`` disables audit columns for this write.
         """
         if isinstance(spec, FileSpec):
-            self._write_file(frame, spec, streaming=streaming)
+            self._write_file(frame, spec, params_instance, streaming=streaming)
             return
         if isinstance(spec, (TempSpec, TempFanInSpec)):
             raise TypeError(
@@ -607,10 +607,12 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         self,
         frame: InputFrameT,
         spec: FileSpec,
+        params_instance: Any,
+        /,
         *,
         streaming: bool,
     ) -> None:
-        """Write to file (CSV, JSON, Parquet)."""
+        """Write to file (CSV, JSON, Parquet), resolving path templates from params."""
 
 
 __all__ = ["_WritePolicy"]

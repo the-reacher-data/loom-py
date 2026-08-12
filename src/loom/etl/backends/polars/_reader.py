@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 import polars as pl
 
 from loom.etl.backends._format_registry import resolve_format_handler
+from loom.etl.backends._path_template import resolve_file_uri
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._read_options import CsvReadOptions, ExcelReadOptions, JsonReadOptions
 from loom.etl.declarative.source import FileSourceSpec, SourceSpec, TableSourceSpec
@@ -148,7 +149,7 @@ class PolarsSourceReader(SourceReader):
         if isinstance(spec, TableSourceSpec):
             return self._read_table(spec, params_instance)
         if isinstance(spec, FileSourceSpec):
-            return self._read_file(spec)
+            return self._read_file(spec, params_instance)
         if isinstance(spec, MongoSourceSpec):
             return self._read_mongo(spec, params_instance)
         if isinstance(spec, ClickHouseSourceSpec):
@@ -256,22 +257,21 @@ class PolarsSourceReader(SourceReader):
 
         return self._finalize_source_frame(frame, spec)
 
-    def _read_file(self, spec: FileSourceSpec) -> pl.LazyFrame:
+    def _read_file(self, spec: FileSourceSpec, params_instance: Any) -> pl.LazyFrame:
         """Read file (CSV, JSON, XLSX, Parquet), resolving alias if needed."""
-        path = self._resolve_file_path(spec)
+        path = self._resolve_file_path(spec, params_instance)
         frame = self._read_file_by_format(path, spec.format, spec.read_options)
         return self._finalize_source_frame(frame, spec)
 
-    def _resolve_file_path(self, spec: FileSourceSpec) -> str:
-        """Return the physical URI for *spec*, resolving alias when required."""
-        if not spec.is_alias:
-            return spec.path
-        if self._file_locator is None:
-            raise ValueError(
-                f"FromFile.alias({spec.path!r}) requires storage.files to be configured. "
-                "Set storage.files in your config YAML."
-            )
-        return self._file_locator.locate(spec.path).uri_template
+    def _resolve_file_path(self, spec: FileSourceSpec, params_instance: Any) -> str:
+        """Return the physical URI for *spec*, resolving alias and template."""
+        return resolve_file_uri(
+            spec.path,
+            is_alias=spec.is_alias,
+            locator=self._file_locator,
+            params_instance=params_instance,
+            role="FromFile",
+        )
 
     def _finalize_source_frame(
         self,

@@ -223,7 +223,10 @@ jobs:
           # truth instead of re-resolving. --no-build is not usable for the same
           # reason as the test job (antlr4-python3-runtime has no wheel).
           uv run --frozen --with "build==1.3.0" python -m build
-          uv run --frozen --with "twine==6.2.0" twine upload \
+          # twine >=7 is required: hatchling (resolved fresh by build's
+          # isolated env) now emits Metadata-Version 2.5, which twine 6.x
+          # rejects as an invalid metadata version.
+          uv run --frozen --with "twine==7.0.0" twine upload \
             --repository-url https://test.pypi.org/legacy/ \
             -u __token__ -p "${TEST_PYPI_TOKEN}" \
             --skip-existing dist/*
