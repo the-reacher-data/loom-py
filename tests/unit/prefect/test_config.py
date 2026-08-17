@@ -8,6 +8,8 @@ Verifies:
 - _load_flow_config() raises KeyError when flow_name is not found in YAML.
 - _load_flow_config() picks the correct flow section from multi-flow YAML.
 - _load_flow_config() reads only the flows.<flow_name> section, ignoring others.
+- flow_config_from_mapping() resolves a policy declared beside the schedule.
+- flow_config_from_mapping() refuses shapes Prefect drops at run time.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from loom.prefect._config import FlowConfig, _load_flow_config
+from loom.prefect._config import FlowConfig, _load_flow_config, flow_config_from_mapping
 
 # ---------------------------------------------------------------------------
 # FlowConfig struct tests
@@ -127,3 +129,24 @@ def test_load_flow_config_raises_when_flows_key_missing(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError):
         _load_flow_config(str(config_file), "any_flow")
+
+
+def test_flow_config_from_mapping_falls_back_to_defaults() -> None:
+    assert flow_config_from_mapping(None) == FlowConfig()
+    assert flow_config_from_mapping({}) == FlowConfig()
+
+
+def test_flow_config_from_mapping_reads_an_hour_scale_delay() -> None:
+    cfg = flow_config_from_mapping({"flow_retries": 3, "flow_retry_delay_seconds": 7200})
+    assert cfg.flow_retries == 3
+    assert cfg.flow_retry_delay_seconds == 7200
+
+
+def test_flow_config_rejects_a_list_of_delays() -> None:
+    with pytest.raises(TypeError, match="single number"):
+        flow_config_from_mapping({"flow_retry_delay_seconds": [5400, 12600]})
+
+
+def test_flow_config_rejects_a_negative_delay() -> None:
+    with pytest.raises(ValueError, match="negative"):
+        flow_config_from_mapping({"flow_retry_delay_seconds": -1})

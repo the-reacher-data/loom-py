@@ -10,7 +10,7 @@ import msgspec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.pipeline import ETLPipeline
 from loom.prefect._config import FlowConfig, _load_flow_config
-from loom.prefect.flow._assemble import assemble_flow, load_flow_settings
+from loom.prefect.flow._assemble import FlowSettings, assemble_flow, load_flow_settings
 from loom.prefect.flow._body import build_flow_body
 from loom.prefect.flow._signature import synthesise_flow_signature
 from loom.prefect.manifest import ManifestStore
@@ -55,7 +55,7 @@ def etl_flow(
     """
     settings = load_flow_settings(config_path)
     plan = ETLCompiler().compile(pipeline)
-    flow_cfg = _resolve_flow_config(flow_config_path, pipeline)
+    flow_cfg = _resolve_flow_config(flow_config_path, pipeline, settings)
 
     flow_body = build_flow_body(
         flow_name=name,
@@ -97,10 +97,13 @@ def etl_flow(
 
 
 def _resolve_flow_config(
-    flow_config_path: str | None, pipeline: type[ETLPipeline[Any]]
+    flow_config_path: str | None,
+    pipeline: type[ETLPipeline[Any]],
+    settings: FlowSettings,
 ) -> FlowConfig:
+    """Resolve the retry policy, preferring a dedicated file when passed."""
     if flow_config_path is None:
-        return FlowConfig()
+        return settings.retry_policy
     try:
         return _load_flow_config(flow_config_path, pipeline.__name__)
     except KeyError:
