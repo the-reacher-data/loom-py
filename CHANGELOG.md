@@ -1,3 +1,18 @@
+# 🚀 Release 1.2.1 ([#122](https://github.com/the-reacher-data/loom-py/pull/122)) ([`797f134`](https://github.com/the-reacher-data/loom-py/commit/797f134ebf64378a0af54f89d8fbac10e033553c))
+
+
+
+## 🐛 Fixes
+### prefect
+- **prefect:** let a flow declare its retry policy beside its schedule
+
+
+
+
+
+
+
+
 # 🚀 Release 1.2.0 ([#119](https://github.com/the-reacher-data/loom-py/pull/119)) ([`5afa8ff`](https://github.com/the-reacher-data/loom-py/commit/5afa8ff5f1d3c87e0cef82095a86bc9d400a0782))
 
 
