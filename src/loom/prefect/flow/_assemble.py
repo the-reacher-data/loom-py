@@ -17,6 +17,7 @@ from typing import Any
 
 import prefect
 
+from loom.prefect._config import FlowConfig, flow_config_from_mapping
 from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
 from loom.prefect.deploy._schedule import extract_pool_config
 from loom.prefect.deploy._yaml import read_yaml
@@ -36,6 +37,7 @@ class FlowSettings:
     pool_config: dict[str, dict[str, Any]]
     tags: tuple[str, ...]
     notifiers: tuple[Notifier, ...]
+    retry_policy: FlowConfig
 
 
 def load_flow_settings(config_path: str) -> FlowSettings:
@@ -55,6 +57,7 @@ def load_flow_settings(config_path: str) -> FlowSettings:
         pool_config=extract_pool_config(raw_cfg),
         tags=coerce_tags(raw_cfg.get("tags")),
         notifiers=build_notifiers(raw_cfg.get("notifications")),
+        retry_policy=flow_config_from_mapping(raw_cfg.get("retry")),
     )
 
 
@@ -82,7 +85,8 @@ def assemble_flow(
         correlation_field: Parameter whose value seeds the run name and the
             correlation id, or ``None`` for timestamp/random naming.
         retries: Prefect flow retries; ``None`` disables retries.
-        retry_delay_seconds: Delay between Prefect flow retries.
+        retry_delay_seconds: Delay before the server reschedules the run. The
+            container exits while it waits, so an hour-scale delay is free.
 
     Returns:
         The ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``
