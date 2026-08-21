@@ -39,6 +39,12 @@ class TestIntoTableModes:
                 False,
             ),
             (
+                lambda t: t.replace_matching("day"),
+                ReplacePartitionsSpec,
+                ("day",),
+                False,
+            ),
+            (
                 lambda t: t.replace_partition(
                     year=params.run_date.year, month=params.run_date.month
                 ),
@@ -73,6 +79,11 @@ class TestIntoTableModes:
         assert (getattr(spec, "replace_predicate", None) is not None) is expect_predicate
         if isinstance(spec, UpsertSpec):
             assert spec.upsert_keys == ("order_id",)
+
+    def test_replace_matching_raises_when_no_cols(self) -> None:
+        table = IntoTable("staging.orders")
+        with pytest.raises(ValueError, match="at least one column"):
+            table.replace_matching()
 
     def test_replace_partitions_raises_when_no_cols(self) -> None:
         table = IntoTable("staging.orders")

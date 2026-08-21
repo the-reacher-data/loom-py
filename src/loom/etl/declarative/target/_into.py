@@ -135,6 +135,12 @@ class IntoTable:
         Collects the distinct partition values from the frame at write time and
         builds the replace predicate dynamically — no params required.
 
+        Despite the name, this never requires the table to be physically
+        partitioned: the write is a Delta replaceWhere over the collected
+        VALUES. When the table is not partitioned and the columns are plain
+        keys (a date column on an unpartitioned fact), prefer the alias
+        :meth:`replace_matching`, which says what actually happens.
+
         For replacing a specific partition whose values come from run params,
         use :meth:`replace_partition`.
 
@@ -162,6 +168,40 @@ class IntoTable:
                 streaming=streaming,
             )
         )
+
+    def replace_matching(
+        self,
+        *cols: str,
+        schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
+    ) -> IntoTable:
+        """Write mode: replace the rows matching the frame's values of *cols*.
+
+        Alias of :meth:`replace_partitions` with the semantics in the name: the
+        writer collects the distinct values of *cols* present in the batch frame
+        and issues a Delta replaceWhere over them — physical partitioning is
+        never required. This is the natural write mode for a model table built
+        slice by slice (a fact keyed by day, a queue keyed by its snapshot
+        date): the run recomputes its slices whole and substitutes exactly
+        those rows, idempotently.
+
+        Args:
+            *cols:   Column names whose frame values define the replaced rows.
+            schema:  Schema evolution strategy.
+
+        Returns:
+            New ``IntoTable`` with REPLACE_PARTITIONS mode.
+
+        Raises:
+            ValueError: If no column names are provided.
+
+        Example::
+
+            target = IntoTable("mg.fact_family_matriculation").replace_matching("day")
+        """
+        if not cols:
+            raise ValueError("replace_matching: at least one column name is required.")
+        return self.replace_partitions(*cols, schema=schema, streaming=streaming)
 
     def replace_partition(
         self,
