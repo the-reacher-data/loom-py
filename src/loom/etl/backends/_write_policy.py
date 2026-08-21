@@ -294,6 +294,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
                 partition_cols=spec.partition_cols,
             )
             return
+        if spec.require_physical:
+            self._require_physical_partitions(target, spec.partition_cols)
         aligned = self._align(frame, existing, spec.schema_mode)
         materialized = self._materialize_checked(aligned, target, streaming)
         self._replace_partitions(
@@ -302,6 +304,30 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             partition_cols=spec.partition_cols,
             schema_mode=spec.schema_mode,
         )
+
+    def _physical_partition_columns(self, target: ResolvedTarget) -> tuple[str, ...] | None:
+        """The table's physical partition columns, or ``None`` when the backend
+        cannot tell — which makes ``require_physical`` refuse rather than guess."""
+        return None
+
+    def _require_physical_partitions(
+        self, target: ResolvedTarget, partition_cols: tuple[str, ...]
+    ) -> None:
+        physical = self._physical_partition_columns(target)
+        if physical is None:
+            raise ValueError(
+                f"replace_physical_partitions: backend cannot verify the physical "
+                f"partitioning of {target}. Use replace_partitions/replace_matching, "
+                f"or a backend that exposes partition metadata."
+            )
+        missing = [col for col in partition_cols if col not in physical]
+        if missing:
+            raise ValueError(
+                f"replace_physical_partitions: table {target} is partitioned by "
+                f"{list(physical) or 'nothing'} but the write asked for {list(partition_cols)} "
+                f"(missing: {missing}). For value-based replacement on these columns "
+                f"use replace_matching instead."
+            )
 
     def _do_replace_where(
         self,

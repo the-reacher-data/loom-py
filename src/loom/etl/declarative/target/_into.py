@@ -203,6 +203,52 @@ class IntoTable:
             raise ValueError("replace_matching: at least one column name is required.")
         return self.replace_partitions(*cols, schema=schema, streaming=streaming)
 
+    def replace_physical_partitions(
+        self,
+        *cols: str,
+        schema: SchemaMode = SchemaMode.STRICT,
+        streaming: bool = False,
+    ) -> IntoTable:
+        """Write mode: the TRUE partition replace — refuses on an unpartitioned table.
+
+        Same collected-values predicate as :meth:`replace_partitions`, plus a
+        write-time check that the Delta table is physically partitioned by
+        every column in *cols*: on a partitioned table the replaceWhere prunes
+        whole partitions instead of rewriting row groups, and asking for that
+        on a table that cannot deliver it is a design smell this mode turns
+        into an error. For value-based replacement on an unpartitioned table
+        use :meth:`replace_matching`.
+
+        Args:
+            *cols:   Physical partition column names to collect from the frame.
+            schema:  Schema evolution strategy.
+
+        Returns:
+            New ``IntoTable`` with REPLACE_PARTITIONS mode (physical check on).
+
+        Raises:
+            ValueError: If no column names are provided.
+
+        Example::
+
+            target = IntoTable("pg.snap_st_dgt_registration").replace_physical_partitions(
+                "year", "month", "day"
+            )
+        """
+        if not cols:
+            raise ValueError(
+                "replace_physical_partitions: at least one partition column name is required."
+            )
+        return self._with(
+            ReplacePartitionsSpec(
+                table_ref=self._ref,
+                partition_cols=cols,
+                schema_mode=schema,
+                streaming=streaming,
+                require_physical=True,
+            )
+        )
+
     def replace_partition(
         self,
         *,

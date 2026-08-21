@@ -45,6 +45,12 @@ class TestIntoTableModes:
                 False,
             ),
             (
+                lambda t: t.replace_physical_partitions("year", "month"),
+                ReplacePartitionsSpec,
+                ("year", "month"),
+                False,
+            ),
+            (
                 lambda t: t.replace_partition(
                     year=params.run_date.year, month=params.run_date.month
                 ),
@@ -79,6 +85,21 @@ class TestIntoTableModes:
         assert (getattr(spec, "replace_predicate", None) is not None) is expect_predicate
         if isinstance(spec, UpsertSpec):
             assert spec.upsert_keys == ("order_id",)
+
+    def test_replace_physical_partitions_sets_the_flag(self) -> None:
+        spec = IntoTable("staging.orders").replace_physical_partitions("year")._to_spec()
+        assert isinstance(spec, ReplacePartitionsSpec)
+        assert spec.require_physical is True
+
+    def test_replace_matching_does_not_set_the_flag(self) -> None:
+        spec = IntoTable("staging.orders").replace_matching("day")._to_spec()
+        assert isinstance(spec, ReplacePartitionsSpec)
+        assert spec.require_physical is False
+
+    def test_replace_physical_partitions_raises_when_no_cols(self) -> None:
+        table = IntoTable("staging.orders")
+        with pytest.raises(ValueError, match="at least one partition column"):
+            table.replace_physical_partitions()
 
     def test_replace_matching_raises_when_no_cols(self) -> None:
         table = IntoTable("staging.orders")

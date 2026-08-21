@@ -405,6 +405,11 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         )
         _log_write_commit("replace", location)
 
+    def _physical_partition_columns(self, target: ResolvedTarget) -> tuple[str, ...] | None:
+        location = self._as_path_target(target).location
+        dt = DeltaTable(location.uri, storage_options=location.storage_options or {})
+        return tuple(dt.metadata().partition_columns)
+
     def _replace_partitions(
         self,
         frame: pl.DataFrame,

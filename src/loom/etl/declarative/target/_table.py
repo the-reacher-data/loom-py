@@ -75,6 +75,11 @@ class ReplacePartitionsSpec:
     partition_cols: tuple[str, ...]
     schema_mode: SchemaMode = SchemaMode.STRICT
     streaming: bool = False
+    require_physical: bool = False
+    """When ``True`` the writer refuses unless the table is PHYSICALLY
+    partitioned by every column in ``partition_cols`` — the true
+    partition-replace, where the predicate maps to whole-partition file
+    pruning instead of a row-level rewrite."""
 
 
 @dataclass(frozen=True)
