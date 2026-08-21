@@ -338,6 +338,40 @@ def test_writer_replace_partitions_overwrites_matching_partition(tmp_path: Path)
     assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
 
 
+def test_writer_replace_physical_partitions_refuses_an_unpartitioned_table(
+    tmp_path: Path,
+) -> None:
+    initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
+    _seed(tmp_path, "staging.flatfacts", initial)  # sin particion fisica
+    writer = PolarsTargetWriter(tmp_path)
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.flatfacts"),
+        partition_cols=("year",),
+        require_physical=True,
+    )
+    with pytest.raises(ValueError, match="partitioned by nothing but the write asked"):
+        writer.write(pl.DataFrame({"year": [2024], "v": [99]}).lazy(), spec, None)
+
+
+def test_writer_replace_physical_partitions_writes_on_a_partitioned_table(
+    tmp_path: Path,
+) -> None:
+    path = table_path(tmp_path, TableRef("staging.partfacts"))
+    path.mkdir(parents=True, exist_ok=True)
+    initial = pl.DataFrame({"year": [2023, 2024], "v": [10, 20]})
+    write_deltalake(str(path), initial, mode="overwrite", partition_by=["year"])
+    writer = PolarsTargetWriter(tmp_path)
+    spec = ReplacePartitionsSpec(
+        table_ref=TableRef("staging.partfacts"),
+        partition_cols=("year",),
+        require_physical=True,
+    )
+    writer.write(pl.DataFrame({"year": [2024], "v": [99]}).lazy(), spec, None)
+    result = _read_table(tmp_path, "staging.partfacts")
+    assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
+    assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
+
+
 def test_writer_replace_partitions_with_string_values(tmp_path: Path) -> None:
     initial = pl.DataFrame({"region": ["us", "eu"], "v": [1, 2]})
     _seed(tmp_path, "staging.regions", initial)
