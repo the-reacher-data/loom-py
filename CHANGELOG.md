@@ -1,3 +1,39 @@
+# 🚀 Release 1.2.2 ([#124](https://github.com/the-reacher-data/loom-py/pull/124)) ([`ced8b6a`](https://github.com/the-reacher-data/loom-py/commit/ced8b6ab8bba62b7d34e57ad334d26f29af1e0c2))
+
+
+## ✨ Features
+### etl
+- **etl:** replace_matching, el alias que dice lo que replace_partitions hace<br>
+  > replace_partitions nunca ha exigido particion fisica: colecta los VALORES de
+  > las columnas presentes en el frame y emite un replaceWhere de Delta sobre
+  > ellos. El nombre ha causado confusion real en tablas de model sin particionar
+  > (facts por dia, colas por fecha de snapshot). replace_matching(*cols) es el
+  > mismo spec con la semantica en el nombre; replace_partitions queda intacto
+  > (en uso) y su docstring apunta al alias.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **etl:** replace_physical_partitions — el replace de particiones DE VERDAD<br>
+  > La familia queda completa y cada nombre dice lo que hace:
+  > replace_matching(*cols): replaceWhere por los VALORES del frame; tablas sin
+  > particionar (facts por dia, colas por fecha).
+  > replace_physical_partitions(*cols): mismo predicado MAS un check en escritura
+  > contra el metadata Delta — si la tabla no esta fisicamente particionada por
+  > esas columnas, rechaza en alto en vez de degradar a rewrite por filas. Un
+  > backend sin metadata de particiones (spark hoy) tambien rechaza, no adivina.
+  > replace_partitions(*cols): intacto (en uso), su docstring dirige a los dos.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.2.1 ([#122](https://github.com/the-reacher-data/loom-py/pull/122)) ([`797f134`](https://github.com/the-reacher-data/loom-py/commit/797f134ebf64378a0af54f89d8fbac10e033553c))
 
 
