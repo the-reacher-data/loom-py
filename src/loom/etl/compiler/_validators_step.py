@@ -198,10 +198,16 @@ def validate_param_exprs(
     source_bindings: tuple[SourceBinding, ...],
     target_binding: TargetBinding,
 ) -> None:
-    """Raise when any ParamExpr references an undeclared params field."""
+    """Raise when any ParamExpr references an undeclared params field.
+
+    A reference is declared when it is a struct field of *params_type* or a
+    public ``property`` on the class — computed read-only params resolve
+    through the same ``getattr`` chain at runtime as plain fields.
+    """
     known = _known_fields(params_type)
     if known is None:
         return
+    known = known | _class_properties(params_type)
 
     exprs: list[ParamExpr] = []
     for binding in source_bindings:
@@ -233,11 +239,14 @@ def validate_file_path_templates(
 
     Only non-alias paths are validated: alias URIs live in environment
     config (``storage.files``) and are resolved — and template-checked —
-    at runtime.
+    at runtime.  As in :func:`validate_param_exprs`, public ``property``
+    names on the params class count as known fields — template resolution
+    uses the same ``getattr`` at runtime.
     """
     known = _known_fields(params_type)
     if known is None:
         return
+    known = known | _class_properties(params_type)
 
     paths: list[str] = []
     for binding in source_bindings:
@@ -263,6 +272,18 @@ def _known_fields(params_type: type[Any]) -> frozenset[str] | None:
         return frozenset(f.name for f in msgspec.structs.fields(params_type))
     except Exception:
         return None
+
+
+def _class_properties(params_type: type[Any]) -> frozenset[str]:
+    """Public ``property`` names declared on *params_type* (class inspection).
+
+    Only properties count — methods and private names stay unknown.
+    """
+    return frozenset(
+        name
+        for name, member in inspect.getmembers(params_type)
+        if isinstance(member, property) and not name.startswith("_")
+    )
 
 
 def _collect_exprs(node: PredicateNode, out: list[ParamExpr]) -> None:

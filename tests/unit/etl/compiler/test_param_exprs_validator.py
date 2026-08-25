@@ -159,3 +159,45 @@ class _PlainParams:
 def test_non_struct_params_skipped() -> None:
     pred = col("year") == p.anything_goes
     validate_param_exprs(_Step, _PlainParams, (_source_binding(pred),), _append_target())
+
+
+# ---------------------------------------------------------------------------
+# Read-only properties on the params class are known fields
+# ---------------------------------------------------------------------------
+
+
+class _PWithProperty(ETLParams):
+    run_date: date
+
+    @property
+    def partition_day(self) -> date:
+        return self.run_date
+
+    def not_a_property(self) -> date:
+        return self.run_date
+
+
+def test_property_reference_passes() -> None:
+    pred = col("day") == p.partition_day.year
+    validate_param_exprs(_Step, _PWithProperty, (_source_binding(pred),), _append_target())
+
+
+def test_property_reference_in_replace_where_passes() -> None:
+    pred = col("day") == p.partition_day
+    validate_param_exprs(_Step, _PWithProperty, (), _replace_where_target(pred))
+
+
+def test_method_reference_still_raises() -> None:
+    pred = col("day") == p.not_a_property
+    with pytest.raises(ETLCompilationError) as exc_info:
+        validate_param_exprs(_Step, _PWithProperty, (_source_binding(pred),), _append_target())
+    assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
+    assert exc_info.value.field == "not_a_property"
+
+
+def test_unknown_field_still_raises_with_property_params() -> None:
+    pred = col("day") == p.bad_field
+    with pytest.raises(ETLCompilationError) as exc_info:
+        validate_param_exprs(_Step, _PWithProperty, (_source_binding(pred),), _append_target())
+    assert exc_info.value.code == ETLErrorCode.UNKNOWN_PARAM_FIELD
+    assert exc_info.value.field == "bad_field"
