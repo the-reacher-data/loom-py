@@ -7,8 +7,8 @@ Public surface
 - :func:`maintenance_flow` — build one ``@prefect.flow`` per
   :class:`~loom.etl.maintenance.MaintenanceStep` (vacuum, compact, z-order).
 - :func:`backfill_flow` — build one ``@prefect.flow`` that runs an
-  ``ETLPipeline`` one chunk at a time (:data:`BackfillChunk` — hour, day or
-  month), then finalizes once after all chunks.
+  ``ETLPipeline`` one chunk at a time (:data:`BackfillChunk` — hour, day,
+  month or year), then finalizes once after all chunks.
 - :data:`BackfillChunk` — chunk granularity literal accepted by
   :func:`backfill_flow`.
 

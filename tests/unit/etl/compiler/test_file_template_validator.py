@@ -72,3 +72,31 @@ def test_alias_paths_are_not_validated_at_compile_time() -> None:
     """Alias URIs live in storage config; template check happens at runtime."""
     target = TargetBinding(spec=FileSpec(path="exports_daily", format=Format.CSV, is_alias=True))
     validate_file_path_templates(_Step, _P, (_file_source("events_raw", is_alias=True),), target)
+
+
+# ---------------------------------------------------------------------------
+# Read-only properties on the params class are known template fields
+# ---------------------------------------------------------------------------
+
+
+class _PWithProperty(ETLParams):
+    run_date: date
+
+    @property
+    def partition_day(self) -> date:
+        return self.run_date
+
+
+def test_property_in_source_path_passes() -> None:
+    validate_file_path_templates(
+        _Step, _PWithProperty, (_file_source("s3://raw/{partition_day}.csv"),), _table_target()
+    )
+
+
+def test_unknown_field_still_raises_with_property_params() -> None:
+    with pytest.raises(ETLCompilationError) as excinfo:
+        validate_file_path_templates(
+            _Step, _PWithProperty, (_file_source("s3://raw/{nope}.csv"),), _table_target()
+        )
+    assert excinfo.value.code is ETLErrorCode.UNKNOWN_TEMPLATE_FIELD
+    assert excinfo.value.field == "nope"

@@ -130,3 +130,49 @@ class UpsertSpec:
     partition_cols: tuple[str, ...] = field(default_factory=tuple)
     upsert_exclude: tuple[str, ...] = field(default_factory=tuple)
     upsert_include: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class UpdateSpec:
+    """Merge rows into a Delta table updating matches only (matched-only MERGE).
+
+    Same MERGE machinery as :class:`UpsertSpec`, minus the insert branch:
+    source rows without a matching target row are silently ignored, so the
+    write can never grow the table.  The ``upsert_*`` read-only aliases
+    satisfy the shared merge-plan protocol without leaking upsert vocabulary
+    into the public field names.
+
+    Args:
+        table_ref:      Logical table reference.
+        keys:           Columns that uniquely identify a row (MERGE ON).
+        schema_mode:    Schema evolution strategy.
+        partition_cols: Partition columns added to the MERGE ON predicate
+                        for file-level pruning.  Strongly recommended for
+                        large tables.
+        exclude:        Columns excluded from ``UPDATE SET`` on match.
+                        Mutually exclusive with *include*.
+        include:        Explicit allow-list for ``UPDATE SET``.
+                        Mutually exclusive with *exclude*.
+    """
+
+    table_ref: TableRef
+    keys: tuple[str, ...]
+    schema_mode: SchemaMode = SchemaMode.STRICT
+    partition_cols: tuple[str, ...] = field(default_factory=tuple)
+    exclude: tuple[str, ...] = field(default_factory=tuple)
+    include: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def upsert_keys(self) -> tuple[str, ...]:
+        """Merge-protocol alias for :attr:`keys`."""
+        return self.keys
+
+    @property
+    def upsert_exclude(self) -> tuple[str, ...]:
+        """Merge-protocol alias for :attr:`exclude`."""
+        return self.exclude
+
+    @property
+    def upsert_include(self) -> tuple[str, ...]:
+        """Merge-protocol alias for :attr:`include`."""
+        return self.include

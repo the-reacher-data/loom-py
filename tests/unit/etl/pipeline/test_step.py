@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, ClassVar, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -15,6 +15,7 @@ from loom.etl import (
     Sources,
     SourceSet,
 )
+from loom.etl.declarative.target import IntoHistory
 from loom.etl.pipeline._step import _SourceForm
 
 
@@ -141,3 +142,11 @@ def test_streaming_name_is_not_treated_as_inline_source() -> None:
 
             def execute(self, params: RunParams) -> Any:
                 return None
+
+
+def test_target_annotation_admits_into_history() -> None:
+    """IntoHistory is part of the declared target union, not just runtime-tolerated."""
+    hints = get_type_hints(ETLStep)
+    assert get_origin(hints["target"]) is ClassVar  # ClassVar wrapper intact
+    (target_union,) = get_args(hints["target"])
+    assert IntoHistory in get_args(target_union)

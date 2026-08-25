@@ -114,6 +114,16 @@ class _StubWritePolicy(_WritePolicy[list[int], list[int], dict[str, Any]]):
     ) -> None:
         pass  # Stub — not used in historify dispatch tests.
 
+    def _update(
+        self,
+        frame: list[int],
+        target: ResolvedTarget,
+        *,
+        spec: Any,
+        existing_schema: dict[str, Any],
+    ) -> None:
+        pass  # Stub — not used in historify dispatch tests.
+
     def _read_existing_data(
         self,
         target: ResolvedTarget,

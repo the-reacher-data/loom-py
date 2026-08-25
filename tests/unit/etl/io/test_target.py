@@ -20,6 +20,7 @@ from loom.etl.declarative.target._table import (
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
@@ -70,6 +71,12 @@ class TestIntoTableModes:
                 (),
                 False,
             ),
+            (
+                lambda t: t.update(keys=("order_id",)),
+                UpdateSpec,
+                (),
+                False,
+            ),
         ],
     )
     def test_into_table_mode_contract(
@@ -83,7 +90,7 @@ class TestIntoTableModes:
         assert isinstance(spec, expected_type)
         assert getattr(spec, "partition_cols", ()) == expected_partitions
         assert (getattr(spec, "replace_predicate", None) is not None) is expect_predicate
-        if isinstance(spec, UpsertSpec):
+        if isinstance(spec, (UpsertSpec, UpdateSpec)):
             assert spec.upsert_keys == ("order_id",)
 
     def test_replace_physical_partitions_sets_the_flag(self) -> None:
@@ -173,6 +180,23 @@ class TestIntoTableModes:
         assert spec.partition_cols == ("year", "month")
         assert spec.upsert_exclude == ("created_at",)
         assert spec.upsert_include == ("status",)
+
+    def test_update_propagates_include_exclude_and_partitions(self) -> None:
+        spec = (
+            IntoTable("staging.orders")
+            .update(
+                keys=("order_id",),
+                partition_cols=("year", "month"),
+                exclude=("created_at",),
+                include=("status",),
+            )
+            ._to_spec()
+        )
+        assert isinstance(spec, UpdateSpec)
+        assert spec.keys == ("order_id",)
+        assert spec.partition_cols == ("year", "month")
+        assert spec.exclude == ("created_at",)
+        assert spec.include == ("status",)
 
     def test_repr_includes_mode(self) -> None:
         repr_value = repr(IntoTable("staging.orders").append())

@@ -126,3 +126,83 @@ def test_exclude_overlaps_key_raises() -> None:
     spec = _spec(_ExcludeOverlapsKey)
     with pytest.raises(ETLCompilationError, match="id"):
         validate_upsert_spec(_ExcludeOverlapsKey, spec)
+
+
+# ---------------------------------------------------------------------------
+# update() shares the merge checks and names itself in errors
+# ---------------------------------------------------------------------------
+
+
+class _ValidUpdate(ETLStep[_P]):
+    target = IntoTable("t.out").update(keys=("id",))
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_valid_update_passes() -> None:
+    validate_upsert_spec(_ValidUpdate, _spec(_ValidUpdate))
+
+
+class _UpdateNoKeys(ETLStep[_P]):
+    target = IntoTable("t.out").update(keys=())
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_update_empty_keys_raises_naming_update() -> None:
+    spec = _spec(_UpdateNoKeys)
+    with pytest.raises(ETLCompilationError, match=r"update\(\) requires at least one key"):
+        validate_upsert_spec(_UpdateNoKeys, spec)
+
+
+class _UpdateBothExcludeInclude(ETLStep[_P]):
+    target = IntoTable("t.out").update(keys=("id",), exclude=("x",), include=("y",))
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_update_exclude_and_include_raises_naming_update() -> None:
+    spec = _spec(_UpdateBothExcludeInclude)
+    with pytest.raises(ETLCompilationError, match=r"update\(\) exclude= and include="):
+        validate_upsert_spec(_UpdateBothExcludeInclude, spec)
+
+
+class _UpdateIncludeAbsorbed(ETLStep[_P]):
+    target = IntoTable("t.out").update(
+        keys=("id",), partition_cols=("year",), include=("id", "year")
+    )
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_update_include_absorbed_by_keys_and_partitions_raises() -> None:
+    spec = _spec(_UpdateIncludeAbsorbed)
+    with pytest.raises(ETLCompilationError, match="guaranteed no-op"):
+        validate_upsert_spec(_UpdateIncludeAbsorbed, spec)
+
+
+class _UpdateIncludeWithRealColumn(ETLStep[_P]):
+    target = IntoTable("t.out").update(keys=("id",), include=("id", "status"))
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_update_include_with_one_real_column_passes() -> None:
+    validate_upsert_spec(_UpdateIncludeWithRealColumn, _spec(_UpdateIncludeWithRealColumn))
+
+
+class _UpsertIncludeAbsorbed(ETLStep[_P]):
+    # upsert still inserts unmatched rows, so an absorbed include is not a no-op.
+    target = IntoTable("t.out").upsert(keys=("id",), include=("id",))
+
+    def execute(self, params: _P) -> Any:
+        return None
+
+
+def test_upsert_include_absorbed_is_not_flagged() -> None:
+    validate_upsert_spec(_UpsertIncludeAbsorbed, _spec(_UpsertIncludeAbsorbed))

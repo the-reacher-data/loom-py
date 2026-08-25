@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
-from delta.tables import DeltaTable
+from delta.tables import DeltaMergeBuilder, DeltaTable
 from pyspark.errors.exceptions.base import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as T
@@ -20,6 +20,7 @@ from loom.etl.backends._merge import (
     TARGET_ALIAS,
     _build_merge_plan,
     _log_partition_combos,
+    _MergePlan,
     _warn_no_partition_cols,
 )
 from loom.etl.backends._path_template import resolve_file_uri
@@ -37,7 +38,7 @@ from loom.etl.declarative._write_options import (
 from loom.etl.declarative.target import SchemaMode
 from loom.etl.declarative.target._file import FileSpec
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
-from loom.etl.declarative.target._table import AppendSpec, UpsertSpec
+from loom.etl.declarative.target._table import AppendSpec, UpdateSpec, UpsertSpec
 from loom.etl.lineage._records import LineageRecord, get_lineage_schema
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage._file_locator import FileLocator
@@ -250,7 +251,40 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
     ) -> None:
         """Merge frame into target using Delta MERGE (delta-spark)."""
         _ = existing_schema
+        merger, plan = self._matched_update_merger(frame, target, spec)
+        merger.whenNotMatchedInsert(
+            values=cast(dict[str, str | Column], plan.insert_values)
+        ).execute()
 
+    def _update(
+        self,
+        frame: DataFrame,
+        target: ResolvedTarget,
+        *,
+        spec: UpdateSpec,
+        existing_schema: SparkPhysicalSchema,
+    ) -> None:
+        """Merge frame into target using a matched-only Delta MERGE.
+
+        No ``whenNotMatchedInsert`` clause is emitted, so unmatched source
+        rows are ignored and the MERGE inserts zero rows by construction.
+        """
+        _ = existing_schema
+        merger, _plan = self._matched_update_merger(frame, target, spec)
+        merger.execute()
+
+    def _matched_update_merger(
+        self,
+        frame: DataFrame,
+        target: ResolvedTarget,
+        spec: UpsertSpec | UpdateSpec,
+    ) -> tuple[DeltaMergeBuilder, _MergePlan]:
+        """Build the Delta MERGE up to the shared ``whenMatchedUpdate`` clause.
+
+        Both :meth:`_upsert` and :meth:`_update` start from the same merge:
+        partition-combo pre-filter, ON predicate, and the matched-update
+        column map.  The caller chains its remaining clauses and executes.
+        """
         if isinstance(target, CatalogTarget):
             dt = DeltaTable.forName(self._spark, target.catalog_ref.ref)
         else:
@@ -265,13 +299,12 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
             source_alias=SOURCE_ALIAS,
         )
 
-        (
+        merger = (
             dt.alias(TARGET_ALIAS)
             .merge(frame.alias(SOURCE_ALIAS), merge_plan.predicate)
             .whenMatchedUpdate(set=cast(dict[str, str | Column], merge_plan.update_set))
-            .whenNotMatchedInsert(values=cast(dict[str, str | Column], merge_plan.insert_values))
-            .execute()
         )
+        return merger, merge_plan
 
     def _read_existing_data(
         self,

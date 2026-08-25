@@ -29,8 +29,17 @@ from loom.prefect.observer._logging_bridge import install_log_bridge, uninstall_
 
 _log = logging.getLogger(__name__)
 
-BackfillChunk = Literal["hour", "day", "month"]
-"""Partition granularity of a :func:`~loom.prefect.backfill_flow` window."""
+BackfillChunk = Literal["hour", "day", "month", "year"]
+"""Partition granularity of a :func:`~loom.prefect.backfill_flow` window.
+
+Prefer the coarsest granularity the pipeline tolerates: when the cost of a
+backfill is dominated by per-chunk overhead rather than data volume, a
+multi-year window runs in a handful of ``"year"`` chunks instead of
+hundreds of monthly ones.  Mind that at ``"year"`` the two window edges
+also operate at year scale: the start is floored to January 1 (a window
+opening in June reprocesses from the year's start) and the finalize run
+pins ``window_end`` to January 1 of the *current* year.
+"""
 
 
 @dataclass(frozen=True)
@@ -45,6 +54,10 @@ class _ChunkAlgebra:
 def _advance_month(value: datetime) -> datetime:
     year, month = divmod(value.month, 12)
     return value.replace(year=value.year + year, month=month + 1)
+
+
+def _advance_year(value: datetime) -> datetime:
+    return value.replace(year=value.year + 1)
 
 
 _CHUNK_ALGEBRA: dict[BackfillChunk, _ChunkAlgebra] = {
@@ -62,6 +75,11 @@ _CHUNK_ALGEBRA: dict[BackfillChunk, _ChunkAlgebra] = {
         floor=lambda v: v.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
         advance=_advance_month,
         label="%Y%m",
+    ),
+    "year": _ChunkAlgebra(
+        floor=lambda v: v.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0),
+        advance=_advance_year,
+        label="%Y",
     ),
 }
 
