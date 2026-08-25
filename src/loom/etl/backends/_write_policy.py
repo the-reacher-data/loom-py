@@ -23,6 +23,7 @@ from loom.etl.declarative.target import (
     TargetSpec,
     TempFanInSpec,
     TempSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.declarative.target._history import HistorifyRepairReport, HistorifySpec
@@ -158,6 +159,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
             ReplacePartitionsSpec: self._dispatch_replace_partitions,
             ReplaceWhereSpec: self._dispatch_replace_where,
             UpsertSpec: self._dispatch_upsert,
+            UpdateSpec: self._dispatch_update,
             HistorifySpec: self._dispatch_historify,
         }
 
@@ -212,6 +214,16 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         self._do_upsert(frame, target, cast(UpsertSpec, spec), streaming)
+
+    def _dispatch_update(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: TargetSpec,
+        _params_instance: Any,
+        streaming: bool,
+    ) -> None:
+        self._do_update(frame, target, cast(UpdateSpec, spec), streaming)
 
     def _dispatch_historify(
         self,
@@ -384,6 +396,36 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         aligned = self._align(frame, existing, spec.schema_mode)
         materialized = self._materialize_checked(aligned, target, streaming=False)
         self._upsert(
+            materialized,
+            target,
+            spec=spec,
+            existing_schema=existing,
+        )
+
+    def _do_update(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        spec: UpdateSpec,
+        streaming: bool,
+    ) -> None:
+        """Update policy: require exists → align+write.
+
+        Unlike :meth:`_do_upsert` there is no creation path: an update-only
+        MERGE against a missing table has nothing to update, and creating the
+        table from the frame would insert every row — exactly what this mode
+        exists to prevent.
+        """
+        existing = self._physical_schema(target)
+        if existing is None:
+            raise SchemaNotFoundError(
+                f"Destination table does not exist: {target}. "
+                "update() never inserts, so it cannot create the table — "
+                "create it first with append/replace/upsert."
+            )
+        aligned = self._align(frame, existing, spec.schema_mode)
+        materialized = self._materialize_checked(aligned, target, streaming=False)
+        self._update(
             materialized,
             target,
             spec=spec,
@@ -589,6 +631,17 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         existing_schema: PhysicalSchemaT,
     ) -> None:
         """Upsert/merge into existing table."""
+
+    @abstractmethod
+    def _update(
+        self,
+        frame: WriteFrameT,
+        target: ResolvedTarget,
+        *,
+        spec: UpdateSpec,
+        existing_schema: PhysicalSchemaT,
+    ) -> None:
+        """Matched-only merge into existing table — never inserts."""
 
     @abstractmethod
     def _historify(

@@ -16,6 +16,7 @@ from loom.etl.declarative.target._table import (
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
@@ -51,6 +52,19 @@ class TestTableVariants:
         assert spec.upsert_exclude == ()
         assert spec.upsert_include == ()
 
+    def test_update_keys_and_defaults(self) -> None:
+        spec = UpdateSpec(table_ref=_REF, keys=("id",))
+        assert spec.keys == ("id",)
+        assert spec.partition_cols == ()
+        assert spec.exclude == ()
+        assert spec.include == ()
+
+    def test_update_aliases_satisfy_merge_protocol(self) -> None:
+        spec = UpdateSpec(table_ref=_REF, keys=("id",), exclude=("created_at",))
+        assert spec.upsert_keys == spec.keys
+        assert spec.upsert_exclude == spec.exclude
+        assert spec.upsert_include == spec.include
+
     def test_upsert_include_exclude(self) -> None:
         spec = UpsertSpec(table_ref=_REF, upsert_keys=("id",), upsert_exclude=("created_at",))
         assert spec.upsert_exclude == ("created_at",)
@@ -65,6 +79,7 @@ class TestTableVariants:
             ReplacePartitionsSpec(table_ref=_REF, partition_cols=("year",)),
             ReplaceWhereSpec(table_ref=_REF, replace_predicate=_PRED),
             UpsertSpec(table_ref=_REF, upsert_keys=("id",)),
+            UpdateSpec(table_ref=_REF, keys=("id",)),
         ],
     )
     def test_table_variants_are_frozen(self, spec: object) -> None:
@@ -79,6 +94,7 @@ class TestTableVariants:
             ReplacePartitionsSpec(table_ref=_REF, partition_cols=("year",)),
             ReplaceWhereSpec(table_ref=_REF, replace_predicate=_PRED),
             UpsertSpec(table_ref=_REF, upsert_keys=("id",)),
+            UpdateSpec(table_ref=_REF, keys=("id",)),
             FileSpec(path="s3://bucket/out.csv", format=Format.CSV),
             TempSpec(temp_name="normalized", temp_scope=CheckpointScope.RUN),
             TempFanInSpec(temp_name="parts", temp_scope=CheckpointScope.RUN),

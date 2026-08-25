@@ -28,6 +28,7 @@ class ETLErrorCode(StrEnum):
     UPSERT_NO_KEYS = "UPSERT_NO_KEYS"
     UPSERT_EXCLUDE_INCLUDE_CONFLICT = "UPSERT_EXCLUDE_INCLUDE_CONFLICT"
     UPSERT_KEY_IN_EXCLUDE = "UPSERT_KEY_IN_EXCLUDE"
+    UPDATE_EMPTY_UPDATE_SET = "UPDATE_EMPTY_UPDATE_SET"
     MISSING_GENERIC_PARAM = "MISSING_GENERIC_PARAM"
     MISSING_TARGET = "MISSING_TARGET"
     INVALID_TARGET_TYPE = "INVALID_TARGET_TYPE"
@@ -171,38 +172,56 @@ class ETLCompilationError(Exception):
         )
 
     @classmethod
-    def upsert_no_keys(cls, step: type) -> ETLCompilationError:
-        """upsert() declared with no key columns."""
+    def upsert_no_keys(cls, step: type, method: str = "upsert") -> ETLCompilationError:
+        """upsert()/update() declared with no key columns."""
         return cls(
             code=ETLErrorCode.UPSERT_NO_KEYS,
             component=step.__qualname__,
             message=(
-                f"{step.__qualname__}: upsert() requires at least one key column. "
+                f"{step.__qualname__}: {method}() requires at least one key column. "
                 'Pass keys=("col",) to identify rows uniquely.'
             ),
         )
 
     @classmethod
-    def upsert_exclude_include_conflict(cls, step: type) -> ETLCompilationError:
-        """upsert() has both exclude= and include= set."""
+    def upsert_exclude_include_conflict(
+        cls, step: type, method: str = "upsert"
+    ) -> ETLCompilationError:
+        """upsert()/update() has both exclude= and include= set."""
         return cls(
             code=ETLErrorCode.UPSERT_EXCLUDE_INCLUDE_CONFLICT,
             component=step.__qualname__,
             message=(
-                f"{step.__qualname__}: upsert() exclude= and include= are mutually exclusive. "
+                f"{step.__qualname__}: {method}() exclude= and include= are mutually exclusive. "
                 "Use one or the other, not both."
             ),
         )
 
     @classmethod
-    def upsert_key_in_exclude(cls, step: type, overlap: frozenset[str]) -> ETLCompilationError:
-        """upsert() exclude= contains columns that are also upsert keys."""
+    def upsert_key_in_exclude(
+        cls, step: type, overlap: frozenset[str], method: str = "upsert"
+    ) -> ETLCompilationError:
+        """upsert()/update() exclude= contains columns that are also merge keys."""
         return cls(
             code=ETLErrorCode.UPSERT_KEY_IN_EXCLUDE,
             component=step.__qualname__,
             message=(
-                f"{step.__qualname__}: upsert() exclude={sorted(overlap)} overlaps with "
-                "upsert keys — key columns are always excluded from UPDATE SET."
+                f"{step.__qualname__}: {method}() exclude={sorted(overlap)} overlaps with "
+                f"{method} keys — key columns are always excluded from UPDATE SET."
+            ),
+        )
+
+    @classmethod
+    def update_empty_update_set(cls, step: type, include: tuple[str, ...]) -> ETLCompilationError:
+        """update() include= is fully absorbed by keys and partition columns."""
+        return cls(
+            code=ETLErrorCode.UPDATE_EMPTY_UPDATE_SET,
+            component=step.__qualname__,
+            message=(
+                f"{step.__qualname__}: update() include={sorted(include)} is fully covered "
+                "by keys/partition_cols, which are always excluded from UPDATE SET — "
+                "the MERGE would update no columns and the write would be a guaranteed "
+                "no-op. List at least one non-key, non-partition column."
             ),
         )
 

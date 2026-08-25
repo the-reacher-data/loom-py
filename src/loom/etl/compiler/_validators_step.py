@@ -19,6 +19,7 @@ from loom.etl.declarative.expr._predicate import PredicateNode
 from loom.etl.declarative.source import FileSourceSpec
 from loom.etl.declarative.target import TargetSpec
 from loom.etl.declarative.target._file import FileSpec
+from loom.etl.declarative.target._table import UpdateSpec
 from loom.etl.pipeline._step_client import ClientStep
 from loom.etl.pipeline._step_sql import StepSQL
 
@@ -44,9 +45,19 @@ class _ReplaceWhereSpecLike(Protocol):
 
 
 class _UpsertSpecLike(Protocol):
-    upsert_keys: tuple[str, ...]
-    upsert_exclude: tuple[str, ...]
-    upsert_include: tuple[str, ...]
+    """Merge-shaped spec — satisfied by ``UpsertSpec`` fields and ``UpdateSpec`` aliases."""
+
+    @property
+    def upsert_keys(self) -> tuple[str, ...]: ...
+
+    @property
+    def partition_cols(self) -> tuple[str, ...]: ...
+
+    @property
+    def upsert_exclude(self) -> tuple[str, ...]: ...
+
+    @property
+    def upsert_include(self) -> tuple[str, ...]: ...
 
 
 class _HistorifySpecLike(Protocol):
@@ -325,13 +336,20 @@ def _is_historify_like(spec: object) -> bool:
 
 
 def validate_upsert_spec(step_type: type[Any], spec: TargetSpec) -> None:
-    """Validate UPSERT-specific constraints at compile time."""
+    """Validate UPSERT/UPDATE merge constraints at compile time.
+
+    :class:`~loom.etl.declarative.target.UpdateSpec` mirrors the upsert merge fields, so the
+    same checks apply — only the builder method named in the error changes.
+    """
     if not _is_upsert_like(spec):
         return
+    method = "update" if isinstance(spec, UpdateSpec) else "upsert"
     upsert_spec = cast(_UpsertSpecLike, spec)
-    _check_upsert_keys_non_empty(step_type, upsert_spec)
-    _check_upsert_exclude_include_exclusive(step_type, upsert_spec)
-    _check_upsert_exclude_keys_disjoint(step_type, upsert_spec)
+    _check_upsert_keys_non_empty(step_type, upsert_spec, method)
+    _check_upsert_exclude_include_exclusive(step_type, upsert_spec, method)
+    _check_upsert_exclude_keys_disjoint(step_type, upsert_spec, method)
+    if method == "update":
+        _check_update_include_not_absorbed(step_type, upsert_spec)
 
 
 def validate_historify_spec(step_type: type[Any], spec: TargetSpec) -> None:
@@ -484,20 +502,38 @@ def _warn_historify_track_none(step_type: type[Any], spec: _HistorifySpecLike) -
         )
 
 
-def _check_upsert_keys_non_empty(step_type: type[Any], spec: _UpsertSpecLike) -> None:
+def _check_upsert_keys_non_empty(step_type: type[Any], spec: _UpsertSpecLike, method: str) -> None:
     if not spec.upsert_keys:
-        raise ETLCompilationError.upsert_no_keys(step_type)
+        raise ETLCompilationError.upsert_no_keys(step_type, method)
 
 
-def _check_upsert_exclude_include_exclusive(step_type: type[Any], spec: _UpsertSpecLike) -> None:
+def _check_upsert_exclude_include_exclusive(
+    step_type: type[Any], spec: _UpsertSpecLike, method: str
+) -> None:
     if spec.upsert_exclude and spec.upsert_include:
-        raise ETLCompilationError.upsert_exclude_include_conflict(step_type)
+        raise ETLCompilationError.upsert_exclude_include_conflict(step_type, method)
 
 
-def _check_upsert_exclude_keys_disjoint(step_type: type[Any], spec: _UpsertSpecLike) -> None:
+def _check_upsert_exclude_keys_disjoint(
+    step_type: type[Any], spec: _UpsertSpecLike, method: str
+) -> None:
     overlap = frozenset(spec.upsert_exclude) & frozenset(spec.upsert_keys)
     if overlap:
-        raise ETLCompilationError.upsert_key_in_exclude(step_type, overlap)
+        raise ETLCompilationError.upsert_key_in_exclude(step_type, overlap, method)
+
+
+def _check_update_include_not_absorbed(step_type: type[Any], spec: _UpsertSpecLike) -> None:
+    """Raise when update() include= cannot produce a single UPDATE SET column.
+
+    Keys and partition columns are always excluded from UPDATE SET, and
+    update() never inserts — so an include list fully absorbed by them makes
+    the whole write a guaranteed no-op: a green pipeline that repairs nothing.
+    """
+    if not spec.upsert_include:
+        return
+    always_excluded = frozenset(spec.upsert_keys) | frozenset(spec.partition_cols)
+    if frozenset(spec.upsert_include) <= always_excluded:
+        raise ETLCompilationError.update_empty_update_set(step_type, spec.upsert_include)
 
 
 def _is_upsert_like(spec: object) -> bool:

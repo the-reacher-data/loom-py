@@ -71,6 +71,7 @@ Every `IntoTable` target declares exactly one write mode by chaining a method.
 | `replace_partition` | Overwrite a single known partition | `IntoTable("staging.orders").replace_partition(year=params.run_date.year)` |
 | `replace_where` | Overwrite rows matching a predicate | `IntoTable("staging.orders").replace_where(col("date") == params.run_date)` |
 | `upsert` | Merge on key columns | `IntoTable("staging.orders").upsert(keys=("order_id",))` |
+| `update` | Update matching rows only — never inserts | `IntoTable("staging.orders").update(keys=("order_id",))` |
 
 See the [ETL pipelines guide](../etl/pipelines.md) for the full write-mode reference.
 

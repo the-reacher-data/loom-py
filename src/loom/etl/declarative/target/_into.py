@@ -14,6 +14,7 @@ set by chaining a write-intent method::
         (col("year") == params.run_date.year) & (col("month") == params.run_date.month)
     )
     IntoTable("staging.orders").upsert(keys=("order_id",))
+    IntoTable("staging.orders").update(keys=("order_id",), include=("status",))
     IntoFile("s3://exports/report_{run_date}.csv", format=Format.CSV)
 """
 
@@ -36,6 +37,7 @@ from loom.etl.declarative.target._table import (
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
@@ -55,7 +57,7 @@ class IntoTable:
 
     The write mode is set by chaining one of:
     :meth:`append`, :meth:`replace`, :meth:`replace_partitions`,
-    :meth:`replace_where`, :meth:`upsert`.
+    :meth:`replace_where`, :meth:`upsert`, :meth:`update`.
 
     Args:
         ref: Logical table reference — ``str`` or :class:`~loom.etl.TableRef`.
@@ -387,6 +389,66 @@ class IntoTable:
                 partition_cols=partition_cols,
                 upsert_exclude=exclude,
                 upsert_include=include,
+                schema_mode=schema,
+            )
+        )
+
+    def update(
+        self,
+        *,
+        keys: tuple[str, ...],
+        partition_cols: tuple[str, ...] = (),
+        exclude: tuple[str, ...] = (),
+        include: tuple[str, ...] = (),
+        schema: SchemaMode = SchemaMode.STRICT,
+    ) -> IntoTable:
+        """Write mode: update matching rows only (matched-only MERGE).
+
+        The insert-less sibling of :meth:`upsert`: rows whose keys match are
+        updated; source rows without a match are IGNORED — nothing is ever
+        inserted.  Use it when an insert would be a bug, e.g. repairing
+        columns of an existing table.  Because it never inserts, the target
+        table must already exist — the first-write creation path of
+        :meth:`upsert` does not apply and a missing table is a write error.
+
+        Declaring ``partition_cols`` is strongly recommended for large tables —
+        it allows Delta to prune files at the log level before evaluating the
+        join condition.  Without it, every MERGE forces a full table scan.
+
+        Args:
+            keys:           Columns that uniquely identify a row.  Used in the
+                            MERGE ``ON`` join condition.
+            partition_cols: Partition columns to include in the MERGE ``ON``
+                            predicate and for Delta log pruning.  Must be a
+                            subset of the frame columns.
+            exclude:        Columns to exclude from ``UPDATE SET`` on match.
+                            Keys and partition columns are always excluded.
+                            Mutually exclusive with *include*.
+            include:        Explicit allow-list of columns to update on match.
+                            Keys and partition columns are always excluded even
+                            if listed here.  Mutually exclusive with *exclude*.
+            schema:         Schema evolution strategy.  Defaults to
+                            :attr:`~SchemaMode.STRICT`.
+
+        Returns:
+            New ``IntoTable`` with UPDATE mode.
+
+        Example::
+
+            # Repair one column of an existing fact — never add rows
+            target = IntoTable("mg.fact_orders").update(
+                keys=("order_id",),
+                partition_cols=("year", "month"),
+                include=("family_id",),
+            )
+        """
+        return self._with(
+            UpdateSpec(
+                table_ref=self._ref,
+                keys=keys,
+                partition_cols=partition_cols,
+                exclude=exclude,
+                include=include,
                 schema_mode=schema,
             )
         )

@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 import polars as pl
 from deltalake import CommitProperties, DeltaTable, WriterProperties, write_deltalake
+from deltalake.table import TableMerger
 
 from loom.core.logger import get_logger
 from loom.etl.backends._historify._transform import scd2_transform
@@ -16,6 +17,7 @@ from loom.etl.backends._merge import (
     _build_merge_plan,
     _build_partition_predicate,
     _log_partition_combos,
+    _MergePlan,
     _warn_no_partition_cols,
 )
 from loom.etl.backends._path_template import resolve_file_uri
@@ -33,6 +35,7 @@ from loom.etl.declarative.target._history import HistorifyRepairReport, Historif
 from loom.etl.declarative.target._table import (
     AppendSpec,
     ReplacePartitionsSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.lineage._records import LineageRecord, WriteContext, get_lineage_schema
@@ -490,9 +493,55 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
         spec: UpsertSpec,
         existing_schema: PolarsPhysicalSchema,
     ) -> None:
-        """Merge frame into target using Delta MERGE."""
-        path_target = self._as_path_target(target)
+        """Merge frame into target using Delta MERGE (update + insert)."""
         _ = existing_schema
+        merger, plan, location = self._matched_update_merger(frame, target, spec, mode="upsert")
+        merger.when_not_matched_insert(updates=plan.insert_values).execute()
+        _log_write_commit("upsert", location)
+
+    def _update(
+        self,
+        frame: pl.DataFrame,
+        target: ResolvedTarget,
+        *,
+        spec: UpdateSpec,
+        existing_schema: PolarsPhysicalSchema,
+    ) -> None:
+        """Merge frame into target using a matched-only Delta MERGE.
+
+        No ``when_not_matched_insert`` clause is emitted, so unmatched source
+        rows are ignored and the MERGE inserts zero rows by construction.
+        """
+        _ = existing_schema
+        merger, _plan, location = self._matched_update_merger(frame, target, spec, mode="update")
+        merger.execute()
+        _log_write_commit("update", location)
+
+    def _matched_update_merger(
+        self,
+        frame: pl.DataFrame,
+        target: ResolvedTarget,
+        spec: UpsertSpec | UpdateSpec,
+        *,
+        mode: str,
+    ) -> tuple[TableMerger, _MergePlan, TableLocation]:
+        """Build the Delta MERGE up to the shared ``when_matched_update`` clause.
+
+        Both :meth:`_upsert` and :meth:`_update` start from the same merge:
+        partition-combo pre-filter, ON predicate, and the matched-update
+        column map.  The caller chains its remaining clauses and executes.
+
+        Args:
+            frame:  Materialised source frame.
+            target: Resolved path target.
+            spec:   Upsert or update spec (identical merge fields).
+            mode:   Write-mode label for logging.
+
+        Returns:
+            Tuple of the prepared merger, the merge plan, and the target
+            location (for commit logging).
+        """
+        path_target = self._as_path_target(target)
         location = path_target.location
 
         # Collect partition combinations for pre-filter
@@ -512,24 +561,19 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
 
         dt = DeltaTable(location.uri, storage_options=location.storage_options or {})
         _log_write_start(
-            "upsert",
+            mode,
             location,
             frame,
             partition_cols=spec.partition_cols,
             predicate=merge_plan.predicate,
         )
-        (
-            dt.merge(
-                source=frame,
-                predicate=merge_plan.predicate,
-                source_alias=SOURCE_ALIAS,
-                target_alias=TARGET_ALIAS,
-            )
-            .when_matched_update(updates=merge_plan.update_set)
-            .when_not_matched_insert(updates=merge_plan.insert_values)
-            .execute()
-        )
-        _log_write_commit("upsert", location)
+        merger = dt.merge(
+            source=frame,
+            predicate=merge_plan.predicate,
+            source_alias=SOURCE_ALIAS,
+            target_alias=TARGET_ALIAS,
+        ).when_matched_update(updates=merge_plan.update_set)
+        return merger, merge_plan, location
 
     def _read_existing_data(
         self,

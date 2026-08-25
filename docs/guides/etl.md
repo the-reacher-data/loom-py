@@ -269,6 +269,21 @@ target = IntoTable("events.orders").upsert(
 `partition_cols` is optional but strongly recommended — without it every MERGE
 forces a full table scan.
 
+### update
+
+Matched-only MERGE. Rows whose keys match are updated; source rows without a
+match are ignored — nothing is ever inserted. Use it when an insert would be
+a bug, e.g. repairing columns of an existing table. The target table must
+already exist: a missing table is a write error, not a create.
+
+```python
+target = IntoTable("events.orders").update(
+    keys=("order_id",),
+    partition_cols=("year", "month"),  # strongly recommended for large tables
+    include=("status",),               # only these columns are updated
+)
+```
+
 ### historify
 
 For SCD Type 2 history tracking use `IntoHistory` instead of `IntoTable`.
@@ -283,6 +298,7 @@ SNAPSHOT vs LOG mode, and configuration of boundary columns.
 | `IntoTable(...).replace_partition(...)` | Replace known partition | Above |
 | `IntoTable(...).replace_where(...)` | Predicate-based overwrite | Above |
 | `IntoTable(...).upsert(...)` | Merge by key | Above |
+| `IntoTable(...).update(...)` | Update matches only, never insert | Above |
 | `IntoHistory(...)` | SCD Type 2 historification | [Below](#historify) |
 
 ---

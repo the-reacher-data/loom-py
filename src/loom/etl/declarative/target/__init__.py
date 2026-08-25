@@ -17,6 +17,7 @@ TABLE targets (Delta Lake):
 * :class:`ReplacePartitionsSpec`  — overwrite partitions present in the frame
 * :class:`ReplaceWhereSpec`       — overwrite rows matching a static predicate
 * :class:`UpsertSpec`             — MERGE with explicit merge keys
+* :class:`UpdateSpec`             — matched-only MERGE (never inserts)
 * :class:`HistorifySpec`          — SCD Type 2 merge with history tracking
 
 Non-table targets:
@@ -56,6 +57,7 @@ from loom.etl.declarative.target._table import (
     ReplacePartitionsSpec,
     ReplaceSpec,
     ReplaceWhereSpec,
+    UpdateSpec,
     UpsertSpec,
 )
 from loom.etl.declarative.target._temp import TempFanInSpec, TempSpec
@@ -66,6 +68,7 @@ TargetSpec = (
     | ReplacePartitionsSpec
     | ReplaceWhereSpec
     | UpsertSpec
+    | UpdateSpec
     | HistorifySpec
     | FileSpec
     | TempSpec
@@ -108,6 +111,7 @@ __all__ = [
     "ReplacePartitionsSpec",
     "ReplaceWhereSpec",
     "UpsertSpec",
+    "UpdateSpec",
     "HistorifySpec",
     # file / temp specs
     "FileSpec",

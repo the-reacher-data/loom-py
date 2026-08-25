@@ -35,7 +35,7 @@ TARGET_ALIAS = "t"
 
 
 class _UpsertLike(Protocol):
-    """Structural protocol satisfied by both ``UpsertSpec`` and ``UpsertOp``.
+    """Structural protocol satisfied by the merge specs (``UpsertSpec``, ``UpdateSpec``).
 
     Declared as read-only properties so frozen dataclasses satisfy it.
     """
@@ -214,7 +214,7 @@ def _build_merge_plan(
 
 
 def _warn_no_partition_cols(table_ref: str) -> None:
-    """Emit a WARNING when no partition columns are declared on an UPSERT.
+    """Emit a WARNING when no partition columns are declared on a MERGE write.
 
     Without partition columns the MERGE predicate cannot prune Delta log files,
     forcing a full table scan.  For large tables this can be very expensive.
@@ -223,7 +223,7 @@ def _warn_no_partition_cols(table_ref: str) -> None:
         table_ref: Logical table reference string (for the log message).
     """
     _log.warning(
-        "upsert table=%s has no partition_cols — full table scan on MERGE. "
+        "merge table=%s has no partition_cols — full table scan on MERGE. "
         "Declare partition_cols= to enable Delta log file pruning.",
         table_ref,
     )
@@ -239,7 +239,7 @@ def _log_partition_combos(
         combos:    List of partition combination dicts collected from the frame.
         table_ref: Logical table reference string.
     """
-    _log.debug("upsert table=%s partition_combos=%d", table_ref, len(combos))
+    _log.debug("merge table=%s partition_combos=%d", table_ref, len(combos))
 
 
 def _build_partition_predicate(
