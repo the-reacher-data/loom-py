@@ -15,7 +15,7 @@ Public API
 - :class:`FlowCtx` — operational context (correlation_id, run_id, env).
 - :func:`etl_flow` — per-ETL flow factory with synthesized signature.
 - :func:`backfill_flow` / :data:`BackfillChunk` — chunked backfill flow
-  factory (hour/day/month partitions plus a finalize pass).
+  factory (hour/day/month/year partitions plus a finalize pass).
 - :func:`discover_and_deploy_etls` — walks a flows package and registers
   one Prefect deployment per ETL.
 - :class:`ManifestStore` / :class:`RunManifest` / :class:`StepEntry` —

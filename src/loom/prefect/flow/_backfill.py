@@ -62,7 +62,9 @@ def backfill_flow(
         window_start_field: Name of the datetime field holding the window start.
         window_end_field: Name of the datetime field holding the (exclusive)
             window end; also the field pinned on the finalize run.
-        chunk: Partition granularity used to slice the window.
+        chunk: Partition granularity used to slice the window.  At
+            ``"year"`` the floor/finalize edges operate at year scale —
+            see :data:`~loom.prefect.BackfillChunk`.
         storage_config_path: Path to the loom storage YAML read at runtime.
             Overridable via ``LOOM_STORAGE_CONFIG_PATH``.
         manifest_store: Optional manifest backend, for observability only.

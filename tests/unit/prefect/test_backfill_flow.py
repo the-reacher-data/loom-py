@@ -250,6 +250,62 @@ def test_month_chunk_slices_by_month_across_year_boundary(
     ]
 
 
+def test_year_chunk_slices_by_calendar_year(tmp_path: Path, runner: MagicMock) -> None:
+    # partial edges: mid-2022 to mid-2025 -> whole years 2022..2025.
+    flow = _build_flow(tmp_path, chunk="year")
+    flow.fn(
+        updated_at_from=datetime(2022, 6, 15, 10, 30, tzinfo=UTC),
+        updated_at_to=datetime(2025, 3, 1, tzinfo=UTC),
+    )
+    assert _windows(runner) == [
+        (datetime(2022, 1, 1, tzinfo=UTC), datetime(2023, 1, 1, tzinfo=UTC)),
+        (datetime(2023, 1, 1, tzinfo=UTC), datetime(2024, 1, 1, tzinfo=UTC)),
+        (datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)),
+        (datetime(2025, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)),
+    ]
+
+
+def test_year_chunk_exact_boundary_excludes_end_year(tmp_path: Path, runner: MagicMock) -> None:
+    # exclusive end exactly on Jan 1 -> that year is NOT backfilled.
+    flow = _build_flow(tmp_path, chunk="year")
+    flow.fn(
+        updated_at_from=datetime(2023, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    assert _windows(runner) == [
+        (datetime(2023, 1, 1, tzinfo=UTC), datetime(2024, 1, 1, tzinfo=UTC)),
+        (datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)),
+    ]
+
+
+def test_year_runs_use_year_scoped_correlation_ids(tmp_path: Path, runner: MagicMock) -> None:
+    flow = _build_flow(tmp_path, chunk="year")
+    flow.fn(
+        updated_at_from=datetime(2023, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    corr_ids = [
+        c.kwargs["correlation_id"]
+        for c in runner.run.call_args_list
+        if c.kwargs["include"] == [_CHUNK_PROCESS]
+    ]
+    assert corr_ids == ["backfill-2023", "backfill-2024"]
+    assert len(set(corr_ids)) == len(corr_ids)
+
+
+def test_year_start_from_skips_earlier_years(tmp_path: Path, runner: MagicMock) -> None:
+    flow = _build_flow(tmp_path, chunk="year")
+    flow.fn(
+        updated_at_from=datetime(2015, 1, 1, tzinfo=UTC),
+        updated_at_to=datetime(2019, 1, 1, tzinfo=UTC),
+        start_from=datetime(2017, 8, 3, 9, 0, tzinfo=UTC),
+    )
+    assert [w[0] for w in _windows(runner)] == [
+        datetime(2017, 1, 1, tzinfo=UTC),
+        datetime(2018, 1, 1, tzinfo=UTC),
+    ]
+
+
 def test_factory_rejects_unknown_per_chunk_process(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="per_chunk_processes"):
         _build_flow(tmp_path, per_chunk_processes=["NoSuchProcess"])
