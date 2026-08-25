@@ -20,7 +20,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from loom.core.logger import get_logger
 from loom.etl.declarative.source import FromFile, FromTable, FromTemp, Sources, SourceSet
-from loom.etl.declarative.target import IntoFile, IntoTable, IntoTemp
+from loom.etl.declarative.target import IntoFile, IntoHistory, IntoTable, IntoTemp
 from loom.etl.declarative.target._client import IntoClient
 from loom.etl.pipeline._generics import _extract_generic_arg
 
@@ -82,7 +82,7 @@ class ETLStep(Generic[ParamsT]):
     """
 
     sources: ClassVar[Sources | SourceSet[Any] | None] = None
-    target: ClassVar[IntoTable | IntoFile | IntoTemp | IntoClient | None] = None
+    target: ClassVar[IntoTable | IntoHistory | IntoFile | IntoTemp | IntoClient | None] = None
     streaming: ClassVar[bool] = False
 
     # Set by __init_subclass__

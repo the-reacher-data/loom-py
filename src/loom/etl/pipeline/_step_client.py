@@ -45,7 +45,7 @@ from __future__ import annotations
 import typing
 from typing import Any, ClassVar, Generic, TypeVar, cast
 
-from loom.etl.declarative.target import IntoFile, IntoTable, IntoTemp
+from loom.etl.declarative.target import IntoFile, IntoHistory, IntoTable, IntoTemp
 from loom.etl.declarative.target._client import IntoClient
 from loom.etl.pipeline._step import ETLStep
 
@@ -80,7 +80,9 @@ class ClientStep(ETLStep[ParamsT], Generic[ParamsT]):
                 )
     """
 
-    target: ClassVar[IntoTable | IntoFile | IntoTemp | IntoClient | None] = IntoClient()
+    target: ClassVar[IntoTable | IntoHistory | IntoFile | IntoTemp | IntoClient | None] = (
+        IntoClient()
+    )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
