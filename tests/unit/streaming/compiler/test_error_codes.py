@@ -6,18 +6,20 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.streaming import (
-    CompilationError,
-    CompilationIssue,
     Fork,
     ForkRoute,
     FromTopic,
     IntoTopic,
     Process,
     StreamFlow,
-    StreamingErrorCode,
     StreamShape,
-    compile_flow,
     msg,
+)
+from loom.streaming.compiler import (
+    CompilationError,
+    CompilationIssue,
+    StreamingErrorCode,
+    compile_flow,
 )
 from loom.streaming.compiler.phases.build_plan import (
     _build_dispatch_table,
