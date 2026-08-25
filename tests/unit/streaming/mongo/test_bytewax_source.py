@@ -9,7 +9,7 @@ import pytest
 from pymongo.errors import OperationFailure
 
 from loom.streaming import StreamShape
-from loom.streaming.compiler._plan import CompiledMongoCDCSource
+from loom.streaming.compiler import CompiledMongoCDCSource
 from loom.streaming.mongo import MongoSourceConfig
 from loom.streaming.mongo._bytewax_source import (
     MongoCDCPartition,

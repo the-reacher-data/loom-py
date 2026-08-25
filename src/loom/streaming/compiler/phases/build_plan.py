@@ -8,6 +8,11 @@ from typing import Any, Literal, get_args, get_origin
 
 from loom.core.config import ConfigContext
 from loom.core.config.keys import ConfigKey
+from loom.streaming.compiler._errors import (
+    error_envelope_unparameterized,
+    payload_type_invalid,
+    storage_sink_unsupported,
+)
 from loom.streaming.compiler._plan import (
     CompilationError,
     CompiledMongoCDCSource,
@@ -155,12 +160,7 @@ def _build_dispatch_table(payloads: tuple[type[Any], ...]) -> DispatchTable:
         if origin is ErrorEnvelope:
             args = get_args(t)
             if not args:
-                raise CompilationError(
-                    [
-                        "ErrorEnvelope in FromMultiTypeTopic must be parameterized, "
-                        f"e.g. ErrorEnvelope[OrderEvent]. Got: {t!r}"
-                    ]
-                )
+                raise CompilationError([error_envelope_unparameterized(t)])
             inner_type = args[0]
             key = _require_message_type(inner_type)
             error[key] = t
@@ -171,7 +171,10 @@ def _build_dispatch_table(payloads: tuple[type[Any], ...]) -> DispatchTable:
 
 
 def _require_message_type(t: type[Any]) -> str:
-    return str(t.loom_message_type())
+    try:
+        return str(t.loom_message_type())
+    except AttributeError:
+        raise CompilationError([payload_type_invalid(t)]) from None
 
 
 def _build_nodes(flow: StreamFlow[Any, Any]) -> list[CompiledNode]:
@@ -356,7 +359,7 @@ def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStor
                 config=ch_resolved.sink,
                 database_config=None,
             )
-    raise ValueError(f"Unsupported storage sink: {type(node).__name__}")
+    raise CompilationError([storage_sink_unsupported(node)])
 
 
 _BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = MappingProxyType(

@@ -6,7 +6,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from loom.streaming import Drain, FromMongoCDC, MongoSourceConfig, Process, StreamFlow, compile_flow
-from loom.streaming.compiler._plan import CompilationError, CompiledMongoCDCSource
+from loom.streaming.compiler import CompilationError, CompiledMongoCDCSource
 from loom.streaming.mongo import MongoCDCEvent
 
 

@@ -9,7 +9,7 @@ from confluent_kafka import TopicPartition
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _adapter, _runtime_io
-from loom.streaming.compiler._plan import CompiledMongoCDCSource
+from loom.streaming.compiler import CompiledMongoCDCSource
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.kafka import MsgspecCodec

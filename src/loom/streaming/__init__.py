@@ -19,7 +19,13 @@ Kafka-specific codecs, clients, and transport settings live under
 """
 
 from loom.core.model import JsonStr
-from loom.streaming.compiler import compile_flow
+from loom.streaming.compiler import (
+    CompilationError,
+    CompilationIssue,
+    CompiledPlan,
+    StreamingErrorCode,
+    compile_flow,
+)
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, ErrorMessage, ErrorMessageMeta
 from loom.streaming.core._message import Message, MessageMeta
 from loom.streaming.graph._flow import ErrorRoute, Process, ProcessNode, StreamFlow
@@ -87,6 +93,9 @@ __all__ = [
     "Broadcast",
     "BroadcastRoute",
     "CollectBatch",
+    "CompilationError",
+    "CompilationIssue",
+    "CompiledPlan",
     "ContextFactory",
     "DeltaSinkConfig",
     "ExpandRoutes",
@@ -135,6 +144,7 @@ __all__ = [
     "Selector",
     "SinkPartition",
     "StreamFlow",
+    "StreamingErrorCode",
     "StreamShape",
     "Step",
     "StepContext",
