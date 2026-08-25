@@ -1,3 +1,74 @@
+# 🚀 Release 1.3.0 ([#127](https://github.com/the-reacher-data/loom-py/pull/127)) ([`1fcaa1c`](https://github.com/the-reacher-data/loom-py/commit/1fcaa1ca1520db435d1ba4974284a96a35d2734f))
+
+
+## ✨ Features
+### etl
+- **etl:** update() — matched-only MERGE, the insert-less sibling of upsert<br>
+  > IntoTable(...).update(keys=..., include=/exclude=) issues the upsert
+  > MERGE WITHOUT when_not_matched_insert: source rows whose keys match are
+  > updated, rows without a match are IGNORED — nothing is ever inserted,
+  > by construction. This is the mode for repairing columns of an existing
+  > table (re-attribution), where an insert would be a bug that until now
+  > had to be guarded with row-count assertions outside the write.
+  > UpdateSpec keeps neutral public field names (keys/exclude/include) and
+  > exposes upsert_* read-only aliases that satisfy the shared _UpsertLike
+  > merge protocol, so the MERGE plan, the partition pre-filter and the
+  > compile-time key/exclude/include validators are reused untouched;
+  > compilation errors name update() instead of upsert(). A new compile
+  > guard rejects an include= fully absorbed by keys/partition_cols — in
+  > update() that write is a guaranteed no-op. At write time there is no
+  > creation path: a missing table is an error, never a create. Implemented
+  > in the Polars and Spark writers by factoring the shared merge up to
+  > when_matched_update.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01U65Md2FMcEaEgpZCKkYqGL
+
+- **etl:** IntoHistory joins the declared target union of ETLStep<br>
+  > It worked at runtime but mypy rejected the assignment on every step
+  > with a historified target. One line in the ClassVar (mirrored in
+  > ClientStep, which redeclares the same union — pyright requires the
+  > override to be identical) and a test pinning union membership via
+  > get_type_hints.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01U65Md2FMcEaEgpZCKkYqGL
+
+- **etl:** param exprs and path templates accept read-only params properties<br>
+  > A computed @property (e.g. partition_day) resolves at runtime through
+  > the same getattr chain as a struct field, but compile-time validation
+  > only looked at msgspec.structs.fields — forcing the filter down to
+  > runtime and losing the declarative pushdown. Now names resolving to a
+  > property on the CLASS (public properties only — no methods, no private
+  > names) count as known fields, symmetrically in validate_param_exprs and
+  > validate_file_path_templates; an unknown name still fails with the same
+  > error.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01U65Md2FMcEaEgpZCKkYqGL
+
+
+### prefect
+- **prefect:** "year" chunk in backfill_flow for overhead-dominated backfills<br>
+  > When backfill cost is dominated by per-chunk overhead rather than data
+  > volume (real case: 135 monthly chunks x ~2.5 min ≈ 6 h for a fact that
+  > resolves each chunk in seconds), a multi-year window drops to a handful
+  > of calendar-year chunks. Same algebra as month: floor to January 1,
+  > calendar-year advance, %Y label for correlation/run ids, and start_from
+  > resume intact. The docstrings call out that both documented window
+  > edges — the start floor and the finalize window_end pin — operate at
+  > year scale at this granularity.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01U65Md2FMcEaEgpZCKkYqGL
+  > --------
+  > Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.2.2 ([#124](https://github.com/the-reacher-data/loom-py/pull/124)) ([`ced8b6a`](https://github.com/the-reacher-data/loom-py/commit/ced8b6ab8bba62b7d34e57ad334d26f29af1e0c2))
 
 
