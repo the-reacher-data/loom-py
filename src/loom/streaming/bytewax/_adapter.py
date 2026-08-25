@@ -23,8 +23,9 @@ from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from loom.core.async_bridge import AsyncBridge
 from loom.core.logger import get_logger
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.bytewax._resource_manager import ResourceManager
-from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks
+from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks, drop_item_to_commit
 from loom.streaming.bytewax.handlers.dispatcher import (
     _NODE_HANDLERS,
     _wire_process,
@@ -59,20 +60,40 @@ class _BuiltDataflow:
 
 
 class _DropSinkPartition(StatelessSinkPartition[Any]):
-    """Discard items routed to an unrouted error branch."""
+    """Discard items routed to an unrouted error branch.
+
+    Discarding still completes each record with the commit tracker: a dropped
+    message that never completes would freeze its partition's watermark under
+    at-least-once delivery.
+    """
+
+    def __init__(self, commit_tracker: KafkaCommitTracker | None = None) -> None:
+        self._commit_tracker = commit_tracker
 
     def write_batch(self, items: list[Any]) -> None:
-        del items
+        if self._commit_tracker is None:
+            return
+        for item in items:
+            topic, partition, offset = drop_item_to_commit(item)
+            if topic is not None and partition is not None and offset is not None:
+                self._commit_tracker.complete(topic, partition, offset)
 
 
 class _DropSink(DynamicSink[Any]):
-    """Build a no-op sink for unrouted error branches."""
+    """Build a tracker-aware discard sink for unrouted error branches."""
+
+    def __init__(self, commit_tracker: KafkaCommitTracker | None = None) -> None:
+        self._commit_tracker = commit_tracker
+
+    def bind_commit_tracker(self, tracker: KafkaCommitTracker) -> None:
+        """Bind a commit tracker (adapter duck-typed hook)."""
+        self._commit_tracker = tracker
 
     def build(
         self, step_id: str, worker_index: int, worker_count: int
     ) -> StatelessSinkPartition[Any]:
         del step_id, worker_index, worker_count
-        return _DropSinkPartition()
+        return _DropSinkPartition(self._commit_tracker)
 
 
 def build_dataflow(
@@ -237,7 +258,7 @@ class _BuildContext:
             kind=kind.value,
             step_id=step_id,
         )
-        bw_output(f"{step_id}_{kind.value}_dropped", stream, _DropSink())
+        bw_output(f"{step_id}_{kind.value}_dropped", stream, _DropSink(self.commit_tracker))
 
     def wire_flow_output(self, stream: Any, plan: CompiledPlan) -> None:
         if self.sink is None and plan.output is not None:

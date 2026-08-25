@@ -266,3 +266,13 @@ def test_topic_resolution_uses_configured_physical_topic_before_boundary_fallbac
         )
         == "logical-output"
     )
+
+
+def test_commit_keepalive_ms_rejects_non_positive_values() -> None:
+    with pytest.raises(ValueError, match="commit_keepalive_ms"):
+        ConsumerSettings(
+            brokers=("localhost:9092",),
+            group_id="test",
+            topics=("orders.in",),
+            commit_keepalive_ms=0,
+        )

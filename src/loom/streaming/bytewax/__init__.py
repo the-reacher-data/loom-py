@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 from loom.streaming.bytewax._adapter import build_dataflow, build_dataflow_with_shutdown
+from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource
 from loom.streaming.bytewax._sink_registry import RegisteredSink, RuntimeSinkBinding
 from loom.streaming.bytewax.runner import (
     BytewaxRecoverySettings,
@@ -26,6 +27,7 @@ __all__ = [
     "BytewaxRecoverySettings",
     "BytewaxRuntimeConfig",
     "DuplicateErrorSinkError",
+    "KafkaPartitionedSource",
     "RegisteredSink",
     "RuntimeSinkBinding",
     "StreamingRunner",

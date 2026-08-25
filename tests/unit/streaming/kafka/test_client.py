@@ -496,3 +496,65 @@ class TestKafkaConsumerClient:
             ),
         ):
             raise ValueError("body-boom")
+
+
+def _consumer_settings() -> ConsumerSettings:
+    return ConsumerSettings(
+        brokers=("localhost:9092",),
+        group_id="test",
+        topics=("orders",),
+    )
+
+
+class TestCommittedOffset:
+    def test_returns_committed_offset_from_group_coordinator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        installer.stub.committed_offsets[("orders", 2)] = 41
+        client = KafkaConsumerClient.unassigned(_consumer_settings())
+
+        assert client.committed_offset("orders", 2, timeout_ms=5_000) == 41
+        partitions, timeout = installer.stub.committed_calls[0]
+        assert (partitions[0].topic, partitions[0].partition) == ("orders", 2)
+        assert timeout == 5.0
+
+    def test_invalid_offset_maps_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        del installer  # default committed offset is OFFSET_INVALID (-1001)
+        client = KafkaConsumerClient.unassigned(_consumer_settings())
+
+        assert client.committed_offset("orders", 2, timeout_ms=5_000) is None
+
+    def test_per_partition_error_is_a_hard_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        installer.stub.committed_partition_errors[("orders", 2)] = "COORDINATOR_LOAD_IN_PROGRESS"
+        client = KafkaConsumerClient.unassigned(_consumer_settings())
+
+        with pytest.raises(KafkaCommitError, match="COORDINATOR_LOAD_IN_PROGRESS"):
+            client.committed_offset("orders", 2, timeout_ms=5_000)
+
+    def test_backend_failure_is_a_hard_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        installer.stub.committed_error = RuntimeError("coordinator-timeout")
+        client = KafkaConsumerClient.unassigned(_consumer_settings())
+
+        with pytest.raises(KafkaCommitError, match="coordinator-timeout"):
+            client.committed_offset("orders", 2, timeout_ms=5_000)
+
+
+class TestTombstoneHandling:
+    def test_consume_batch_skips_compacted_topic_tombstones(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        installer.stub.queued_messages = [
+            FakeKafkaMessage(offset=1, value=b"a"),
+            FakeKafkaMessage(offset=2, value=None),  # tombstone
+            FakeKafkaMessage(offset=3, value=b"b"),
+        ]
+        client = KafkaConsumerClient.unassigned(_consumer_settings())
+
+        records = client.consume_batch(10)
+
+        assert [(r.offset, r.value) for r in records] == [(1, b"a"), (3, b"b")]

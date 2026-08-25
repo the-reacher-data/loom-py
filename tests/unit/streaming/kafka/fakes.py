@@ -107,6 +107,16 @@ class FakeKafkaMessage:
         return self._offset
 
 
+@dataclass(slots=True)
+class CommittedPartitionResult:
+    """Result row of Consumer.committed(): offset plus optional per-partition error."""
+
+    topic: str
+    partition: int
+    offset: int
+    error: object | None = None
+
+
 class ConsumerBackendStub:
     """In-memory confluent-like consumer stub."""
 
@@ -124,6 +134,10 @@ class ConsumerBackendStub:
         self.commit_offset_calls: list[list[TopicPartition]] = []
         self.commit_error: Exception | None = None
         self.close_error: Exception | None = None
+        self.committed_offsets: dict[tuple[str, int], int] = {}
+        self.committed_partition_errors: dict[tuple[str, int], object] = {}
+        self.committed_calls: list[tuple[list[TopicPartition], float]] = []
+        self.committed_error: Exception | None = None
 
     def subscribe(self, topics: list[str]) -> None:
         self.subscribed = topics
@@ -155,8 +169,28 @@ class ConsumerBackendStub:
             return
         self.commit_calls.append(asynchronous)
 
-    def commit_offset(self, partitions: list[TopicPartition]) -> None:
-        self.commit(offsets=partitions, asynchronous=False)
+    def commit_offset(
+        self, partitions: list[TopicPartition], *, asynchronous: bool = False
+    ) -> None:
+        self.commit(offsets=partitions, asynchronous=asynchronous)
+
+    def committed(self, partitions: list[TopicPartition], timeout: float) -> list[object]:
+        self.committed_calls.append((list(partitions), timeout))
+        if self.committed_error is not None:
+            raise self.committed_error
+        results: list[object] = []
+        for requested in partitions:
+            offset = self.committed_offsets.get((requested.topic, requested.partition), -1001)
+            error = self.committed_partition_errors.get((requested.topic, requested.partition))
+            results.append(
+                CommittedPartitionResult(
+                    topic=requested.topic,
+                    partition=requested.partition,
+                    offset=offset,
+                    error=error,
+                )
+            )
+        return results
 
     def close(self) -> None:
         if self.close_error is not None:
@@ -213,7 +247,10 @@ class RawConsumerStub:
     def commit(self, *, asynchronous: bool = False) -> None:
         self.commit_calls.append(asynchronous)
 
-    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+    def commit_offset(
+        self, partitions: list[TopicPartition], *, asynchronous: bool = False
+    ) -> None:
+        del asynchronous
         if self.commit_offset_error is not None:
             raise self.commit_offset_error
         self.commit_offset_calls.append(partitions)
@@ -244,7 +281,10 @@ class RuntimeConsumerStub:
     def commit(self, *, asynchronous: bool = False) -> None:
         self.commit_calls.append(asynchronous)
 
-    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+    def commit_offset(
+        self, partitions: list[TopicPartition], *, asynchronous: bool = False
+    ) -> None:
+        del asynchronous
         if self.commit_offset_error is not None:
             raise self.commit_offset_error
         self.commit_offset_calls.append(partitions)
@@ -301,3 +341,58 @@ def install_raw_consumer_stub(
         consumer_installer,
     )
     return consumer_installer
+
+
+class PartitionClientStub:
+    """Client-level stub for partitioned-source tests (KafkaConsumerClient shape)."""
+
+    def __init__(self) -> None:
+        self.committed: dict[tuple[str, int], int | None] = {}
+        self.committed_requests: list[tuple[str, int, int]] = []
+        self.assign_calls: list[tuple[str, int, int]] = []
+        self.batches: list[list[KafkaRecord[bytes]]] = []
+        self.consume_calls: list[int] = []
+        self.commit_offset_calls: list[list[TopicPartition]] = []
+        self.commit_async_flags: list[bool] = []
+        self.commit_error: Exception | None = None
+        self.closed = False
+
+    def committed_offset(self, topic: str, partition: int, *, timeout_ms: int) -> int | None:
+        self.committed_requests.append((topic, partition, timeout_ms))
+        return self.committed.get((topic, partition))
+
+    def assign_partition(self, topic: str, partition: int, offset: int) -> None:
+        self.assign_calls.append((topic, partition, offset))
+
+    def consume_batch(self, max_records: int) -> list[KafkaRecord[bytes]]:
+        self.consume_calls.append(max_records)
+        if self.batches:
+            return self.batches.pop(0)
+        return []
+
+    def commit_offset(
+        self, partitions: list[TopicPartition], *, asynchronous: bool = False
+    ) -> None:
+        if self.commit_error is not None:
+            raise self.commit_error
+        self.commit_offset_calls.append(list(partitions))
+        self.commit_async_flags.append(asynchronous)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class PartitionClientInstaller:
+    """Shim replacing KafkaConsumerClient in the runtime-source module.
+
+    ``unassigned`` hands out the pre-seeded stubs in order (one per built
+    partition), recording the settings/observability it was called with.
+    """
+
+    def __init__(self, stubs: list[PartitionClientStub] | None = None) -> None:
+        self.stubs = stubs if stubs is not None else [PartitionClientStub()]
+        self.unassigned_calls: list[tuple[object, object]] = []
+
+    def unassigned(self, settings: object, observability: object = None) -> PartitionClientStub:
+        self.unassigned_calls.append((settings, observability))
+        return self.stubs.pop(0)

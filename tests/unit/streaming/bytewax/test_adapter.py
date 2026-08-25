@@ -291,3 +291,52 @@ class TestOutputAndErrorWiring:
         assert recorded["step_id"] == "decode_wire_dropped"
         assert recorded["stream"] == "stream"
         assert recorded["sink_type"] == "_DropSink"
+
+
+class TestDropSinkCompletion:
+    def test_drop_sink_completes_every_droppable_item_kind(self) -> None:
+        """A drop that never completes freezes the watermark under at_least_once."""
+        from loom.streaming.bytewax._adapter import _DropSinkPartition
+        from loom.streaming.core._errors import (
+            ErrorEnvelope,
+            ErrorKind,
+            ErrorMessage,
+            ErrorMessageMeta,
+        )
+        from loom.streaming.kafka._wire import DecodeError
+        from tests.unit.streaming.bytewax.cases import Order, build_order_message
+
+        completed: list[tuple[str, int, int]] = []
+
+        class _Tracker:
+            def complete(self, topic: str, partition: int, offset: int) -> None:
+                completed.append((topic, partition, offset))
+
+        message = build_order_message("1", None, partition=0, offset=7)
+        envelope: ErrorEnvelope[Order] = ErrorEnvelope(
+            kind=ErrorKind.BUSINESS,
+            reason="boom",
+            original_message=ErrorMessage(
+                payload=Order(order_id="2"),
+                meta=ErrorMessageMeta(message_id="m2", topic="orders.in", partition=1, offset=8),
+            ),
+        )
+        decode_error = DecodeError(
+            error=ErrorEnvelope(kind=ErrorKind.WIRE, reason="bad-bytes"),
+            raw=b"x",
+            topic="orders.in",
+            key=None,
+            headers={},
+            partition=2,
+            offset=9,
+            timestamp_ms=None,
+        )
+
+        partition = _DropSinkPartition(_Tracker())
+        partition.write_batch([message, envelope, decode_error])
+
+        assert completed == [
+            ("orders.in", 0, 7),
+            ("orders.in", 1, 8),
+            ("orders.in", 2, 9),
+        ]

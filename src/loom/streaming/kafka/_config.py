@@ -99,6 +99,11 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
             Defaults to 500.
         poll_backoff_ms: Milliseconds to back off after an empty batch consume
             before polling again.  Defaults to 50.
+        commit_keepalive_ms: Maximum milliseconds between offset commits per
+            partition.  Member-less consumer groups expire committed offsets
+            after ``offsets.retention.minutes`` (default 7 days), so idle
+            partitions re-commit their watermark periodically to refresh
+            retention.  Defaults to 30 minutes.
         delivery: Explicit delivery semantics.  ``None`` (default) keeps the
             legacy resolution derived from ``enable_auto_commit``.
         enable_auto_commit: Whether Kafka should auto-commit offsets.
@@ -115,6 +120,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
     poll_timeout_ms: int = 100
     batch_size: int = 500
     poll_backoff_ms: int = 50
+    commit_keepalive_ms: int = 1_800_000
     delivery: Literal["at_least_once", "at_most_once"] | None = None
     enable_auto_commit: bool | None = None
     security: KafkaSecuritySettings | None = None
@@ -131,6 +137,8 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
             raise ValueError("ConsumerSettings.batch_size must be greater than zero.")
         if self.poll_backoff_ms < 1:
             raise ValueError("ConsumerSettings.poll_backoff_ms must be greater than zero.")
+        if self.commit_keepalive_ms < 1:
+            raise ValueError("ConsumerSettings.commit_keepalive_ms must be greater than zero.")
 
     def effective_delivery(self) -> Literal["at_least_once", "at_most_once"]:
         """Resolve the effective delivery semantics.

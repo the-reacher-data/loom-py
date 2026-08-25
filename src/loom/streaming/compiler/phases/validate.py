@@ -20,6 +20,7 @@ from loom.streaming.compiler._errors import (
     explode_without_router,
     fork_branch_no_terminal,
     fork_not_last,
+    fork_unmatched_unrouted,
     kafka_config_invalid,
     missing_terminal_output,
     mongo_config_invalid,
@@ -96,7 +97,10 @@ def validate_delivery(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[Co
     consumer = _resolve_consumer_settings(flow.source, ctx)
     if consumer is None:
         return []
-    return _delivery_conflict_issues(flow.source.name, consumer)
+    issues = _delivery_conflict_issues(flow.source.name, consumer)
+    if consumer.effective_delivery() == "at_least_once":
+        issues.extend(_unrouted_fork_issues(flow))
+    return issues
 
 
 def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[CompilationIssue]:
@@ -167,6 +171,15 @@ def _resolve_consumer_settings(
         return None
 
 
+def _unrouted_fork_issues(flow: StreamFlow[Any, Any]) -> list[CompilationIssue]:
+    """Report terminal forks whose unmatched stream would drop without completing."""
+    issues: list[CompilationIssue] = []
+    for node in _walk_all_process_nodes(flow.process.nodes):
+        if isinstance(node, Fork) and node.default is None:
+            issues.append(fork_unmatched_unrouted())
+    return issues
+
+
 def _delivery_conflict_issues(
     consumer_ref: str,
     settings: ConsumerSettings,
@@ -212,6 +225,17 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
         yield node
         for child_nodes in _iter_child_node_groups(node):
             yield from _walk_all_process_nodes(child_nodes)
+
+
+def walk_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
+    """Yield every DSL node reachable from *nodes*, recursing into branches.
+
+    Public traversal helper over the process tree: recurses into Router,
+    Fork, Broadcast, ExpandRoutes and scoped With/WithAsync processes.
+    Used by the compiler phases and by runtime guards that must inspect
+    nested nodes.
+    """
+    yield from _walk_all_process_nodes(nodes)
 
 
 def _node_needs_async_bridge(node: object) -> bool:

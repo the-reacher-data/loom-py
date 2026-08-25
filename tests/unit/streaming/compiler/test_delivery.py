@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from loom.core.config import ConfigContext
-from loom.streaming import FromTopic, IntoTopic, Process, StreamFlow
+from loom.streaming import Drain, Fork, ForkRoute, FromTopic, IntoTopic, Process, StreamFlow, msg
 from loom.streaming.compiler import CompilationError, StreamingErrorCode, compile_flow
 from loom.streaming.compiler.phases.validate import validate_delivery
 from tests.unit.streaming.compiler.cases import FakeStep, Order, Result
@@ -101,3 +103,55 @@ class TestCompileFlowDeliveryConflict:
 
         codes = {issue.code for issue in exc_info.value.issues}
         assert StreamingErrorCode.DELIVERY_CONFLICT in codes
+
+
+class TestUnroutedForkUnderAtLeastOnce:
+    def _flow_with_fork(self, default: Process[Any, Any] | None) -> StreamFlow[Order, Result]:
+        return StreamFlow(
+            name="test",
+            source=FromTopic("in", payload=Order),
+            process=Process(
+                Fork.when(
+                    routes=[
+                        ForkRoute(
+                            when=msg.payload.order_id == "vip",
+                            process=Process(IntoTopic("out", payload=Order)),
+                        )
+                    ],
+                    default=default,
+                )
+            ),
+        )
+
+    def test_fork_without_default_is_rejected_under_at_least_once(
+        self, streaming_kafka_config: DictConfig
+    ) -> None:
+        config = OmegaConf.merge(
+            streaming_kafka_config,
+            {"kafka": {"consumer": {"delivery": "at_least_once"}}},
+        )
+
+        with pytest.raises(CompilationError) as exc_info:
+            compile_flow(self._flow_with_fork(default=None), config=config)
+
+        codes = {issue.code for issue in exc_info.value.issues}
+        assert StreamingErrorCode.FORK_UNMATCHED_UNROUTED in codes
+
+    def test_fork_with_default_passes_under_at_least_once(
+        self, streaming_kafka_config: DictConfig
+    ) -> None:
+        config = OmegaConf.merge(
+            streaming_kafka_config,
+            {"kafka": {"consumer": {"delivery": "at_least_once"}}},
+        )
+
+        plan = compile_flow(self._flow_with_fork(default=Process(Drain())), config=config)
+
+        assert plan.name == "test"
+
+    def test_fork_without_default_is_allowed_under_at_most_once(
+        self, streaming_kafka_config: DictConfig
+    ) -> None:
+        plan = compile_flow(self._flow_with_fork(default=None), config=streaming_kafka_config)
+
+        assert plan.name == "test"

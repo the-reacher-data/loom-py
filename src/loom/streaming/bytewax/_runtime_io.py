@@ -5,12 +5,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
-from bytewax.inputs import SimplePollingSource
+from bytewax.inputs import FixedPartitionedSource, StatefulSourcePartition
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
+from confluent_kafka import OFFSET_BEGINNING, OFFSET_END
+from confluent_kafka.admin import AdminClient
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.bytewax._dlq import (
@@ -29,7 +32,8 @@ from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
-from loom.streaming.kafka._errors import KafkaDeliveryError
+from loom.streaming.kafka._config import ConsumerSettings
+from loom.streaming.kafka._errors import KafkaDeliveryError, KafkaPollError
 from loom.streaming.kafka._message import (
     HEADER_CAUSATION_ID,
     HEADER_CORRELATION_ID,
@@ -118,37 +122,196 @@ def _commit_runtime_items(
             commit_tracker.complete(topic, partition, offset)
 
 
-class _KafkaPollingSource(SimplePollingSource[KafkaRecord[bytes], None]):
-    """Poll Kafka records from one worker using the project Kafka client."""
+_COMMITTED_FETCH_TIMEOUT_MS = 10_000
+_METADATA_FETCH_TIMEOUT_S = 10.0
+_DEFAULT_POLL_TIMEOUT_MS = 100
+_ADMIN_KEY_PREFIXES = ("security.", "sasl.", "ssl.", "enable.ssl.")
+
+
+def _admin_config(source: _CompiledKafkaSource) -> dict[str, Any]:
+    """Extract the broker/security subset of the consumer config for AdminClient.
+
+    Only ``bootstrap.servers`` plus security-related keys are copied; other
+    ``extra`` consumer keys are consumer-specific and never reach the
+    metadata client.
+    """
+    full = source.settings.to_confluent_config()
+    admin: dict[str, Any] = {"bootstrap.servers": full["bootstrap.servers"]}
+    for key, value in full.items():
+        if key.startswith(_ADMIN_KEY_PREFIXES):
+            admin[key] = value
+    return admin
+
+
+class KafkaPartitionedSource(FixedPartitionedSource[KafkaRecord[bytes], "int | None"]):
+    """One Bytewax input partition per Kafka partition.
+
+    Partition keys are ``"{topic}:{index}"`` — a durable contract: they are
+    also the Bytewax recovery-state keys, so the format must stay stable
+    (``:`` is not a legal topic character; parse with ``rpartition``).
+
+    Consumers are created lazily per partition inside :meth:`build_part` and
+    pinned with ``assign`` — no ``subscribe``, no group membership: the
+    consumer group acts purely as an offset store. Start-offset precedence::
+
+        resume_state (Bytewax recovery) > committed group offset > auto_offset_reset
+    """
 
     def __init__(
         self,
         source: _CompiledKafkaSource,
         commit_tracker: KafkaCommitTracker | None = None,
+        observability: ObservabilityRuntime | None = None,
     ) -> None:
-        self._poll_timeout_ms = source.settings.poll_timeout_ms
-        super().__init__(interval=timedelta(milliseconds=self._poll_timeout_ms))
-        self._consumer = KafkaConsumerClient(source.settings)
+        self._source = source
         self._commit_tracker = commit_tracker
-        if self._commit_tracker is not None:
-            self._commit_tracker.bind(self._consumer)
+        self._observability = observability
+        if source.settings.poll_timeout_ms != _DEFAULT_POLL_TIMEOUT_MS:
+            logger.warning(
+                "kafka consumer poll_timeout_ms is deprecated for the partitioned "
+                "source and ignored; use batch_size and poll_backoff_ms instead"
+            )
 
-    def next_item(self) -> KafkaRecord[bytes]:
-        record = self._consumer.poll(self._poll_timeout_ms)
-        if record is None:
-            raise SimplePollingSource.Retry(timedelta(milliseconds=0))
+    def list_parts(self) -> list[str]:
+        """List one partition key per Kafka partition of every source topic.
+
+        Note: with ``auto.create.topics.enable=true`` on the broker, asking
+        for a missing topic may auto-create it (confluent metadata caveat).
+        """
+        admin = AdminClient(_admin_config(self._source))
+        parts: list[str] = []
+        for topic in self._source.topics:
+            metadata = admin.list_topics(topic, timeout=_METADATA_FETCH_TIMEOUT_S)
+            topic_meta = metadata.topics.get(topic)
+            if topic_meta is None or topic_meta.error is not None:
+                reason = topic_meta.error if topic_meta is not None else "topic not found"
+                raise KafkaPollError(f"cannot list partitions for topic '{topic}': {reason}")
+            parts.extend(f"{topic}:{index}" for index in sorted(topic_meta.partitions))
+        return parts
+
+    def build_part(
+        self,
+        step_id: str,
+        for_part: str,
+        resume_state: int | None,
+    ) -> _KafkaSourcePartition:
+        """Build one partition: lazy consumer, assign, floor, tracker binding."""
+        del step_id
+        topic, _, raw_index = for_part.rpartition(":")
+        if topic not in self._source.topics:
+            raise ValueError(
+                f"partition key '{for_part}' does not belong to this flow's topics "
+                f"{self._source.topics}; cannot resume from a different topic set"
+            )
+        partition = int(raw_index)
+        client = KafkaConsumerClient.unassigned(self._source.settings, self._observability)
+        committed = client.committed_offset(
+            topic, partition, timeout_ms=_COMMITTED_FETCH_TIMEOUT_MS
+        )
+        if resume_state is not None and committed is not None and resume_state < committed:
+            logger.warning(
+                "resume state %d is behind the committed group offset %d for %s:%d "
+                "(distance %d): replaying from the recovery snapshot; commits below "
+                "the floor are suppressed",
+                resume_state,
+                committed,
+                topic,
+                partition,
+                committed - resume_state,
+            )
+        client.assign_partition(topic, partition, self._start_offset(resume_state, committed))
         if self._commit_tracker is not None:
-            self._commit_tracker.register_record(record)
-        return record
+            self._commit_tracker.reset_partition(topic, partition)
+            self._commit_tracker.set_floor(topic, partition, committed)
+            self._commit_tracker.seed_watermark(topic, partition, committed)
+            self._commit_tracker.bind_partition(topic, partition, client)
+        position = resume_state if resume_state is not None else committed
+        return _KafkaSourcePartition(
+            client=client,
+            topic=topic,
+            partition=partition,
+            commit_tracker=self._commit_tracker,
+            settings=self._source.settings,
+            start_position=position,
+        )
+
+    def _start_offset(self, resume_state: int | None, committed: int | None) -> int:
+        if resume_state is not None:
+            return resume_state
+        if committed is not None:
+            return committed
+        reset = self._source.settings.auto_offset_reset
+        return int(OFFSET_BEGINNING) if reset == "earliest" else int(OFFSET_END)
 
     def bind_commit_tracker(self, commit_tracker: KafkaCommitTracker | None) -> None:
-        """Bind or clear the source commit tracker."""
+        """Bind or clear the source commit tracker (adapter duck-typed hook)."""
         self._commit_tracker = commit_tracker
-        if self._commit_tracker is not None:
-            self._commit_tracker.bind(self._consumer)
+
+
+class _KafkaSourcePartition(StatefulSourcePartition[KafkaRecord[bytes], "int | None"]):
+    """One assigned Kafka partition: batch consume, register, coalesced flush."""
+
+    def __init__(
+        self,
+        *,
+        client: KafkaConsumerClient,
+        topic: str,
+        partition: int,
+        commit_tracker: KafkaCommitTracker | None,
+        settings: ConsumerSettings,
+        start_position: int | None = None,
+    ) -> None:
+        self._client = client
+        self._topic = topic
+        self._partition = partition
+        self._commit_tracker = commit_tracker
+        self._batch_size = settings.batch_size
+        self._backoff = timedelta(milliseconds=settings.poll_backoff_ms)
+        self._keepalive = timedelta(milliseconds=settings.commit_keepalive_ms)
+        self._next_awake: datetime | None = None
+        # Seeded so an epoch with no data snapshots the true read position
+        # instead of overwriting a prior resume_state with None.
+        self._next_offset: int | None = start_position
+        self._last_commit_at = datetime.now(UTC)
+
+    def next_batch(self) -> list[KafkaRecord[bytes]]:
+        """Return buffered records; the batch is validated before registering."""
+        records = self._client.consume_batch(self._batch_size)
+        now = datetime.now(UTC)
+        if records:
+            if self._commit_tracker is not None:
+                for record in records:
+                    self._commit_tracker.register_record(record)
+            last_offset = records[-1].offset
+            if last_offset is not None:
+                self._next_offset = last_offset + 1
+            self._next_awake = None
+        else:
+            self._next_awake = now + self._backoff
+        self._flush_commits(now)
+        return records
+
+    def _flush_commits(self, now: datetime) -> None:
+        """Flush coalesced watermark commits; force periodically as keep-alive."""
+        if self._commit_tracker is None:
+            return
+        force = now - self._last_commit_at >= self._keepalive
+        committed = self._commit_tracker.flush(
+            self._topic, self._partition, force=force, synchronous=False
+        )
+        if committed or force:
+            self._last_commit_at = now
+
+    def next_awake(self) -> datetime | None:
+        return self._next_awake
+
+    def snapshot(self) -> int | None:
+        return self._next_offset
 
     def close(self) -> None:
-        self._consumer.close()
+        if self._commit_tracker is not None:
+            self._commit_tracker.flush(self._topic, self._partition, force=True)
+        self._client.close()
 
 
 class _KafkaSinkPartitionBase:
@@ -290,11 +453,12 @@ _ErrorSink: TypeAlias = _KafkaErrorEnvelopeSink | _KafkaDecodeErrorSink
 def build_runtime_source(
     source: CompiledSource,
     commit_tracker: KafkaCommitTracker | None = None,
-) -> _KafkaPollingSource | MongoCDCSource:
+    observability: Any | None = None,
+) -> KafkaPartitionedSource | MongoCDCSource:
     """Build the runtime source for one compiled input."""
     if isinstance(source, CompiledMongoCDCSource):
         return MongoCDCSource(source)
-    return _KafkaPollingSource(source, commit_tracker)
+    return KafkaPartitionedSource(source, commit_tracker, observability)
 
 
 def build_runtime_sink(
@@ -508,3 +672,20 @@ def _decode_error_to_commit(
     item: DecodeError,
 ) -> tuple[str | None, int | None, int | None]:
     return item.topic, item.partition, item.offset
+
+
+def drop_item_to_commit(item: object) -> tuple[str | None, int | None, int | None]:
+    """Resolve the commit triple for any droppable runtime item.
+
+    Dropped streams carry ``Message`` (router/filter non-matches),
+    ``ErrorEnvelope`` (unrouted error kinds), or ``DecodeError`` (unrouted
+    WIRE errors). Every drop must still complete its record or the commit
+    watermark of its partition freezes under at-least-once delivery.
+    """
+    if isinstance(item, Message):
+        return _message_to_commit(item)
+    if isinstance(item, ErrorEnvelope):
+        return _error_item_to_commit(item)
+    if isinstance(item, DecodeError):
+        return _decode_error_to_commit(item)
+    return (None, None, None)

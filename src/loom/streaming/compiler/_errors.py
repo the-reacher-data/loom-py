@@ -385,6 +385,40 @@ def delivery_conflict(
     )
 
 
+def fork_unmatched_unrouted() -> CompilationIssue:
+    """A terminal Fork without default drops unmatched messages silently.
+
+    Under at-least-once delivery a dropped message that never completes
+    freezes the partition's commit watermark forever.
+    """
+    return CompilationIssue(
+        code=StreamingErrorCode.FORK_UNMATCHED_UNROUTED,
+        message=(
+            "fork has no default branch: unmatched messages are dropped without "
+            "completing and freeze the commit watermark under "
+            "delivery=at_least_once. Add default=Process(Drain())."
+        ),
+        component="fork",
+        field="default",
+    )
+
+
+def delivery_keyed_multiprocess(node_name: str) -> CompilationIssue:
+    """Keyed nodes redistribute records across processes, breaking commits."""
+    return CompilationIssue(
+        code=StreamingErrorCode.DELIVERY_KEYED_MULTIPROCESS,
+        message=(
+            f"delivery=at_least_once with {node_name} is not supported on a "
+            f"multi-process Bytewax cluster: keyed operators route records to "
+            f"other processes, where completions cannot reach the source "
+            f"process's commit tracker. Scale with workers_per_process "
+            f"(threads) or use Bytewax recovery instead."
+        ),
+        component=node_name,
+        field="streaming.runtime.addresses",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Plan-building factories
 # ---------------------------------------------------------------------------

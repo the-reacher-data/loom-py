@@ -105,6 +105,9 @@ def build_compiled_source(
     *,
     enable_auto_commit: bool | None = None,
     delivery: Literal["at_least_once", "at_most_once"] | None = None,
+    auto_offset_reset: Literal["earliest", "latest"] = "earliest",
+    commit_keepalive_ms: int = 1_800_000,
+    topics: tuple[str, ...] | None = None,
 ) -> CompiledSingleSource:
     """Build a reusable compiled source for Bytewax adapter tests."""
     return CompiledSingleSource(
@@ -115,8 +118,10 @@ def build_compiled_source(
             poll_timeout_ms=poll_timeout_ms,
             enable_auto_commit=enable_auto_commit,
             delivery=delivery,
+            auto_offset_reset=auto_offset_reset,
+            commit_keepalive_ms=commit_keepalive_ms,
         ),
-        topics=(_ORDERS_IN_TOPIC,),
+        topics=topics or (_ORDERS_IN_TOPIC,),
         payload_type=Order,
         shape=StreamShape.RECORD,
         decode_strategy="record",

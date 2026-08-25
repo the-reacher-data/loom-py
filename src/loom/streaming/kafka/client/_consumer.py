@@ -50,6 +50,27 @@ class KafkaConsumerClient:
         self._obs = obs
 
     @classmethod
+    def unassigned(
+        cls,
+        settings: ConsumerSettings,
+        observability: ObservabilityRuntime | None = None,
+    ) -> KafkaConsumerClient:
+        """Build a consumer with neither subscription nor assignment.
+
+        Used to query the group coordinator (:meth:`committed_offset`) before
+        deciding the start offset, then pin the partition with
+        :meth:`assign_partition`.
+
+        Args:
+            settings: Typed consumer settings.
+            observability: Optional observability runtime.
+
+        Returns:
+            Consumer client not yet attached to any partition.
+        """
+        return cls(settings, observability, _subscribe=False)
+
+    @classmethod
     def for_partition(
         cls,
         settings: ConsumerSettings,
@@ -74,9 +95,55 @@ class KafkaConsumerClient:
         Returns:
             Consumer client assigned to exactly one topic partition.
         """
-        client = cls(settings, observability, _subscribe=False)
-        client._consumer.assign([TopicPartition(topic, partition, offset)])
+        client = cls.unassigned(settings, observability)
+        client.assign_partition(topic, partition, offset)
         return client
+
+    def assign_partition(self, topic: str, partition: int, offset: int) -> None:
+        """Pin this consumer to exactly one topic partition via ``assign``.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            offset: Start offset (a concrete offset or a confluent sentinel
+                such as ``OFFSET_BEGINNING``/``OFFSET_END``).
+        """
+        self._consumer.assign([TopicPartition(topic, partition, offset)])
+
+    def committed_offset(self, topic: str, partition: int, *, timeout_ms: int) -> int | None:
+        """Read the consumer group's committed offset for one partition.
+
+        Works without group membership (plain ``OffsetFetch`` to the group
+        coordinator), so it is safe on assign-mode and unassigned consumers.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            timeout_ms: Explicit coordinator timeout — a coordinator that does
+                not answer is a hard error, never a silent fallback.
+
+        Returns:
+            The committed offset, or ``None`` when the group has no valid
+            committed offset for the partition.
+
+        Raises:
+            KafkaCommitError: If the offset fetch fails or times out.
+        """
+        try:
+            results = self._consumer.committed(
+                [TopicPartition(topic, partition)], timeout=timeout_ms / 1000
+            )
+        except Exception as exc:
+            raise KafkaCommitError(str(exc)) from exc
+        if not results:
+            return None
+        result = results[0]
+        if result.error is not None:
+            raise KafkaCommitError(str(result.error))
+        offset = result.offset
+        if offset is None or offset < 0:
+            return None
+        return int(offset)
 
     def poll(self, timeout_ms: int) -> KafkaRecord[bytes] | None:
         """Read one raw byte record from Kafka.
@@ -115,7 +182,10 @@ class KafkaConsumerClient:
 
         Uses a negligible backend timeout, so the call returns whatever the
         consumer already buffered.  Record order is the broker order per
-        partition.
+        partition.  Compacted-topic tombstones (records with a ``None``
+        value) are skipped: they carry no payload to decode, and the
+        gap-tolerant commit watermark treats unregistered offsets as gaps,
+        so skipping never freezes commits.
 
         Args:
             max_records: Maximum number of records to return.
@@ -131,7 +201,15 @@ class KafkaConsumerClient:
             messages = self._consumer.consume(max_records, timeout=0.001)
         except Exception as exc:
             raise KafkaPollError(str(exc)) from exc
-        return [_checked_record(message) for message in messages]
+        records: list[KafkaRecord[bytes]] = []
+        for message in messages:
+            error = message.error()
+            if error is not None:
+                raise KafkaPollError(str(error))
+            if message.value() is None:
+                continue
+            records.append(_to_record(message))
+        return records
 
     def commit(self, *, asynchronous: bool = False) -> None:
         """Commit consumed offsets.
@@ -148,18 +226,26 @@ class KafkaConsumerClient:
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
-    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+    def commit_offset(
+        self,
+        partitions: list[TopicPartition],
+        *,
+        asynchronous: bool = False,
+    ) -> None:
         """Commit explicit Kafka offsets.
 
         Args:
             partitions: Kafka topic-partition offsets to commit.
+            asynchronous: When ``True``, librdkafka coalesces the commit in
+                the background; failures surface through the consumer's
+                logger/``on_commit`` callback rather than as an exception.
 
         Raises:
-            KafkaCommitError: If the backend commit fails.
+            KafkaCommitError: If the backend commit fails (synchronous mode).
         """
         try:
             commit = cast(_CommitMethod, self._consumer.commit)
-            commit(offsets=partitions, asynchronous=False)
+            commit(offsets=partitions, asynchronous=asynchronous)
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
