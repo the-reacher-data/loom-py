@@ -81,6 +81,7 @@ Companion demo application:
    :caption: Streaming
 
    streaming/bytewax
+   streaming/delivery
 
 .. toctree::
    :maxdepth: 2
