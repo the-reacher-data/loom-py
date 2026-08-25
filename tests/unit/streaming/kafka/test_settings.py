@@ -78,6 +78,90 @@ def test_consumer_settings_enable_auto_commit_defaults_to_true() -> None:
     assert config["enable.auto.commit"] is True
 
 
+@pytest.mark.parametrize(
+    ("delivery", "enable_auto_commit", "expected"),
+    [
+        (None, None, "at_most_once"),
+        (None, True, "at_most_once"),
+        (None, False, "at_least_once"),
+        ("at_least_once", None, "at_least_once"),
+        ("at_least_once", True, "at_least_once"),
+        ("at_least_once", False, "at_least_once"),
+        ("at_most_once", None, "at_most_once"),
+        ("at_most_once", True, "at_most_once"),
+        ("at_most_once", False, "at_most_once"),
+    ],
+)
+def test_consumer_settings_effective_delivery_matrix(
+    delivery: str | None,
+    enable_auto_commit: bool | None,
+    expected: str,
+) -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+        delivery=delivery,  # type: ignore[arg-type]
+        enable_auto_commit=enable_auto_commit,
+    )
+
+    assert settings.effective_delivery() == expected
+
+
+@pytest.mark.parametrize(
+    ("delivery", "expected_auto_commit"),
+    [
+        ("at_least_once", False),
+        ("at_most_once", True),
+    ],
+)
+def test_consumer_settings_confluent_auto_commit_derives_from_delivery(
+    delivery: str,
+    expected_auto_commit: bool,
+) -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+        delivery=delivery,  # type: ignore[arg-type]
+    )
+
+    assert settings.to_confluent_config()["enable.auto.commit"] is expected_auto_commit
+
+
+def test_consumer_settings_batching_defaults() -> None:
+    settings = ConsumerSettings(
+        brokers=("k1:9092",),
+        group_id="g-1",
+        topics=("orders",),
+    )
+
+    assert settings.batch_size == 500
+    assert settings.poll_backoff_ms == 50
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("batch_size", 0),
+        ("batch_size", -1),
+        ("poll_backoff_ms", 0),
+        ("poll_backoff_ms", -1),
+    ],
+)
+def test_consumer_settings_reject_non_positive_batching_values(
+    field_name: str,
+    value: int,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        ConsumerSettings(
+            brokers=("k1:9092",),
+            group_id="g-1",
+            topics=("orders",),
+            **{field_name: value},  # type: ignore[arg-type]
+        )
+
+
 def test_security_settings_omit_unset_optional_values() -> None:
     settings = ProducerSettings(
         brokers=("k1:9092",),

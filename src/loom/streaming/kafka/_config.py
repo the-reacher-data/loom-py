@@ -95,7 +95,15 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
         poll_timeout_ms: Maximum milliseconds to block waiting for a message on
             each poll call.  Higher values reduce CPU usage when the topic is
             idle; lower values decrease end-to-end latency.  Defaults to 100.
+        batch_size: Maximum records returned by one batch consume call.
+            Defaults to 500.
+        poll_backoff_ms: Milliseconds to back off after an empty batch consume
+            before polling again.  Defaults to 50.
+        delivery: Explicit delivery semantics.  ``None`` (default) keeps the
+            legacy resolution derived from ``enable_auto_commit``.
         enable_auto_commit: Whether Kafka should auto-commit offsets.
+            Deprecated in favor of ``delivery`` but honored for the whole 1.x
+            line.  ``None`` means unset.
         security: Optional security configuration.
         extra: Optional extra Confluent settings.
     """
@@ -105,12 +113,45 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
     topics: tuple[str, ...]
     auto_offset_reset: Literal["earliest", "latest"] = "earliest"
     poll_timeout_ms: int = 100
-    enable_auto_commit: bool = True
+    batch_size: int = 500
+    poll_backoff_ms: int = 50
+    delivery: Literal["at_least_once", "at_most_once"] | None = None
+    enable_auto_commit: bool | None = None
     security: KafkaSecuritySettings | None = None
     extra: dict[str, KafkaConfigValue] = msgspec.field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Validate batch consumption parameters.
+
+        Raises:
+            ValueError: If ``batch_size`` or ``poll_backoff_ms`` is not
+                greater than zero.
+        """
+        if self.batch_size < 1:
+            raise ValueError("ConsumerSettings.batch_size must be greater than zero.")
+        if self.poll_backoff_ms < 1:
+            raise ValueError("ConsumerSettings.poll_backoff_ms must be greater than zero.")
+
+    def effective_delivery(self) -> Literal["at_least_once", "at_most_once"]:
+        """Resolve the effective delivery semantics.
+
+        Returns:
+            ``delivery`` when set explicitly; otherwise the legacy resolution
+            from ``enable_auto_commit``: ``False`` maps to ``"at_least_once"``
+            while ``True`` or unset maps to ``"at_most_once"``.
+        """
+        if self.delivery is not None:
+            return self.delivery
+        if self.enable_auto_commit is False:
+            return "at_least_once"
+        return "at_most_once"
+
     def to_confluent_config(self) -> dict[str, KafkaConfigValue]:
         """Compile settings to a Confluent-compatible config mapping.
+
+        ``enable.auto.commit`` is derived from :meth:`effective_delivery`:
+        ``"at_most_once"`` maps to ``True`` and ``"at_least_once"`` to
+        ``False``.
 
         Returns:
             String-keyed Confluent configuration mapping.
@@ -123,7 +164,7 @@ class ConsumerSettings(LoomFrozenStruct, frozen=True, kw_only=True):
             "bootstrap.servers": _broker_list(self.brokers),
             "group.id": self.group_id,
             "auto.offset.reset": self.auto_offset_reset,
-            "enable.auto.commit": self.enable_auto_commit,
+            "enable.auto.commit": self.effective_delivery() == "at_most_once",
             **_security_config(self.security),
         }
         return _merge_extra_config(managed, self.extra)

@@ -113,9 +113,13 @@ class ConsumerBackendStub:
     def __init__(self, config: dict[str, str]) -> None:
         self.config = config
         self.subscribed: list[str] = []
+        self.subscribe_calls = 0
+        self.assigned: list[TopicPartition] = []
         self.next_message: Any | None = None
+        self.queued_messages: list[FakeKafkaMessage] = []
         self.closed = False
         self.poll_calls: list[float] = []
+        self.consume_calls: list[tuple[int, float]] = []
         self.commit_calls: list[bool] = []
         self.commit_offset_calls: list[list[TopicPartition]] = []
         self.commit_error: Exception | None = None
@@ -123,10 +127,20 @@ class ConsumerBackendStub:
 
     def subscribe(self, topics: list[str]) -> None:
         self.subscribed = topics
+        self.subscribe_calls += 1
+
+    def assign(self, partitions: list[TopicPartition]) -> None:
+        self.assigned = partitions
 
     def poll(self, timeout: float) -> FakeKafkaMessage | None:
         self.poll_calls.append(timeout)
         return self.next_message
+
+    def consume(self, num_messages: int, timeout: float) -> list[FakeKafkaMessage]:
+        self.consume_calls.append((num_messages, timeout))
+        batch = self.queued_messages[:num_messages]
+        del self.queued_messages[:num_messages]
+        return batch
 
     def commit(
         self,

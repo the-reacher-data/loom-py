@@ -34,17 +34,49 @@ class KafkaConsumerClient:
 
     Args:
         settings: Typed consumer settings.
-        observer: Optional observability observer.
+        obs: Optional observability runtime.
     """
 
     def __init__(
         self,
         settings: ConsumerSettings,
         obs: ObservabilityRuntime | None = None,
+        *,
+        _subscribe: bool = True,
     ) -> None:
         self._consumer = _Consumer(settings.to_confluent_config())
-        self._consumer.subscribe(list(settings.topics))
+        if _subscribe:
+            self._consumer.subscribe(list(settings.topics))
         self._obs = obs
+
+    @classmethod
+    def for_partition(
+        cls,
+        settings: ConsumerSettings,
+        *,
+        topic: str,
+        partition: int,
+        offset: int,
+        observability: ObservabilityRuntime | None = None,
+    ) -> KafkaConsumerClient:
+        """Build a consumer pinned to one partition via Kafka ``assign``.
+
+        The consumer never calls ``subscribe`` and therefore never joins
+        group membership: the consumer group acts only as an offset store.
+
+        Args:
+            settings: Typed consumer settings.
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            offset: Start offset passed to ``assign``.
+            observability: Optional observability runtime.
+
+        Returns:
+            Consumer client assigned to exactly one topic partition.
+        """
+        client = cls(settings, observability, _subscribe=False)
+        client._consumer.assign([TopicPartition(topic, partition, offset)])
+        return client
 
     def poll(self, timeout_ms: int) -> KafkaRecord[bytes] | None:
         """Read one raw byte record from Kafka.
@@ -65,9 +97,7 @@ class KafkaConsumerClient:
             raise KafkaPollError(str(exc)) from exc
         if message is None:
             return None
-        if message.error() is not None:
-            raise KafkaPollError(str(message.error()))
-        record = _to_record(message)
+        record = _checked_record(message)
         if self._obs is not None:
             self._obs.emit(
                 LifecycleEvent.end(
@@ -79,6 +109,29 @@ class KafkaConsumerClient:
                 )
             )
         return record
+
+    def consume_batch(self, max_records: int) -> list[KafkaRecord[bytes]]:
+        """Read up to ``max_records`` raw byte records without blocking.
+
+        Uses a negligible backend timeout, so the call returns whatever the
+        consumer already buffered.  Record order is the broker order per
+        partition.
+
+        Args:
+            max_records: Maximum number of records to return.
+
+        Returns:
+            Raw Kafka records; empty when nothing is available.
+
+        Raises:
+            KafkaPollError: If the backend consume fails or any message
+                carries a broker error.
+        """
+        try:
+            messages = self._consumer.consume(max_records, timeout=0.001)
+        except Exception as exc:
+            raise KafkaPollError(str(exc)) from exc
+        return [_checked_record(message) for message in messages]
 
     def commit(self, *, asynchronous: bool = False) -> None:
         """Commit consumed offsets.
@@ -126,6 +179,14 @@ class KafkaConsumerClient:
             if exc[0] is None:
                 raise
         return False
+
+
+def _checked_record(message: _RawMessage) -> KafkaRecord[bytes]:
+    """Translate one confluent message, raising on broker-reported errors."""
+    error = message.error()
+    if error is not None:
+        raise KafkaPollError(str(error))
+    return _to_record(message)
 
 
 def _to_record(message: _RawMessage) -> KafkaRecord[bytes]:

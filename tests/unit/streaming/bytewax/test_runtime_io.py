@@ -9,6 +9,7 @@ from confluent_kafka import TopicPartition
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _adapter, _runtime_io
+from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.compiler import CompiledMongoCDCSource
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message, MessageMeta
@@ -254,6 +255,23 @@ class TestRuntimeIOBuilders:
         assert fake_raw.sent[0].key == b"tenant-a"
         assert fake_raw.sent[0].headers["x-error-kind"] == b"wire"
         assert fake_raw.sent[0].headers["x-error-reason"] == b"decode failed"
+
+    def test_build_commit_tracker_defaults_to_legacy_at_most_once(self) -> None:
+        """Configs setting neither delivery nor enable_auto_commit keep prior behavior."""
+        source = build_compiled_source()
+
+        assert source.settings.to_confluent_config()["enable.auto.commit"] is True
+        assert _runtime_io.build_commit_tracker(source) is None
+
+    def test_build_commit_tracker_with_explicit_at_least_once(self) -> None:
+        tracker = _runtime_io.build_commit_tracker(build_compiled_source(delivery="at_least_once"))
+
+        assert isinstance(tracker, KafkaCommitTracker)
+
+    def test_build_commit_tracker_with_explicit_at_most_once(self) -> None:
+        tracker = _runtime_io.build_commit_tracker(build_compiled_source(delivery="at_most_once"))
+
+        assert tracker is None
 
     def test_commit_tracker_commits_after_sink_write(
         self,

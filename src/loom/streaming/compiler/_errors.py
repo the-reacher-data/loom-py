@@ -59,7 +59,7 @@ class StreamingErrorCode(StrEnum):
     STORAGE_SINK_UNSUPPORTED = "STORAGE_SINK_UNSUPPORTED"
     PAYLOAD_TYPE_INVALID = "PAYLOAD_TYPE_INVALID"
 
-    # Reserved for the delivery-semantics phase (partitioned source spec)
+    # Delivery-semantics phase (partitioned source spec)
     DELIVERY_CONFLICT = "DELIVERY_CONFLICT"
     DELIVERY_KEYED_MULTIPROCESS = "DELIVERY_KEYED_MULTIPROCESS"
     FORK_UNMATCHED_UNROUTED = "FORK_UNMATCHED_UNROUTED"
@@ -365,6 +365,23 @@ def scoped_process_unsupported_node(node: object, inner_node: object) -> Compila
             f"optional terminal IntoTopic; found {type(inner_node).__name__}."
         ),
         component=type(node).__name__,
+    )
+
+
+def delivery_conflict(
+    consumer_ref: str,
+    delivery: str,
+    enable_auto_commit: bool,
+) -> CompilationIssue:
+    """A consumer sets delivery and a contradicting deprecated enable_auto_commit."""
+    return CompilationIssue(
+        code=StreamingErrorCode.DELIVERY_CONFLICT,
+        message=(
+            f"kafka consumer '{consumer_ref}': delivery={delivery} conflicts with "
+            f"enable_auto_commit={enable_auto_commit}; remove the deprecated enable_auto_commit"
+        ),
+        component=f"kafka consumer '{consumer_ref}'",
+        field="kafka.consumer.enable_auto_commit",
     )
 
 

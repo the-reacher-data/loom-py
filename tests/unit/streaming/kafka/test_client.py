@@ -384,6 +384,102 @@ class TestKafkaConsumerClient:
 
         assert fake.closed is True
 
+    def test_for_partition_assigns_without_subscribing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+
+        KafkaConsumerClient.for_partition(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+            topic="orders",
+            partition=3,
+            offset=17,
+        )
+
+        fake = installer.stub
+        assert fake is not None
+        assert fake.subscribe_calls == 0
+        assert len(fake.assigned) == 1
+        assert fake.assigned[0].topic == "orders"
+        assert fake.assigned[0].partition == 3
+        assert fake.assigned[0].offset == 17
+
+    def test_for_partition_propagates_observability(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        fake.next_message = FakeKafkaMessage(
+            headers=[("x-trace-id", b"trace-1"), ("x-correlation-id", b"corr-1")]
+        )
+        events: list[LifecycleEvent] = []
+
+        class _RecordingObserver:
+            def on_event(self, event: LifecycleEvent) -> None:
+                events.append(event)
+
+        consumer = KafkaConsumerClient.for_partition(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+            topic="orders",
+            partition=0,
+            offset=0,
+            observability=ObservabilityRuntime([_RecordingObserver()]),
+        )
+
+        assert consumer.poll(100) is not None
+        assert events, "Expected at least one lifecycle event"
+        assert events[-1].trace_id == "trace-1"
+
+    def test_consume_batch_converts_messages_in_broker_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        fake.queued_messages = [
+            FakeKafkaMessage(value=b"first", offset=7),
+            FakeKafkaMessage(value=b"second", offset=8),
+        ]
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+        )
+
+        records = consumer.consume_batch(10)
+
+        assert fake.consume_calls == [(10, 0.001)]
+        assert [record.value for record in records] == [b"first", b"second"]
+        assert [record.offset for record in records] == [7, 8]
+
+    def test_consume_batch_returns_empty_list_without_messages(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        install_raw_consumer_stub(monkeypatch)
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+        )
+
+        assert consumer.consume_batch(5) == []
+
+    def test_consume_batch_raises_on_kafka_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        installer = install_raw_consumer_stub(monkeypatch)
+        fake = installer.stub
+        assert fake is not None
+        fake.queued_messages = [FakeKafkaMessage(error=_FakeError())]
+        consumer = KafkaConsumerClient(
+            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
+        )
+
+        with pytest.raises(KafkaPollError, match="boom"):
+            consumer.consume_batch(5)
+
     def test_raw_consumer_context_manager_does_not_mask_body_exception(
         self,
         monkeypatch: pytest.MonkeyPatch,

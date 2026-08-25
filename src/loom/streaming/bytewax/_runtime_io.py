@@ -359,9 +359,9 @@ def build_inline_sink_partition(
 
 def build_commit_tracker(source: CompiledSource) -> KafkaCommitTracker | None:
     """Build a commit tracker when explicit source commits are required."""
-    if not source.needs_decode:
+    if not isinstance(source, (CompiledSingleSource, CompiledMultiSource)):
         return None
-    if source.settings.enable_auto_commit:  # type: ignore[union-attr]
+    if source.settings.effective_delivery() == "at_most_once":
         return None
     return KafkaCommitTracker()
 
