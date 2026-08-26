@@ -320,11 +320,11 @@ class TestRuntimeIOBuilders:
 
         tracker.complete("orders.in", 2, 5)
         tracker.complete("orders.in", 2, 3)
-        tracker.flush("orders.in", 2)
+        tracker.flush_partition("orders.in", 2)
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 4)]]
 
         tracker.complete("orders.in", 2, 4)
-        tracker.flush("orders.in", 2)
+        tracker.flush_partition("orders.in", 2)
 
         assert consumer.commit_offset_calls == [
             [TopicPartition("orders.in", 2, 4)],
@@ -345,13 +345,13 @@ class TestRuntimeIOBuilders:
         tracker.fork("orders.in", 2, 9, 2)
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush("orders.in", 2) == []
+        assert tracker.flush_partition("orders.in", 2) == []
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush("orders.in", 2) == []
+        assert tracker.flush_partition("orders.in", 2) == []
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush("orders.in", 2) == [TopicPartition("orders.in", 2, 10)]
+        assert tracker.flush_partition("orders.in", 2) == [TopicPartition("orders.in", 2, 10)]
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 10)]]
 
     def test_commit_tracker_propagates_commit_offset_errors(
@@ -369,7 +369,7 @@ class TestRuntimeIOBuilders:
 
         tracker.complete("orders.in", 2, 9)
         with pytest.raises(RuntimeError, match="commit-boom"):
-            tracker.flush("orders.in", 2)
+            tracker.flush_partition("orders.in", 2)
 
     def test_build_inline_sink_partition_can_write_dlq_payloads(
         self,
@@ -416,7 +416,7 @@ class TestCommitTrackerGapsAndFloor:
         for offset in (100, 104, 101, 106):
             tracker.complete("orders.in", 0, offset)
 
-        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 107)]
+        assert tracker.flush_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 107)]
 
     def test_floor_suppresses_commits_at_or_below_committed_offset(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
@@ -432,14 +432,14 @@ class TestCommitTrackerGapsAndFloor:
             )
             tracker.complete("orders.in", 0, offset)
         # watermark 5 is strictly below the floor: the group never rewinds
-        assert tracker.flush("orders.in", 0) == []
+        assert tracker.flush_partition("orders.in", 0) == []
 
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=5)
         )
         tracker.complete("orders.in", 0, 5)
         # watermark == floor commits idempotently (keep-alive relies on this)
-        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 6)]
+        assert tracker.flush_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 6)]
 
     def test_partition_committers_route_commits_to_their_owner(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
@@ -456,7 +456,7 @@ class TestCommitTrackerGapsAndFloor:
                 )
             )
             tracker.complete("orders.in", partition, 5)
-            tracker.flush("orders.in", partition)
+            tracker.flush_partition("orders.in", partition)
 
         assert owner_zero.commit_offset_calls == [[TopicPartition("orders.in", 0, 6)]]
         assert owner_one.commit_offset_calls == [[TopicPartition("orders.in", 1, 6)]]
@@ -470,10 +470,10 @@ class TestCommitTrackerGapsAndFloor:
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=9)
         )
         tracker.complete("orders.in", 0, 9)
-        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
 
-        assert tracker.flush("orders.in", 0) == []  # sin avance: nada que commitear
-        assert tracker.flush("orders.in", 0, force=True) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush_partition("orders.in", 0) == []  # sin avance: nada que commitear
+        assert tracker.keepalive_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
 
     def test_rebuilding_a_partition_clears_inflight_state(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
@@ -487,7 +487,7 @@ class TestCommitTrackerGapsAndFloor:
         tracker.attach_partition("orders.in", 0, consumer, None)  # rebuild resets
         tracker.complete("orders.in", 0, 9)  # orphan complete: no-op
 
-        assert tracker.flush("orders.in", 0, force=True) == []
+        assert tracker.keepalive_partition("orders.in", 0) == []
 
 
 class TestCommitTrackerRobustness:
@@ -502,8 +502,8 @@ class TestCommitTrackerRobustness:
         tracker.register_record(record)  # redelivery of an in-flight offset
         tracker.complete("orders.in", 0, 9)
 
-        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
-        assert tracker.flush("orders.in", 0) == []
+        assert tracker.flush_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush_partition("orders.in", 0) == []
 
     def test_commit_failure_remarks_dirty_so_next_flush_retries(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
@@ -517,7 +517,7 @@ class TestCommitTrackerRobustness:
         tracker.complete("orders.in", 0, 9)
 
         with pytest.raises(RuntimeError, match="transient-commit-boom"):
-            tracker.flush("orders.in", 0)
+            tracker.flush_partition("orders.in", 0)
 
         consumer.commit_error = None
-        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush_partition("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]

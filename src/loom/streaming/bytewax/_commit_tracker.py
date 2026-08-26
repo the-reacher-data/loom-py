@@ -12,7 +12,8 @@ Design invariants:
   control records, compaction). The watermark waits only for offsets that were
   actually registered, so gaps never freeze commits.
 - **Coalesced commits**: ``complete()`` never talks to Kafka. Watermark
-  advances are accumulated per partition and committed by ``flush()`` — one
+  advances are accumulated per partition and committed by the explicit
+  per-partition commit methods — one
   commit per partition per flush cycle instead of one round-trip per record.
 - **Commit floor**: commits at or below the floor (the group offset observed
   at partition start) are suppressed, so a Bytewax-recovery replay never
@@ -149,78 +150,100 @@ class KafkaCommitTracker:
             if partition_state.watermark.complete(state.offset):
                 partition_state.dirty = True
 
-    def flush(
-        self,
-        topic: str | None = None,
-        partition: int | None = None,
-        *,
-        force: bool = False,
-        synchronous: bool = True,
-    ) -> list[TopicPartition]:
-        """Commit accumulated watermarks, coalesced per partition.
+    def flush_partition(self, topic: str, partition: int) -> list[TopicPartition]:
+        """Commit one partition's watermark if it advanced since the last commit.
 
-        Must be invoked only from the thread that owns the flushed partition
-        (the source partition's poll loop, or close): that single-writer rule
-        is what makes out-of-order group commits impossible.
+        The hot path. The commit is handed to librdkafka asynchronously so the
+        poll loop is never blocked on a broker round-trip.
 
         Args:
-            topic: Restrict the flush to one topic (with ``partition``).
-            partition: Restrict the flush to one partition of ``topic``.
-            force: Commit the current watermark even when it did not advance
-                since the last flush — used as a retention keep-alive for
-                member-less consumer groups.
-            synchronous: ``False`` lets librdkafka coalesce the commit in the
-                background (hot path); ``True`` blocks until acknowledged
-                (close/shutdown).
+            topic: Physical topic name.
+            partition: Kafka partition index.
 
         Returns:
-            The topic-partition offsets handed to the committer.
+            The offsets handed to the committer; empty when nothing advanced.
 
         Raises:
-            KafkaCommitError: Propagated from the committer when the broker
-                commit fails; the affected partitions are re-marked dirty so
-                the next flush retries them.
+            KafkaCommitError: Propagated from the committer; the partition is
+                re-marked dirty so the next flush retries it.
         """
-        plan: list[tuple[OffsetCommitter, TopicPartition]] = []
-        with self._lock:
-            for key in self._flush_targets(topic, partition, force=force):
-                state = self._partitions[key]
-                offset = state.committable_offset()
-                state.dirty = False
-                if offset is None:
-                    continue
-                plan.append((state.committer, TopicPartition(key[0], key[1], offset)))
-        committed: list[TopicPartition] = []
-        try:
-            for committer, target in plan:
-                committer.commit_offset([target], asynchronous=not synchronous)
-                committed.append(target)
-        except Exception:
-            with self._lock:
-                for _, target in plan[len(committed) :]:
-                    stale = self._partitions.get((target.topic, target.partition))
-                    if stale is not None:
-                        stale.dirty = True
-            raise
-        return committed
+        return self._commit_partition(topic, partition, force=False, synchronous=False)
 
-    def _flush_targets(
+    def keepalive_partition(self, topic: str, partition: int) -> list[TopicPartition]:
+        """Re-commit one partition's current watermark to refresh retention.
+
+        Member-less consumer groups expire committed offsets after
+        ``offsets.retention.minutes``, so an idle partition re-commits the same
+        offset periodically. Re-committing an unchanged offset is idempotent
+        and never rewinds.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+
+        Returns:
+            The offsets handed to the committer.
+
+        Raises:
+            KafkaCommitError: Propagated from the committer.
+        """
+        return self._commit_partition(topic, partition, force=True, synchronous=False)
+
+    def close_partition(self, topic: str, partition: int) -> list[TopicPartition]:
+        """Commit one partition's final watermark, blocking until acknowledged.
+
+        Called once while the partition shuts down. Synchronous on purpose: an
+        offset lost at shutdown is reprocessed on the next run.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+
+        Returns:
+            The offsets handed to the committer.
+
+        Raises:
+            KafkaCommitError: Propagated from the committer.
+        """
+        return self._commit_partition(topic, partition, force=True, synchronous=True)
+
+    def _commit_partition(
         self,
-        topic: str | None,
-        partition: int | None,
+        topic: str,
+        partition: int,
         *,
         force: bool,
-    ) -> list[tuple[str, int]]:
-        """Resolve which partitions this flush call should consider."""
-        if topic is not None and partition is not None:
-            key = (topic, partition)
+        synchronous: bool,
+    ) -> list[TopicPartition]:
+        """Shared commit mechanics behind the three named entry points.
+
+        Must be invoked only from the thread that owns the partition (its poll
+        loop, or its close): that single-writer rule is what makes out-of-order
+        group commits impossible.
+
+        The two axes stay private precisely so callers never spell them out —
+        each combination that production actually uses has its own named method.
+        """
+        key = (topic, partition)
+        with self._lock:
             state = self._partitions.get(key)
-            if state is not None and (force or state.dirty):
-                return [key]
-            return []
-        if force:
-            return list(self._partitions)
-        return [key for key, state in self._partitions.items() if state.dirty]
+            if state is None or not (force or state.dirty):
+                return []
+            offset = state.committable_offset()
+            state.dirty = False
+            if offset is None:
+                return []
+            committer = state.committer
+        target = TopicPartition(topic, partition, offset)
+        try:
+            committer.commit_offset([target], asynchronous=not synchronous)
+        except Exception:
+            with self._lock:
+                stale = self._partitions.get(key)
+                if stale is not None:
+                    stale.dirty = True
+            raise
+        return [target]
 
 
 @dataclass(slots=True)

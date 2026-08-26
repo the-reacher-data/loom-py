@@ -312,14 +312,14 @@ class _KafkaSourcePartition(StatefulSourcePartition[KafkaRecord[bytes], "int | N
         return records
 
     def _flush_commits(self, now: datetime) -> None:
-        """Flush coalesced watermark commits; force periodically as keep-alive."""
+        """Commit the coalesced watermark, or re-commit it as a keep-alive."""
         if self._commit_tracker is None:
             return
-        force = now - self._last_commit_at >= self._keepalive
-        committed = self._commit_tracker.flush(
-            self._topic, self._partition, force=force, synchronous=False
-        )
-        if committed or force:
+        if now - self._last_commit_at >= self._keepalive:
+            self._commit_tracker.keepalive_partition(self._topic, self._partition)
+            self._last_commit_at = now
+            return
+        if self._commit_tracker.flush_partition(self._topic, self._partition):
             self._last_commit_at = now
 
     def next_awake(self) -> datetime | None:
@@ -338,7 +338,7 @@ class _KafkaSourcePartition(StatefulSourcePartition[KafkaRecord[bytes], "int | N
         """
         try:
             if self._commit_tracker is not None:
-                self._commit_tracker.flush(self._topic, self._partition, force=True)
+                self._commit_tracker.close_partition(self._topic, self._partition)
         finally:
             self._client.close()
 

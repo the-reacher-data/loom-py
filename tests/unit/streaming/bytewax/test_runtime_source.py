@@ -145,7 +145,7 @@ class TestKafkaSourcePartition:
         # registered before returning: completing both now advances the watermark
         tracker.complete("orders.in", 2, 7)
         tracker.complete("orders.in", 2, 8)
-        assert tracker.flush("orders.in", 2) == [TopicPartition("orders.in", 2, 9)]
+        assert tracker.flush_partition("orders.in", 2) == [TopicPartition("orders.in", 2, 9)]
 
     def test_empty_batch_backs_off_and_flushes_pending_commits(
         self,
