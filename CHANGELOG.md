@@ -1,3 +1,56 @@
+# 🚀 Release 1.4.0 ([#129](https://github.com/the-reacher-data/loom-py/pull/129)) ([`71520ce`](https://github.com/the-reacher-data/loom-py/commit/71520ce4840f8a3b9b914081704520f90d46b31e))
+
+
+## ✨ Features
+### streaming
+- **streaming:** structured compiler error codes and public compiler exports<br>
+  > Replace the compiler's bare list[str] failures with structured issues so a
+  > guided platform can map compilation errors to form fields, mirroring
+  > loom.etl's ETLErrorCode:
+  > New loom.streaming.compiler._errors with StreamingErrorCode (StrEnum
+  > covering the binding, validation, and plan-building phases, plus codes
+  > reserved for the delivery-semantics phase) and CompilationIssue
+  > (LoomFrozenStruct with code, message, component, field). All message
+  > formatting lives in per-code factory functions; validator call-sites stay
+  > intention-revealing.
+  > CompilationError now aggregates issues (.issues) while keeping the legacy
+  > .errors accessor and the exact aggregated message format. The constructor
+  > still accepts bare strings, normalized to code UNSPECIFIED.
+  > Branch validation scopes nested issues via CompilationIssue.prefixed(),
+  > preserving the historical "fork/router/broadcast branch X: ..." messages.
+  > Two previously uncoded build-phase failures now raise CompilationError
+  > with codes: STORAGE_SINK_UNSUPPORTED (was a bare ValueError) and
+  > PAYLOAD_TYPE_INVALID (was an unguarded AttributeError).
+  > validate.py no longer constructs UnsupportedNodeError/MissingSinkError just
+  > to str() them; the exception classes remain runtime errors of the adapter.
+  > Export symmetry: loom.streaming now exports CompilationError, CompiledPlan,
+  > CompilationIssue, and StreamingErrorCode; loom.streaming.compiler adds
+  > CompiledMongoCDCSource. Tests migrated from private to public import paths.
+
+
+
+## 🐛 Fixes
+### docs
+- **docs:** keep compilation types canonical in loom.streaming.compiler<br>
+  > The strict docs build (warnings-as-errors) rejected re-exporting
+  > CompilationError/CompilationIssue/CompiledPlan/StreamingErrorCode at the
+  > loom.streaming package level: both the package and loom.streaming.compiler
+  > pages are in the autosummary, so each symbol was documented twice and
+  > cross-references became ambiguous.
+  > Follow the real loom.etl convention instead: compilation types have a single
+  > canonical import path (loom.streaming.compiler) and the package front-page
+  > docstring points there, exactly like loom.etl does with ETLCompilationError.
+  > compile_flow stays exported at the package level as before.
+  > --------
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.3.0 ([#127](https://github.com/the-reacher-data/loom-py/pull/127)) ([`1fcaa1c`](https://github.com/the-reacher-data/loom-py/commit/1fcaa1ca1520db435d1ba4974284a96a35d2734f))
 
 
