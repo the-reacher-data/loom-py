@@ -23,7 +23,7 @@ from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from loom.core.async_bridge import AsyncBridge
 from loom.core.logger import get_logger
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
+from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._resource_manager import ResourceManager
 from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks, drop_item_to_commit
 from loom.streaming.bytewax.handlers.dispatcher import (
@@ -67,7 +67,7 @@ class _DropSinkPartition(StatelessSinkPartition[Any]):
     at-least-once delivery.
     """
 
-    def __init__(self, commit_tracker: KafkaCommitTracker | None = None) -> None:
+    def __init__(self, commit_tracker: CommitCompletionPort | None = None) -> None:
         self._commit_tracker = commit_tracker
 
     def write_batch(self, items: list[Any]) -> None:
@@ -82,10 +82,10 @@ class _DropSinkPartition(StatelessSinkPartition[Any]):
 class _DropSink(DynamicSink[Any]):
     """Build a tracker-aware discard sink for unrouted error branches."""
 
-    def __init__(self, commit_tracker: KafkaCommitTracker | None = None) -> None:
+    def __init__(self, commit_tracker: CommitCompletionPort | None = None) -> None:
         self._commit_tracker = commit_tracker
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker) -> None:
+    def bind_commit_tracker(self, tracker: CommitCompletionPort) -> None:
         """Bind a commit tracker (adapter duck-typed hook)."""
         self._commit_tracker = tracker
 

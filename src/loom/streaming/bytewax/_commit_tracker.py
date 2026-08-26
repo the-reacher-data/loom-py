@@ -45,6 +45,28 @@ class OffsetCommitter(Protocol):
         """Commit explicit topic-partition offsets."""
 
 
+@runtime_checkable
+class CommitCompletionPort(Protocol):
+    """The only tracker operations a downstream branch is allowed to reach.
+
+    Sinks, DLQs, error routes and drop sinks run on Bytewax worker threads that
+    do not own any partition. They may report what happened to a record; they
+    must never drive a partition's commit lifecycle, because
+    ``KafkaCommitTracker`` commits under a single-writer rule — only the thread
+    owning a partition may commit it, and an out-of-order group commit from a
+    sink thread would corrupt the watermark.
+
+    Narrowing the type is what enforces that rule: with the concrete tracker in
+    hand a sink could call ``close_partition`` and the type checker would agree.
+    """
+
+    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
+        """Increase the expected completions for one logical message."""
+
+    def complete(self, topic: str, partition: int, offset: int) -> None:
+        """Mark one logical message branch as complete."""
+
+
 class KafkaCommitTracker:
     """Track per-offset completion and commit Kafka offsets once safe."""
 
@@ -325,4 +347,4 @@ class _PartitionWatermark:
         return advanced
 
 
-__all__ = ["KafkaCommitTracker", "OffsetCommitter"]
+__all__ = ["CommitCompletionPort", "KafkaCommitTracker", "OffsetCommitter"]

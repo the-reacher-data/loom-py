@@ -14,6 +14,7 @@ from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
+from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorKind
@@ -97,7 +98,7 @@ class _BuildContextProtocol(Protocol):
 
     plan: CompiledPlan
     bridge: AsyncBridge | None
-    commit_tracker: _CommitTrackerProtocol | None
+    commit_tracker: CommitCompletionPort | None
     flow_runtime: ObservabilityRuntime
 
     def wire_terminal(self, step_id: str, stream: Stream) -> None:
@@ -154,16 +155,6 @@ class _BuildContextProtocol(Protocol):
         path_prefix: tuple[int, ...] = (),
     ) -> Stream:
         """Wire one nested process subtree."""
-
-
-class _CommitTrackerProtocol(Protocol):
-    """Offset completion tracker used by the Kafka runtime adapter."""
-
-    def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
-        """Increase the expected completions for one logical message."""
-
-    def complete(self, topic: str, partition: int, offset: int) -> None:
-        """Mark one logical message branch as complete."""
 
 
 def _step_id(base: str, ctx: _BuildContextProtocol) -> str:

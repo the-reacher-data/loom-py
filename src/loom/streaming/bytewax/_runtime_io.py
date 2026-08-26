@@ -15,7 +15,7 @@ from confluent_kafka.admin import AdminClient
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import generate_trace_id
-from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
+from loom.streaming.bytewax._commit_tracker import CommitCompletionPort, KafkaCommitTracker
 from loom.streaming.bytewax._dlq import (
     send_batch_to_dlq,
     send_decode_error_batch_to_dlq,
@@ -82,7 +82,7 @@ def _write_kafka_batch(
         [KafkaMessageProducer[PayloadT], str, list[ItemT], KafkaDeliveryError], None
     ]
     | None,
-    commit_tracker: KafkaCommitTracker | None,
+    commit_tracker: CommitCompletionPort | None,
 ) -> None:
     try:
         for item in items:
@@ -112,7 +112,7 @@ def _write_kafka_batch(
 def _commit_runtime_items(
     items: list[ItemT],
     item_to_commit: Callable[[ItemT], tuple[str | None, int | None, int | None]] | None,
-    commit_tracker: KafkaCommitTracker | None,
+    commit_tracker: CommitCompletionPort | None,
 ) -> None:
     if commit_tracker is None or item_to_commit is None:
         return
@@ -349,7 +349,7 @@ class _KafkaSinkPartitionBase:
     def __init__(
         self,
         sink: CompiledSink,
-        commit_tracker: KafkaCommitTracker | None = None,
+        commit_tracker: CommitCompletionPort | None = None,
     ) -> None:
         self._sink = sink
         self._producer = KafkaProducerClient(sink.settings)
@@ -361,7 +361,7 @@ class _KafkaSinkPartitionBase:
     def close(self) -> None:
         self._message_producer.close()
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+    def bind_commit_tracker(self, tracker: CommitCompletionPort | None) -> None:
         self._commit_tracker = tracker
 
 
@@ -430,9 +430,9 @@ class _KafkaDynamicSinkBase:
 
     def __init__(self, sink: CompiledSink) -> None:
         self._sink = sink
-        self._commit_tracker: KafkaCommitTracker | None = None
+        self._commit_tracker: CommitCompletionPort | None = None
 
-    def bind_commit_tracker(self, tracker: KafkaCommitTracker | None) -> None:
+    def bind_commit_tracker(self, tracker: CommitCompletionPort | None) -> None:
         """Bind a commit tracker used by all partitions built from this sink."""
         self._commit_tracker = tracker
 
@@ -492,7 +492,7 @@ def build_runtime_source(
 
 def build_runtime_sink(
     sink: CompiledSink,
-    commit_tracker: KafkaCommitTracker | None = None,
+    commit_tracker: CommitCompletionPort | None = None,
 ) -> _KafkaMessageSink:
     """Build the runtime sink for one compiled Kafka output."""
     runtime_sink = _KafkaMessageSink(sink)
@@ -502,7 +502,7 @@ def build_runtime_sink(
 
 def build_runtime_error_sinks(
     error_routes: dict[ErrorKind, CompiledSink],
-    commit_tracker: KafkaCommitTracker | None = None,
+    commit_tracker: CommitCompletionPort | None = None,
 ) -> dict[ErrorKind, _ErrorSink]:
     """Build runtime sinks for explicit error routes.
 
@@ -524,7 +524,7 @@ def build_runtime_error_sinks(
 
 def build_runtime_terminal_sinks(
     terminal_sinks: dict[tuple[int, ...], CompiledSink],
-    commit_tracker: KafkaCommitTracker | None = None,
+    commit_tracker: CommitCompletionPort | None = None,
 ) -> dict[tuple[int, ...], _KafkaMessageSink]:
     """Build runtime sinks for terminal branch outputs."""
     return {path: build_runtime_sink(sink, commit_tracker) for path, sink in terminal_sinks.items()}
@@ -532,7 +532,7 @@ def build_runtime_terminal_sinks(
 
 def build_inline_sink_partition(
     sink: CompiledSink,
-    commit_tracker: KafkaCommitTracker | None = None,
+    commit_tracker: CommitCompletionPort | None = None,
 ) -> _KafkaMessageSinkPartition:
     """Build a sink partition for direct (non-Bytewax-graph) message writing.
 
