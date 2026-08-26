@@ -15,6 +15,11 @@ from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
 from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID
 from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka.client._retry import (
+    DEFAULT_COORDINATOR_RETRY,
+    CoordinatorRetryPolicy,
+    with_coordinator_retry,
+)
 
 
 class _CommitMethod(Protocol):
@@ -35,6 +40,8 @@ class KafkaConsumerClient:
     Args:
         settings: Typed consumer settings.
         obs: Optional observability runtime.
+        retry_policy: Backoff schedule for transient group-coordinator errors
+            on offset fetch and commit.
     """
 
     def __init__(
@@ -42,18 +49,22 @@ class KafkaConsumerClient:
         settings: ConsumerSettings,
         obs: ObservabilityRuntime | None = None,
         *,
+        retry_policy: CoordinatorRetryPolicy = DEFAULT_COORDINATOR_RETRY,
         _subscribe: bool = True,
     ) -> None:
         self._consumer = _Consumer(settings.to_confluent_config())
         if _subscribe:
             self._consumer.subscribe(list(settings.topics))
         self._obs = obs
+        self._retry_policy = retry_policy
 
     @classmethod
     def unassigned(
         cls,
         settings: ConsumerSettings,
         observability: ObservabilityRuntime | None = None,
+        *,
+        retry_policy: CoordinatorRetryPolicy = DEFAULT_COORDINATOR_RETRY,
     ) -> KafkaConsumerClient:
         """Build a consumer with neither subscription nor assignment.
 
@@ -64,11 +75,13 @@ class KafkaConsumerClient:
         Args:
             settings: Typed consumer settings.
             observability: Optional observability runtime.
+            retry_policy: Backoff schedule for transient group-coordinator
+                errors.
 
         Returns:
             Consumer client not yet attached to any partition.
         """
-        return cls(settings, observability, _subscribe=False)
+        return cls(settings, observability, retry_policy=retry_policy, _subscribe=False)
 
     @classmethod
     def for_partition(
@@ -130,8 +143,11 @@ class KafkaConsumerClient:
             KafkaCommitError: If the offset fetch fails or times out.
         """
         try:
-            results = self._consumer.committed(
-                [TopicPartition(topic, partition)], timeout=timeout_ms / 1000
+            results = with_coordinator_retry(
+                lambda: self._consumer.committed(
+                    [TopicPartition(topic, partition)], timeout=timeout_ms / 1000
+                ),
+                policy=self._retry_policy,
             )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
@@ -222,7 +238,10 @@ class KafkaConsumerClient:
         """
         try:
             commit = cast(_CommitMethod, self._consumer.commit)
-            commit(asynchronous=asynchronous)
+            with_coordinator_retry(
+                lambda: commit(asynchronous=asynchronous),
+                policy=self._retry_policy,
+            )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
@@ -245,7 +264,10 @@ class KafkaConsumerClient:
         """
         try:
             commit = cast(_CommitMethod, self._consumer.commit)
-            commit(offsets=partitions, asynchronous=asynchronous)
+            with_coordinator_retry(
+                lambda: commit(offsets=partitions, asynchronous=asynchronous),
+                policy=self._retry_policy,
+            )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
