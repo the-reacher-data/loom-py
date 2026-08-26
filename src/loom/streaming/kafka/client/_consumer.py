@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
@@ -15,6 +16,13 @@ from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
 from loom.streaming.kafka._message import HEADER_CORRELATION_ID, HEADER_TRACE_ID
 from loom.streaming.kafka._record import KafkaRecord
+from loom.streaming.kafka.client._retry import (
+    DEFAULT_COORDINATOR_RETRY,
+    CoordinatorRetryPolicy,
+    with_coordinator_retry,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class _CommitMethod(Protocol):
@@ -34,17 +42,100 @@ class KafkaConsumerClient:
 
     Args:
         settings: Typed consumer settings.
-        observer: Optional observability observer.
+        obs: Optional observability runtime.
+        retry_policy: Backoff schedule for transient group-coordinator errors
+            on offset fetch and commit.
     """
 
     def __init__(
         self,
         settings: ConsumerSettings,
         obs: ObservabilityRuntime | None = None,
+        *,
+        retry_policy: CoordinatorRetryPolicy = DEFAULT_COORDINATOR_RETRY,
+        _subscribe: bool = True,
     ) -> None:
-        self._consumer = _Consumer(settings.to_confluent_config())
-        self._consumer.subscribe(list(settings.topics))
         self._obs = obs
+        self._retry_policy = retry_policy
+        config: dict[str, Any] = dict(settings.to_confluent_config())
+        config["on_commit"] = self._on_commit
+        self._consumer = _Consumer(config)
+        if _subscribe:
+            self._consumer.subscribe(list(settings.topics))
+
+    @classmethod
+    def unassigned(
+        cls,
+        settings: ConsumerSettings,
+        observability: ObservabilityRuntime | None = None,
+        *,
+        retry_policy: CoordinatorRetryPolicy = DEFAULT_COORDINATOR_RETRY,
+    ) -> KafkaConsumerClient:
+        """Build a consumer with neither subscription nor assignment.
+
+        Used to query the group coordinator (:meth:`committed_offset`) before
+        deciding the start offset, then pin the partition with
+        :meth:`assign_partition`.
+
+        Args:
+            settings: Typed consumer settings.
+            observability: Optional observability runtime.
+            retry_policy: Backoff schedule for transient group-coordinator
+                errors.
+
+        Returns:
+            Consumer client not yet attached to any partition.
+        """
+        return cls(settings, observability, retry_policy=retry_policy, _subscribe=False)
+
+    def assign_partition(self, topic: str, partition: int, offset: int) -> None:
+        """Pin this consumer to exactly one topic partition via ``assign``.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            offset: Start offset (a concrete offset or a confluent sentinel
+                such as ``OFFSET_BEGINNING``/``OFFSET_END``).
+        """
+        self._consumer.assign([TopicPartition(topic, partition, offset)])
+
+    def committed_offset(self, topic: str, partition: int, *, timeout_ms: int) -> int | None:
+        """Read the consumer group's committed offset for one partition.
+
+        Works without group membership (plain ``OffsetFetch`` to the group
+        coordinator), so it is safe on assign-mode and unassigned consumers.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            timeout_ms: Explicit coordinator timeout — a coordinator that does
+                not answer is a hard error, never a silent fallback.
+
+        Returns:
+            The committed offset, or ``None`` when the group has no valid
+            committed offset for the partition.
+
+        Raises:
+            KafkaCommitError: If the offset fetch fails or times out.
+        """
+        try:
+            results = with_coordinator_retry(
+                lambda: self._consumer.committed(
+                    [TopicPartition(topic, partition)], timeout=timeout_ms / 1000
+                ),
+                policy=self._retry_policy,
+            )
+        except Exception as exc:
+            raise KafkaCommitError(str(exc)) from exc
+        if not results:
+            return None
+        result = results[0]
+        if result.error is not None:
+            raise KafkaCommitError(str(result.error))
+        offset = result.offset
+        if offset is None or offset < 0:
+            return None
+        return int(offset)
 
     def poll(self, timeout_ms: int) -> KafkaRecord[bytes] | None:
         """Read one raw byte record from Kafka.
@@ -65,9 +156,7 @@ class KafkaConsumerClient:
             raise KafkaPollError(str(exc)) from exc
         if message is None:
             return None
-        if message.error() is not None:
-            raise KafkaPollError(str(message.error()))
-        record = _to_record(message)
+        record = _checked_record(message)
         if self._obs is not None:
             self._obs.emit(
                 LifecycleEvent.end(
@@ -80,6 +169,40 @@ class KafkaConsumerClient:
             )
         return record
 
+    def consume_batch(self, max_records: int) -> list[KafkaRecord[bytes]]:
+        """Read up to ``max_records`` raw byte records without blocking.
+
+        Uses a negligible backend timeout, so the call returns whatever the
+        consumer already buffered.  Record order is the broker order per
+        partition.  Compacted-topic tombstones (records with a ``None``
+        value) are skipped: they carry no payload to decode, and the
+        gap-tolerant commit watermark treats unregistered offsets as gaps,
+        so skipping never freezes commits.
+
+        Args:
+            max_records: Maximum number of records to return.
+
+        Returns:
+            Raw Kafka records; empty when nothing is available.
+
+        Raises:
+            KafkaPollError: If the backend consume fails or any message
+                carries a broker error.
+        """
+        try:
+            messages = self._consumer.consume(max_records, timeout=0.001)
+        except Exception as exc:
+            raise KafkaPollError(str(exc)) from exc
+        records: list[KafkaRecord[bytes]] = []
+        for message in messages:
+            error = message.error()
+            if error is not None:
+                raise KafkaPollError(str(error))
+            if message.value() is None:
+                continue
+            records.append(_to_record(message))
+        return records
+
     def commit(self, *, asynchronous: bool = False) -> None:
         """Commit consumed offsets.
 
@@ -91,24 +214,62 @@ class KafkaConsumerClient:
         """
         try:
             commit = cast(_CommitMethod, self._consumer.commit)
-            commit(asynchronous=asynchronous)
+            with_coordinator_retry(
+                lambda: commit(asynchronous=asynchronous),
+                policy=self._retry_policy,
+            )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
 
-    def commit_offset(self, partitions: list[TopicPartition]) -> None:
+    def commit_offset(
+        self,
+        partitions: list[TopicPartition],
+        *,
+        asynchronous: bool = False,
+    ) -> None:
         """Commit explicit Kafka offsets.
 
         Args:
             partitions: Kafka topic-partition offsets to commit.
+            asynchronous: When ``True``, librdkafka coalesces the commit in
+                the background and this call returns before the broker
+                answers, so a rejection surfaces through :meth:`_on_commit`
+                rather than as an exception raised here.
 
         Raises:
-            KafkaCommitError: If the backend commit fails.
+            KafkaCommitError: If the backend commit fails (synchronous mode).
         """
         try:
             commit = cast(_CommitMethod, self._consumer.commit)
-            commit(offsets=partitions, asynchronous=False)
+            with_coordinator_retry(
+                lambda: commit(offsets=partitions, asynchronous=asynchronous),
+                policy=self._retry_policy,
+            )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
+
+    def _on_commit(self, error: object | None, partitions: list[TopicPartition]) -> None:
+        """Report the outcome of an asynchronous offset commit.
+
+        Asynchronous commits return before the broker answers, so a rejection
+        can only arrive here. Without this callback such a failure was
+        discarded entirely: the offset silently stayed where it was and the
+        only visible symptom was consumer lag with no explanation.
+
+        This does not weaken delivery. A commit that never lands means the
+        group offset does not advance, so those records are reprocessed on the
+        next run — which is what at-least-once permits. The retention
+        keep-alive re-commits the watermark later, so the failure is transient
+        as long as it is *visible*, which is what this restores.
+        """
+        if error is None:
+            return
+        logger.error(
+            "kafka asynchronous offset commit failed: %s (partitions: %s); the group "
+            "offset did not advance, so these records will be reprocessed on restart",
+            error,
+            ", ".join(f"{part.topic}:{part.partition}@{part.offset}" for part in partitions),
+        )
 
     def close(self) -> None:
         """Close the consumer and release resources."""
@@ -126,6 +287,14 @@ class KafkaConsumerClient:
             if exc[0] is None:
                 raise
         return False
+
+
+def _checked_record(message: _RawMessage) -> KafkaRecord[bytes]:
+    """Translate one confluent message, raising on broker-reported errors."""
+    error = message.error()
+    if error is not None:
+        raise KafkaPollError(str(error))
+    return _to_record(message)
 
 
 def _to_record(message: _RawMessage) -> KafkaRecord[bytes]:

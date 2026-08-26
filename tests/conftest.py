@@ -133,3 +133,27 @@ def assert_output_snapshot(update_golden: bool) -> Any:
         )
 
     return _assert
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_loom_logging() -> None:
+    """Configure logging once per session, as an application does at startup.
+
+    Without this the suite ran against structlog's *unconfigured* default,
+    which is a pipeline no application ever uses and which does not survive
+    pytest's default fd-level capture: ``structlog/_output.py`` binds
+    ``from sys import stdout`` at import time, so ``PrintLogger`` freezes
+    whatever ``sys.stdout`` was when structlog was first imported. Under
+    ``--capture=fd`` that is the temporary capture file of whichever test
+    happened to import it first; once that test finished and pytest closed the
+    descriptor, every later log call raised ``OSError: Bad file descriptor``.
+
+    The symptom was eight unrelated integration tests failing in a full run
+    while passing in isolation. Configuring logging installs
+    ``structlog.stdlib.LoggerFactory``, which routes through stdlib logging and
+    never touches that frozen stream — and makes the suite exercise the same
+    logging path production does.
+    """
+    from loom.core.logger import configure_logging
+
+    configure_logging()

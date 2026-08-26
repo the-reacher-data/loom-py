@@ -23,6 +23,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import shutdown_runner
 from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
+from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._runtime_io import (
     build_commit_tracker,
     build_runtime_error_sinks,
@@ -31,9 +32,15 @@ from loom.streaming.bytewax._runtime_io import (
     build_runtime_terminal_sinks,
 )
 from loom.streaming.bytewax._sink_registry import SinkRegistry
-from loom.streaming.compiler import CompiledPlan, compile_flow
+from loom.streaming.compiler import (
+    CompiledPlan,
+    compile_flow,
+    walk_process_nodes,
+)
+from loom.streaming.compiler._errors import delivery_keyed_multiprocess
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.graph._flow import StreamFlow
+from loom.streaming.nodes._shape import CollectBatch
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +225,7 @@ class StreamingRunner:
         self,
         *,
         error_sinks: Mapping[ErrorKind, ErrorSink] | None = None,
+        runtime: BytewaxRuntimeConfig | None = None,
     ) -> _PreparedStreamingRun:
         """Prepare one executable dataflow and its shutdown callback.
 
@@ -228,6 +236,8 @@ class StreamingRunner:
             error_sinks: Optional mapping of :class:`~loom.streaming.core._errors.ErrorKind`
                 to :class:`ErrorSink` instances.  When provided, these sinks override the
                 default error routing built from the compiled plan.
+            runtime: Optional runtime override; defaults to the runner's
+                config-loaded runtime settings.
 
         Returns:
             A bundle containing the assembled :class:`~bytewax.dataflow.Dataflow`
@@ -248,7 +258,7 @@ class StreamingRunner:
         prepared = _prepare_run(
             self._plan,
             observability_runtime=self._observability_runtime,
-            runtime=self._runtime,
+            runtime=runtime or self._runtime,
             error_sinks=merged_error_sinks,
         )
         self._shutdown = prepared.shutdown
@@ -318,7 +328,7 @@ class StreamingRunner:
         status = LifecycleStatus.FAILURE
         try:
             self._observability_runtime.start_scrape_server()
-            prepared = self.prepare_run()
+            prepared = self.prepare_run(runtime=resolved_runtime)
             with self._observability_runtime.span(
                 Scope.FLOW,
                 self._plan.name,
@@ -387,8 +397,9 @@ def _prepare_run(
     runtime: BytewaxRuntimeConfig | None = None,
 ) -> _PreparedStreamingRun:
     commit_tracker = build_commit_tracker(plan.source)
+    _guard_keyed_multiprocess(plan, runtime, commit_tracker)
     if source is None:
-        source = build_runtime_source(plan.source, commit_tracker)
+        source = build_runtime_source(plan.source, commit_tracker, observability_runtime)
     if sink is None and plan.output is not None:
         sink = build_runtime_sink(plan.output, commit_tracker)
     if terminal_sinks is None:
@@ -407,6 +418,32 @@ def _prepare_run(
         commit_tracker=commit_tracker,
     )
     return _PreparedStreamingRun(dataflow=built.dataflow, shutdown=built.shutdown)
+
+
+def _guard_keyed_multiprocess(
+    plan: CompiledPlan,
+    runtime: BytewaxRuntimeConfig | None,
+    commit_tracker: object | None,
+) -> None:
+    """Reject at-least-once + keyed nodes on a multi-process cluster (fail-fast).
+
+    Keyed operators (``CollectBatch``) route records to a primary worker by key
+    hash, which in a multi-process cluster may be another process — where
+    completions cannot reach the source process's commit tracker, silently
+    freezing the watermark. Threads within one process share the tracker and
+    remain supported.
+
+    Raises:
+        RuntimeConfigurationError: If the plan contains a keyed node and the
+            runtime declares more than one process.
+    """
+    if commit_tracker is None or runtime is None:
+        return
+    if runtime.addresses is None or len(runtime.addresses) <= 1:
+        return
+    for node in walk_process_nodes(compiled.node for compiled in plan.nodes):
+        if isinstance(node, CollectBatch):
+            raise RuntimeConfigurationError([delivery_keyed_multiprocess(type(node).__name__)])
 
 
 def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBridge | None:

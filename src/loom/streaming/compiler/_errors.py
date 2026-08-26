@@ -59,9 +59,10 @@ class StreamingErrorCode(StrEnum):
     STORAGE_SINK_UNSUPPORTED = "STORAGE_SINK_UNSUPPORTED"
     PAYLOAD_TYPE_INVALID = "PAYLOAD_TYPE_INVALID"
 
-    # Reserved for the delivery-semantics phase (partitioned source spec)
+    # Delivery-semantics phase (partitioned source spec)
     DELIVERY_CONFLICT = "DELIVERY_CONFLICT"
     DELIVERY_KEYED_MULTIPROCESS = "DELIVERY_KEYED_MULTIPROCESS"
+    SINK_CANNOT_TRACK_COMMITS = "SINK_CANNOT_TRACK_COMMITS"
     FORK_UNMATCHED_UNROUTED = "FORK_UNMATCHED_UNROUTED"
 
     # Compatibility bucket for issues built from bare strings
@@ -365,6 +366,74 @@ def scoped_process_unsupported_node(node: object, inner_node: object) -> Compila
             f"optional terminal IntoTopic; found {type(inner_node).__name__}."
         ),
         component=type(node).__name__,
+    )
+
+
+def delivery_conflict(
+    consumer_ref: str,
+    delivery: str,
+    enable_auto_commit: bool,
+) -> CompilationIssue:
+    """A consumer sets delivery and a contradicting deprecated enable_auto_commit."""
+    return CompilationIssue(
+        code=StreamingErrorCode.DELIVERY_CONFLICT,
+        message=(
+            f"kafka consumer '{consumer_ref}': delivery={delivery} conflicts with "
+            f"enable_auto_commit={enable_auto_commit}; remove the deprecated enable_auto_commit"
+        ),
+        component=f"kafka consumer '{consumer_ref}'",
+        field="kafka.consumer.enable_auto_commit",
+    )
+
+
+def fork_unmatched_unrouted() -> CompilationIssue:
+    """A terminal Fork without default drops unmatched messages silently.
+
+    Under at-least-once delivery a dropped message that never completes
+    freezes the partition's commit watermark forever.
+    """
+    return CompilationIssue(
+        code=StreamingErrorCode.FORK_UNMATCHED_UNROUTED,
+        message=(
+            "fork has no default branch: unmatched messages are dropped without "
+            "completing and freeze the commit watermark under "
+            "delivery=at_least_once. Add default=Process(Drain())."
+        ),
+        component="fork",
+        field="default",
+    )
+
+
+def sink_cannot_track_commits(sink_name: str) -> CompilationIssue:
+    """A runtime sink cannot receive the commit tracker under at-least-once."""
+    return CompilationIssue(
+        code=StreamingErrorCode.SINK_CANNOT_TRACK_COMMITS,
+        message=(
+            f"delivery=at_least_once requires every runtime sink to accept the "
+            f"commit tracker, but {sink_name} exposes no bind_commit_tracker "
+            f"method. Records written by it would never be completed, so its "
+            f"partitions would stop committing while the flow looks healthy. "
+            f"Add bind_commit_tracker(tracker) to the sink, or declare "
+            f"delivery=at_most_once."
+        ),
+        component=sink_name,
+        field="streaming.delivery",
+    )
+
+
+def delivery_keyed_multiprocess(node_name: str) -> CompilationIssue:
+    """Keyed nodes redistribute records across processes, breaking commits."""
+    return CompilationIssue(
+        code=StreamingErrorCode.DELIVERY_KEYED_MULTIPROCESS,
+        message=(
+            f"delivery=at_least_once with {node_name} is not supported on a "
+            f"multi-process Bytewax cluster: keyed operators route records to "
+            f"other processes, where completions cannot reach the source "
+            f"process's commit tracker. Scale with workers_per_process "
+            f"(threads) or use Bytewax recovery instead."
+        ),
+        component=node_name,
+        field="streaming.runtime.addresses",
     )
 
 

@@ -636,7 +636,6 @@ def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> Non
         "orders",
         5,
         "With",
-        tracker,
         _Lifecycle(),
         {},
         [_UpperRecordStep()],
@@ -649,8 +648,14 @@ def test_execute_with_step_does_not_fork_commit_tracker_for_inline_sink() -> Non
     assert len(sink_partition.writes) == 1
 
 
-def test_execute_inner_process_completes_commit_tracker_on_success() -> None:
-    tracker = _CommitTracker()
+def test_execute_inner_process_writes_to_the_inline_sink() -> None:
+    """The record is written inline and keeps flowing to its real terminal.
+
+    Completion is that terminal's job. This used to complete here, releasing
+    the offset while the message was still in flight — a data-loss window on
+    any intermediate WithAsync. The guarantee is now structural rather than
+    asserted: the function has no tracker parameter to complete through.
+    """
     sink_partition = _RecordingSinkPartition()
 
     asyncio.run(
@@ -658,48 +663,40 @@ def test_execute_inner_process_completes_commit_tracker_on_success() -> None:
             _message("abc", message_id="m-1"),
             [_UpperRecordStep()],
             sink_partition,
-            tracker,
             {},
             None,
         )
     )
 
-    assert tracker.completes == [("t", 0, 0)]
     assert [_message_payload(item).value for item in sink_partition.writes[0]] == ["ABC"]
 
 
-def test_execute_inner_process_completes_without_sink_partition() -> None:
-    tracker = _CommitTracker()
-
-    asyncio.run(
+def test_execute_inner_process_runs_without_a_sink_partition() -> None:
+    """An inner process with no inline sink still applies its steps."""
+    result = asyncio.run(
         _scopes._execute_inner_process(
             _message("abc", message_id="m-1"),
             [_UpperRecordStep()],
             None,
-            tracker,
             {},
             None,
         )
     )
 
-    assert tracker.completes == [("t", 0, 0)]
+    assert _message_payload(result).value == "ABC"
 
 
-def test_execute_inner_process_does_not_complete_on_sink_failure() -> None:
-    tracker = _CommitTracker()
-
+def test_execute_inner_process_propagates_a_sink_failure() -> None:
+    """An inline sink failure must surface, never be swallowed."""
     process = _scopes._execute_inner_process(
         _message("abc", message_id="m-1"),
         [_UpperRecordStep()],
         _FailingSinkPartition(),
-        tracker,
         {},
         None,
     )
     with pytest.raises(RuntimeError, match="sink-boom"):
         asyncio.run(process)
-
-    assert tracker.completes == []
 
 
 class TestWithAsyncBatch:
@@ -780,12 +777,11 @@ class TestWithAsyncBatch:
             messages: list[Message[StreamPayload]],
             inner_steps: list[object],
             sink_partition: object,
-            tracker: object,
             deps: dict[str, object],
             timeout_ms: int | None,
             max_concurrency: int,
         ) -> Any:
-            del inner_steps, sink_partition, tracker, deps, timeout_ms
+            del inner_steps, sink_partition, deps, timeout_ms
             calls["batch"] = [message.meta.message_id for message in messages]
             calls["max_concurrency"] = max_concurrency
             return asyncio.sleep(0, result=[])
@@ -841,7 +837,6 @@ class TestWithAsyncBatch:
             messages,
             [_AsyncUpperRecordStep(probe)],
             sink_partition,
-            tracker,
             {},
             None,
             2,
@@ -856,10 +851,7 @@ class TestWithAsyncBatch:
         assert sorted(
             _message_payload(item).value for batch in sink_partition.writes for item in batch
         ) == ["ABC", "DEF"]
-        assert sorted(tracker.completes, key=lambda item: item[2]) == [
-            ("t", 0, 0),
-            ("t", 0, 1),
-        ]
+        # completion belongs to the terminal; WithAsync cannot reach a tracker
         assert probe.max_active == 2
 
     @pytest.mark.asyncio
@@ -877,7 +869,6 @@ class TestWithAsyncBatch:
             messages,
             [_ConditionalAsyncRecordStep()],
             sink_partition,
-            tracker,
             {},
             None,
             2,
@@ -893,7 +884,7 @@ class TestWithAsyncBatch:
         assert sorted(
             _message_payload(item).value for batch in sink_partition.writes for item in batch
         ) == ["OK"]
-        assert tracker.completes == [("t", 0, 0)]
+        # completion belongs to the terminal; WithAsync cannot reach a tracker
 
     @pytest.mark.asyncio
     async def test_execute_with_async_batch_returns_classified_error_for_sink_failure(
@@ -910,7 +901,6 @@ class TestWithAsyncBatch:
             messages,
             [_AsyncUpperRecordStep()],
             sink_partition,
-            tracker,
             {},
             None,
             2,
@@ -927,7 +917,7 @@ class TestWithAsyncBatch:
         assert sorted(
             _message_payload(item).value for batch in sink_partition.writes for item in batch
         ) == ["OK"]
-        assert tracker.completes == [("t", 0, 0)]
+        # completion belongs to the terminal; WithAsync cannot reach a tracker
 
     @pytest.mark.asyncio
     async def test_execute_with_async_batch_respects_max_concurrency(
@@ -943,7 +933,6 @@ class TestWithAsyncBatch:
             ],
             [_AsyncUpperRecordStep(probe)],
             sink_partition,
-            tracker,
             {},
             None,
             1,

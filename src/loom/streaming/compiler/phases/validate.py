@@ -16,9 +16,11 @@ from loom.streaming.compiler._errors import (
     CompilationIssue,
     batch_scope_direct_context,
     broadcast_not_last,
+    delivery_conflict,
     explode_without_router,
     fork_branch_no_terminal,
     fork_not_last,
+    fork_unmatched_unrouted,
     kafka_config_invalid,
     missing_terminal_output,
     mongo_config_invalid,
@@ -38,7 +40,7 @@ from loom.streaming.compiler._errors import (
 )
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
-from loom.streaming.kafka._config import KafkaSettings
+from loom.streaming.kafka._config import ConsumerSettings, KafkaSettings
 from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
 from loom.streaming.nodes._broadcast import Broadcast
@@ -79,6 +81,26 @@ def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[Compi
         return []
     except ConfigError as exc:
         return [kafka_config_invalid(exc)]
+
+
+def validate_delivery(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[CompilationIssue]:
+    """Validate that explicit delivery semantics do not contradict legacy flags.
+
+    Emits :data:`StreamingErrorCode.DELIVERY_CONFLICT` when a resolved consumer
+    sets ``delivery`` and an explicit ``enable_auto_commit`` that contradicts
+    it.  Missing Kafka config is reported by :func:`validate_kafka`, not here.
+    """
+    if not _uses_kafka(flow):
+        return []
+    if not isinstance(flow.source, (FromTopic, FromMultiTypeTopic)):
+        return []
+    consumer = _resolve_consumer_settings(flow.source, ctx)
+    if consumer is None:
+        return []
+    issues = _delivery_conflict_issues(flow.source.name, consumer)
+    if consumer.effective_delivery() == "at_least_once":
+        issues.extend(_unrouted_fork_issues(flow))
+    return issues
 
 
 def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[CompilationIssue]:
@@ -137,6 +159,40 @@ def _uses_kafka(flow: StreamFlow[Any, Any]) -> bool:
     return _has_kafka_topic_output(flow.process.nodes)
 
 
+def _resolve_consumer_settings(
+    source: FromTopic[Any] | FromMultiTypeTopic[Any],
+    ctx: ConfigContext,
+) -> ConsumerSettings | None:
+    """Resolve the consumer settings for one Kafka source, or None if unresolvable."""
+    try:
+        kafka = ctx.section(ConfigKey.KAFKA, KafkaSettings)
+        return kafka.consumer_for(source.logical_ref)
+    except (ConfigError, KeyError):
+        return None
+
+
+def _unrouted_fork_issues(flow: StreamFlow[Any, Any]) -> list[CompilationIssue]:
+    """Report terminal forks whose unmatched stream would drop without completing."""
+    issues: list[CompilationIssue] = []
+    for node in _walk_all_process_nodes(flow.process.nodes):
+        if isinstance(node, Fork) and node.default is None:
+            issues.append(fork_unmatched_unrouted())
+    return issues
+
+
+def _delivery_conflict_issues(
+    consumer_ref: str,
+    settings: ConsumerSettings,
+) -> list[CompilationIssue]:
+    """Return a conflict issue when delivery and enable_auto_commit contradict."""
+    if settings.delivery is None or settings.enable_auto_commit is None:
+        return []
+    expected_auto_commit = settings.delivery == "at_most_once"
+    if settings.enable_auto_commit == expected_auto_commit:
+        return []
+    return [delivery_conflict(consumer_ref, settings.delivery, settings.enable_auto_commit)]
+
+
 def _iter_expand_routes_groups(node: ExpandRoutes[Any]) -> Iterable[Iterable[object]]:
     for process in node.routes.values():
         yield process.nodes
@@ -169,6 +225,17 @@ def _walk_all_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
         yield node
         for child_nodes in _iter_child_node_groups(node):
             yield from _walk_all_process_nodes(child_nodes)
+
+
+def walk_process_nodes(nodes: Iterable[object]) -> Iterable[object]:
+    """Yield every DSL node reachable from *nodes*, recursing into branches.
+
+    Public traversal helper over the process tree: recurses into Router,
+    Fork, Broadcast, ExpandRoutes and scoped With/WithAsync processes.
+    Used by the compiler phases and by runtime guards that must inspect
+    nested nodes.
+    """
+    yield from _walk_all_process_nodes(nodes)
 
 
 def _node_needs_async_bridge(node: object) -> bool:
@@ -504,8 +571,6 @@ def _node_has_kafka_topic_output(node: object) -> bool:
 
 
 def _has_kafka_topic_output(nodes: Iterable[object]) -> bool:
-    if isinstance(nodes, tuple):
-        return any(_node_has_kafka_topic_output(node) for node in nodes)
     return any(_node_has_kafka_topic_output(node) for node in nodes)
 
 

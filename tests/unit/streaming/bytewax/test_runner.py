@@ -48,7 +48,7 @@ class TestStreamingRunner:
         )
         dataflow = Dataflow("test")
 
-        def _fake_prepare() -> object:
+        def _fake_prepare(**kwargs: object) -> object:
             def shutdown() -> None:
                 return None
 
@@ -83,7 +83,7 @@ class TestStreamingRunner:
         shutdown_calls: list[str] = []
         cli_calls: dict[str, object] = {}
 
-        def _fake_prepare() -> object:
+        def _fake_prepare(**kwargs: object) -> object:
             def shutdown() -> None:
                 shutdown_calls.append("done")
 
@@ -120,7 +120,7 @@ class TestStreamingRunner:
         dataflow = Dataflow("test")
         shutdown_calls: list[str] = []
 
-        def _fake_prepare() -> object:
+        def _fake_prepare(**kwargs: object) -> object:
             def shutdown() -> None:
                 shutdown_calls.append("done")
 
@@ -316,7 +316,7 @@ class TestRunFlowSpan:
         )
         dataflow = Dataflow("test")
 
-        def _fake_prepare() -> object:
+        def _fake_prepare(**kwargs: object) -> object:
             return SimpleNamespace(dataflow=dataflow, shutdown=lambda: None)
 
         monkeypatch.setattr(runner, "prepare_run", _fake_prepare)
@@ -350,7 +350,7 @@ class TestRunFlowSpan:
         )
         dataflow = Dataflow("test")
 
-        def _fake_prepare() -> object:
+        def _fake_prepare(**kwargs: object) -> object:
             return SimpleNamespace(dataflow=dataflow, shutdown=lambda: None)
 
         def _raise_stream_failure(*_a: object, **_kw: object) -> None:
@@ -385,7 +385,7 @@ class TestRunFlowSpan:
             observability_runtime=runtime,
         )
 
-        def _raise_prep_failed() -> None:
+        def _raise_prep_failed(**kwargs: object) -> None:
             raise RuntimeError("prep failed")
 
         monkeypatch.setattr(runner, "prepare_run", _raise_prep_failed)
@@ -622,3 +622,37 @@ streaming:
 
         # error_sinks should be None or absent — registry is not auto-resolved here
         assert received_kwargs.get("error_sinks") is None
+
+
+class TestKeyedMultiprocessGuard:
+    def test_at_least_once_with_collect_batch_on_cluster_fails_fast(self) -> None:
+        from loom.streaming.bytewax import RuntimeConfigurationError
+        from loom.streaming.bytewax import runner as runner_mod
+        from loom.streaming.compiler import StreamingErrorCode
+        from loom.streaming.nodes._shape import CollectBatch
+        from tests.unit.streaming.bytewax.cases import build_compiled_plan
+
+        plan = build_compiled_plan(CollectBatch(max_records=10, timeout_ms=100))
+        runtime = runner_mod.BytewaxRuntimeConfig(addresses=("host-a:2101", "host-b:2101"))
+        tracker = object()
+
+        # a runtime rejection, not a compilation failure: the plan compiled fine
+        with pytest.raises(RuntimeConfigurationError) as exc_info:
+            runner_mod._guard_keyed_multiprocess(plan, runtime, tracker)
+
+        codes = {issue.code for issue in exc_info.value.issues}
+        assert StreamingErrorCode.DELIVERY_KEYED_MULTIPROCESS in codes
+
+    def test_single_process_or_at_most_once_passes(self) -> None:
+        from loom.streaming.bytewax import runner as runner_mod
+        from loom.streaming.nodes._shape import CollectBatch
+        from tests.unit.streaming.bytewax.cases import build_compiled_plan
+
+        plan = build_compiled_plan(CollectBatch(max_records=10, timeout_ms=100))
+        cluster = runner_mod.BytewaxRuntimeConfig(addresses=("host-a:2101",))
+        single = runner_mod.BytewaxRuntimeConfig()
+
+        runner_mod._guard_keyed_multiprocess(plan, single, object())  # threads: supported
+        runner_mod._guard_keyed_multiprocess(plan, cluster, object())  # 1-process cluster
+        runner_mod._guard_keyed_multiprocess(plan, cluster, None)  # at_most_once: no tracker
+        runner_mod._guard_keyed_multiprocess(plan, None, object())  # no runtime declared

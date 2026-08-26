@@ -93,8 +93,10 @@ class TestCompilationErrorContract:
             process=Process(FakeStep(), IntoTopic("out", payload=Result)),
         )
 
+        empty_config = OmegaConf.create({})
+
         with pytest.raises(CompilationError) as exc_info:
-            compile_flow(flow, config=OmegaConf.create({}))
+            compile_flow(flow, config=empty_config)
 
         codes = {issue.code for issue in exc_info.value.issues}
         assert StreamingErrorCode.KAFKA_CONFIG_INVALID in codes
@@ -157,8 +159,11 @@ class TestBuildPhaseCodes:
         class _NotATable:
             name = "fake"
 
+        not_a_table = _NotATable()
+        empty_config = OmegaConf.create({})
+
         with pytest.raises(CompilationError) as exc_info:
-            _build_storage_sink(_NotATable(), OmegaConf.create({}))  # type: ignore[arg-type]
+            _build_storage_sink(not_a_table, empty_config)  # type: ignore[arg-type]
 
         issue = exc_info.value.issues[0]
         assert issue.code is StreamingErrorCode.STORAGE_SINK_UNSUPPORTED

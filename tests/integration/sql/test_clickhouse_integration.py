@@ -33,6 +33,12 @@ import pytest
 
 pytest.importorskip("clickhouse_connect", reason="clickhouse-connect extra not installed")
 
+# Marked `integration`: this module needs a provisioned ClickHouse. The fast CI
+# lane deselects it and the integration lane runs it with the service actually
+# up — before this marker existed the module ran in CI and skipped every time,
+# which reads as approved without ever having executed.
+pytestmark = pytest.mark.integration
+
 # Imports after the importorskip guard: loom.core.sql.clickhouse imports the
 # clickhouse-connect driver at module import time.
 from loom.core.sql.abc import SqlExecutionError, SqlExecutionOptions  # noqa: E402

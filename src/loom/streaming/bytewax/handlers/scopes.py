@@ -51,7 +51,6 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
     node_type = type(node).__name__
-    tracker = ctx.commit_tracker
     inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
     def step(batch: list[Any]) -> list[Any]:
@@ -64,7 +63,6 @@ def _apply_with(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtoco
                 flow_name,
                 idx,
                 node_type,
-                tracker,
                 manager,
                 worker_resources,
                 inner_steps,
@@ -107,7 +105,6 @@ def _apply_with_async_process(
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
     node_type = type(node).__name__
-    tracker = ctx.commit_tracker
 
     inner_steps, sink_partition = _resolve_inner_process(node, ctx)
 
@@ -130,7 +127,6 @@ def _apply_with_async_process(
                         batch,
                         inner_steps,
                         sink_partition,
-                        tracker,
                         deps,
                         node.task_timeout_ms,
                         node.max_concurrency,
@@ -176,7 +172,6 @@ async def _execute_inner_process(
     message: Message[StreamPayload],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
 ) -> Message[StreamPayload]:
@@ -186,10 +181,12 @@ async def _execute_inner_process(
         current = _replace_payload(current, result)
     if sink_partition is not None:
         sink_partition.write_batch([current])
-    if tracker is not None:
-        t, p, o = current.meta.topic, current.meta.partition, current.meta.offset
-        if t is not None and p is not None and o is not None:
-            tracker.complete(t, p, o)
+    # Deliberately no tracker.complete() here. The message is returned into the
+    # stream and continues to its real terminal, which is what completes the
+    # offset. Completing at an inline sink released the record while it was
+    # still in flight — a data-loss window on any intermediate WithAsync. The
+    # synchronous sibling (_execute_with_step) never completed either; this
+    # removes the asymmetry.
     return current
 
 
@@ -197,7 +194,6 @@ async def _execute_with_async_message(
     message: Message[StreamPayload],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
 ) -> Any:
@@ -206,7 +202,6 @@ async def _execute_with_async_message(
             message,
             inner_steps,
             sink_partition,
-            tracker,
             deps,
             timeout_ms,
         )
@@ -219,7 +214,6 @@ async def _execute_with_async_batch(
     messages: Sequence[Message[StreamPayload]],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
     max_concurrency: int,
@@ -236,7 +230,6 @@ async def _execute_with_async_batch(
                 message,
                 inner_steps,
                 sink_partition,
-                tracker,
                 deps,
                 timeout_ms,
             )
@@ -257,14 +250,12 @@ def _execute_with_step(
     flow_name: str,
     idx: int,
     node_type: str,
-    tracker: Any | None,
     manager: ResourceLifecycle,
     worker_resources: Mapping[str, object],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
     messages: list[Message[StreamPayload]],
 ) -> list[Message[StreamPayload]]:
-    del tracker
     with (
         _observe_node(
             observer,

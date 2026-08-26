@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 from bytewax.operators import branch
@@ -16,6 +17,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _ExecutableRecordStep,
     _observe_node,
     _register_broadcast_fanout,
+    _register_row_fanout,
     _replace_payload,
     _require_message,
     _step_id,
@@ -109,6 +111,56 @@ def _apply_broadcast(
     return stream
 
 
+def _row_extractor(
+    node: ExpandRoutes[Any],
+    output_type: type | None,
+) -> Callable[[Any], list[Any]]:
+    """Build the extractor that turns one expanded payload into a route's rows.
+
+    ``output_type`` of ``None`` is the default route: it collects the rows of
+    every type no declared route claims.
+    """
+    declared = frozenset(node.routes.keys())
+
+    def extract_rows(msg: Any) -> list[Any]:
+        message = _require_message(msg)
+        expanded = cast(dict[type, list[Any]], message.payload)
+        if output_type is None:
+            rows = [row for tp, rs in expanded.items() if tp not in declared for row in rs]
+        else:
+            rows = expanded.get(output_type) or []
+        return [_replace_payload(message, row) for row in rows]
+
+    return extract_rows
+
+
+def _wire_row_fanout(
+    stream: Stream,
+    node: ExpandRoutes[Any],
+    idx: int,
+    ctx: _BuildContextProtocol,
+) -> Stream:
+    """Insert the commit-accounting step ahead of the per-route extraction.
+
+    The fan-out is the number of ROWS the expander actually produced across
+    every route, not the number of routes declared: each row becomes its own
+    message and completes the source offset when it reaches a terminal, while a
+    route matching no row contributes nothing. Accounting by the declared route
+    count froze the partition whenever rows < routes and released the offset
+    early whenever rows > routes.
+    """
+    tracker = ctx.commit_tracker
+    if tracker is None:
+        return stream
+    declared_types = frozenset(node.routes.keys())
+    has_default = node.default is not None
+    return bw_map(
+        _step_id(f"expand_routes_{idx}_fanout", ctx),
+        stream,
+        lambda item: _register_row_fanout(item, tracker, declared_types, has_default),
+    )
+
+
 def _apply_expand_routes(
     stream: Stream,
     raw: object,
@@ -119,11 +171,9 @@ def _apply_expand_routes(
         raise UnsupportedNodeError(f"Unsupported expand_routes node {type(raw).__name__}.")
     node = raw
     expand_path = ctx.current_path
-    tracker = ctx.commit_tracker
     all_processes: list[tuple[type | None, Any]] = list(node.routes.items())
     if node.default is not None:
         all_processes.append((None, node.default))
-    route_count = len(all_processes)
 
     # Step 1: expand once — payload becomes dict[type, list[rows]].
     # Use Message() directly: _replace_payload rejects non-LoomStruct payloads.
@@ -138,32 +188,14 @@ def _apply_expand_routes(
         do_expand,
     )
 
-    # Step 2: fanout tracking for Kafka offset commits (same as Broadcast)
-    if tracker is not None and route_count > 1:
-        expanded_stream = bw_map(
-            _step_id(f"expand_routes_{idx}_fanout", ctx),
-            expanded_stream,
-            lambda item: _register_broadcast_fanout(item, tracker, route_count),
-        )
+    expanded_stream = _wire_row_fanout(expanded_stream, node, idx, ctx)
 
     # Step 3: for each route, flat_map to extract rows of its type, then wire process
     for branch_idx, (output_type, process) in enumerate(all_processes):
-
-        def extract_rows(msg: Any, t: type | None = output_type) -> list[Any]:
-            message = _require_message(msg)
-            expanded = cast(dict[type, list[Any]], message.payload)
-            if t is None:
-                # default route: collect rows for types not in declared routes
-                declared = set(node.routes.keys())
-                rows = [r for tp, rs in expanded.items() if tp not in declared for r in rs]
-            else:
-                rows = expanded.get(t) or []
-            return [_replace_payload(message, row) for row in rows]
-
         route_stream = bw_flat_map(
             _step_id(f"expand_routes_{idx}_extract_{branch_idx}", ctx),
             expanded_stream,
-            extract_rows,
+            _row_extractor(node, output_type),
         )
         ctx.wire_process(
             route_stream,

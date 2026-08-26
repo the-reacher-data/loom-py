@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import polars as pl
@@ -35,25 +36,31 @@ class TestRowCountIfCheap:
 
 
 class TestMaterializeChecked:
-    def test_an_empty_frame_warns_naming_the_target(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_an_empty_frame_warns_naming_the_target(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Asserted through stdlib logging, which is where a configured app emits.
+
+        Reading stdout instead only worked while structlog was left
+        unconfigured and fell back to printing — a pipeline no application
+        ever runs.
+        """
         writer = _writer()
         empty = pl.DataFrame({"a": []}, schema={"a": pl.Int64}).lazy()
 
-        writer._materialize_checked(empty, _target(), streaming=False)
+        with caplog.at_level(logging.WARNING):
+            writer._materialize_checked(empty, _target(), streaming=False)
 
-        out = capsys.readouterr().out
-        assert _WARNING_EVENT in out
-        assert "silver.players" in out
+        emitted = " ".join(record.getMessage() for record in caplog.records)
+        assert _WARNING_EVENT in emitted
+        assert "silver.players" in emitted
 
-    def test_a_populated_frame_stays_quiet(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_a_populated_frame_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         writer = _writer()
         populated = pl.DataFrame({"a": [1]}).lazy()
 
-        writer._materialize_checked(populated, _target(), streaming=False)
+        with caplog.at_level(logging.WARNING):
+            writer._materialize_checked(populated, _target(), streaming=False)
 
-        assert _WARNING_EVENT not in capsys.readouterr().out
+        assert _WARNING_EVENT not in " ".join(r.getMessage() for r in caplog.records)
 
     def test_the_frame_is_returned_unchanged(self) -> None:
         writer = _writer()

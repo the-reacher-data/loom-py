@@ -13,6 +13,7 @@ from loom.streaming.compiler._plan import (
     CompiledSource,
     CompiledStorageSink,
 )
+from loom.streaming.compiler.phases.validate import walk_process_nodes
 
 __all__ = [
     "compile_flow",
@@ -27,4 +28,5 @@ __all__ = [
     "CompiledSource",
     "CompiledStorageSink",
     "StreamingErrorCode",
+    "walk_process_nodes",
 ]

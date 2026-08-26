@@ -25,6 +25,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _ExecutableRecordStep,
     _identity,
     _observe_node,
+    _reconcile_fanout,
     _replace_payload,
     _replace_payloads,
     _require_message,
@@ -105,9 +106,11 @@ def _apply_expand_step(
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
+    tracker = ctx.commit_tracker
+
     def step_fn(msg: Any) -> list[NodeResult]:
         message = _require_message(msg)
-        return _execute_batch_in_boundary(
+        results = _execute_batch_in_boundary(
             _classify_task,
             [message],
             lambda: _execute_expand_step(
@@ -119,6 +122,8 @@ def _apply_expand_step(
                 message,
             ),
         )
+        _reconcile_fanout([message], results, tracker)
+        return results
 
     sid = _step_id(f"expand_{idx}_{name}", ctx)
     mapped = bw_map(sid, stream, step_fn)
@@ -141,9 +146,11 @@ def _apply_batch_expand_step(
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
+    tracker = ctx.commit_tracker
+
     def step_fn(batch: list[Any]) -> list[NodeResult]:
         messages = [_require_message(item) for item in batch]
-        return _execute_batch_in_boundary(
+        results = _execute_batch_in_boundary(
             _classify_task,
             messages,
             lambda: _execute_batch_expand_step(
@@ -155,6 +162,8 @@ def _apply_batch_expand_step(
                 messages,
             ),
         )
+        _reconcile_fanout(messages, results, tracker)
+        return results
 
     sid = _step_id(f"batch_expand_{idx}_{name}", ctx)
     mapped = bw_map(sid, stream, step_fn)
@@ -170,9 +179,11 @@ def _apply_explode(stream: Stream, raw: object, idx: int, ctx: _BuildContextProt
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
 
+    tracker = ctx.commit_tracker
+
     def step_fn(msg: Any) -> list[NodeResult]:
         message = _require_message(msg)
-        return _execute_batch_in_boundary(
+        results = _execute_batch_in_boundary(
             _classify_task,
             [message],
             lambda: _execute_explode_step(
@@ -184,6 +195,8 @@ def _apply_explode(stream: Stream, raw: object, idx: int, ctx: _BuildContextProt
                 message,
             ),
         )
+        _reconcile_fanout([message], results, tracker)
+        return results
 
     sid = _step_id(f"explode_{idx}_{name}", ctx)
     mapped = bw_map(sid, stream, step_fn)

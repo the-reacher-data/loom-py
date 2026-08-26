@@ -51,6 +51,7 @@ def _ctx() -> SimpleNamespace:
         plan=SimpleNamespace(name="orders"),
         current_path=(1, 2),
         flow_runtime=ObservabilityRuntime.noop(),
+        commit_tracker=None,
     )
 
 
@@ -92,6 +93,7 @@ def test_apply_record_step_emits_trace_id_from_message(
         plan=SimpleNamespace(name="orders"),
         current_path=(1, 2),
         flow_runtime=runtime,
+        commit_tracker=None,
     )
 
     def _bw_map(step_id: str, stream: object, fn: Any) -> object:
