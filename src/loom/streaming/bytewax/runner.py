@@ -23,6 +23,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import shutdown_runner
 from loom.core.tracing import generate_trace_id
 from loom.streaming.bytewax._adapter import build_dataflow_with_shutdown
+from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._runtime_io import (
     build_commit_tracker,
     build_runtime_error_sinks,
@@ -32,7 +33,6 @@ from loom.streaming.bytewax._runtime_io import (
 )
 from loom.streaming.bytewax._sink_registry import SinkRegistry
 from loom.streaming.compiler import (
-    CompilationError,
     CompiledPlan,
     compile_flow,
     walk_process_nodes,
@@ -432,6 +432,10 @@ def _guard_keyed_multiprocess(
     completions cannot reach the source process's commit tracker, silently
     freezing the watermark. Threads within one process share the tracker and
     remain supported.
+
+    Raises:
+        RuntimeConfigurationError: If the plan contains a keyed node and the
+            runtime declares more than one process.
     """
     if commit_tracker is None or runtime is None:
         return
@@ -439,7 +443,7 @@ def _guard_keyed_multiprocess(
         return
     for node in walk_process_nodes(compiled.node for compiled in plan.nodes):
         if isinstance(node, CollectBatch):
-            raise CompilationError([delivery_keyed_multiprocess(type(node).__name__)])
+            raise RuntimeConfigurationError([delivery_keyed_multiprocess(type(node).__name__)])
 
 
 def _create_bridge(plan: CompiledPlan, runtime: BytewaxRuntimeConfig) -> AsyncBridge | None:

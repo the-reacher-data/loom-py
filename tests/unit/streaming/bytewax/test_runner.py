@@ -627,7 +627,8 @@ streaming:
 class TestKeyedMultiprocessGuard:
     def test_at_least_once_with_collect_batch_on_cluster_fails_fast(self) -> None:
         from loom.streaming.bytewax import runner as runner_mod
-        from loom.streaming.compiler import CompilationError, StreamingErrorCode
+        from loom.streaming.bytewax._errors import RuntimeConfigurationError
+        from loom.streaming.compiler import StreamingErrorCode
         from loom.streaming.nodes._shape import CollectBatch
         from tests.unit.streaming.bytewax.cases import build_compiled_plan
 
@@ -635,7 +636,8 @@ class TestKeyedMultiprocessGuard:
         runtime = runner_mod.BytewaxRuntimeConfig(addresses=("host-a:2101", "host-b:2101"))
         tracker = object()
 
-        with pytest.raises(CompilationError) as exc_info:
+        # a runtime rejection, not a compilation failure: the plan compiled fine
+        with pytest.raises(RuntimeConfigurationError) as exc_info:
             runner_mod._guard_keyed_multiprocess(plan, runtime, tracker)
 
         codes = {issue.code for issue in exc_info.value.issues}
