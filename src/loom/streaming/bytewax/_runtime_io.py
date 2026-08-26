@@ -309,9 +309,18 @@ class _KafkaSourcePartition(StatefulSourcePartition[KafkaRecord[bytes], "int | N
         return self._next_offset
 
     def close(self) -> None:
-        if self._commit_tracker is not None:
-            self._commit_tracker.flush(self._topic, self._partition, force=True)
-        self._client.close()
+        """Flush the final watermark, then release the consumer unconditionally.
+
+        The final flush is synchronous and deliberately re-raises: a broker that
+        rejects the closing commit must not fail silently. It must not leak the
+        consumer either — without the ``finally``, a broker that is down at
+        shutdown leaves the client, its sockets and its group state alive.
+        """
+        try:
+            if self._commit_tracker is not None:
+                self._commit_tracker.flush(self._topic, self._partition, force=True)
+        finally:
+            self._client.close()
 
 
 class _KafkaSinkPartitionBase:

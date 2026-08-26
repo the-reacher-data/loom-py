@@ -11,7 +11,7 @@ from confluent_kafka import OFFSET_BEGINNING, OFFSET_END, TopicPartition
 from loom.streaming.bytewax import _runtime_io
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.kafka._config import ConsumerSettings
-from loom.streaming.kafka._errors import KafkaPollError
+from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
 from loom.streaming.kafka._record import KafkaRecord
 from tests.unit.streaming.bytewax.cases import build_compiled_source
 from tests.unit.streaming.kafka.fakes import PartitionClientInstaller, PartitionClientStub
@@ -183,6 +183,31 @@ class TestKafkaSourcePartition:
 
         assert stub.commit_offset_calls == [[TopicPartition("orders.in", 2, 6)]]
         assert stub.closed is True
+
+    def test_close_releases_the_client_even_when_the_final_flush_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A broker down at shutdown must not leak the consumer.
+
+        The closing commit is synchronous and re-raises by design, so without a
+        try/finally the client survives the exception together with its sockets
+        and group state.
+        """
+        stub = PartitionClientStub()
+        stub.batches = [[_record(5)]]
+        stub.commit_error = KafkaCommitError("broker down at shutdown")
+        _install_clients(monkeypatch, stub)
+        tracker = KafkaCommitTracker()
+        source = _runtime_io.KafkaPartitionedSource(build_compiled_source(), tracker)
+        partition = source.build_part("s", "orders.in:2", resume_state=None)
+        partition.next_batch()
+        tracker.complete("orders.in", 2, 5)
+
+        with pytest.raises(KafkaCommitError, match="broker down at shutdown"):
+            partition.close()
+
+        assert stub.closed is True, "the consumer leaked when the final flush raised"
 
     def test_warns_on_deprecated_poll_timeout(
         self,
