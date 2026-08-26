@@ -143,6 +143,32 @@ def _admin_config(source: _CompiledKafkaSource) -> dict[str, Any]:
     return admin
 
 
+def _warn_on_stale_resume_state(
+    topic: str,
+    partition: int,
+    resume_state: int | None,
+    committed: int | None,
+) -> None:
+    """Warn when a recovery snapshot is behind the committed group offset.
+
+    Not an error: the replay is safe because commits below the floor are
+    suppressed. It is worth a warning because the records between the two
+    offsets are reprocessed, which is visible as duplicate downstream effects.
+    """
+    if resume_state is None or committed is None or resume_state >= committed:
+        return
+    logger.warning(
+        "resume state %d is behind the committed group offset %d for %s:%d "
+        "(distance %d): replaying from the recovery snapshot; commits below "
+        "the floor are suppressed",
+        resume_state,
+        committed,
+        topic,
+        partition,
+        committed - resume_state,
+    )
+
+
 class KafkaPartitionedSource(FixedPartitionedSource[KafkaRecord[bytes], "int | None"]):
     """One Bytewax input partition per Kafka partition.
 
@@ -197,43 +223,37 @@ class KafkaPartitionedSource(FixedPartitionedSource[KafkaRecord[bytes], "int | N
     ) -> _KafkaSourcePartition:
         """Build one partition: lazy consumer, assign, floor, tracker binding."""
         del step_id
-        topic, _, raw_index = for_part.rpartition(":")
-        if topic not in self._source.topics:
-            raise ValueError(
-                f"partition key '{for_part}' does not belong to this flow's topics "
-                f"{self._source.topics}; cannot resume from a different topic set"
-            )
-        partition = int(raw_index)
+        topic, partition = self._parse_partition_key(for_part)
         client = KafkaConsumerClient.unassigned(self._source.settings, self._observability)
         committed = client.committed_offset(
             topic, partition, timeout_ms=_COMMITTED_FETCH_TIMEOUT_MS
         )
-        if resume_state is not None and committed is not None and resume_state < committed:
-            logger.warning(
-                "resume state %d is behind the committed group offset %d for %s:%d "
-                "(distance %d): replaying from the recovery snapshot; commits below "
-                "the floor are suppressed",
-                resume_state,
-                committed,
-                topic,
-                partition,
-                committed - resume_state,
-            )
+        _warn_on_stale_resume_state(topic, partition, resume_state, committed)
         client.assign_partition(topic, partition, self._start_offset(resume_state, committed))
         if self._commit_tracker is not None:
-            self._commit_tracker.reset_partition(topic, partition)
-            self._commit_tracker.set_floor(topic, partition, committed)
-            self._commit_tracker.seed_watermark(topic, partition, committed)
-            self._commit_tracker.bind_partition(topic, partition, client)
-        position = resume_state if resume_state is not None else committed
+            self._commit_tracker.attach_partition(topic, partition, client, committed)
         return _KafkaSourcePartition(
             client=client,
             topic=topic,
             partition=partition,
             commit_tracker=self._commit_tracker,
             settings=self._source.settings,
-            start_position=position,
+            start_position=resume_state if resume_state is not None else committed,
         )
+
+    def _parse_partition_key(self, for_part: str) -> tuple[str, int]:
+        """Split a ``"{topic}:{index}"`` recovery key and reject foreign topics.
+
+        Raises:
+            ValueError: If the key names a topic this flow does not read.
+        """
+        topic, _, raw_index = for_part.rpartition(":")
+        if topic not in self._source.topics:
+            raise ValueError(
+                f"partition key '{for_part}' does not belong to this flow's topics "
+                f"{self._source.topics}; cannot resume from a different topic set"
+            )
+        return topic, int(raw_index)
 
     def _start_offset(self, resume_state: int | None, committed: int | None) -> int:
         if resume_state is not None:

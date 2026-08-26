@@ -48,63 +48,57 @@ class KafkaCommitTracker:
     """Track per-offset completion and commit Kafka offsets once safe."""
 
     def __init__(self) -> None:
-        self._committers: dict[tuple[str, int], OffsetCommitter] = {}
+        self._partitions: dict[tuple[str, int], _PartitionCommitState] = {}
         self._messages: dict[str, _TrackedMessage] = {}
-        self._watermarks: dict[tuple[str, int], _PartitionWatermark] = {}
-        self._floors: dict[tuple[str, int], int] = {}
-        self._dirty: set[tuple[str, int]] = set()
         self._lock = threading.Lock()
 
-    def bind_partition(self, topic: str, partition: int, committer: OffsetCommitter) -> None:
-        """Bind the committer that owns one topic partition."""
-        with self._lock:
-            self._committers[(topic, partition)] = committer
+    def attach_partition(
+        self,
+        topic: str,
+        partition: int,
+        committer: OffsetCommitter,
+        committed_offset: int | None,
+    ) -> None:
+        """Take ownership of one partition's commit state.
 
-    def set_floor(self, topic: str, partition: int, offset: int | None) -> None:
-        """Set the commit floor for one partition.
+        Called when a partition is (re)built. Everything the partition needs is
+        established in one step — owner, commit floor, seeded watermark, and a
+        clean slate of in-flight offsets — because all of it has to happen, in
+        that order, or the commit invariant breaks silently.
 
-        Commits at or below the floor are suppressed so a recovery replay can
-        never rewind the consumer-group watermark. ``None`` clears the floor.
+        The seeded watermark gives idle partitions something the retention
+        keep-alive can re-commit; the floor suppresses commits at or below the
+        group offset observed here, so a recovery replay can never rewind it.
+
+        Args:
+            topic: Physical topic name.
+            partition: Kafka partition index.
+            committer: The consumer that owns this partition's offsets.
+            committed_offset: Group offset observed at partition start, or
+                ``None`` when the group has none yet.
         """
+        key = (topic, partition)
         with self._lock:
-            if offset is None:
-                self._floors.pop((topic, partition), None)
-            else:
-                self._floors[(topic, partition)] = offset
-
-    def seed_watermark(self, topic: str, partition: int, offset: int | None) -> None:
-        """Seed a partition's commit position with the group's committed offset.
-
-        Gives idle partitions (no traffic this run) a watermark the retention
-        keep-alive can re-commit; re-committing the same group offset is
-        idempotent and never rewinds.
-        """
-        if offset is None:
-            return
-        with self._lock:
-            watermark = self._watermarks.setdefault(
-                (topic, partition),
-                _PartitionWatermark(topic=topic, partition=partition),
+            self._discard_partition_messages(topic, partition)
+            self._partitions[key] = _PartitionCommitState(
+                watermark=_PartitionWatermark(
+                    topic=topic,
+                    partition=partition,
+                    commit_offset=committed_offset,
+                ),
+                committer=committer,
+                floor=committed_offset,
             )
-            if watermark.commit_offset is None:
-                watermark.commit_offset = offset
 
-    def reset_partition(self, topic: str, partition: int) -> None:
-        """Drop all in-flight state for one partition.
-
-        Called when a partition is (re)built so a replay after resume starts
-        from a clean watermark instead of colliding with stale offsets.
-        """
-        with self._lock:
-            self._watermarks.pop((topic, partition), None)
-            self._dirty.discard((topic, partition))
-            stale = [
-                key
-                for key, state in self._messages.items()
-                if state.topic == topic and state.partition == partition
-            ]
-            for key in stale:
-                self._messages.pop(key, None)
+    def _discard_partition_messages(self, topic: str, partition: int) -> None:
+        """Drop in-flight offsets of one partition; caller holds the lock."""
+        stale = [
+            key
+            for key, state in self._messages.items()
+            if state.topic == topic and state.partition == partition
+        ]
+        for key in stale:
+            self._messages.pop(key, None)
 
     def register_record(self, record: KafkaRecord[bytes]) -> None:
         """Register one newly polled Kafka record for offset tracking."""
@@ -112,7 +106,8 @@ class KafkaCommitTracker:
             return
         key = f"{record.topic}:{record.partition}:{record.offset}"
         with self._lock:
-            if key in self._messages:
+            state = self._partitions.get((record.topic, record.partition))
+            if state is None or key in self._messages:
                 return
             self._messages[key] = _TrackedMessage(
                 topic=record.topic,
@@ -120,11 +115,7 @@ class KafkaCommitTracker:
                 offset=record.offset,
                 pending=1,
             )
-            watermark = self._watermarks.setdefault(
-                (record.topic, record.partition),
-                _PartitionWatermark(topic=record.topic, partition=record.partition),
-            )
-            watermark.register(record.offset)
+            state.watermark.register(record.offset)
 
     def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
         """Increase the number of expected completions for one message."""
@@ -152,11 +143,11 @@ class KafkaCommitTracker:
             if state.pending > 0:
                 return
             self._messages.pop(key, None)
-            watermark = self._watermarks.get((state.topic, state.partition))
-            if watermark is None:
+            partition_state = self._partitions.get((state.topic, state.partition))
+            if partition_state is None:
                 return
-            if watermark.complete(state.offset):
-                self._dirty.add((state.topic, state.partition))
+            if partition_state.watermark.complete(state.offset):
+                partition_state.dirty = True
 
     def flush(
         self,
@@ -193,18 +184,12 @@ class KafkaCommitTracker:
         plan: list[tuple[OffsetCommitter, TopicPartition]] = []
         with self._lock:
             for key in self._flush_targets(topic, partition, force=force):
-                watermark = self._watermarks.get(key)
-                if watermark is None or watermark.commit_offset is None:
+                state = self._partitions[key]
+                offset = state.committable_offset()
+                state.dirty = False
+                if offset is None:
                     continue
-                floor = self._floors.get(key)
-                if floor is not None and watermark.commit_offset < floor:
-                    self._dirty.discard(key)
-                    continue
-                committer = self._committers.get(key)
-                if committer is None:
-                    continue
-                plan.append((committer, TopicPartition(key[0], key[1], watermark.commit_offset)))
-                self._dirty.discard(key)
+                plan.append((state.committer, TopicPartition(key[0], key[1], offset)))
         committed: list[TopicPartition] = []
         try:
             for committer, target in plan:
@@ -213,7 +198,9 @@ class KafkaCommitTracker:
         except Exception:
             with self._lock:
                 for _, target in plan[len(committed) :]:
-                    self._dirty.add((target.topic, target.partition))
+                    stale = self._partitions.get((target.topic, target.partition))
+                    if stale is not None:
+                        stale.dirty = True
             raise
         return committed
 
@@ -227,12 +214,50 @@ class KafkaCommitTracker:
         """Resolve which partitions this flush call should consider."""
         if topic is not None and partition is not None:
             key = (topic, partition)
-            if force or key in self._dirty:
+            state = self._partitions.get(key)
+            if state is not None and (force or state.dirty):
                 return [key]
             return []
         if force:
-            return list(self._watermarks)
-        return list(self._dirty)
+            return list(self._partitions)
+        return [key for key, state in self._partitions.items() if state.dirty]
+
+
+@dataclass(slots=True)
+class _PartitionCommitState:
+    """Everything the tracker owns for one Kafka topic partition.
+
+    Held as a single record rather than parallel dictionaries keyed by
+    ``(topic, partition)``: a commit decision reads the watermark, the floor and
+    the owner together, and splitting them across dictionaries meant every
+    decision had to re-cross them and keep four structures in step.
+
+    Attributes:
+        watermark: Gap-tolerant commit position.
+        committer: Consumer that owns this partition's offsets.
+        floor: Group offset observed when the partition was attached; commits
+            strictly below it are suppressed.
+        dirty: Whether the watermark advanced since the last commit.
+    """
+
+    watermark: _PartitionWatermark
+    committer: OffsetCommitter
+    floor: int | None = None
+    dirty: bool = False
+
+    def committable_offset(self) -> int | None:
+        """Return the offset safe to commit now, or ``None`` when there is none.
+
+        ``None`` means either nothing has completed yet, or the watermark is
+        still strictly below the floor — a recovery replay catching up to the
+        group offset it must never rewind.
+        """
+        offset = self.watermark.commit_offset
+        if offset is None:
+            return None
+        if self.floor is not None and offset < self.floor:
+            return None
+        return offset
 
 
 @dataclass(slots=True)
