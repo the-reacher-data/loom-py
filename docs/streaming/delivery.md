@@ -40,6 +40,25 @@ Under `at_least_once` two structural rules are enforced at compile/startup:
   cannot reach the source's commit tracker. Scale those flows with
   `workers_per_process` (threads share the tracker) or use Bytewax recovery.
 
+### What at-least-once requires of a flow
+
+The guarantee rests on one rule: **every record is completed exactly once,
+after the work it represents is durably written**. Loom enforces the parts it
+can see.
+
+- Nodes that change the record count (`Explode`, `Expand`, `BatchExpand`,
+  `ExpandRoutes`) declare the fan-out they actually produced, so an offset is
+  committed only once *all* its outputs are written — and a record that
+  produced nothing is released instead of stalling its partition.
+- A branch with no terminal sink drains through a drop sink that completes its
+  record, so an unfinished `Broadcast` branch cannot freeze commits.
+- Custom sinks must expose `bind_commit_tracker(tracker)`. A sink without it
+  would never complete what it writes, so under `at_least_once` the flow is
+  rejected at assembly with `RuntimeConfigurationError` naming the sink.
+- Asynchronous commit failures are logged with their topic-partition-offsets.
+  They do not break the guarantee — the group offset simply does not advance
+  and those records are reprocessed — but they are never silent.
+
 ### How commits work
 
 The source registers every record before emitting it; each terminal branch
@@ -71,6 +90,25 @@ Bytewax distributes those partitions across the workers of **one cluster**
 
 Partition discovery is static per execution: partitions added to a topic are
 picked up on the next restart.
+
+### Batching across processes
+
+Keyed operators route records by key hash, which is a **different** distribution
+from the source's partition assignment. A record read by one process is
+therefore batched on whichever process owns its batch key — often another one.
+Its completion then reaches a commit tracker that does not own the partition,
+and that partition stops committing.
+
+Loom refuses this combination at startup rather than letting it drift:
+`delivery=at_least_once` plus a keyed node (`CollectBatch`) on a multi-process
+cluster raises `RuntimeConfigurationError`. Within a single process the workers
+share one tracker, so **scale batching flows with `workers_per_process`
+(threads), not with processes** — or declare `at_most_once`.
+
+Verified on a 3-partition topic with a 2-process cluster: the source assigned
+partitions `[0, 2]` and `[1]` to the two processes with no overlap and no loss,
+while the batch stage grouped `[0]` and `[1, 2]` — a different split, which is
+exactly the hazard the guard rejects.
 
 ## Recovery and snapshots
 
