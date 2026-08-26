@@ -1,3 +1,430 @@
+# 🚀 Release 1.5.0 ([#131](https://github.com/the-reacher-data/loom-py/pull/131)) ([`f5ed4f7`](https://github.com/the-reacher-data/loom-py/commit/f5ed4f7229ebcd954ff9ae6d4acf952a8e33c8a1))
+
+
+## ✨ Features
+### streaming
+- **streaming:** structured compiler error codes and public compiler exports<br>
+  > Replace the compiler's bare list[str] failures with structured issues so a
+  > guided platform can map compilation errors to form fields, mirroring
+  > loom.etl's ETLErrorCode:
+  > New loom.streaming.compiler._errors with StreamingErrorCode (StrEnum
+  > covering the binding, validation, and plan-building phases, plus codes
+  > reserved for the delivery-semantics phase) and CompilationIssue
+  > (LoomFrozenStruct with code, message, component, field). All message
+  > formatting lives in per-code factory functions; validator call-sites stay
+  > intention-revealing.
+  > CompilationError now aggregates issues (.issues) while keeping the legacy
+  > .errors accessor and the exact aggregated message format. The constructor
+  > still accepts bare strings, normalized to code UNSPECIFIED.
+  > Branch validation scopes nested issues via CompilationIssue.prefixed(),
+  > preserving the historical "fork/router/broadcast branch X: ..." messages.
+  > Two previously uncoded build-phase failures now raise CompilationError
+  > with codes: STORAGE_SINK_UNSUPPORTED (was a bare ValueError) and
+  > PAYLOAD_TYPE_INVALID (was an unguarded AttributeError).
+  > validate.py no longer constructs UnsupportedNodeError/MissingSinkError just
+  > to str() them; the exception classes remain runtime errors of the adapter.
+  > Export symmetry: loom.streaming now exports CompilationError, CompiledPlan,
+  > CompilationIssue, and StreamingErrorCode; loom.streaming.compiler adds
+  > CompiledMongoCDCSource. Tests migrated from private to public import paths.
+
+- **streaming:** explicit delivery semantics config and assign-mode consumer client<br>
+  > Slice 1 of the partitioned-source plan (spec §4.1/§4.7, non-breaking dual mode):
+  > ConsumerSettings gains delivery ("at_least_once" | "at_most_once" | None),
+  > tri-state enable_auto_commit (deprecated alias, honored for 1.x), batch_size
+  > and poll_backoff_ms (fail-fast validated). effective_delivery() implements
+  > the legacy resolution so configs that set neither field behave exactly as
+  > before (regression-tested); to_confluent_config derives enable.auto.commit
+  > from it.
+  > New validate_delivery compiler pass emits DELIVERY_CONFLICT (with
+  > field=kafka.consumer.enable_auto_commit) when both fields are explicitly
+  > contradictory.
+  > build_commit_tracker resolves via effective_delivery() with explicit union
+  > narrowing, dropping the type: ignore.
+  > KafkaConsumerClient.for_partition() builds an assign-mode consumer pinned to
+  > one TopicPartition (no subscribe, no group membership) and consume_batch()
+  > reads buffered records non-blocking, validating per-message broker errors —
+  > the client surface the upcoming KafkaPartitionedSource builds on.
+
+- **streaming:** partitioned Kafka source with group-offset delivery<br>
+  > Replaces the singleton SimplePollingSource (~10 msg/s ceiling, one worker)
+  > with KafkaPartitionedSource: one Bytewax input partition per Kafka partition,
+  > lazy assign-mode consumers (no group membership — the group is purely an
+  > offset store), real batching, and empty-poll backoff. Partition keys
+  > "{topic}:{index}" are the durable recovery-state contract.
+  > Delivery (at-least-once via the commit tracker, opt-in per the dual-mode
+  > spec) is hardened end to end, with every fix adversarially reviewed before
+  > commit:
+  > Gap-tolerant watermark: offsets are not contiguous (transactional control
+  > records, compaction); the watermark waits only for registered offsets.
+  > Coalesced commits: complete() never talks to Kafka; the source partition
+  > flushes once per cycle with asynchronous commits (librdkafka coalesces) and
+  > a synchronous final flush on close. Commit failures re-mark partitions
+  > dirty so the next flush retries.
+  > Commit floor: build_part always reads the committed group offset, seeds
+  > the watermark and suppresses commits strictly below it — recovery replays
+  > can never rewind the group; re-committing the floor stays idempotent and
+  > doubles as the retention keep-alive for idle partitions
+  > (commit_keepalive_ms, default 30 min, KIP-211 expiry).
+  > Start-offset precedence resume_state > committed > auto_offset_reset, with
+  > snapshot() seeded from the resolved position so empty epochs never
+  > overwrite a prior resume_state; loud warning when resume lags committed.
+  > committed() per-partition errors are startup failures, never silent
+  > fallbacks; compacted-topic tombstones are skipped (they decode to nothing
+  > and unregistered offsets are gaps, so commits never freeze).
+  > Every terminal path completes: unrouted-error drop sinks are now
+  > tracker-aware, and a terminal Fork without default under at_least_once is
+  > a compile error (FORK_UNMATCHED_UNROUTED).
+  > Fail-fast guard DELIVERY_KEYED_MULTIPROCESS: at_least_once + keyed nodes
+  > (CollectBatch) on a multi-process cluster is rejected at startup — keyed
+  > operators reroute records across processes where completions cannot reach
+  > the source tracker; the guard also covers run(runtime=...) overrides and
+  > allows single-address clusters.
+  > Consumption observability finally wired: the runner passes the
+  > ObservabilityRuntime through to every partition consumer.
+  > walk_process_nodes promoted to the public compiler API;
+  > KafkaPartitionedSource exported from loom.streaming.bytewax.
+  > 465 streaming unit tests (decode-parity contract included) green; mypy
+  > strict and ruff clean.
+
+
+
+## 🐛 Fixes
+### docs
+- **docs:** keep compilation types canonical in loom.streaming.compiler<br>
+  > The strict docs build (warnings-as-errors) rejected re-exporting
+  > CompilationError/CompilationIssue/CompiledPlan/StreamingErrorCode at the
+  > loom.streaming package level: both the package and loom.streaming.compiler
+  > pages are in the autosummary, so each symbol was documented twice and
+  > cross-references became ambiguous.
+  > Follow the real loom.etl convention instead: compilation types have a single
+  > canonical import path (loom.streaming.compiler) and the package front-page
+  > docstring points there, exactly like loom.etl does with ETLCompilationError.
+  > compile_flow stays exported at the package level as before.
+  > Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_0127JmGktjmRK8gJ6RWaWtQX
+
+
+### streaming
+- **streaming:** retry transient Kafka coordinator errors on offset ops<br>
+  > Consumer-group offset operations are answered by the group's coordinator,
+  > which is elected lazily, must load its __consumer_offsets partition, and moves
+  > on broker restart or partition reassignment. While that settles the broker
+  > answers NOT_COORDINATOR — a retriable protocol error.
+  > committed_offset() turned it into a hard KafkaCommitError with no retry, and
+  > build_part() calls it while constructing every partition, so a flow reading
+  > from a cluster whose coordinator was still settling died at startup with an
+  > opaque error. Reproduced against a virgin Apache Kafka cluster: attempt 1
+  > raises NOT_COORDINATOR, attempt 2 succeeds. Redpanda never reproduces it,
+  > which is why the integration suite runs against both brokers.
+  > Adds with_coordinator_retry: bounded exponential backoff around a single
+  > coordinator round-trip, applied to committed_offset, commit and commit_offset.
+  > Zero cost on the happy path, and non-coordinator errors still fail on the
+  > first attempt rather than after a backoff.
+  > Classification uses an explicit code set, never KafkaError.retriable() — that
+  > flag reports whether librdkafka retries internally, a different question, and
+  > it is False for NOT_COORDINATOR. A unit test pins that distinction so the bug
+  > cannot silently return.
+
+- **streaming:** release the Kafka consumer when the closing flush fails<br>
+  > _KafkaSourcePartition.close() flushed the final watermark and then closed the
+  > client. That flush is synchronous and re-raises by design — a broker rejecting
+  > the closing commit must not fail silently — so a broker that is down at
+  > shutdown skipped the close entirely, leaking the consumer along with its
+  > sockets and group state.
+  > A try/finally keeps both properties: the error still surfaces, the client is
+  > always released.
+
+- **streaming:** make the commit-port narrowing true on every path<br>
+  > Third-party review found the previous commit's claim was only half kept: the
+  > tracker still travelled as `Any` through build_dataflow_with_shutdown, the
+  > duck-typed binder, _BuildContext and the four scope helpers, and the two
+  > functions sink threads actually call (_drop_and_commit,
+  > _register_broadcast_fanout) took `tracker: Any`. A protocol declared at one end
+  > of an `Any` pipeline checks nothing, so the single-writer rule was still prose.
+  > Types are now CommitCompletionPort end to end. mypy --strict passes, which is
+  > the point: the claim is verified rather than asserted.
+  > Also from the same review:
+  > _message_to_send was dead — a two-line wrapper around
+  > _message_to_send_with_policy(message, None) with no references anywhere. The
+  > exact species of leftover this cleanup was about; it was simply missed.
+  > RuntimeConfigurationError was documented as raised by StreamingRunner but
+  > exported from nowhere, so callers could not catch it without importing a
+  > private module — as the branch's own test was doing. It is now in
+  > loom.streaming.bytewax.__all__ and the test imports it publicly.
+
+- **streaming:** account for real fan-out so at-least-once holds<br>
+  > Third-party review found the delivery guarantee did not survive contact with
+  > the DSL's own fan-out nodes. Every node that changes the record count shares
+  > one hazard: all outputs carry the same source offset and each completes it at
+  > its terminal, while the tracker expects exactly one completion per record.
+  > Five ways that broke, all silent:
+  > Expand / BatchExpand / Explode never forked. The first of N outputs released
+  > the offset while N-1 were still in flight, so a crash lost them for good, and
+  > a record that produced nothing was never completed at all — that partition
+  > stopped committing forever.
+  > ExpandRoutes forked by the number of declared routes and completed by the
+  > number of rows produced. The two are unrelated: fewer rows than routes froze
+  > the partition, more rows than routes released the offset early.
+  > A Broadcast branch with no terminal sink was discarded silently, leaving the
+  > fork that created it outstanding forever. Unrouted *error* branches already
+  > fell back to a drop sink for exactly this reason; branches now do too.
+  > WithAsync completed the record at its inline sink and then returned it into
+  > the stream, releasing an offset still in flight. Its synchronous sibling
+  > never completed — the asymmetry was the tell.
+  > A sink that could not receive the tracker was skipped without a word, which
+  > is the default outcome for any sink a user registers themselves. It is now a
+  > RuntimeConfigurationError naming the sink and the method it lacks.
+  > _reconcile_fanout derives the expectation from what a node actually produced,
+  > counting error envelopes too since they reach terminals that complete the
+  > offset. Nodes read it once, before any output can have been completed.
+  > Tests assert committed offsets from a real KafkaCommitTracker rather than spy
+  > calls, and each was confirmed to fail against the previous behaviour: the
+  > fan-out cases go red without _reconcile_fanout, the route cases go red with the
+  > route-count accounting restored.
+  > Three existing tests asserted the old behaviour and were rewritten — including
+  > one literally named test_execute_inner_process_completes_without_sink_partition.
+
+- **streaming:** surface asynchronous offset commit failures<br>
+  > commit_offset(asynchronous=True) returns before the broker answers, so a
+  > rejection can only arrive through librdkafka's on_commit callback. The
+  > docstring said failures surfaced there — but no callback was registered
+  > anywhere in the repository, so they were discarded in silence. The hot commit
+  > path had no failure signal at all.
+  > This does not weaken delivery, and the docstring now says so: a commit that
+  > never lands leaves the group offset where it was, so those records are
+  > reprocessed on the next run, which is what at-least-once permits. The
+  > retention keep-alive re-commits the watermark later, so the failure is
+  > transient — provided it is visible, which is what this restores.
+  > The callback logs the rejection with the affected topic-partition-offsets and
+  > states the consequence, because the previous symptom was consumer lag with no
+  > explanation anywhere in the logs.
+
+- **streaming:** clear the Sonar findings on this branch's new code<br>
+  > Five findings, plus every other instance of the same three patterns so this
+  > does not need a second visit.
+  > Blocker — _register_row_fanout returned `message` from every path (S3516). The
+  > row counting moves into _expanded_row_total and the function has one return.
+  > Same rule, same fix, in _drop_and_commit: it returned the empty tuple twice.
+  > Major — the `tracker` parameter of _execute_inner_process became unused when
+  > that function stopped completing records mid-pipeline. It was threaded through
+  > the whole WithAsync chain only to be discarded, and the synchronous sibling had
+  > been doing `del tracker` to hide the same thing. The parameter is gone from all
+  > five functions and from ctx.commit_tracker reads that existed only to feed it.
+  > The guarantee it used to carry is now structural: WithAsync has no tracker to
+  > complete through, so the three tests that asserted "does not complete" now
+  > assert what they actually verify and say so.
+  > Major — a composite assertion in the transport-contract test is two
+  > assertions, and five `pytest.raises` blocks invoked two things that could
+  > throw. The construction is hoisted out in each so the block tests one call.
+  > Sonar reported two of those five; a scan of the branch found the other three
+  > before they surfaced.
+  > Drive-by, pre-existing and outside the new-code gate: _has_kafka_topic_output
+  > branched on `isinstance(nodes, tuple)` and both branches were character-for-character
+  > identical. Not a smell but a no-op; removed rather than left in a file this
+  > branch already reworks. Flagged here in case you want it separate.
+
+
+
+## 📖 Documentation
+### streaming
+- **streaming:** delivery, scaling, and recovery guide<br>
+  > Documents the partitioned-source operating model (spec deliverable): explicit
+  > delivery semantics and the legacy resolution, the structural rules enforced
+  > under at_least_once (fork default, keyed multi-process restriction), the
+  > gap-tolerant coalesced commit model with retention keep-alive, the scaling
+  > rules (grow the Bytewax cluster, never free replicas; stable group_id),
+  > recovery precedence with the commit floor, and runtime tuning knobs.
+
+- **streaming:** state what at-least-once requires and where batching stops<br>
+  > The guide promised at-least-once without saying what the guarantee rests on or
+  > where it stops, which is how the fan-out accounting gaps stayed invisible.
+  > Adds the rule every node and sink has to honour — one completion per record,
+  > after the write — and the contract custom sinks must implement. Adds the
+  > keyed-node constraint: batch stages distribute by key hash, a different split
+  > from the source's partition assignment, so batching across processes is
+  > rejected under at-least-once and scales with threads instead. The measured
+  > 2-process/3-partition split is included, since it is the evidence for both the
+  > supported case and the rejected one.
+  > Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01NBBxo1t6Y1LbpDA4631NfN
+
+
+
+
+## ♻️ Refactor
+### streaming
+- **streaming:** remove scaffolding left behind by the partitioned source<br>
+  > Three pieces survived the move from the single-consumer source to the
+  > partitioned one without a caller:
+  > KafkaCommitTracker.bind()/_default_committer: production binds every
+  > partition through bind_partition, so the default committer could never be
+  > reached. Its docstring justified itself with "kept for single-consumer
+  > sources" — a reason the same change had already removed — and it carried a
+  > `type: ignore[assignment]` over `object` while the OffsetCommitter Protocol
+  > declared twelve lines above has exactly the right signature.
+  > KafkaConsumerClient.for_partition: public API with no consumer. build_part
+  > must interleave committed_offset() between constructing and assigning, so it
+  > uses unassigned() + assign_partition(); the factory documented a path the
+  > code demonstrates is not the recommended one.
+  > RuntimeConsumerStub: an orphan test double.
+  > The nine tests that exercised bind() are repointed at bind_partition and the
+  > per-partition flush rather than deleted: they cover the gap-tolerant
+  > watermark, the commit floor and commit-failure retry — real logic that was
+  > simply entering through a door production never opens. The two for_partition
+  > tests go, since the factory does.
+  > Removing the default committer also retires the global flush: production
+  > always names a topic and partition, so flush()'s topic-less branches were only
+  > ever reached from those tests.
+
+- **streaming:** own commit state per partition instead of parallel maps<br>
+  > KafkaCommitTracker held four dictionaries keyed by (topic, partition) —
+  > watermark, floor, committer, dirty — and every commit decision had to cross
+  > them in sequence while keeping all four in step. The same missing piece showed
+  > from the outside: build_part made four ordered calls (reset, floor, seed,
+  > bind) that all had to happen, in that order, or the invariant broke silently.
+  > _PartitionCommitState holds the four together and answers the commit question
+  > itself through committable_offset(), which returns the offset safe to send or
+  > None when the watermark is still below the floor. attach_partition replaces
+  > the four-call sequence with one, so the ordering cannot be got wrong.
+  > _PartitionWatermark was already extracted this way; this just applies the same
+  > shape to the state around it.
+  > build_part drops from 41 effective lines to 24, under the 40-line rule: the
+  > recovery-key parsing and the stale-resume warning become named functions,
+  > which is what the excess actually was.
+
+- **streaming:** name the three commit paths instead of flagging one<br>
+  > flush(topic, partition, *, force, synchronous) admitted four shapes, of which
+  > production used three, and `force` did not qualify the commit — it changed
+  > which partitions were selected. Boolean flags controlling several behaviours
+  > are explicitly disallowed by the repository rules.
+  > The three real paths are now named for what they are: flush_partition (hot
+  > path, commit if advanced, async), keepalive_partition (re-commit an unchanged
+  > watermark so a member-less group's offsets do not expire, async) and
+  > close_partition (final watermark, blocking). The two axes survive only as
+  > private parameters of the shared mechanics, so no caller spells them out.
+  > Removing the fourth, unused shape also retires _flush_targets: every entry
+  > point names exactly one partition, so there is nothing left to resolve.
+  > _flush_commits reads as the decision it makes — keep-alive due, or commit what
+  > advanced — rather than computing a flag and passing it down.
+
+- **streaming:** stop reporting a runtime rejection as a compilation error<br>
+  > _guard_keyed_multiprocess runs while the dataflow is assembled, where nothing
+  > is being compiled, yet it raised CompilationError — whose message literally
+  > reads "Compilation failed". The name sent the reader looking for a mistake in
+  > their flow definition when the flow is fine: what fails is pairing that plan
+  > with a multi-process runtime.
+  > RuntimeConfigurationError says that, and carries the same structured issues,
+  > so StreamingErrorCode.DELIVERY_KEYED_MULTIPROCESS and the
+  > streaming.runtime.addresses field pointer are unchanged.
+  > Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01NBBxo1t6Y1LbpDA4631NfN
+
+- **streaming:** narrow sinks to a commit-completion port<br>
+  > KafkaCommitTracker exposes seven operations that fall into two disjoint roles:
+  > five drive one partition's commit lifecycle and belong to the source, two
+  > report what happened to a record and belong to everything downstream. Sinks,
+  > DLQs, error routes and drop sinks were typed against the concrete tracker and
+  > therefore reached all seven while calling one.
+  > That is not only a wide surface. _commit_partition documents a single-writer
+  > rule — only the thread owning a partition may commit it — while sinks run on
+  > Bytewax worker threads that own nothing. With the concrete tracker in hand a
+  > sink could call close_partition and both mypy and pyright would approve, so
+  > the rule was enforced by a comment alone. Typing the downstream side as
+  > CommitCompletionPort makes the type system reject it.
+  > The protocol already existed as _CommitTrackerProtocol in handlers/_shared.py
+  > with exactly the right two methods, but a sibling package's private module is
+  > not somewhere _runtime_io can import from. It moves next to OffsetCommitter in
+  > _commit_tracker.py — the same idea applied to the tracker's other side — and
+  > handlers now import it instead of declaring their own.
+  > Types only: bind_commit_tracker is a duck-typed hook the runner calls by name,
+  > so runtime behaviour is unchanged.
+  > Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01NBBxo1t6Y1LbpDA4631NfN
+
+
+
+
+## ✅ Tests
+- configure logging once per session to stop cross-test pollution<br>
+  > Eight integration tests failed in a full run and passed in isolation, with
+  > `OSError: [Errno 9] Bad file descriptor` raised from a debug log inside an
+  > unrelated SQLAlchemy session scope.
+  > The cause is not in those tests. structlog/_output.py binds `from sys import
+  > stdout` at import time, so PrintLogger freezes whatever sys.stdout was when
+  > structlog was first imported rather than resolving it per call. The suite never
+  > called configure_logging(), so structlog stayed on its default
+  > PrintLoggerFactory — a pipeline no application ever runs. Under pytest's
+  > default fd-level capture, sys.stdout at that moment is the temporary capture
+  > file of whichever test imported structlog first (here the Prefect backfill
+  > tests); when that test ended pytest closed the descriptor, and every later log
+  > call wrote to a dead fd.
+  > Confirmed by capture mode: the combination fails under --capture=fd and passes
+  > under both -s and --capture=sys.
+  > Configuring logging once per session installs structlog.stdlib.LoggerFactory,
+  > which routes through stdlib logging and never touches that frozen stream. The
+  > suite now exercises the same logging path production does.
+  > test_empty_write_warning asserted on captured stdout, which only worked while
+  > structlog was left unconfigured and fell back to printing. It now asserts
+  > through caplog, where a configured application actually emits.
+  > Full suite: 4075 passed, 0 failed — verified under random ordering too.
+
+
+### streaming
+- **streaming:** decode-parity contract between poll and consume_batch<br>
+  > Locks the invariant the partitioned-source migration must preserve: the typed
+  > LoomStruct pipeline is untouched by how records are consumed. Same broker
+  > bytes through poll() and consume_batch() yield field-identical KafkaRecords,
+  > identical decoded Message[Payload] (real MsgspecCodec, no decode mocking),
+  > identical multi-type dispatch (plain + ErrorEnvelope + DecodeError wire
+  > types), identical trace headers, and an identical WIRE-path DecodeError for
+  > corrupt bytes.
+
+- **streaming:** kafka integration harness on redpanda and apache kafka<br>
+  > Validate KafkaPartitionedSource against a live broker before replacing the
+  > previous Kafka source. The properties that make the substitution safe are
+  > broker behaviours, so no fake can establish them.
+  > The suite runs against two brokers from docker-compose.local.yaml: redpanda
+  > (fast loop) and apache/kafka in KRaft mode (fidelity). The source pins
+  > partitions with assign and never subscribes, using the consumer group purely
+  > as an offset store — OffsetFetch/OffsetCommit without group membership is
+  > exactly where broker implementations may legitimately diverge, so a green
+  > redpanda run is not evidence that Apache Kafka agrees.
+
+- **streaming:** close the coverage and Sonar gaps on the new code<br>
+  > Pre-merge analysis against the quality gate found three things worth fixing
+  > before they became a second visit to this branch.
+  > Coverage on new code was 94% with the gaps in exactly the wrong places:
+  > _apply_expand_routes was entirely untested, so the row-fanout wiring added
+  > here was never executed by a test — only the helper it calls was. The
+  > ErrorEnvelope branch of _commit_key was uncovered too, which matters because
+  > envelopes reach terminals that complete offsets: counting only successful
+  > messages would release a failed record before its error route had written it
+  > anywhere. New code coverage is now 98.1%.
+  > _apply_expand_routes was 57 effective lines against the repository's 40-line
+  > rule, and this branch had made it longer. The row extractor and the fanout
+  > wiring become named functions — the extractor also stops rebuilding the
+  > declared-types set per message — leaving it at 39.
+  > test_delay_grows_exponentially compared computed floats with ==, which
+  > Sonar flags as S1244. It uses pytest.approx now.
+  > Checked and deliberately not acted on: the four complexity findings
+  > (_resolve_process_node, two validators) are pre-existing and untouched by this
+  > branch; the duplicate blocks a naive scan reports are docstring sections and
+  > parameter lists, which token-based detection ignores; vulture's unused
+  > `offsets` is a Protocol parameter.
+
+
+### sql
+- **sql:** mark the clickhouse suite as integration so it actually runs<br>
+  > The module was already collected by CI and skipped on every single run: the
+  > fast lane provisions no ClickHouse, so the reachability guard fired every
+  > time. It has therefore never executed in CI while still costing maintenance
+  > and reporting as passing-by-omission.
+  > Marking it `integration` moves it into the lane that provisions the service,
+  > and out of the fast lane that could only ever skip it.
+
+
+
+
 # 🚀 Release 1.4.0 ([#129](https://github.com/the-reacher-data/loom-py/pull/129)) ([`71520ce`](https://github.com/the-reacher-data/loom-py/commit/71520ce4840f8a3b9b914081704520f90d46b31e))
 
 
