@@ -388,7 +388,23 @@ class TestRuntimeIOBuilders:
         assert "orders.out" in topics
         assert "orders.dlq" in topics
 
-    def test_branch_terminal_without_sink_is_discarded(self) -> None:
+    def test_branch_terminal_without_sink_falls_back_to_a_drop_sink(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A branch with no terminal still owes its record a completion.
+
+        The broadcast that created the branch already forked the offset once
+        per branch. Discarding the stream silently left that fork outstanding
+        forever and froze the partition's watermark.
+        """
+        tracker = KafkaCommitTracker()
+        outputs: list[tuple[str, object, object]] = []
+        monkeypatch.setattr(
+            _adapter,
+            "bw_output",
+            lambda step_id, stream, sink: outputs.append((step_id, stream, sink)),
+        )
         ctx = _adapter._BuildContext(
             plan=build_compiled_plan(),
             bridge=None,
@@ -396,9 +412,13 @@ class TestRuntimeIOBuilders:
             sink=None,
             terminal_sinks={},
             error_sinks={},
+            commit_tracker=tracker,
         )
 
         ctx.wire_branch_terminal("branch", object(), (0, 1))
+
+        assert len(outputs) == 1, "the branch stream was discarded instead of drained"
+        assert isinstance(outputs[0][2], _adapter._DropSink)
 
 
 class TestCommitTrackerGapsAndFloor:

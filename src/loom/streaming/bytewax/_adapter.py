@@ -24,6 +24,7 @@ from loom.core.async_bridge import AsyncBridge
 from loom.core.logger import get_logger
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
+from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._resource_manager import ResourceManager
 from loom.streaming.bytewax._runtime_io import build_runtime_terminal_sinks, drop_item_to_commit
 from loom.streaming.bytewax.handlers.dispatcher import (
@@ -31,6 +32,7 @@ from loom.streaming.bytewax.handlers.dispatcher import (
     _wire_process,
 )
 from loom.streaming.compiler import CompiledPlan
+from loom.streaming.compiler._errors import sink_cannot_track_commits
 from loom.streaming.compiler._plan import CompiledMultiSource, CompiledSingleSource
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
@@ -172,11 +174,23 @@ class _SupportsCommitBind(Protocol):
 def _bind_commit_tracker_object(
     item: object | None, commit_tracker: CommitCompletionPort | None
 ) -> None:
-    """Bind a commit tracker to one runtime object when supported."""
+    """Bind a commit tracker to one runtime object, or refuse to run.
+
+    Under at-least-once delivery a sink that cannot receive the tracker never
+    completes the records it writes, so its partitions stop committing and the
+    consumer lag grows without bound while the flow looks healthy. Skipping the
+    binding silently — the previous behaviour — made that the default outcome
+    for any sink a user registered themselves.
+
+    Raises:
+        RuntimeConfigurationError: If a tracker is required and this runtime
+            object cannot accept one.
+    """
     if item is None or commit_tracker is None:
         return
-    if isinstance(item, _SupportsCommitBind):
-        item.bind_commit_tracker(commit_tracker)
+    if not isinstance(item, _SupportsCommitBind):
+        raise RuntimeConfigurationError([sink_cannot_track_commits(type(item).__name__)])
+    item.bind_commit_tracker(commit_tracker)
 
 
 def _bind_commit_tracker_mapping(
@@ -245,9 +259,25 @@ class _BuildContext:
 
     def wire_branch_terminal(self, step_id: str, stream: Any, path: tuple[int, ...]) -> None:
         sink = self.terminal_sinks.get(path)
-        if sink is None:
+        if sink is not None:
+            bw_output(_qualified_step_id(step_id, path), stream, sink)
             return
-        bw_output(_qualified_step_id(step_id, path), stream, sink)
+        # A branch without a terminal still owes its record a completion: the
+        # broadcast that created it already forked the offset once per branch.
+        # Discarding the stream silently left that fork outstanding forever and
+        # froze the partition's watermark. Unrouted error branches already fall
+        # back to a drop sink for exactly this reason; branches now do too.
+        logger.warning(
+            "unrouted_branch_drop_sink",
+            flow=self.plan.name,
+            step_id=step_id,
+            path=path,
+        )
+        bw_output(
+            _qualified_step_id(f"{step_id}_dropped", path),
+            stream,
+            _DropSink(self.commit_tracker),
+        )
 
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Any) -> None:
         sink = self.error_sinks.get(kind)

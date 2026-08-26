@@ -62,6 +62,7 @@ class StreamingErrorCode(StrEnum):
     # Delivery-semantics phase (partitioned source spec)
     DELIVERY_CONFLICT = "DELIVERY_CONFLICT"
     DELIVERY_KEYED_MULTIPROCESS = "DELIVERY_KEYED_MULTIPROCESS"
+    SINK_CANNOT_TRACK_COMMITS = "SINK_CANNOT_TRACK_COMMITS"
     FORK_UNMATCHED_UNROUTED = "FORK_UNMATCHED_UNROUTED"
 
     # Compatibility bucket for issues built from bare strings
@@ -400,6 +401,23 @@ def fork_unmatched_unrouted() -> CompilationIssue:
         ),
         component="fork",
         field="default",
+    )
+
+
+def sink_cannot_track_commits(sink_name: str) -> CompilationIssue:
+    """A runtime sink cannot receive the commit tracker under at-least-once."""
+    return CompilationIssue(
+        code=StreamingErrorCode.SINK_CANNOT_TRACK_COMMITS,
+        message=(
+            f"delivery=at_least_once requires every runtime sink to accept the "
+            f"commit tracker, but {sink_name} exposes no bind_commit_tracker "
+            f"method. Records written by it would never be completed, so its "
+            f"partitions would stop committing while the flow looks healthy. "
+            f"Add bind_commit_tracker(tracker) to the sink, or declare "
+            f"delivery=at_most_once."
+        ),
+        component=sink_name,
+        field="streaming.delivery",
     )
 
 

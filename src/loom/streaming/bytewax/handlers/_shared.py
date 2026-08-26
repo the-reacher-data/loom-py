@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Iterable, Iterator, Mapping
+from collections import Counter
+from collections.abc import Awaitable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, cast, runtime_checkable
 
@@ -17,7 +18,7 @@ from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
-from loom.streaming.core._errors import ErrorKind
+from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig
@@ -326,6 +327,74 @@ def _empty(_item: Any) -> tuple[()]:
     return ()
 
 
+def _commit_key(item: Any) -> tuple[str, int, int] | None:
+    """Resolve the source offset one runtime item is accountable for.
+
+    Both a produced ``Message`` and an ``ErrorEnvelope`` carry the offset of
+    the record they came from — the envelope through its original snapshot —
+    because both eventually reach a terminal that completes that offset.
+    """
+    if _is_message(item):
+        return _offset_triple(item.meta.topic, item.meta.partition, item.meta.offset)
+    if isinstance(item, ErrorEnvelope):
+        original = item.original_message
+        if original is None:
+            return None
+        return _offset_triple(original.meta.topic, original.meta.partition, original.meta.offset)
+    return None
+
+
+def _offset_triple(
+    topic: str | None, partition: int | None, offset: int | None
+) -> tuple[str, int, int] | None:
+    """Return a complete offset triple, or ``None`` when any part is missing."""
+    if topic is None or partition is None or offset is None:
+        return None
+    return topic, partition, offset
+
+
+def _reconcile_fanout(
+    originals: Sequence[Any],
+    results: Sequence[Any],
+    tracker: CommitCompletionPort | None,
+) -> None:
+    """Align commit accounting with the fan-out a node actually produced.
+
+    An expanding node turns one input record into N outputs that all carry the
+    same source offset, and every one of them completes that offset when it
+    reaches a terminal. The tracker starts each record expecting a single
+    completion, so accounting has to be corrected here — while the outputs are
+    still a plain list and none of them can have reached a terminal yet.
+
+    Two failures this prevents, both silent:
+
+    - ``N > 1`` without a fork: the first completion releases the offset while
+      N-1 outputs are still in flight, so a crash loses them for good — the
+      consumer group has already moved past them.
+    - ``N == 0`` without a completion: nothing ever completes that offset, so
+      the partition's watermark never advances again.
+
+    Args:
+        originals: Input records handed to the node.
+        results: Everything the node produced, successes and error envelopes.
+        tracker: Completion port, or ``None`` under at-most-once delivery.
+    """
+    if tracker is None:
+        return
+    produced: Counter[tuple[str, int, int]] = Counter()
+    for item in results:
+        key = _commit_key(item)
+        if key is not None:
+            produced[key] += 1
+    for key, count in produced.items():
+        if count > 1:
+            tracker.fork(key[0], key[1], key[2], count - 1)
+    for original in originals:
+        key = _commit_key(original)
+        if key is not None and key not in produced:
+            tracker.complete(key[0], key[1], key[2])
+
+
 def _drop_and_commit(item: Any, tracker: CommitCompletionPort) -> tuple[()]:
     """Drop one item and mark it complete for commit tracking."""
     if not _is_message(item):
@@ -339,6 +408,37 @@ def _drop_and_commit(item: Any, tracker: CommitCompletionPort) -> tuple[()]:
 def _identity(items: Any) -> Any:
     """Pass through one item unchanged for flat_map."""
     return items
+
+
+def _register_row_fanout(
+    item: Any,
+    tracker: CommitCompletionPort,
+    declared_types: frozenset[type],
+    has_default: bool,
+) -> Any:
+    """Account for the rows an ``ExpandRoutes`` node actually produced.
+
+    The expanded payload maps each output type to its rows. Every row becomes
+    one message on its route and completes the source offset at its terminal,
+    so the expected completions must match the total row count — which is
+    unrelated to how many routes were declared. Zero rows completes the offset
+    here, since nothing downstream ever will.
+    """
+    message = _require_message(item)
+    expanded = cast(dict[type, list[Any]], message.payload)
+    total = sum(len(expanded.get(output_type) or []) for output_type in declared_types)
+    if has_default:
+        total += sum(
+            len(rows) for output_type, rows in expanded.items() if output_type not in declared_types
+        )
+    key = _commit_key(message)
+    if key is None:
+        return message
+    if total == 0:
+        tracker.complete(key[0], key[1], key[2])
+    elif total > 1:
+        tracker.fork(key[0], key[1], key[2], total - 1)
+    return message
 
 
 def _register_broadcast_fanout(item: Any, tracker: CommitCompletionPort, route_count: int) -> Any:

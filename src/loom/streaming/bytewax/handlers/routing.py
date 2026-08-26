@@ -16,6 +16,7 @@ from loom.streaming.bytewax.handlers._shared import (
     _ExecutableRecordStep,
     _observe_node,
     _register_broadcast_fanout,
+    _register_row_fanout,
     _replace_payload,
     _require_message,
     _step_id,
@@ -123,7 +124,6 @@ def _apply_expand_routes(
     all_processes: list[tuple[type | None, Any]] = list(node.routes.items())
     if node.default is not None:
         all_processes.append((None, node.default))
-    route_count = len(all_processes)
 
     # Step 1: expand once — payload becomes dict[type, list[rows]].
     # Use Message() directly: _replace_payload rejects non-LoomStruct payloads.
@@ -138,12 +138,21 @@ def _apply_expand_routes(
         do_expand,
     )
 
-    # Step 2: fanout tracking for Kafka offset commits (same as Broadcast)
-    if tracker is not None and route_count > 1:
+    # Step 2: fanout tracking for Kafka offset commits.
+    #
+    # The fan-out is the number of ROWS the expander actually produced across
+    # every route, not the number of routes declared: each row becomes its own
+    # message and completes the source offset when it reaches a terminal. A
+    # route that matches no row contributes nothing. Forking by route_count
+    # instead froze the partition whenever rows < routes and released the
+    # offset early whenever rows > routes.
+    declared_types = frozenset(node.routes.keys())
+    has_default = node.default is not None
+    if tracker is not None:
         expanded_stream = bw_map(
             _step_id(f"expand_routes_{idx}_fanout", ctx),
             expanded_stream,
-            lambda item: _register_broadcast_fanout(item, tracker, route_count),
+            lambda item: _register_row_fanout(item, tracker, declared_types, has_default),
         )
 
     # Step 3: for each route, flat_map to extract rows of its type, then wire process
