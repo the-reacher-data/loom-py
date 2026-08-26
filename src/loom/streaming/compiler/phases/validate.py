@@ -571,8 +571,6 @@ def _node_has_kafka_topic_output(node: object) -> bool:
 
 
 def _has_kafka_topic_output(nodes: Iterable[object]) -> bool:
-    if isinstance(nodes, tuple):
-        return any(_node_has_kafka_topic_output(node) for node in nodes)
     return any(_node_has_kafka_topic_output(node) for node in nodes)
 
 

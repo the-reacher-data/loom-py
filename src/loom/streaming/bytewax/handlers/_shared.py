@@ -396,12 +396,13 @@ def _reconcile_fanout(
 
 
 def _drop_and_commit(item: Any, tracker: CommitCompletionPort) -> tuple[()]:
-    """Drop one item and mark it complete for commit tracking."""
-    if not _is_message(item):
-        return ()
-    t, p, o = item.meta.topic, item.meta.partition, item.meta.offset
-    if t is not None and p is not None and o is not None:
-        tracker.complete(t, p, o)
+    """Drop one item and mark it complete for commit tracking.
+
+    Returns the empty tuple that tells ``flat_map`` to emit nothing.
+    """
+    key = _commit_key(item) if _is_message(item) else None
+    if key is not None:
+        tracker.complete(key[0], key[1], key[2])
     return ()
 
 
@@ -425,20 +426,29 @@ def _register_row_fanout(
     here, since nothing downstream ever will.
     """
     message = _require_message(item)
+    key = _commit_key(message)
+    if key is not None:
+        total = _expanded_row_total(message, declared_types, has_default)
+        if total == 0:
+            tracker.complete(key[0], key[1], key[2])
+        elif total > 1:
+            tracker.fork(key[0], key[1], key[2], total - 1)
+    return message
+
+
+def _expanded_row_total(
+    message: Any,
+    declared_types: frozenset[type],
+    has_default: bool,
+) -> int:
+    """Count the rows an expanded payload will emit across every wired route."""
     expanded = cast(dict[type, list[Any]], message.payload)
     total = sum(len(expanded.get(output_type) or []) for output_type in declared_types)
-    if has_default:
-        total += sum(
-            len(rows) for output_type, rows in expanded.items() if output_type not in declared_types
-        )
-    key = _commit_key(message)
-    if key is None:
-        return message
-    if total == 0:
-        tracker.complete(key[0], key[1], key[2])
-    elif total > 1:
-        tracker.fork(key[0], key[1], key[2], total - 1)
-    return message
+    if not has_default:
+        return total
+    return total + sum(
+        len(rows) for output_type, rows in expanded.items() if output_type not in declared_types
+    )
 
 
 def _register_broadcast_fanout(item: Any, tracker: CommitCompletionPort, route_count: int) -> Any:

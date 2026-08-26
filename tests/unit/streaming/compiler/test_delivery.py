@@ -98,8 +98,10 @@ class TestCompileFlowDeliveryConflict:
             {"kafka": {"consumer": {"delivery": "at_least_once", "enable_auto_commit": True}}},
         )
 
+        flow = _flow()
+
         with pytest.raises(CompilationError) as exc_info:
-            compile_flow(_flow(), config=config)
+            compile_flow(flow, config=config)
 
         codes = {issue.code for issue in exc_info.value.issues}
         assert StreamingErrorCode.DELIVERY_CONFLICT in codes
@@ -131,8 +133,10 @@ class TestUnroutedForkUnderAtLeastOnce:
             {"kafka": {"consumer": {"delivery": "at_least_once"}}},
         )
 
+        flow = self._flow_with_fork(default=None)
+
         with pytest.raises(CompilationError) as exc_info:
-            compile_flow(self._flow_with_fork(default=None), config=config)
+            compile_flow(flow, config=config)
 
         codes = {issue.code for issue in exc_info.value.issues}
         assert StreamingErrorCode.FORK_UNMATCHED_UNROUTED in codes

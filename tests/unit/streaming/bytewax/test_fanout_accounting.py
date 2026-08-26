@@ -267,9 +267,10 @@ class TestSinkTrackingContract:
             """A sink a user wrote without knowing about commit tracking."""
 
         tracker, _ = _tracker()
+        sink = _UserSink()
 
         with pytest.raises(RuntimeConfigurationError, match="bind_commit_tracker"):
-            _adapter._bind_commit_tracker_object(_UserSink(), tracker)
+            _adapter._bind_commit_tracker_object(sink, tracker)
 
     def test_untrackable_sink_is_fine_under_at_most_once(self) -> None:
         class _UserSink:

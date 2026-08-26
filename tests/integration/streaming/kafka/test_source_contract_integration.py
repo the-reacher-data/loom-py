@@ -136,7 +136,8 @@ class TestOutputContract:
         assert record.headers["x-loom-correlation-id"] == b"corr-xyz"
         assert record.partition == 0
         assert record.offset == 0
-        assert record.timestamp_ms is not None and record.timestamp_ms > 0
+        assert record.timestamp_ms is not None
+        assert record.timestamp_ms > 0
 
     def test_snapshot_is_the_next_offset_to_read(
         self,
