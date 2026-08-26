@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
 from loom.core.model import LoomFrozenStruct, LoomStruct
+from loom.streaming.compiler._errors import CompilationIssue, from_message
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.kafka._config import ConsumerSettings, ProducerSettings
 from loom.streaming.kafka._wire import DispatchTable
@@ -112,13 +113,29 @@ class CompiledNode:
 class CompilationError(Exception):
     """Raised when a StreamFlow fails validation or cannot be compiled.
 
+    Aggregates every :class:`CompilationIssue` found in a compilation run.
+    Bare strings are accepted for backwards compatibility and normalized to
+    issues with code :data:`StreamingErrorCode.UNSPECIFIED`.
+
+    Attributes:
+        issues: Structured issues, one per failure, each carrying a
+            machine-readable code, component, and optional config field.
+
     Args:
-        errors: List of human-readable error messages.
+        issues: Issues (or legacy message strings) collected by the compiler.
     """
 
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__(f"Compilation failed with {len(errors)} error(s): {'; '.join(errors)}")
+    def __init__(self, issues: Sequence[CompilationIssue | str]) -> None:
+        self.issues: tuple[CompilationIssue, ...] = tuple(
+            from_message(item) if isinstance(item, str) else item for item in issues
+        )
+        messages = [issue.message for issue in self.issues]
+        super().__init__(f"Compilation failed with {len(messages)} error(s): {'; '.join(messages)}")
+
+    @property
+    def errors(self) -> list[str]:
+        """Human-readable messages, one per issue (legacy accessor)."""
+        return [issue.message for issue in self.issues]
 
 
 CompiledSource = CompiledSingleSource | CompiledMultiSource | CompiledMongoCDCSource

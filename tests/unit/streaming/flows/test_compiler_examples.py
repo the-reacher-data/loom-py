@@ -7,7 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from loom.streaming import Explode, Router, StreamShape, compile_flow
-from loom.streaming.compiler._plan import CompiledPlan
+from loom.streaming.compiler import CompiledPlan
 from tests.unit.streaming.flows.cases import StreamFlowCase
 
 pytestmark = pytest.mark.integration

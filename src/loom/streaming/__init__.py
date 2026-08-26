@@ -14,6 +14,17 @@ Use :mod:`loom.streaming` for user-facing flow declarations::
         StreamShape,
     )
 
+Compilation types (plan, structured errors) live under
+:mod:`loom.streaming.compiler`::
+
+    from loom.streaming.compiler import (
+        CompilationError,
+        CompilationIssue,
+        CompiledPlan,
+        StreamingErrorCode,
+        compile_flow,
+    )
+
 Kafka-specific codecs, clients, and transport settings live under
 :mod:`loom.streaming.kafka`.
 """

@@ -7,6 +7,7 @@ from typing import Any
 
 from loom.core.config import ConfigContext
 from loom.streaming.compiler._bindings import resolve_flow_bindings
+from loom.streaming.compiler._errors import CompilationIssue
 from loom.streaming.compiler._plan import CompilationError, CompiledPlan
 from loom.streaming.compiler.phases.build_plan import build_plan
 from loom.streaming.compiler.phases.validate import (
@@ -44,12 +45,14 @@ def compile_flow(
 class _Compiler:
     """Validates a StreamFlow and produces a CompiledPlan.
 
-    Each validator is a pure function that returns a list of error strings.
+    Each validator is a pure function that returns a list of
+    :class:`CompilationIssue` values; the compiler accumulates them and raises
+    a single :class:`CompilationError` per phase gate.
     """
 
     def compile(self, flow: StreamFlow[Any, Any], ctx: ConfigContext) -> CompiledPlan:
         """Run all validation phases then build the compiled plan."""
-        errors: list[str] = []
+        errors: list[CompilationIssue] = []
 
         resolved_flow, binding_errors = resolve_flow_bindings(flow, ctx)
         errors.extend(binding_errors)

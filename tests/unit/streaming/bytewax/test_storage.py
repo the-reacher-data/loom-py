@@ -10,7 +10,7 @@ import pytest
 from loom.core.async_bridge import AsyncBridge
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax.handlers import storage as _storage
-from loom.streaming.compiler._plan import CompiledStorageSink
+from loom.streaming.compiler import CompiledStorageSink
 from loom.streaming.nodes._table import Backend, IntoTable
 from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig, SqlAlchemySinkConfig
 from tests.unit.streaming.compiler.cases import Result

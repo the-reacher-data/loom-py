@@ -6,7 +6,7 @@ from typing import Any
 
 from loom.core.model import LoomFrozenStruct
 from loom.streaming import IntoTopic
-from loom.streaming.compiler._plan import (
+from loom.streaming.compiler import (
     CompiledNode,
     CompiledPlan,
     CompiledSingleSource,

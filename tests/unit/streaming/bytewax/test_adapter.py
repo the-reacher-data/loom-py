@@ -6,7 +6,7 @@ import pytest
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _adapter
-from loom.streaming.compiler._plan import CompiledSink
+from loom.streaming.compiler import CompiledSink
 from loom.streaming.core._errors import ErrorKind
 from loom.streaming.core._message import Message
 from loom.streaming.kafka import (

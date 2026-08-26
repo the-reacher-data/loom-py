@@ -16,8 +16,7 @@ from loom.streaming import (
     With,
     WithAsync,
 )
-from loom.streaming.compiler import compile_flow
-from loom.streaming.compiler._compiler import CompilationError
+from loom.streaming.compiler import CompilationError, compile_flow
 from tests.unit.streaming.compiler.cases import FakeStep, Order, Result
 
 

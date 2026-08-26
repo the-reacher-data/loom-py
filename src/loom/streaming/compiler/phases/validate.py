@@ -1,4 +1,9 @@
-"""Validation phase for streaming flow compilation."""
+"""Validation phase for streaming flow compilation.
+
+Each validator returns a list of :class:`CompilationIssue` — structured
+failures with machine-readable codes — accumulated by the compiler into a
+single :class:`~loom.streaming.compiler.CompilationError`.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,30 @@ from typing import Any, cast
 
 from loom.core.config import ConfigContext, ConfigError
 from loom.core.config.keys import ConfigKey
-from loom.streaming.core._exceptions import MissingSinkError, UnsupportedNodeError
+from loom.streaming.compiler._errors import (
+    CompilationIssue,
+    batch_scope_direct_context,
+    broadcast_not_last,
+    explode_without_router,
+    fork_branch_no_terminal,
+    fork_not_last,
+    kafka_config_invalid,
+    missing_terminal_output,
+    mongo_config_invalid,
+    output_with_broadcast,
+    output_with_fork,
+    router_branch_fanout_unsupported,
+    router_branch_shape_divergence,
+    router_branch_unsafe_node,
+    scoped_into_topic_not_last,
+    scoped_process_not_last,
+    scoped_process_unsupported_node,
+    shape_mismatch,
+    sink_config_invalid,
+    sink_missing_name,
+    terminal_not_last,
+    window_strategy_unsupported,
+)
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import KafkaSettings
@@ -31,15 +59,18 @@ from loom.streaming.nodes._table.config import (
 from loom.streaming.nodes._with import ResourceScope, With, WithAsync
 
 
-def validate_storage_sinks(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+def validate_storage_sinks(
+    flow: StreamFlow[Any, Any],
+    ctx: ConfigContext,
+) -> list[CompilationIssue]:
     """Validate that every named IntoSink node has a config section at streaming.sinks.<name>."""
-    errors: list[str] = []
+    errors: list[CompilationIssue] = []
     for node in _iter_unique_storage_sinks(flow.process.nodes, errors):
         errors.extend(_validate_storage_sink_node(node, ctx))
     return errors
 
 
-def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[CompilationIssue]:
     """Validate Kafka settings required by *flow*."""
     if not _uses_kafka(flow):
         return []
@@ -47,10 +78,10 @@ def validate_kafka(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
         ctx.section(ConfigKey.KAFKA, KafkaSettings)
         return []
     except ConfigError as exc:
-        return [f"kafka: {exc}"]
+        return [kafka_config_invalid(exc)]
 
 
-def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
+def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[CompilationIssue]:
     """Validate Mongo settings required by *flow*."""
     if not isinstance(flow.source, FromMongoCDC):
         return []
@@ -59,25 +90,21 @@ def validate_mongo(flow: StreamFlow[Any, Any], ctx: ConfigContext) -> list[str]:
         mongo.source_for(flow.source.logical_ref)
         return []
     except (ConfigError, KeyError) as exc:
-        return [f"mongo source '{flow.source.name}': {exc}"]
+        return [mongo_config_invalid(flow.source.name, exc)]
 
 
-def validate_resources(flow: StreamFlow[Any, Any]) -> list[str]:
+def validate_resources(flow: StreamFlow[Any, Any]) -> list[CompilationIssue]:
     """Validate resource usage across the full process tree."""
-    errors: list[str] = []
+    errors: list[CompilationIssue] = []
     for node in _walk_all_process_nodes(flow.process.nodes):
         if isinstance(node, (With, WithAsync)) and node.scope == ResourceScope.BATCH:
             direct_cms = list(node.sync_contexts.keys()) + list(node.async_contexts.keys())
             if direct_cms:
-                errors.append(
-                    f"{type(node).__name__} with scope=BATCH cannot use direct context "
-                    f"manager instances: {', '.join(direct_cms)}. "
-                    f"Use ContextFactory for batch-scoped resources."
-                )
+                errors.append(batch_scope_direct_context(node, direct_cms))
     return errors
 
 
-def validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
+def validate_shapes(flow: StreamFlow[Any, Any]) -> list[CompilationIssue]:
     """Validate shape transitions through the process tree."""
     errors, _ = _validate_shape_sequence(flow.process.nodes, flow.source.shape)
     errors.extend(_validate_window_strategies(flow.process.nodes))
@@ -85,37 +112,19 @@ def validate_shapes(flow: StreamFlow[Any, Any]) -> list[str]:
     return errors
 
 
-def validate_outputs(flow: StreamFlow[Any, Any]) -> list[str]:
+def validate_outputs(flow: StreamFlow[Any, Any]) -> list[CompilationIssue]:
     """Validate terminal outputs and branch terminality."""
-    errors: list[str] = []
+    errors: list[CompilationIssue] = []
     has_terminal = flow.output is not None or _has_terminal_output(flow.process.nodes)
 
     if flow.output is not None and _contains_fork(flow.process.nodes):
-        errors.append(
-            str(
-                UnsupportedNodeError(
-                    "flow.output cannot be combined with Fork: branches must be terminal"
-                )
-            )
-        )
+        errors.append(output_with_fork())
 
     if flow.output is not None and _contains_broadcast(flow.process.nodes):
-        errors.append(
-            str(
-                UnsupportedNodeError(
-                    "flow.output cannot be combined with Broadcast: branches must be terminal"
-                )
-            )
-        )
+        errors.append(output_with_broadcast())
 
     if not has_terminal:
-        errors.append(
-            str(
-                MissingSinkError(
-                    "no terminal output found: add IntoTopic, a storage sink node, or flow.output"
-                )
-            )
-        )
+        errors.append(missing_terminal_output())
 
     return errors
 
@@ -171,19 +180,20 @@ def _node_needs_async_bridge(node: object) -> bool:
 def _check_input_shape(
     node: object,
     current_shape: StreamShape,
-    errors: list[str],
+    errors: list[CompilationIssue],
 ) -> None:
     expected = _node_input_shape(node)
     if expected is not None and current_shape != expected:
-        errors.append(
-            f"shape mismatch: expected {expected.value} but got {current_shape.value} "
-            f"before {type(node).__name__}"
-        )
+        errors.append(shape_mismatch(expected.value, current_shape.value, node))
 
 
-def _must_be_last_errors(idx: int, node_list: tuple[object, ...], message: str) -> list[str]:
+def _must_be_last_errors(
+    idx: int,
+    node_list: tuple[object, ...],
+    issue: CompilationIssue,
+) -> list[CompilationIssue]:
     if idx != len(node_list) - 1:
-        return [message]
+        return [issue]
     return []
 
 
@@ -194,8 +204,8 @@ def _is_scoped_process(node: object) -> bool:
 def _validate_shape_sequence(
     nodes: Iterable[object],
     initial_shape: StreamShape,
-) -> tuple[list[str], StreamShape]:
-    errors: list[str] = []
+) -> tuple[list[CompilationIssue], StreamShape]:
+    errors: list[CompilationIssue] = []
     current_shape = initial_shape
     node_list = tuple(nodes)
 
@@ -217,7 +227,7 @@ def _validate_shape_sequence(
 
 def _iter_unique_storage_sinks(
     nodes: Iterable[object],
-    errors: list[str],
+    errors: list[CompilationIssue],
 ) -> Iterable[IntoSink[Any]]:
     """Yield named storage sinks once while recording missing-name errors."""
     seen: set[str] = set()
@@ -225,7 +235,7 @@ def _iter_unique_storage_sinks(
         if not isinstance(node, IntoSink):
             continue
         if not node.name:
-            errors.append(f"storage sink '{type(node).__name__}': missing name")
+            errors.append(sink_missing_name(node))
             continue
         if node.name in seen:
             continue
@@ -233,7 +243,7 @@ def _iter_unique_storage_sinks(
         yield node
 
 
-def _validate_storage_sink_node(node: IntoSink[Any], ctx: ConfigContext) -> list[str]:
+def _validate_storage_sink_node(node: IntoSink[Any], ctx: ConfigContext) -> list[CompilationIssue]:
     """Validate backend-specific config for one storage sink."""
     if not isinstance(node, IntoTable):
         return []
@@ -248,12 +258,12 @@ def _validate_storage_sink_resolution(
     node: IntoTable[Any],
     ctx: ConfigContext,
     resolver: Any,
-) -> list[str]:
+) -> list[CompilationIssue]:
     """Resolve one IntoTable config and return validation errors."""
     try:
         resolver(node, ctx)
     except ValueError as exc:
-        return [f"storage sink '{node.name or type(node).__name__}': {exc}"]
+        return [sink_config_invalid(node.name or type(node).__name__, exc)]
     return []
 
 
@@ -262,7 +272,7 @@ def _validate_shape_node(
     idx: int,
     node_list: tuple[object, ...],
     current_shape: StreamShape,
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate one node inside a process shape sequence."""
     if _is_leaf_terminal(node):
         return _validate_leaf_terminal_node(node, idx, node_list, current_shape)
@@ -285,11 +295,9 @@ def _validate_leaf_terminal_node(
     idx: int,
     node_list: tuple[object, ...],
     current_shape: StreamShape,
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate a terminal leaf node."""
-    errors = _must_be_last_errors(
-        idx, node_list, f"{type(node).__name__} must be the last node in a process"
-    )
+    errors = _must_be_last_errors(idx, node_list, terminal_not_last(node))
     return errors, current_shape, True
 
 
@@ -298,10 +306,10 @@ def _validate_fork_node(
     idx: int,
     node_list: tuple[object, ...],
     current_shape: StreamShape,
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate a fork node and stop the enclosing process."""
     errors, next_shape = _validate_fork_shapes(node, current_shape)
-    errors.extend(_must_be_last_errors(idx, node_list, "fork must be the last node in a process"))
+    errors.extend(_must_be_last_errors(idx, node_list, fork_not_last()))
     return errors, next_shape, True
 
 
@@ -310,12 +318,10 @@ def _validate_broadcast_node(
     idx: int,
     node_list: tuple[object, ...],
     current_shape: StreamShape,
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate a broadcast node and stop the enclosing process."""
     errors, next_shape = _validate_broadcast_shapes(node, current_shape)
-    errors.extend(
-        _must_be_last_errors(idx, node_list, "broadcast must be the last node in a process")
-    )
+    errors.extend(_must_be_last_errors(idx, node_list, broadcast_not_last()))
     return errors, next_shape, True
 
 
@@ -323,13 +329,9 @@ def _validate_scoped_process_node(
     node: object,
     idx: int,
     node_list: tuple[object, ...],
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate a scoped process node and stop the enclosing process."""
-    errors = _must_be_last_errors(
-        idx,
-        node_list,
-        f"{type(node).__name__}(process=...) must be the last node in a process",
-    )
+    errors = _must_be_last_errors(idx, node_list, scoped_process_not_last(node))
     return errors, StreamShape.NONE, True
 
 
@@ -338,27 +340,26 @@ def _validate_explode_node(
     idx: int,
     node_list: tuple[object, ...],
     current_shape: StreamShape,
-) -> tuple[list[str], StreamShape, bool]:
+) -> tuple[list[CompilationIssue], StreamShape, bool]:
     """Validate that Explode is followed immediately by Router."""
     next_node = node_list[idx + 1] if idx + 1 < len(node_list) else None
-    errors: list[str] = []
+    errors: list[CompilationIssue] = []
     if not isinstance(next_node, Router):
-        got = type(next_node).__name__ if next_node is not None else "nothing"
-        errors.append(f"Explode must be immediately followed by a Router; got {got}")
+        errors.append(explode_without_router(next_node))
     return errors, _node_output_shape(node, current_shape), False
 
 
 def _validate_fork_shapes(
     fork: Fork[StreamPayload],
     initial_shape: StreamShape,
-) -> tuple[list[str], StreamShape]:
-    errors: list[str] = []
+) -> tuple[list[CompilationIssue], StreamShape]:
+    errors: list[CompilationIssue] = []
 
     for label, nodes in _fork_branch_nodes(fork):
         branch_errors, _ = _validate_shape_sequence(nodes, initial_shape)
-        errors.extend(f"fork branch {label}: {error}" for error in branch_errors)
+        errors.extend(issue.prefixed(f"fork branch {label}") for issue in branch_errors)
         if not _has_terminal_output(nodes):
-            errors.append(f"fork branch {label}: no terminal output found")
+            errors.append(fork_branch_no_terminal(label))
 
     return errors, StreamShape.NONE
 
@@ -366,19 +367,19 @@ def _validate_fork_shapes(
 def _validate_broadcast_shapes(
     broadcast: Broadcast[Any],
     initial_shape: StreamShape,
-) -> tuple[list[str], StreamShape]:
-    errors: list[str] = []
+) -> tuple[list[CompilationIssue], StreamShape]:
+    errors: list[CompilationIssue] = []
     for branch_idx, route in enumerate(broadcast.routes):
         branch_errors, _ = _validate_shape_sequence(route.process.nodes, initial_shape)
-        errors.extend(f"broadcast branch {branch_idx}: {e}" for e in branch_errors)
+        errors.extend(issue.prefixed(f"broadcast branch {branch_idx}") for issue in branch_errors)
     return errors, StreamShape.NONE
 
 
 def _validate_router_branch_shape_sequence(
     nodes: Iterable[object],
     initial_shape: StreamShape,
-) -> tuple[list[str], StreamShape]:
-    errors: list[str] = []
+) -> tuple[list[CompilationIssue], StreamShape]:
+    errors: list[CompilationIssue] = []
     current_shape = initial_shape
     node_list = tuple(nodes)
 
@@ -388,12 +389,9 @@ def _validate_router_branch_shape_sequence(
             continue
         expected = _node_input_shape(node)
         if expected is not None and current_shape != expected:
-            errors.append(
-                f"shape mismatch: expected {expected.value} but got {current_shape.value} "
-                f"before {type(node).__name__}"
-            )
+            errors.append(shape_mismatch(expected.value, current_shape.value, node))
         if _is_leaf_terminal(node) and idx != len(node_list) - 1:
-            errors.append(f"{type(node).__name__} must be the last node in a process")
+            errors.append(terminal_not_last(node))
             break
         current_shape = _node_output_shape(node, current_shape)
 
@@ -403,29 +401,24 @@ def _validate_router_branch_shape_sequence(
 def _validate_router_shapes(
     router: Router[StreamPayload, StreamPayload],
     initial_shape: StreamShape,
-) -> tuple[list[str], StreamShape]:
-    errors: list[str] = []
+) -> tuple[list[CompilationIssue], StreamShape]:
+    errors: list[CompilationIssue] = []
     outputs: list[StreamShape] = []
 
     for label, nodes in _router_branch_nodes(router):
         branch_errors, branch_output = _validate_router_branch_shape_sequence(nodes, initial_shape)
-        errors.extend(f"router branch {label}: {error}" for error in branch_errors)
+        errors.extend(issue.prefixed(f"router branch {label}") for issue in branch_errors)
         for node in nodes:
             if not isinstance(node, RouterBranchSafe):
-                errors.append(
-                    f"router branch {label}: node {type(node).__name__} is not router-branch safe"
-                )
+                errors.append(router_branch_unsafe_node(label, node))
             elif isinstance(node, (ExpandStep, BatchExpandStep)):
-                errors.append(
-                    f"router branch {label}: {type(node).__name__} is not supported in Router "
-                    f"branches — Router is 1-to-1; use Fork for fan-out."
-                )
+                errors.append(router_branch_fanout_unsupported(label, node))
         outputs.append(branch_output)
 
     unique_outputs = set(outputs)
     if len(unique_outputs) > 1:
         ordered = ", ".join(sorted(shape.value for shape in unique_outputs))
-        errors.append(f"router branches produce different shapes: {ordered}")
+        errors.append(router_branch_shape_divergence(ordered))
 
     return errors, outputs[0] if outputs else initial_shape
 
@@ -546,19 +539,16 @@ def _node_input_shape(node: object) -> StreamShape | None:
     return None
 
 
-def _validate_window_strategies(nodes: Iterable[object]) -> list[str]:
-    errors: list[str] = []
+def _validate_window_strategies(nodes: Iterable[object]) -> list[CompilationIssue]:
+    errors: list[CompilationIssue] = []
     for node in nodes:
         if isinstance(node, CollectBatch) and node.window is not WindowStrategy.COLLECT:
-            errors.append(
-                f"CollectBatch.window={node.window} is not yet supported by the Bytewax adapter. "
-                f"Only WindowStrategy.COLLECT is available in this adapter version."
-            )
+            errors.append(window_strategy_unsupported(node.window))
     return errors
 
 
-def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
-    errors: list[str] = []
+def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[CompilationIssue]:
+    errors: list[CompilationIssue] = []
     for node in nodes:
         if not isinstance(node, (With, WithAsync)):
             continue
@@ -568,15 +558,9 @@ def _validate_scoped_process_nodes(nodes: Iterable[object]) -> list[str]:
                 continue
             if isinstance(inner_node, IntoTopic):
                 if idx != len(inner_nodes) - 1:
-                    errors.append(
-                        f"{type(node).__name__}(process=...) requires IntoTopic to be last; "
-                        f"found {type(inner_nodes[idx + 1]).__name__} after it."
-                    )
+                    errors.append(scoped_into_topic_not_last(node, inner_nodes[idx + 1]))
                 continue
-            errors.append(
-                f"{type(node).__name__}(process=...) only supports RecordStep nodes and an "
-                f"optional terminal IntoTopic; found {type(inner_node).__name__}."
-            )
+            errors.append(scoped_process_unsupported_node(node, inner_node))
     return errors
 
 
