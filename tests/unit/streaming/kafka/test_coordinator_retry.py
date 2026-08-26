@@ -133,3 +133,53 @@ class TestPolicy:
     def test_invalid_policies_are_rejected(self, field: str, value: float) -> None:
         with pytest.raises(ValueError, match=field):
             CoordinatorRetryPolicy(**{field: value})  # type: ignore[arg-type]
+
+
+class TestAsyncCommitVisibility:
+    """A commit that fails after the call returned must still be reported."""
+
+    def test_failed_async_commit_is_logged_with_its_partitions(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Without this the only symptom was unexplained consumer lag."""
+        import logging
+
+        from confluent_kafka import TopicPartition
+
+        from loom.streaming.kafka._config import ConsumerSettings
+        from loom.streaming.kafka.client._consumer import KafkaConsumerClient
+
+        settings = ConsumerSettings(
+            brokers=("k1:9092",), group_id="g1", topics=("orders",), delivery="at_least_once"
+        )
+        client = KafkaConsumerClient.unassigned(settings)
+
+        with caplog.at_level(logging.ERROR):
+            client._on_commit(
+                KafkaError(KafkaError.REQUEST_TIMED_OUT),
+                [TopicPartition("orders", 3, 91)],
+            )
+
+        assert any("orders:3@91" in record.getMessage() for record in caplog.records)
+
+    def test_successful_async_commit_is_silent(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from confluent_kafka import TopicPartition
+
+        from loom.streaming.kafka._config import ConsumerSettings
+        from loom.streaming.kafka.client._consumer import KafkaConsumerClient
+
+        settings = ConsumerSettings(
+            brokers=("k1:9092",), group_id="g1", topics=("orders",), delivery="at_least_once"
+        )
+        client = KafkaConsumerClient.unassigned(settings)
+
+        with caplog.at_level(logging.ERROR):
+            client._on_commit(None, [TopicPartition("orders", 3, 91)])
+
+        assert caplog.records == []

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
-from typing import Literal, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
@@ -20,6 +21,8 @@ from loom.streaming.kafka.client._retry import (
     CoordinatorRetryPolicy,
     with_coordinator_retry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _CommitMethod(Protocol):
@@ -52,11 +55,13 @@ class KafkaConsumerClient:
         retry_policy: CoordinatorRetryPolicy = DEFAULT_COORDINATOR_RETRY,
         _subscribe: bool = True,
     ) -> None:
-        self._consumer = _Consumer(settings.to_confluent_config())
-        if _subscribe:
-            self._consumer.subscribe(list(settings.topics))
         self._obs = obs
         self._retry_policy = retry_policy
+        config: dict[str, Any] = dict(settings.to_confluent_config())
+        config["on_commit"] = self._on_commit
+        self._consumer = _Consumer(config)
+        if _subscribe:
+            self._consumer.subscribe(list(settings.topics))
 
     @classmethod
     def unassigned(
@@ -227,8 +232,9 @@ class KafkaConsumerClient:
         Args:
             partitions: Kafka topic-partition offsets to commit.
             asynchronous: When ``True``, librdkafka coalesces the commit in
-                the background; failures surface through the consumer's
-                logger/``on_commit`` callback rather than as an exception.
+                the background and this call returns before the broker
+                answers, so a rejection surfaces through :meth:`_on_commit`
+                rather than as an exception raised here.
 
         Raises:
             KafkaCommitError: If the backend commit fails (synchronous mode).
@@ -241,6 +247,29 @@ class KafkaConsumerClient:
             )
         except Exception as exc:
             raise KafkaCommitError(str(exc)) from exc
+
+    def _on_commit(self, error: object | None, partitions: list[TopicPartition]) -> None:
+        """Report the outcome of an asynchronous offset commit.
+
+        Asynchronous commits return before the broker answers, so a rejection
+        can only arrive here. Without this callback such a failure was
+        discarded entirely: the offset silently stayed where it was and the
+        only visible symptom was consumer lag with no explanation.
+
+        This does not weaken delivery. A commit that never lands means the
+        group offset does not advance, so those records are reprocessed on the
+        next run — which is what at-least-once permits. The retention
+        keep-alive re-commits the watermark later, so the failure is transient
+        as long as it is *visible*, which is what this restores.
+        """
+        if error is None:
+            return
+        logger.error(
+            "kafka asynchronous offset commit failed: %s (partitions: %s); the group "
+            "offset did not advance, so these records will be reprocessed on restart",
+            error,
+            ", ".join(f"{part.topic}:{part.partition}@{part.offset}" for part in partitions),
+        )
 
     def close(self) -> None:
         """Close the consumer and release resources."""
