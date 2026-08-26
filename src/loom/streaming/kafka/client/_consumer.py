@@ -83,35 +83,6 @@ class KafkaConsumerClient:
         """
         return cls(settings, observability, retry_policy=retry_policy, _subscribe=False)
 
-    @classmethod
-    def for_partition(
-        cls,
-        settings: ConsumerSettings,
-        *,
-        topic: str,
-        partition: int,
-        offset: int,
-        observability: ObservabilityRuntime | None = None,
-    ) -> KafkaConsumerClient:
-        """Build a consumer pinned to one partition via Kafka ``assign``.
-
-        The consumer never calls ``subscribe`` and therefore never joins
-        group membership: the consumer group acts only as an offset store.
-
-        Args:
-            settings: Typed consumer settings.
-            topic: Physical topic name.
-            partition: Kafka partition index.
-            offset: Start offset passed to ``assign``.
-            observability: Optional observability runtime.
-
-        Returns:
-            Consumer client assigned to exactly one topic partition.
-        """
-        client = cls.unassigned(settings, observability)
-        client.assign_partition(topic, partition, offset)
-        return client
-
     def assign_partition(self, topic: str, partition: int, offset: int) -> None:
         """Pin this consumer to exactly one topic partition via ``assign``.
 

@@ -384,55 +384,6 @@ class TestKafkaConsumerClient:
 
         assert fake.closed is True
 
-    def test_for_partition_assigns_without_subscribing(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        installer = install_raw_consumer_stub(monkeypatch)
-
-        KafkaConsumerClient.for_partition(
-            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
-            topic="orders",
-            partition=3,
-            offset=17,
-        )
-
-        fake = installer.stub
-        assert fake is not None
-        assert fake.subscribe_calls == 0
-        assert len(fake.assigned) == 1
-        assert fake.assigned[0].topic == "orders"
-        assert fake.assigned[0].partition == 3
-        assert fake.assigned[0].offset == 17
-
-    def test_for_partition_propagates_observability(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        installer = install_raw_consumer_stub(monkeypatch)
-        fake = installer.stub
-        assert fake is not None
-        fake.next_message = FakeKafkaMessage(
-            headers=[("x-trace-id", b"trace-1"), ("x-correlation-id", b"corr-1")]
-        )
-        events: list[LifecycleEvent] = []
-
-        class _RecordingObserver:
-            def on_event(self, event: LifecycleEvent) -> None:
-                events.append(event)
-
-        consumer = KafkaConsumerClient.for_partition(
-            ConsumerSettings(brokers=("k1:9092",), group_id="g1", topics=("orders",)),
-            topic="orders",
-            partition=0,
-            offset=0,
-            observability=ObservabilityRuntime([_RecordingObserver()]),
-        )
-
-        assert consumer.poll(100) is not None
-        assert events, "Expected at least one lifecycle event"
-        assert events[-1].trace_id == "trace-1"
-
     def test_consume_batch_converts_messages_in_broker_order(
         self,
         monkeypatch: pytest.MonkeyPatch,

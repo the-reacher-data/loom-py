@@ -9,7 +9,6 @@ import pytest
 from confluent_kafka import TopicPartition
 
 from loom.streaming.kafka import KafkaRecord
-from loom.streaming.kafka._config import ConsumerSettings
 
 
 class ProducerBackendStub:
@@ -243,40 +242,6 @@ class RawConsumerStub:
         if self._records:
             return self._records.pop(0)
         return None
-
-    def commit(self, *, asynchronous: bool = False) -> None:
-        self.commit_calls.append(asynchronous)
-
-    def commit_offset(
-        self, partitions: list[TopicPartition], *, asynchronous: bool = False
-    ) -> None:
-        del asynchronous
-        if self.commit_offset_error is not None:
-            raise self.commit_offset_error
-        self.commit_offset_calls.append(partitions)
-
-    def close(self) -> None:
-        if self.close_error is not None:
-            raise self.close_error
-        self.closed = True
-
-
-class RuntimeConsumerStub:
-    """In-memory raw consumer for runtime source tests."""
-
-    def __init__(self, settings: ConsumerSettings) -> None:
-        del settings
-        self.closed = False
-        self.poll_calls: list[int] = []
-        self.commit_calls: list[bool] = []
-        self.commit_offset_calls: list[list[TopicPartition]] = []
-        self.close_error: Exception | None = None
-        self.commit_offset_error: Exception | None = None
-        self.next_message: Any | None = None
-
-    def poll(self, timeout_ms: int) -> object | None:
-        self.poll_calls.append(timeout_ms)
-        return self.next_message
 
     def commit(self, *, asynchronous: bool = False) -> None:
         self.commit_calls.append(asynchronous)

@@ -306,7 +306,7 @@ class TestRuntimeIOBuilders:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 2, consumer)
 
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=3)
@@ -320,11 +320,11 @@ class TestRuntimeIOBuilders:
 
         tracker.complete("orders.in", 2, 5)
         tracker.complete("orders.in", 2, 3)
-        tracker.flush()
+        tracker.flush("orders.in", 2)
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 4)]]
 
         tracker.complete("orders.in", 2, 4)
-        tracker.flush()
+        tracker.flush("orders.in", 2)
 
         assert consumer.commit_offset_calls == [
             [TopicPartition("orders.in", 2, 4)],
@@ -337,7 +337,7 @@ class TestRuntimeIOBuilders:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 2, consumer)
 
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=9)
@@ -345,13 +345,13 @@ class TestRuntimeIOBuilders:
         tracker.fork("orders.in", 2, 9, 2)
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush() == []
+        assert tracker.flush("orders.in", 2) == []
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush() == []
+        assert tracker.flush("orders.in", 2) == []
 
         tracker.complete("orders.in", 2, 9)
-        assert tracker.flush() == [TopicPartition("orders.in", 2, 10)]
+        assert tracker.flush("orders.in", 2) == [TopicPartition("orders.in", 2, 10)]
         assert consumer.commit_offset_calls == [[TopicPartition("orders.in", 2, 10)]]
 
     def test_commit_tracker_propagates_commit_offset_errors(
@@ -361,7 +361,7 @@ class TestRuntimeIOBuilders:
         assert tracker is not None
         consumer = ConsumerBackendStub({})
         consumer.commit_error = RuntimeError("commit-boom")
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 2, consumer)
 
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=2, offset=9)
@@ -369,7 +369,7 @@ class TestRuntimeIOBuilders:
 
         tracker.complete("orders.in", 2, 9)
         with pytest.raises(RuntimeError, match="commit-boom"):
-            tracker.flush()
+            tracker.flush("orders.in", 2)
 
     def test_build_inline_sink_partition_can_write_dlq_payloads(
         self,
@@ -407,7 +407,7 @@ class TestCommitTrackerGapsAndFloor:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
 
         for offset in (100, 101, 104, 106):  # 102-103 and 105 are never delivered
             tracker.register_record(
@@ -416,13 +416,13 @@ class TestCommitTrackerGapsAndFloor:
         for offset in (100, 104, 101, 106):
             tracker.complete("orders.in", 0, offset)
 
-        assert tracker.flush() == [TopicPartition("orders.in", 0, 107)]
+        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 107)]
 
     def test_floor_suppresses_commits_at_or_below_committed_offset(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
         tracker.set_floor("orders.in", 0, 6)
 
         for offset in (3, 4):
@@ -431,14 +431,14 @@ class TestCommitTrackerGapsAndFloor:
             )
             tracker.complete("orders.in", 0, offset)
         # watermark 5 is strictly below the floor: the group never rewinds
-        assert tracker.flush() == []
+        assert tracker.flush("orders.in", 0) == []
 
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=5)
         )
         tracker.complete("orders.in", 0, 5)
         # watermark == floor commits idempotently (keep-alive relies on this)
-        assert tracker.flush() == [TopicPartition("orders.in", 0, 6)]
+        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 6)]
 
     def test_partition_committers_route_commits_to_their_owner(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
@@ -455,7 +455,7 @@ class TestCommitTrackerGapsAndFloor:
                 )
             )
             tracker.complete("orders.in", partition, 5)
-        tracker.flush()
+            tracker.flush("orders.in", partition)
 
         assert owner_zero.commit_offset_calls == [[TopicPartition("orders.in", 0, 6)]]
         assert owner_one.commit_offset_calls == [[TopicPartition("orders.in", 1, 6)]]
@@ -464,21 +464,21 @@ class TestCommitTrackerGapsAndFloor:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=9)
         )
         tracker.complete("orders.in", 0, 9)
-        assert tracker.flush() == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
 
-        assert tracker.flush() == []  # sin avance: nada que commitear
-        assert tracker.flush(force=True) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush("orders.in", 0) == []  # sin avance: nada que commitear
+        assert tracker.flush("orders.in", 0, force=True) == [TopicPartition("orders.in", 0, 10)]
 
     def test_reset_partition_clears_inflight_state(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=9)
         )
@@ -486,7 +486,7 @@ class TestCommitTrackerGapsAndFloor:
         tracker.reset_partition("orders.in", 0)
         tracker.complete("orders.in", 0, 9)  # orphan complete: no-op
 
-        assert tracker.flush(force=True) == []
+        assert tracker.flush("orders.in", 0, force=True) == []
 
 
 class TestCommitTrackerRobustness:
@@ -494,29 +494,29 @@ class TestCommitTrackerRobustness:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
         record = KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=9)
 
         tracker.register_record(record)
         tracker.register_record(record)  # redelivery of an in-flight offset
         tracker.complete("orders.in", 0, 9)
 
-        assert tracker.flush() == [TopicPartition("orders.in", 0, 10)]
-        assert tracker.flush() == []
+        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush("orders.in", 0) == []
 
     def test_commit_failure_remarks_dirty_so_next_flush_retries(self) -> None:
         tracker = _runtime_io.build_commit_tracker(build_compiled_source(enable_auto_commit=False))
         assert tracker is not None
         consumer = ConsumerBackendStub({})
         consumer.commit_error = RuntimeError("transient-commit-boom")
-        tracker.bind(consumer)
+        tracker.bind_partition("orders.in", 0, consumer)
         tracker.register_record(
             KafkaRecord(topic="orders.in", key=None, value=b"raw", partition=0, offset=9)
         )
         tracker.complete("orders.in", 0, 9)
 
         with pytest.raises(RuntimeError, match="transient-commit-boom"):
-            tracker.flush()
+            tracker.flush("orders.in", 0)
 
         consumer.commit_error = None
-        assert tracker.flush() == [TopicPartition("orders.in", 0, 10)]
+        assert tracker.flush("orders.in", 0) == [TopicPartition("orders.in", 0, 10)]

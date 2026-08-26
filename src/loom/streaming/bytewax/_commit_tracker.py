@@ -48,22 +48,12 @@ class KafkaCommitTracker:
     """Track per-offset completion and commit Kafka offsets once safe."""
 
     def __init__(self) -> None:
-        self._default_committer: OffsetCommitter | None = None
         self._committers: dict[tuple[str, int], OffsetCommitter] = {}
         self._messages: dict[str, _TrackedMessage] = {}
         self._watermarks: dict[tuple[str, int], _PartitionWatermark] = {}
         self._floors: dict[tuple[str, int], int] = {}
         self._dirty: set[tuple[str, int]] = set()
         self._lock = threading.Lock()
-
-    def bind(self, consumer: object) -> None:
-        """Bind the default committer used for partitions without their own.
-
-        Kept for single-consumer sources and test harnesses; partitioned
-        sources should prefer :meth:`bind_partition`.
-        """
-        with self._lock:
-            self._default_committer = consumer  # type: ignore[assignment]
 
     def bind_partition(self, topic: str, partition: int, committer: OffsetCommitter) -> None:
         """Bind the committer that owns one topic partition."""
@@ -210,7 +200,7 @@ class KafkaCommitTracker:
                 if floor is not None and watermark.commit_offset < floor:
                     self._dirty.discard(key)
                     continue
-                committer = self._committers.get(key) or self._default_committer
+                committer = self._committers.get(key)
                 if committer is None:
                     continue
                 plan.append((committer, TopicPartition(key[0], key[1], watermark.commit_offset)))
