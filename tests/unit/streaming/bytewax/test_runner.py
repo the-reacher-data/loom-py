@@ -626,8 +626,8 @@ streaming:
 
 class TestKeyedMultiprocessGuard:
     def test_at_least_once_with_collect_batch_on_cluster_fails_fast(self) -> None:
+        from loom.streaming.bytewax import RuntimeConfigurationError
         from loom.streaming.bytewax import runner as runner_mod
-        from loom.streaming.bytewax._errors import RuntimeConfigurationError
         from loom.streaming.compiler import StreamingErrorCode
         from loom.streaming.nodes._shape import CollectBatch
         from tests.unit.streaming.bytewax.cases import build_compiled_plan

@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 from loom.streaming.bytewax._adapter import build_dataflow, build_dataflow_with_shutdown
+from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource
 from loom.streaming.bytewax._sink_registry import RegisteredSink, RuntimeSinkBinding
 from loom.streaming.bytewax.runner import (
@@ -22,6 +23,7 @@ from loom.streaming.bytewax.runner import (
 from loom.streaming.core._exceptions import DuplicateErrorSinkError
 
 __all__ = [
+    "RuntimeConfigurationError",
     "build_dataflow",
     "build_dataflow_with_shutdown",
     "BytewaxRecoverySettings",

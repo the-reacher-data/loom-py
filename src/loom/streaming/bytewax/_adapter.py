@@ -125,7 +125,7 @@ def build_dataflow_with_shutdown(
     terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
     error_sinks: Mapping[ErrorKind, Any] | None = None,
     bridge: AsyncBridge | None = None,
-    commit_tracker: Any | None = None,
+    commit_tracker: CommitCompletionPort | None = None,
 ) -> _BuiltDataflow:
     """Build a Bytewax Dataflow and expose its shutdown callback.
 
@@ -165,11 +165,13 @@ def build_dataflow_with_shutdown(
 class _SupportsCommitBind(Protocol):
     """Runtime object that accepts a Kafka commit tracker."""
 
-    def bind_commit_tracker(self, tracker: Any) -> None:
+    def bind_commit_tracker(self, tracker: CommitCompletionPort) -> None:
         """Bind a commit tracker to this runtime object."""
 
 
-def _bind_commit_tracker_object(item: object | None, commit_tracker: object | None) -> None:
+def _bind_commit_tracker_object(
+    item: object | None, commit_tracker: CommitCompletionPort | None
+) -> None:
     """Bind a commit tracker to one runtime object when supported."""
     if item is None or commit_tracker is None:
         return
@@ -179,7 +181,7 @@ def _bind_commit_tracker_object(item: object | None, commit_tracker: object | No
 
 def _bind_commit_tracker_mapping(
     items: Mapping[Any, Any] | None,
-    commit_tracker: Any | None,
+    commit_tracker: CommitCompletionPort | None,
 ) -> None:
     """Bind a commit tracker to each runtime object in a mapping when supported."""
     if items is None or commit_tracker is None:
@@ -223,7 +225,7 @@ class _BuildContext:
         sink: Any | None = None,
         terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
         error_sinks: Mapping[ErrorKind, Any] | None = None,
-        commit_tracker: Any | None = None,
+        commit_tracker: CommitCompletionPort | None = None,
     ) -> None:
         self.plan = plan
         self.bridge = bridge

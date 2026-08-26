@@ -10,6 +10,7 @@ from bytewax.operators import branch, flat_map
 from bytewax.operators import map as bw_map
 
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._error_boundary import (
     _build_error_envelope,
     _classify_task,
@@ -176,7 +177,7 @@ async def _execute_inner_process(
     message: Message[StreamPayload],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
+    tracker: CommitCompletionPort | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
 ) -> Message[StreamPayload]:
@@ -197,7 +198,7 @@ async def _execute_with_async_message(
     message: Message[StreamPayload],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
+    tracker: CommitCompletionPort | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
 ) -> Any:
@@ -219,7 +220,7 @@ async def _execute_with_async_batch(
     messages: Sequence[Message[StreamPayload]],
     inner_steps: Sequence[_ExecutableRecordStep],
     sink_partition: Any,
-    tracker: Any | None,
+    tracker: CommitCompletionPort | None,
     deps: Mapping[str, object],
     timeout_ms: int | None,
     max_concurrency: int,
@@ -257,7 +258,7 @@ def _execute_with_step(
     flow_name: str,
     idx: int,
     node_type: str,
-    tracker: Any | None,
+    tracker: CommitCompletionPort | None,
     manager: ResourceLifecycle,
     worker_resources: Mapping[str, object],
     inner_steps: Sequence[_ExecutableRecordStep],

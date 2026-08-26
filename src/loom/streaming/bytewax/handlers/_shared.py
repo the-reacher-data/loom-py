@@ -326,7 +326,7 @@ def _empty(_item: Any) -> tuple[()]:
     return ()
 
 
-def _drop_and_commit(item: Any, tracker: Any) -> tuple[()]:
+def _drop_and_commit(item: Any, tracker: CommitCompletionPort) -> tuple[()]:
     """Drop one item and mark it complete for commit tracking."""
     if not _is_message(item):
         return ()
@@ -341,7 +341,7 @@ def _identity(items: Any) -> Any:
     return items
 
 
-def _register_broadcast_fanout(item: Any, tracker: Any, route_count: int) -> Any:
+def _register_broadcast_fanout(item: Any, tracker: CommitCompletionPort, route_count: int) -> Any:
     """Increase pending completions for a broadcast fan-out item."""
     if route_count <= 1:
         return item

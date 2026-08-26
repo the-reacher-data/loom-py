@@ -589,10 +589,6 @@ def _resolve_partition_key(
     return incoming_key
 
 
-def _message_to_send(message: Message[StreamPayload]) -> _KafkaSendRequest[StreamPayload]:
-    return _message_to_send_with_policy(message, None)
-
-
 def _message_to_send_with_policy(
     message: Message[StreamPayload],
     partition_policy: PartitionPolicy[Any] | None,
