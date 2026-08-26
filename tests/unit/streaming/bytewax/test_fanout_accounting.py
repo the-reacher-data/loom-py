@@ -16,13 +16,15 @@ Both failures are silent, which is why they are asserted here against a real
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from confluent_kafka import TopicPartition
 
 from loom.streaming.bytewax import RuntimeConfigurationError, _adapter
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
+from loom.streaming.bytewax.handlers import _shared
 from loom.streaming.bytewax.handlers import routing as _routing
 from loom.streaming.bytewax.handlers import steps as _steps
 from loom.streaming.core._message import Message, MessageMeta
@@ -75,8 +77,6 @@ def _complete(tracker: KafkaCommitTracker, results: list[Any]) -> None:
 
 
 def _ctx(tracker: KafkaCommitTracker | None) -> Any:
-    from types import SimpleNamespace
-
     from loom.core.observability.runtime import ObservabilityRuntime
 
     return SimpleNamespace(
@@ -276,3 +276,114 @@ class TestSinkTrackingContract:
             """No tracker means nothing to bind and nothing to guarantee."""
 
         _adapter._bind_commit_tracker_object(_UserSink(), None)
+
+
+class TestErrorEnvelopeAccounting:
+    """A failed record still owes exactly one completion, from its error route."""
+
+    def test_an_error_envelope_counts_as_the_records_single_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The envelope carries the original offset and its sink completes it.
+
+        Counting only successful messages would have completed the record here
+        as "produced nothing", releasing the offset before the error route had
+        written it anywhere.
+        """
+
+        class _FailingExpand:
+            def execute(self, message: Message[Order], **_: object) -> list[Result]:
+                del message
+                raise RuntimeError("expander-boom")
+
+        tracker, _ = _tracker(OFFSET)
+        produced = _drive(monkeypatch, _steps, _sourced_message(Order(order_id="ab")))
+        _steps._apply_expand_step("in", _FailingExpand(), 1, _ctx(tracker))
+        results = produced[0]
+
+        assert len(results) == 1
+        assert not isinstance(results[0], Message)
+        assert tracker.flush_partition(TOPIC, PARTITION) == [], (
+            "the record was released before its error envelope reached a sink"
+        )
+
+        tracker.complete(TOPIC, PARTITION, OFFSET)
+        assert tracker.flush_partition(TOPIC, PARTITION) == [
+            TopicPartition(TOPIC, PARTITION, OFFSET + 1)
+        ]
+
+
+class TestExpandRoutesWiring:
+    """The accounting is only correct if the node actually wires it in."""
+
+    def test_the_node_registers_row_fanout_before_extracting_routes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Order matters: the fork must be registered before any row can complete."""
+
+        from loom.streaming.nodes._expand_routes import ExpandRoutes
+
+        class _Expander:
+            @staticmethod
+            def expand(payload: Order) -> dict[type, list[Any]]:
+                del payload
+                return {Result: [Result(value="a"), Result(value="b")]}
+
+        node = ExpandRoutes(
+            expander=cast(Any, _Expander),
+            routes={Result: cast(Any, SimpleNamespace(nodes=()))},
+        )
+        tracker, _ = _tracker(OFFSET)
+        steps_run: list[str] = []
+
+        def _bw_map(step_id: str, stream: object, fn: Any) -> object:
+            steps_run.append(step_id)
+            return fn(stream)
+
+        def _bw_flat_map(step_id: str, stream: object, fn: Any) -> object:
+            steps_run.append(step_id)
+            return fn(stream)
+
+        monkeypatch.setattr(_routing, "bw_map", _bw_map)
+        monkeypatch.setattr(_routing, "bw_flat_map", _bw_flat_map)
+        ctx = _ctx(tracker)
+        ctx.wire_process = lambda *args, **kwargs: "route-stream"
+        ctx.wire_branch_terminal = lambda *args, **kwargs: None
+
+        _routing._apply_expand_routes(_sourced_message(Order(order_id="ab")), node, 4, ctx)
+
+        assert any("fanout" in step for step in steps_run), "the fanout step was never wired"
+        tracker.complete(TOPIC, PARTITION, OFFSET)
+        assert tracker.flush_partition(TOPIC, PARTITION) == [], (
+            "two rows were produced but the offset was released after the first"
+        )
+        tracker.complete(TOPIC, PARTITION, OFFSET)
+        assert tracker.flush_partition(TOPIC, PARTITION) == [
+            TopicPartition(TOPIC, PARTITION, OFFSET + 1)
+        ]
+
+
+class TestCommitKeyGuards:
+    """Items that account for no source offset must not be counted."""
+
+    def test_an_envelope_without_its_original_is_not_counted(self) -> None:
+        from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
+
+        envelope: Any = ErrorEnvelope(
+            kind=ErrorKind.TASK, reason="boom", payload_type="Order", original_message=None
+        )
+
+        assert _shared._commit_key(envelope) is None
+
+    def test_an_unknown_item_type_is_not_counted(self) -> None:
+        assert _shared._commit_key(object()) is None
+
+    def test_a_message_without_kafka_coordinates_is_not_counted(self) -> None:
+        assert (
+            _shared._commit_key(
+                Message(payload=Order(order_id="a"), meta=MessageMeta(message_id="m-1"))
+            )
+            is None
+        )

@@ -71,6 +71,9 @@ class TestClassification:
     def test_non_kafka_payload_is_not_transient(self) -> None:
         assert is_coordinator_error(KafkaException("plain message")) is False
 
+    def test_an_argument_less_exception_is_not_transient(self) -> None:
+        assert is_coordinator_error(KafkaException()) is False
+
 
 class TestRetryLoop:
     """Bounded retries, and nothing retried that should not be."""
@@ -124,7 +127,9 @@ class TestPolicy:
     def test_delay_grows_exponentially(self) -> None:
         policy = CoordinatorRetryPolicy(attempts=4, initial_backoff_s=0.25, backoff_multiplier=2.0)
 
-        assert [policy.delay_before(index) for index in range(3)] == [0.25, 0.5, 1.0]
+        delays = [policy.delay_before(index) for index in range(3)]
+
+        assert delays == pytest.approx([0.25, 0.5, 1.0])
 
     @pytest.mark.parametrize(
         ("field", "value"),
