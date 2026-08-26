@@ -45,12 +45,17 @@ jobs:
       # "--no-build" is intentionally omitted: omegaconf (a runtime dependency)
       # requires antlr4-python3-runtime 4.9.3, which ships no wheel on PyPI, so
       # the environment cannot be created from binaries only.
+      # Fast lane: `-m "not integration"` deselects the suites that need a
+      # provisioned external service; they run in the `integration` job with
+      # those services actually up. Deselecting is deliberate over letting them
+      # skip — a skipped test reads as approved, a deselected one reads as
+      # "not this lane".
       - name: Run pytest with coverage and JUnit output
         shell: bash
         run: |
           set -euo pipefail
           uv run --frozen --with "pytest-cov==7.1.0" \
-            pytest --cov --junitxml=junit.xml -o junit_family=legacy
+            pytest -m "not integration" --cov --junitxml=junit.xml -o junit_family=legacy
 
       - name: Upload coverage to Codecov
         if: ${{ hashFiles('coverage.xml') != '' }}
@@ -147,3 +152,85 @@ jobs:
               --project-name="loom-py/extra-${extra}" \
               --target-reference="${GITHUB_REF_NAME:-master}"
           done
+
+  # ---------------------------------------------------------------------------
+  # Integration lane: everything marked `integration` needs a real external
+  # service, so it runs here with the services actually provisioned — never as a
+  # silent skip inside the fast lane. The same docker-compose.local.yaml that
+  # developers use locally is the single source of truth for how these services
+  # are configured.
+  #
+  # The Kafka suite runs twice: Redpanda is the fast loop, Apache Kafka in KRaft
+  # mode is the fidelity check. The partitioned source uses the consumer group
+  # purely as an offset store (assign, never subscribe), and that is exactly the
+  # area where broker implementations legitimately diverge — a green Redpanda run
+  # is not evidence that Apache Kafka agrees.
+  # ---------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-integration" >> "$GITHUB_ENV"
+
+      - name: Start integration services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.local.yaml up -d redpanda kafka clickhouse
+
+      - name: Wait for services to report healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in redpanda kafka clickhouse; do
+            container="$(docker compose -f docker-compose.local.yaml ps -q "$service")"
+            for _ in $(seq 1 60); do
+              status="$(docker inspect -f '{{.State.Health.Status}}' "$container")"
+              [ "$status" = "healthy" ] && break
+              sleep 2
+            done
+            if [ "$(docker inspect -f '{{.State.Health.Status}}' "$container")" != "healthy" ]; then
+              echo "::error::$service never became healthy"
+              docker compose -f docker-compose.local.yaml logs "$service"
+              exit 1
+            fi
+          done
+
+      - name: Integration tests (Redpanda)
+        shell: bash
+        env:
+          LOOM_KAFKA_IT_BOOTSTRAP: localhost:19092
+        run: |
+          set -euo pipefail
+          uv run --frozen pytest -m integration -ra
+
+      - name: Integration tests (Apache Kafka fidelity check)
+        shell: bash
+        env:
+          LOOM_KAFKA_IT_BOOTSTRAP: localhost:19093
+        run: |
+          set -euo pipefail
+          uv run --frozen pytest tests/integration/streaming/kafka -ra
+
+      - name: Dump service logs on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: docker compose -f docker-compose.local.yaml logs --no-color --tail=200
+
+      - name: Stop integration services
+        if: ${{ always() }}
+        shell: bash
+        run: docker compose -f docker-compose.local.yaml down -v
