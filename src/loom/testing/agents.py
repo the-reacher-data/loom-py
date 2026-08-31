@@ -164,11 +164,12 @@ class FakeAgentEngine:
 class ContractScenario(LoomFrozenStruct, frozen=True, kw_only=True):
     """Engine behaviour one contract check requires.
 
-    ``AgentPlan`` does not exist until phase 4, so the suite cannot hand the
-    factory a compiled plan.  It hands this neutral description instead and
-    the adapter under test builds an engine exhibiting the behaviour: the
-    fake maps it onto a script, and a real-engine adapter can map it onto a
-    stubbed provider (recorded design decision, FR-048).
+    An ``AgentPlan`` declares structure, not behaviour, while every contract
+    check needs a scripted behaviour: a success run with its events, or a
+    failure with its coded error.  The scenario is therefore the right seam —
+    the suite hands this neutral description and the adapter under test
+    builds an engine exhibiting it: the fake maps it onto a script, and a
+    real-engine adapter can map it onto a stubbed provider (FR-048).
 
     Attributes:
         expected_output: Output ``run()`` and the terminal ``FinalEvent``

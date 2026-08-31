@@ -50,6 +50,17 @@ jobs:
       # those services actually up. Deselecting is deliberate over letting them
       # skip — a skipped test reads as approved, a deselected one reads as
       # "not this lane".
+      # Standalone artifact validation (FR-015): the published corpus must
+      # stay valid against the offline validator. The fake packages provide
+      # the corpus module:symbol references, as they would in an application.
+      - name: Validate agent artifact corpus
+        shell: bash
+        env:
+          PYTHONPATH: tests/unit/ai/fixtures/fake_pkgs
+        run: |
+          set -euo pipefail
+          uv run --frozen python -m loom.ai.validate 'tests/unit/ai/fixtures/corpus_v1/*.yaml'
+
       - name: Run pytest with coverage and JUnit output
         shell: bash
         run: |

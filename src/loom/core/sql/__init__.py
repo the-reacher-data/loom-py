@@ -19,6 +19,7 @@ from loom.core.sql.abc import (
     UnknownConnectionError,
 )
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig, SqlEndpointConfig
+from loom.core.sql.roles import resolve_query_roles
 from loom.core.sql.service import NullSqlQueryService, SqlQueryService
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "SqlQueryResult",
     "SqlQueryService",
     "UnknownConnectionError",
+    "resolve_query_roles",
 ]

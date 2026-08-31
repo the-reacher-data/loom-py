@@ -1,4 +1,4 @@
-"""Identity-bound role resolution for the SQL endpoint (spec §4).
+"""Identity-bound role resolution of the SQL pillar.
 
 The effective roles of a query are derived from the VERIFIED identity the
 authentication middleware published, never from the request body.  The body may
@@ -10,8 +10,9 @@ This module knows nothing about tokens or claims: whichever mechanism
 authenticated the caller, it sees the same
 :class:`~loom.core.identity.identity.Identity`.
 
-Internal module: the resolved values are consumed by
-:mod:`loom.rest.fastapi.sql` and are not part of the public API.
+Public API of the SQL pillar: any layer that executes caller-scoped queries
+(the REST endpoint, the agent compiler's SQL capability at run time) resolves
+the effective roles through this single function.
 """
 
 from __future__ import annotations

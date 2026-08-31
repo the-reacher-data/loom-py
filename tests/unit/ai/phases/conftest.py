@@ -1,0 +1,117 @@
+"""Shared builders for the compiler phase tests.
+
+``loom.ai.compiler`` is imported lazily inside fixtures on purpose: a
+module-level import in a conftest would abort the whole pytest session while
+the compiler does not exist yet, whereas the intended red state is one
+ImportError per test module.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+import pytest
+
+from loom.ai.config import AiConfig
+from loom.ai.declarative import AgentSpecV1, JsonSchemaOutput
+from loom.ai.errors import AgentCompilationIssue
+from loom.core.sql.config import SqlConfig
+from loom.core.use_case.registry import UseCaseRegistry
+
+SOURCE_PATH = "agents/subject.agent.yaml"
+"""Artifact path handed to ``compile``; issues point at it as ``component``."""
+
+ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+
+ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answer"],
+    "properties": {"answer": {"type": "string"}},
+}
+
+_UNSET: Any = object()
+
+
+@pytest.fixture
+def spec_factory() -> Callable[..., AgentSpecV1]:
+    """Build a valid base spec; keyword overrides inject the fault under test."""
+
+    def _make(**overrides: Any) -> AgentSpecV1:
+        base: dict[str, Any] = {
+            "spec_version": 1,
+            "name": "subject-agent",
+            "description": "Answers questions for the phase tests.",
+            "instructions": "Answer using only the prompt. Say so when unsure.",
+            "output": JsonSchemaOutput(schema=ANSWER_SCHEMA),
+        }
+        base.update(overrides)
+        return AgentSpecV1(**base)
+
+    return _make
+
+
+@pytest.fixture
+def compiler_factory(
+    compiler_env_config: AiConfig,
+    compiler_env_registry: UseCaseRegistry,
+    compiler_env_sql: SqlConfig,
+    fake_myapp_path: object,
+) -> Callable[..., Any]:
+    """Build an ``AgentCompiler`` over the shared environment.
+
+    ``sql`` distinguishes "not passed" (use the environment's config) from an
+    explicit ``None`` (no data layer at all, for ``SQL_CONFIG_MISSING``).
+    """
+
+    def _make(
+        *,
+        config: AiConfig | None = None,
+        registry: UseCaseRegistry | None = None,
+        supported_kinds: frozenset[str] = ALL_KINDS,
+        sql: SqlConfig | None = _UNSET,
+    ) -> Any:
+        from loom.ai.compiler import AgentCompiler
+
+        return AgentCompiler(
+            config=config if config is not None else compiler_env_config,
+            registry=registry if registry is not None else compiler_env_registry,
+            supported_kinds=supported_kinds,
+            sql=compiler_env_sql if sql is _UNSET else sql,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def issues_for(
+    compiler_factory: Callable[..., Any],
+) -> Callable[..., tuple[AgentCompilationIssue, ...]]:
+    """Compile one spec expecting failure; return the accumulated issues."""
+
+    def _issues(spec: AgentSpecV1, **compiler_kwargs: Any) -> tuple[AgentCompilationIssue, ...]:
+        from loom.ai.compiler import AgentCompilationError
+
+        compiler = compiler_factory(**compiler_kwargs)
+        try:
+            compiler.compile(spec, source_path=SOURCE_PATH)
+        except AgentCompilationError as exc:
+            return exc.issues
+        pytest.fail("expected AgentCompilationError, but the spec compiled clean")
+
+    return _issues
+
+
+@pytest.fixture
+def single_issue_for(
+    issues_for: Callable[..., tuple[AgentCompilationIssue, ...]],
+) -> Callable[..., AgentCompilationIssue]:
+    """Compile one spec expecting exactly one issue; return it."""
+
+    def _single(spec: AgentSpecV1, **compiler_kwargs: Any) -> AgentCompilationIssue:
+        issues = issues_for(spec, **compiler_kwargs)
+        assert len(issues) == 1, [issue.code for issue in issues]
+        return issues[0]
+
+    return _single
