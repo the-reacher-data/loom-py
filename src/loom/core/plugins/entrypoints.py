@@ -52,6 +52,22 @@ class ApiVersionRequirement:
     supported: frozenset[int]
 
 
+def list_entry_points(group: str) -> tuple[EntryPoint, ...]:
+    """List every entry point registered under ``group``.
+
+    Hosts use this to report what is installed (for example in a
+    "plugin not found, available: ..." message) against exactly the same
+    registrations `select_entry_point` resolves from.
+
+    Args:
+        group: Entry-point group to scan.
+
+    Returns:
+        The registered entry points, possibly empty.
+    """
+    return _iter_group(group)
+
+
 def select_entry_point(
     group: str,
     name: str,
@@ -174,6 +190,7 @@ __all__ = [
     "DuplicatePolicy",
     "EntryPointError",
     "EntryPointNotFoundError",
+    "list_entry_points",
     "load_entry_point",
     "select_entry_point",
 ]
