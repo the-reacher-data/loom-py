@@ -14,9 +14,9 @@ from __future__ import annotations
 import inspect
 
 import pytest
-from loom.ai.abc import AgentEngine
 
 import loom.ai
+from loom.ai.abc import AgentEngine
 
 _REQUIRED_EXPORTS = frozenset(
     {

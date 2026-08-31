@@ -13,13 +13,13 @@ Entry points are simulated by replacing ``entry_points`` inside
 from __future__ import annotations
 
 import pytest
+
+from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.registry import (
     require_provider_sdk,
     require_provider_setting,
     resolve_engine_provider,
 )
-
-from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.core.plugins import entrypoints as entrypoints_module
 
 _GROUP = "loom.ai.engines"

@@ -11,10 +11,10 @@ except where the contract is precisely about the message (secret absence).
 from __future__ import annotations
 
 import pytest
-from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
-from loom.ai.inference import InferenceTarget
 
+from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
+from loom.ai.inference import InferenceTarget
 
 
 def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:

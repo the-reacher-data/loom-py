@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import msgspec
 import pytest
+
 from loom.ai.inference import InferenceTarget
 
 _CREDENTIALS_REF = "ref/to/secret-name"

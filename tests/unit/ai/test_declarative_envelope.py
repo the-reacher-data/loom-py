@@ -16,6 +16,7 @@ import json
 from typing import Any
 
 import pytest
+
 from loom.ai.declarative import AgentSpecV1, DecodedSpec, decode_spec
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 
