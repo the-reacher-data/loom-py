@@ -1,0 +1,9 @@
+spec_version: 1
+name: output-type-ref-agent
+description: Extracts an invoice summary and returns it as an application domain type.
+instructions: >-
+  Read the invoice text provided by the user and extract the issuer, the total amount and
+  the due date. Leave a field empty when the document does not state it.
+output:
+  kind: type_ref
+  ref: myapp.domain.invoices:InvoiceSummary

@@ -1,0 +1,17 @@
+spec_version: 1
+name: minimal-agent
+description: Answers plain product questions and returns a short structured summary.
+instructions: >-
+  Answer the user question using only the information present in the conversation.
+  If the answer is not known, say so instead of guessing.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - answer
+    properties:
+      answer:
+        type: string
+        description: Short natural-language answer for the user.

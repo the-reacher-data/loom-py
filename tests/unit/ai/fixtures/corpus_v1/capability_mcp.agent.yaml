@@ -1,0 +1,30 @@
+spec_version: 1
+name: capability-mcp-agent
+description: Enriches tickets with context pulled from an external MCP knowledge server.
+instructions: >-
+  Search the knowledge server for material related to the ticket and summarise the two most
+  relevant documents. Cite the document title for every claim you make.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - summary
+    properties:
+      summary:
+        type: string
+      sources:
+        type: array
+        items:
+          type: string
+capabilities:
+  - kind: mcp
+    url: https://knowledge.example.com/mcp
+    tool_filter:
+      include:
+        - search_documents
+        - fetch_document
+      exclude:
+        - delete_document
+    headers_ref: knowledge_server_headers

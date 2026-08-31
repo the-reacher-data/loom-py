@@ -1,0 +1,21 @@
+spec_version: 1
+name: capability-skills-agent
+description: Drafts release notes using the shared writing and changelog skills.
+instructions: >-
+  Turn the list of merged changes into release notes grouped by feature, fix and breaking
+  change. Keep every entry to a single sentence.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - release_notes
+    properties:
+      release_notes:
+        type: string
+capabilities:
+  - kind: skills
+    refs:
+      - myapp.skills.writing:tone_of_voice
+      - myapp.skills.changelog:group_changes

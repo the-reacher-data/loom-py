@@ -1,0 +1,25 @@
+spec_version: 1
+name: capability-sql-agent
+description: Answers analytical questions over the read-only reporting warehouse.
+instructions: >-
+  Translate the question into a single read-only query, run it and explain the result in
+  plain language. Always state the time range the numbers cover.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - narrative
+    properties:
+      narrative:
+        type: string
+      rows:
+        type: array
+        items:
+          type: object
+capabilities:
+  - kind: sql
+    connection: reporting_readonly
+    max_rows: 500
+    max_result_bytes: 1048576
