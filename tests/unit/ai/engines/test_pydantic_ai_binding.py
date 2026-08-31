@@ -108,8 +108,7 @@ class TestEntryPoint:
         assert isinstance(provider, PydanticAIEngineProvider)
         assert PydanticAIEngineProvider.LOOM_AI_ENGINE_API == 1
 
-    def test_no_declara_capacidades_cuando_todavia_no_hay_toolsets(self) -> None:
-        """This delivery step serves pure-language agents only."""
-        from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
-
-        assert PydanticAIEngineProvider().supported_capability_kinds() == frozenset()
+    # The kinds this adapter declares are asserted by
+    # ``tests/integration/ai/test_capabilities.py::TestSupportedCapabilityKinds``,
+    # which supersedes the empty-set assertion that stood here while the
+    # capability toolsets did not exist yet.

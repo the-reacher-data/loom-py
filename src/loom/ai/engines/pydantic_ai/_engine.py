@@ -12,6 +12,12 @@ at this level. A stream retries only while it has emitted nothing — once a
 delta has reached the caller, replaying the run would duplicate the answer, so
 the failure is surfaced with its class and the caller decides.
 
+An agent holding a capability does not retry at all, for the same reason: by
+the time the provider fails, the model may already have invoked an application
+operation, and nothing about a granted use case is idempotent or keyed, so a
+replay would execute it again. Only a pure-language agent — which has no side
+effect to duplicate — keeps its retries.
+
 One resolved provider serves the agent, always: a failure is never re-routed to
 another vendor (FR-019a).
 """
@@ -158,6 +164,18 @@ class PydanticAIEngine:
         raise AssertionError("unreachable: the loop returns or raises on every attempt")
 
     def _may_retry(self, code: AgentRunErrorCode, attempt: int) -> bool:
+        """Report whether another attempt is allowed.
+
+        An agent holding a capability may already have invoked an application
+        operation during the failed attempt, and replaying the run would invoke
+        it a second time: nothing about a granted use case is idempotent or
+        keyed. So a capability-bearing agent surfaces the failure with its class
+        and lets the caller decide, exactly as a stream does once a delta has
+        reached the caller. A pure-language agent has no side effect to
+        duplicate and keeps its retries.
+        """
+        if self._plan.capabilities:
+            return False
         return is_retriable(code) and attempt + 1 < self._attempts
 
     def _record(self, code: AgentRunErrorCode | None) -> None:

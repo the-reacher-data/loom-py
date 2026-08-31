@@ -14,6 +14,7 @@ from pydantic_ai import Agent
 
 from loom.ai.abc import AgentEngine, DepsFactory
 from loom.ai.compiler import AgentPlan
+from loom.ai.engines.pydantic_ai._capabilities import build_toolsets
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec
@@ -66,18 +67,21 @@ class PydanticAIEngineProvider:
         if not isinstance(plan, AgentPlan):
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
         model = self._resolve_model(plan.inference)
-        agent = Agent.from_spec(build_agent_spec(plan), model=model, deps_type=object)
+        toolsets = build_toolsets(plan, container)
+        agent = Agent.from_spec(
+            build_agent_spec(plan), model=model, deps_type=object, toolsets=toolsets or None
+        )
         return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
 
     def supported_capability_kinds(self) -> frozenset[str]:
         """Capability kinds this adapter can serve.
 
-        Empty in this delivery step: the engine runs pure-language agents, and
-        the capability toolsets (``usecase``, ``sql``, ``mcp``, ``skills``,
-        ``python``, ``a2a``) are the next one. Returning the kinds before they
-        exist would compile a grant the engine cannot honour.
+        One entry per toolset :mod:`~loom.ai.engines.pydantic_ai._capabilities`
+        actually builds. ``a2a`` is deliberately absent: announcing a kind
+        before its toolset exists would compile a grant the engine cannot
+        honour, and the compiler refuses an unannounced kind instead.
 
         Returns:
             The supported ``kind`` identifiers.
         """
-        return frozenset()
+        return frozenset({"usecase", "sql", "mcp", "skills", "python"})

@@ -11,12 +11,35 @@ Structural kinds are dropped rather than turned into an ``error``: an
 ``part_end`` would fail a healthy run. Drift is caught instead by a coverage
 test that fails when pydantic-ai adds a kind this module has not been taught
 — explicit, and at test time rather than in production.
+
+Two translations carry a contract of their own.
+
+``tool_result.summary`` is built by loom from the structured facts a loom
+toolset publishes in ``metadata["loom"]``, and only from a closed list of
+shapes (FR-030b). A tool result is model-influenced content: were the summary
+read from the payload — or from a free-form string a tool supplied — a tool
+could dictate what every SSE consumer displays, and a large payload would be
+copied into every event. An unknown or absent shape degrades to ``"ok"``.
+
+The ``refused`` shape is the one that also flips ``ok``: a tripped bound or a
+contained failure must not read as a normal call in the stream. Its summary is
+the fixed word ``"refused"`` — carrying the reason would put tool-authored text
+back into the summary, which is exactly what FR-030b forbids.
+
+``tool_call.arguments`` is a decoded mapping, decoded exactly once here. The
+engine hands the raw argument string through unparsed when the model emits
+malformed JSON — ``ToolCallPart.args_as_dict()`` answers
+``{"INVALID_JSON": "<the raw string>"}`` rather than raising — so relaying it
+would leak the model's unparsed text to every consumer as if it were
+structured arguments. Malformed arguments therefore become ``{}``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
+import msgspec
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -25,6 +48,7 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     TextPart,
     TextPartDelta,
+    ToolCallPart,
 )
 
 from loom.ai.abc import AgentEvent, TextDeltaEvent, ToolCallEvent, ToolResultEvent
@@ -57,8 +81,15 @@ IGNORED_EVENT_KINDS: frozenset[str] = frozenset(
 )
 """Engine event kinds with no loom counterpart; carried by no consumer."""
 
-_TOOL_OK = "completed"
+_TOOL_OK = "ok"
 _TOOL_RETRY = "the model was asked to retry the call"
+_TOOL_REFUSED = "refused"
+
+_COUNTED_SHAPES: frozenset[str] = frozenset({"rows"})
+"""Shapes whose summary is a count and a unit; every other shape reads ``ok``."""
+
+_REFUSED_SHAPE = "refused"
+"""Shape a loom toolset publishes when it answers a refusal instead of data."""
 
 
 def _text_from_start(event: PartStartEvent) -> AgentEvent | None:
@@ -75,19 +106,51 @@ def _text_from_delta(event: PartDeltaEvent) -> AgentEvent | None:
     return None
 
 
+def _arguments(part: ToolCallPart) -> dict[str, Any]:
+    """Decode the call arguments once, never relaying an unparsed string."""
+    args = part.args
+    if isinstance(args, Mapping):
+        return dict(args)
+    if not isinstance(args, str | bytes):
+        return {}
+    try:
+        decoded = msgspec.json.decode(args)
+    except msgspec.DecodeError:
+        return {}
+    return dict(decoded) if isinstance(decoded, Mapping) else {}
+
+
 def _tool_call(event: FunctionToolCallEvent) -> AgentEvent:
     part = event.part
-    arguments: dict[str, Any] = part.args_as_dict() if part.args is not None else {}
-    return ToolCallEvent(tool=part.tool_name, call_id=part.tool_call_id, arguments=arguments)
+    return ToolCallEvent(tool=part.tool_name, call_id=part.tool_call_id, arguments=_arguments(part))
+
+
+def _facts(part: object) -> Mapping[str, Any]:
+    """Read the structured facts a loom toolset published, if any."""
+    metadata = getattr(part, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    facts = metadata.get("loom")
+    return facts if isinstance(facts, Mapping) else {}
+
+
+def _summary(part: object) -> str:
+    """Build the summary from the facts alone; never from the payload (FR-030b)."""
+    facts = _facts(part)
+    shape = facts.get("shape")
+    count = facts.get("n")
+    if shape in _COUNTED_SHAPES and isinstance(count, int):
+        return f"{count} {shape}"
+    return _TOOL_OK
 
 
 def _tool_result(event: FunctionToolResultEvent) -> AgentEvent:
     part = event.part
-    ok = not isinstance(part, RetryPromptPart)
-    # The summary never carries a byte of the payload (FR-030b).
-    return ToolResultEvent(
-        call_id=part.tool_call_id, ok=ok, summary=_TOOL_OK if ok else _TOOL_RETRY
-    )
+    if isinstance(part, RetryPromptPart):
+        return ToolResultEvent(call_id=part.tool_call_id, ok=False, summary=_TOOL_RETRY)
+    if _facts(part).get("shape") == _REFUSED_SHAPE:
+        return ToolResultEvent(call_id=part.tool_call_id, ok=False, summary=_TOOL_REFUSED)
+    return ToolResultEvent(call_id=part.tool_call_id, ok=True, summary=_summary(part))
 
 
 def translate(event: object) -> AgentEvent | None:
