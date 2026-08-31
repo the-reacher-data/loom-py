@@ -29,6 +29,7 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.identity import Identity
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
@@ -65,6 +66,10 @@ from loom.rest.fastapi.sql import (
 from loom.rest.middleware import TraceIdMiddleware
 
 if TYPE_CHECKING:
+    # Annotations only: the AI pillar and the ClickHouse extra are imported at
+    # run time solely by the branch that needs them.
+    from loom.ai.config import AiConfig
+    from loom.ai.runtime import AgentRuntime
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
@@ -460,6 +465,144 @@ class _RegistryExecutors(Mapping[str, SqlExecutor]):
 
 
 @dataclass(frozen=True)
+class _AgentDeps:
+    """Per-invocation dependency bundle handed to an agent capability call.
+
+    Args:
+        identity: Verified caller of the invocation.
+        container: Application container holding the singleton services.
+    """
+
+    identity: Identity
+    container: LoomContainer
+
+
+class _AgentDepsFactory:
+    """Builds the per-invocation dependencies of every agent capability call.
+
+    Structural implementation of ``loom.ai.abc.DepsFactory``: it lives in the
+    composition root, and depends only on ``loom.core``, so an application with
+    no ``ai:`` section never imports the AI pillar to obtain it (FR-050).
+    """
+
+    def build(self, identity: Identity, container: LoomContainer) -> object:
+        """Return the dependency bundle for one invocation.
+
+        Args:
+            identity: Verified caller of this invocation.
+            container: Application container holding the singleton services.
+
+        Returns:
+            The bundle the engine passes to its capability calls.
+        """
+        return _AgentDeps(identity=identity, container=container)
+
+
+@dataclass(frozen=True)
+class _AiWiring:
+    """Resolved AI pillar pieces for the auto-bootstrap REST app.
+
+    Args:
+        config: Parsed ``ai:`` section, or ``None`` when absent.
+        runtime: Agent runtime entered by the app lifespan alongside the SQL
+            registry, or ``None`` when no section is configured.
+    """
+
+    config: AiConfig | None
+    runtime: AgentRuntime | None
+
+
+def _resolve_ai(
+    ctx: ConfigContext,
+    *,
+    kernel: KernelRuntime,
+    sql_cfg: SqlConfig | None,
+    code_path: Path,
+) -> _AiWiring:
+    """Load the optional ``ai:`` section into its compiled agent runtime.
+
+    Absent section -> empty wiring, and the AI pillar is never imported.
+    Present section -> the configured engine is resolved, every declared
+    artifact is compiled offline, and the runtime is built without opening a
+    single connection: its live clients open inside the app lifespan.
+    """
+    if not ctx.has(ConfigKey.AI):
+        return _AiWiring(config=None, runtime=None)
+    # Local imports: the AI pillar is optional, and importing it from an
+    # application without an 'ai:' section would pull the whole agent layer
+    # into every Loom app (FR-050) — the same rule '_build_sql_registry'
+    # follows for the ClickHouse extra.
+    from loom.ai.compiler import AgentCompiler
+    from loom.ai.config import AiConfig
+    from loom.ai.declarative import load_specs
+    from loom.ai.registry import resolve_engine_provider
+    from loom.ai.runtime import AgentRuntime
+
+    ai_cfg = ctx.section(ConfigKey.AI, AiConfig)
+    provider = resolve_engine_provider(ai_cfg.engine)
+    compiler = AgentCompiler(
+        config=ai_cfg,
+        registry=kernel.registry,
+        supported_kinds=provider.supported_capability_kinds(),
+        sql=sql_cfg,
+    )
+    decoded = load_specs(ai_cfg.specs, root=code_path)
+    plans = compiler.compile_all([artifact.spec for artifact in decoded])
+    runtime = AgentRuntime(
+        plans=plans,
+        config=ai_cfg,
+        engine_provider=provider,
+        deps=_AgentDepsFactory(),
+        container=kernel.container,
+        sql_config=sql_cfg,
+    )
+    return _AiWiring(config=ai_cfg, runtime=runtime)
+
+
+def _bind_agent_surface(
+    app: FastAPI,
+    ai: _AiWiring,
+    auth: _AuthWiring,
+    observability_runtime: ObservabilityRuntime,
+) -> None:
+    """Mount the agent endpoints of every agent that opted into HTTP.
+
+    Raises:
+        ConfigError: When an agent opts in without a usable authenticator, or
+            when its callers are verified by a JWT without a validated ``aud``.
+    """
+    if ai.config is None or ai.runtime is None:
+        return
+    _validate_agent_endpoint_auth(ai.config, auth)
+    # Local import: same containment rule as '_resolve_ai'.
+    from loom.ai.fastapi.endpoints import bind_agent_endpoints
+
+    bind_agent_endpoints(
+        app,
+        runtime=ai.runtime,
+        config=ai.config,
+        authenticator=auth.authenticator,
+        observability_runtime=observability_runtime,
+    )
+
+
+def _validate_agent_endpoint_auth(ai_cfg: AiConfig, auth: _AuthWiring) -> None:
+    """Apply the JWT start-up gates to every agent bound to a verified caller (§4).
+
+    An agent surface is at least as privileged as a SQL one: the verified
+    caller drives every capability the agent holds, as that caller. So it must
+    not boot in a configuration the SQL surface already refuses.
+    """
+    if auth.jwt_config is None:
+        return
+    for name, endpoint in ai_cfg.endpoints.items():
+        # Same double opt-in 'bind_agent_endpoints' mounts on.
+        if not endpoint.enabled or not endpoint.auth.strip() or endpoint.allow_anonymous:
+            continue
+        _require_jwt_audience(f"Agent {name!r}", auth.jwt_config)
+
+
+@dataclass(frozen=True)
 class _AuthWiring:
     """Resolved authentication for the auto-bootstrap REST app.
 
@@ -580,7 +723,7 @@ def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
             continue
         authenticator = _require_authenticator(name, auth)
         if auth.jwt_config is not None:
-            _require_jwt_audience(name, auth.jwt_config)
+            _require_jwt_audience(f"SQL connection {name!r}", auth.jwt_config)
         _require_role_binding(name, connection.allowed_roles, authenticator)
         _require_authenticated_path(name, endpoint.path or f"/sql/{name}", auth.exclude_paths)
 
@@ -596,15 +739,22 @@ def _require_authenticator(name: str, auth: _AuthWiring) -> Authenticator:
     )
 
 
-def _require_jwt_audience(name: str, jwt_cfg: JwtAuthConfig) -> None:
-    """Binding roles to a token is void without a validated ``aud`` (§4)."""
+def _require_jwt_audience(subject: str, jwt_cfg: JwtAuthConfig) -> None:
+    """Binding an endpoint to a token is void without a validated ``aud`` (§4).
+
+    Args:
+        subject: What is being gated, already formatted for the message — for
+            example ``"SQL connection 'analytics'"`` or ``"Agent 'analyst'"``.
+        jwt_cfg: JWT settings of the application.
+    """
     if jwt_cfg.audience is not None:
         return
     raise ConfigError(
-        f"SQL connection {name!r}: the endpoint requires a verified caller but "
+        f"{subject}: the endpoint requires a verified caller but "
         "'app.rest.auth.jwt.audience' is not set. Without a validated 'aud' any "
         "token signed by the same key — including tokens minted for another "
-        "service — would be accepted and could carry the roles claim."
+        "service — would be accepted as that verified caller, with whatever "
+        "claims it carries."
     )
 
 
@@ -945,6 +1095,7 @@ def create_app(
     )
     _configure_job_service(ctx, result, observability_runtime)
     _register_sql_service(result.container, sql.service)
+    ai = _resolve_ai(ctx, kernel=result, sql_cfg=sql.config, code_path=effective_code_path)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -953,6 +1104,8 @@ def create_app(
             # persistence lifespan fails to start or to shut down.
             if sql.registry is not None:
                 await stack.enter_async_context(sql.registry)
+            if ai.runtime is not None:
+                await stack.enter_async_context(ai.runtime)
             await stack.enter_async_context(wiring.lifespan_init())
             yield
 
@@ -978,6 +1131,7 @@ def create_app(
             observability_runtime=observability_runtime,
         )
         _warn_sql_endpoints(sql.config, auth)
+    _bind_agent_surface(app, ai, auth, observability_runtime)
     # Last: every route the application will ever serve is registered by now,
     # which is what makes the exclusion check meaningful.
     verify_exclusion_paths(app, auth.exclude_paths)

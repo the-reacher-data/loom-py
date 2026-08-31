@@ -24,6 +24,7 @@ from loom.ai.abc import (
 )
 from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
 from loom.ai.inference import InferenceTarget
+from loom.ai.runtime import AgentHealth, AgentRunError, AgentRuntime
 
 __all__ = [
     "A2AConfig",
@@ -31,7 +32,10 @@ __all__ = [
     "AgentEngine",
     "AgentEngineProvider",
     "AgentEvent",
+    "AgentHealth",
     "AgentResult",
+    "AgentRunError",
+    "AgentRuntime",
     "AgentUsage",
     "AiConfig",
     "DepsFactory",

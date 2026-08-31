@@ -132,7 +132,9 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         skills_root: Package root for ``kind: skills`` capabilities.
         a2a: A2A exposure; absent means no card and no A2A endpoints (FR-041).
         endpoints: Per-agent HTTP opt-in (FR-029a).
-        startup_timeout_ms: Per live client while opening them concurrently.
+        startup_timeout_ms: Total budget of start-up: opening every live
+            client concurrently and validating the declared tool filters
+            share one deadline, whatever the number of servers.
         max_concurrent_runs: Per-worker run limit (FR-033a).
         max_prompt_bytes: Enforced while reading the request body.
         health_cache_ttl_ms: Refresh period of the health probe.
