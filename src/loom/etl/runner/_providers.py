@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from importlib.metadata import EntryPoint, entry_points
+from importlib.metadata import EntryPoint
 from typing import Any, Protocol, cast, runtime_checkable
 
+from loom.core.plugins.entrypoints import select_entry_point
 from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import LineageWriter
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
@@ -61,21 +62,13 @@ def load_backend_provider(engine: str) -> BackendProvider:
 
 
 def _find_backend_entrypoint(engine: str) -> EntryPoint:
-    for ep in _iter_backend_entrypoints():
-        if ep.name == engine:
-            return ep
+    ep = select_entry_point(_BACKEND_EP_GROUP, engine, on_duplicate="warn_first")
+    if ep is not None:
+        return ep
     raise ValueError(
         f"Unsupported storage.engine={engine!r}. "
         f"No backend provider registered in entry point group '{_BACKEND_EP_GROUP}'."
     )
-
-
-def _iter_backend_entrypoints() -> tuple[EntryPoint, ...]:
-    eps = entry_points()
-    if hasattr(eps, "select"):
-        return tuple(eps.select(group=_BACKEND_EP_GROUP))
-    legacy = eps.get(_BACKEND_EP_GROUP, ())
-    return tuple(legacy)
 
 
 __all__ = ["BackendProvider", "load_backend_provider"]

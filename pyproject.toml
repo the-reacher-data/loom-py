@@ -260,6 +260,7 @@ minversion = "8.0"
 testpaths = [
     "tests/unit",
     "tests/integration",
+    "tests/contract",
 ]
 pythonpath = [
     "src",

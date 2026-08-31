@@ -49,6 +49,10 @@ class Scope(StrEnum):
     POLL_CYCLE = "poll_cycle"
     BATCH_COLLECT = "batch_collect"
 
+    # AI agent hierarchy
+    AGENT = "agent"
+    TOOL = "tool"
+
     # I/O operations
     TRANSPORT = "transport"
     READ = "read"
