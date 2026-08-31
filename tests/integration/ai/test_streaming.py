@@ -14,10 +14,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import loom.ai.fastapi.streaming as streaming_module
 import pytest
-from loom.ai.fastapi.streaming import HEARTBEAT_FRAME, encode_sse_event, stream_sse
 
+import loom.ai.fastapi.streaming as streaming_module
 from loom.ai.abc import (
     AgentEvent,
     AgentUsage,
@@ -28,6 +27,7 @@ from loom.ai.abc import (
     ToolResultEvent,
 )
 from loom.ai.errors import AgentRunErrorCode
+from loom.ai.fastapi.streaming import HEARTBEAT_FRAME, encode_sse_event, stream_sse
 from loom.core.identity import Identity
 from tests.integration.ai.conftest import DEFAULT_USAGE, ScriptedEngine
 

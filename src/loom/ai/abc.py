@@ -167,6 +167,11 @@ class AgentEngine(Protocol):
         ...
 
 
+HealthState = Literal["ok", "degraded", "unavailable"]
+"""The three health states. Defined beside the struct that carries it so the alias
+and the field cannot drift apart."""
+
+
 class HealthStatus(LoomFrozenStruct, frozen=True, kw_only=True):
     """Health of one agent engine, shared by every engine (FR-048).
 
@@ -175,7 +180,7 @@ class HealthStatus(LoomFrozenStruct, frozen=True, kw_only=True):
         detail: Optional human-readable explanation.
     """
 
-    status: Literal["ok", "degraded", "unavailable"]
+    status: HealthState
     detail: str | None = None
 
 

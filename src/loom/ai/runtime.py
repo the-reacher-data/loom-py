@@ -31,7 +31,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
-from typing import Any, Literal, Protocol, Self, TypeVar
+from typing import Any, Protocol, Self, TypeVar
 from urllib.parse import urlparse
 
 from loom.ai.abc import (
@@ -42,6 +42,7 @@ from loom.ai.abc import (
     DepsFactory,
     ErrorEvent,
     FinalEvent,
+    HealthState,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -72,7 +73,6 @@ _logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-HealthState = Literal["ok", "degraded", "unavailable"]
 """Aggregate health vocabulary shared with the HTTP contract."""
 
 # Worst-first ordering: the aggregate of several dependencies is the worst of
