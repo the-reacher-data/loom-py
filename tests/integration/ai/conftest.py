@@ -35,7 +35,7 @@ from loom.ai.compiler._plan import (
     CompiledOutput,
     CompiledSqlCapability,
 )
-from loom.ai.config import AgentEndpointConfig, AiConfig
+from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
 from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -422,6 +422,7 @@ def make_sql_config(connection: str = "reporting", *, readonly: bool = True) -> 
 def make_ai_config(
     *,
     endpoints: Mapping[str, AgentEndpointConfig] | None = None,
+    a2a: A2AConfig | None = None,
     startup_timeout_ms: int = 500,
     max_concurrent_runs: int = 8,
     max_prompt_bytes: int = 65536,
@@ -433,6 +434,7 @@ def make_ai_config(
         specs=("agents/*.agent.yaml",),
         models={"default": InferenceTarget(provider="fake", model="fake-model")},
         endpoints=dict(endpoints or {}),
+        a2a=a2a,
         startup_timeout_ms=startup_timeout_ms,
         max_concurrent_runs=max_concurrent_runs,
         max_prompt_bytes=max_prompt_bytes,

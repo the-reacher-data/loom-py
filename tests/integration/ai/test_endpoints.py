@@ -26,10 +26,12 @@ import pytest
 import yaml
 from fastapi import FastAPI
 
+from loom.ai.a2a.card import card_path
+from loom.ai.a2a.server import bind_a2a_endpoints
 from loom.ai.abc import AgentEvent, ErrorEvent, FinalEvent, TextDeltaEvent
 from loom.ai.compiler._plan import AgentPlan
-from loom.ai.config import AgentEndpointConfig
-from loom.ai.errors import AgentRunErrorCode
+from loom.ai.config import A2AConfig, AgentEndpointConfig
+from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
 from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
@@ -37,6 +39,7 @@ from loom.core.di import LoomContainer
 from loom.core.identity import Identity, reset_identity, set_identity
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
@@ -852,3 +855,78 @@ def test_no_importa_loom_ai_cuando_la_config_no_tiene_seccion_ai(tmp_path: Path)
     )
 
     assert result.returncode == 0, result.stderr
+
+
+_A2A_PREFIX = "/a2a"
+_A2A_BASE_URL = "https://api.example.com"
+
+
+class TestExclusionesDeAutenticacion:
+    """Only the card may be excluded from authentication (T141, FR-041b)."""
+
+    @staticmethod
+    async def _bind(
+        *,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        exclude_paths: Sequence[str],
+    ) -> None:
+        """Bind the A2A surface of one agent with the given exclusion list."""
+        config = make_ai_config(
+            endpoints={_AGENT: make_endpoint()},
+            a2a=A2AConfig(base_url=_A2A_BASE_URL, expose=(_AGENT,)),
+        )
+        plans = [make_plan(_AGENT)]
+        runtime = AgentRuntime(
+            plans=plans,
+            config=config,
+            engine_provider=CountingEngineProvider(),  # type: ignore[arg-type]
+            deps=deps,
+            container=container,
+        )
+        async with runtime:
+            app = FastAPI()
+            app.add_middleware(
+                AuthenticationMiddleware,
+                authenticator=StubAuthenticator(),  # type: ignore[arg-type]
+                exclude_paths=tuple(exclude_paths),
+            )
+            bind_a2a_endpoints(
+                app,
+                runtime=runtime,
+                config=config,
+                plans=plans,
+                authenticator=StubAuthenticator(),  # type: ignore[arg-type]
+                exclude_paths=tuple(exclude_paths),
+                prefix=_A2A_PREFIX,
+            )
+
+    @pytest.mark.parametrize(
+        "excluded",
+        [_A2A_PREFIX, f"{_A2A_PREFIX}/{_AGENT}", _PREFIX, f"{_PREFIX}/{_AGENT}/run"],
+    )
+    async def test_falla_al_arrancar_cuando_la_exclusion_cubre_una_invocacion(
+        self, deps: StubDepsFactory, container: LoomContainer, excluded: str
+    ) -> None:
+        """Any exclusion under the A2A or agents prefix other than a card aborts start-up."""
+        with pytest.raises(AgentCompilationError) as raised:
+            await self._bind(deps=deps, container=container, exclude_paths=(excluded,))
+
+        assert raised.value.issues[0].code is AgentErrorCode.AUTH_EXCLUSION_OVERLAPS_AGENTS
+        assert excluded in raised.value.issues[0].message
+
+    async def test_arranca_cuando_la_unica_exclusion_es_la_card(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """The card path is the one exclusion this surface accepts."""
+        await self._bind(
+            deps=deps,
+            container=container,
+            exclude_paths=(card_path(_AGENT, prefix=_A2A_PREFIX),),
+        )
+
+    async def test_arranca_cuando_la_exclusion_no_toca_los_agentes(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Exclusions outside both prefixes are none of this surface's business."""
+        await self._bind(deps=deps, container=container, exclude_paths=("/health", "/docs"))

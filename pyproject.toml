@@ -112,6 +112,10 @@ ai-openai = [
 ai-anthropic = [
     "pydantic-ai-slim[anthropic]>=2,<3",
 ]
+ai-a2a = [
+    "fasta2a>=0.6,<1",
+    "a2a-sdk>=1.1,<2",
+]
 celery = [
     "celery>=5.3,<6.0",
     "kombu>=5.3,<6.0",
@@ -177,6 +181,8 @@ dev = [
     "types-pyyaml>=6.0.12.20260724",
     "jsonschema>=4.26.0",
     "pydantic-ai-slim[anthropic,bedrock,openai]>=2,<3",
+    "fasta2a>=0.6,<1",
+    "a2a-sdk>=1.1,<2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -260,6 +266,15 @@ module = [
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
+
+# 'fasta2a' ships no py.typed marker, but its 'schema' module is the A2A wire
+# contract used by 'loom.ai.a2a.server': following it keeps those TypedDicts
+# type-checked instead of degrading them to Any.
+[[tool.mypy.overrides]]
+module = [
+    "fasta2a.*",
+]
+follow_untyped_imports = true
 
 [[tool.mypy.overrides]]
 module = [
