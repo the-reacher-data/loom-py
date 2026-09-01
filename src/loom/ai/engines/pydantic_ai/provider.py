@@ -14,7 +14,7 @@ from pydantic_ai import Agent
 
 from loom.ai.abc import AgentEngine, DepsFactory
 from loom.ai.compiler import AgentPlan
-from loom.ai.engines.pydantic_ai._capabilities import build_toolsets
+from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_toolsets
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec
@@ -68,18 +68,26 @@ class PydanticAIEngineProvider:
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
         model = self._resolve_model(plan.inference)
         toolsets = build_toolsets(plan, container)
+        capabilities = build_capabilities(plan)
         agent = Agent.from_spec(
-            build_agent_spec(plan), model=model, deps_type=object, toolsets=toolsets or None
+            build_agent_spec(plan),
+            model=model,
+            deps_type=object,
+            toolsets=toolsets or None,
+            capabilities=capabilities or None,
         )
         return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
 
     def supported_capability_kinds(self) -> frozenset[str]:
         """Capability kinds this adapter can serve.
 
-        One entry per toolset :mod:`~loom.ai.engines.pydantic_ai._capabilities`
-        actually builds. ``a2a`` is deliberately absent: announcing a kind
-        before its toolset exists would compile a grant the engine cannot
-        honour, and the compiler refuses an unannounced kind instead.
+        One entry per grant :mod:`~loom.ai.engines.pydantic_ai._capabilities`
+        can actually serve. ``skills`` produces no toolset: it becomes a
+        deferred harness capability instead, built by
+        :func:`~loom.ai.engines.pydantic_ai._capabilities.build_capabilities`.
+        ``a2a`` is deliberately absent: announcing a kind the engine cannot
+        honour would compile a grant with no implementation, and the compiler
+        refuses an unannounced kind instead.
 
         Returns:
             The supported ``kind`` identifiers.

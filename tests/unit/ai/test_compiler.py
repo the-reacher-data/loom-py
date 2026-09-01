@@ -18,7 +18,12 @@ from pathlib import Path
 import msgspec
 import pytest
 
-from loom.ai.compiler import AgentCompilationError, AgentCompiler, AgentPlan
+from loom.ai.compiler import (
+    AgentCompilationError,
+    AgentCompiler,
+    AgentPlan,
+    CompiledSkillsCapability,
+)
 from loom.ai.config import AiConfig
 from loom.ai.declarative import (
     AgentSpecV1,
@@ -32,6 +37,8 @@ from loom.ai.declarative import (
 from loom.ai.errors import AgentErrorCode
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
+
+from .conftest import CORPUS_PATTERN
 
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
 
@@ -161,10 +168,20 @@ class TestCorpus:
     def test_compile_all_returns_one_plan_per_artifact_when_corpus_is_valid(
         self, compiler: AgentCompiler
     ) -> None:
-        decoded = load_specs(["*.agent.yaml"], root=CORPUS_DIR)
+        decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
         assert len(decoded) == 9
-        plans = compiler.compile_all([item.spec for item in decoded])
+        plans = compiler.compile_all(decoded)
         assert len(plans) == 9
+
+    def test_compile_all_resolves_local_skill_libraries_when_specs_keep_their_path(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """A ``./`` library resolves beside the artifact, so the path must survive."""
+        decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
+        plans = {plan.name: plan for plan in compiler.compile_all(decoded)}
+        capability = _capability_of_kind(plans["capability-skills-agent"], "skills")
+        assert isinstance(capability, CompiledSkillsCapability)
+        assert Path(capability.directory).is_dir()
 
 
 def _flat_field_values(struct: object) -> list[object]:

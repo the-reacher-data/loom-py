@@ -5,12 +5,11 @@ every pattern, default, minimum and maximum comes from the constants in
 :mod:`loom.ai.declarative._v1`, so the schema cannot drift from the structs it
 describes.
 
-Two places where the emitted document is deliberately ahead of the committed
-``contracts/agent-spec-v1.schema.json`` file:
-
-* ``$defs.policies`` carries ``run_timeout_ms`` (FR-033a).
-* the ``sql`` capability requires ``max_rows`` and ``max_result_bytes``
-  (FR-046b), because an unbounded query is not representable.
+The emitted document is byte-for-byte the committed
+``contracts/agent-spec-v1.schema.json`` file, and a test asserts it: the
+contract is published to generators and editors, so a drift between the schema
+they validate against and the structs loom decodes with would only surface as a
+decoding failure at deploy time.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from ._v1 import (
     RUN_TIMEOUT_MS_DEFAULT,
     RUN_TIMEOUT_MS_MAX,
     RUN_TIMEOUT_MS_MIN,
+    SKILLS_LIBRARY_PATTERN,
     SPEC_VERSION_V1,
     SYMBOL_REF_PATTERN,
     TOOL_TIMEOUT_MS_DEFAULT,
@@ -163,22 +163,44 @@ def _v1_sql_capability() -> dict[str, Any]:
     }
 
 
+def _v1_name_filter() -> dict[str, Any]:
+    """Flat include/exclude properties shared by mcp, skills and a2a."""
+    return {
+        "include": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+            "description": "Names or glob patterns to expose. Empty means all.",
+        },
+        "exclude": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+            "description": "Names or glob patterns to omit.",
+        },
+    }
+
+
 def _v1_mcp_capability() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["kind", "url"],
+        "required": ["kind", "server"],
         "properties": {
-            "kind": {"const": "mcp"},
-            "url": {"type": "string", "format": "uri"},
-            "tool_filter": {"$ref": "#/$defs/tool_filter"},
-            "headers_ref": {
+            "kind": {
+                "const": "mcp",
+                "description": "Tools from a named remote tool server.",
+            },
+            "server": {
                 "type": "string",
+                "minLength": 1,
                 "description": (
-                    "Reference to headers resolved from deployment configuration. "
-                    "Never inline credentials."
+                    "Named remote tool server, resolved from ai.mcp_servers in "
+                    "deployment configuration. The artifact names the server; the "
+                    "deployment knows where it is and how to authenticate to it."
                 ),
             },
+            **_v1_name_filter(),
         },
     }
 
@@ -187,18 +209,23 @@ def _v1_skills_capability() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["kind", "refs"],
+        "required": ["kind", "library"],
         "properties": {
-            "kind": {"const": "skills"},
-            "refs": {
-                "type": "array",
-                "minItems": 1,
-                "items": {"type": "string", "pattern": SYMBOL_REF_PATTERN},
+            "kind": {
+                "const": "skills",
+                "description": "Packaged prompt material from a skill library.",
+            },
+            "library": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": SKILLS_LIBRARY_PATTERN,
                 "description": (
-                    "Package references relative to skills_root. "
-                    "Absolute filesystem paths are not representable."
+                    "Skill library. './name' resolves beside this artifact and travels "
+                    "with it; a bare name resolves against ai.skills_root. '..' is not "
+                    "representable, so a library can never escape its own directory."
                 ),
             },
+            **_v1_name_filter(),
         },
     }
 
@@ -226,15 +253,20 @@ def _v1_a2a_capability() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["kind", "url"],
+        "required": ["kind", "agent"],
         "properties": {
-            "kind": {"const": "a2a"},
-            "url": {
-                "type": "string",
-                "format": "uri",
-                "description": "Remote A2A agent to delegate to.",
+            "kind": {
+                "const": "a2a",
+                "description": "Delegation to a named remote agent.",
             },
-            "skills": {"type": "array", "items": {"type": "string"}},
+            "agent": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Named remote agent, resolved from ai.a2a_agents in deployment configuration."
+                ),
+            },
+            **_v1_name_filter(),
         },
     }
 
@@ -251,14 +283,6 @@ def _v1_defs() -> dict[str, Any]:
                 _v1_python_capability(),
                 _v1_a2a_capability(),
             ]
-        },
-        "tool_filter": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "include": {"type": "array", "items": {"type": "string"}, "default": []},
-                "exclude": {"type": "array", "items": {"type": "string"}, "default": []},
-            },
         },
         "policies": {
             "type": "object",

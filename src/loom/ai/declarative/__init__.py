@@ -40,7 +40,6 @@ from ._v1 import (
     PythonCapability,
     SkillsCapability,
     SqlCapability,
-    ToolFilter,
     TypeRefOutput,
     UsecaseCapability,
 )
@@ -60,7 +59,6 @@ __all__ = [
     "PythonCapability",
     "SkillsCapability",
     "SqlCapability",
-    "ToolFilter",
     "TypeRefOutput",
     "UsecaseCapability",
     "agent_spec_json_schema",

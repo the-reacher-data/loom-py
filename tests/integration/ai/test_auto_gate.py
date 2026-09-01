@@ -115,13 +115,18 @@ def _write_project(
     endpoint: dict[str, Any],
     jwt_section: dict[str, Any],
 ) -> str:
-    """Write the fixture app, one agent spec and the YAML config; return its path."""
+    """Write the fixture app, one agent spec and the YAML config; return its path.
+
+    The spec lives at ``ai/agents/<name>/agent.yaml``: one directory per agent,
+    which is the layout ``ai.specs`` globs and where a skill library sits next
+    to the artifact that grants it.
+    """
     (tmp_path / f"{_APP_MODULE}.py").write_text(_APP_SOURCE, encoding="utf-8")
     secret_path = tmp_path / "hs.key"
     secret_path.write_text("integration-test-secret", encoding="utf-8")
-    agents = tmp_path / "agents"
-    agents.mkdir()
-    (agents / f"{_AGENT}.agent.yaml").write_text(yaml.safe_dump(_AGENT_SPEC), encoding="utf-8")
+    agent_dir = tmp_path / "ai" / "agents" / _AGENT
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "agent.yaml").write_text(yaml.safe_dump(_AGENT_SPEC), encoding="utf-8")
     config: dict[str, Any] = {
         "app": {
             "name": "aigate-demo",
@@ -135,7 +140,7 @@ def _write_project(
         "database": {"url": "sqlite+aiosqlite:///"},
         "ai": {
             "engine": _ENGINE_NAME,
-            "specs": ["agents/*.agent.yaml"],
+            "specs": ["ai/agents/*/agent.yaml"],
             "models": {"default": {"provider": "fake", "model": "fake-model"}},
             "endpoints": {_AGENT: endpoint},
         },

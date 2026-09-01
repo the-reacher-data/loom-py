@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import msgspec
@@ -37,12 +38,15 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
+from pydantic_ai_harness import Skills
 
 from loom.ai.abc import AgentEngine, ToolResultEvent
 from loom.ai.compiler._plan import (
     CompiledMcpCapability,
     CompiledPythonCapability,
+    CompiledSkillsCapability,
     CompiledSqlCapability,
     CompiledUsecaseCapability,
 )
@@ -705,6 +709,118 @@ class TestSupportedCapabilityKinds:
 
 
 # ---------------------------------------------------------------------------
+# skills — a harness capability, not a toolset
+# ---------------------------------------------------------------------------
+
+
+SKILL_LIBRARY = {
+    "pricing": "How to price a product from the published list.",
+    "forecast": "How to forecast demand from the last four quarters.",
+    "auditing": "How to reconcile a ledger.",
+}
+"""Skill name to description of the on-disk library these tests write."""
+
+
+def write_skill_library(root: Path) -> str:
+    """Write a real skill library — one directory with a ``SKILL.md`` each.
+
+    Args:
+        root: Directory the library is written under.
+
+    Returns:
+        The absolute path a compiled grant would carry.
+    """
+    library = root / "skills"
+    for name, description in SKILL_LIBRARY.items():
+        skill = library / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n\nDo the work.\n",
+            encoding="utf-8",
+        )
+    return str(library)
+
+
+def skills_capability(directory: str, *names: str) -> CompiledSkillsCapability:
+    """Build the grant the compiler produces: a directory and exact names."""
+    return CompiledSkillsCapability(library="./skills", directory=directory, names=names)
+
+
+class TestSkillsCapability:
+    """``skills`` becomes a deferred harness capability (FR-042)."""
+
+    def test_construye_una_capability_por_libreria_cuando_el_plan_concede_skills(
+        self, tmp_path: Path
+    ) -> None:
+        """One ``Skills`` per grant, pointed at the directory the compiler resolved."""
+        directory = write_skill_library(tmp_path)
+        plan = make_plan(capabilities=(skills_capability(directory, "pricing", "forecast"),))
+
+        capabilities = _capabilities.build_capabilities(plan)
+
+        assert len(capabilities) == 1
+        skills = capabilities[0]
+        assert isinstance(skills, Skills)
+        assert skills.directories == (directory,)
+
+    def test_concede_solo_los_nombres_seleccionados_cuando_el_artefacto_filtra(
+        self, tmp_path: Path
+    ) -> None:
+        """The compiler already resolved the globs, so a subset reaches the harness."""
+        directory = write_skill_library(tmp_path)
+        plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
+
+        skills = _capabilities.build_capabilities(plan)[0]
+
+        assert isinstance(skills, Skills)
+        assert skills.include == frozenset({"pricing"})
+
+    def test_falla_cuando_un_nombre_concedido_no_existe_en_la_libreria(
+        self, tmp_path: Path
+    ) -> None:
+        """The harness reads the real directory: an unknown name cannot be granted."""
+        directory = write_skill_library(tmp_path)
+        plan = make_plan(capabilities=(skills_capability(directory, "pricing", "invented"),))
+
+        with pytest.raises(ValueError, match="invented"):
+            _capabilities.build_capabilities(plan)
+
+    def test_no_construye_ningun_toolset_cuando_la_capacidad_es_skills(
+        self, tmp_path: Path, app_container: LoomContainer
+    ) -> None:
+        """A skill is prompt material: it publishes no tool to guard."""
+        directory = write_skill_library(tmp_path)
+        plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
+
+        assert _capabilities.build_toolsets(plan, app_container) == ()
+
+    def test_no_construye_capabilities_cuando_el_plan_no_concede_skills(
+        self,
+    ) -> None:
+        """A plan without a library asks nothing of the optional harness."""
+        plan = make_plan(capabilities=(sql_capability(),))
+
+        assert _capabilities.build_capabilities(plan) == ()
+
+    async def test_el_agente_responde_cuando_el_plan_concede_una_libreria(
+        self, tmp_path: Path, app_container: LoomContainer
+    ) -> None:
+        """The provider hands the harness capability to the agent and the run works."""
+        directory = write_skill_library(tmp_path)
+        model = ScriptedToolModel(calls=())
+        engine = build_engine(
+            capabilities=(skills_capability(directory, "pricing"),),
+            model=model,
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        result = await engine.run("hello", identity=ANALYST)
+
+        assert result.output == {"answer": "42"}
+
+
+# ---------------------------------------------------------------------------
 # Contained application failures (security review, FIX 1 and FIX 2)
 # ---------------------------------------------------------------------------
 
@@ -931,6 +1047,28 @@ def stub_mcp_server(calls: list[str]) -> Callable[[CompiledMcpCapability], Abstr
     return _server
 
 
+def stub_mcp_catalogue(*tool_names: str) -> Callable[[CompiledMcpCapability], AbstractToolset[Any]]:
+    """Stand in for an MCP server offering ``tool_names`` and nothing else."""
+
+    def _named_tool(name: str) -> Tool[Any]:
+        async def call() -> str:
+            return "ok"
+
+        return Tool.from_schema(
+            call,
+            name=name,
+            description=f"Remote tool {name}.",
+            json_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            takes_ctx=False,
+        )
+
+    def _server(capability: CompiledMcpCapability) -> AbstractToolset[Any]:
+        del capability
+        return FunctionToolset([_named_tool(name) for name in tool_names])
+
+    return _server
+
+
 def signalling_capability(signal: Exception) -> CompiledPythonCapability:
     """Build a ``python`` grant whose tool raises one engine control signal."""
 
@@ -1110,7 +1248,7 @@ class TestForeignToolsetsAreGuarded:
         monkeypatch.setattr(_capabilities, "_mcp_server", stub_mcp_server(calls))
         model = ScriptedToolModel(calls=(("remote_ping", {}),))
         engine = build_engine(
-            capabilities=(CompiledMcpCapability(url="https://tools.internal/mcp"),),
+            capabilities=(CompiledMcpCapability(server="tools", url="https://tools.internal/mcp"),),
             model=model,
             container=app_container,
             deps=CapabilityDepsFactory(),
@@ -1129,7 +1267,7 @@ class TestForeignToolsetsAreGuarded:
         monkeypatch.setattr(_capabilities, "_mcp_server", stub_mcp_server(calls))
         model = ScriptedToolModel(calls=(("remote_ping", {}),))
         engine = build_engine(
-            capabilities=(CompiledMcpCapability(url="https://tools.internal/mcp"),),
+            capabilities=(CompiledMcpCapability(server="tools", url="https://tools.internal/mcp"),),
             model=model,
             container=app_container,
             deps=CapabilityDepsFactory(),
@@ -1138,6 +1276,84 @@ class TestForeignToolsetsAreGuarded:
         await engine.run("hello", identity=ANALYST)
 
         assert calls == ["remote_ping"]
+
+
+class TestMcpToolFilter:
+    """The artifact's ``include``/``exclude`` are globs, applied at build (FR-025)."""
+
+    async def test_ofrece_solo_la_familia_incluida_cuando_el_include_es_un_glob(
+        self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``search_*`` selects a family of tools, not a literal name."""
+        monkeypatch.setattr(
+            _capabilities,
+            "_mcp_server",
+            stub_mcp_catalogue("search_web", "search_docs", "delete_index"),
+        )
+        model = ScriptedToolModel(calls=(("search_web", {}),))
+        engine = build_engine(
+            capabilities=(
+                CompiledMcpCapability(
+                    server="tools",
+                    url="https://tools.internal/mcp",
+                    include=("search_*",),
+                ),
+            ),
+            model=model,
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        await engine.run("hello", identity=ANALYST)
+
+        assert sorted(model.offered_tools) == ["search_docs", "search_web"]
+
+    async def test_el_exclude_gana_sobre_el_include_cuando_ambos_casan(
+        self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``exclude`` is applied after ``include``, so an admitted tool can still go."""
+        monkeypatch.setattr(
+            _capabilities,
+            "_mcp_server",
+            stub_mcp_catalogue("search_web", "search_admin", "delete_index"),
+        )
+        model = ScriptedToolModel(calls=(("search_web", {}),))
+        engine = build_engine(
+            capabilities=(
+                CompiledMcpCapability(
+                    server="tools",
+                    url="https://tools.internal/mcp",
+                    include=("search_*",),
+                    exclude=("*_admin",),
+                ),
+            ),
+            model=model,
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        await engine.run("hello", identity=ANALYST)
+
+        assert model.offered_tools == ("search_web",)
+
+    async def test_ofrece_todo_lo_que_el_servidor_expone_cuando_no_hay_filtro(
+        self, app_container: LoomContainer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No filter grants the whole surface: an empty ``include`` means all."""
+        monkeypatch.setattr(
+            _capabilities, "_mcp_server", stub_mcp_catalogue("search_web", "delete_index")
+        )
+        model = ScriptedToolModel(calls=(("search_web", {}),))
+        engine = build_engine(
+            capabilities=(CompiledMcpCapability(server="tools", url="https://tools.internal/mcp"),),
+            model=model,
+            container=app_container,
+            deps=CapabilityDepsFactory(),
+        )
+
+        await engine.run("hello", identity=ANALYST)
+
+        assert sorted(model.offered_tools) == ["delete_index", "search_web"]
 
 
 # ---------------------------------------------------------------------------

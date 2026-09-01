@@ -20,6 +20,8 @@ import pytest
 from loom.ai.declarative import AgentSpecV1, DecodedSpec, decode_spec
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 
+_ARTIFACT_PATH = "ai/agents/support-triage/agent.yaml"
+
 _OUTPUT_JSON_SCHEMA: dict[str, Any] = {
     "kind": "json_schema",
     "schema": {"type": "object", "properties": {"answer": {"type": "string"}}},
@@ -160,3 +162,28 @@ def test_decode_spec_deja_capabilities_vacias_cuando_no_se_declaran() -> None:
     decoded = _decode_valid()
 
     assert decoded.spec.capabilities == ()
+
+
+def test_decode_spec_conserva_el_source_path_cuando_el_origen_es_un_fichero() -> None:
+    """A ``./`` skill library resolves against this path, so it must survive decoding."""
+    decoded = decode_spec(_encode(_valid_payload()), source=_ARTIFACT_PATH)
+
+    assert decoded.source_path == _ARTIFACT_PATH
+
+
+def test_decode_spec_deja_source_path_en_none_cuando_se_decodifica_desde_bytes() -> None:
+    """Bytes have no file behind them, so no ``./`` library can be anchored to them."""
+    decoded = _decode_valid()
+
+    assert decoded.source_path is None
+
+
+def test_decode_spec_apunta_las_incidencias_al_origen_cuando_se_declara_un_fichero() -> None:
+    """The declared origin is also what every issue points at as its component."""
+    payload = _valid_payload()
+    payload["engine"] = "pydantic-ai"
+
+    with pytest.raises(AgentCompilationError) as exc:
+        decode_spec(_encode(payload), source=_ARTIFACT_PATH)
+
+    assert [issue.component for issue in exc.value.issues] == [_ARTIFACT_PATH]

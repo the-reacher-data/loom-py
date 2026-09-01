@@ -61,7 +61,7 @@ def _spec() -> AgentSpecV1:
 
 def _config(target: InferenceTarget) -> AiConfig:
     return AiConfig(
-        engine="pydantic-ai", specs=("agents/*.agent.yaml",), models={"default": target}
+        engine="pydantic-ai", specs=("ai/agents/*/agent.yaml",), models={"default": target}
     )
 
 
@@ -170,7 +170,7 @@ class TestRuntimeWiring:
         )
         config = _AiConfig(
             engine="pydantic-ai",
-            specs=("agents/*.agent.yaml",),
+            specs=("ai/agents/*/agent.yaml",),
             models={"default": _TARGETS["openai"]},
         )
         runtime = AgentRuntime(

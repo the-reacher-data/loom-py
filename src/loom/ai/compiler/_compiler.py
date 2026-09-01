@@ -18,7 +18,7 @@ from loom.ai.compiler.phases._limits import validate_policies
 from loom.ai.compiler.phases._model_role import resolve_model_role
 from loom.ai.compiler.phases._output import compile_output
 from loom.ai.config import AiConfig
-from loom.ai.declarative import AgentSpecV1
+from loom.ai.declarative import AgentSpecV1, DecodedSpec
 from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
@@ -83,7 +83,7 @@ class AgentCompiler:
             raise AgentCompilationError(issues)
         return plan
 
-    def compile_all(self, specs: Sequence[AgentSpecV1]) -> tuple[AgentPlan, ...]:
+    def compile_all(self, specs: Sequence[AgentSpecV1 | DecodedSpec]) -> tuple[AgentPlan, ...]:
         """Compile a whole application, accumulating issues across specs.
 
         Duplicate agent names are an application-level fault: a single spec is
@@ -91,7 +91,11 @@ class AgentCompiler:
         detected — and is only reported — here.
 
         Args:
-            specs: Decoded artifacts of the application.
+            specs: Decoded artifacts of the application. Passing the
+                :class:`~loom.ai.declarative.DecodedSpec` values as returned by
+                ``load_specs`` keeps each artifact's path, which a ``./`` skill
+                library resolves against; a bare
+                :class:`~loom.ai.declarative.AgentSpecV1` has no path.
 
         Returns:
             One plan per spec, in input order.
@@ -99,10 +103,11 @@ class AgentCompiler:
         Raises:
             AgentCompilationError: Aggregating every issue of every spec.
         """
-        issues: list[AgentCompilationIssue] = _duplicate_name_issues(specs)
+        entries = [_as_entry(item) for item in specs]
+        issues: list[AgentCompilationIssue] = _duplicate_name_issues([spec for spec, _ in entries])
         plans: list[AgentPlan] = []
-        for spec in specs:
-            plan, spec_issues = self._compile_one(spec, None)
+        for spec, source_path in entries:
+            plan, spec_issues = self._compile_one(spec, source_path)
             issues.extend(spec_issues)
             if plan is not None:
                 plans.append(plan)
@@ -125,6 +130,7 @@ class AgentCompiler:
             registry=self._registry,
             sql=self._sql,
             supported_kinds=self._supported_kinds,
+            source_path=source_path,
         )
         issues.extend(capability_issues)
         if issues or output is None or inference is None:
@@ -151,6 +157,12 @@ class AgentCompiler:
             metadata=MappingProxyType(dict(spec.metadata)),
             source_path=source_path,
         )
+
+
+def _as_entry(item: AgentSpecV1 | DecodedSpec) -> tuple[AgentSpecV1, str | None]:
+    if isinstance(item, DecodedSpec):
+        return item.spec, item.source_path
+    return item, None
 
 
 def _duplicate_name_issues(specs: Sequence[AgentSpecV1]) -> list[AgentCompilationIssue]:

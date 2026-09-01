@@ -32,6 +32,12 @@ MODEL_ROLE_PATTERN: Final[str] = r"^[a-z][a-z0-9_-]{0,31}$"
 SYMBOL_REF_PATTERN: Final[str] = r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$"
 """Pattern of a ``module:symbol`` reference; filesystem paths are not representable."""
 
+SKILLS_LIBRARY_PATTERN: Final[str] = r"^(\./[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$"
+"""Pattern of a skill library name: ``./name`` beside the artifact, or a bare name.
+
+``..`` is not representable, so a library can never escape its own directory.
+"""
+
 DEFAULT_MODEL_ROLE: Final[str] = "default"
 """Model role an artifact binds to when it declares none."""
 
@@ -98,23 +104,6 @@ OutputSpec = JsonSchemaOutput | TypeRefOutput
 """Union of every supported output declaration, tagged on ``kind``."""
 
 
-class ToolFilter(
-    msgspec.Struct,
-    frozen=True,
-    kw_only=True,
-    forbid_unknown_fields=True,
-):
-    """Allow/deny lists applied to the tools a remote server exposes.
-
-    Args:
-        include: Tool names to keep; empty means "every tool".
-        exclude: Tool names to drop, applied after ``include``.
-    """
-
-    include: tuple[str, ...] = ()
-    exclude: tuple[str, ...] = ()
-
-
 class UsecaseCapability(
     msgspec.Struct,
     frozen=True,
@@ -164,18 +153,22 @@ class McpCapability(
     tag="mcp",
     tag_field="kind",
 ):
-    """Tools served by a remote MCP server.
+    """Tools served by a named remote MCP server.
+
+    The artifact *names* the server; it never locates it. Where the server
+    lives, how to authenticate to it and how long to wait are deployment facts
+    read from ``ai.mcp_servers``, so the same artifact moves between
+    environments unchanged.
 
     Args:
-        url:         Server URL.
-        tool_filter: Optional allow/deny lists over the exposed tools.
-        headers_ref: Reference to headers resolved from deployment
-            configuration. Never inline credentials.
+        server:  Named server, resolved from ``ai.mcp_servers``.
+        include: Tool names or glob patterns to expose; empty means all.
+        exclude: Tool names or glob patterns to omit, applied after ``include``.
     """
 
-    url: _NonEmptyStr
-    tool_filter: ToolFilter | None = None
-    headers_ref: str | None = None
+    server: _NonEmptyStr
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 class SkillsCapability(
@@ -186,13 +179,22 @@ class SkillsCapability(
     tag="skills",
     tag_field="kind",
 ):
-    """Reusable skills packaged with the application.
+    """Packaged prompt material from one skill library.
+
+    The artifact *names* a library; it never carries an absolute path.
+    ``./name`` resolves beside the artifact and travels with it, a bare name
+    resolves against ``ai.skills_root``, and ``..`` is not representable, so a
+    library can never escape its own directory.
 
     Args:
-        refs: ``module:symbol`` references to the granted skills.
+        library: Skill library, either ``./name`` or a bare name.
+        include: Skill names or glob patterns to expose; empty means all.
+        exclude: Skill names or glob patterns to omit, applied after ``include``.
     """
 
-    refs: Annotated[tuple[_SymbolRef, ...], msgspec.Meta(min_length=1)]
+    library: Annotated[str, msgspec.Meta(min_length=1, pattern=SKILLS_LIBRARY_PATTERN)]
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 class PythonCapability(
@@ -221,15 +223,20 @@ class A2ACapability(
     tag="a2a",
     tag_field="kind",
 ):
-    """Delegation to a remote agent reachable over A2A.
+    """Delegation to a named remote agent reachable over A2A.
+
+    The artifact *names* the agent; ``ai.a2a_agents`` knows where it is and how
+    to authenticate to it.
 
     Args:
-        url:    Remote A2A agent to delegate to.
-        skills: Optional subset of the remote agent's skills to use.
+        agent:   Named remote agent, resolved from ``ai.a2a_agents``.
+        include: Skill names or glob patterns to expose; empty means all.
+        exclude: Skill names or glob patterns to omit, applied after ``include``.
     """
 
-    url: _NonEmptyStr
-    skills: tuple[str, ...] | None = None
+    agent: _NonEmptyStr
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 CapabilitySpec = (

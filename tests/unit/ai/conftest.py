@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from loom.ai.config import AgentEndpointConfig, AiConfig
+from loom.ai.config import A2AAgentConfig, AgentEndpointConfig, AiConfig, McpServerConfig
 from loom.ai.inference import InferenceTarget
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.use_case.registry import UseCaseRegistry
@@ -36,6 +36,10 @@ def _event_loop_before_socket_block(request: pytest.FixtureRequest) -> None:
 
 FAKE_PKGS_DIR = Path(__file__).parent / "fixtures" / "fake_pkgs"
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
+SKILLS_ROOT_DIR = Path(__file__).parent / "fixtures" / "skills_root"
+
+CORPUS_PATTERN = "*/agent.yaml"
+"""Glob matching every corpus artifact: one directory per agent, always."""
 
 _CORPUS_USECASE_KEYS: tuple[str, ...] = (
     "orders.get_order_status",
@@ -59,6 +63,10 @@ def fake_myapp_path() -> Iterator[Path]:
             del sys.modules[name]
 
 
+_CORPUS_MCP_SERVERS: tuple[str, ...] = ("knowledge", "runbooks")
+_CORPUS_A2A_AGENTS: tuple[str, ...] = ("translations", "oncall")
+
+
 def _inference_target() -> InferenceTarget:
     """Offline-safe model binding: nothing in the provider requires settings."""
     return InferenceTarget(provider="fake", model="fake-model")
@@ -70,18 +78,44 @@ def ai_config_factory() -> Callable[..., AiConfig]:
 
     def _make(
         *,
-        skills_root: str | None = "myapp.skills",
+        skills_root: str | None = str(SKILLS_ROOT_DIR),
         endpoints: dict[str, AgentEndpointConfig] | None = None,
+        mcp_servers: dict[str, McpServerConfig] | None = None,
+        a2a_agents: dict[str, A2AAgentConfig] | None = None,
     ) -> AiConfig:
         return AiConfig(
             engine="fake",
-            specs=("agents/*.agent.yaml",),
+            specs=("ai/agents/*/agent.yaml",),
             models={"default": _inference_target(), "reasoning": _inference_target()},
             skills_root=skills_root,
+            mcp_servers=mcp_servers if mcp_servers is not None else _corpus_mcp_servers(),
+            a2a_agents=a2a_agents if a2a_agents is not None else _corpus_a2a_agents(),
             endpoints=endpoints if endpoints is not None else {},
         )
 
     return _make
+
+
+def _corpus_mcp_servers() -> dict[str, McpServerConfig]:
+    """Locate every MCP server the corpus names; artifacts carry no URL."""
+    return {
+        name: McpServerConfig(
+            url=f"https://{name}.example.com/mcp",
+            headers_ref=f"{name}_server_headers",
+        )
+        for name in _CORPUS_MCP_SERVERS
+    }
+
+
+def _corpus_a2a_agents() -> dict[str, A2AAgentConfig]:
+    """Locate every remote agent the corpus names; artifacts carry no URL."""
+    return {
+        name: A2AAgentConfig(
+            url=f"https://{name}.example.com/a2a",
+            headers_ref=f"{name}_agent_headers",
+        )
+        for name in _CORPUS_A2A_AGENTS
+    }
 
 
 @pytest.fixture

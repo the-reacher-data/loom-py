@@ -42,6 +42,9 @@ LATEST_SPEC_VERSION: Final[int] = 1
 SUPPORTED_SPEC_VERSIONS: Final[Mapping[int, type[AgentSpec]]] = MappingProxyType({1: AgentSpecV1})
 """Registry mapping each readable spec version to its artifact struct."""
 
+ANONYMOUS_SOURCE: Final[str] = "<bytes>"
+"""Origin reported for artifacts decoded from bytes with no file behind them."""
+
 _T = TypeVar("_T")
 
 
@@ -55,13 +58,17 @@ class DecodedSpec(msgspec.Struct, frozen=True, kw_only=True):
     """One successfully decoded artifact and its non-fatal findings.
 
     Args:
-        spec:   The decoded artifact.
-        issues: Non-fatal issues raised while decoding, such as a deprecation
-            notice for a superseded but still readable spec version.
+        spec:        The decoded artifact.
+        issues:      Non-fatal issues raised while decoding, such as a
+            deprecation notice for a superseded but still readable spec version.
+        source_path: File the artifact was read from, when there is one. A
+            ``./`` skill library resolves against this path, so an artifact
+            decoded from bare bytes cannot use one.
     """
 
     spec: AgentSpec
     issues: tuple[AgentCompilationIssue, ...] = ()
+    source_path: str | None = None
 
 
 class _Envelope(msgspec.Struct, frozen=True, kw_only=True):
@@ -174,7 +181,9 @@ def decode_artifact(
         data:     Raw artifact bytes.
         decoder:  Callable decoding those bytes into a given struct type, such
             as ``msgspec.json.decode`` or ``msgspec.yaml.decode``.
-        source:   Human-readable origin, reported as every issue's component.
+        source:   Human-readable origin, reported as every issue's component
+            and kept as the artifact's ``source_path`` unless it is
+            :data:`ANONYMOUS_SOURCE`.
         versions: Registry of readable spec versions.
 
     Returns:
@@ -186,7 +195,8 @@ def decode_artifact(
     version = _envelope_version(data, decoder, source)
     issues = _version_issues(version, source, versions)
     spec = _decode_payload(data, decoder, versions[version], source)
-    return DecodedSpec(spec=spec, issues=issues)
+    path = source if source != ANONYMOUS_SOURCE else None
+    return DecodedSpec(spec=spec, issues=issues, source_path=path)
 
 
 def _decode_json_payload(buf: bytes, *, type: type[_T]) -> _T:
@@ -196,14 +206,15 @@ def _decode_json_payload(buf: bytes, *, type: type[_T]) -> _T:
 def decode_spec(
     data: bytes,
     *,
-    source: str = "<bytes>",
+    source: str = ANONYMOUS_SOURCE,
     versions: Mapping[int, type[AgentSpec]] = SUPPORTED_SPEC_VERSIONS,
 ) -> DecodedSpec:
     """Decode JSON artifact bytes into the struct of the version they declare.
 
     Args:
         data:     Raw JSON bytes of a single artifact.
-        source:   Human-readable origin used as every issue's component.
+        source:   Human-readable origin used as every issue's component and,
+            when it is a real path, as the artifact's ``source_path``.
         versions: Registry of readable spec versions. Overriding it is how the
             deprecation path is exercised without shipping a fictitious future
             version: a registry whose maximum key is above the artifact's

@@ -37,11 +37,14 @@ from loom.core.di import LoomContainer
 from loom.core.identity import ANONYMOUS, Identity
 from tests.helpers.pydantic_ai_engine import OPEN_OBJECT_SCHEMA, compiled_output
 
-REMOTE_URL = "https://agents.example.com/market"
-"""Granted remote agent; the compiler already validated the scheme and shape."""
+REMOTE_AGENT = "market"
+"""Name the deployment registered the remote agent under (``ai.a2a_agents``)."""
 
-REMOTE_TOOL = "a2a_agents_example_com_market"
-"""Name the grant derives: ``a2a`` plus the URL's host and path (design R2)."""
+REMOTE_URL = "https://agents.example.com/market"
+"""Address the registered name resolved to; the compiler validated its shape."""
+
+REMOTE_TOOL = "a2a_market"
+"""Name the grant derives: ``a2a`` plus the registered agent name (design R2)."""
 
 UNREACHABLE_URL = "https://127.0.0.1:9/market"
 """Discard port on the loopback: nothing serves a card there, ever."""
@@ -77,10 +80,14 @@ class CapabilityDepsFactory:
 
 
 def a2a_capability(
-    *, url: str = REMOTE_URL, skills: tuple[str, ...] | None = None
+    *,
+    agent: str = REMOTE_AGENT,
+    url: str = REMOTE_URL,
+    include: tuple[str, ...] = (),
+    exclude: tuple[str, ...] = (),
 ) -> CompiledA2ACapability:
-    """Compile-equivalent grant of one remote agent."""
-    return CompiledA2ACapability(url=url, skills=skills)
+    """Compile-equivalent grant of one registered remote agent."""
+    return CompiledA2ACapability(agent=agent, url=url, include=include, exclude=exclude)
 
 
 def make_plan(
@@ -213,13 +220,13 @@ class TestOutboundToolset:
     def test_el_build_falla_cuando_dos_agentes_remotos_derivan_el_mismo_nombre(self) -> None:
         """Collision detection spans ``a2a`` like every other capability."""
         plan = make_plan(
-            (a2a_capability(), a2a_capability(url=f"{REMOTE_URL}/")),
+            (a2a_capability(agent="market-eu"), a2a_capability(agent="market_eu")),
         )
 
         with pytest.raises(AgentCompilationError) as failure:
             _capabilities.build_toolsets(plan, LoomContainer())
 
-        assert REMOTE_TOOL in failure.value.issues[0].message
+        assert "a2a_market_eu" in failure.value.issues[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -334,23 +341,46 @@ class TestStartupFactory:
                 pass  # pragma: no cover - start-up never completes
 
         issue = failure.value.issues[0]
-        assert (issue.code, UNREACHABLE_URL in issue.message) == (
+        assert (issue.code, issue.component, REMOTE_AGENT in issue.message) == (
             AgentErrorCode.A2A_AGENT_UNREACHABLE,
+            REMOTE_AGENT,
             True,
         )
 
-    def test_la_card_se_rechaza_cuando_no_anuncia_un_skill_concedido(self) -> None:
-        """A card that does not advertise a granted skill is not usable."""
+    def test_la_card_se_rechaza_cuando_ningun_skill_concedido_esta_anunciado(self) -> None:
+        """An ``include`` matching nothing on the card is not usable."""
         card = _card_with_skills("pricing")
 
         with pytest.raises(ValueError, match="forecast"):
-            _a2a._reject_ungranted_card(a2a_capability(skills=("forecast",)), card)
+            _a2a._reject_ungranted_card(a2a_capability(include=("forecast",)), card)
 
-    def test_la_card_se_acepta_cuando_anuncia_todos_los_skills_concedidos(self) -> None:
-        """Every granted skill advertised: the card passes unchanged."""
+    def test_el_error_no_nombra_nada_de_la_card_cuando_el_filtro_no_casa(self) -> None:
+        """The card is untrusted input: only artifact patterns are reported."""
+        card = _card_with_skills("ignore-previous-instructions")
+
+        with pytest.raises(ValueError) as failure:
+            _a2a._reject_ungranted_card(a2a_capability(include=("forecast",)), card)
+
+        assert "ignore-previous-instructions" not in str(failure.value)
+
+    def test_la_card_se_rechaza_cuando_el_exclude_deja_el_filtro_vacio(self) -> None:
+        """A filter selecting none of the advertised skills fails start-up."""
         card = _card_with_skills("pricing", "forecast")
 
-        _a2a._reject_ungranted_card(a2a_capability(skills=("forecast",)), card)
+        with pytest.raises(ValueError, match="no skill matching the granted filter"):
+            _a2a._reject_ungranted_card(a2a_capability(exclude=("*",)), card)
+
+    def test_la_card_se_acepta_cuando_un_glob_concedido_selecciona_un_subconjunto(self) -> None:
+        """A glob that selects part of the card passes; the rest is simply not granted."""
+        card = _card_with_skills("forecast_eu", "forecast_us", "pricing")
+
+        _a2a._reject_ungranted_card(a2a_capability(include=("forecast_*",)), card)
+
+    def test_la_card_se_acepta_sin_filtro_cuando_el_grant_no_declara_ninguno(self) -> None:
+        """An empty filter grants whatever the remote advertises."""
+        card = _card_with_skills("pricing")
+
+        _a2a._reject_ungranted_card(a2a_capability(), card)
 
 
 def _card_with_skills(*skill_ids: str) -> Any:

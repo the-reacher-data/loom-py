@@ -5,6 +5,10 @@ The byte-for-byte test keeps it from drifting from the Tier-1 structs: the schem
 code emits and the file consumers validate against must be the same document, byte for
 byte. Regenerate the file from ``_schema.py`` when the structs legitimately change —
 never edit it by hand to make this test pass.
+
+The contract and the emitter agree again on ``policies.run_timeout_ms`` and on the
+mandatory ``sql`` result bounds; both used to be documented divergences and are pinned
+below so a regression shows up as a named failure instead of a diff.
 """
 
 from __future__ import annotations
@@ -39,10 +43,30 @@ def _serialise(document: dict[str, Any]) -> str:
     return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
 
 
+def _capability_variant(document: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Return one variant of the capability union of a schema document."""
+    variants: list[dict[str, Any]] = document["$defs"]["capability"]["oneOf"]
+    return next(variant for variant in variants if variant["properties"]["kind"]["const"] == kind)
+
+
 def _sql_variant(document: dict[str, Any]) -> dict[str, Any]:
     """Return the ``sql`` variant of the capability union of a schema document."""
-    variants: list[dict[str, Any]] = document["$defs"]["capability"]["oneOf"]
-    return next(variant for variant in variants if variant["properties"]["kind"]["const"] == "sql")
+    return _capability_variant(document, "sql")
+
+
+def _property_names(node: Any) -> set[str]:
+    """Collect every property name declared anywhere in a schema document."""
+    if isinstance(node, dict):
+        names: set[str] = set(node.get("properties", {}))
+        for value in node.values():
+            names |= _property_names(value)
+        return names
+    if isinstance(node, list):
+        names = set()
+        for item in node:
+            names |= _property_names(item)
+        return names
+    return set()
 
 
 def _policy_properties(document: dict[str, Any]) -> dict[str, Any]:
@@ -70,7 +94,7 @@ def test_el_esquema_emitido_es_identico_al_contrato_publicado_cuando_se_serializ
 
 
 def test_las_politicas_emitidas_declaran_run_timeout_ms_cuando_se_construye_el_esquema() -> None:
-    """First known divergence: the emitted policies carry ``run_timeout_ms``."""
+    """The whole-run budget is part of the published policy vocabulary (FR-033a)."""
     assert _policy_properties(_emitted())["run_timeout_ms"] == {
         "type": "integer",
         "minimum": 1000,
@@ -80,13 +104,43 @@ def test_las_politicas_emitidas_declaran_run_timeout_ms_cuando_se_construye_el_e
 
 
 def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_construye() -> None:
-    """Second known divergence: the emitted ``sql`` variant requires the bounds."""
+    """An unbounded query is not representable: both bounds are required (FR-046b)."""
     assert _sql_variant(_emitted())["required"] == [
         "kind",
         "connection",
         "max_rows",
         "max_result_bytes",
     ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "reference"),
+    [("mcp", "server"), ("a2a", "agent"), ("skills", "library")],
+)
+def test_la_capacidad_emitida_exige_su_referencia_por_nombre_cuando_se_construye(
+    kind: str,
+    reference: str,
+) -> None:
+    """Every outward-pointing capability names its target, and naming it is mandatory."""
+    variant = _capability_variant(_emitted(), kind)
+
+    assert variant["required"] == ["kind", reference]
+
+
+@pytest.mark.parametrize("kind", ["mcp", "a2a", "skills"])
+def test_la_capacidad_emitida_declara_el_filtro_plano_cuando_se_construye(kind: str) -> None:
+    """The three filtered kinds share one flat include/exclude vocabulary."""
+    properties = _capability_variant(_emitted(), kind)["properties"]
+
+    assert {"include", "exclude"} <= set(properties)
+
+
+@pytest.mark.parametrize("retired", ["tool_filter", "refs", "url", "headers_ref", "timeout_ms"])
+def test_el_esquema_emitido_no_declara_el_vocabulario_retirado_cuando_se_construye(
+    retired: str,
+) -> None:
+    """Addresses and credentials are deployment facts; they left the artifact."""
+    assert retired not in _property_names(_emitted())
 
 
 def test_agent_spec_json_schema_falla_cuando_la_version_no_esta_publicada() -> None:

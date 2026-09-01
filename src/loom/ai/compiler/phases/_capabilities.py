@@ -1,19 +1,25 @@
 """Capability phase: one handler per ``kind``, dispatched by a map.
 
 Every grant is validated statically and resolved to a handle: the registered
-use-case types, the SQL connection config, the imported factory.  URLs are the
-declared exception — they resolve over the network in ``__aenter__``
-(invariant 3), so only their well-formedness is checked here.
+use-case types, the SQL connection config, the imported factory, the configured
+remote server.  Artifacts *name*, they never locate, so ``mcp`` and ``a2a``
+resolve their name against deployment configuration — which validated the URL
+and the credential reference when it was parsed, so nothing is re-checked here.
+
+Skill libraries resolve on the filesystem, offline: the directory is listed and
+the include/exclude filter applied at compile, so the plan carries exact skill
+names.  Reading a directory is not network access and keeps FR-010 intact.
 """
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
-from urllib.parse import SplitResult, urlsplit
 
+from loom.ai._filters import select_names
 from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledCapability,
@@ -24,10 +30,7 @@ from loom.ai.compiler._plan import (
     CompiledUsecaseCapability,
 )
 from loom.ai.compiler._symbols import import_symbol
-
-# Private cross-module reuse inside the pillar: the fail-closed "reference,
-# not secret" heuristic is defined once, next to the config it protects.
-from loom.ai.config import AiConfig, _is_credentials_reference
+from loom.ai.config import A2AAgentConfig, AiConfig, McpServerConfig
 from loom.ai.declarative import (
     A2ACapability,
     AgentSpecV1,
@@ -40,14 +43,16 @@ from loom.ai.declarative import (
 )
 from loom.ai.errors import (
     AgentCompilationIssue,
-    a2a_url_invalid,
+    a2a_agent_unknown,
     anonymous_with_data_capability,
+    capability_empty,
     capability_kind_unsupported,
-    mcp_credentials_inline,
-    mcp_url_invalid,
+    mcp_server_unknown,
     python_factory_not_callable,
     python_factory_unresolvable,
-    skills_ref_invalid,
+    skills_library_escapes,
+    skills_library_invalid,
+    skills_name_collision,
     skills_root_missing,
     sql_config_missing,
     sql_connection_not_readonly,
@@ -60,15 +65,20 @@ from loom.core.engine.compilable import Compilable
 from loom.core.sql.config import SqlConfig, roles_need_identity_binding
 from loom.core.use_case.registry import UseCaseRegistry
 
-_URL_USERINFO_RE = re.compile(r"://[^/]*@")
-
 # Kinds that read application data or call application/remote code.  An agent
 # that opts out of authentication may hold none of them (FR-045a); ``skills``
 # only injects packaged prompt material, so it is exempt.
 _DATA_OR_REMOTE_KINDS: Final[frozenset[str]] = frozenset({"usecase", "sql", "python", "mcp", "a2a"})
 
+# A directory is one skill when it holds this manifest; a library is a
+# directory of such directories.  Same rule as ``pydantic-ai-harness``.
+_SKILL_MANIFEST: Final[str] = "SKILL.md"
+
+_LOCAL_LIBRARY_PREFIX: Final[str] = "./"
+
 _CompileResult = tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]
 _HandlerResult = tuple[CompiledCapability | None, list[AgentCompilationIssue]]
+_ResolveResult = tuple[Path | None, list[AgentCompilationIssue]]
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,9 @@ class _Context:
     registry: UseCaseRegistry
     sql: SqlConfig | None
     skills_root: str | None
+    mcp_servers: Mapping[str, McpServerConfig]
+    a2a_agents: Mapping[str, A2AAgentConfig]
+    source_path: str | None
     anonymous: bool
 
 
@@ -90,16 +103,19 @@ def compile_capabilities(
     registry: UseCaseRegistry,
     sql: SqlConfig | None,
     supported_kinds: frozenset[str],
+    source_path: str | None = None,
 ) -> _CompileResult:
     """Validate every declared capability and resolve it to a handle.
 
     Args:
         spec: Decoded artifact whose capabilities are compiled.
         component: Artifact path or agent name the issues point at.
-        config: Deployment configuration (engine name, skills root, endpoints).
+        config: Deployment configuration (engine, skills root, remote servers).
         registry: Use-case registry the ``usecase`` grants resolve against.
         sql: Data-layer configuration; ``None`` fails every ``sql`` grant.
         supported_kinds: Kinds the configured engine serves, as a plain value.
+        source_path: Artifact file, when known; a ``./`` skill library resolves
+            beside it and cannot be resolved without it.
 
     Returns:
         The compiled capabilities and every issue found across all of them.
@@ -109,6 +125,9 @@ def compile_capabilities(
         registry=registry,
         sql=sql,
         skills_root=config.skills_root,
+        mcp_servers=config.mcp_servers,
+        a2a_agents=config.a2a_agents,
+        source_path=source_path,
         anonymous=_is_anonymous(spec.name, config),
     )
     compiled: list[CompiledCapability] = []
@@ -124,7 +143,25 @@ def compile_capabilities(
         issues.extend(item_issues)
         if item is not None:
             compiled.append(item)
+    issues.extend(_skill_collision_issues(compiled, component))
     return tuple(compiled), issues
+
+
+def _skill_collision_issues(
+    compiled: list[CompiledCapability],
+    component: str,
+) -> list[AgentCompilationIssue]:
+    """Report skill names granted twice to the same agent by two libraries."""
+    owner: dict[str, str] = {}
+    issues: list[AgentCompilationIssue] = []
+    for capability in compiled:
+        if not isinstance(capability, CompiledSkillsCapability):
+            continue
+        for name in capability.names:
+            first = owner.setdefault(name, capability.library)
+            if first != capability.library:
+                issues.append(skills_name_collision(component, name, first, capability.library))
+    return issues
 
 
 def _is_anonymous(agent_name: str, config: AiConfig) -> bool:
@@ -175,38 +212,108 @@ def _compile_sql(capability: SqlCapability, context: _Context) -> _HandlerResult
 
 
 def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult:
-    issues: list[AgentCompilationIssue] = []
-    fault = _url_fault(capability.url)
-    if fault is not None:
-        issues.append(mcp_url_invalid(context.component, _redact_url(capability.url), fault))
-    headers_ref = capability.headers_ref
-    if headers_ref is not None and not _is_credentials_reference(headers_ref):
-        issues.append(mcp_credentials_inline(context.component, "capabilities.headers_ref"))
-    if issues:
-        return None, issues
+    server = context.mcp_servers.get(capability.server)
+    if server is None:
+        return None, [mcp_server_unknown(context.component, capability.server)]
     return (
         CompiledMcpCapability(
-            url=capability.url,
-            tool_filter=capability.tool_filter,
-            headers_ref=headers_ref,
+            server=capability.server,
+            url=server.url,
+            headers_ref=server.headers_ref,
+            timeout_ms=server.timeout_ms,
+            include=capability.include,
+            exclude=capability.exclude,
         ),
         [],
     )
 
 
-def _compile_skills(capability: SkillsCapability, context: _Context) -> _HandlerResult:
-    issues: list[AgentCompilationIssue] = []
+def _compile_a2a(capability: A2ACapability, context: _Context) -> _HandlerResult:
+    agent = context.a2a_agents.get(capability.agent)
+    if agent is None:
+        return None, [a2a_agent_unknown(context.component, capability.agent)]
+    return (
+        CompiledA2ACapability(
+            agent=capability.agent,
+            url=agent.url,
+            headers_ref=agent.headers_ref,
+            include=capability.include,
+            exclude=capability.exclude,
+        ),
+        [],
+    )
+
+
+def _library_escapes(library: str) -> bool:
+    """Report whether a library name would leave the directory it is anchored to."""
+    name = library.removeprefix(_LOCAL_LIBRARY_PREFIX)
+    return ".." in Path(name).parts
+
+
+def _library_base(library: str, context: _Context) -> _ResolveResult:
+    """Return the directory ``library`` is anchored to, or why it has none."""
+    if library.startswith(_LOCAL_LIBRARY_PREFIX):
+        if context.source_path is None:
+            reason = "a './' library needs a known artifact path"
+            return None, [skills_library_invalid(context.component, library, reason)]
+        return Path(context.source_path).parent, []
     if context.skills_root is None:
-        issues.append(skills_root_missing(context.component))
-    skills: list[object] = []
-    for ref in capability.refs:
-        try:
-            skills.append(import_symbol(ref))
-        except (ImportError, AttributeError, ValueError):
-            issues.append(skills_ref_invalid(context.component, ref))
-    if issues:
+        return None, [skills_root_missing(context.component)]
+    return Path(context.skills_root), []
+
+
+def _resolve_library(library: str, context: _Context) -> _ResolveResult:
+    if _library_escapes(library):
+        return None, [skills_library_escapes(context.component, library)]
+    base, issues = _library_base(library, context)
+    if base is None:
         return None, issues
-    return CompiledSkillsCapability(refs=capability.refs, skills=tuple(skills)), []
+    resolved = (base / library.removeprefix(_LOCAL_LIBRARY_PREFIX)).resolve()
+    if not resolved.is_relative_to(base.resolve()):
+        return None, [skills_library_escapes(context.component, library)]
+    return resolved, []
+
+
+def _discover_skills(directory: Path) -> tuple[tuple[str, ...], str | None]:
+    """List the skills of a library directory, or say why it is not one.
+
+    Replicates the discovery rule of ``pydantic-ai-harness``: an immediate
+    child directory holding a ``SKILL.md`` is one skill, named after the
+    directory, NFKC-normalised.
+    """
+    if not directory.exists():
+        return (), "the directory does not exist"
+    if not directory.is_dir():
+        return (), "the path is not a directory"
+    if (directory / _SKILL_MANIFEST).is_file():
+        return (), "the path is a single skill, not a library of skills"
+    names = sorted(
+        unicodedata.normalize("NFKC", child.name)
+        for child in directory.iterdir()
+        if child.is_dir() and (child / _SKILL_MANIFEST).is_file()
+    )
+    return tuple(names), None
+
+
+def _compile_skills(capability: SkillsCapability, context: _Context) -> _HandlerResult:
+    library = capability.library
+    directory, issues = _resolve_library(library, context)
+    if directory is None:
+        return None, issues
+    discovered, reason = _discover_skills(directory)
+    if reason is not None:
+        return None, [skills_library_invalid(context.component, library, reason)]
+    selected = select_names(
+        discovered,
+        include=capability.include,
+        exclude=capability.exclude,
+    )
+    if not selected:
+        return None, [capability_empty(context.component, "skills")]
+    return (
+        CompiledSkillsCapability(library=library, directory=str(directory), names=selected),
+        [],
+    )
 
 
 def _compile_python(capability: PythonCapability, context: _Context) -> _HandlerResult:
@@ -217,35 +324,6 @@ def _compile_python(capability: PythonCapability, context: _Context) -> _Handler
     if not callable(factory):
         return None, [python_factory_not_callable(context.component, capability.factory)]
     return CompiledPythonCapability(factory_ref=capability.factory, factory=factory), []
-
-
-def _compile_a2a(capability: A2ACapability, context: _Context) -> _HandlerResult:
-    fault = _url_fault(capability.url)
-    if fault is not None:
-        return None, [a2a_url_invalid(context.component, _redact_url(capability.url), fault)]
-    return CompiledA2ACapability(url=capability.url, skills=capability.skills), []
-
-
-def _url_fault(url: str) -> str | None:
-    """Return why a remote URL is unsafe, or ``None`` when it is acceptable."""
-    try:
-        parts: SplitResult = urlsplit(url)
-    except ValueError:
-        return "the URL is malformed"
-    if parts.scheme != "https":
-        return "the scheme must be https"
-    if not parts.hostname:
-        return "the URL declares no host"
-    if parts.username is not None or parts.password is not None:
-        return "the URL carries credentials in its userinfo"
-    if parts.query:
-        return "the URL carries a query string, which may embed credentials"
-    return None
-
-
-def _redact_url(url: str) -> str:
-    """Strip userinfo and query so an invalid-URL message cannot leak a secret."""
-    return _URL_USERINFO_RE.sub("://***@", url).split("?", 1)[0]
 
 
 # Dispatch map keyed by the declared capability type.  ``Any`` in the handler

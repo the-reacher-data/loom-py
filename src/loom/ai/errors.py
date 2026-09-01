@@ -50,12 +50,16 @@ class AgentErrorCode(StrEnum):
     SQL_CONFIG_MISSING = "SQL_CONFIG_MISSING"
     SQL_CONNECTION_ROLES_UNBOUND = "SQL_CONNECTION_ROLES_UNBOUND"
     SQL_RESULT_BOUND_MISSING = "SQL_RESULT_BOUND_MISSING"
+    MCP_SERVER_UNKNOWN = "MCP_SERVER_UNKNOWN"
     MCP_URL_INVALID = "MCP_URL_INVALID"
     MCP_CREDENTIALS_INLINE = "MCP_CREDENTIALS_INLINE"
-    SKILLS_REF_INVALID = "SKILLS_REF_INVALID"
+    SKILLS_LIBRARY_INVALID = "SKILLS_LIBRARY_INVALID"
+    SKILLS_LIBRARY_ESCAPES = "SKILLS_LIBRARY_ESCAPES"
+    SKILLS_NAME_COLLISION = "SKILLS_NAME_COLLISION"
     SKILLS_ROOT_MISSING = "SKILLS_ROOT_MISSING"
     PYTHON_FACTORY_UNRESOLVABLE = "PYTHON_FACTORY_UNRESOLVABLE"
     PYTHON_FACTORY_NOT_CALLABLE = "PYTHON_FACTORY_NOT_CALLABLE"
+    A2A_AGENT_UNKNOWN = "A2A_AGENT_UNKNOWN"
     A2A_URL_INVALID = "A2A_URL_INVALID"
     ANONYMOUS_WITH_DATA_CAPABILITY = "ANONYMOUS_WITH_DATA_CAPABILITY"
 
@@ -331,13 +335,23 @@ def sql_result_bound_missing(component: str, connection: str) -> AgentCompilatio
     )
 
 
+def mcp_server_unknown(component: str, server: str) -> AgentCompilationIssue:
+    """An ``mcp`` capability names a server that is not configured."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_SERVER_UNKNOWN,
+        message=f"{component}: mcp server '{server}' is not configured in ai.mcp_servers",
+        component=component,
+        field="capabilities.server",
+    )
+
+
 def mcp_url_invalid(component: str, url: str, reason: str) -> AgentCompilationIssue:
     """An MCP server URL is malformed, not ``https://``, or carries credentials."""
     return AgentCompilationIssue(
         code=AgentErrorCode.MCP_URL_INVALID,
         message=f"{component}: invalid mcp url '{url}': {reason}",
         component=component,
-        field="capabilities.url",
+        field="url",
     )
 
 
@@ -354,23 +368,54 @@ def mcp_credentials_inline(component: str, field: str) -> AgentCompilationIssue:
     )
 
 
-def skills_ref_invalid(component: str, ref: str) -> AgentCompilationIssue:
-    """A skills reference is not a package reference, or is an absolute path."""
+def skills_library_invalid(component: str, library: str, reason: str) -> AgentCompilationIssue:
+    """A skill library does not resolve to a readable library directory."""
     return AgentCompilationIssue(
-        code=AgentErrorCode.SKILLS_REF_INVALID,
-        message=f"{component}: skills reference '{ref}' is not a module:symbol reference",
+        code=AgentErrorCode.SKILLS_LIBRARY_INVALID,
+        message=f"{component}: skills library '{library}' is unusable: {reason}",
         component=component,
-        field="capabilities.refs",
+        field="capabilities.library",
+    )
+
+
+def skills_library_escapes(component: str, library: str) -> AgentCompilationIssue:
+    """A skill library resolves outside the directory it is anchored to."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.SKILLS_LIBRARY_ESCAPES,
+        message=f"{component}: skills library '{library}' escapes its own directory",
+        component=component,
+        field="capabilities.library",
+    )
+
+
+def skills_name_collision(
+    component: str,
+    skill: str,
+    first_library: str,
+    second_library: str,
+) -> AgentCompilationIssue:
+    """Two libraries granted to one agent expose the same skill name."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.SKILLS_NAME_COLLISION,
+        message=(
+            f"{component}: skill '{skill}' is exposed by both libraries "
+            f"'{first_library}' and '{second_library}'"
+        ),
+        component=component,
+        field="capabilities.library",
     )
 
 
 def skills_root_missing(component: str) -> AgentCompilationIssue:
-    """A ``skills`` capability was used with no ``skills_root`` configured."""
+    """A bare skill library was named with no ``skills_root`` configured."""
     return AgentCompilationIssue(
         code=AgentErrorCode.SKILLS_ROOT_MISSING,
-        message=f"{component}: skills capability requires a configured skills_root",
+        message=(
+            f"{component}: a bare skills library requires a configured skills_root; "
+            f"use './name' to resolve it beside the artifact instead"
+        ),
         component=component,
-        field="capabilities.refs",
+        field="capabilities.library",
     )
 
 
@@ -394,13 +439,23 @@ def python_factory_not_callable(component: str, factory: str) -> AgentCompilatio
     )
 
 
+def a2a_agent_unknown(component: str, agent: str) -> AgentCompilationIssue:
+    """An ``a2a`` capability names a remote agent that is not configured."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.A2A_AGENT_UNKNOWN,
+        message=f"{component}: a2a agent '{agent}' is not configured in ai.a2a_agents",
+        component=component,
+        field="capabilities.agent",
+    )
+
+
 def a2a_url_invalid(component: str, url: str, reason: str) -> AgentCompilationIssue:
     """A remote agent URL is malformed, not ``https://``, or carries credentials."""
     return AgentCompilationIssue(
         code=AgentErrorCode.A2A_URL_INVALID,
         message=f"{component}: invalid a2a url '{url}': {reason}",
         component=component,
-        field="capabilities.url",
+        field="url",
     )
 
 
@@ -527,13 +582,13 @@ def mcp_server_unreachable(url: str, reason: str) -> AgentCompilationIssue:
     )
 
 
-def tool_filter_matches_nothing(component: str, url: str) -> AgentCompilationIssue:
-    """A tool filter excludes every tool the server exposes."""
+def tool_filter_matches_nothing(component: str, target: str) -> AgentCompilationIssue:
+    """An include/exclude filter excludes every tool the target exposes."""
     return AgentCompilationIssue(
         code=AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING,
-        message=f"{component}: tool_filter for '{url}' matches no tool",
+        message=f"{component}: filter for '{target}' matches no tool",
         component=component,
-        field="capabilities.tool_filter",
+        field="capabilities.include",
     )
 
 

@@ -9,6 +9,7 @@ ImportError per test module.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,8 +20,11 @@ from loom.ai.errors import AgentCompilationIssue
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
 
-SOURCE_PATH = "agents/subject.agent.yaml"
+SOURCE_PATH = "ai/agents/subject-agent/agent.yaml"
 """Artifact path handed to ``compile``; issues point at it as ``component``."""
+
+SKILL_MANIFEST = "SKILL.md"
+"""Manifest turning a directory into one skill package, as in ``pydantic-ai-harness``."""
 
 ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
 
@@ -85,17 +89,42 @@ def compiler_factory(
 
 
 @pytest.fixture
+def plan_for(compiler_factory: Callable[..., Any]) -> Callable[..., Any]:
+    """Compile one spec expecting success; return the plan.
+
+    ``source_path`` is explicit because a ``./`` skill library resolves beside
+    the artifact: a test that ships a library must anchor the spec to the
+    directory holding it.
+    """
+
+    def _plan(
+        spec: AgentSpecV1,
+        *,
+        source_path: str | None = SOURCE_PATH,
+        **compiler_kwargs: Any,
+    ) -> Any:
+        return compiler_factory(**compiler_kwargs).compile(spec, source_path=source_path)
+
+    return _plan
+
+
+@pytest.fixture
 def issues_for(
     compiler_factory: Callable[..., Any],
 ) -> Callable[..., tuple[AgentCompilationIssue, ...]]:
     """Compile one spec expecting failure; return the accumulated issues."""
 
-    def _issues(spec: AgentSpecV1, **compiler_kwargs: Any) -> tuple[AgentCompilationIssue, ...]:
+    def _issues(
+        spec: AgentSpecV1,
+        *,
+        source_path: str | None = SOURCE_PATH,
+        **compiler_kwargs: Any,
+    ) -> tuple[AgentCompilationIssue, ...]:
         from loom.ai.compiler import AgentCompilationError
 
         compiler = compiler_factory(**compiler_kwargs)
         try:
-            compiler.compile(spec, source_path=SOURCE_PATH)
+            compiler.compile(spec, source_path=source_path)
         except AgentCompilationError as exc:
             return exc.issues
         pytest.fail("expected AgentCompilationError, but the spec compiled clean")
@@ -115,3 +144,32 @@ def single_issue_for(
         return issues[0]
 
     return _single
+
+
+@pytest.fixture
+def skill_library(tmp_path: Path) -> Callable[..., Path]:
+    """Write a real skill library on disk and return its directory.
+
+    Libraries resolve on the filesystem at compile time, so the phase tests
+    need genuine ``SKILL.md`` packages rather than a mocked listing.
+    """
+
+    def _make(library: str, *skills: str) -> Path:
+        directory = tmp_path / library
+        for skill in skills:
+            package = directory / skill
+            package.mkdir(parents=True, exist_ok=True)
+            (package / SKILL_MANIFEST).write_text(
+                f"---\nname: {skill}\ndescription: Fixture skill {skill}.\n---\n\nBody.\n",
+                encoding="utf-8",
+            )
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    return _make
+
+
+@pytest.fixture
+def artifact_path(tmp_path: Path) -> str:
+    """Path of the artifact a ``./`` skill library is anchored to."""
+    return str(tmp_path / "agent.yaml")

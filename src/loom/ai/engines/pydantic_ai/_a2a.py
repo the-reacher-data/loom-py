@@ -3,8 +3,8 @@
 Two entry points, one connection recipe:
 
 * :func:`create_a2a_client` is the :data:`~loom.ai.runtime.A2AClientFactory`
-  the runtime opens at start-up. Entering it fetches the remote card, checks
-  the granted skills against it and hands back a usable session, so an
+  the runtime opens at start-up. Entering it fetches the remote card, applies
+  the grant's skill filter to it and hands back a usable session, so an
   unreachable or mismatched agent fails start-up as ``A2A_AGENT_UNREACHABLE``
   instead of surfacing on the first delegation.
 * :func:`send_to_remote_agent` performs one delegation. It opens the same
@@ -26,11 +26,12 @@ would break every deployment that declares no ``a2a`` grant.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from importlib.util import find_spec
 from typing import TYPE_CHECKING, Final
 
+from loom.ai._filters import matches, select_names
 from loom.ai.compiler import CompiledA2ACapability
 from loom.ai.errors import AgentCompilationError, provider_not_installed
 
@@ -66,7 +67,8 @@ async def create_a2a_client(capability: CompiledA2ACapability) -> AsyncIterator[
 
     Args:
         capability: Compiled grant carrying the validated ``https://`` URL and
-            the optional subset of skills the artifact delegates to.
+            the ``include``/``exclude`` filter selecting the skills the
+            artifact delegates to.
 
     Yields:
         The connected client, closed together with its HTTP client on exit.
@@ -75,7 +77,7 @@ async def create_a2a_client(capability: CompiledA2ACapability) -> AsyncIterator[
         AgentCardResolutionError: When the card cannot be fetched, decoded or
             validated.
         ValueError: When the card advertises no transport this client speaks,
-            or does not advertise a granted skill.
+            or advertises no skill the grant's filter selects.
 
     Example::
 
@@ -127,15 +129,29 @@ async def _reply_text(client: Client, prompt: str) -> str:
 
 
 def _reject_ungranted_card(capability: CompiledA2ACapability, card: AgentCard) -> None:
-    """Refuse a card that does not advertise every skill the artifact grants.
+    """Refuse a card the grant's skill filter does not usefully select from.
 
-    Only names the artifact already carries are reported: no text of the remote
-    card reaches the start-up issue.
+    Two failures are distinguished, most specific first: an ``include`` pattern
+    that matches no advertised skill — the artifact asked for something this
+    remote does not have — and, failing that, a filter whose ``exclude`` leaves
+    nothing selected. Only patterns the artifact already carries are reported:
+    the card is untrusted input (FR-044a), so no text of it reaches the
+    start-up issue.
     """
-    granted = capability.skills
-    if not granted:
+    if not capability.include and not capability.exclude:
         return
-    advertised = {skill.id for skill in card.skills}
-    missing = tuple(name for name in granted if name not in advertised)
-    if missing:
-        raise ValueError(f"the card does not advertise the granted skills: {', '.join(missing)}")
+    advertised = tuple(skill.id for skill in card.skills)
+    unmatched = tuple(
+        pattern for pattern in capability.include if not _matches_any(pattern, advertised)
+    )
+    if unmatched:
+        raise ValueError(
+            f"the card advertises nothing matching the granted skills: {', '.join(unmatched)}"
+        )
+    if not select_names(advertised, include=capability.include, exclude=capability.exclude):
+        raise ValueError("the card advertises no skill matching the granted filter")
+
+
+def _matches_any(pattern: str, names: Sequence[str]) -> bool:
+    """Report whether one granted pattern selects at least one advertised name."""
+    return any(matches(name, (pattern,)) for name in names)

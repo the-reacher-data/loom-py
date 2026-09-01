@@ -23,7 +23,7 @@ from typing import Any, ClassVar
 import msgspec
 
 from loom.ai.abc import ToolsetFactory
-from loom.ai.declarative import PolicySpec, ToolFilter
+from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
 from loom.core.model import LoomFrozenStruct
@@ -82,36 +82,52 @@ class CompiledSqlCapability(LoomFrozenStruct, frozen=True, kw_only=True):
 
 
 class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Statically validated MCP server grant.
+    """MCP server grant, resolved against ``ai.mcp_servers``.
 
-    The URL resolves over the network in ``__aenter__`` — it is one of the
-    three declared exceptions to "strings die at compile" (invariant 3).
+    The artifact names a server; the plan carries the resolved handle — URL,
+    credential reference and deadline — so nothing downstream re-reads
+    configuration.  The URL itself resolves over the network in ``__aenter__``:
+    it is one of the declared exceptions to "strings die at compile"
+    (invariant 3), and so is the filter, which is applied against the server's
+    real tool list.
 
     Attributes:
+        server: Configured server name, carried for the self-description.
         url: Validated ``https://`` server URL, free of inline credentials.
-        tool_filter: Optional allow/deny lists over the exposed tools.
         headers_ref: Reference to deployment-resolved headers; never a secret.
+        timeout_ms: Deadline of a single call to this server.
+        include: Tool names or glob patterns to expose; empty means all.
+        exclude: Tool names or glob patterns to omit, applied after ``include``.
     """
 
     kind: ClassVar[str] = "mcp"
 
+    server: str
     url: str
-    tool_filter: ToolFilter | None = None
     headers_ref: str | None = None
+    timeout_ms: int = 20000
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 class CompiledSkillsCapability(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Packaged skills resolved to their imported objects.
+    """Skill library resolved to a directory and a selected set of skill names.
+
+    Both globs and the library reference die at compile: the plan carries the
+    absolute directory and the exact skill names granted, so the engine loads
+    them without re-interpreting the artifact.
 
     Attributes:
-        refs: ``module:symbol`` references, carried for the self-description.
-        skills: Imported skill objects, one per reference, in order.
+        library: Library as written in the artifact, for the self-description.
+        directory: Absolute path the library resolved to.
+        names: Selected skill names, alphabetically ordered.
     """
 
     kind: ClassVar[str] = "skills"
 
-    refs: tuple[str, ...]
-    skills: tuple[object, ...]
+    library: str
+    directory: str
+    names: tuple[str, ...]
 
 
 class CompiledPythonCapability(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -129,20 +145,27 @@ class CompiledPythonCapability(LoomFrozenStruct, frozen=True, kw_only=True):
 
 
 class CompiledA2ACapability(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Statically validated remote-agent grant.
+    """Remote-agent grant, resolved against ``ai.a2a_agents``.
 
-    The URL resolves over the network in ``__aenter__`` — it is one of the
-    three declared exceptions to "strings die at compile" (invariant 3).
+    The card is fetched in ``__aenter__`` and the filter applied against the
+    skills it really advertises — one of the declared exceptions to "strings
+    die at compile" (invariant 3).
 
     Attributes:
+        agent: Configured agent name, carried for the self-description.
         url: Validated ``https://`` remote agent URL, free of credentials.
-        skills: Optional subset of the remote agent's skills to use.
+        headers_ref: Reference to deployment-resolved headers; never a secret.
+        include: Skill names or glob patterns to expose; empty means all.
+        exclude: Skill names or glob patterns to omit, applied after ``include``.
     """
 
     kind: ClassVar[str] = "a2a"
 
+    agent: str
     url: str
-    skills: tuple[str, ...] | None = None
+    headers_ref: str | None = None
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 CompiledCapability = (

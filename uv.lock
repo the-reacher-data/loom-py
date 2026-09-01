@@ -1869,6 +1869,9 @@ ai-anthropic = [
 ai-bedrock = [
     { name = "pydantic-ai-slim", extra = ["bedrock"] },
 ]
+ai-harness = [
+    { name = "pydantic-ai-harness", extra = ["skills"] },
+]
 ai-openai = [
     { name = "pydantic-ai-slim", extra = ["openai"] },
 ]
@@ -1999,6 +2002,7 @@ dev = [
     { name = "prometheus-client" },
     { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "pydantic-ai-harness", extra = ["skills"] },
     { name = "pydantic-ai-slim", extra = ["anthropic", "bedrock", "openai"] },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "pymongo" },
@@ -2069,6 +2073,7 @@ requires-dist = [
     { name = "prometheus-client", marker = "extra == 'rest'", specifier = ">=0.20" },
     { name = "pyarrow", marker = "extra == 'etl-polars'", specifier = ">=14.0" },
     { name = "pydantic", marker = "extra == 'rest'", specifier = ">=2.0,<3.0" },
+    { name = "pydantic-ai-harness", extras = ["skills"], marker = "extra == 'ai-harness'", specifier = ">=0.28,<1" },
     { name = "pydantic-ai-slim", marker = "extra == 'ai-pydantic'", specifier = ">=2,<3" },
     { name = "pydantic-ai-slim", extras = ["anthropic"], marker = "extra == 'ai-anthropic'", specifier = ">=2,<3" },
     { name = "pydantic-ai-slim", extras = ["bedrock"], marker = "extra == 'ai-bedrock'", specifier = ">=2,<3" },
@@ -2085,7 +2090,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },
 ]
-provides-extras = ["rest", "sqlalchemy", "clickhouse", "dynamodb", "jwt", "config", "config-ssm", "cache", "etl-polars", "etl-spark", "etl-otel", "prefect", "pyspark", "prometheus", "streaming", "ai-pydantic", "ai-bedrock", "ai-openai", "ai-anthropic", "ai-a2a", "celery"]
+provides-extras = ["rest", "sqlalchemy", "clickhouse", "dynamodb", "jwt", "config", "config-ssm", "cache", "etl-polars", "etl-spark", "etl-otel", "prefect", "pyspark", "prometheus", "streaming", "ai-pydantic", "ai-bedrock", "ai-openai", "ai-anthropic", "ai-a2a", "ai-harness", "celery"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2122,6 +2127,7 @@ dev = [
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pyarrow", specifier = ">=14.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
+    { name = "pydantic-ai-harness", extras = ["skills"], specifier = ">=0.28,<1" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "bedrock", "openai"], specifier = ">=2,<3" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.12.0" },
     { name = "pymongo", specifier = ">=4.6,<5.0" },
@@ -3004,6 +3010,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/69/44/36f1a6e523abc58ae5f928898e4aca2e0ea509b5aa6f6f392a5d882be928/pydantic-2.12.5.tar.gz", hash = "sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49", size = 821591, upload-time = "2025-11-26T15:11:46.471Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl", hash = "sha256:e561593fccf61e8a20fc46dfc2dfe075b8be7d0188df33f221ad1f0139180f9d", size = 463580, upload-time = "2025-11-26T15:11:44.605Z" },
+]
+
+[[package]]
+name = "pydantic-ai-harness"
+version = "0.28.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "genai-prices" },
+    { name = "httpx" },
+    { name = "pydantic-ai-slim" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c3/9d/6763b64fc75af544e9cba39c66aff1af95f8dac5774920ea42f3314d746e/pydantic_ai_harness-0.28.0.tar.gz", hash = "sha256:ebf9d3fb2e5e5363e46373bc9c5b482f55652b43e44e0897d6a7747ba2170121", size = 2432075, upload-time = "2026-09-01T02:07:30.602Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/d1/466c0c2d06ccf5c09f28a1a20516a3d7cce862a79e0ffc9fc96ff39acbd3/pydantic_ai_harness-0.28.0-py3-none-any.whl", hash = "sha256:119874dd503e6c1543ce3b371adf583474962ec88af9bb81aa790341141e62fa", size = 759703, upload-time = "2026-09-01T02:07:28.594Z" },
+]
+
+[package.optional-dependencies]
+skills = [
+    { name = "pyyaml" },
 ]
 
 [[package]]

@@ -35,7 +35,13 @@ from loom.ai.compiler._plan import (
     CompiledOutput,
     CompiledSqlCapability,
 )
-from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
+from loom.ai.config import (
+    A2AAgentConfig,
+    A2AConfig,
+    AgentEndpointConfig,
+    AiConfig,
+    McpServerConfig,
+)
 from loom.ai.declarative import PolicySpec
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -184,17 +190,17 @@ class StubMcpClient:
 def mcp_client_factory(
     clients: Mapping[str, StubMcpClient],
 ) -> Callable[[CompiledMcpCapability], StubMcpClient]:
-    """Build an ``McpClientFactory`` resolving a stub client per URL.
+    """Build an ``McpClientFactory`` resolving a stub client per registered name.
 
     Args:
-        clients: Stub client per ``CompiledMcpCapability.url``.
+        clients: Stub client per ``CompiledMcpCapability.server``.
 
     Returns:
         The factory the runtime calls once per MCP capability.
     """
 
     def _factory(capability: CompiledMcpCapability) -> StubMcpClient:
-        return clients[capability.url]
+        return clients[capability.server]
 
     return _factory
 
@@ -375,19 +381,33 @@ def make_plan(
     )
 
 
+DEFAULT_MCP_SERVER = "tools"
+"""Name a plain MCP grant refers to; the deployment maps it to an address."""
+
+
+def mcp_server_url(server: str) -> str:
+    """Return the address ``ai.mcp_servers.<server>`` is taken to resolve to."""
+    return f"https://{server}.internal/mcp"
+
+
 def make_mcp_capability(
-    url: str = "https://tools.internal/mcp",
+    server: str = DEFAULT_MCP_SERVER,
     *,
     include: Sequence[str] = (),
     exclude: Sequence[str] = (),
 ) -> CompiledMcpCapability:
-    """Build an MCP capability, optionally carrying a tool filter."""
-    from loom.ai.declarative import ToolFilter
-
-    tool_filter = (
-        ToolFilter(include=tuple(include), exclude=tuple(exclude)) if include or exclude else None
+    """Build an MCP capability naming a registered server and its glob filter."""
+    return CompiledMcpCapability(
+        server=server,
+        url=mcp_server_url(server),
+        include=tuple(include),
+        exclude=tuple(exclude),
     )
-    return CompiledMcpCapability(url=url, tool_filter=tool_filter)
+
+
+def make_mcp_servers(*servers: str) -> dict[str, McpServerConfig]:
+    """Build the ``ai.mcp_servers`` entries the named grants resolve against."""
+    return {server: McpServerConfig(url=mcp_server_url(server)) for server in servers}
 
 
 def make_sql_connection(*, readonly: bool = True) -> SqlConnectionConfig:
@@ -423,6 +443,8 @@ def make_ai_config(
     *,
     endpoints: Mapping[str, AgentEndpointConfig] | None = None,
     a2a: A2AConfig | None = None,
+    mcp_servers: Mapping[str, McpServerConfig] | None = None,
+    a2a_agents: Mapping[str, A2AAgentConfig] | None = None,
     startup_timeout_ms: int = 500,
     max_concurrent_runs: int = 8,
     max_prompt_bytes: int = 65536,
@@ -431,10 +453,12 @@ def make_ai_config(
     """Build an ``AiConfig`` with test-sized budgets and no model secrets."""
     return AiConfig(
         engine="fake",
-        specs=("agents/*.agent.yaml",),
+        specs=("ai/agents/*/agent.yaml",),
         models={"default": InferenceTarget(provider="fake", model="fake-model")},
         endpoints=dict(endpoints or {}),
         a2a=a2a,
+        mcp_servers=dict(mcp_servers or {}),
+        a2a_agents=dict(a2a_agents or {}),
         startup_timeout_ms=startup_timeout_ms,
         max_concurrent_runs=max_concurrent_runs,
         max_prompt_bytes=max_prompt_bytes,

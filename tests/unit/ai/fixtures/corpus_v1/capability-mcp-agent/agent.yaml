@@ -20,11 +20,9 @@ output:
           type: string
 capabilities:
   - kind: mcp
-    url: https://knowledge.example.com/mcp
-    tool_filter:
-      include:
-        - search_documents
-        - fetch_document
-      exclude:
-        - delete_document
-    headers_ref: knowledge_server_headers
+    server: knowledge
+    include:
+      - search_*
+      - fetch_document
+    exclude:
+      - delete_*

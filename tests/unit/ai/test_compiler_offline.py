@@ -19,6 +19,8 @@ from loom.ai.declarative import load_specs
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
 
+from .conftest import CORPUS_PATTERN
+
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
 
 ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
@@ -61,6 +63,6 @@ def test_corpus_compiles_clean_when_offline_and_credentialless(
         supported_kinds=ALL_KINDS,
         sql=compiler_env_sql,
     )
-    decoded = load_specs(["*.agent.yaml"], root=CORPUS_DIR)
-    plans = compiler.compile_all([item.spec for item in decoded])
+    decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
+    plans = compiler.compile_all(decoded)
     assert len(plans) == len(decoded) == 9

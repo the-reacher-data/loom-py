@@ -32,8 +32,8 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
 from typing import Any, Protocol, Self, TypeVar
-from urllib.parse import urlparse
 
+from loom.ai._filters import select_names
 from loom.ai.abc import (
     AgentEngine,
     AgentEngineProvider,
@@ -53,7 +53,7 @@ from loom.ai.compiler._plan import (
     CompiledSqlCapability,
 )
 from loom.ai.config import AiConfig
-from loom.ai.declarative import PolicySpec, ToolFilter
+from loom.ai.declarative import PolicySpec
 from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
@@ -135,8 +135,9 @@ class AgentHealth(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Attributes:
         status: Aggregate state, the worst of every check.
-        checks: Per-dependency state, keyed ``"model"``, ``"mcp:<host>"``,
-            ``"a2a:<url>"`` or ``"sql:<connection>"``. Internal topology: only
+        checks: Per-dependency state, keyed ``"model"``, ``"mcp:<server>"``,
+            ``"a2a:<agent>"`` or ``"sql:<connection>"``, always by the name the
+            deployment registered rather than by URL. Internal topology: only
             an authenticated caller ever sees it (FR-029c).
         detail: Optional explanation, ``"probing"`` until the first probe of
             the background refresher completes.
@@ -228,20 +229,19 @@ class _OpenedClient:
 def _dependency_key(capability: object) -> str | None:
     """Return the health-check key of a capability with a live dependency."""
     if type(capability) is CompiledMcpCapability:
-        return f"mcp:{urlparse(capability.url).hostname or capability.url}"
+        return _mcp_key(capability)
     if type(capability) is CompiledA2ACapability:
-        return f"a2a:{capability.url}"
+        return _a2a_key(capability)
     if type(capability) is CompiledSqlCapability:
         return f"sql:{capability.connection}"
     return None
 
 
-def _filtered_tools(tools: Sequence[str], tool_filter: ToolFilter) -> tuple[str, ...]:
-    """Apply ``include`` then ``exclude`` to the tools a server offers."""
-    include = frozenset(tool_filter.include)
-    exclude = frozenset(tool_filter.exclude)
-    included = tools if not include else [tool for tool in tools if tool in include]
-    return tuple(tool for tool in included if tool not in exclude)
+def _filtered_tools(
+    tools: Sequence[str], *, include: Sequence[str], exclude: Sequence[str]
+) -> tuple[str, ...]:
+    """Apply the glob ``include`` then ``exclude`` to the tools a server offers."""
+    return select_names(tools, include=include, exclude=exclude)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,9 +249,10 @@ class _FilterTarget:
     """One declared tool filter and the shared session it must be checked against."""
 
     agent: str
-    url: str
+    server: str
     key: str
-    tool_filter: ToolFilter
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
 
 
 def _filter_targets(plans: Iterable[AgentPlan]) -> tuple[_FilterTarget, ...]:
@@ -259,13 +260,14 @@ def _filter_targets(plans: Iterable[AgentPlan]) -> tuple[_FilterTarget, ...]:
     return tuple(
         _FilterTarget(
             agent=plan.name,
-            url=capability.url,
+            server=capability.server,
             key=_mcp_key(capability),
-            tool_filter=capability.tool_filter,
+            include=capability.include,
+            exclude=capability.exclude,
         )
         for plan in plans
         for capability in plan.capabilities
-        if type(capability) is CompiledMcpCapability and capability.tool_filter is not None
+        if type(capability) is CompiledMcpCapability and (capability.include or capability.exclude)
     )
 
 
@@ -274,9 +276,10 @@ def _filter_issues(
 ) -> list[AgentCompilationIssue]:
     """Return one issue per filter that selects none of its server's tools."""
     return [
-        tool_filter_matches_nothing(target.agent, target.url)
+        tool_filter_matches_nothing(target.agent, target.server)
         for target in targets
-        if target.key in listed and not _filtered_tools(listed[target.key], target.tool_filter)
+        if target.key in listed
+        and not _filtered_tools(listed[target.key], include=target.include, exclude=target.exclude)
     ]
 
 
@@ -285,9 +288,11 @@ def _listing_timeout_issues(
 ) -> list[AgentCompilationIssue]:
     """Name every server whose tool listing did not complete inside the budget."""
     pending: dict[str, str] = {
-        target.key: target.url for target in targets if target.key not in listed
+        target.key: target.server for target in targets if target.key not in listed
     }
-    return [mcp_server_unreachable(url, "listing its tools timed out") for url in pending.values()]
+    return [
+        mcp_server_unreachable(server, "listing its tools timed out") for server in pending.values()
+    ]
 
 
 def _worst(states: Iterable[str]) -> HealthState:
@@ -449,7 +454,8 @@ class AgentRuntime:
 
     Raises:
         AgentCompilationError: From ``__aenter__``, aggregating every start-up
-            failure — an unreachable server (naming its URL), a tool filter
+            failure — an unreachable server (named as the deployment
+            registered it, never by URL), a tool filter
             matching nothing, or a SQL connection whose read-only state drifted.
 
     Example::
@@ -676,7 +682,7 @@ class AgentRuntime:
 
     async def _open_clients(self, stack: AsyncExitStack, deadline: float) -> None:
         """Open every live client concurrently, before the start-up deadline."""
-        mcp, a2a = _url_capabilities(self._plans.values())
+        mcp, a2a = _remote_capabilities(self._plans.values())
         if not mcp and not a2a:
             return
         opened: list[_OpenedClient] = []
@@ -706,14 +712,14 @@ class AgentRuntime:
         factory = self._mcp_client_factory
         if factory is None:
             failures.append(
-                mcp_server_unreachable(capability.url, "no MCP client factory is configured")
+                mcp_server_unreachable(capability.server, "no MCP client factory is configured")
             )
             return
         client = factory(capability)
         try:
             session = await client.__aenter__()
         except Exception as exc:  # recovery: reported as a coded start-up issue
-            failures.append(mcp_server_unreachable(capability.url, str(exc)))
+            failures.append(mcp_server_unreachable(capability.server, str(exc)))
             return
         opened.append(_OpenedClient(key=_mcp_key(capability), client=client, session=session))
 
@@ -726,16 +732,16 @@ class AgentRuntime:
         factory = self._a2a_client_factory
         if factory is None:
             failures.append(
-                a2a_agent_unreachable(capability.url, "no A2A client factory is configured")
+                a2a_agent_unreachable(capability.agent, "no A2A client factory is configured")
             )
             return
         client = factory(capability)
         try:
             session = await client.__aenter__()
         except Exception as exc:  # recovery: reported as a coded start-up issue
-            failures.append(a2a_agent_unreachable(capability.url, str(exc)))
+            failures.append(a2a_agent_unreachable(capability.agent, str(exc)))
             return
-        opened.append(_OpenedClient(key=f"a2a:{capability.url}", client=client, session=session))
+        opened.append(_OpenedClient(key=_a2a_key(capability), client=client, session=session))
 
     def _register_opened(self, stack: AsyncExitStack, opened: Sequence[_OpenedClient]) -> None:
         for entry in opened:
@@ -755,14 +761,14 @@ class AgentRuntime:
         reason = f"connection did not complete within {self._config.startup_timeout_ms} ms"
         live = {entry.key for entry in opened}
         issues: list[AgentCompilationIssue] = [
-            mcp_server_unreachable(capability.url, reason)
+            mcp_server_unreachable(capability.server, reason)
             for capability in mcp
             if _mcp_key(capability) not in live
         ]
         issues.extend(
-            a2a_agent_unreachable(remote.url, reason)
+            a2a_agent_unreachable(remote.agent, reason)
             for remote in a2a
-            if f"a2a:{remote.url}" not in live
+            if _a2a_key(remote) not in live
         )
         return issues
 
@@ -881,17 +887,25 @@ class AgentRuntime:
 
 
 def _mcp_key(capability: CompiledMcpCapability) -> str:
-    """Return the health-check key of one MCP capability."""
-    return f"mcp:{urlparse(capability.url).hostname or capability.url}"
+    """Return the health-check key of one MCP capability, by registered name."""
+    return f"mcp:{capability.server}"
 
 
-def _url_capabilities(
+def _a2a_key(capability: CompiledA2ACapability) -> str:
+    """Return the health-check key of one A2A capability, by registered name."""
+    return f"a2a:{capability.agent}"
+
+
+def _remote_capabilities(
     plans: Iterable[AgentPlan],
 ) -> tuple[tuple[CompiledMcpCapability, ...], tuple[CompiledA2ACapability, ...]]:
-    """Return one MCP and one A2A capability per distinct URL across every plan.
+    """Return one MCP and one A2A capability per registered name across every plan.
 
     Clients are shared per worker, not per agent and never per call (FR-026),
-    so two agents pointing at the same server open a single connection.
+    so two agents naming the same server open a single connection. The name is
+    the unit of sharing, not the URL: two entries of ``ai.mcp_servers`` may
+    legitimately share a host while differing in credential reference or
+    deadline.
 
     Args:
         plans: Compiled plans of this worker.
@@ -904,7 +918,7 @@ def _url_capabilities(
     for plan in plans:
         for capability in plan.capabilities:
             if type(capability) is CompiledMcpCapability:
-                mcp.setdefault(capability.url, capability)
+                mcp.setdefault(capability.server, capability)
             elif type(capability) is CompiledA2ACapability:
-                a2a.setdefault(capability.url, capability)
+                a2a.setdefault(capability.agent, capability)
     return tuple(mcp.values()), tuple(a2a.values())

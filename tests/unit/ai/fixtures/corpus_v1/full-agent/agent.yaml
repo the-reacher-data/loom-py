@@ -18,21 +18,18 @@ capabilities:
     max_rows: 1000
     max_result_bytes: 2097152
   - kind: mcp
-    url: https://runbooks.example.com/mcp
-    tool_filter:
-      include:
-        - search_runbooks
-      exclude:
-        - execute_runbook
-    headers_ref: runbooks_server_headers
+    server: runbooks
+    include:
+      - search_*
+    exclude:
+      - execute_*
   - kind: skills
-    refs:
-      - myapp.skills.incidents:severity_rubric
+    library: ./skills
   - kind: python
     factory: myapp.tools.metrics:build_metrics_toolset
   - kind: a2a
-    url: https://oncall.example.com/a2a
-    skills:
+    agent: oncall
+    include:
       - page_oncall
 policies:
   retries: 3

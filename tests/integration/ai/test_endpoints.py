@@ -51,13 +51,14 @@ from tests.integration.ai.conftest import (
     make_ai_config,
     make_endpoint,
     make_mcp_capability,
+    make_mcp_servers,
     make_plan,
     mcp_client_factory,
 )
 
 _AGENT = "analyst"
 _PREFIX = "/agents"
-_MCP_URL = "https://tools.internal/mcp"
+_MCP_SERVER = "tools"
 _SRC = Path(__file__).resolve().parents[3] / "src"
 
 
@@ -120,6 +121,7 @@ async def _serving(
     """Serve an entered runtime over an in-process ASGI client."""
     config = make_ai_config(
         endpoints=dict(endpoints if endpoints is not None else {_AGENT: make_endpoint()}),
+        mcp_servers=make_mcp_servers(_MCP_SERVER),
         max_prompt_bytes=max_prompt_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
     )
@@ -130,7 +132,7 @@ async def _serving(
         deps=deps,
         container=container,
         mcp_client_factory=mcp_client_factory(
-            {_MCP_URL: StubMcpClient(label="mcp", session=RecordingMcpSession(), log=[])}
+            {_MCP_SERVER: StubMcpClient(label="mcp", session=RecordingMcpSession(), log=[])}
         ),  # type: ignore[arg-type]
     )
     async with runtime:
@@ -695,7 +697,7 @@ class TestHealth:
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """An anonymous caller gets the aggregate only (FR-029c)."""
-        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_URL),))
+        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_SERVER),))
         async with _serving(deps=deps, container=container, plans=(plan,), identity=None) as (
             _app,
             client,
@@ -708,7 +710,7 @@ class TestHealth:
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
         """No dependency identifier appears anywhere in the anonymous body."""
-        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_URL),))
+        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_SERVER),))
         async with _serving(deps=deps, container=container, plans=(plan,), identity=None) as (
             _app,
             client,
@@ -721,7 +723,7 @@ class TestHealth:
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
     ) -> None:
         """A verified caller gets the per-dependency breakdown."""
-        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_URL),))
+        plan = make_plan(_AGENT, capabilities=(make_mcp_capability(_MCP_SERVER),))
         async with _serving(deps=deps, container=container, plans=(plan,), identity=identity) as (
             _app,
             client,

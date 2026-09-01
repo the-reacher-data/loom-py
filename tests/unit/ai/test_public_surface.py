@@ -12,10 +12,12 @@ Pins two properties of the pillar's public API:
 from __future__ import annotations
 
 import inspect
+from types import ModuleType
 
 import pytest
 
 import loom.ai
+import loom.ai.declarative
 from loom.ai.abc import AgentEngine
 
 _REQUIRED_EXPORTS = frozenset(
@@ -41,6 +43,11 @@ _REQUIRED_EXPORTS = frozenset(
 )
 
 _ENGINE_NAME_FRAGMENTS = ("Pydantic", "OpenAI", "Bedrock", "LangChain", "Fake")
+
+# Names retired when ``mcp``/``a2a``/``skills`` collapsed onto one flat
+# include/exclude filter.  A re-export would resurrect a vocabulary the
+# artifact contract no longer has.
+_RETIRED_EXPORTS = frozenset({"ToolFilter"})
 
 _FORBIDDEN_RUN_PARAMS = frozenset(
     {"message", "messages", "history", "chat_history", "conversation"}
@@ -76,6 +83,20 @@ class TestPublicExports:
         missing = [name for name in loom.ai.__all__ if not hasattr(loom.ai, name)]
 
         assert missing == []
+
+    def test_all_no_contiene_nombres_retirados_cuando_se_importa_loom_ai(self) -> None:
+        """``ToolFilter`` was retired with the nested filter; it must not come back."""
+        assert set(loom.ai.__all__) & _RETIRED_EXPORTS == set()
+
+    @pytest.mark.parametrize("module", [loom.ai, loom.ai.declarative], ids=["ai", "declarative"])
+    def test_los_nombres_retirados_no_son_alcanzables_cuando_se_importa_el_modulo(
+        self,
+        module: ModuleType,
+    ) -> None:
+        """Absence from ``__all__`` is not enough: the attribute must be gone too."""
+        reachable = [name for name in _RETIRED_EXPORTS if hasattr(module, name)]
+
+        assert reachable == []
 
     def test_loom_ai_no_exporta_identity_cuando_se_importa(self) -> None:
         """Identity comes from the caller, never from the AI pillar (FR-043)."""

@@ -116,6 +116,9 @@ ai-a2a = [
     "fasta2a>=0.6,<1",
     "a2a-sdk>=1.1,<2",
 ]
+ai-harness = [
+    "pydantic-ai-harness[skills]>=0.28,<1",
+]
 celery = [
     "celery>=5.3,<6.0",
     "kombu>=5.3,<6.0",
@@ -183,6 +186,7 @@ dev = [
     "pydantic-ai-slim[anthropic,bedrock,openai]>=2,<3",
     "fasta2a>=0.6,<1",
     "a2a-sdk>=1.1,<2",
+    "pydantic-ai-harness[skills]>=0.28,<1",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -29,15 +29,17 @@ from tests.integration.ai.conftest import (
     StubMcpClient,
     make_ai_config,
     make_mcp_capability,
+    make_mcp_servers,
     make_plan,
     make_sql_capability,
     make_sql_config,
     mcp_client_factory,
+    mcp_server_url,
 )
 
-_URL_A = "https://alpha.internal/mcp"
-_URL_B = "https://beta.internal/mcp"
-_URL_C = "https://gamma.internal/mcp"
+_SERVER_A = "alpha-tools"
+_SERVER_B = "beta-tools"
+_SERVER_C = "gamma-tools"
 
 
 def _codes(error: AgentCompilationError) -> set[AgentErrorCode]:
@@ -58,7 +60,7 @@ def _build_runtime(
     """Assemble an ``AgentRuntime`` over local stubs only."""
     return AgentRuntime(
         plans=list(plans),  # type: ignore[arg-type]
-        config=make_ai_config(**(config_kwargs or {})),
+        config=make_ai_config(mcp_servers=make_mcp_servers(*clients), **(config_kwargs or {})),
         engine_provider=provider,  # type: ignore[arg-type]
         deps=deps,
         container=container,
@@ -78,11 +80,11 @@ class TestCicloDeVida:
     ) -> None:
         """``__aenter__`` opens every MCP client the plans declare."""
         clients = {
-            _URL_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log),
-            _URL_B: StubMcpClient(label="b", session=RecordingMcpSession(), log=lifecycle_log),
+            _SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log),
+            _SERVER_B: StubMcpClient(label="b", session=RecordingMcpSession(), log=lifecycle_log),
         }
         plan = make_plan(
-            capabilities=(make_mcp_capability(_URL_A), make_mcp_capability(_URL_B)),
+            capabilities=(make_mcp_capability(_SERVER_A), make_mcp_capability(_SERVER_B)),
         )
         runtime = _build_runtime(
             plans=(plan,),
@@ -103,8 +105,8 @@ class TestCicloDeVida:
     ) -> None:
         """Clients close in strict reverse order of the order they opened in."""
         clients = {
-            _URL_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log),
-            _URL_B: StubMcpClient(
+            _SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log),
+            _SERVER_B: StubMcpClient(
                 label="b",
                 session=RecordingMcpSession(),
                 log=lifecycle_log,
@@ -112,7 +114,7 @@ class TestCicloDeVida:
             ),
         }
         plan = make_plan(
-            capabilities=(make_mcp_capability(_URL_A), make_mcp_capability(_URL_B)),
+            capabilities=(make_mcp_capability(_SERVER_A), make_mcp_capability(_SERVER_B)),
         )
         runtime = _build_runtime(
             plans=(plan,),
@@ -136,11 +138,11 @@ class TestCicloDeVida:
     ) -> None:
         """Engines are built once per plan, never per request (FR-026)."""
         clients = {
-            _URL_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
+            _SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
         }
         provider = CountingEngineProvider()
         runtime = _build_runtime(
-            plans=(make_plan(capabilities=(make_mcp_capability(_URL_A),)),),
+            plans=(make_plan(capabilities=(make_mcp_capability(_SERVER_A),)),),
             clients=clients,
             provider=provider,
             deps=deps,
@@ -165,10 +167,10 @@ class TestCicloDeVida:
     ) -> None:
         """The MCP client is shared per worker, not opened per call (FR-026)."""
         clients = {
-            _URL_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
+            _SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
         }
         runtime = _build_runtime(
-            plans=(make_plan(capabilities=(make_mcp_capability(_URL_A),)),),
+            plans=(make_plan(capabilities=(make_mcp_capability(_SERVER_A),)),),
             clients=clients,
             provider=CountingEngineProvider(),
             deps=deps,
@@ -192,10 +194,10 @@ class TestCicloDeVida:
     ) -> None:
         """Exiting the stack from another task is refused, not silently done (T077)."""
         clients = {
-            _URL_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
+            _SERVER_A: StubMcpClient(label="a", session=RecordingMcpSession(), log=lifecycle_log)
         }
         runtime = _build_runtime(
-            plans=(make_plan(capabilities=(make_mcp_capability(_URL_A),)),),
+            plans=(make_plan(capabilities=(make_mcp_capability(_SERVER_A),)),),
             clients=clients,
             provider=CountingEngineProvider(),
             deps=deps,
@@ -224,15 +226,15 @@ class TestArranqueConcurrente:
     ) -> None:
         """Two 40 ms connections must not cost 80 ms: start-up is concurrent."""
         clients = {
-            _URL_A: StubMcpClient(
+            _SERVER_A: StubMcpClient(
                 label="a", session=RecordingMcpSession(), log=lifecycle_log, connect_delay_ms=40
             ),
-            _URL_B: StubMcpClient(
+            _SERVER_B: StubMcpClient(
                 label="b", session=RecordingMcpSession(), log=lifecycle_log, connect_delay_ms=40
             ),
         }
         plan = make_plan(
-            capabilities=(make_mcp_capability(_URL_A), make_mcp_capability(_URL_B)),
+            capabilities=(make_mcp_capability(_SERVER_A), make_mcp_capability(_SERVER_B)),
         )
         runtime = _build_runtime(
             plans=(plan,),
@@ -256,9 +258,9 @@ class TestArranqueConcurrente:
         deps: StubDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """An unreachable server aborts start-up with its URL in the message."""
+        """An unreachable server aborts start-up naming its registered server."""
         clients = {
-            _URL_A: StubMcpClient(
+            _SERVER_A: StubMcpClient(
                 label="a",
                 session=RecordingMcpSession(),
                 log=lifecycle_log,
@@ -266,7 +268,7 @@ class TestArranqueConcurrente:
             )
         }
         runtime = _build_runtime(
-            plans=(make_plan(capabilities=(make_mcp_capability(_URL_A),)),),
+            plans=(make_plan(capabilities=(make_mcp_capability(_SERVER_A),)),),
             clients=clients,
             provider=CountingEngineProvider(),
             deps=deps,
@@ -280,7 +282,7 @@ class TestArranqueConcurrente:
             async with asyncio.timeout(0.1):
                 await runtime.__aenter__()
 
-        assert _URL_A in str(failure.value)
+        assert _SERVER_A in str(failure.value)
 
     async def test_reporta_mcp_server_unreachable_cuando_no_conecta(
         self,
@@ -290,7 +292,7 @@ class TestArranqueConcurrente:
     ) -> None:
         """The abort carries the stable ``MCP_SERVER_UNREACHABLE`` code."""
         clients = {
-            _URL_A: StubMcpClient(
+            _SERVER_A: StubMcpClient(
                 label="a",
                 session=RecordingMcpSession(),
                 log=lifecycle_log,
@@ -298,7 +300,7 @@ class TestArranqueConcurrente:
             )
         }
         runtime = _build_runtime(
-            plans=(make_plan(capabilities=(make_mcp_capability(_URL_A),)),),
+            plans=(make_plan(capabilities=(make_mcp_capability(_SERVER_A),)),),
             clients=clients,
             provider=CountingEngineProvider(),
             deps=deps,
@@ -324,21 +326,21 @@ class TestPresupuestoDeArranque:
         container: LoomContainer,
     ) -> AgentRuntime:
         """Three servers whose tool listings alone outlast a single budget."""
-        urls = (_URL_A, _URL_B, _URL_C)
+        servers = (_SERVER_A, _SERVER_B, _SERVER_C)
         clients = {
-            url: StubMcpClient(
-                label=url,
+            server: StubMcpClient(
+                label=server,
                 session=RecordingMcpSession(tools=("alpha",), list_delay_ms=50),
                 log=lifecycle_log,
             )
-            for url in urls
+            for server in servers
         }
         plans = tuple(
             make_plan(
                 f"agent-{index}",
-                capabilities=(make_mcp_capability(url, include=("alpha",)),),
+                capabilities=(make_mcp_capability(server, include=("alpha",)),),
             )
-            for index, url in enumerate(urls)
+            for index, server in enumerate(servers)
         )
         return _build_runtime(
             plans=plans,
@@ -385,7 +387,7 @@ class TestPresupuestoDeArranque:
             await runtime.__aenter__()
 
         assert AgentErrorCode.MCP_SERVER_UNREACHABLE in _codes(failure.value)
-        assert _URL_C in str(failure.value)
+        assert _SERVER_C in str(failure.value)
 
     async def test_lista_las_herramientas_una_vez_cuando_dos_planes_comparten_servidor(
         self,
@@ -395,10 +397,10 @@ class TestPresupuestoDeArranque:
     ) -> None:
         """One shared session means one ``list_tools`` round trip, not one per plan."""
         session = RecordingMcpSession(tools=("alpha", "beta"))
-        clients = {_URL_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
         plans = (
-            make_plan("first", capabilities=(make_mcp_capability(_URL_A, include=("alpha",)),)),
-            make_plan("second", capabilities=(make_mcp_capability(_URL_A, include=("beta",)),)),
+            make_plan("first", capabilities=(make_mcp_capability(_SERVER_A, include=("alpha",)),)),
+            make_plan("second", capabilities=(make_mcp_capability(_SERVER_A, include=("beta",)),)),
         )
         runtime = _build_runtime(
             plans=plans,
@@ -419,10 +421,10 @@ class TestPresupuestoDeArranque:
     ) -> None:
         """The single listing is still checked against every plan's own filter."""
         session = RecordingMcpSession(tools=("alpha", "beta"))
-        clients = {_URL_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
         plans = (
-            make_plan("first", capabilities=(make_mcp_capability(_URL_A, include=("alpha",)),)),
-            make_plan("second", capabilities=(make_mcp_capability(_URL_A, include=("gamma",)),)),
+            make_plan("first", capabilities=(make_mcp_capability(_SERVER_A, include=("alpha",)),)),
+            make_plan("second", capabilities=(make_mcp_capability(_SERVER_A, include=("gamma",)),)),
         )
         runtime = _build_runtime(
             plans=plans,
@@ -450,8 +452,8 @@ class TestFiltroDeHerramientas:
     ) -> None:
         """A filter matching none of the offered tools fails start-up (FR-025)."""
         session = RecordingMcpSession(tools=("alpha", "beta"))
-        clients = {_URL_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
-        capability = make_mcp_capability(_URL_A, include=("gamma",))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("gamma",))
         runtime = _build_runtime(
             plans=(make_plan(capabilities=(capability,)),),
             clients=clients,
@@ -473,8 +475,8 @@ class TestFiltroDeHerramientas:
     ) -> None:
         """A filter keeping at least one offered tool starts up normally."""
         session = RecordingMcpSession(tools=("alpha", "beta"))
-        clients = {_URL_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
-        capability = make_mcp_capability(_URL_A, include=("alpha",))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("alpha",))
         runtime = _build_runtime(
             plans=(make_plan(capabilities=(capability,)),),
             clients=clients,
@@ -485,6 +487,97 @@ class TestFiltroDeHerramientas:
 
         async with runtime:
             assert runtime.has_agent("analyst")
+
+    async def test_arranca_cuando_un_glob_casa_parte_de_las_herramientas(
+        self,
+        lifecycle_log: list[str],
+        deps: StubDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """``include`` is glob-matched, so a pattern selects a family of tools."""
+        session = RecordingMcpSession(tools=("search_web", "search_docs", "delete_index"))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("search_*",))
+        runtime = _build_runtime(
+            plans=(make_plan(capabilities=(capability,)),),
+            clients=clients,
+            provider=CountingEngineProvider(),
+            deps=deps,
+            container=container,
+        )
+
+        async with runtime:
+            assert runtime.has_agent("analyst")
+
+    async def test_aborta_cuando_el_glob_no_casa_ninguna_herramienta(
+        self,
+        lifecycle_log: list[str],
+        deps: StubDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """A glob is matched, not compared literally: an unmatched one still fails."""
+        session = RecordingMcpSession(tools=("search_web", "delete_index"))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("write_*",))
+        runtime = _build_runtime(
+            plans=(make_plan(capabilities=(capability,)),),
+            clients=clients,
+            provider=CountingEngineProvider(),
+            deps=deps,
+            container=container,
+        )
+
+        with pytest.raises(AgentCompilationError) as failure:
+            await runtime.__aenter__()
+
+        assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
+
+    async def test_aborta_cuando_el_exclude_vacia_lo_que_el_glob_incluye(
+        self,
+        lifecycle_log: list[str],
+        deps: StubDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """``exclude`` is applied after ``include`` and can empty the selection."""
+        session = RecordingMcpSession(tools=("search_web", "search_docs"))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("search_*",), exclude=("search_*",))
+        runtime = _build_runtime(
+            plans=(make_plan(capabilities=(capability,)),),
+            clients=clients,
+            provider=CountingEngineProvider(),
+            deps=deps,
+            container=container,
+        )
+
+        with pytest.raises(AgentCompilationError) as failure:
+            await runtime.__aenter__()
+
+        assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in _codes(failure.value)
+
+    async def test_nombra_el_servidor_registrado_y_no_su_url_cuando_el_filtro_falla(
+        self,
+        lifecycle_log: list[str],
+        deps: StubDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """The issue names the registered server: a URL would publish the topology."""
+        session = RecordingMcpSession(tools=("alpha",))
+        clients = {_SERVER_A: StubMcpClient(label="a", session=session, log=lifecycle_log)}
+        capability = make_mcp_capability(_SERVER_A, include=("gamma",))
+        runtime = _build_runtime(
+            plans=(make_plan(capabilities=(capability,)),),
+            clients=clients,
+            provider=CountingEngineProvider(),
+            deps=deps,
+            container=container,
+        )
+
+        with pytest.raises(AgentCompilationError) as failure:
+            await runtime.__aenter__()
+
+        message = str(failure.value)
+        assert _SERVER_A in message and mcp_server_url(_SERVER_A) not in message
 
 
 class TestDerivaDeSoloLectura:

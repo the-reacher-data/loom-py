@@ -18,7 +18,7 @@ output:
         type: string
 capabilities:
   - kind: a2a
-    url: https://translations.example.com/a2a
-    skills:
+    agent: translations
+    include:
       - translate_text
       - detect_language

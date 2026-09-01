@@ -11,8 +11,9 @@ issues found across every model role and endpoint and raises once.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
+from urllib.parse import SplitResult, urlsplit
 
 from msgspec import field
 
@@ -20,9 +21,12 @@ from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
     a2a_expose_empty,
+    a2a_url_invalid,
     endpoint_auth_missing,
     inference_target_incomplete,
     mcp_credentials_inline,
+    mcp_url_invalid,
+    policy_out_of_range,
 )
 from loom.ai.inference import InferenceTarget
 from loom.core.model import LoomFrozenStruct
@@ -39,6 +43,10 @@ _SECRET_MATERIAL_PREFIXES = ("AKIA", "sk-", "ghp_")
 
 # A URL carrying userinfo (``scheme://user:pass@host``) embeds a credential.
 _URL_USERINFO_RE = re.compile(r"://[^/]*@")
+
+# Bounds of a single remote call, mirroring ``policies.tool_timeout_ms``.
+_TIMEOUT_MS_MIN = 1
+_TIMEOUT_MS_MAX = 600000
 
 # Settings a provider requires directly in its ``InferenceTarget`` binding.
 # Providers absent from this map need nothing beyond ``provider``/``model``
@@ -68,6 +76,28 @@ def _is_credentials_reference(value: str) -> bool:
     return _URL_USERINFO_RE.search(value) is None
 
 
+def _url_fault(url: str) -> str | None:
+    """Return why a remote URL is unsafe, or ``None`` when it is acceptable."""
+    try:
+        parts: SplitResult = urlsplit(url)
+    except ValueError:
+        return "the URL is malformed"
+    if parts.scheme != "https":
+        return "the scheme must be https"
+    if not parts.hostname:
+        return "the URL declares no host"
+    if parts.username is not None or parts.password is not None:
+        return "the URL carries credentials in its userinfo"
+    if parts.query:
+        return "the URL carries a query string, which may embed credentials"
+    return None
+
+
+def _redact_url(url: str) -> str:
+    """Strip userinfo and query so an invalid-URL message cannot leak a secret."""
+    return _URL_USERINFO_RE.sub("://***@", url).split("?", 1)[0]
+
+
 def _validate_model_binding(role: str, target: InferenceTarget) -> list[AgentCompilationIssue]:
     """Collect the issues of one ``ai.models.<role>`` binding."""
     issues: list[AgentCompilationIssue] = []
@@ -81,6 +111,38 @@ def _validate_model_binding(role: str, target: InferenceTarget) -> list[AgentCom
         # message must not leak the very secret it rejects.
         issues.append(mcp_credentials_inline(f"model role '{role}'", "credentials_ref"))
     return issues
+
+
+class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
+    """One named remote MCP server (``ai.mcp_servers.<name>``).
+
+    Artifacts name a server; this is where the server lives.  Keeping the
+    address, the credential reference and the deadline here is what lets the
+    same artifact move between environments unchanged.
+
+    Attributes:
+        url: ``https://`` server URL, free of userinfo and query string.
+        headers_ref: Reference to headers resolved by the secrets resolver.
+            Never a literal secret.
+        timeout_ms: Deadline of a single call to this server.
+    """
+
+    url: str
+    headers_ref: str | None = None
+    timeout_ms: int = 20000
+
+
+class A2AAgentConfig(LoomFrozenStruct, frozen=True, kw_only=True):
+    """One named remote A2A agent (``ai.a2a_agents.<name>``).
+
+    Attributes:
+        url: ``https://`` agent URL, free of userinfo and query string.
+        headers_ref: Reference to headers resolved by the secrets resolver.
+            Never a literal secret.
+    """
+
+    url: str
+    headers_ref: str | None = None
 
 
 class AgentEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -129,7 +191,9 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         engine: Entry-point name in group ``loom.ai.engines``.
         specs: Glob patterns of agent artifacts, relative to the app root.
         models: Model-role bindings; must contain every role an agent declares.
-        skills_root: Package root for ``kind: skills`` capabilities.
+        skills_root: Filesystem root bare skill library names resolve against.
+        mcp_servers: Named remote MCP servers artifacts refer to by name.
+        a2a_agents: Named remote A2A agents artifacts refer to by name.
         a2a: A2A exposure; absent means no card and no A2A endpoints (FR-041).
         endpoints: Per-agent HTTP opt-in (FR-029a).
         startup_timeout_ms: Total budget of start-up: opening every live
@@ -142,13 +206,17 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     Raises:
         AgentCompilationError: Aggregating one issue per invalid model binding
             (incomplete provider settings, literal secret in
-            ``credentials_ref``) and per endpoint without a named ``auth``.
+            ``credentials_ref``), per unsafe remote server or agent (bad URL,
+            inline credentials, out-of-range timeout) and per endpoint without
+            a named ``auth``.
     """
 
     engine: str
     specs: tuple[str, ...]
     models: dict[str, InferenceTarget]
     skills_root: str | None = None
+    mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
+    a2a_agents: dict[str, A2AAgentConfig] = field(default_factory=dict)
     a2a: A2AConfig | None = None
     endpoints: dict[str, AgentEndpointConfig] = field(default_factory=dict)
     startup_timeout_ms: int = 10000
@@ -160,8 +228,63 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         issues: list[AgentCompilationIssue] = []
         for role, target in self.models.items():
             issues.extend(_validate_model_binding(role, target))
+        issues.extend(_validate_mcp_servers(self.mcp_servers))
+        issues.extend(_validate_a2a_agents(self.a2a_agents))
         for name, endpoint in self.endpoints.items():
             if not endpoint.auth.strip():
                 issues.append(endpoint_auth_missing(name))
         if issues:
             raise AgentCompilationError(issues)
+
+
+_UrlIssue = Callable[[str, str, str], AgentCompilationIssue]
+
+
+def _validate_remote_url(component: str, url: str, build: _UrlIssue) -> list[AgentCompilationIssue]:
+    """Collect the fault of one remote URL, redacted so it cannot leak a secret."""
+    fault = _url_fault(url)
+    if fault is None:
+        return []
+    return [build(component, _redact_url(url), fault)]
+
+
+def _validate_headers_ref(component: str, headers_ref: str | None) -> list[AgentCompilationIssue]:
+    if headers_ref is None or _is_credentials_reference(headers_ref):
+        return []
+    # The rejected value is deliberately absent: the message must not leak the
+    # very secret it rejects.
+    return [mcp_credentials_inline(component, "headers_ref")]
+
+
+def _validate_mcp_servers(
+    servers: Mapping[str, McpServerConfig],
+) -> list[AgentCompilationIssue]:
+    """Collect the issues of every ``ai.mcp_servers`` entry."""
+    issues: list[AgentCompilationIssue] = []
+    for name, server in servers.items():
+        component = f"ai.mcp_servers.{name}"
+        issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
+        issues.extend(_validate_headers_ref(component, server.headers_ref))
+        if not _TIMEOUT_MS_MIN <= server.timeout_ms <= _TIMEOUT_MS_MAX:
+            issues.append(
+                policy_out_of_range(
+                    component,
+                    "timeout_ms",
+                    server.timeout_ms,
+                    _TIMEOUT_MS_MIN,
+                    _TIMEOUT_MS_MAX,
+                )
+            )
+    return issues
+
+
+def _validate_a2a_agents(
+    agents: Mapping[str, A2AAgentConfig],
+) -> list[AgentCompilationIssue]:
+    """Collect the issues of every ``ai.a2a_agents`` entry."""
+    issues: list[AgentCompilationIssue] = []
+    for name, agent in agents.items():
+        component = f"ai.a2a_agents.{name}"
+        issues.extend(_validate_remote_url(component, agent.url, a2a_url_invalid))
+        issues.extend(_validate_headers_ref(component, agent.headers_ref))
+    return issues

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 _AI_TESTS_DIR = Path(__file__).parent.parent
-CORPUS_GLOB = str(_AI_TESTS_DIR / "fixtures" / "corpus_v1" / "*.agent.yaml")
+CORPUS_GLOB = str(_AI_TESTS_DIR / "fixtures" / "corpus_v1" / "*" / "agent.yaml")
 FAKE_PKGS_DIR = _AI_TESTS_DIR / "fixtures" / "fake_pkgs"
 
 BROKEN_ARTIFACT = """\

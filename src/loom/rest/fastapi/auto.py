@@ -547,7 +547,9 @@ def _resolve_ai(
         sql=sql_cfg,
     )
     decoded = load_specs(ai_cfg.specs, root=code_path)
-    plans = compiler.compile_all([artifact.spec for artifact in decoded])
+    # DecodedSpec, not .spec: the artifact's own path is what resolves a
+    # './library' skill grant, and dropping it fails them in real wiring.
+    plans = compiler.compile_all(decoded)
     runtime = AgentRuntime(
         plans=plans,
         config=ai_cfg,
@@ -1095,6 +1097,12 @@ def create_app(
     )
     _configure_job_service(ctx, result, observability_runtime)
     _register_sql_service(result.container, sql.service)
+    # Registered, not merely passed: capability spans resolve it from the
+    # container, and an unregistered runtime makes every Scope.TOOL span a
+    # silent no-op in production while passing every test that injects one.
+    result.container.register(
+        ObservabilityRuntime, lambda: observability_runtime, scope=Scope.APPLICATION
+    )
     ai = _resolve_ai(ctx, kernel=result, sql_cfg=sql.config, code_path=effective_code_path)
 
     @asynccontextmanager

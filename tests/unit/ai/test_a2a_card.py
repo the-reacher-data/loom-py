@@ -25,6 +25,7 @@ from typing import Any, Final
 
 import msgspec
 import pytest
+
 from loom.ai.a2a.card import (
     DEFAULT_A2A_PREFIX,
     PROTOCOL_VERSION,
@@ -34,7 +35,6 @@ from loom.ai.a2a.card import (
     card_path,
 )
 from loom.ai.a2a.events import A2AEventProjector
-
 from loom.ai.abc import (
     AgentEvent,
     AgentUsage,
@@ -101,9 +101,15 @@ _CANARY_STRINGS: Final[tuple[str, ...]] = (
     "cost_centre",
     "ticket",
     "canary.usecase.key",
+    "canary_server",
     "https://canary-mcp.internal/mcp",
+    "canary/mcp-headers",
+    "canary_remote",
     "https://canary-remote.internal",
-    "myapp.skills:canary",
+    "canary/a2a-headers",
+    "canary-library",
+    "/srv/canary-library",
+    "canary-skill",
     "myapp.tools:canary_factory",
     "canary_conn",
     "canary-db.internal",
@@ -191,13 +197,25 @@ def _canary_capabilities() -> tuple[CompiledCapability, ...]:
             max_rows=100,
             max_result_bytes=1024,
         ),
-        CompiledMcpCapability(url="https://canary-mcp.internal/mcp"),
-        CompiledSkillsCapability(refs=("myapp.skills:canary",), skills=()),
+        CompiledMcpCapability(
+            server="canary_server",
+            url="https://canary-mcp.internal/mcp",
+            headers_ref="canary/mcp-headers",
+        ),
+        CompiledSkillsCapability(
+            library="canary-library",
+            directory="/srv/canary-library",
+            names=("canary-skill",),
+        ),
         CompiledPythonCapability(
             factory_ref="myapp.tools:canary_factory",
             factory=_canary_factory,
         ),
-        CompiledA2ACapability(url="https://canary-remote.internal"),
+        CompiledA2ACapability(
+            agent="canary_remote",
+            url="https://canary-remote.internal",
+            headers_ref="canary/a2a-headers",
+        ),
     )
 
 
