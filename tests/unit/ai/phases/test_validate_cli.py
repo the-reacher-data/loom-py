@@ -68,3 +68,21 @@ def test_exits_nonzero_with_one_coded_line_per_issue_when_artifact_is_broken(
     for code in ("OUTPUT_SCHEMA_INVALID", "POLICY_OUT_OF_RANGE"):
         matching = [line for line in lines if code in line]
         assert len(matching) == 1, (code, lines)
+
+
+def test_un_patron_que_no_casa_nada_falla_en_vez_de_pasar(tmp_path: Path) -> None:
+    """Counting only issues makes an empty match look like a clean corpus.
+
+    That is not hypothetical: this project's own CI guarded the artifact
+    corpus with '*.yaml' after the corpus moved to one directory per agent,
+    so the step matched nothing, exited 0 and asserted nothing for as long as
+    it stood.
+    """
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "loom.ai.validate", str(tmp_path / "*.agent.yaml")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "no artifact matched" in result.stderr

@@ -54,13 +54,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not patterns:
         print("usage: python -m loom.ai.validate <glob> [<glob> ...]", file=sys.stderr)
         return 2
-    issues = validate_patterns(patterns)
+    matched = _matched_files(patterns)
+    if not matched:
+        # A pattern that matches nothing exits 0 if you only count issues,
+        # which is how a CI step guards a corpus while validating none of it:
+        # exactly what happened to this project's own workflow when the corpus
+        # moved to one directory per agent and the glob kept saying '*.yaml'.
+        print(f"no artifact matched: {' '.join(patterns)}", file=sys.stderr)
+        return 2
+    issues = [issue for path in matched for issue in _issues_for_file(path)]
     for issue in issues:
         print(f"{issue.code.value} {issue.message}", file=sys.stderr)
     return 1 if issues else 0
 
 
 def _matched_files(patterns: Sequence[str]) -> tuple[Path, ...]:
+    """Resolve the globs to the files they name.
+
+    Paths are taken as given. This is a local command line: the person who
+    typed the pattern already has the process's own permissions, so there is
+    no boundary here to escape and confining the result would only break the
+    legitimate case of validating an artifact outside the working tree.
+    (Sonar's pythonsecurity:S8707 reads this as traversal; the suppression in
+    sonar-project.properties carries the reasoning.)
+
+    Args:
+        patterns: Glob patterns as given on the command line.
+
+    Returns:
+        The matched files, sorted and de-duplicated.
+    """
     matches: set[Path] = set()
     for pattern in patterns:
         matches.update(Path(match) for match in glob(pattern, recursive=True))

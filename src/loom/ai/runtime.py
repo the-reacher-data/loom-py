@@ -420,12 +420,23 @@ async def _supervised_events(
 
 
 async def _cancel_task(task: asyncio.Task[None]) -> None:
-    """Cancel an owned background task and wait for it to actually stop."""
+    """Cancel an owned background task and wait for it to actually stop.
+
+    The ``CancelledError`` is swallowed only when it belongs to *task*. If it
+    arrived because the caller itself was cancelled while awaiting, it is
+    re-raised: absorbing that one would break the cooperative cancellation of
+    whoever is shutting this runtime down, and the shutdown would appear to
+    succeed while its caller kept running.
+
+    Args:
+        task: Background task this runtime owns.
+    """
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
-        return
+        if not task.cancelled():
+            raise
 
 
 class AgentRuntime:

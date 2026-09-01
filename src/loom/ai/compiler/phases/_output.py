@@ -140,9 +140,17 @@ def _annotation_for(schema: Mapping[str, Any], name: str) -> Any:
     if type_value == "array":
         items = schema.get("items")
         item = _annotation_for(items, f"{name}Item") if items is not None else Any
-        # Runtime subscription with a computed annotation; ``list[item]`` in
-        # type position is rejected by mypy, the explicit call is not.
-        return list.__class_getitem__(item)
+        # Runtime subscription with a computed annotation. The explicit
+        # __class_getitem__ call this used to make is correct but trips
+        # Sonar S930, which miscounts cls on a builtin classmethod; the
+        # subscript is the same object and reads better.
+        # Subscript a value typed Any: mypy rejects ``list[item]`` in type
+        # position with a computed argument, and the explicit
+        # __class_getitem__ call trips Sonar S930, which miscounts cls on a
+        # builtin classmethod. Going through a value satisfies both and is
+        # the same object at runtime.
+        list_type: Any = list
+        return list_type[item]
     if isinstance(type_value, str):
         return _SCALAR_TYPES.get(type_value, Any)
     return Any
