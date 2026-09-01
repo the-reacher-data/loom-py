@@ -10,7 +10,7 @@ of production.
 
 from __future__ import annotations
 
-from loom.ai.a2a.server import _RUN_ERROR_DETAILS
+from loom.ai.a2a._rpc import RUN_ERROR_DETAILS
 from loom.ai.errors import _RUN_ERROR_CLASSES, AgentRunErrorCode
 
 
@@ -21,4 +21,4 @@ def test_toda_clase_de_error_de_ejecucion_esta_mapeada() -> None:
 
 def test_todo_detalle_a2a_esta_mapeado() -> None:
     """The A2A detail catalogue degrades silently, so a gap ships unnoticed."""
-    assert set(_RUN_ERROR_DETAILS) == set(AgentRunErrorCode)
+    assert set(RUN_ERROR_DETAILS) == set(AgentRunErrorCode)

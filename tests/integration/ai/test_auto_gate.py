@@ -114,6 +114,7 @@ def _write_project(
     *,
     endpoint: dict[str, Any],
     jwt_section: dict[str, Any],
+    a2a: dict[str, Any] | None = None,
 ) -> str:
     """Write the fixture app, one agent spec and the YAML config; return its path.
 
@@ -143,6 +144,7 @@ def _write_project(
             "specs": ["ai/agents/*/agent.yaml"],
             "models": {"default": {"provider": "fake", "model": "fake-model"}},
             "endpoints": {_AGENT: endpoint},
+            **({"a2a": a2a} if a2a is not None else {}),
         },
     }
     config_path = tmp_path / "app.yaml"
@@ -186,6 +188,80 @@ class TestAudienciaJwtDelAgente:
             tmp_path,
             endpoint={"enabled": True, "auth": "identity"},
             jwt_section={**_JWT_WITHOUT_AUDIENCE, "audience": "loom-api"},
+        )
+
+        assert create_app(config_path) is not None
+
+
+_A2A_SECTION: dict[str, Any] = {
+    "base_url": "https://agents.example.com",
+    "expose": [_AGENT],
+}
+
+# The HTTP surface is switched off, so only 'ai.a2a.expose' publishes this
+# agent: the gate must fire on the A2A exposure alone or it fires on nothing.
+_HTTP_OFF: dict[str, Any] = {"enabled": False, "auth": "identity"}
+
+
+class TestAudienciaJwtDelAgentePublicadoPorA2a:
+    """The public A2A surface is gated at least as strictly as the HTTP one (§4).
+
+    An agent in ``ai.a2a.expose`` is announced to the internet with a card
+    naming its bearer scheme. Without a validated ``aud`` any token signed by
+    the same key — including one minted for a sibling service — drives every
+    capability that agent holds, as that caller.
+    """
+
+    @pytest.mark.usefixtures("fake_engine")
+    def test_falla_al_arrancar_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+        """Publishing over A2A alone is enough to require the ``aud`` gate."""
+        config_path = _write_project(
+            tmp_path,
+            endpoint=_HTTP_OFF,
+            jwt_section=_JWT_WITHOUT_AUDIENCE,
+            a2a=_A2A_SECTION,
+        )
+
+        with pytest.raises(ConfigError, match="audience"):
+            create_app(config_path)
+
+    @pytest.mark.usefixtures("fake_engine")
+    def test_nombra_el_agente_cuando_el_jwt_no_valida_audience(self, tmp_path: Path) -> None:
+        """The operator is told which exposed agent blocks start-up."""
+        config_path = _write_project(
+            tmp_path,
+            endpoint=_HTTP_OFF,
+            jwt_section=_JWT_WITHOUT_AUDIENCE,
+            a2a=_A2A_SECTION,
+        )
+
+        with pytest.raises(ConfigError) as failure:
+            create_app(config_path)
+
+        assert _AGENT in str(failure.value)
+
+    @pytest.mark.usefixtures("fake_engine")
+    def test_arranca_cuando_el_jwt_valida_audience(self, tmp_path: Path) -> None:
+        """A validated ``aud`` is all the gate asks for, here too."""
+        config_path = _write_project(
+            tmp_path,
+            endpoint=_HTTP_OFF,
+            jwt_section={**_JWT_WITHOUT_AUDIENCE, "audience": "loom-api"},
+            a2a=_A2A_SECTION,
+        )
+
+        assert create_app(config_path) is not None
+
+    @pytest.mark.usefixtures("fake_engine")
+    def test_arranca_sin_audience_cuando_el_agente_publicado_es_anonimo(
+        self, tmp_path: Path
+    ) -> None:
+        """An agent that verifies no caller has no ``aud`` to validate."""
+        config_path = _write_project(
+            tmp_path,
+            endpoint={"enabled": True, "auth": "identity", "allow_anonymous": True},
+            jwt_section=_JWT_WITHOUT_AUDIENCE,
+            a2a=_A2A_SECTION,
         )
 
         assert create_app(config_path) is not None

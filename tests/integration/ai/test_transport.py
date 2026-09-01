@@ -13,6 +13,7 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import loom.ai.a2a._handlers as a2a_handlers
 import loom.ai.a2a.server as a2a_server
 import loom.ai.fastapi.endpoints as endpoints_module
 import loom.ai.fastapi.streaming as streaming_module
@@ -92,18 +93,27 @@ class TestLatidosCompartidos:
         assert await _collect(with_heartbeats(frames(), heartbeat_ms=1000)) == [b"one", b"two"]
 
 
+def _a2a_transport_source() -> str:
+    """Return every module of the A2A transport package, concatenated.
+
+    The transport is split across ``server``, ``_rpc``, ``_handlers`` and
+    ``_binding``; scanning only the entry module would let a copy of a shared
+    rule reappear in a sibling and pass unnoticed.
+    """
+    package = Path(str(a2a_server.__file__)).parent
+    return "\n".join(module.read_text(encoding="utf-8") for module in sorted(package.glob("*.py")))
+
+
 class TestPropiedadUnica:
     """Neither surface owns the shared rules, and neither reaches into the other."""
 
     def test_el_servidor_a2a_no_importa_nombres_privados_del_surface_http(self) -> None:
         """A leading underscore is a boundary; the A2A module must not cross it."""
-        source = Path(str(a2a_server.__file__)).read_text(encoding="utf-8")
-
-        assert "from loom.ai.fastapi.endpoints import" not in source
+        assert "from loom.ai.fastapi.endpoints import" not in _a2a_transport_source()
 
     def test_los_dos_transportes_usan_la_misma_carrera_cuando_laten(self) -> None:
         """One heartbeat generator, not a copy per surface."""
-        assert a2a_server.with_heartbeats is with_heartbeats
+        assert a2a_handlers.with_heartbeats is with_heartbeats
 
     def test_el_surface_http_usa_la_misma_carrera_cuando_late(self) -> None:
         """``stream_sse`` is the encoder composed with that same generator."""
@@ -111,7 +121,7 @@ class TestPropiedadUnica:
 
     def test_los_dos_transportes_usan_el_mismo_periodo_cuando_laten(self) -> None:
         """One silence budget, so the two surfaces cannot drift apart again."""
-        assert a2a_server.HEARTBEAT_MS is endpoints_module.HEARTBEAT_MS
+        assert a2a_handlers.HEARTBEAT_MS is endpoints_module.HEARTBEAT_MS
 
     def test_el_surface_http_no_define_su_propio_mapeo_de_fallo_terminal(self) -> None:
         """The encoder module keeps no private copy of the failure mapping."""
@@ -121,6 +131,4 @@ class TestPropiedadUnica:
 
     def test_el_servidor_a2a_no_define_su_propio_mapeo_de_fallo_terminal(self) -> None:
         """Nor does the A2A one: a single definition, imported by both."""
-        source = Path(str(a2a_server.__file__)).read_text(encoding="utf-8")
-
-        assert "def _failure_event(" not in source
+        assert "def _failure_event(" not in _a2a_transport_source()
