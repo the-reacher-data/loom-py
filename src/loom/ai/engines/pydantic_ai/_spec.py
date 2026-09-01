@@ -14,6 +14,21 @@ What is deliberately **not** projected:
 * ``run_timeout_ms`` / ``max_iterations`` — enforced by
   :class:`~loom.ai.runtime.AgentRuntime`, which supervises every stream; a
   second enforcement here would be a hidden, divergent limit.
+* ``tool_timeout_ms`` — enforced on loom's side, by
+  ``_capabilities._capability_call`` around every granted tool and by
+  ``AgentRuntime``'s own tool deadline. Those two agree: same code, same
+  retry class, so which one fires first is not observable. Projecting it as
+  the engine's ``tool_timeout`` too
+  would race the two deadlines over the same value: whichever fired first
+  decided the outcome, and the engine's own expiry is classified
+  ``PROVIDER_UNAVAILABLE`` (retried) where loom's is ``TOOL_TIMEOUT`` (not
+  retried). One value, two retry behaviours, chosen by the event loop.
+
+``retries`` **is** projected, and it is not the same axis as the runtime's
+``plan.policies.retries + 1`` attempts (``_engine``): the engine's counter
+replays a failed *tool* call inside one run, loom's replays a failed
+*provider* call across runs. They share one artifact field on purpose — a
+single operator-facing knob — but neither enforcement subsumes the other.
 """
 
 from __future__ import annotations
@@ -23,8 +38,6 @@ from typing import Any
 from pydantic_ai import AgentSpec
 
 from loom.ai.compiler import AgentPlan
-
-_MS_PER_SECOND = 1000.0
 
 
 def build_agent_spec(plan: AgentPlan) -> AgentSpec:
@@ -47,5 +60,4 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
         instructions=plan.instructions,
         output_schema=schema,
         retries=plan.policies.retries,
-        tool_timeout=plan.policies.tool_timeout_ms / _MS_PER_SECOND,
     )

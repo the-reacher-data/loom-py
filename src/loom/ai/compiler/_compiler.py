@@ -8,7 +8,7 @@ its issues and one :class:`AgentCompilationError` reports them all (FR-011).
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import defaultdict
 from collections.abc import Sequence
 from types import MappingProxyType
 
@@ -27,6 +27,8 @@ from loom.ai.errors import (
 from loom.ai.inference import InferenceTarget
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
+
+_UNNAMED_SOURCE = "<in-memory spec>"
 
 _CompileResult = tuple[AgentPlan | None, list[AgentCompilationIssue]]
 
@@ -104,7 +106,7 @@ class AgentCompiler:
             AgentCompilationError: Aggregating every issue of every spec.
         """
         entries = [_as_entry(item) for item in specs]
-        issues: list[AgentCompilationIssue] = _duplicate_name_issues([spec for spec, _ in entries])
+        issues: list[AgentCompilationIssue] = _duplicate_name_issues(entries)
         plans: list[AgentPlan] = []
         for spec, source_path in entries:
             plan, spec_issues = self._compile_one(spec, source_path)
@@ -165,8 +167,18 @@ def _as_entry(item: AgentSpecV1 | DecodedSpec) -> tuple[AgentSpecV1, str | None]
     return item, None
 
 
-def _duplicate_name_issues(specs: Sequence[AgentSpecV1]) -> list[AgentCompilationIssue]:
-    counts = Counter(spec.name for spec in specs)
-    return [
-        agent_name_duplicate(name, [name] * count) for name, count in counts.items() if count > 1
-    ]
+def _duplicate_name_issues(
+    entries: Sequence[tuple[AgentSpecV1, str | None]],
+) -> list[AgentCompilationIssue]:
+    """Report every name declared twice, naming the artifacts that declare it.
+
+    The issue's value is its provenance: an operator needs the files to open,
+    not the name repeated once per occurrence. A spec handed over without a
+    path (a bare :class:`~loom.ai.declarative.AgentSpecV1`) has no artifact to
+    name, so it is reported as an explicit placeholder rather than silently
+    dropped, which would leave the list shorter than the occurrence count.
+    """
+    sources: dict[str, list[str]] = defaultdict(list)
+    for spec, source_path in entries:
+        sources[spec.name].append(source_path if source_path is not None else _UNNAMED_SOURCE)
+    return [agent_name_duplicate(name, paths) for name, paths in sources.items() if len(paths) > 1]

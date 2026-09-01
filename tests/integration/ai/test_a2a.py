@@ -781,10 +781,16 @@ class TestLimiteDeCuerpo:
 
         assert response.json()["error"]["code"] == -32602
 
-    async def test_rechaza_el_cuerpo_cuando_supera_el_tope(
+    async def test_rechaza_el_cuerpo_en_json_rpc_cuando_supera_el_tope(
         self, deps: StubDepsFactory, container: LoomContainer
     ) -> None:
-        """A body far over the envelope cap is refused with 413 before it is buffered."""
+        """An oversized body answers ``-32602``, like the oversized prompt.
+
+        The body cap and the prompt cap are the same logical refusal caught one
+        layer apart. Answering the outer one with a flat ``{"code","message"}``
+        413 handed a JSON-RPC client a body it cannot parse, and made the shape
+        of the answer depend on where the size was noticed.
+        """
         body = b'{"jsonrpc":"2.0","id":7,"method":"message/send","padding":"' + b"x" * 200_000
         async with _serving(deps=deps, container=container, max_prompt_bytes=1024) as (
             _app,
@@ -792,5 +798,86 @@ class TestLimiteDeCuerpo:
         ):
             response = await client.post(f"{_PREFIX}/{_AGENT}", content=body, headers=_auth())
 
-        assert response.status_code == 413
-        assert response.json()["code"] == "PROMPT_TOO_LARGE"
+        assert response.status_code == 200
+        assert response.json()["error"]["code"] == -32602
+
+    async def test_no_filtra_el_tope_como_respuesta_plana_cuando_supera_el_tope(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Nothing past authentication may answer in the flat REST shape."""
+        body = b'{"jsonrpc":"2.0","id":7,"method":"message/send","padding":"' + b"x" * 200_000
+        async with _serving(deps=deps, container=container, max_prompt_bytes=1024) as (
+            _app,
+            client,
+        ):
+            response = await client.post(f"{_PREFIX}/{_AGENT}", content=body, headers=_auth())
+
+        payload = response.json()
+        assert payload["jsonrpc"] == "2.0"
+        assert "code" not in payload
+
+
+class TestProtocoloDeRespuesta:
+    """Where the protocol boundary sits: authentication outside, the rest inside.
+
+    ``require_caller`` runs before JSON-RPC exists for this request, so an
+    unverified caller is refused at the transport (HTTP 401, flat body).
+    Everything after it — body read, envelope decode, method dispatch, the run
+    itself — is inside the protocol and answers HTTP 200 with a JSON-RPC error
+    object, whatever the failure.
+    """
+
+    async def test_responde_401_plano_cuando_falta_el_llamante_verificado(
+        self, deps: StubDepsFactory, container: LoomContainer
+    ) -> None:
+        """Authentication precedes the protocol, so it answers outside it.
+
+        In this wiring the mounted middleware refuses first; ``require_caller``
+        is the same refusal one layer in, for the deployments that mount none.
+        Either way the answer is an HTTP status, never a JSON-RPC envelope.
+        """
+        async with _serving(deps=deps, container=container) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}", json=_rpc("message/send"))
+
+        assert response.status_code == 401
+        assert "jsonrpc" not in response.text
+
+    @pytest.mark.parametrize(
+        ("body", "expected_code"),
+        [
+            pytest.param(b"not json at all", -32700, id="cuerpo-no-json"),
+            pytest.param(b'{"jsonrpc":"2.0","id":7}', -32600, id="sin-metodo"),
+            pytest.param(
+                b'{"jsonrpc":"2.0","id":7,"method":"message/unknown","params":{}}',
+                -32601,
+                id="metodo-desconocido",
+            ),
+            pytest.param(
+                b'{"jsonrpc":"2.0","id":7,"method":"message/send","params":{}}',
+                -32602,
+                id="sin-parte-de-texto",
+            ),
+            pytest.param(
+                b'{"jsonrpc":"2.0","id":7,"method":"message/send","padding":"' + b"x" * 200_000,
+                -32602,
+                id="cuerpo-sobredimensionado",
+            ),
+        ],
+    )
+    async def test_responde_json_rpc_cuando_el_fallo_es_posterior_a_require_caller(
+        self,
+        deps: StubDepsFactory,
+        container: LoomContainer,
+        body: bytes,
+        expected_code: int,
+    ) -> None:
+        async with _serving(deps=deps, container=container, max_prompt_bytes=1024) as (
+            _app,
+            client,
+        ):
+            response = await client.post(f"{_PREFIX}/{_AGENT}", content=body, headers=_auth())
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["error"]["code"] == expected_code

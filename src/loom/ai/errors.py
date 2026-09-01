@@ -73,6 +73,7 @@ class AgentErrorCode(StrEnum):
     ENGINE_DUPLICATE = "ENGINE_DUPLICATE"
     ENGINE_API_MISMATCH = "ENGINE_API_MISMATCH"
     PROVIDER_NOT_INSTALLED = "PROVIDER_NOT_INSTALLED"
+    PROVIDER_UNKNOWN = "PROVIDER_UNKNOWN"
     PROVIDER_SETTING_MISSING = "PROVIDER_SETTING_MISSING"
     MCP_SERVER_UNREACHABLE = "MCP_SERVER_UNREACHABLE"
     TOOL_FILTER_MATCHES_NOTHING = "TOOL_FILTER_MATCHES_NOTHING"
@@ -200,7 +201,12 @@ def agent_name_invalid(component: str, reason: str) -> AgentCompilationIssue:
 
 
 def agent_name_duplicate(name: str, sources: Sequence[str]) -> AgentCompilationIssue:
-    """Two artifacts in the same application declare the same agent name."""
+    """Two artifacts in the same application declare the same agent name.
+
+    Args:
+        name: The duplicated agent name.
+        sources: Artifact paths that declare it, one entry per occurrence.
+    """
     return AgentCompilationIssue(
         code=AgentErrorCode.AGENT_NAME_DUPLICATE,
         message=f"agent '{name}' is declared more than once: {', '.join(sources)}",
@@ -563,6 +569,26 @@ def provider_not_installed(provider: str, extra: str) -> AgentCompilationIssue:
     )
 
 
+def provider_unknown(provider: str, supported: Sequence[str]) -> AgentCompilationIssue:
+    """The provider is not one this release knows how to bind.
+
+    Distinct from ``PROVIDER_NOT_INSTALLED``: there is no extra to install,
+    because no such provider exists in this release.
+
+    Args:
+        provider: Provider identifier the artifact named.
+        supported: Provider identifiers this release binds.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.PROVIDER_UNKNOWN,
+        message=(
+            f"provider '{provider}' is not known to this release of loom; "
+            f"supported providers: {', '.join(supported)}"
+        ),
+        component=provider,
+    )
+
+
 def provider_setting_missing(provider: str, setting: str) -> AgentCompilationIssue:
     """A provider setting (credentials, region, endpoint) is absent."""
     return AgentCompilationIssue(
@@ -573,12 +599,19 @@ def provider_setting_missing(provider: str, setting: str) -> AgentCompilationIss
     )
 
 
-def mcp_server_unreachable(url: str, reason: str) -> AgentCompilationIssue:
-    """An MCP server is not reachable at start-up."""
+def mcp_server_unreachable(server: str, reason: str) -> AgentCompilationIssue:
+    """An MCP server is not reachable at start-up.
+
+    Args:
+        server: The server's registered name, never its URL — a URL carries
+            credentials and hosts that the redaction guarantee keeps out of
+            diagnostics (FR-030a/FR-038).
+        reason: Why the connection did not complete.
+    """
     return AgentCompilationIssue(
         code=AgentErrorCode.MCP_SERVER_UNREACHABLE,
-        message=f"mcp server '{url}' is unreachable: {reason}",
-        component=url,
+        message=f"mcp server '{server}' is unreachable: {reason}",
+        component=server,
     )
 
 
@@ -634,12 +667,19 @@ def auth_exclusion_overlaps_agents(paths: Sequence[str]) -> AgentCompilationIssu
     )
 
 
-def a2a_agent_unreachable(url: str, reason: str) -> AgentCompilationIssue:
-    """A remote agent's card cannot be retrieved."""
+def a2a_agent_unreachable(agent: str, reason: str) -> AgentCompilationIssue:
+    """A remote agent's card cannot be retrieved.
+
+    Args:
+        agent: The remote agent's registered name, never its URL — a URL
+            carries credentials and hosts that the redaction guarantee keeps
+            out of diagnostics (FR-030a/FR-038).
+        reason: Why the card could not be retrieved.
+    """
     return AgentCompilationIssue(
         code=AgentErrorCode.A2A_AGENT_UNREACHABLE,
-        message=f"remote a2a agent '{url}' is unreachable: {reason}",
-        component=url,
+        message=f"remote a2a agent '{agent}' is unreachable: {reason}",
+        component=agent,
     )
 
 

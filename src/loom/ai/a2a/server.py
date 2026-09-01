@@ -464,13 +464,20 @@ def _make_handlers(
 def _make_rpc_handler(
     agent: _PublishedAgent, handlers: Mapping[str, _Handler], *, max_prompt_bytes: int
 ) -> Callable[[Request], Awaitable[Response]]:
-    """Build the JSON-RPC endpoint of one published agent."""
+    """Build the JSON-RPC endpoint of one published agent.
+
+    Authentication is the one failure answered outside the protocol: it
+    precedes JSON-RPC, so an unverified caller gets a flat HTTP 401 and never
+    reaches the dispatcher. Everything from the body read onwards answers in
+    JSON-RPC — an oversized body included. Answering that one with a flat 413
+    gave the same logical failure two shapes, since a prompt over the cap
+    detected one layer later (``_extract_prompt``) already answers ``-32602``.
+    """
     body_cap = max_prompt_bytes + BODY_OVERHEAD_BYTES
 
-    async def serve_rpc(request: Request) -> Response:
+    async def dispatch(request: Request, identity: Identity) -> Response:
         request_id: int | str | None = None
         try:
-            identity = require_caller(agent.name, agent.endpoint)
             body = await read_body_capped(request, max_bytes=body_cap)
             envelope = _decode_envelope(body)
             request_id = envelope.id
@@ -480,7 +487,7 @@ def _make_rpc_handler(
                 return _error_response(request_id, _method_not_found_error(method))
             return await handler(_Call(agent, request_id, envelope.params, identity))
         except TransportError as exc:
-            return flat_error_response(exc.status_code, exc.code, exc.message)
+            return _error_response(request_id, _invalid_params_error(exc.message))
         except _RpcFault as exc:
             return _error_response(request_id, exc.error)
         except Exception:
@@ -488,6 +495,13 @@ def _make_rpc_handler(
             # references in its text; the caller gets none of it.
             _logger.exception("Unhandled error in the a2a endpoint of agent %r", agent.name)
             return _error_response(request_id, _unexpected_error())
+
+    async def serve_rpc(request: Request) -> Response:
+        try:
+            identity = require_caller(agent.name, agent.endpoint)
+        except TransportError as exc:
+            return flat_error_response(exc.status_code, exc.code, exc.message)
+        return await dispatch(request, identity)
 
     return serve_rpc
 

@@ -27,6 +27,7 @@ from loom.ai.compiler import (
 from loom.ai.config import AiConfig
 from loom.ai.declarative import (
     AgentSpecV1,
+    DecodedSpec,
     JsonSchemaOutput,
     PolicySpec,
     SqlCapability,
@@ -153,6 +154,45 @@ class TestCompileAll:
         with pytest.raises(AgentCompilationError) as excinfo:
             compiler.compile_all([_spec(name="dup-agent"), _spec(name="dup-agent")])
         assert AgentErrorCode.AGENT_NAME_DUPLICATE in {issue.code for issue in excinfo.value.issues}
+
+    def test_compile_all_names_the_artifacts_when_two_files_share_a_name(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """The duplicate issue promises provenance, so it must carry paths.
+
+        Reporting the name once per occurrence ("dup-agent, dup-agent") tells
+        an operator nothing they did not already read in ``component``.
+        """
+        first = DecodedSpec(spec=_spec(name="dup-agent"), source_path="agents/triage.yaml")
+        second = DecodedSpec(spec=_spec(name="dup-agent"), source_path="agents/intake.yaml")
+        with pytest.raises(AgentCompilationError) as excinfo:
+            compiler.compile_all([first, second])
+        issue = next(
+            item
+            for item in excinfo.value.issues
+            if item.code is AgentErrorCode.AGENT_NAME_DUPLICATE
+        )
+        assert "agents/triage.yaml" in issue.message
+        assert "agents/intake.yaml" in issue.message
+
+    def test_compile_all_marks_the_pathless_spec_when_a_duplicate_has_no_artifact(
+        self, compiler: AgentCompiler
+    ) -> None:
+        """A spec handed over as an object has no path; it is named, not dropped."""
+        with pytest.raises(AgentCompilationError) as excinfo:
+            compiler.compile_all(
+                [
+                    DecodedSpec(spec=_spec(name="dup-agent"), source_path="agents/triage.yaml"),
+                    _spec(name="dup-agent"),
+                ]
+            )
+        issue = next(
+            item
+            for item in excinfo.value.issues
+            if item.code is AgentErrorCode.AGENT_NAME_DUPLICATE
+        )
+        assert "agents/triage.yaml" in issue.message
+        assert "<in-memory spec>" in issue.message
 
     def test_compile_accepts_each_duplicate_spec_when_compiled_alone(
         self, compiler: AgentCompiler

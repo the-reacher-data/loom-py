@@ -63,8 +63,10 @@ class TestModelBinding:
             resolve_model(InferenceTarget(provider="unheard-of", model="x"))
 
         issue = failure.value.issues[0]
-        assert issue.code is AgentErrorCode.PROVIDER_NOT_INSTALLED
+        assert issue.code is AgentErrorCode.PROVIDER_UNKNOWN
         assert "openai" in issue.message
+        assert "extra" not in issue.message
+        assert "not installed" not in issue.message
 
     def test_falla_pidiendo_la_region_cuando_bedrock_no_la_trae(self) -> None:
         """A Bedrock binding without a region fails before any request."""
@@ -87,7 +89,18 @@ class TestSpecTranslation:
 
         assert spec.output_schema == dict(plan.output.schema)
         assert spec.retries == 3
-        assert spec.tool_timeout == plan.policies.tool_timeout_ms / 1000
+
+    def test_el_spec_no_lleva_tool_timeout_cuando_loom_ya_lo_aplica(self) -> None:
+        """``tool_timeout_ms`` has one enforcer, so the engine gets no deadline.
+
+        Projecting it here as well raced loom's own ``asyncio.timeout`` over
+        the same value: the engine's expiry classifies as
+        ``PROVIDER_UNAVAILABLE`` and is retried, loom's raises ``TOOL_TIMEOUT``
+        and is not. Which one fired was up to the event loop.
+        """
+        spec = build_agent_spec(make_plan())
+
+        assert spec.tool_timeout is None
 
     def test_el_spec_no_lleva_metadata_ni_modelo_cuando_se_traduce(self) -> None:
         """Ownership facts and the concrete model never travel in the spec."""

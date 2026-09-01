@@ -29,7 +29,7 @@ from typing import Protocol, cast
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from loom.ai.errors import AgentCompilationError, provider_not_installed
+from loom.ai.errors import AgentCompilationError, provider_unknown
 from loom.ai.inference import InferenceTarget
 from loom.ai.registry import require_provider_sdk, require_provider_setting
 
@@ -125,15 +125,15 @@ def resolve_model(target: InferenceTarget) -> Model:
         The engine model, with its provider client already configured.
 
     Raises:
-        AgentCompilationError: With ``PROVIDER_NOT_INSTALLED`` when the vendor
-            SDK is missing (naming the extra) or the provider is unknown to
-            this release, and with ``PROVIDER_SETTING_MISSING`` when a setting
-            the vendor requires is absent.
+        AgentCompilationError: With ``PROVIDER_UNKNOWN`` when no provider of
+            that name exists in this release, with ``PROVIDER_NOT_INSTALLED``
+            when the vendor SDK is missing (naming the extra), and with
+            ``PROVIDER_SETTING_MISSING`` when a setting the vendor requires is
+            absent.
     """
     builder = _BUILDERS.get(target.provider)
     if builder is None:
-        known = ", ".join(sorted(SUPPORTED_PROVIDERS))
         raise AgentCompilationError(
-            [provider_not_installed(target.provider, f"one of the providers: {known}")]
+            [provider_unknown(target.provider, sorted(SUPPORTED_PROVIDERS))]
         )
     return builder(target)
