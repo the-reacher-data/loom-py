@@ -10,8 +10,10 @@ issues found across every model role and endpoint and raises once.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Mapping
+from ipaddress import ip_address
 from types import MappingProxyType
 from urllib.parse import SplitResult, urlsplit
 
@@ -77,6 +79,51 @@ def _is_credentials_reference(value: str) -> bool:
     return _URL_USERINFO_RE.search(value) is None
 
 
+_logger = logging.getLogger(__name__)
+
+
+def _is_loopback(hostname: str | None) -> bool:
+    """Whether *hostname* names this machine and nothing else.
+
+    Args:
+        hostname: Host component of a URL, or ``None`` when it declares none.
+
+    Returns:
+        ``True`` for ``localhost`` and for any address in a loopback range.
+    """
+    if hostname is None:
+        return False
+    if hostname == "localhost":
+        return True
+    try:
+        return ip_address(hostname.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _warn_plaintext_loopback(component: str, url: str) -> None:
+    """Announce a plaintext loopback URL, which is allowed only because it is one.
+
+    The exception is deliberate and narrow, so it must not be silent: a
+    configuration that works on a laptop and is refused in staging is worth
+    hearing about at start-up rather than at deploy time.
+
+    Args:
+        component: Configuration path the URL came from.
+        url: The accepted URL, already redacted.
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "http" or not _is_loopback(parts.hostname):
+        return
+    _logger.warning(
+        "%s uses plaintext http at %s. Allowed because the traffic cannot leave "
+        "this machine; the same URL on any other host is refused, so this "
+        "configuration is local-only.",
+        component,
+        parts.hostname,
+    )
+
+
 def _url_fault(url: str) -> str | None:
     """Return why a remote URL is unsafe, or ``None`` when it is acceptable."""
     try:
@@ -84,6 +131,14 @@ def _url_fault(url: str) -> str | None:
     except ValueError:
         return "the URL is malformed"
     if parts.scheme != "https":
+        if parts.scheme == "http" and _is_loopback(parts.hostname):
+            # Plaintext is acceptable only when the traffic cannot leave the
+            # machine. Requiring TLS from a developer's own MCP server buys
+            # nothing — there is no network to intercept — and costs a
+            # self-signed certificate before anything can be tried locally.
+            # Anywhere else the refusal stands: see _warn_plaintext_loopback,
+            # which makes the exception audible rather than silent.
+            return None
         return "the scheme must be https"
     if not parts.hostname:
         return "the URL declares no host"
@@ -190,6 +245,8 @@ class A2AConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         # already applies to the remote URLs it validates, applied where this
         # one actually lives (FR-038).
         fault = _url_fault(self.base_url)
+        if fault is None:
+            _warn_plaintext_loopback("ai.a2a.base_url", self.base_url)
         if fault is not None:
             raise AgentCompilationError([a2a_base_url_invalid(_redact_url(self.base_url), fault)])
 
@@ -257,6 +314,7 @@ def _validate_remote_url(component: str, url: str, build: _UrlIssue) -> list[Age
     """Collect the fault of one remote URL, redacted so it cannot leak a secret."""
     fault = _url_fault(url)
     if fault is None:
+        _warn_plaintext_loopback(component, url)
         return []
     return [build(component, _redact_url(url), fault)]
 
