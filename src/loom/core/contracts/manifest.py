@@ -16,6 +16,7 @@ Example manifest module::
     USE_CASES = [GetProductUseCase]
     INTERFACES = [ProductInterface]
     REPOSITORIES = [ProductRepository]
+    AGENTS = ["ai/agents/*/agent.yaml"]
 """
 
 from __future__ import annotations
@@ -30,9 +31,15 @@ class AppManifestAttr(StrEnum):
     with ``getattr``::
 
         models = getattr(module, AppManifestAttr.MODELS, [])
+
+    ``AGENTS`` lists agent artifacts as paths or globs — plain strings, never
+    types from the AI pillar.  It is mutually exclusive with the ``ai.specs``
+    configuration key: declaring both is a compilation error, so the artifacts
+    of an application always have exactly one source.
     """
 
     MODELS = "MODELS"
     USE_CASES = "USE_CASES"
     INTERFACES = "INTERFACES"
     REPOSITORIES = "REPOSITORIES"
+    AGENTS = "AGENTS"

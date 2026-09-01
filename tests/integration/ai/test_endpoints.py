@@ -816,9 +816,12 @@ class ContainmentPingInterface(RestInterface[str]):
 _CONTAINMENT_SCRIPT = """
 import sys
 
-from loom.rest.fastapi.auto import create_app
+from loom.rest.fastapi.auto import create_app, describe_fastapi_app
 
-create_app(sys.argv[1])
+app = create_app(sys.argv[1])
+description = describe_fastapi_app(app)
+if "agents" in description:
+    raise SystemExit("an app with no ai: section described an 'agents' section")
 leaked = sorted(name for name in sys.modules if name == "loom.ai" or name.startswith("loom.ai."))
 if leaked:
     raise SystemExit("loom.ai leaked into an app with no ai: section: " + ", ".join(leaked))
@@ -826,10 +829,12 @@ if leaked:
 
 
 def test_no_importa_loom_ai_cuando_la_config_no_tiene_seccion_ai(tmp_path: Path) -> None:
-    """``create_app`` without an ``ai:`` section never imports ``loom.ai`` (T098, SC-013).
+    """Neither building nor describing an app without ``ai:`` imports ``loom.ai`` (T098, SC-013).
 
-    Runs in a clean interpreter so modules imported by unrelated suites inside
-    the pytest process cannot mask the leak.
+    Covers both routes into the pillar — ``create_app`` and the
+    post-construction ``describe_fastapi_app`` — and runs in a clean
+    interpreter so modules imported by unrelated suites inside the pytest
+    process cannot mask the leak.
     """
     (tmp_path / f"{_APP_MODULE}.py").write_text(_APP_SOURCE, encoding="utf-8")
     config = {

@@ -25,7 +25,8 @@ class ManifestDiscoveryEngine:
 
         The manifest module is expected to expose ``MODELS``, ``USE_CASES``,
         and ``INTERFACES`` lists. It may also expose ``REPOSITORIES`` to make
-        custom repository imports explicit in the composition root. When
+        custom repository imports explicit in the composition root, and
+        ``AGENTS`` to declare agent artifacts as paths or globs. When
         ``USE_CASES`` is empty but
         ``INTERFACES`` contain ``auto=True`` interfaces, the generated use
         cases are discovered automatically from the interface routes.
@@ -37,6 +38,8 @@ class ManifestDiscoveryEngine:
         Raises:
             ValueError: When no manifest module path is provided, or when the
                 manifest exposes no components at all.
+            TypeError: When a declared repository is not a repository, or an
+                ``AGENTS`` entry is not a non-empty string.
         """
         if not self._manifest_module:
             raise ValueError("manifest discovery requires a module path.")
@@ -46,6 +49,7 @@ class ManifestDiscoveryEngine:
         raw_use_cases = cast(list[Any], getattr(module, AppManifestAttr.USE_CASES, []))
         raw_interfaces = cast(list[Any], getattr(module, AppManifestAttr.INTERFACES, []))
         raw_repositories = cast(list[Any], getattr(module, AppManifestAttr.REPOSITORIES, []))
+        raw_agent_specs = cast(list[Any], getattr(module, AppManifestAttr.AGENTS, []))
 
         models = [cast(type[BaseModel], item) for item in raw_models]
         use_cases = [cast(type[UseCase[object, object]], item) for item in raw_use_cases]
@@ -53,15 +57,17 @@ class ManifestDiscoveryEngine:
         repositories = [cast(type[Any], item) for item in raw_repositories]
 
         self._validate_repositories(repositories)
+        agent_specs = self._validated_agent_specs(raw_agent_specs)
 
         seen_ucs: set[type[UseCase[object, object]]] = set(use_cases)
         for uc in collect_use_cases_from_interfaces(interfaces):
             _append_unique(use_cases, seen_ucs, uc)
 
-        if not interfaces and not use_cases and not models and not repositories:
+        if not interfaces and not use_cases and not models and not repositories and not agent_specs:
             expected = (
                 f"{AppManifestAttr.MODELS}/{AppManifestAttr.USE_CASES}/"
-                f"{AppManifestAttr.INTERFACES}/{AppManifestAttr.REPOSITORIES}"
+                f"{AppManifestAttr.INTERFACES}/{AppManifestAttr.REPOSITORIES}/"
+                f"{AppManifestAttr.AGENTS}"
             )
             raise ValueError(
                 f"Manifest module {self._manifest_module!r} exposes no components. "
@@ -72,6 +78,7 @@ class ManifestDiscoveryEngine:
             models=tuple(models),
             use_cases=tuple(use_cases),
             interfaces=tuple(interfaces),
+            agent_specs=agent_specs,
         )
 
     def _validate_repositories(
@@ -83,3 +90,9 @@ class ManifestDiscoveryEngine:
                 raise TypeError(
                     f"Manifest repository {repository!r} must implement the Repository protocol."
                 )
+
+    def _validated_agent_specs(self, raw_agent_specs: list[Any]) -> tuple[str, ...]:
+        for spec in raw_agent_specs:
+            if not isinstance(spec, str) or not spec.strip():
+                raise TypeError(f"Manifest agent entry {spec!r} must be a path or glob string.")
+        return tuple(cast(list[str], raw_agent_specs))

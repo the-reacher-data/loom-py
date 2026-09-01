@@ -190,6 +190,9 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     Attributes:
         engine: Entry-point name in group ``loom.ai.engines``.
         specs: Glob patterns of agent artifacts, relative to the app root.
+            Mutually exclusive with the manifest ``AGENTS`` attribute: exactly
+            one of the two declares the artifacts of an application, and
+            declaring both is a compilation error.
         models: Model-role bindings; must contain every role an agent declares.
         skills_root: Filesystem root bare skill library names resolve against.
         mcp_servers: Named remote MCP servers artifacts refer to by name.
@@ -212,8 +215,8 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """
 
     engine: str
-    specs: tuple[str, ...]
     models: dict[str, InferenceTarget]
+    specs: tuple[str, ...] = ()
     skills_root: str | None = None
     mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
     a2a_agents: dict[str, A2AAgentConfig] = field(default_factory=dict)

@@ -30,6 +30,13 @@ from loom.core.discovery import (
 )
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.identity import Identity
+from loom.core.introspection import (
+    INTROSPECTION_STATE_ATTR,
+    AppIntrospection,
+    ContributorRef,
+    IntrospectionError,
+    describe_app,
+)
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
@@ -69,9 +76,17 @@ from loom.rest.middleware import TraceIdMiddleware
 if TYPE_CHECKING:
     # Annotations only: the AI pillar and the ClickHouse extra are imported at
     # run time solely by the branch that needs them.
+    from loom.ai.compiler import AgentPlan
     from loom.ai.config import AiConfig
     from loom.ai.runtime import AgentRuntime
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
+
+
+# Written as data, never imported here: an application without an 'ai:'
+# section must not gain a single AI import (FR-050).  The reference resolves
+# inside 'describe_app', and only when a description is asked for.
+_AGENTS_SECTION = "agents"
+_AGENTS_CONTRIBUTOR = "loom.ai.describe:describe_agents"
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -524,10 +539,38 @@ class _AiWiring:
         config: Parsed ``ai:`` section, or ``None`` when absent.
         runtime: Agent runtime entered by the app lifespan alongside the SQL
             registry, or ``None`` when no section is configured.
+        plans: Compiled agent plans, kept so the application can describe
+            itself without reaching into the runtime.
     """
 
     config: AiConfig | None
     runtime: AgentRuntime | None
+    plans: tuple[AgentPlan, ...] = ()
+
+
+def _effective_agent_specs(
+    config_specs: tuple[str, ...],
+    manifest_specs: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return the single artifact source of the application.
+
+    ``ai.specs`` and the manifest ``AGENTS`` attribute are mutually exclusive:
+    an implicit precedence would silently ignore half of the agents an
+    operator declared.
+
+    Raises:
+        AgentCompilationError: When both sources declare artifacts, or when
+            neither does.
+    """
+    # Local import: same containment rule as '_resolve_ai'; this helper only
+    # ever runs from the branch that already decided to load the AI pillar.
+    from loom.ai.errors import AgentCompilationError, agent_specs_conflict, agent_specs_missing
+
+    if config_specs and manifest_specs:
+        raise AgentCompilationError([agent_specs_conflict()])
+    if not config_specs and not manifest_specs:
+        raise AgentCompilationError([agent_specs_missing()])
+    return config_specs or manifest_specs
 
 
 def _resolve_ai(
@@ -536,6 +579,7 @@ def _resolve_ai(
     kernel: KernelRuntime,
     sql_cfg: SqlConfig | None,
     code_path: Path,
+    manifest_agent_specs: tuple[str, ...],
 ) -> _AiWiring:
     """Load the optional ``ai:`` section into its compiled agent runtime.
 
@@ -565,7 +609,8 @@ def _resolve_ai(
         supported_kinds=provider.supported_capability_kinds(),
         sql=sql_cfg,
     )
-    decoded = load_specs(ai_cfg.specs, root=code_path)
+    specs = _effective_agent_specs(ai_cfg.specs, manifest_agent_specs)
+    decoded = load_specs(specs, root=code_path)
     # DecodedSpec, not .spec: the artifact's own path is what resolves a
     # './library' skill grant, and dropping it fails them in real wiring.
     plans = compiler.compile_all(decoded)
@@ -582,7 +627,7 @@ def _resolve_ai(
         mcp_client_factory=mcp_factory,
         a2a_client_factory=a2a_factory,
     )
-    return _AiWiring(config=ai_cfg, runtime=runtime)
+    return _AiWiring(config=ai_cfg, runtime=runtime, plans=plans)
 
 
 def _bind_agent_surface(
@@ -1127,7 +1172,14 @@ def create_app(
     result.container.register(
         ObservabilityRuntime, lambda: observability_runtime, scope=Scope.APPLICATION
     )
-    ai = _resolve_ai(ctx, kernel=result, sql_cfg=sql.config, code_path=effective_code_path)
+    _reject_manifest_agents_without_ai_section(ctx, discovered.agent_specs)
+    ai = _resolve_ai(
+        ctx,
+        kernel=result,
+        sql_cfg=sql.config,
+        code_path=effective_code_path,
+        manifest_agent_specs=discovered.agent_specs,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -1164,11 +1216,85 @@ def create_app(
         )
         _warn_sql_endpoints(sql.config, auth)
     _bind_agent_surface(app, ai, auth, observability_runtime)
+    setattr(app.state, INTROSPECTION_STATE_ATTR, _build_introspection(app_cfg, ai))
     # Last: every route the application will ever serve is registered by now,
     # which is what makes the exclusion check meaningful.
     verify_exclusion_paths(app, auth.exclude_paths)
     _warn_anonymous_schema(app_cfg.rest, auth)
     return app
+
+
+def _reject_manifest_agents_without_ai_section(
+    ctx: ConfigContext,
+    manifest_agent_specs: tuple[str, ...],
+) -> None:
+    """Refuse a manifest declaring agents in an application with no ``ai:`` section.
+
+    Raises:
+        ConfigError: When ``AGENTS`` names artifacts nothing can compile.
+    """
+    if manifest_agent_specs and not ctx.has(ConfigKey.AI):
+        raise ConfigError(
+            "The manifest declares AGENTS but the configuration has no 'ai:' section: "
+            "agent artifacts need an engine and its model bindings to compile. Add the "
+            "'ai:' section, or remove AGENTS from the manifest."
+        )
+
+
+def _build_introspection(app_cfg: _AppConfig, ai: _AiWiring) -> AppIntrospection:
+    """Build the self-description of the application under construction.
+
+    The AI contribution is a *string* reference resolved only when the
+    description is asked for, so an application without an ``ai:`` section
+    never imports the pillar (FR-050).
+    """
+    contributors: tuple[ContributorRef, ...] = ()
+    if ai.config is not None:
+        contributors = (
+            ContributorRef(
+                section=_AGENTS_SECTION,
+                contributor=_AGENTS_CONTRIBUTOR,
+                subject=ai.plans,
+            ),
+        )
+    return AppIntrospection(
+        name=app_cfg.name,
+        version=app_cfg.rest.version,
+        contributors=contributors,
+    )
+
+
+def describe_fastapi_app(app: FastAPI) -> dict[str, Any]:
+    """Describe an application built by :func:`create_app`.
+
+    The document always carries the application identity under ``"app"``, plus
+    one section per wired pillar — ``"agents"`` when an ``ai:`` section is
+    configured.  Only publishable values appear: no instructions, no model
+    binding, no URL and no credential reference.
+
+    Args:
+        app: Application previously built by :func:`create_app`.
+
+    Returns:
+        JSON-encodable self-description of the application.
+
+    Raises:
+        IntrospectionError: When *app* was not built by :func:`create_app`, or
+            when a pillar contribution cannot be resolved.
+
+    Example::
+
+        app = create_app("config/app.yaml")
+        describe_fastapi_app(app)["app"]
+        # {'name': 'billing', 'version': '1.4.0'}
+    """
+    introspection = getattr(app.state, INTROSPECTION_STATE_ATTR, None)
+    if not isinstance(introspection, AppIntrospection):
+        raise IntrospectionError(
+            "this application carries no introspection state; only applications built by "
+            "'create_app' can describe themselves."
+        )
+    return describe_app(introspection)
 
 
 def _warn_anonymous_schema(rest_cfg: _RestConfig, auth: _AuthWiring) -> None:

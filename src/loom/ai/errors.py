@@ -82,6 +82,8 @@ class AgentErrorCode(StrEnum):
     A2A_EXPOSE_EMPTY = "A2A_EXPOSE_EMPTY"
     AUTH_EXCLUSION_OVERLAPS_AGENTS = "AUTH_EXCLUSION_OVERLAPS_AGENTS"
     A2A_AGENT_UNREACHABLE = "A2A_AGENT_UNREACHABLE"
+    AGENT_SPECS_CONFLICT = "AGENT_SPECS_CONFLICT"
+    AGENT_SPECS_MISSING = "AGENT_SPECS_MISSING"
 
     # Compatibility
     SPEC_VERSION_DEPRECATED = "SPEC_VERSION_DEPRECATED"
@@ -680,6 +682,32 @@ def a2a_agent_unreachable(agent: str, reason: str) -> AgentCompilationIssue:
         code=AgentErrorCode.A2A_AGENT_UNREACHABLE,
         message=f"remote a2a agent '{agent}' is unreachable: {reason}",
         component=agent,
+    )
+
+
+def agent_specs_conflict() -> AgentCompilationIssue:
+    """Both artifact sources declare agents; there is no implicit precedence."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.AGENT_SPECS_CONFLICT,
+        message=(
+            "agent artifacts are declared both by the manifest 'AGENTS' attribute and by "
+            "the 'ai.specs' config key; declare them in exactly one of the two"
+        ),
+        component="ai",
+        field="ai.specs",
+    )
+
+
+def agent_specs_missing() -> AgentCompilationIssue:
+    """The ``ai:`` section is configured but no artifact source declares agents."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.AGENT_SPECS_MISSING,
+        message=(
+            "the 'ai:' section is configured but declares no agent artifact; set 'ai.specs' "
+            "or the manifest 'AGENTS' attribute"
+        ),
+        component="ai",
+        field="ai.specs",
     )
 
 
