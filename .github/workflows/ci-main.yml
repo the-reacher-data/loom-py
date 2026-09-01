@@ -238,7 +238,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --only-binary :all: \
+          # --python is required: uv pip honours VIRTUAL_ENV, not
+          # UV_PROJECT_ENVIRONMENT, so without it the install cannot find the
+          # environment 'uv sync' just created and fails asking for a venv.
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" --only-binary :all: \
             "pydantic-ai-slim[anthropic,bedrock,openai]==${pydantic_ai_slim}" \
             "pydantic-ai-harness[skills]==${pydantic_ai_harness}" \
             "fasta2a==${fasta2a}" \

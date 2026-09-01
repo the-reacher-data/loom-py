@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from datetime import datetime
@@ -82,28 +83,32 @@ _SQL_REEXPORTED_NAMES = (
 # 'loom.ai.compiler' re-export them for import convenience; documenting them
 # twice makes every cross-reference ambiguous. Same treatment as loom.core.sql.
 _AI_PACKAGE = "loom.ai"
-_AI_REEXPORTED_NAMES = (
-    "A2AConfig",
-    "AgentEndpointConfig",
-    "AgentEngine",
-    "AgentEngineProvider",
-    "AgentEvent",
-    "AgentHealth",
-    "AgentResult",
-    "AgentRunError",
-    "AgentRuntime",
-    "AgentUsage",
-    "AiConfig",
-    "DepsFactory",
-    "ErrorEvent",
-    "FinalEvent",
-    "HealthStatus",
-    "InferenceTarget",
-    "TextDeltaEvent",
-    "ToolCallEvent",
-    "ToolResultEvent",
-    "ToolsetFactory",
-)
+
+
+def _reexported_names(package: str) -> tuple[str, ...]:
+    """Return the names a façade package re-exports from its submodules.
+
+    Derived from ``__all__`` rather than listed by hand: the hand-written list
+    silently went stale the moment the pillar published seven more names, and
+    the strict build only said so in CI. A façade re-exports everything it
+    declares, so the declaration is the list.
+
+    Args:
+        package: Importable façade package, e.g. ``"loom.ai"``.
+
+    Returns:
+        Every name in the package's ``__all__``, or an empty tuple when the
+        package cannot be imported in this environment.
+    """
+    try:
+        module = importlib.import_module(package)
+    except ImportError:
+        return ()
+    return tuple(getattr(module, "__all__", ()))
+
+
+_AI_REEXPORTED_NAMES = _reexported_names(_AI_PACKAGE)
+
 
 _AI_COMPILER_PACKAGE = "loom.ai.compiler"
 _AI_COMPILER_REEXPORTED_NAMES = (
