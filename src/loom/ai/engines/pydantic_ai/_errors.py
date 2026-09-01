@@ -67,8 +67,15 @@ def classify(error: BaseException) -> AgentRunErrorCode:
         return error.code
     if isinstance(error, ModelHTTPError):
         return _http_code(error)
-    for exception_type, code in _EXCEPTION_CODES.items():
-        if isinstance(error, exception_type):
+    # Walk the error's own MRO rather than the mapping: the most specific
+    # mapped ancestor wins by construction, so the day someone maps an
+    # exception that is an ancestor of another — pydantic-ai's own
+    # ``AgentRunError`` is the base of three entries here — the answer cannot
+    # come to depend on dict insertion order. It is also cheaper: a dict
+    # lookup per ancestor, against an ``isinstance`` per catalogue entry.
+    for ancestor in type(error).__mro__:
+        code = _EXCEPTION_CODES.get(ancestor)
+        if code is not None:
             return code
     return AgentRunErrorCode.PROVIDER_UNAVAILABLE
 

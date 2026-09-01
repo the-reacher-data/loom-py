@@ -22,6 +22,7 @@ from loom.ai.abc import (
     DepsFactory,
     ErrorEvent,
     FinalEvent,
+    HealthState,
     HealthStatus,
     TextDeltaEvent,
     ToolCallEvent,
@@ -29,11 +30,26 @@ from loom.ai.abc import (
     ToolsetFactory,
 )
 from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
-from loom.ai.errors import AgentRunError
+from loom.ai.errors import (
+    AgentCompilationError,
+    AgentCompilationIssue,
+    AgentErrorCode,
+    AgentRunError,
+    AgentRunErrorClass,
+    AgentRunErrorCode,
+    is_retriable,
+)
 from loom.ai.inference import InferenceTarget
 from loom.ai.runtime import AgentHealth, AgentRuntime
 
 __all__ = [
+    "AgentCompilationError",
+    "AgentCompilationIssue",
+    "AgentErrorCode",
+    "AgentRunErrorClass",
+    "AgentRunErrorCode",
+    "HealthState",
+    "is_retriable",
     "A2AConfig",
     "AgentEndpointConfig",
     "AgentEngine",

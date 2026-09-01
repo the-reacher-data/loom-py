@@ -133,3 +133,15 @@ class TestAgentEngineProtocol:
         annotations = getattr(AgentEngine.run_stream, "__annotations__", {})
 
         assert "AbstractAsyncContextManager" in str(annotations.get("return"))
+
+
+def test_todo_lo_declarado_en_all_es_importable() -> None:
+    """A name in ``__all__`` that does not resolve is worse than an absent one.
+
+    ``from loom.ai import *`` raises on it, and a reader takes the list as the
+    declared surface.  The list grew by seven names when the error vocabulary
+    was published; this pins that they exist.
+    """
+    import loom.ai as pillar
+
+    assert [name for name in pillar.__all__ if not hasattr(pillar, name)] == []
