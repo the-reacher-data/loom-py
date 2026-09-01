@@ -3,6 +3,9 @@
 Everything the compiler, the runtime and the HTTP layer share with an engine
 lives here, and nothing here imports an engine: the bootstrap resolves the
 provider through :mod:`loom.ai.registry` and hands the compiler plain values.
+
+These contracts are experimental and may change within a major line; the
+artifact format they serve is not.  See :mod:`loom.ai` for the distinction.
 """
 
 from __future__ import annotations
@@ -163,7 +166,12 @@ class AgentEngine(Protocol):
         ...
 
     async def health(self) -> HealthStatus:
-        """Report the engine's current health without per-call network I/O."""
+        """Report the engine's current health without per-call network I/O.
+
+        Returns:
+            The engine's state, derived from outcomes it has already observed
+            rather than from a probe issued on this call.
+        """
         ...
 
 

@@ -14,6 +14,17 @@ Two disjoint catalogues, mirroring :mod:`loom.streaming.compiler._errors`:
 
 Every code has a dedicated factory function so call-sites stay
 intention-revealing and free of string formatting.
+
+Issue factories
+    The factories below share one contract, stated here once rather than
+    repeated on each of them.  Every factory returns a single
+    :class:`AgentCompilationIssue` carrying its own :class:`AgentErrorCode`.
+    ``component`` names the artifact component or configuration path the
+    issue is attributed to — ``"market"``, ``"ai.mcp_servers.data"``.  Every
+    other parameter is interpolated into the human-readable ``message`` and
+    is never read for control flow: callers branch on the code, never on the
+    text.  Messages never carry secret material — in credential-related
+    issues the offending value is deliberately omitted.
 """
 
 from __future__ import annotations

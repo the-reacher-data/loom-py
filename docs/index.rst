@@ -85,6 +85,17 @@ Companion demo application:
 
 .. toctree::
    :maxdepth: 2
+   :caption: AI Agents
+
+   ai/overview
+   ai/artifacts
+   ai/providers
+   ai/a2a
+   ai/mcp
+   ai/observability
+
+.. toctree::
+   :maxdepth: 2
    :caption: Reference
 
    reference/index

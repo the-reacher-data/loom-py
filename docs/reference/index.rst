@@ -12,4 +12,5 @@ autodoc output easier to navigate.
    api/streaming
    api/repository
    api/rest
+   api/ai
    api/testing

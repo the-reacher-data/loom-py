@@ -1,6 +1,12 @@
-"""Contract between the emitted JSON Schema and the committed schema file.
+"""Contract between the emitted JSON Schema and the schema file that ships.
 
-``contracts/agent-spec-v1.schema.json`` is the published artifact contract (FR-009).
+``loom/ai/declarative/schemas/agent-spec-v1.schema.json`` is the published artifact
+contract (FR-009). It is *shipped inside the distribution* rather than referenced from
+``specs/``: that directory is not distributed (it is git-ignored working state), so a
+test anchored there proves nothing on a fresh checkout and the file it guards would
+never reach a consumer. The shipped copy is what a generator downloads, so the shipped
+copy is what the ratchet must guard.
+
 The byte-for-byte test keeps it from drifting from the Tier-1 structs: the schema the
 code emits and the file consumers validate against must be the same document, byte for
 byte. Regenerate the file from ``_schema.py`` when the structs legitimately change —
@@ -19,12 +25,9 @@ from typing import Any
 
 import pytest
 
-from loom.ai.declarative import agent_spec_json_schema
+from loom.ai.declarative import agent_spec_json_schema, agent_spec_schema_path
 
-_REPO_ROOT: Path = Path(__file__).resolve().parents[3]
-_CONTRACT_PATH: Path = (
-    _REPO_ROOT / "specs" / "001-ai-agent-layer" / "contracts" / "agent-spec-v1.schema.json"
-)
+_CONTRACT_PATH: Path = agent_spec_schema_path(1)
 
 
 def _emitted() -> dict[str, Any]:
@@ -147,3 +150,22 @@ def test_agent_spec_json_schema_falla_cuando_la_version_no_esta_publicada() -> N
     """An unpublished spec version is a programming error, not an empty document."""
     with pytest.raises(ValueError, match="spec version 2"):
         agent_spec_json_schema(2)
+
+
+def test_el_esquema_publicado_viaja_dentro_del_paquete_cuando_se_localiza() -> None:
+    """The schema file must live under the installed package, not under 'specs/'.
+
+    A consumer validates against a file it can extract from the wheel or the sdist;
+    anchoring the contract in git-ignored working state would publish nothing (FR-009).
+    """
+    path = agent_spec_schema_path(1)
+
+    assert path.is_file()
+    assert path.parent.name == "schemas"
+    assert path.parent.parent.name == "declarative"
+
+
+def test_localizar_el_esquema_falla_cuando_la_version_no_esta_publicada() -> None:
+    """An unpublished spec version is a programming error, not a missing file."""
+    with pytest.raises(ValueError, match="spec version 2"):
+        agent_spec_schema_path(2)

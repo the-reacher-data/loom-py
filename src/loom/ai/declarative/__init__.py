@@ -28,7 +28,7 @@ from ._envelope import (
     decode_artifact,
     decode_spec,
 )
-from ._schema import agent_spec_json_schema
+from ._schema import SCHEMA_FILENAMES, agent_spec_json_schema, agent_spec_schema_path
 from ._v1 import (
     A2ACapability,
     AgentSpecV1,
@@ -45,6 +45,7 @@ from ._v1 import (
 )
 
 __all__ = [
+    "SCHEMA_FILENAMES",
     "SUPPORTED_SPEC_VERSIONS",
     "LATEST_SPEC_VERSION",
     "A2ACapability",
@@ -62,6 +63,7 @@ __all__ = [
     "TypeRefOutput",
     "UsecaseCapability",
     "agent_spec_json_schema",
+    "agent_spec_schema_path",
     "decode_spec",
     "load_specs",
 ]

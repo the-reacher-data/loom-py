@@ -39,6 +39,11 @@ class FakeAgentRunError(Exception):
     ``ErrorEvent``.  Defined on the testing surface — not in ``loom.ai`` —
     because it is a detail of the fake: real engines raise their own errors.
 
+    Args:
+        code: Failure code of the terminal ``ErrorEvent`` that ended the run.
+        message: Its description; prefixed with the code in the exception
+            text, so a failed assertion names both.
+
     Attributes:
         code: Failure code carried by the terminal ``ErrorEvent``.
     """
@@ -145,7 +150,11 @@ class FakeAgentEngine:
         return self._stream()
 
     async def health(self) -> HealthStatus:
-        """Report a fixed ``"ok"`` status without any I/O."""
+        """Report a fixed ``"ok"`` status without any I/O.
+
+        Returns:
+            Always ``"ok"``: the fake has no dependency that could degrade.
+        """
         return HealthStatus(status="ok")
 
     @asynccontextmanager

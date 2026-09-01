@@ -13,6 +13,9 @@ the number of servers. Leaving closes everything in strict reverse order.
 
 Nothing here imports FastAPI or Starlette: the HTTP surface lives in
 :mod:`loom.ai.fastapi` and this module stays usable from any transport.
+
+The classes here are experimental and may change within a major line; the
+artifact format they run is not.  See :mod:`loom.ai` for the distinction.
 """
 
 from __future__ import annotations
@@ -96,7 +99,12 @@ class McpSession(Protocol):
     """Minimal MCP session the runtime needs from any client library."""
 
     async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes."""
+        """Return the tool names the server exposes.
+
+        Returns:
+            Every tool name the server advertises, before any declared filter
+            is applied.
+        """
         ...
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
@@ -166,7 +174,11 @@ class SharedMcpSession:
         self._lock = asyncio.Lock()
 
     async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes, serialised with every other call."""
+        """Return the tool names the server exposes, serialised with every other call.
+
+        Returns:
+            Every tool name the underlying session advertises.
+        """
         return await self._serialised(self._session.list_tools())
 
     async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
@@ -550,7 +562,11 @@ class AgentRuntime:
         await stack.aclose()
 
     def agent_names(self) -> tuple[str, ...]:
-        """Return the names of every agent this runtime serves."""
+        """Return the names of every agent this runtime serves.
+
+        Returns:
+            One name per compiled plan, in the order the plans were given.
+        """
         return tuple(self._plans)
 
     def has_agent(self, name: str) -> bool:

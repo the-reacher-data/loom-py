@@ -119,6 +119,15 @@ ai-a2a = [
 ai-harness = [
     "pydantic-ai-harness[skills]>=0.28,<1",
 ]
+# Logfire is an OTel distribution, not a second telemetry stack: it installs the
+# global TracerProvider that loom then SHARES via OtelConfig(endpoint="").
+# See docs/ai/observability.md — a non-empty endpoint makes loom build its own
+# provider, and the two are mutually exclusive by construction.
+logfire = [
+    "logfire>=4.0,<5",
+    "opentelemetry-api>=1.27,<2.0",
+    "opentelemetry-sdk>=1.27,<2.0",
+]
 celery = [
     "celery>=5.3,<6.0",
     "kombu>=5.3,<6.0",
@@ -193,8 +202,13 @@ dev = [
 packages = [
     "src/loom",
 ]
+# The agent-spec JSON Schema is shipped as package data so a generator can
+# validate its output against the published contract without importing loom —
+# and, by extracting it from the wheel or sdist, without installing loom at all
+# (FR-009). 'specs/' is not distributed, so the schema must live under 'src/'.
 include = [
     "src/loom/py.typed",
+    "src/loom/ai/declarative/schemas/*.json",
 ]
 
 [tool.ruff]

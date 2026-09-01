@@ -5,16 +5,24 @@ every pattern, default, minimum and maximum comes from the constants in
 :mod:`loom.ai.declarative._v1`, so the schema cannot drift from the structs it
 describes.
 
-The emitted document is byte-for-byte the committed
-``contracts/agent-spec-v1.schema.json`` file, and a test asserts it: the
-contract is published to generators and editors, so a drift between the schema
-they validate against and the structs loom decodes with would only surface as a
-decoding failure at deploy time.
+The emitted document is byte-for-byte the schema file **shipped inside the
+distribution** (``loom/ai/declarative/schemas/agent-spec-v1.schema.json``), and
+a test asserts it: the contract is published to generators and editors, so a
+drift between the schema they validate against and the structs loom decodes
+with would only surface as a decoding failure at deploy time.
+
+The file is shipped rather than only emitted because the consumer that needs it
+most — a generator that writes ``.agent.yaml`` files — must be able to validate
+its output without importing loom, and often without installing it at all: the
+file can be extracted from the wheel or the sdist and handed to any JSON Schema
+validator in any language.  :func:`agent_spec_schema_path` locates it for the
+callers that *do* have loom installed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
 
@@ -366,3 +374,47 @@ def agent_spec_json_schema(spec_version: int = LATEST_SPEC_VERSION) -> dict[str,
             f"no JSON Schema published for spec version {spec_version}; known: {known}"
         )
     return builder()
+
+
+SCHEMA_FILENAMES: Final[Mapping[int, str]] = MappingProxyType({1: "agent-spec-v1.schema.json"})
+"""File name each published spec version is shipped under, inside ``schemas/``."""
+
+_SCHEMA_DIRECTORY: Final[Path] = Path(__file__).parent / "schemas"
+
+
+def agent_spec_schema_path(spec_version: int = LATEST_SPEC_VERSION) -> Path:
+    """Locate the JSON Schema file shipped in the installed distribution.
+
+    The file is the byte-for-byte twin of :func:`agent_spec_json_schema`, kept
+    honest by a test.  Prefer this over the emitter when the schema must be
+    handed to a tool that reads a *path* — an editor, a linter, a CI validation
+    step in another language.
+
+    Args:
+        spec_version: Spec version whose schema file is wanted.
+
+    Returns:
+        Absolute path of the shipped schema file.
+
+    Raises:
+        ValueError: If no schema is published for that version.
+        FileNotFoundError: If the distribution was built without its schema
+            data files, which is a packaging defect rather than a usage error.
+
+    Example:
+        >>> agent_spec_schema_path(1).name
+        'agent-spec-v1.schema.json'
+    """
+    filename = SCHEMA_FILENAMES.get(spec_version)
+    if filename is None:
+        known = ", ".join(str(version) for version in sorted(SCHEMA_FILENAMES))
+        raise ValueError(
+            f"no JSON Schema published for spec version {spec_version}; known: {known}"
+        )
+    path = _SCHEMA_DIRECTORY / filename
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"the installed distribution ships no schema file at {path}; "
+            f"rebuild the package so 'schemas/*.json' is included"
+        )
+    return path
