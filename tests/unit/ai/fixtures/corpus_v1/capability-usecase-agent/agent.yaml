@@ -1,0 +1,26 @@
+spec_version: 1
+name: capability-usecase-agent
+description: Resolves customer support requests by running explicitly granted business operations.
+instructions: >-
+  Use the available business operations to resolve the request end to end.
+  Report the outcome of every operation you run.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - resolution
+    properties:
+      resolution:
+        type: string
+      operations_used:
+        type: array
+        items:
+          type: string
+capabilities:
+  - kind: usecase
+    keys:
+      - orders.get_order_status
+      - orders.request_refund
+      - customers.get_profile

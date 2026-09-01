@@ -18,6 +18,12 @@ _OPTIONS_TAKING_A_VALUE = frozenset(
         "-r",
         "--index-url",
         "--extra-index-url",
+        # uv's interpreter selector. Without it the tokenizer reads the
+        # environment path as a package specifier, sees no '==' and reports a
+        # pinned install as unpinned — a false alarm that would push someone
+        # to weaken the contract instead of teaching the parser one flag.
+        "--python",
+        "-p",
     }
 )
 

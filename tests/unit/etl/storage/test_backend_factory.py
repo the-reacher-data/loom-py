@@ -173,9 +173,9 @@ def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.M
 
             return PolarsProvider
 
-    providers_module = importlib.import_module("loom.etl.runner._providers")
+    entrypoints_module = importlib.import_module("loom.core.plugins.entrypoints")
     monkeypatch.setattr(
-        providers_module,
+        entrypoints_module,
         "entry_points",
         lambda: {"loom.etl.backends": [_DummyEP()]},
     )

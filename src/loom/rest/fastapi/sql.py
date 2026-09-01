@@ -38,11 +38,11 @@ from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig, roles_need_identity_binding
+from loom.core.sql.roles import resolve_query_roles
 from loom.core.sql.service import SqlQueryService
 from loom.core.tracing import get_trace_id
 from loom.rest.auth.abc import Authenticator
 from loom.rest.errors import ErrorField, HttpErrorMapper
-from loom.rest.fastapi._sql_roles import resolve_query_roles
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
 _logger = logging.getLogger(__name__)

@@ -100,11 +100,42 @@ streaming = [
     "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27,<2.0",
 ]
+ai-pydantic = [
+    "pydantic-ai-slim>=2,<3",
+]
+ai-bedrock = [
+    "pydantic-ai-slim[bedrock]>=2,<3",
+]
+ai-openai = [
+    "pydantic-ai-slim[openai]>=2,<3",
+]
+ai-anthropic = [
+    "pydantic-ai-slim[anthropic]>=2,<3",
+]
+ai-a2a = [
+    "fasta2a>=0.6,<1",
+    "a2a-sdk>=1.1,<2",
+]
+ai-harness = [
+    "pydantic-ai-harness[skills]>=0.28,<1",
+]
+# Logfire is an OTel distribution, not a second telemetry stack: it installs the
+# global TracerProvider that loom then SHARES via OtelConfig(endpoint="").
+# See docs/ai/observability.md — a non-empty endpoint makes loom build its own
+# provider, and the two are mutually exclusive by construction.
+logfire = [
+    "logfire>=4.0,<5",
+    "opentelemetry-api>=1.27,<2.0",
+    "opentelemetry-sdk>=1.27,<2.0",
+]
 celery = [
     "celery>=5.3,<6.0",
     "kombu>=5.3,<6.0",
     "redis>=5.0,<6.0",
 ]
+
+[project.entry-points."loom.ai.engines"]
+pydantic-ai = "loom.ai.engines.pydantic_ai.provider:PydanticAIEngineProvider"
 
 [project.entry-points."loom.etl.backends"]
 polars = "loom.etl.backends.polars.provider:PolarsProvider"
@@ -117,6 +148,15 @@ requires = [
 build-backend = "hatchling.build"
 
 [dependency-groups]
+# Isolated on purpose: fastmcp pulls ~26 packages and resolves
+# py-key-value-aio backwards (0.4.5 -> 0.3.0), a transitive shared with
+# prefect. The MCP end-to-end test is the only consumer, so the cost is paid
+# by whoever asks for it — `uv sync --group mcp-tests` — not by every
+# contributor's default install. The test skips when fastmcp is absent.
+mcp-tests = [
+    "fastmcp>=2.12,<3",
+]
+
 dev = [
     "aiocache>=0.12,<1.0",
     "aiosqlite>=0.20.0",
@@ -160,14 +200,24 @@ dev = [
     "pyyaml>=6.0",
     "httpx>=0.27",
     "types-pyyaml>=6.0.12.20260724",
+    "jsonschema>=4.26.0",
+    "pydantic-ai-slim[anthropic,bedrock,openai]>=2,<3",
+    "fasta2a>=0.6,<1",
+    "a2a-sdk>=1.1,<2",
+    "pydantic-ai-harness[skills]>=0.28,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/loom",
 ]
+# The agent-spec JSON Schema is shipped as package data so a generator can
+# validate its output against the published contract without importing loom —
+# and, by extracting it from the wheel or sdist, without installing loom at all
+# (FR-009). 'specs/' is not distributed, so the schema must live under 'src/'.
 include = [
     "src/loom/py.typed",
+    "src/loom/ai/declarative/schemas/*.json",
 ]
 
 [tool.ruff]
@@ -244,6 +294,15 @@ module = [
 ignore_missing_imports = true
 follow_imports = "skip"
 
+# 'fasta2a' ships no py.typed marker, but its 'schema' module is the A2A wire
+# contract used by 'loom.ai.a2a.server': following it keeps those TypedDicts
+# type-checked instead of degrading them to Any.
+[[tool.mypy.overrides]]
+module = [
+    "fasta2a.*",
+]
+follow_untyped_imports = true
+
 [[tool.mypy.overrides]]
 module = [
     "docker",
@@ -260,6 +319,7 @@ minversion = "8.0"
 testpaths = [
     "tests/unit",
     "tests/integration",
+    "tests/contract",
 ]
 pythonpath = [
     "src",
@@ -274,6 +334,7 @@ markers = [
     "kafka: tests that exercise Kafka transport and codecs",
     "integration: end-to-end streaming flow tests",
     "slow: long-running tests that should be opt-in in CI",
+    "live: tests that call a real model provider; skipped without credentials",
 ]
 
 [tool.commitizen]

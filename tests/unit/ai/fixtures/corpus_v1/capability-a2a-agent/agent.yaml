@@ -1,0 +1,24 @@
+spec_version: 1
+name: capability-a2a-agent
+description: Delegates translation work to a remote agent exposed over A2A.
+instructions: >-
+  Delegate the translation to the remote agent and return its result unchanged.
+  Report the source and target language you used.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - translated_text
+    properties:
+      translated_text:
+        type: string
+      target_language:
+        type: string
+capabilities:
+  - kind: a2a
+    agent: translations
+    include:
+      - translate_text
+      - detect_language

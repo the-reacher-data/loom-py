@@ -104,6 +104,22 @@ jobs:
       # those services actually up. Deselecting is deliberate over letting them
       # skip — a skipped test reads as approved, a deselected one reads as
       # "not this lane".
+      # Standalone artifact validation (FR-015): the published corpus must
+      # stay valid against the offline validator. The fake packages provide
+      # the corpus module:symbol references, as they would in an application.
+      # The glob is '*/agent.yaml', not '*.yaml': each corpus entry is a
+      # DIRECTORY holding its artifact next to its own skills, which is the
+      # layout an application uses. A top-level '*.yaml' matches nothing, and
+      # the validator exits 0 on an empty match — so the wrong glob is a step
+      # that passes without validating anything.
+      - name: Validate agent artifact corpus
+        shell: bash
+        env:
+          PYTHONPATH: tests/unit/ai/fixtures/fake_pkgs
+        run: |
+          set -euo pipefail
+          uv run --frozen python -m loom.ai.validate 'tests/unit/ai/fixtures/corpus_v1/*/agent.yaml'
+
       - name: Run pytest with coverage and JUnit output
         shell: bash
         run: |
@@ -254,6 +270,122 @@ jobs:
           if [ "${{ steps.quality.outcome }}" != "success" ] || [ "${{ steps.quality.outputs.blocking }}" = "true" ]; then
             echo "Blocking quality/security conditions detected"
             exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Churn canary (plan.md risk table): run the agent suites against the LATEST
+  # published pydantic-ai instead of the locked one.
+  #
+  # Why this job exists, concretely. During this feature three separate breaks
+  # were found by hand, each one the package disagreeing with its own docs:
+  #   * `Agent.to_a2a` had been removed;
+  #   * `FunctionToolResultEvent.result` did not exist;
+  #   * `Skills.include` accepted exact names only, not the patterns documented.
+  # Each cost a debugging session. The fourth should cost a CI annotation, and
+  # it should arrive on the day upstream ships it, not on the day we upgrade.
+  #
+  # Non-blocking by construction: `continue-on-error` on the job so a red canary
+  # never gates a PR, and a loud `::warning::` annotation plus a job summary so
+  # it is never a silent grey tick either. A canary nobody sees is not a canary.
+  #
+  # No `--frozen` and no `uv.lock` here — resolving fresh is the entire point.
+  pydantic-ai-canary:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-canary" >> "$GITHUB_ENV"
+
+      # Sync the locked environment first so only the pydantic-ai family moves:
+      # a canary that also floats msgspec or fastapi would report churn without
+      # saying whose churn it is.
+      - name: Sync the locked environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --frozen
+
+      # Two steps rather than one `--upgrade`, on purpose. The repository's
+      # supply-chain contract requires every CI install to name an exact
+      # version and to refuse sdists, so nothing can execute a setup script on
+      # a runner. A canary that floated its version would break that rule; a
+      # canary that RESOLVES the latest version, records it, and then installs
+      # that exact pin from wheels keeps it — and gains reproducibility, since
+      # the log now says precisely which release was tested.
+      - name: Resolve the latest published versions
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package in pydantic-ai-slim pydantic-ai-harness fasta2a a2a-sdk; do
+            version="$(python -c 'import json,sys,urllib.request; print(json.load(urllib.request.urlopen("https://pypi.org/pypi/" + sys.argv[1] + "/json", timeout=30))["info"]["version"])' "$package")"
+            echo "Latest ${package}: ${version}"
+            echo "${package//-/_}=${version}" >> "$GITHUB_ENV"
+          done
+
+      - name: Install the latest release, pinned and wheels-only
+        id: upgrade
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --python is required: uv pip honours VIRTUAL_ENV, not
+          # UV_PROJECT_ENVIRONMENT, so without it the install cannot find the
+          # environment 'uv sync' just created and fails asking for a venv.
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT" --only-binary :all: \
+            "pydantic-ai-slim[anthropic,bedrock,openai]==${pydantic_ai_slim}" \
+            "pydantic-ai-harness[skills]==${pydantic_ai_harness}" \
+            "fasta2a==${fasta2a}" \
+            "a2a-sdk==${a2a_sdk}"
+          {
+            echo "resolved<<EOF"
+            echo "pydantic-ai-slim==${pydantic_ai_slim}"
+            echo "pydantic-ai-harness==${pydantic_ai_harness}"
+            echo "fasta2a==${fasta2a}"
+            echo "a2a-sdk==${a2a_sdk}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run the agent suites against the latest release
+        id: canary
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest tests/unit/ai tests/contract/ai tests/integration/ai -q
+
+      # Always reports, pass or fail: the version tested is as useful as the
+      # verdict, because it is what pins the upgrade when the verdict is red.
+      - name: Report the canary verdict
+        if: ${{ always() }}
+        shell: bash
+        env:
+          RESOLVED: ${{ steps.upgrade.outputs.resolved }}
+          OUTCOME: ${{ steps.canary.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## pydantic-ai churn canary: \`${OUTCOME}\`"
+            echo
+            echo "Versions under test:"
+            echo '```'
+            echo "${RESOLVED}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${OUTCOME}" != "success" ]; then
+            echo "::warning title=pydantic-ai churn canary failed::The agent suites fail against the latest pydantic-ai. This does NOT block the PR. It means the next upgrade of the pinned version needs work first — read the job log, then either adapt the adapter or hold the pin."
           fi
 
   # ---------------------------------------------------------------------------

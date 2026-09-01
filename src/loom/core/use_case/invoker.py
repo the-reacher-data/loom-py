@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.executor import RuntimeExecutor
+from loom.core.identity import Identity
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.registry import UseCaseRegistry, model_entity_key
 
@@ -89,11 +90,44 @@ class EntityInvoker:
 
 @dataclass(frozen=True)
 class AppInvoker:
-    """Default implementation for app-level invocation."""
+    """Default implementation for app-level invocation.
+
+    Args:
+        factory: Builds the use-case instance to execute.
+        executor: Runs the built instance against its execution plan.
+        registry: Resolves a use case from its registered key.
+        identity: Verified caller every invocation runs as. ``None`` — the
+            default — passes no caller to the executor, so a use case declaring
+            ``Caller()`` raises ``Unauthenticated`` exactly as it does today; a
+            transport that has a caller binds one with :meth:`for_identity`.
+
+    The identity is a field rather than something read from ambient state
+    inside :meth:`invoke`: a facade that discovers who it runs as would make
+    the caller of one invocation depend on what the surrounding task happened
+    to set, which is the ambient-configuration rule the REST layer already
+    keeps to a single documented site.
+    """
 
     factory: UseCaseFactory
     executor: RuntimeExecutor
     registry: UseCaseRegistry
+    identity: Identity | None = None
+
+    def for_identity(self, identity: Identity) -> AppInvoker:
+        """Return a copy of this invoker bound to *identity*.
+
+        Args:
+            identity: Verified caller the copy invokes every use case as.
+
+        Returns:
+            A new invoker sharing this one's factory, executor and registry.
+
+        Example::
+
+            bound = invoker.for_identity(caller)
+            await bound.invoke(ReadInvoice, params={"id": 7})
+        """
+        return replace(self, identity=identity)
 
     async def invoke(
         self,
@@ -103,7 +137,9 @@ class AppInvoker:
         payload: dict[str, Any] | None = None,
     ) -> Any:
         instance: Compilable = self.factory.build(use_case)
-        return await self.executor.execute(instance, params=params, payload=payload)
+        return await self.executor.execute(
+            instance, params=params, payload=payload, identity=self.identity
+        )
 
     async def invoke_name(
         self,

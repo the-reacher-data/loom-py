@@ -1,0 +1,42 @@
+spec_version: 1
+name: full-agent
+description: Investigates production incidents by combining warehouse data, tools and a remote agent.
+instructions: >-
+  Investigate the reported incident, gather the supporting evidence and propose the next
+  remediation step. State explicitly when the evidence is inconclusive.
+model_role: reasoning
+output:
+  kind: type_ref
+  ref: myapp.domain.incidents:IncidentReport
+capabilities:
+  - kind: usecase
+    keys:
+      - incidents.get_incident
+      - incidents.append_timeline_entry
+  - kind: sql
+    connection: observability_readonly
+    max_rows: 1000
+    max_result_bytes: 2097152
+  - kind: mcp
+    server: runbooks
+    include:
+      - search_*
+    exclude:
+      - execute_*
+  - kind: skills
+    library: ./skills
+  - kind: python
+    factory: myapp.tools.metrics:build_metrics_toolset
+  - kind: a2a
+    agent: oncall
+    include:
+      - page_oncall
+policies:
+  retries: 3
+  tool_timeout_ms: 30000
+  max_iterations: 20
+  run_timeout_ms: 300000
+metadata:
+  owner: platform-reliability
+  tier: critical
+  runbook: incident-response

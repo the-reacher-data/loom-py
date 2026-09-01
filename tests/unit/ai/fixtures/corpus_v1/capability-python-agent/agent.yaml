@@ -1,0 +1,21 @@
+spec_version: 1
+name: capability-python-agent
+description: Performs geospatial lookups through a Python toolset built by the application.
+instructions: >-
+  Resolve the address to coordinates and report the nearest three service points with their
+  distance in kilometres.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - service_points
+    properties:
+      service_points:
+        type: array
+        items:
+          type: object
+capabilities:
+  - kind: python
+    factory: myapp.tools.geo:build_geo_toolset

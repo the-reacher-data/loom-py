@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from datetime import datetime
@@ -52,6 +53,11 @@ autodoc_preserve_defaults = True
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 
+# Generate ids for headings up to level 3 so Markdown pages can link to a
+# specific section of another page ('other.md#some-heading'). Without this,
+# MyST emits no local ids and every such cross-reference is a build warning.
+myst_heading_anchors = 3
+
 
 # loom.core.sql re-exports: canonical docs live in loom.core.sql.abc
 # and loom.core.sql.config, both listed in reference/api/core.rst.
@@ -71,6 +77,46 @@ _SQL_REEXPORTED_NAMES = (
     "UnknownConnectionError",
 )
 
+# loom.ai re-exports: canonical docs live in the modules that DEFINE each
+# symbol (loom.ai.abc, loom.ai.config, loom.ai.errors, loom.ai.inference,
+# loom.ai.runtime), listed in reference/api/ai.rst. The 'loom.ai' facade and
+# 'loom.ai.compiler' re-export them for import convenience; documenting them
+# twice makes every cross-reference ambiguous. Same treatment as loom.core.sql.
+_AI_PACKAGE = "loom.ai"
+
+
+def _reexported_names(package: str) -> tuple[str, ...]:
+    """Return the names a façade package re-exports from its submodules.
+
+    Derived from ``__all__`` rather than listed by hand: the hand-written list
+    silently went stale the moment the pillar published seven more names, and
+    the strict build only said so in CI. A façade re-exports everything it
+    declares, so the declaration is the list.
+
+    Args:
+        package: Importable façade package, e.g. ``"loom.ai"``.
+
+    Returns:
+        Every name in the package's ``__all__``, or an empty tuple when the
+        package cannot be imported in this environment.
+    """
+    try:
+        module = importlib.import_module(package)
+    except ImportError:
+        return ()
+    return tuple(getattr(module, "__all__", ()))
+
+
+_AI_REEXPORTED_NAMES = _reexported_names(_AI_PACKAGE)
+
+
+_AI_COMPILER_PACKAGE = "loom.ai.compiler"
+_AI_COMPILER_REEXPORTED_NAMES = (
+    "AgentCompilationError",
+    "AgentCompilationIssue",
+    "AgentErrorCode",
+)
+
 _DUPLICATED_REEXPORTS = {
     ("loom.core.errors", "RuleViolation"),
     ("loom.core.errors", "RuleViolations"),
@@ -80,6 +126,8 @@ _DUPLICATED_REEXPORTS = {
     ("loom.testing", "CompilationError"),
     ("loom.rest.model", "PaginationMode"),
     *((_SQL_PACKAGE, symbol) for symbol in _SQL_REEXPORTED_NAMES),
+    *((_AI_PACKAGE, symbol) for symbol in _AI_REEXPORTED_NAMES),
+    *((_AI_COMPILER_PACKAGE, symbol) for symbol in _AI_COMPILER_REEXPORTED_NAMES),
 }
 
 

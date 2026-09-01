@@ -12,11 +12,20 @@ from loom.rest.model import RestInterface
 
 @dataclass(frozen=True)
 class DiscoveryResult:
-    """Discovered application components used by bootstrap."""
+    """Discovered application components used by bootstrap.
+
+    Attributes:
+        models: Discovered persistent models.
+        use_cases: Discovered use cases, including auto-generated ones.
+        interfaces: Discovered REST interfaces.
+        agent_specs: Agent artifact paths or globs the manifest declares;
+            empty for engines that do not expose agents.
+    """
 
     models: tuple[type[BaseModel], ...]
     use_cases: tuple[type[UseCase[object, object]], ...]
     interfaces: tuple[type[RestInterface[object]], ...]
+    agent_specs: tuple[str, ...] = ()
 
 
 class DiscoveryEngine(Protocol):

@@ -1,0 +1,23 @@
+spec_version: 1
+name: capability-skills-agent
+description: Drafts release notes using its own packaged skill and the shared writing library.
+instructions: >-
+  Turn the list of merged changes into release notes grouped by feature, fix and breaking
+  change. Keep every entry to a single sentence.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - release_notes
+    properties:
+      release_notes:
+        type: string
+capabilities:
+  - kind: skills
+    library: ./skills
+  - kind: skills
+    library: shared
+    include:
+      - tone-of-voice

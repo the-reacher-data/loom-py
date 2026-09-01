@@ -97,6 +97,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
             use_cases=(object(),),
             interfaces=(type("DummyRestInterface", (), {}),),
             models=(object(),),
+            agent_specs=(),
         )
         return result, wiring, discovered
 

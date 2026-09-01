@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loom.dev/schemas/agent-spec/v1.json",
+  "title": "Loom AgentSpec v1",
+  "description": "Declarative, engine-agnostic and vendor-agnostic agent definition. Published per spec version (FR-009) so generators and editors can validate without the platform runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "name",
+    "description",
+    "instructions",
+    "output"
+  ],
+  "properties": {
+    "spec_version": {
+      "const": 1,
+      "description": "Format version. Read first, before any other field."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,62}$",
+      "description": "Unique agent name within the application. Published in the A2A card."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What the agent does. PUBLIC: published in the A2A card."
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Instructions the agent follows. NEVER published. Must not encode authorization."
+    },
+    "model_role": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+      "default": "default",
+      "description": "Logical model role, bound to a concrete provider and model by deployment configuration. Never a vendor name or model id."
+    },
+    "output": {
+      "$ref": "#/$defs/output"
+    },
+    "capabilities": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/capability"
+      }
+    },
+    "policies": {
+      "$ref": "#/$defs/policies"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {}
+    }
+  },
+  "$defs": {
+    "output": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "schema"
+          ],
+          "properties": {
+            "kind": {
+              "const": "json_schema"
+            },
+            "schema": {
+              "type": "object",
+              "description": "JSON Schema object describing the required answer. Canonical form; what a generator emits."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "type_ref"
+            },
+            "ref": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$",
+              "description": "Shortcut for hand-written applications: module:Symbol resolved at compile time."
+            }
+          }
+        }
+      ]
+    },
+    "capability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "keys"
+          ],
+          "properties": {
+            "kind": {
+              "const": "usecase"
+            },
+            "keys": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": "Explicitly granted business operation keys. Never expanded automatically."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "connection",
+            "max_rows",
+            "max_result_bytes"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sql"
+            },
+            "connection": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Named connection. Compilation fails unless it is read-only."
+            },
+            "max_rows": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_result_bytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "server"
+          ],
+          "properties": {
+            "kind": {
+              "const": "mcp",
+              "description": "Tools from a named remote tool server."
+            },
+            "server": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Named remote tool server, resolved from ai.mcp_servers in deployment configuration. The artifact names the server; the deployment knows where it is and how to authenticate to it."
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to expose. Empty means all."
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to omit."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "library"
+          ],
+          "properties": {
+            "kind": {
+              "const": "skills",
+              "description": "Packaged prompt material from a skill library."
+            },
+            "library": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(\\./[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)$",
+              "description": "Skill library. './name' resolves beside this artifact and travels with it; a bare name resolves against ai.skills_root. '..' is not representable, so a library can never escape its own directory."
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to expose. Empty means all."
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to omit."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "factory"
+          ],
+          "properties": {
+            "kind": {
+              "const": "python"
+            },
+            "factory": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$",
+              "description": "module:factory satisfying the ToolsetFactory protocol. A factory, never a constructed object."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "agent"
+          ],
+          "properties": {
+            "kind": {
+              "const": "a2a",
+              "description": "Delegation to a named remote agent."
+            },
+            "agent": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Named remote agent, resolved from ai.a2a_agents in deployment configuration."
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to expose. Empty means all."
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Names or glob patterns to omit."
+            }
+          }
+        }
+      ]
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 2
+        },
+        "tool_timeout_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 600000,
+          "default": 20000
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 12
+        },
+        "run_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 1800000,
+          "default": 120000
+        }
+      }
+    }
+  }
+}

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import msgspec
 import prometheus_client
@@ -29,6 +29,14 @@ from loom.core.discovery import (
     ModulesDiscoveryEngine,
 )
 from loom.core.discovery.base import DiscoveryResult
+from loom.core.identity import Identity
+from loom.core.introspection import (
+    INTROSPECTION_STATE_ATTR,
+    AppIntrospection,
+    ContributorRef,
+    IntrospectionError,
+    describe_app,
+)
 from loom.core.job.service import InlineJobService, JobService
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
@@ -43,6 +51,7 @@ from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
 from loom.core.sql.config import roles_need_identity_binding
 from loom.core.uow.abc import UnitOfWorkFactory
+from loom.core.use_case.invoker import AppInvoker
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest._body import DEFAULT_MAX_BODY_BYTES, BodySizeLimitMiddleware
@@ -65,7 +74,23 @@ from loom.rest.fastapi.sql import (
 from loom.rest.middleware import TraceIdMiddleware
 
 if TYPE_CHECKING:
+    # Annotations only: the AI pillar and the ClickHouse extra are imported at
+    # run time solely by the branch that needs them.
+    from loom.ai.compiler import AgentPlan
+    from loom.ai.config import AiConfig
+    from loom.ai.runtime import AgentRuntime
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
+
+
+# Written as data, never imported here: an application without an 'ai:'
+# section must not gain a single AI import (FR-050).  The reference resolves
+# inside 'describe_app', and only when a description is asked for.
+_AGENTS_SECTION = "agents"
+# Single source of the agents prefix for both agent surfaces. Passed
+# explicitly to 'bind_agent_endpoints' and to 'bind_a2a_endpoints' so the
+# FR-041b exclusion guard measures the prefix the application really mounts.
+_AGENTS_PREFIX: Final[str] = "/agents"
+_AGENTS_CONTRIBUTOR = "loom.ai.describe:describe_agents"
 
 
 class _DiscoveryInterfaces(msgspec.Struct, kw_only=True):
@@ -460,6 +485,267 @@ class _RegistryExecutors(Mapping[str, SqlExecutor]):
 
 
 @dataclass(frozen=True)
+class _AgentDeps:
+    """Per-invocation dependency bundle handed to an agent capability call.
+
+    Args:
+        identity: Verified caller of the invocation.
+        container: Application container holding the singleton services.
+        invoker: Application invoker already bound to ``identity``.
+    """
+
+    identity: Identity
+    container: LoomContainer
+    invoker: AppInvoker
+
+
+class _AgentDepsFactory:
+    """Builds the per-invocation dependencies of every agent capability call.
+
+    Structural implementation of ``loom.ai.abc.DepsFactory``: it lives in the
+    composition root, and depends only on ``loom.core``, so an application with
+    no ``ai:`` section never imports the AI pillar to obtain it (FR-050).
+
+    Binding the invoker to the caller happens here, at the one point that knows
+    both: a granted use case declaring ``Caller()`` is executed as the identity
+    that invoked the agent, and the capability never has to discover the caller
+    from ambient state (FR-043).
+
+    Args:
+        invoker: Unbound application invoker of this application.
+    """
+
+    def __init__(self, invoker: AppInvoker) -> None:
+        self._invoker = invoker
+
+    def build(self, identity: Identity, container: LoomContainer) -> object:
+        """Return the dependency bundle for one invocation.
+
+        Args:
+            identity: Verified caller of this invocation.
+            container: Application container holding the singleton services.
+
+        Returns:
+            The bundle the engine passes to its capability calls.
+        """
+        return _AgentDeps(
+            identity=identity,
+            container=container,
+            invoker=self._invoker.for_identity(identity),
+        )
+
+
+@dataclass(frozen=True)
+class _AiWiring:
+    """Resolved AI pillar pieces for the auto-bootstrap REST app.
+
+    Args:
+        config: Parsed ``ai:`` section, or ``None`` when absent.
+        runtime: Agent runtime entered by the app lifespan alongside the SQL
+            registry, or ``None`` when no section is configured.
+        plans: Compiled agent plans, kept so the application can describe
+            itself without reaching into the runtime.
+    """
+
+    config: AiConfig | None
+    runtime: AgentRuntime | None
+    plans: tuple[AgentPlan, ...] = ()
+
+
+def _effective_agent_specs(
+    config_specs: tuple[str, ...],
+    manifest_specs: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Return the single artifact source of the application.
+
+    ``ai.specs`` and the manifest ``AGENTS`` attribute are mutually exclusive:
+    an implicit precedence would silently ignore half of the agents an
+    operator declared.
+
+    Raises:
+        AgentCompilationError: When both sources declare artifacts, or when
+            neither does.
+    """
+    # Local import: same containment rule as '_resolve_ai'; this helper only
+    # ever runs from the branch that already decided to load the AI pillar.
+    from loom.ai.errors import AgentCompilationError, agent_specs_conflict, agent_specs_missing
+
+    if config_specs and manifest_specs:
+        raise AgentCompilationError([agent_specs_conflict()])
+    if not config_specs and not manifest_specs:
+        raise AgentCompilationError([agent_specs_missing()])
+    return config_specs or manifest_specs
+
+
+def _resolve_ai(
+    ctx: ConfigContext,
+    *,
+    kernel: KernelRuntime,
+    sql_cfg: SqlConfig | None,
+    code_path: Path,
+    manifest_agent_specs: tuple[str, ...],
+) -> _AiWiring:
+    """Load the optional ``ai:`` section into its compiled agent runtime.
+
+    Absent section -> empty wiring, and the AI pillar is never imported.
+    Present section -> the configured engine is resolved, every declared
+    artifact is compiled offline, and the runtime is built without opening a
+    single connection: its live clients open inside the app lifespan.
+    """
+    if not ctx.has(ConfigKey.AI):
+        return _AiWiring(config=None, runtime=None)
+    # Local imports: the AI pillar is optional, and importing it from an
+    # application without an 'ai:' section would pull the whole agent layer
+    # into every Loom app (FR-050) — the same rule '_build_sql_registry'
+    # follows for the ClickHouse extra.
+    from loom.ai.compiler import AgentCompiler
+    from loom.ai.config import AiConfig
+    from loom.ai.declarative import load_specs
+    from loom.ai.registry import engine_client_factories, resolve_engine_provider
+    from loom.ai.runtime import AgentRuntime
+
+    ai_cfg = ctx.section(ConfigKey.AI, AiConfig)
+    provider = resolve_engine_provider(ai_cfg.engine)
+    mcp_factory, a2a_factory = engine_client_factories(provider)
+    compiler = AgentCompiler(
+        config=ai_cfg,
+        registry=kernel.registry,
+        supported_kinds=provider.supported_capability_kinds(),
+        sql=sql_cfg,
+    )
+    specs = _effective_agent_specs(ai_cfg.specs, manifest_agent_specs)
+    decoded = load_specs(specs, root=code_path)
+    # DecodedSpec, not .spec: the artifact's own path is what resolves a
+    # './library' skill grant, and dropping it fails them in real wiring.
+    plans = compiler.compile_all(decoded)
+    runtime = AgentRuntime(
+        plans=plans,
+        config=ai_cfg,
+        engine_provider=provider,
+        deps=_AgentDepsFactory(kernel.app),
+        container=kernel.container,
+        sql_config=sql_cfg,
+        # Without these an artifact granting 'mcp' or 'a2a' compiles and then
+        # fails to start: the runtime has no way to reach the server it must
+        # validate the grant against.
+        mcp_client_factory=mcp_factory,
+        a2a_client_factory=a2a_factory,
+    )
+    return _AiWiring(config=ai_cfg, runtime=runtime, plans=plans)
+
+
+def _bind_agent_surface(
+    app: FastAPI,
+    ai: _AiWiring,
+    auth: _AuthWiring,
+    observability_runtime: ObservabilityRuntime,
+) -> None:
+    """Mount the agent surfaces: HTTP for every opt-in, A2A for every exposure.
+
+    Both mounts read the same ``_AGENTS_PREFIX``. That single source is what
+    makes the FR-041b exclusion guard meaningful: it measures the agents prefix
+    an exclusion could open, so a prefix nobody mounts would leave the real one
+    unguarded.
+
+    Raises:
+        ConfigError: When an agent opts in without a usable authenticator, or
+            when its callers are verified by a JWT without a validated ``aud``.
+    """
+    if ai.config is None or ai.runtime is None:
+        return
+    _validate_agent_endpoint_auth(ai.config, auth)
+    # Local import: same containment rule as '_resolve_ai'.
+    from loom.ai.fastapi.endpoints import bind_agent_endpoints
+
+    bind_agent_endpoints(
+        app,
+        runtime=ai.runtime,
+        config=ai.config,
+        authenticator=auth.authenticator,
+        observability_runtime=observability_runtime,
+        prefix=_AGENTS_PREFIX,
+    )
+    _bind_a2a_surface(app, ai, auth, observability_runtime)
+
+
+def _bind_a2a_surface(
+    app: FastAPI,
+    ai: _AiWiring,
+    auth: _AuthWiring,
+    observability_runtime: ObservabilityRuntime,
+) -> None:
+    """Publish the agents named in ``ai.a2a.expose`` over inbound A2A (FR-041).
+
+    Guarded on the section rather than delegated to ``bind_a2a_endpoints``'s own
+    early return: the import below pulls the ``ai-a2a`` extra, which a
+    deployment without an ``ai.a2a`` section is not required to have installed.
+    """
+    if ai.config is None or ai.runtime is None or ai.config.a2a is None:
+        return
+    # Local import: the A2A transport lives behind the 'ai-a2a' extra.
+    from loom.ai.a2a.server import bind_a2a_endpoints
+
+    bind_a2a_endpoints(
+        app,
+        runtime=ai.runtime,
+        config=ai.config,
+        plans=ai.plans,
+        authenticator=auth.authenticator,
+        exclude_paths=auth.exclude_paths,
+        observability_runtime=observability_runtime,
+        agents_prefix=_AGENTS_PREFIX,
+    )
+
+
+def _validate_agent_endpoint_auth(ai_cfg: AiConfig, auth: _AuthWiring) -> None:
+    """Apply the JWT start-up gates to every agent bound to a verified caller (§4).
+
+    An agent surface is at least as privileged as a SQL one: the verified
+    caller drives every capability the agent holds, as that caller. So it must
+    not boot in a configuration the SQL surface already refuses.
+    """
+    if auth.jwt_config is None:
+        return
+    for name in _agents_bound_to_a_verified_caller(ai_cfg):
+        _require_jwt_audience(f"Agent {name!r}", auth.jwt_config)
+
+
+def _agents_bound_to_a_verified_caller(ai_cfg: AiConfig) -> tuple[str, ...]:
+    """Name every agent whose callers are authenticated, over either surface.
+
+    An A2A-published agent counts too, and is the stricter case of the two: the
+    HTTP mount is opt-in per agent, while ``ai.a2a.expose`` puts the agent on
+    the public internet, where an unvalidated ``aud`` accepts a token minted
+    for another service as the caller driving every capability the agent holds.
+    """
+    http = {
+        # The double opt-in 'bind_agent_endpoints' mounts on.
+        name
+        for name, endpoint in ai_cfg.endpoints.items()
+        if endpoint.enabled and endpoint.auth.strip() and not endpoint.allow_anonymous
+    }
+    a2a = {name for name in _a2a_exposed(ai_cfg) if not _a2a_allows_anonymous(ai_cfg, name)}
+    return tuple(sorted(http | a2a))
+
+
+def _a2a_exposed(ai_cfg: AiConfig) -> tuple[str, ...]:
+    return ai_cfg.a2a.expose if ai_cfg.a2a is not None else ()
+
+
+def _a2a_allows_anonymous(ai_cfg: AiConfig, name: str) -> bool:
+    """Mirror ``loom.ai.a2a._binding``'s rule for an unverified A2A caller.
+
+    Anonymity is only in force when the HTTP stanza's own double opt-in holds:
+    a disabled or unnamed-``auth`` stanza grants nothing, so its
+    ``allow_anonymous`` does not travel to the A2A surface either.
+    """
+    endpoint = ai_cfg.endpoints.get(name)
+    if endpoint is None or not endpoint.enabled or not endpoint.auth.strip():
+        return False
+    return endpoint.allow_anonymous
+
+
+@dataclass(frozen=True)
 class _AuthWiring:
     """Resolved authentication for the auto-bootstrap REST app.
 
@@ -580,7 +866,7 @@ def _validate_sql_endpoint_auth(sql_cfg: SqlConfig, auth: _AuthWiring) -> None:
             continue
         authenticator = _require_authenticator(name, auth)
         if auth.jwt_config is not None:
-            _require_jwt_audience(name, auth.jwt_config)
+            _require_jwt_audience(f"SQL connection {name!r}", auth.jwt_config)
         _require_role_binding(name, connection.allowed_roles, authenticator)
         _require_authenticated_path(name, endpoint.path or f"/sql/{name}", auth.exclude_paths)
 
@@ -596,15 +882,22 @@ def _require_authenticator(name: str, auth: _AuthWiring) -> Authenticator:
     )
 
 
-def _require_jwt_audience(name: str, jwt_cfg: JwtAuthConfig) -> None:
-    """Binding roles to a token is void without a validated ``aud`` (§4)."""
+def _require_jwt_audience(subject: str, jwt_cfg: JwtAuthConfig) -> None:
+    """Binding an endpoint to a token is void without a validated ``aud`` (§4).
+
+    Args:
+        subject: What is being gated, already formatted for the message — for
+            example ``"SQL connection 'analytics'"`` or ``"Agent 'analyst'"``.
+        jwt_cfg: JWT settings of the application.
+    """
     if jwt_cfg.audience is not None:
         return
     raise ConfigError(
-        f"SQL connection {name!r}: the endpoint requires a verified caller but "
+        f"{subject}: the endpoint requires a verified caller but "
         "'app.rest.auth.jwt.audience' is not set. Without a validated 'aud' any "
         "token signed by the same key — including tokens minted for another "
-        "service — would be accepted and could carry the roles claim."
+        "service — would be accepted as that verified caller, with whatever "
+        "claims it carries."
     )
 
 
@@ -945,6 +1238,20 @@ def create_app(
     )
     _configure_job_service(ctx, result, observability_runtime)
     _register_sql_service(result.container, sql.service)
+    # Registered, not merely passed: capability spans resolve it from the
+    # container, and an unregistered runtime makes every Scope.TOOL span a
+    # silent no-op in production while passing every test that injects one.
+    result.container.register(
+        ObservabilityRuntime, lambda: observability_runtime, scope=Scope.APPLICATION
+    )
+    _reject_manifest_agents_without_ai_section(ctx, discovered.agent_specs)
+    ai = _resolve_ai(
+        ctx,
+        kernel=result,
+        sql_cfg=sql.config,
+        code_path=effective_code_path,
+        manifest_agent_specs=discovered.agent_specs,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -953,6 +1260,8 @@ def create_app(
             # persistence lifespan fails to start or to shut down.
             if sql.registry is not None:
                 await stack.enter_async_context(sql.registry)
+            if ai.runtime is not None:
+                await stack.enter_async_context(ai.runtime)
             await stack.enter_async_context(wiring.lifespan_init())
             yield
 
@@ -978,11 +1287,86 @@ def create_app(
             observability_runtime=observability_runtime,
         )
         _warn_sql_endpoints(sql.config, auth)
+    _bind_agent_surface(app, ai, auth, observability_runtime)
+    setattr(app.state, INTROSPECTION_STATE_ATTR, _build_introspection(app_cfg, ai))
     # Last: every route the application will ever serve is registered by now,
     # which is what makes the exclusion check meaningful.
     verify_exclusion_paths(app, auth.exclude_paths)
     _warn_anonymous_schema(app_cfg.rest, auth)
     return app
+
+
+def _reject_manifest_agents_without_ai_section(
+    ctx: ConfigContext,
+    manifest_agent_specs: tuple[str, ...],
+) -> None:
+    """Refuse a manifest declaring agents in an application with no ``ai:`` section.
+
+    Raises:
+        ConfigError: When ``AGENTS`` names artifacts nothing can compile.
+    """
+    if manifest_agent_specs and not ctx.has(ConfigKey.AI):
+        raise ConfigError(
+            "The manifest declares AGENTS but the configuration has no 'ai:' section: "
+            "agent artifacts need an engine and its model bindings to compile. Add the "
+            "'ai:' section, or remove AGENTS from the manifest."
+        )
+
+
+def _build_introspection(app_cfg: _AppConfig, ai: _AiWiring) -> AppIntrospection:
+    """Build the self-description of the application under construction.
+
+    The AI contribution is a *string* reference resolved only when the
+    description is asked for, so an application without an ``ai:`` section
+    never imports the pillar (FR-050).
+    """
+    contributors: tuple[ContributorRef, ...] = ()
+    if ai.config is not None:
+        contributors = (
+            ContributorRef(
+                section=_AGENTS_SECTION,
+                contributor=_AGENTS_CONTRIBUTOR,
+                subject=ai.plans,
+            ),
+        )
+    return AppIntrospection(
+        name=app_cfg.name,
+        version=app_cfg.rest.version,
+        contributors=contributors,
+    )
+
+
+def describe_fastapi_app(app: FastAPI) -> dict[str, Any]:
+    """Describe an application built by :func:`create_app`.
+
+    The document always carries the application identity under ``"app"``, plus
+    one section per wired pillar — ``"agents"`` when an ``ai:`` section is
+    configured.  Only publishable values appear: no instructions, no model
+    binding, no URL and no credential reference.
+
+    Args:
+        app: Application previously built by :func:`create_app`.
+
+    Returns:
+        JSON-encodable self-description of the application.
+
+    Raises:
+        IntrospectionError: When *app* was not built by :func:`create_app`, or
+            when a pillar contribution cannot be resolved.
+
+    Example::
+
+        app = create_app("config/app.yaml")
+        describe_fastapi_app(app)["app"]
+        # {'name': 'billing', 'version': '1.4.0'}
+    """
+    introspection = getattr(app.state, INTROSPECTION_STATE_ATTR, None)
+    if not isinstance(introspection, AppIntrospection):
+        raise IntrospectionError(
+            "this application carries no introspection state; only applications built by "
+            "'create_app' can describe themselves."
+        )
+    return describe_app(introspection)
 
 
 def _warn_anonymous_schema(rest_cfg: _RestConfig, auth: _AuthWiring) -> None:
