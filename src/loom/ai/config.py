@@ -20,6 +20,7 @@ from msgspec import field
 from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
+    a2a_base_url_invalid,
     a2a_expose_empty,
     a2a_url_invalid,
     endpoint_auth_missing,
@@ -182,6 +183,15 @@ class A2AConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     def __post_init__(self) -> None:
         if not self.expose:
             raise AgentCompilationError([a2a_expose_empty()])
+        # base_url is published verbatim in the capability card, which is the
+        # one unauthenticated surface of the pillar: an http:// address would
+        # advertise a plaintext channel to every discovering client, and
+        # userinfo would publish a credential outright. Same rule the compiler
+        # already applies to the remote URLs it validates, applied where this
+        # one actually lives (FR-038).
+        fault = _url_fault(self.base_url)
+        if fault is not None:
+            raise AgentCompilationError([a2a_base_url_invalid(_redact_url(self.base_url), fault)])
 
 
 class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):

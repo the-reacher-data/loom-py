@@ -90,6 +90,7 @@ class AgentErrorCode(StrEnum):
     TOOL_FILTER_MATCHES_NOTHING = "TOOL_FILTER_MATCHES_NOTHING"
     SQL_READONLY_DRIFT = "SQL_READONLY_DRIFT"
     ENDPOINT_AUTH_MISSING = "ENDPOINT_AUTH_MISSING"
+    A2A_BASE_URL_INVALID = "A2A_BASE_URL_INVALID"
     A2A_EXPOSE_EMPTY = "A2A_EXPOSE_EMPTY"
     AUTH_EXCLUSION_OVERLAPS_AGENTS = "AUTH_EXCLUSION_OVERLAPS_AGENTS"
     A2A_AGENT_UNREACHABLE = "A2A_AGENT_UNREACHABLE"
@@ -657,6 +658,24 @@ def endpoint_auth_missing(component: str) -> AgentCompilationIssue:
         message=f"{component}: HTTP exposure requires a named authentication",
         component=component,
         field="auth",
+    )
+
+
+def a2a_base_url_invalid(url: str, reason: str) -> AgentCompilationIssue:
+    """Report an ``ai.a2a.base_url`` that is unsafe to publish.
+
+    Args:
+        url: The offending URL, already redacted of userinfo and query.
+        reason: Why it is unsafe, in the vocabulary of the URL check.
+
+    Returns:
+        The issue, coded :data:`AgentErrorCode.A2A_BASE_URL_INVALID`.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.A2A_BASE_URL_INVALID,
+        component="ai.a2a",
+        field="base_url",
+        message=f"the published card base URL is unsafe: {reason} ({url})",
     )
 
 
