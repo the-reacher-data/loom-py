@@ -14,8 +14,10 @@ from pydantic_ai import Agent
 
 from loom.ai.abc import AgentEngine, DepsFactory
 from loom.ai.compiler import AgentPlan
+from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
 from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_toolsets
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
+from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec
 from loom.core.di import LoomContainer
@@ -42,6 +44,13 @@ class PydanticAIEngineProvider:
     """
 
     LOOM_AI_ENGINE_API: ClassVar[int] = 1
+
+    mcp_client_factory = staticmethod(create_mcp_client)
+    """Session factory for ``mcp`` grants, read off the provider by the
+    composition root so it never imports this engine (FR-016, FR-051)."""
+
+    a2a_client_factory = staticmethod(create_a2a_client)
+    """Client factory for ``a2a`` grants, read the same way."""
 
     def __init__(self, *, model_resolver: ModelResolver | None = None) -> None:
         self._resolve_model: ModelResolver = model_resolver or resolve_model
@@ -85,11 +94,12 @@ class PydanticAIEngineProvider:
         can actually serve. ``skills`` produces no toolset: it becomes a
         deferred harness capability instead, built by
         :func:`~loom.ai.engines.pydantic_ai._capabilities.build_capabilities`.
-        ``a2a`` is deliberately absent: announcing a kind the engine cannot
-        honour would compile a grant with no implementation, and the compiler
-        refuses an unannounced kind instead.
+        ``a2a`` produces the single delegation tool of
+        :func:`~loom.ai.engines.pydantic_ai._a2a.send_to_remote_agent`, and the
+        runtime opens its start-up client through
+        :func:`~loom.ai.engines.pydantic_ai._a2a.create_a2a_client`.
 
         Returns:
             The supported ``kind`` identifiers.
         """
-        return frozenset({"usecase", "sql", "mcp", "skills", "python"})
+        return frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})

@@ -3,7 +3,10 @@
 Implements ``specs/001-ai-agent-layer/contracts/a2a.md`` on top of
 :class:`~loom.ai.runtime.AgentRuntime`, reusing the pure projections of
 :mod:`loom.ai.a2a.card` and :mod:`loom.ai.a2a.events`. Nothing here re-derives
-the card or the event mapping: this module is transport only.
+the card or the event mapping: this module is transport only, and the rules
+every agent transport shares — the body cap, the caller check, the span that
+survives a disconnect and the heartbeat race — come from
+:mod:`loom.ai._transport` rather than from the HTTP surface's private names.
 
 **Deviation from ``fasta2a.pydantic_ai.agent_to_a2a``.** The dependency is real
 — ``fasta2a.schema`` is the wire contract and the error taxonomy used below —
@@ -38,7 +41,6 @@ answers its stable code and a fixed detail, never the failure message.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -62,27 +64,29 @@ from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
+from loom.ai._transport import (
+    BODY_OVERHEAD_BYTES,
+    HEARTBEAT_MS,
+    TransportError,
+    always_closed,
+    failure_event,
+    read_body_capped,
+    require_caller,
+    with_heartbeats,
+)
 from loom.ai.a2a.card import DEFAULT_A2A_PREFIX, build_agent_card, card_path
 from loom.ai.a2a.events import A2AEventProjector
-from loom.ai.abc import ErrorEvent
 from loom.ai.compiler import AgentPlan
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import (
     AgentCompilationError,
+    AgentRunError,
     AgentRunErrorCode,
     auth_exclusion_overlaps_agents,
 )
-from loom.ai.fastapi.endpoints import (
-    _BODY_OVERHEAD_BYTES,
-    _HEARTBEAT_MS,
-    _AgentHttpError,
-    _always_closed,
-    _read_body_capped,
-    _require_caller,
-)
 from loom.ai.fastapi.response import ENCODER, AgentJSONResponse
-from loom.ai.fastapi.streaming import HEARTBEAT_FRAME
-from loom.ai.runtime import AgentRunError, AgentRuntime
+from loom.ai.fastapi.response import error_response as flat_error_response
+from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity
 from loom.core.observability.event import Scope
@@ -329,74 +333,6 @@ def _sse_frame(request_id: int | str | None, event: Mapping[str, object]) -> byt
     return _DATA_PREFIX + ENCODER.encode(_rpc_response(request_id, event)) + _FRAME_SUFFIX
 
 
-def _failure_event(exc: BaseException) -> ErrorEvent:
-    """Turn a post-first-byte failure into the stream's terminal error event."""
-    if isinstance(exc, AgentRunError):
-        return ErrorEvent(code=exc.code, message=str(exc))
-    return ErrorEvent(
-        code=AgentRunErrorCode.PROVIDER_UNAVAILABLE, message="the agent run failed unexpectedly"
-    )
-
-
-async def _next_frame(frames: AsyncIterator[bytes]) -> bytes | None:
-    try:
-        return await anext(frames)
-    except StopAsyncIteration:
-        return None
-
-
-async def _drain(pending: asyncio.Future[bytes | None] | None) -> None:
-    """Cancel the awaited frame and wait for it, so nothing outlives the stream."""
-    if pending is None:
-        return
-    pending.cancel()
-    try:
-        await pending
-    except (Exception, asyncio.CancelledError):
-        # The consumer is already gone: neither the cancellation just requested
-        # nor a late failure has anybody left to be reported to.
-        return
-
-
-async def _with_heartbeats(
-    frames: AsyncIterator[bytes], *, heartbeat_ms: int
-) -> AsyncIterator[bytes]:
-    """Emit a comment frame for every silence longer than *heartbeat_ms*.
-
-    Mirrors the race in :func:`loom.ai.fastapi.streaming.stream_sse` — which
-    cannot be reused because it is bound to the HTTP frame encoding, while an
-    A2A frame is a JSON-RPC envelope and one agent event may project to two of
-    them. The awaited frame is shielded from the timeout and drained on exit,
-    so a disconnected client leaves no run burning tokens (FR-033).
-
-    Args:
-        frames: Frames to relay, in order; exhaustion ends the stream.
-        heartbeat_ms: Silence after which a comment frame is emitted.
-
-    Yields:
-        The relayed frames, interleaved with heartbeat comment frames.
-    """
-    iterator = frames.__aiter__()
-    beat = heartbeat_ms / 1000
-    pending: asyncio.Future[bytes | None] | None = None
-    try:
-        while True:
-            if pending is None:
-                pending = asyncio.ensure_future(_next_frame(iterator))
-            try:
-                async with asyncio.timeout(beat):
-                    frame = await asyncio.shield(pending)
-            except TimeoutError:
-                yield HEARTBEAT_FRAME
-                continue
-            pending = None
-            if frame is None:
-                return
-            yield frame
-    finally:
-        await _drain(pending)
-
-
 def _make_send_handler(
     runtime: AgentRuntime,
     config: AiConfig,
@@ -454,7 +390,7 @@ def _run_frames(
             # The status line is long gone, so this failure can only travel
             # in-band, as the stream's terminal event (FR-032).
             _logger.warning("a2a stream failed after the first byte", exc_info=exc)
-            for projected in projector.project(_failure_event(exc)):
+            for projected in projector.project(failure_event(exc)):
                 yield _sse_frame(call.request_id, projected)
 
     return _frames()
@@ -475,7 +411,7 @@ def _make_stream_handler(
         task_id, context_id = uuid4().hex, uuid4().hex
 
         async def _framed() -> AsyncIterator[bytes]:
-            with _always_closed(
+            with always_closed(
                 observability_runtime.span(
                     Scope.AGENT,
                     "agent_run",
@@ -488,7 +424,7 @@ def _make_stream_handler(
                 )
             ):
                 frames = _run_frames(runtime, call, prompt, task_id=task_id, context_id=context_id)
-                async for frame in _with_heartbeats(frames, heartbeat_ms=_HEARTBEAT_MS):
+                async for frame in with_heartbeats(frames, heartbeat_ms=HEARTBEAT_MS):
                     yield frame
 
         return StreamingResponse(_framed(), media_type=_MEDIA_TYPE_SSE)
@@ -529,13 +465,13 @@ def _make_rpc_handler(
     agent: _PublishedAgent, handlers: Mapping[str, _Handler], *, max_prompt_bytes: int
 ) -> Callable[[Request], Awaitable[Response]]:
     """Build the JSON-RPC endpoint of one published agent."""
-    body_cap = max_prompt_bytes + _BODY_OVERHEAD_BYTES
+    body_cap = max_prompt_bytes + BODY_OVERHEAD_BYTES
 
     async def serve_rpc(request: Request) -> Response:
         request_id: int | str | None = None
         try:
-            identity = _require_caller(agent.name, agent.endpoint)
-            body = await _read_body_capped(request, max_bytes=body_cap)
+            identity = require_caller(agent.name, agent.endpoint)
+            body = await read_body_capped(request, max_bytes=body_cap)
             envelope = _decode_envelope(body)
             request_id = envelope.id
             method = _require_method(envelope)
@@ -543,8 +479,8 @@ def _make_rpc_handler(
             if handler is None:
                 return _error_response(request_id, _method_not_found_error(method))
             return await handler(_Call(agent, request_id, envelope.params, identity))
-        except _AgentHttpError as exc:
-            return exc.response()
+        except TransportError as exc:
+            return flat_error_response(exc.status_code, exc.code, exc.message)
         except _RpcFault as exc:
             return _error_response(request_id, exc.error)
         except Exception:

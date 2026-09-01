@@ -43,6 +43,7 @@ from loom.ai.config import (
     McpServerConfig,
 )
 from loom.ai.declarative import PolicySpec
+from loom.ai.engines.pydantic_ai import create_a2a_client, create_mcp_client
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -326,6 +327,13 @@ class CountingEngineProvider:
     def supported_capability_kinds(self) -> frozenset[str]:
         """Accept every compiled capability kind."""
         return frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+
+    # An engine that announces 'mcp' and 'a2a' must supply what serving them
+    # needs: the composition root reads these off the provider rather than
+    # importing an engine package, so announcing a kind without its factory is
+    # now an inconsistency the runtime reports instead of one it hides.
+    mcp_client_factory = staticmethod(create_mcp_client)
+    a2a_client_factory = staticmethod(create_a2a_client)
 
 
 class StubDepsFactory:

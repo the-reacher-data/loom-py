@@ -73,13 +73,14 @@ from loom.ai.compiler import (
     CompiledUsecaseCapability,
 )
 from loom.ai.engines.pydantic_ai._a2a import require_a2a_sdk, send_to_remote_agent
+from loom.ai.engines.pydantic_ai._mcp import build_mcp_toolset
 from loom.ai.errors import (
     AgentCompilationError,
+    AgentRunError,
     AgentRunErrorCode,
     provider_not_installed,
     python_factory_not_callable,
 )
-from loom.ai.runtime import AgentRunError
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.plan import ExecutionPlan
@@ -133,16 +134,24 @@ class CapabilityDeps(Protocol):
     """Dependency bundle every capability call requires.
 
     Structural on purpose: the deployment owns its bundle type and only has to
-    carry these two attributes. A bundle that does not is refused inside the
-    tool body rather than silently replaced by an anonymous caller.
+    carry these attributes. A bundle that does not is refused inside the tool
+    body rather than silently replaced by an anonymous caller.
+
+    ``identity`` and ``container`` gate every capability; ``invoker`` is read
+    by ``usecase`` grants alone, and is already bound to ``identity`` by the
+    composition root that built the bundle — so a granted use case declaring
+    ``Caller()`` receives the agent's caller instead of failing as
+    unauthenticated (FR-043).
 
     Attributes:
         identity: Verified caller this invocation runs as.
         container: Application container the capability resolves services from.
+        invoker: Application invoker already bound to ``identity``.
     """
 
     identity: Identity
     container: LoomContainer
+    invoker: ApplicationInvoker
 
 
 @dataclass(frozen=True)
@@ -655,11 +664,30 @@ def _usecase_tool(grant: _UsecaseGrant, context: _BuildContext) -> Tool[Any]:
     )
 
 
+def _require_invoker(deps: CapabilityDeps, tool: str) -> ApplicationInvoker:
+    """Return the bundle's invoker, refusing a bundle that carries none.
+
+    Read from the bundle rather than resolved from the container: the bundle's
+    invoker is the one the composition root already bound to this invocation's
+    caller, and the container holds only the unbound singleton.
+
+    Raises:
+        AgentRunError: ``UNAUTHORIZED`` when the bundle carries no invoker.
+    """
+    invoker = getattr(deps, "invoker", None)
+    if isinstance(invoker, ApplicationInvoker):
+        return invoker
+    raise AgentRunError(
+        AgentRunErrorCode.UNAUTHORIZED,
+        f"tool '{tool}' requires a dependency bundle exposing an 'invoker' bound to its caller",
+    )
+
+
 async def _invoke(
     grant: _UsecaseGrant, deps: CapabilityDeps, arguments: Mapping[str, Any]
 ) -> object:
-    """Invoke the granted use case under the caller's ambient identity."""
-    invoker: ApplicationInvoker = deps.container.resolve(ApplicationInvoker)
+    """Invoke the granted use case as the caller, ambient identity included."""
+    invoker = _require_invoker(deps, grant.tool_name)
     params = {name: arguments[name] for name in grant.param_names if name in arguments}
     payload = _payload_of(grant, arguments)
     token = set_identity(deps.identity)
@@ -820,22 +848,13 @@ def _mcp_toolset(capability: CompiledMcpCapability, context: _BuildContext) -> A
 
 
 def _mcp_server(capability: CompiledMcpCapability) -> AbstractToolset[Any]:
-    # Local import: the MCP client is an optional pydantic-ai dependency, and
-    # importing it at module load would break every pure-language agent in a
-    # deployment that never declares an MCP grant.
-    try:
-        from pydantic_ai.mcp import MCPToolset
-    except ImportError as exc:
-        raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
-    if capability.headers_ref is not None:
-        raise AgentCompilationError(
-            [
-                f"mcp server '{capability.server}': headers_ref cannot be resolved by "
-                f"the engine; the deployment secret resolver does not reach it"
-            ]
-        )
-    toolset: AbstractToolset[Any] = MCPToolset(capability.url)
-    return toolset
+    """Build the grant's server toolset through the module that owns its rules.
+
+    The same builder serves the start-up client of
+    :func:`~loom.ai.engines.pydantic_ai._mcp.create_mcp_client`, so a run can
+    never reach a server start-up validated under different connection rules.
+    """
+    return build_mcp_toolset(capability)
 
 
 def _tool_predicate(

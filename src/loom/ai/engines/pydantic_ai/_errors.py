@@ -6,7 +6,7 @@ exception type decides the rest. Only the ``INFRASTRUCTURE`` class is
 retriable, and :func:`~loom.ai.errors.is_retriable` is the single authority on
 that — this module never re-encodes the rule.
 
-An :class:`~loom.ai.runtime.AgentRunError` raised further down (a capability
+An :class:`~loom.ai.errors.AgentRunError` raised further down (a capability
 refusing an ungranted operation, a tool timing out) already carries its code
 and class, so it passes through unchanged instead of being reclassified.
 """
@@ -23,8 +23,7 @@ from pydantic_ai.exceptions import (
     UsageLimitExceeded,
 )
 
-from loom.ai.errors import AgentRunErrorCode
-from loom.ai.runtime import AgentRunError
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
 
 _STATUS_CODES: Mapping[int, AgentRunErrorCode] = MappingProxyType(
     {
@@ -82,7 +81,7 @@ def as_run_error(error: BaseException) -> AgentRunError:
 
     Returns:
         The original error when it is already an
-        :class:`~loom.ai.runtime.AgentRunError`, otherwise a new one carrying
+        :class:`~loom.ai.errors.AgentRunError`, otherwise a new one carrying
         the classification and the original message.
     """
     if isinstance(error, AgentRunError):

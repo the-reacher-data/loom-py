@@ -55,6 +55,7 @@ from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider, _capabilities
 from loom.ai.engines.pydantic_ai._events import translate
 from loom.ai.errors import AgentCompilationError, AgentRunErrorCode
 from loom.ai.runtime import AgentRunError
+from loom.core.bootstrap import create_kernel
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.compiler import UseCaseCompiler
@@ -63,8 +64,10 @@ from loom.core.identity import ANONYMOUS, Identity, current_identity
 from loom.core.sql.abc import SqlColumn, SqlQueryResult
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
 from loom.core.sql.service import SqlQueryService
+from loom.core.use_case import Caller
 from loom.core.use_case.invoker import ApplicationInvoker, EntityInvoker
 from loom.core.use_case.use_case import UseCase
+from loom.rest.fastapi.auto import _AgentDepsFactory
 from tests.integration.ai.conftest import make_plan, make_policies
 
 CANARY = "SECRET-CANARY-9931"
@@ -111,9 +114,22 @@ class DeleteProductUseCase(UseCase[object, str]):
         return f"deleted {product_id}"
 
 
+class WhoAmIUseCase(UseCase[object, str]):
+    """Granted operation that declares the caller, as FR-043 requires."""
+
+    async def execute(self, caller: Identity = Caller()) -> str:
+        """Return the subject of the verified caller of this invocation."""
+        return caller.subject
+
+
 def _compile_use_cases() -> None:
     compiler = UseCaseCompiler()
-    for use_case in (CreateProductUseCase, GetProductUseCase, DeleteProductUseCase):
+    for use_case in (
+        CreateProductUseCase,
+        GetProductUseCase,
+        DeleteProductUseCase,
+        WhoAmIUseCase,
+    ):
         compiler.compile(use_case)
 
 
@@ -324,18 +340,23 @@ class CapabilityDeps:
     Attributes:
         identity: Verified caller of this invocation.
         container: Application container the capability resolves from.
+        invoker: Application invoker bound to ``identity``, or ``None`` for a
+            plan whose capabilities never invoke a use case.
     """
 
     identity: Identity
     container: LoomContainer
+    invoker: ApplicationInvoker | None = None
 
 
 class CapabilityDepsFactory:
     """Per-invocation factory producing a well-formed :class:`CapabilityDeps`."""
 
     def build(self, identity: Identity, container: LoomContainer) -> object:
-        """Return the bundle carrying the caller and the container."""
-        return CapabilityDeps(identity=identity, container=container)
+        """Return the bundle carrying the caller, the container and the invoker."""
+        registered = container.is_registered(ApplicationInvoker)
+        invoker = container.resolve(ApplicationInvoker) if registered else None
+        return CapabilityDeps(identity=identity, container=container, invoker=invoker)
 
 
 class IdentitylessDepsFactory:
@@ -702,10 +723,10 @@ class TestSupportedCapabilityKinds:
     def test_los_kinds_soportados_son_los_de_esta_fase_cuando_se_consulta_el_provider(
         self,
     ) -> None:
-        """``a2a`` stays out: it is the next phase, not this one."""
+        """Every kind the adapter can serve is announced, ``a2a`` included."""
         kinds = PydanticAIEngineProvider().supported_capability_kinds()
 
-        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python"})
+        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
 
 
 # ---------------------------------------------------------------------------
@@ -1500,3 +1521,51 @@ class TestRefusalsAreVisibleInTheStream:
         assert [
             (event.ok, event.summary) for event in events if isinstance(event, ToolResultEvent)
         ] == [(True, "3 rows")]
+
+
+# ---------------------------------------------------------------------------
+# FR-043 — the caller reaches the executor, not only the ambient context
+# ---------------------------------------------------------------------------
+
+
+def whoami_capability() -> CompiledUsecaseCapability:
+    """Grant the single operation that declares ``Caller()``."""
+    return CompiledUsecaseCapability(keys=("whoami",), use_cases=(WhoAmIUseCase,))
+
+
+class TestIdentidadHastaElEjecutor:
+    """A granted use case declaring ``Caller()`` must receive the agent's caller.
+
+    Driven through the real composition-root dependency factory and a real
+    kernel, because the bug being fixed lives exactly between them: the invoker
+    reached the executor with no ``identity=``, so the marker had nothing to
+    bind and the operation failed as ``Unauthenticated``.
+    """
+
+    @staticmethod
+    def _engine_and_model() -> tuple[Any, ScriptedToolModel]:
+        kernel = create_kernel(config=object(), use_cases=[WhoAmIUseCase])
+        model = ScriptedToolModel(calls=(("usecase_whoami", {}),))
+        engine = build_engine(
+            capabilities=(whoami_capability(),),
+            model=model,
+            container=kernel.container,
+            deps=_AgentDepsFactory(kernel.app),
+        )
+        return engine, model
+
+    async def test_el_caso_de_uso_ve_al_llamante_cuando_el_agente_lo_invoca(self) -> None:
+        """The subject of the agent's caller reaches the ``Caller()`` binding."""
+        engine, model = self._engine_and_model()
+
+        await engine.run("hello", identity=ANALYST)
+
+        assert ANALYST.subject in model.shown
+
+    async def test_no_falla_como_no_autenticado_cuando_el_agente_lo_invoca(self) -> None:
+        """No ``Unauthenticated``: the executor is handed the caller explicitly."""
+        engine, model = self._engine_and_model()
+
+        await engine.run("hello", identity=ANALYST)
+
+        assert "the operation failed" not in model.shown

@@ -23,8 +23,9 @@ from loom.ai.abc import (
     ToolsetFactory,
 )
 from loom.ai.config import A2AConfig, AgentEndpointConfig, AiConfig
+from loom.ai.errors import AgentRunError
 from loom.ai.inference import InferenceTarget
-from loom.ai.runtime import AgentHealth, AgentRunError, AgentRuntime
+from loom.ai.runtime import AgentHealth, AgentRuntime
 
 __all__ = [
     "A2AConfig",

@@ -44,6 +44,7 @@ from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
 from loom.core.sql.config import roles_need_identity_binding
 from loom.core.uow.abc import UnitOfWorkFactory
+from loom.core.use_case.invoker import AppInvoker
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
 from loom.rest._body import DEFAULT_MAX_BODY_BYTES, BodySizeLimitMiddleware
@@ -471,10 +472,12 @@ class _AgentDeps:
     Args:
         identity: Verified caller of the invocation.
         container: Application container holding the singleton services.
+        invoker: Application invoker already bound to ``identity``.
     """
 
     identity: Identity
     container: LoomContainer
+    invoker: AppInvoker
 
 
 class _AgentDepsFactory:
@@ -483,7 +486,18 @@ class _AgentDepsFactory:
     Structural implementation of ``loom.ai.abc.DepsFactory``: it lives in the
     composition root, and depends only on ``loom.core``, so an application with
     no ``ai:`` section never imports the AI pillar to obtain it (FR-050).
+
+    Binding the invoker to the caller happens here, at the one point that knows
+    both: a granted use case declaring ``Caller()`` is executed as the identity
+    that invoked the agent, and the capability never has to discover the caller
+    from ambient state (FR-043).
+
+    Args:
+        invoker: Unbound application invoker of this application.
     """
+
+    def __init__(self, invoker: AppInvoker) -> None:
+        self._invoker = invoker
 
     def build(self, identity: Identity, container: LoomContainer) -> object:
         """Return the dependency bundle for one invocation.
@@ -495,7 +509,11 @@ class _AgentDepsFactory:
         Returns:
             The bundle the engine passes to its capability calls.
         """
-        return _AgentDeps(identity=identity, container=container)
+        return _AgentDeps(
+            identity=identity,
+            container=container,
+            invoker=self._invoker.for_identity(identity),
+        )
 
 
 @dataclass(frozen=True)
@@ -535,11 +553,12 @@ def _resolve_ai(
     from loom.ai.compiler import AgentCompiler
     from loom.ai.config import AiConfig
     from loom.ai.declarative import load_specs
-    from loom.ai.registry import resolve_engine_provider
+    from loom.ai.registry import engine_client_factories, resolve_engine_provider
     from loom.ai.runtime import AgentRuntime
 
     ai_cfg = ctx.section(ConfigKey.AI, AiConfig)
     provider = resolve_engine_provider(ai_cfg.engine)
+    mcp_factory, a2a_factory = engine_client_factories(provider)
     compiler = AgentCompiler(
         config=ai_cfg,
         registry=kernel.registry,
@@ -554,9 +573,14 @@ def _resolve_ai(
         plans=plans,
         config=ai_cfg,
         engine_provider=provider,
-        deps=_AgentDepsFactory(),
+        deps=_AgentDepsFactory(kernel.app),
         container=kernel.container,
         sql_config=sql_cfg,
+        # Without these an artifact granting 'mcp' or 'a2a' compiles and then
+        # fails to start: the runtime has no way to reach the server it must
+        # validate the grant against.
+        mcp_client_factory=mcp_factory,
+        a2a_client_factory=a2a_factory,
     )
     return _AiWiring(config=ai_cfg, runtime=runtime)
 

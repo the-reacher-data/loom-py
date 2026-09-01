@@ -690,6 +690,32 @@ class AgentRunErrorCode(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class AgentRunError(Exception):
+    """A run failed with a stable, machine-readable code.
+
+    Lives with :class:`AgentRunErrorCode` rather than with the runtime that
+    raises it: the engine adapters classify and re-raise it, and importing the
+    whole live runtime — its exit stack, its shared sessions, its SQL
+    configuration — to reach one exception class would point the dependency
+    arrow at the concretion instead of at the contract.
+
+    Args:
+        code: Run-time failure code; the retry policy reads its class.
+        message: Human-readable description, safe to return to the caller.
+
+    Attributes:
+        code: The failure code carried by this error.
+
+    Example::
+
+        raise AgentRunError(AgentRunErrorCode.RUN_TIMEOUT, "the run took too long")
+    """
+
+    def __init__(self, code: AgentRunErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProxyType(
     {
         AgentRunErrorCode.PROVIDER_UNAVAILABLE: AgentRunErrorClass.INFRASTRUCTURE,

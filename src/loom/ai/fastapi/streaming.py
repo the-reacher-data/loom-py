@@ -10,18 +10,19 @@ Two properties are deliberate and load-bearing:
   with a single mapping lookup. A chain of type tests, or reading a type's name
   at run time, would be reflection on the most frequent event of the whole
   pillar.
-* Heartbeats race a timeout against the next event inside this generator. A
-  background task feeding a queue would survive the disconnect cancellation and
-  keep a run burning tokens with nobody listening.
+* Encoding is all this module owns. The heartbeat race that interleaves comment
+  frames is the same one the A2A surface needs over a different frame encoding,
+  so it lives in :mod:`loom.ai._transport` and :func:`stream_sse` is the
+  composition of the two.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Any, Final
 
+from loom.ai._transport import HEARTBEAT_FRAME, failure_event, with_heartbeats
 from loom.ai.abc import (
     AgentEvent,
     ErrorEvent,
@@ -30,20 +31,15 @@ from loom.ai.abc import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from loom.ai.errors import AgentRunErrorCode
 from loom.ai.fastapi.response import ENCODER
-from loom.ai.runtime import AgentRunError
+
+__all__ = ["HEARTBEAT_FRAME", "encode_sse_event", "stream_sse"]
 
 _logger = logging.getLogger("loom.ai.fastapi.streaming")
-
-HEARTBEAT_FRAME: Final[bytes] = b": ping\n\n"
-"""SSE comment frame keeping a silent stream alive; clients ignore it."""
 
 _EVENT_PREFIX: Final[bytes] = b"event: "
 _DATA_PREFIX: Final[bytes] = b"\ndata: "
 _FRAME_SUFFIX: Final[bytes] = b"\n\n"
-
-_UNEXPECTED_FAILURE = "the agent run failed unexpectedly"
 
 
 def _text_delta_payload(event: TextDeltaEvent) -> Mapping[str, object]:
@@ -105,79 +101,40 @@ def encode_sse_event(event: AgentEvent) -> bytes:
     return _EVENT_PREFIX + name + _DATA_PREFIX + ENCODER.encode(payload(event)) + _FRAME_SUFFIX
 
 
-def _failure_event(exc: Exception) -> ErrorEvent:
-    """Turn a post-first-byte failure into the stream's terminal error event."""
-    if type(exc) is AgentRunError:
-        return ErrorEvent(code=exc.code, message=str(exc))
-    return ErrorEvent(code=AgentRunErrorCode.PROVIDER_UNAVAILABLE, message=_UNEXPECTED_FAILURE)
+async def _encoded_events(events: AsyncIterator[AgentEvent]) -> AsyncIterator[bytes]:
+    """Encode an agent event stream as SSE frames, terminal frame last.
 
-
-async def _next_or_none(iterator: AsyncIterator[AgentEvent]) -> AgentEvent | None:
-    """Await the next event, reporting exhaustion as ``None``."""
+    A failure raised once the status line is long gone can only travel in-band,
+    so it becomes this stream's single terminal frame (FR-032).
+    """
     try:
-        return await anext(iterator)
-    except StopAsyncIteration:
-        return None
+        async for event in events:
+            yield encode_sse_event(event)
+            if event.__class__ in _TERMINAL_TYPES:
+                return
+    except Exception as exc:
+        _logger.warning("agent stream failed after the first byte", exc_info=exc)
+        yield encode_sse_event(failure_event(exc))
 
 
-async def _drain(pending: asyncio.Future[AgentEvent | None] | None) -> None:
-    """Cancel the awaited event and wait for it, so nothing outlives the stream."""
-    if pending is None:
-        return
-    pending.cancel()
-    try:
-        await pending
-    except (Exception, asyncio.CancelledError):
-        # The consumer is already gone: the cancellation just requested, and
-        # any late failure, have nobody left to be reported to.
-        return
-
-
-async def stream_sse(
-    events: AsyncIterator[AgentEvent], *, heartbeat_ms: int
-) -> AsyncIterator[bytes]:
+def stream_sse(events: AsyncIterator[AgentEvent], *, heartbeat_ms: int) -> AsyncIterator[bytes]:
     """Encode an agent event stream as SSE frames, with heartbeats.
 
-    Every silence longer than *heartbeat_ms* produces one comment frame and the
-    race starts again. The awaited event is shielded from the heartbeat — a
-    timeout must not tear down the run it is keeping alive — and is cancelled
-    and drained when the consumer goes away, so no work outlives it (FR-033).
+    Composition of this module's encoder with the transport-wide heartbeat
+    race of :func:`~loom.ai._transport.with_heartbeats`: encoding is what the
+    HTTP contract owns, the race is not.
 
     Args:
         events: Agent events to encode, terminal event last.
         heartbeat_ms: Silence after which a comment frame is emitted.
 
-    Yields:
-        Encoded SSE frames, ending at the single terminal frame.
+    Returns:
+        The encoded SSE frames, ending at the single terminal frame and
+        interleaved with heartbeat comment frames.
 
     Example::
 
         async for frame in stream_sse(events, heartbeat_ms=15000):
             ...
     """
-    iterator = events.__aiter__()
-    beat = heartbeat_ms / 1000
-    pending: asyncio.Future[AgentEvent | None] | None = None
-    try:
-        while True:
-            if pending is None:
-                pending = asyncio.ensure_future(_next_or_none(iterator))
-            try:
-                async with asyncio.timeout(beat):
-                    event = await asyncio.shield(pending)
-            except TimeoutError:
-                yield HEARTBEAT_FRAME
-                continue
-            pending = None
-            if event is None:
-                return
-            yield encode_sse_event(event)
-            if event.__class__ in _TERMINAL_TYPES:
-                return
-    except Exception as exc:
-        # The status line is long gone, so the only place this failure can
-        # travel is in-band, as the stream's one terminal frame (FR-032).
-        _logger.warning("agent stream failed after the first byte", exc_info=exc)
-        yield encode_sse_event(_failure_event(exc))
-    finally:
-        await _drain(pending)
+    return with_heartbeats(_encoded_events(events), heartbeat_ms=heartbeat_ms)

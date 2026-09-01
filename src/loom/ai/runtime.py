@@ -63,6 +63,11 @@ from loom.ai.errors import (
     sql_readonly_drift,
     tool_filter_matches_nothing,
 )
+from loom.ai.errors import (
+    # Re-exported: ``AgentRunError`` lives with its code in 'loom.ai.errors',
+    # so an engine adapter reaches it without importing this whole runtime.
+    AgentRunError as AgentRunError,
+)
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.model import LoomFrozenStruct
@@ -114,22 +119,6 @@ A2AClientFactory = Callable[[CompiledA2ACapability], AbstractAsyncContextManager
 """Builds the (not yet opened) client of one compiled A2A capability."""
 
 
-class AgentRunError(Exception):
-    """A run failed with a stable, machine-readable code.
-
-    Args:
-        code: Run-time failure code; the retry policy reads its class.
-        message: Human-readable description, safe to return to the caller.
-
-    Attributes:
-        code: The failure code carried by this error.
-    """
-
-    def __init__(self, code: AgentRunErrorCode, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
 class AgentHealth(LoomFrozenStruct, frozen=True, kw_only=True):
     """Cached health of one agent and of its live dependencies.
 
@@ -149,6 +138,11 @@ class AgentHealth(LoomFrozenStruct, frozen=True, kw_only=True):
 
 
 _PROBING = AgentHealth(status="degraded", detail="probing")
+
+_PROBE_FAILED = "the health probe failed; the detail is recorded server-side"
+"""Detail of an agent whose engine probe raised. No exception text: the probe
+reaches a model provider, so its failures carry endpoints and credential
+references that an anonymous ``/health`` scrape must never receive."""
 
 
 class SharedMcpSession:
@@ -817,11 +811,27 @@ class AgentRuntime:
         stack.push_async_callback(_cancel_task, probe)
 
     async def _probe_forever(self) -> None:
+        """Refresh the health cache forever; only cancellation ends this task.
+
+        :meth:`~loom.ai.abc.AgentEngine.health` is a public protocol a third
+        party implements, so it may raise anything. An escaping failure would
+        end this task for good while ``/health`` kept answering the last cached
+        ``ok`` — a dead probe reported as a healthy runtime. Instead the failing
+        agent is recorded as ``unavailable`` and the loop moves on to the next.
+        """
         period = max(self._config.health_cache_ttl_ms, 1) / 1000
         while True:
             for name in tuple(self._slots):
-                self._health[name] = await self._probe(name)
+                self._health[name] = await self._probe_or_unavailable(name)
             await asyncio.sleep(period)
+
+    async def _probe_or_unavailable(self, name: str) -> AgentHealth:
+        """Probe one agent, reporting a failing probe as ``unavailable``."""
+        try:
+            return await self._probe(name)
+        except Exception:  # recovery: a failed probe is a health state, not a crash
+            _logger.exception("Health probe of agent %r failed", name)
+            return AgentHealth(status="unavailable", detail=_PROBE_FAILED)
 
     async def _probe(self, name: str) -> AgentHealth:
         slot = self._slots[name]

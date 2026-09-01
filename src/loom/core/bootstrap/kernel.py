@@ -30,12 +30,16 @@ class KernelRuntime(BootstrapResult):
     Attributes:
         executor: Runtime executor shared by transport adapters.
         registry: Read-only use-case registry for name-based resolution.
-        app: App-level invoker facade.
+        app: App-level invoker facade. Typed as the concrete
+            :class:`~loom.core.use_case.invoker.AppInvoker` because a
+            composition root binds a copy of it to one caller with
+            :meth:`~loom.core.use_case.invoker.AppInvoker.for_identity`, which
+            is a property of this implementation rather than of the protocol.
     """
 
     executor: RuntimeExecutor
     registry: UseCaseRegistry
-    app: ApplicationInvoker
+    app: AppInvoker
 
 
 def create_kernel(

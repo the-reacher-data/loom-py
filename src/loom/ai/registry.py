@@ -11,9 +11,14 @@ name and the handshake is a ``getattr`` on the loaded object, never an
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:  # import cycle at runtime: runtime.py imports the compiler,
+    # which imports abc; the aliases are only needed for annotations.
+    from loom.ai.runtime import A2AClientFactory, McpClientFactory
+
 from importlib import import_module
 from types import ModuleType
-from typing import cast
 
 from loom.ai.abc import AgentEngineProvider
 from loom.ai.errors import (
@@ -139,3 +144,35 @@ def _distributions_for(name: str) -> list[str]:
         for ep in list_entry_points(ENGINE_ENTRY_POINT_GROUP)
         if ep.name == name
     ]
+
+
+def engine_client_factories(
+    provider: object,
+) -> tuple[McpClientFactory | None, A2AClientFactory | None]:
+    """Return the ``(mcp, a2a)`` live-client factories a provider supplies.
+
+    Read off the resolved provider, never imported from an engine package: the
+    composition root importing ``loom.ai.engines.<engine>`` directly is what
+    would make ``create_app`` fail on a deployment running a third-party engine
+    without that one installed, undoing the entry-point seam the pillar exists
+    for (FR-016, FR-051).
+
+    Optional by design and read with ``getattr``, the same handshake shape as
+    ``LOOM_AI_ENGINE_API``: an engine that serves neither ``mcp`` nor ``a2a``
+    grants declares neither factory, and the compiler already refuses those
+    grants through ``supported_capability_kinds``.
+
+    Args:
+        provider: Engine provider resolved from the entry point group.
+
+    Returns:
+        The MCP client factory and the A2A client factory, each ``None`` when
+        the engine does not supply it.
+
+    Example::
+
+        mcp, a2a = engine_client_factories(resolve_engine_provider("pydantic-ai"))
+    """
+    mcp = cast("McpClientFactory | None", getattr(provider, "mcp_client_factory", None))
+    a2a = cast("A2AClientFactory | None", getattr(provider, "a2a_client_factory", None))
+    return mcp, a2a

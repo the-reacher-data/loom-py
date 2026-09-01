@@ -14,13 +14,15 @@ Two request-path rules come straight from the contract
   agents an application runs (FR-029b).
 * The body is capped **while it is read**. The declared ``Content-Length`` is a
   fast path for honest clients, never the cap (FR-033a).
+
+Both are enforced by :mod:`loom.ai._transport`, which the A2A surface shares:
+they are properties of an agent transport, not of this wire protocol.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncIterator, Callable, Mapping
 from typing import Final
 
 import msgspec
@@ -28,12 +30,20 @@ from fastapi import FastAPI
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
+from loom.ai._transport import (
+    BODY_OVERHEAD_BYTES,
+    HEARTBEAT_MS,
+    TransportError,
+    always_closed,
+    read_body_capped,
+    require_caller,
+)
 from loom.ai.abc import ErrorEvent
 from loom.ai.config import AgentEndpointConfig, AiConfig
-from loom.ai.errors import AgentRunErrorCode
-from loom.ai.fastapi.response import AgentJSONResponse
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.ai.fastapi.response import AgentJSONResponse, error_response
 from loom.ai.fastapi.streaming import encode_sse_event, stream_sse
-from loom.ai.runtime import AgentRunError, AgentRuntime
+from loom.ai.runtime import AgentRuntime
 from loom.core.config.errors import ConfigError
 from loom.core.identity import Identity, current_identity
 from loom.core.model import LoomFrozenStruct
@@ -43,17 +53,6 @@ from loom.core.tracing import get_trace_id
 from loom.rest.auth.abc import Authenticator
 
 _logger = logging.getLogger(__name__)
-
-# Fixed headroom on top of ``max_prompt_bytes`` for the JSON envelope around
-# the ``prompt`` field (key name, quoting, escapes). The total body cap is
-# ``max_prompt_bytes + _BODY_OVERHEAD_BYTES``; anything larger is refused
-# before buffering beyond the cap.
-_BODY_OVERHEAD_BYTES: Final[int] = 64 * 1024
-
-# Silence after which the SSE surface emits a comment frame. Well under the
-# 30 s idle timeout of the common reverse proxies, and not configurable: it is
-# a property of the transport, not of an agent.
-_HEARTBEAT_MS: Final[int] = 15_000
 
 _MEDIA_TYPE_SSE: Final[str] = "text/event-stream"
 
@@ -82,116 +81,30 @@ class _AgentRunRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unkno
 _REQUEST_DECODER = msgspec.json.Decoder(_AgentRunRequest)
 
 
-class _AgentHttpError(Exception):
-    """A failure that is still a status code because no byte was sent yet.
-
-    Args:
-        status_code: HTTP status to answer with.
-        code: Stable machine-readable code carried in the body.
-        message: Human-readable description, safe to return to the caller.
-    """
-
-    def __init__(self, status_code: int, code: str, message: str) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.code = code
-        self.message = message
-
-    def response(self) -> Response:
-        """Return the flat ``{"code", "message"}`` body of this failure."""
-        return _error_response(self.status_code, self.code, self.message)
-
-
-def _error_response(status_code: int, code: str, message: str) -> Response:
-    """Build the flat error body every agent endpoint answers failures with."""
-    return AgentJSONResponse(content={"code": code, "message": message}, status_code=status_code)
-
-
 def _run_error_response(error: AgentRunError) -> Response:
     """Map a run-error code onto its published HTTP status."""
-    return _error_response(_STATUS_BY_CODE.get(error.code, 500), str(error.code), str(error))
-
-
-def _declared_content_length(request: Request) -> int | None:
-    """Return the Content-Length header as an int, or ``None`` when unusable."""
-    header = request.headers.get("content-length")
-    if header is None:
-        return None
-    try:
-        return int(header)
-    except ValueError:
-        return None
-
-
-def _prompt_too_large(max_bytes: int) -> _AgentHttpError:
-    return _AgentHttpError(
-        413,
-        "PROMPT_TOO_LARGE",
-        f"Request body exceeds the maximum accepted size ({max_bytes} bytes)",
-    )
-
-
-async def _read_body_capped(request: Request, *, max_bytes: int) -> bytes:
-    """Read the request body without ever buffering more than *max_bytes*.
-
-    The Content-Length check is only a fast path for honest clients; the capped
-    stream read is the authoritative defense — it covers chunked bodies and
-    lying headers too, aborting as soon as the cap is exceeded.
-
-    Args:
-        request: Incoming request whose body is read.
-        max_bytes: Maximum number of bytes ever buffered.
-
-    Returns:
-        The body bytes.
-
-    Raises:
-        _AgentHttpError: 413 ``PROMPT_TOO_LARGE`` when the cap is hit.
-    """
-    declared = _declared_content_length(request)
-    if declared is not None and declared > max_bytes:
-        raise _prompt_too_large(max_bytes)
-    received = 0
-    chunks: list[bytes] = []
-    async for chunk in request.stream():
-        received += len(chunk)
-        if received > max_bytes:
-            raise _prompt_too_large(max_bytes)
-        chunks.append(chunk)
-    return b"".join(chunks)
+    return error_response(_STATUS_BY_CODE.get(error.code, 500), str(error.code), str(error))
 
 
 async def _read_prompt(request: Request, *, max_prompt_bytes: int) -> str:
     """Read and validate the prompt of one invocation.
 
     Raises:
-        _AgentHttpError: 413 when the body or the prompt exceeds its cap, 422
+        TransportError: 413 when the body or the prompt exceeds its cap, 422
             when the body is not the documented ``{"prompt": ...}`` shape.
     """
-    body = await _read_body_capped(request, max_bytes=max_prompt_bytes + _BODY_OVERHEAD_BYTES)
+    body = await read_body_capped(request, max_bytes=max_prompt_bytes + BODY_OVERHEAD_BYTES)
     try:
         parsed = _REQUEST_DECODER.decode(body)
     except msgspec.DecodeError as exc:
-        raise _AgentHttpError(422, "INVALID_REQUEST", str(exc)) from exc
+        raise TransportError(422, "INVALID_REQUEST", str(exc)) from exc
     if len(parsed.prompt.encode("utf-8")) > max_prompt_bytes:
-        raise _prompt_too_large(max_prompt_bytes)
+        raise TransportError(
+            413,
+            "PROMPT_TOO_LARGE",
+            f"Request body exceeds the maximum accepted size ({max_prompt_bytes} bytes)",
+        )
     return parsed.prompt
-
-
-def _require_caller(name: str, endpoint: AgentEndpointConfig | None) -> Identity:
-    """Return the verified caller, refusing anonymous ones before existence.
-
-    An unknown agent has no ``allow_anonymous`` opt-out, so an anonymous probe
-    is refused with 401 whatever the name — which is what stops the surface
-    from being used as an agent directory (FR-029b).
-
-    Raises:
-        _AgentHttpError: 401 for an anonymous caller without an opt-out.
-    """
-    identity = current_identity()
-    if identity.is_authenticated or (endpoint is not None and endpoint.allow_anonymous):
-        return identity
-    raise _AgentHttpError(401, "UNAUTHORIZED", f"agent {name!r} requires a verified caller")
 
 
 def _require_agent(
@@ -200,11 +113,11 @@ def _require_agent(
     """Refuse an agent that is not compiled or not exposed over HTTP.
 
     Raises:
-        _AgentHttpError: 404 ``AGENT_NOT_FOUND``.
+        TransportError: 404 ``AGENT_NOT_FOUND``.
     """
     if name in exposed and runtime.has_agent(name):
         return
-    raise _AgentHttpError(404, "AGENT_NOT_FOUND", f"no agent named {name!r} is exposed")
+    raise TransportError(404, "AGENT_NOT_FOUND", f"no agent named {name!r} is exposed")
 
 
 def _make_run_handler(
@@ -219,7 +132,7 @@ def _make_run_handler(
 
     async def run_agent(request: Request, name: str) -> Response:
         try:
-            identity = _require_caller(name, exposed.get(name))
+            identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
             prompt = await _read_prompt(request, max_prompt_bytes=config.max_prompt_bytes)
             with observability_runtime.span(
@@ -235,46 +148,15 @@ def _make_run_handler(
             ):
                 result = await runtime.run(name, prompt, identity=identity)
             return AgentJSONResponse(content=result)
-        except _AgentHttpError as exc:
-            return exc.response()
+        except TransportError as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
         except AgentRunError as exc:
             return _run_error_response(exc)
         except Exception:
             _logger.exception("Unhandled error in the run endpoint of agent %r", name)
-            return _error_response(500, "INTERNAL_ERROR", "An unexpected error occurred")
+            return error_response(500, "INTERNAL_ERROR", "An unexpected error occurred")
 
     return run_agent
-
-
-@contextmanager
-def _always_closed(span: AbstractContextManager[None]) -> Iterator[None]:
-    """Enter *span* and close it whatever ends the body, including a disconnect.
-
-    :meth:`~loom.core.observability.runtime.ObservabilityRuntime.span` emits its
-    terminal event for a normal exit or an ``Exception`` only. A client that
-    walks away from an SSE stream ends the generator serving it with
-    ``CancelledError`` or ``GeneratorExit`` — neither is an ``Exception`` — so
-    without this adapter every abandoned stream would leave a span that emitted
-    ``START`` and nothing else. A disconnect closes the span as a normal end:
-    the run was not the thing that failed.
-
-    Args:
-        span: Span context manager to enter, and to close exactly once.
-
-    Yields:
-        ``None``, with the span open.
-    """
-    span.__enter__()
-    try:
-        yield
-    except Exception as exc:
-        span.__exit__(type(exc), exc, exc.__traceback__)
-        raise
-    except BaseException:
-        span.__exit__(None, None, None)
-        raise
-    else:
-        span.__exit__(None, None, None)
 
 
 def _stream_frames(
@@ -292,8 +174,8 @@ def _stream_frames(
     handler: the handler returns as soon as the response exists, while the run
     lasts for as long as the frames are pulled. Entering it here makes the span
     open on the first frame and close on generator exit — including the
-    cancellation of a disconnected client, which :func:`_always_closed`
-    turns into a terminal event.
+    cancellation of a disconnected client, which
+    :func:`~loom.ai._transport.always_closed` turns into a terminal event.
 
     The span carries no ``status_code``: the status line of a stream is
     committed to 200 before the run produces anything, so the field would be a
@@ -302,7 +184,7 @@ def _stream_frames(
     """
 
     async def _frames() -> AsyncIterator[bytes]:
-        with _always_closed(
+        with always_closed(
             observability_runtime.span(
                 Scope.AGENT,
                 "agent_run",
@@ -316,7 +198,7 @@ def _stream_frames(
         ):
             try:
                 async with runtime.run_stream(name, prompt, identity=identity) as events:
-                    async for frame in stream_sse(events, heartbeat_ms=_HEARTBEAT_MS):
+                    async for frame in stream_sse(events, heartbeat_ms=HEARTBEAT_MS):
                         yield frame
             except AgentRunError as exc:
                 # Admission failures surface once the response exists, so they
@@ -338,11 +220,11 @@ def _make_stream_handler(
 
     async def stream_agent(request: Request, name: str) -> Response:
         try:
-            identity = _require_caller(name, exposed.get(name))
+            identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
             prompt = await _read_prompt(request, max_prompt_bytes=config.max_prompt_bytes)
-        except _AgentHttpError as exc:
-            return exc.response()
+        except TransportError as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
         return StreamingResponse(
             _stream_frames(
                 runtime,
@@ -367,8 +249,8 @@ def _make_health_handler(
     async def agent_health(name: str) -> Response:
         try:
             _require_agent(name, exposed, runtime)
-        except _AgentHttpError as exc:
-            return exc.response()
+        except TransportError as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
         health = await runtime.health(name)
         payload: dict[str, object] = {"status": health.status}
         if health.detail is not None:

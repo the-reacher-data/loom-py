@@ -15,6 +15,7 @@ from ipaddress import IPv4Address, IPv6Address
 from typing import Any
 
 import msgspec
+from starlette.responses import Response
 
 from loom.rest.fastapi.response import MsgspecJSONResponse
 
@@ -62,3 +63,25 @@ class AgentJSONResponse(MsgspecJSONResponse):
             The UTF-8 encoded JSON body.
         """
         return ENCODER.encode(content)
+
+
+def error_response(status_code: int, code: str, message: str) -> Response:
+    """Build the flat ``{"code", "message"}`` body agent surfaces refuse with.
+
+    Both the HTTP surface and the A2A one answer a pre-first-byte failure with
+    the same two fields, so the shape is defined once here rather than once per
+    transport.
+
+    Args:
+        status_code: HTTP status of the response.
+        code: Stable machine-readable code.
+        message: Human-readable description, safe to return to the caller.
+
+    Returns:
+        The encoded error response.
+
+    Example::
+
+        return error_response(404, "AGENT_NOT_FOUND", "no agent named 'x' is exposed")
+    """
+    return AgentJSONResponse(content={"code": code, "message": message}, status_code=status_code)
