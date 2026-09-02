@@ -15,7 +15,7 @@ What is deliberately **not** projected:
   :class:`~loom.ai.runtime.AgentRuntime`, which supervises every stream; a
   second enforcement here would be a hidden, divergent limit.
 * ``tool_timeout_ms`` — enforced on loom's side, by
-  ``_capabilities._capability_call`` around every granted tool and by
+  ``_guards.capability_call`` around every granted tool and by
   ``AgentRuntime``'s own tool deadline. Those two agree: same code, same
   retry class, so which one fires first is not observable. Projecting it as
   the engine's ``tool_timeout`` too

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from loom.core.introspection import (
     AppIntrospection,
     ContributorRef,

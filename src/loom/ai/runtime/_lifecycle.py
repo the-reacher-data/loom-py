@@ -1,4 +1,4 @@
-"""Live agent runtime: one entered lifecycle, shared clients, bounded runs.
+"""One entered runtime lifecycle: shared clients opened once, engines built once.
 
 Mirrors :class:`~loom.core.sql.clickhouse.registry.ClickHouseConnectionRegistry`:
 the runtime exists only between ``__aenter__`` and ``__aexit__``, so there is no
@@ -10,33 +10,18 @@ the read-only state of every SQL grant against live configuration, and builds
 one engine per plan. Connecting and validating share a single absolute
 deadline, so ``startup_timeout_ms`` bounds the whole of start-up once, whatever
 the number of servers. Leaving closes everything in strict reverse order.
-
-Nothing here imports FastAPI or Starlette: the HTTP surface lives in
-:mod:`loom.ai.fastapi` and this module stays usable from any transport.
-
-The classes here are experimental and may change within a major line; the
-artifact format they run is not.  See :mod:`loom.ai` for the distinction.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import (
-    AsyncGenerator,
-    AsyncIterator,
-    Callable,
-    Coroutine,
-    Iterable,
-    Mapping,
-    Sequence,
-)
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
-from typing import Any, Protocol, Self, TypeVar
+from typing import Any, Self
 
-from loom.ai._filters import select_names
 from loom.ai.abc import (
     AgentEngine,
     AgentEngineProvider,
@@ -46,8 +31,6 @@ from loom.ai.abc import (
     ErrorEvent,
     FinalEvent,
     HealthState,
-    ToolCallEvent,
-    ToolResultEvent,
 )
 from loom.ai.compiler._plan import (
     AgentPlan,
@@ -56,94 +39,36 @@ from loom.ai.compiler._plan import (
     CompiledSqlCapability,
 )
 from loom.ai.config import AiConfig
-from loom.ai.declarative import PolicySpec
 from loom.ai.errors import (
     AgentCompilationError,
     AgentCompilationIssue,
+    AgentRunError,
     AgentRunErrorCode,
     a2a_agent_unreachable,
     mcp_server_unreachable,
     sql_readonly_drift,
-    tool_filter_matches_nothing,
 )
-from loom.ai.errors import (
-    # Re-exported: ``AgentRunError`` lives with its code in 'loom.ai.errors',
-    # so an engine adapter reaches it without importing this whole runtime.
-    AgentRunError as AgentRunError,
+from loom.ai.runtime._health import AgentHealth, worst
+from loom.ai.runtime._limits import cancel_task, supervised_events
+from loom.ai.runtime._mcp import (
+    FilterTarget,
+    McpClientFactory,
+    McpSession,
+    SharedMcpSession,
+    filter_issues,
+    filter_targets,
+    listing_timeout_issues,
+    mcp_key,
 )
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
-from loom.core.model import LoomFrozenStruct
 from loom.core.sql.config import SqlConfig
 
 _logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
-
-
-"""Aggregate health vocabulary shared with the HTTP contract."""
-
-# Worst-first ordering: the aggregate of several dependencies is the worst of
-# them, so a single unavailable server is never hidden by healthy neighbours.
-_STATE_ORDER: Mapping[str, int] = MappingProxyType({"ok": 0, "degraded": 1, "unavailable": 2})
-_STATE_BY_RANK: Mapping[int, HealthState] = MappingProxyType(
-    {0: "ok", 1: "degraded", 2: "unavailable"}
-)
-
-_EMPTY_CHECKS: Mapping[str, str] = MappingProxyType({})
-
-_TERMINAL_EVENT_TYPES: frozenset[type] = frozenset({ErrorEvent, FinalEvent})
-
-
-class McpSession(Protocol):
-    """Minimal MCP session the runtime needs from any client library."""
-
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes.
-
-        Returns:
-            Every tool name the server advertises, before any declared filter
-            is applied.
-        """
-        ...
-
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Invoke one tool and return its result.
-
-        Args:
-            name: Tool name as the server exposes it.
-            arguments: Arguments to pass to the tool.
-
-        Returns:
-            The tool's result, as the client library decoded it.
-        """
-        ...
-
-
-McpClientFactory = Callable[[CompiledMcpCapability], AbstractAsyncContextManager[McpSession]]
-"""Builds the (not yet opened) client of one compiled MCP capability."""
 
 A2AClientFactory = Callable[[CompiledA2ACapability], AbstractAsyncContextManager[object]]
 """Builds the (not yet opened) client of one compiled A2A capability."""
-
-
-class AgentHealth(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Cached health of one agent and of its live dependencies.
-
-    Attributes:
-        status: Aggregate state, the worst of every check.
-        checks: Per-dependency state, keyed ``"model"``, ``"mcp:<server>"``,
-            ``"a2a:<agent>"`` or ``"sql:<connection>"``, always by the name the
-            deployment registered rather than by URL. Internal topology: only
-            an authenticated caller ever sees it (FR-029c).
-        detail: Optional explanation, ``"probing"`` until the first probe of
-            the background refresher completes.
-    """
-
-    status: HealthState
-    checks: Mapping[str, str] = _EMPTY_CHECKS
-    detail: str | None = None
-
 
 _PROBING = AgentHealth(status="degraded", detail="probing")
 
@@ -151,68 +76,6 @@ _PROBE_FAILED = "the health probe failed; the detail is recorded server-side"
 """Detail of an agent whose engine probe raised. No exception text: the probe
 reaches a model provider, so its failures carry endpoints and credential
 references that an anonymous ``/health`` scrape must never receive."""
-
-
-class SharedMcpSession:
-    """Serialises every call to one MCP session shared by concurrent runs.
-
-    A JSON-RPC session is a single framed stream: two overlapping calls
-    interleave their frames, and a caller cancelled mid-frame leaves the
-    session desynchronised for its neighbours. Both are prevented here — one
-    lock per session, and the in-flight call shielded and drained to
-    completion before the lock is released, after which the cancellation is
-    re-raised to the caller that asked for it.
-
-    Args:
-        session: The live session to guard.
-        label: Human-readable name used in log messages.
-    """
-
-    def __init__(self, session: McpSession, *, label: str) -> None:
-        self._session = session
-        self._label = label
-        self._lock = asyncio.Lock()
-
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes, serialised with every other call.
-
-        Returns:
-            Every tool name the underlying session advertises.
-        """
-        return await self._serialised(self._session.list_tools())
-
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Invoke one tool, serialised with every other call on this session.
-
-        Args:
-            name: Tool name as the server exposes it.
-            arguments: Arguments to pass to the tool.
-
-        Returns:
-            The tool's result.
-
-        Raises:
-            asyncio.CancelledError: When the caller is cancelled. The in-flight
-                call still runs to completion, so the session stays usable.
-        """
-        return await self._serialised(self._session.call_tool(name, arguments))
-
-    async def _serialised(self, call: Coroutine[Any, Any, _T]) -> _T:
-        async with self._lock:
-            in_flight = asyncio.ensure_future(call)
-            try:
-                return await asyncio.shield(in_flight)
-            except asyncio.CancelledError:
-                _logger.debug("mcp session %r: draining a cancelled call", self._label)
-                await asyncio.wait([in_flight])
-                _discard_outcome(in_flight)
-                raise
-
-
-def _discard_outcome(task: asyncio.Future[Any]) -> None:
-    """Consume a drained call's outcome so it is never reported as unretrieved."""
-    if not task.cancelled():
-        task.exception()
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,208 +98,12 @@ class _OpenedClient:
 def _dependency_key(capability: object) -> str | None:
     """Return the health-check key of a capability with a live dependency."""
     if type(capability) is CompiledMcpCapability:
-        return _mcp_key(capability)
+        return mcp_key(capability)
     if type(capability) is CompiledA2ACapability:
         return _a2a_key(capability)
     if type(capability) is CompiledSqlCapability:
         return f"sql:{capability.connection}"
     return None
-
-
-def _filtered_tools(
-    tools: Sequence[str], *, include: Sequence[str], exclude: Sequence[str]
-) -> tuple[str, ...]:
-    """Apply the glob ``include`` then ``exclude`` to the tools a server offers."""
-    return select_names(tools, include=include, exclude=exclude)
-
-
-@dataclass(frozen=True, slots=True)
-class _FilterTarget:
-    """One declared tool filter and the shared session it must be checked against."""
-
-    agent: str
-    server: str
-    key: str
-    include: tuple[str, ...]
-    exclude: tuple[str, ...]
-
-
-def _filter_targets(plans: Iterable[AgentPlan]) -> tuple[_FilterTarget, ...]:
-    """Return every declared MCP tool filter, in plan then declaration order."""
-    return tuple(
-        _FilterTarget(
-            agent=plan.name,
-            server=capability.server,
-            key=_mcp_key(capability),
-            include=capability.include,
-            exclude=capability.exclude,
-        )
-        for plan in plans
-        for capability in plan.capabilities
-        if type(capability) is CompiledMcpCapability and (capability.include or capability.exclude)
-    )
-
-
-def _filter_issues(
-    targets: Iterable[_FilterTarget], listed: Mapping[str, tuple[str, ...]]
-) -> list[AgentCompilationIssue]:
-    """Return one issue per filter that selects none of its server's tools."""
-    return [
-        tool_filter_matches_nothing(target.agent, target.server)
-        for target in targets
-        if target.key in listed
-        and not _filtered_tools(listed[target.key], include=target.include, exclude=target.exclude)
-    ]
-
-
-def _listing_timeout_issues(
-    targets: Iterable[_FilterTarget], listed: Mapping[str, tuple[str, ...]]
-) -> list[AgentCompilationIssue]:
-    """Name every server whose tool listing did not complete inside the budget."""
-    pending: dict[str, str] = {
-        target.key: target.server for target in targets if target.key not in listed
-    }
-    return [
-        mcp_server_unreachable(server, "listing its tools timed out") for server in pending.values()
-    ]
-
-
-def _worst(states: Iterable[str]) -> HealthState:
-    """Return the worst of several dependency states, ``"ok"`` when there are none."""
-    ranks = (_STATE_ORDER.get(state, 2) for state in states)
-    return _STATE_BY_RANK[max(ranks, default=0)]
-
-
-class _RunSupervisor:
-    """Enforces the per-run limits of one plan over its event stream.
-
-    Keeps the whole limit vocabulary in one place so ``/run`` and ``/stream``
-    share a single code path: a breach becomes the stream's terminal
-    :class:`~loom.ai.abc.ErrorEvent`, which ``run()`` turns back into an
-    :class:`AgentRunError`.
-
-    Args:
-        policies: Validated execution limits of the plan being run.
-    """
-
-    def __init__(self, policies: PolicySpec) -> None:
-        loop = asyncio.get_running_loop()
-        self._now = loop.time
-        self._run_deadline = loop.time() + policies.run_timeout_ms / 1000
-        self._policies = policies
-        self._tool_deadline: float | None = None
-        self._pending_tool: str | None = None
-        self._pending_call: str | None = None
-        self._iterations = 0
-        self.terminated = False
-
-    @property
-    def deadline(self) -> float:
-        """Absolute loop time the next event must arrive before."""
-        if self._tool_deadline is None:
-            return self._run_deadline
-        return min(self._run_deadline, self._tool_deadline)
-
-    def timeout_event(self) -> ErrorEvent:
-        """Return the terminal event of an expired deadline, naming what expired."""
-        tool_expired = (
-            self._pending_tool is not None
-            and self._tool_deadline is not None
-            and self._tool_deadline <= self._run_deadline
-        )
-        if tool_expired:
-            return ErrorEvent(
-                code=AgentRunErrorCode.TOOL_TIMEOUT,
-                message=(
-                    f"tool {self._pending_tool!r} exceeded tool_timeout_ms "
-                    f"({self._policies.tool_timeout_ms})"
-                ),
-            )
-        return ErrorEvent(
-            code=AgentRunErrorCode.RUN_TIMEOUT,
-            message=f"run exceeded run_timeout_ms ({self._policies.run_timeout_ms})",
-        )
-
-    def observe(self, event: AgentEvent) -> ErrorEvent | None:
-        """Account for one event and return the terminal event of a breach.
-
-        Args:
-            event: Event just produced by the engine.
-
-        Returns:
-            The terminal :class:`~loom.ai.abc.ErrorEvent` when a limit is
-            breached, ``None`` when the event may be forwarded.
-        """
-        if type(event) is ToolCallEvent:
-            return self._observe_tool_call(event)
-        if type(event) is ToolResultEvent:
-            self._observe_tool_result(event)
-            return None
-        self.terminated = type(event) in _TERMINAL_EVENT_TYPES
-        return None
-
-    def _observe_tool_call(self, event: ToolCallEvent) -> ErrorEvent | None:
-        self._iterations += 1
-        if self._iterations > self._policies.max_iterations:
-            return ErrorEvent(
-                code=AgentRunErrorCode.MAX_ITERATIONS_EXCEEDED,
-                message=f"run exceeded max_iterations ({self._policies.max_iterations})",
-            )
-        self._pending_tool = event.tool
-        self._pending_call = event.call_id
-        self._tool_deadline = self._now() + self._policies.tool_timeout_ms / 1000
-        return None
-
-    def _observe_tool_result(self, event: ToolResultEvent) -> None:
-        if event.call_id != self._pending_call:
-            return
-        self._pending_tool = None
-        self._pending_call = None
-        self._tool_deadline = None
-
-
-async def _supervised_events(
-    events: AsyncIterator[AgentEvent], policies: PolicySpec
-) -> AsyncGenerator[AgentEvent, None]:
-    """Forward an engine stream while enforcing the plan's per-run limits."""
-    supervisor = _RunSupervisor(policies)
-    iterator = events.__aiter__()
-    while True:
-        try:
-            async with asyncio.timeout_at(supervisor.deadline):
-                event = await anext(iterator)
-        except StopAsyncIteration:
-            return
-        except TimeoutError:
-            yield supervisor.timeout_event()
-            return
-        breach = supervisor.observe(event)
-        if breach is not None:
-            yield breach
-            return
-        yield event
-        if supervisor.terminated:
-            return
-
-
-async def _cancel_task(task: asyncio.Task[None]) -> None:
-    """Cancel an owned background task and wait for it to actually stop.
-
-    The ``CancelledError`` is swallowed only when it belongs to *task*. If it
-    arrived because the caller itself was cancelled while awaiting, it is
-    re-raised: absorbing that one would break the cooperative cancellation of
-    whoever is shutting this runtime down, and the shutdown would appear to
-    succeed while its caller kept running.
-
-    Args:
-        task: Background task this runtime owns.
-    """
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        if not task.cancelled():
-            raise
 
 
 class AgentRuntime:
@@ -742,7 +409,7 @@ class AgentRuntime:
         except Exception as exc:  # recovery: reported as a coded start-up issue
             failures.append(mcp_server_unreachable(capability.server, str(exc)))
             return
-        opened.append(_OpenedClient(key=_mcp_key(capability), client=client, session=session))
+        opened.append(_OpenedClient(key=mcp_key(capability), client=client, session=session))
 
     async def _open_a2a(
         self,
@@ -784,7 +451,7 @@ class AgentRuntime:
         issues: list[AgentCompilationIssue] = [
             mcp_server_unreachable(capability.server, reason)
             for capability in mcp
-            if _mcp_key(capability) not in live
+            if mcp_key(capability) not in live
         ]
         issues.extend(
             a2a_agent_unreachable(remote.agent, reason)
@@ -801,7 +468,7 @@ class AgentRuntime:
         at the same server would otherwise pay two serialised round trips for
         identical data.
         """
-        targets = _filter_targets(self._plans.values())
+        targets = filter_targets(self._plans.values())
         if not targets:
             return
         listed: dict[str, tuple[str, ...]] = {}
@@ -809,13 +476,13 @@ class AgentRuntime:
             async with asyncio.timeout_at(deadline):
                 await self._list_tools_once(targets, listed)
         except TimeoutError:
-            raise AgentCompilationError(_listing_timeout_issues(targets, listed)) from None
-        issues = _filter_issues(targets, listed)
+            raise AgentCompilationError(listing_timeout_issues(targets, listed)) from None
+        issues = filter_issues(targets, listed)
         if issues:
             raise AgentCompilationError(issues)
 
     async def _list_tools_once(
-        self, targets: Sequence[_FilterTarget], listed: dict[str, tuple[str, ...]]
+        self, targets: Sequence[FilterTarget], listed: dict[str, tuple[str, ...]]
     ) -> None:
         """List the tools of every session a declared filter applies to, once per session."""
         for target in targets:
@@ -835,7 +502,7 @@ class AgentRuntime:
     def _start_health_probe(self, stack: AsyncExitStack) -> None:
         """Start the single owned probe refreshing the declared health cache."""
         probe = asyncio.create_task(self._probe_forever(), name="loom-agent-health-probe")
-        stack.push_async_callback(_cancel_task, probe)
+        stack.push_async_callback(cancel_task, probe)
 
     async def _probe_forever(self) -> None:
         """Refresh the health cache forever; only cancellation ends this task.
@@ -868,7 +535,7 @@ class AgentRuntime:
             key = _dependency_key(capability)
             if key is not None:
                 checks[key] = self._dependency_state(key)
-        return AgentHealth(status=_worst(checks.values()), checks=MappingProxyType(checks))
+        return AgentHealth(status=worst(checks.values()), checks=MappingProxyType(checks))
 
     def _dependency_state(self, key: str) -> HealthState:
         if key.startswith("sql:"):
@@ -885,7 +552,7 @@ class AgentRuntime:
         await self._admit(name)
         try:
             async with slot.engine.run_stream(prompt, identity=identity) as events:
-                supervised = _supervised_events(events, slot.plan.policies)
+                supervised = supervised_events(events, slot.plan.policies)
                 try:
                     yield supervised
                 finally:
@@ -921,11 +588,6 @@ class AgentRuntime:
                 "'async with runtime:' to open its clients and build its engines"
             )
         return slot
-
-
-def _mcp_key(capability: CompiledMcpCapability) -> str:
-    """Return the health-check key of one MCP capability, by registered name."""
-    return f"mcp:{capability.server}"
 
 
 def _a2a_key(capability: CompiledA2ACapability) -> str:
