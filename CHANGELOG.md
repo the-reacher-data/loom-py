@@ -1,3 +1,34 @@
+# 🚀 Release 1.7.0 ([#142](https://github.com/the-reacher-data/loom-py/pull/142)) ([`1a9240a`](https://github.com/the-reacher-data/loom-py/commit/1a9240a6))
+
+
+## ✨ Features
+### ai
+- **ai:** pluggable MCP server authentication ([#139](https://github.com/the-reacher-data/loom-py/pull/139))<br>
+  > Loom could only reach MCP servers with no authentication at all: the engine
+  > refused the `headers_ref` the rest of the stack already carried. A new
+  > entry-point group `loom.ai.mcp_auth` ships `bearer`, `oauth` and `static`,
+  > and anyone registers their own strategy from their own package. The contract
+  > is `httpx.Auth` itself, so any existing implementation works with no adapter.
+  > An unregistered strategy fails at compile time; every setting in the `auth`
+  > block is held to the same inline-credential refusal as `headers_ref`.
+
+### streaming
+- **streaming:** trace a message from ingestion to death ([#142](https://github.com/the-reacher-data/loom-py/pull/142))<br>
+  > A streaming message can now be followed under one trace id from the inbound
+  > Kafka header, through every node, to where it dies — written to a sink,
+  > converted to an error envelope, or dropped with no route. The trace id was
+  > already carried faithfully in the data and discarded at the span layer.
+  >
+  > Batch operations emit N+1 spans: a participation span in each message's own
+  > trace carrying `loom.batch_id`, plus one batch span linking back, with links
+  > added only for participations that actually recorded.
+  >
+  > Two limits are documented rather than hidden: batch spans are roots in their
+  > own trace, so a ratio sampler judges them independently and batch visibility
+  > is not guaranteed at low ratios; and `IntoTopic` sinks still end a message's
+  > trace at its last node span.
+
+
 # 🚀 Release 1.6.0 ([#138](https://github.com/the-reacher-data/loom-py/pull/138)) ([`2795d15`](https://github.com/the-reacher-data/loom-py/commit/2795d159))
 
 
