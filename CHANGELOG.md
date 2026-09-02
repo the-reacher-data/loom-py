@@ -1,3 +1,29 @@
+# 🚀 Release 1.7.1 ([#143](https://github.com/the-reacher-data/loom-py/pull/143)) ([`0322dbb`](https://github.com/the-reacher-data/loom-py/commit/0322dbb2))
+
+
+## 🐛 Fixes
+### streaming
+- **streaming:** emit a terminal span for outbound topic writes ([#143](https://github.com/the-reacher-data/loom-py/pull/143))<br>
+  > `TerminalReason.SINK_WRITE` has documented "written to a storage sink or an
+  > outbound topic" since 1.7.0, but the outbound half was never true: the Kafka
+  > sink partition had no observability runtime in reach, so a flow ending in
+  > `IntoTopic` produced a trace that stopped at its last node span.
+  >
+  > A message written to an outbound topic now emits one terminal span in its own
+  > trace, plus the same N+1 batch shape as the storage sink. Failed writes close
+  > failed and carry `terminal.failure_scope="batch"`, because the producer keeps
+  > one delivery error for a whole batch — without the marker a trace would claim
+  > that messages the broker acknowledged had failed. A batch diverted to a DLQ
+  > also closes failed: `send_batch_to_dlq` never flushes, so at span-close time
+  > the landing is unverified.
+  >
+  > The untraced path gained no branch: tracing is a wrapper returned only when
+  > bound, so a flow without observability runs exactly the code it ran before.
+  >
+  > Three of five death paths are now traced. Drop sinks and `Drain` still emit
+  > no terminal span.
+
+
 # 🚀 Release 1.7.0 ([#142](https://github.com/the-reacher-data/loom-py/pull/142)) ([`1a9240a`](https://github.com/the-reacher-data/loom-py/commit/1a9240a6))
 
 
