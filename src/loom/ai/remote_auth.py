@@ -54,10 +54,13 @@ during configuration decode in every deployment.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Mapping, Sequence
 from functools import cache
 from threading import Lock
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast, get_type_hints
+
+import msgspec
 
 from loom.ai.errors import (
     AgentCompilationError,
@@ -302,10 +305,76 @@ class _SharedStrategies:
             return built
 
 
+_COERCIBLE: Final = (str, int, float, bool)
+"""Annotations a setting is converted to.
+
+Deliberately only these.  A strategy declaring ``cfg: MyObject`` receives the
+string it receives today and is unaffected, so widening the rule later stays
+additive while narrowing it never has to happen.
+"""
+
+
+def _coerce_settings(strategy: Any, settings: dict[str, str]) -> dict[str, object]:
+    """Convert each setting whose parameter declares a primitive type.
+
+    Configuration carries every setting as a string, because each one passes the
+    inline-credential refusal, which admits no spaces.  That is loom's own
+    constraint, so loom converts back rather than handing a strategy a string
+    where its signature asked for an ``int`` -- or, worse, a ``bool``, since the
+    string ``"false"`` is truthy and would silently invert what a deployment
+    asked for.
+
+    ``inspect.signature(strategy)`` reads the callable itself, not
+    ``__init__``: two of the three strategies loom registers are plain
+    functions, and inspecting a function's ``__init__`` yields ``object``'s
+    ``(*args, **kwargs)`` -- no parameters, and therefore no conversion, in
+    silence.
+
+    Args:
+        strategy: The loaded strategy, a class or a function.
+        settings: The endpoint's settings, every value a string.
+
+    Returns:
+        The settings, with primitive-annotated values converted and everything
+        else -- custom types, unannotated parameters, names the strategy does
+        not declare -- passed through unchanged.
+
+    Raises:
+        ValidationError: When a value cannot become the primitive its parameter
+            declares.  The caller names the setting.
+    """
+    try:
+        params = inspect.signature(strategy).parameters
+        # signature() reads a class through its __init__, but get_type_hints()
+        # on a class reads its *attribute* annotations, so the two must be
+        # pointed at different objects to describe the same parameters.
+        annotated: Any = getattr(strategy, "__init__") if isinstance(strategy, type) else strategy  # noqa: B009
+        hints = get_type_hints(annotated)
+    except Exception:  # noqa: BLE001 - introspection is best effort, see below
+        # A callable whose signature or annotations cannot be resolved -- a
+        # C builtin, a partial, an annotation naming a TYPE_CHECKING-only
+        # import -- behaves exactly as it did before this function existed.
+        # Introspection must never be the thing that breaks a working strategy.
+        return dict(settings)
+    coerced: dict[str, object] = {}
+    for name, raw in settings.items():
+        annotation = hints.get(name)
+        if name not in params or annotation not in _COERCIBLE:
+            coerced[name] = raw
+        else:
+            coerced[name] = msgspec.convert(raw, type=annotation, strict=False)
+    return coerced
+
+
 def _build(auth: CompiledRemoteAuth) -> httpx.Auth | str:
     """Load the named strategy and construct it from its settings."""
     strategy = _load_strategy(auth.kind)
-    settings = dict(auth.settings)
+    try:
+        settings = _coerce_settings(strategy, dict(auth.settings))
+    except msgspec.ValidationError as exc:
+        raise AgentCompilationError(
+            [mcp_auth_strategy_invalid(auth.kind, f"a setting has the wrong type: {exc}")]
+        ) from exc
     try:
         built = strategy(**settings)
     except TypeError as exc:
