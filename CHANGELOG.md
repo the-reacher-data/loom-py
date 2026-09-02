@@ -1,3 +1,39 @@
+# 🚀 Release 1.6.0 ([#138](https://github.com/the-reacher-data/loom-py/pull/138)) ([`2795d15`](https://github.com/the-reacher-data/loom-py/commit/2795d159))
+
+
+## ✨ Features
+### ai
+- **ai:** engine-agnostic agent layer with multi-provider models and A2A ([#133](https://github.com/the-reacher-data/loom-py/pull/133))
+
+### observability
+- **observability:** declare opentelemetry-api and pin current tracing behaviour ([#136](https://github.com/the-reacher-data/loom-py/pull/136))<br>
+  > `import loom.core.observability` failed on a core-only install: the SDK was
+  > imported at module scope but was in no core dependency. `opentelemetry-api`
+  > joins core dependencies and the SDK moves behind lazy guards.
+- **observability:** open real OTel spans and delete the hand-rolled parenting ([#138](https://github.com/the-reacher-data/loom-py/pull/138))<br>
+  > **Breaking change to trace shape.** Loom reconstructed spans after the fact
+  > from a two-call event stream, which structurally forbids
+  > `start_as_current_span`, so it hand-rolled parenting, span identity and
+  > trace-id derivation — and got all three wrong: nesting never happened, spans
+  > carried a fabricated parent that was never exported, and concurrent runs of
+  > the same scope collided. Spans now open through OTel and nest by context.
+  > `OtelLifecycleObserver`, `_SpanRegistry`, `PARENT_SCOPES`, `span_parent_key`
+  > and `_trace_parent_context` are removed with no shim.
+  >
+  > New public API: `ObservabilityRuntime.open_span` and `LoomSpan`, for spans
+  > whose lifetime is not lexically scoped (SSE streaming across `asend`).
+  >
+  > Migration: dashboards, alerts and sampling rules keyed on flat root spans
+  > will see nested trees. Under a host sampler, a non-sampled inbound request
+  > now drops loom spans, where the old code always forced them sampled.
+  > Parallel ETL groups remain flat for now.
+
+
+## ♻️ Refactor
+### ai
+- **ai:** split runtime.py and _capabilities.py by responsibility ([#137](https://github.com/the-reacher-data/loom-py/pull/137))
+
+
 # 🚀 Release 1.5.0 ([#131](https://github.com/the-reacher-data/loom-py/pull/131)) ([`f5ed4f7`](https://github.com/the-reacher-data/loom-py/commit/f5ed4f7229ebcd954ff9ae6d4acf952a8e33c8a1))
 
 
