@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from time import time_ns
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from bytewax.inputs import FixedPartitionedSource, StatefulSourcePartition
@@ -13,8 +14,11 @@ from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from confluent_kafka import OFFSET_BEGINNING, OFFSET_END
 from confluent_kafka.admin import AdminClient
 
+from loom.core.observability.event import Scope, TerminalReason
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 from loom.core.tracing import generate_trace_id
+from loom.streaming.bytewax._batch_spans import BatchSpan, BatchWindow, emit_batch_spans
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort, KafkaCommitTracker
 from loom.streaming.bytewax._dlq import (
     send_batch_to_dlq,
@@ -29,7 +33,8 @@ from loom.streaming.compiler._plan import (
     CompiledSource,
 )
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
-from loom.streaming.core._message import Message
+from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.core._tracing import open_terminal_span
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.kafka._codec import MsgspecCodec
 from loom.streaming.kafka._config import ConsumerSettings
@@ -70,6 +75,30 @@ class _KafkaSendRequest(Generic[PayloadT]):
     produced_at_ms: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _BatchOutcome:
+    """How one Kafka batch write ended, for the two exits that return normally.
+
+    A delivery failure diverted to a DLQ topic returns exactly like a delivered
+    batch: it commits and raises nothing. The return value is therefore the only
+    thing that lets a caller above ``_write_kafka_batch`` tell the two apart —
+    and a diversion is a failure, because ``send_batch_to_dlq`` never flushes
+    and swallows per-item failures, so the DLQ landing is unverified here.
+
+    Args:
+        error: Delivery failure that caused the diversion, or ``None`` when the
+            batch was delivered.
+        dlq_topic: Topic the batch was diverted to, or ``None``.
+    """
+
+    error: KafkaDeliveryError | None = None
+    dlq_topic: str | None = None
+
+
+_DELIVERED = _BatchOutcome()
+"""The outcome of a batch that flushed without a delivery failure."""
+
+
 def _write_kafka_batch(
     *,
     sink: CompiledSink,
@@ -83,7 +112,7 @@ def _write_kafka_batch(
     ]
     | None,
     commit_tracker: CommitCompletionPort | None,
-) -> None:
+) -> _BatchOutcome:
     try:
         for item in items:
             request = item_to_send(item)
@@ -105,8 +134,9 @@ def _write_kafka_batch(
         if sink.dlq_topic is not None and dlq_sender is not None:
             dlq_sender(message_producer, sink.dlq_topic, items, exc)
             _commit_runtime_items(items, item_to_commit, commit_tracker)
-            return
+            return _BatchOutcome(error=exc, dlq_topic=sink.dlq_topic)
         raise
+    return _DELIVERED
 
 
 def _commit_runtime_items(
@@ -373,7 +403,26 @@ class _KafkaMessageSinkPartition(
     _message_producer: KafkaMessageProducer[StreamPayload]
 
     def write_batch(self, items: list[Message[StreamPayload]]) -> None:
-        _write_kafka_batch(
+        self.write_batch_outcome(items)
+
+    def write_batch_outcome(self, items: list[Message[StreamPayload]]) -> _BatchOutcome:
+        """Write one batch to the outbound topic and report how it ended.
+
+        ``StatelessSinkPartition.write_batch`` must return ``None``, so this
+        sibling exists to carry the outcome to a wrapper that needs it — a DLQ
+        diversion returns normally and is otherwise indistinguishable from a
+        delivered batch.
+
+        Args:
+            items: Messages Bytewax delivered for the current epoch.
+
+        Returns:
+            The outcome of the write.
+
+        Raises:
+            KafkaDeliveryError: If delivery failed and no DLQ topic is declared.
+        """
+        return _write_kafka_batch(
             sink=self._sink,
             producer=self._producer,
             message_producer=self._message_producer,
@@ -383,6 +432,146 @@ class _KafkaMessageSinkPartition(
             dlq_sender=send_batch_to_dlq,
             commit_tracker=self._commit_tracker,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalTracing:
+    """Everything the terminal span of an outbound-topic write needs.
+
+    Bound once, at wiring time, by the adapter sites that run only for a real
+    terminal — never for the inline ``WithAsync`` sink, whose messages go on
+    living.
+
+    Args:
+        observer: Runtime the terminal and batch spans are opened on.
+        flow: Name of the enclosing flow.
+        flow_run_id: Identifier of the flow run the spans belong to.
+    """
+
+    observer: ObservabilityRuntime
+    flow: str
+    flow_run_id: str
+
+
+def _terminal_failure_attributes(dlq_topic: str | None) -> dict[str, object]:
+    """Return the attributes stamped on terminal spans of a failed batch.
+
+    ``terminal.failure_scope`` is stamped on failure only. ``KafkaProducerClient``
+    keeps one pending delivery error and ``flush()`` raises it for the whole
+    batch, so one bad record fails all N spans and the attribute says so. On
+    success ``flush()`` waited for every record and raised nothing, which makes
+    success per-message truth that needs no qualification.
+    """
+    attributes: dict[str, object] = {"terminal.failure_scope": "batch"}
+    if dlq_topic is not None:
+        attributes["terminal.dlq_topic"] = dlq_topic
+    return attributes
+
+
+class _TracedMessageSinkPartition(StatelessSinkPartition[Message[StreamPayload]]):
+    """Record an outbound-topic write as the death of every message in it.
+
+    Wraps :class:`_KafkaMessageSinkPartition` and emits the N+1 shape of
+    :mod:`loom.streaming.bytewax._batch_spans`: one ``terminal:sink_write`` span
+    per message, in that message's own trace, plus one ``Scope.WRITE`` span for
+    the flush itself, in a trace of its own, linking back to all of them.
+
+    A flow ending in ``IntoTopic`` used to produce a trace that stopped at its
+    last node span. Wrapping rather than branching inside the write keeps the
+    untraced path — the framework's highest-throughput path — free of the extra
+    branch: an untraced sink builds the bare partition instead.
+
+    Args:
+        partition: Kafka partition that performs the write.
+        tracing: Runtime and flow identity the spans are opened with.
+        topic: Outbound topic, reported as the sink name on every span.
+    """
+
+    def __init__(
+        self,
+        partition: _KafkaMessageSinkPartition,
+        tracing: _TerminalTracing,
+        *,
+        topic: str,
+    ) -> None:
+        self._partition = partition
+        self._tracing = tracing
+        self._topic = topic
+
+    def write_batch(self, items: list[Message[StreamPayload]]) -> None:
+        """Write the batch, then close every message's trace with its death.
+
+        Empty epochs are forwarded without a span, so an idle flow emits
+        nothing. A batch diverted to a DLQ closes *failed*: the diversion never
+        flushed, so the landing is unverified at span-close time.
+
+        Args:
+            items: Messages Bytewax delivered for the current epoch.
+
+        Raises:
+            Exception: Whatever the underlying partition raises, after the
+                failure has been recorded on every span of the batch.
+        """
+        if not items:
+            self._partition.write_batch(items)
+            return
+        started_ns = time_ns()
+        try:
+            outcome = self._partition.write_batch_outcome(items)
+        except Exception as exc:
+            self._emit_spans(items, BatchWindow.since(started_ns), exc, None)
+            raise
+        self._emit_spans(items, BatchWindow.since(started_ns), outcome.error, outcome.dlq_topic)
+
+    def _emit_spans(
+        self,
+        items: list[Message[StreamPayload]],
+        window: BatchWindow,
+        error: BaseException | None,
+        dlq_topic: str | None,
+    ) -> None:
+        """Emit the per-message terminal spans and the batch write span."""
+        failure = _terminal_failure_attributes(dlq_topic) if error is not None else {}
+
+        def open_terminal(
+            meta: MessageMeta,
+            batch_attributes: Mapping[str, object],
+            started_ns: int,
+        ) -> LoomSpan:
+            return open_terminal_span(
+                self._tracing.observer,
+                meta,
+                TerminalReason.SINK_WRITE,
+                start_time_ns=started_ns,
+                attributes={
+                    "flow": self._tracing.flow,
+                    "sink": self._topic,
+                    **failure,
+                    **batch_attributes,
+                },
+            )
+
+        emit_batch_spans(
+            self._tracing.observer,
+            [item.meta for item in items],
+            batch=BatchSpan(
+                scope=Scope.WRITE,
+                name=f"{self._tracing.flow}:{self._topic}",
+                attributes={
+                    "flow": self._tracing.flow,
+                    "sink": self._topic,
+                    "batch_size": len(items),
+                    "loom.flow_run_id": self._tracing.flow_run_id,
+                },
+            ),
+            open_participation=open_terminal,
+            window=window,
+            error=error,
+        )
+
+    def close(self) -> None:
+        """Delegate close to the wrapped partition."""
+        self._partition.close()
 
 
 class _KafkaErrorEnvelopeSinkPartition(
@@ -438,16 +627,90 @@ class _KafkaDynamicSinkBase:
 
 
 class _KafkaMessageSink(_KafkaDynamicSinkBase, DynamicSink[Message[StreamPayload]]):
-    """Build Kafka sink partitions for the runtime output topic."""
+    """Build Kafka sink partitions for the runtime output topic.
+
+    Terminal tracing is optional and off by default. The adapter binds it only
+    at the wiring sites that run for a real terminal, so this sink is the only
+    one that can emit a death span: the error sinks structurally cannot receive
+    the binding, and an inline ``WithAsync`` sink is refused it.
+
+    Args:
+        sink: Compiled Kafka sink configuration.
+    """
+
+    def __init__(self, sink: CompiledSink) -> None:
+        super().__init__(sink)
+        self._terminal_tracing: _TerminalTracing | None = None
+        self._built_inline_partition = False
+
+    def bind_terminal_tracing(
+        self,
+        observer: ObservabilityRuntime,
+        flow: str,
+        flow_run_id: str,
+    ) -> None:
+        """Make the partitions built from this sink emit terminal spans.
+
+        Args:
+            observer: Runtime the terminal and batch spans are opened on.
+            flow: Name of the enclosing flow.
+            flow_run_id: Identifier of the flow run.
+
+        Raises:
+            RuntimeError: If an inline ``WithAsync`` partition was already built
+                from this sink, which would make it report a death that a still
+                living message never had.
+        """
+        if self._built_inline_partition:
+            raise RuntimeError(
+                f"cannot bind terminal tracing to the sink for topic '{self._sink.topic}': "
+                "an inline WithAsync partition was already built from it. A message written "
+                "by an inline IntoTopic goes on living, so a terminal span there would "
+                "report a death that never happened."
+            )
+        self._terminal_tracing = _TerminalTracing(
+            observer=observer, flow=flow, flow_run_id=flow_run_id
+        )
+
+    def mark_inline_partition(self) -> None:
+        """Record that an inline, non-terminal partition is built from this sink.
+
+        Raises:
+            RuntimeError: If terminal tracing is already bound. Nothing fixes
+                the order the two wiring sites run in, so the collision is
+                refused from both directions.
+        """
+        if self._terminal_tracing is not None:
+            raise RuntimeError(
+                f"cannot build an inline WithAsync partition from the sink for topic "
+                f"'{self._sink.topic}': terminal tracing is already bound to it, so the "
+                "inline and terminal wiring paths collided on one compiled sink."
+            )
+        self._built_inline_partition = True
 
     def build(
         self,
         step_id: str,
         worker_index: int,
         worker_count: int,
-    ) -> _KafkaMessageSinkPartition:
+    ) -> StatelessSinkPartition[Message[StreamPayload]]:
+        """Build one worker's partition, traced only when tracing is bound.
+
+        Args:
+            step_id:      Bytewax step identifier (unused).
+            worker_index: Zero-based index of the calling worker.
+            worker_count: Total number of workers in this run.
+
+        Returns:
+            The bare Kafka partition, or one wrapped to emit terminal spans.
+        """
         del step_id, worker_index, worker_count
-        return _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
+        partition = _KafkaMessageSinkPartition(self._sink, self._commit_tracker)
+        if self._terminal_tracing is None:
+            return partition
+        return _TracedMessageSinkPartition(
+            partition, self._terminal_tracing, topic=self._sink.topic
+        )
 
 
 class _KafkaErrorEnvelopeSink(_KafkaDynamicSinkBase, DynamicSink[ErrorEnvelope[StreamPayload]]):

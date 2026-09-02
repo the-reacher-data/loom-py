@@ -173,6 +173,32 @@ class _SupportsCommitBind(Protocol):
         """Bind a commit tracker to this runtime object."""
 
 
+@runtime_checkable
+class _SupportsTerminalTracing(Protocol):
+    """Runtime sink that can record the death of the messages it writes."""
+
+    def bind_terminal_tracing(
+        self, observer: ObservabilityRuntime, flow: str, flow_run_id: str
+    ) -> None:
+        """Make this sink emit a terminal span per message it writes."""
+
+    def mark_inline_partition(self) -> None:
+        """Record that an inline, non-terminal partition is built from this sink."""
+
+
+def _mark_inline_partition(sink: object) -> None:
+    """Record on one sink that an inline, non-terminal partition is built from it.
+
+    Sinks that cannot carry terminal tracing — storage sinks, test doubles —
+    have nothing to record and are left untouched.
+
+    Raises:
+        RuntimeError: If the sink already carries terminal tracing.
+    """
+    if isinstance(sink, _SupportsTerminalTracing):
+        sink.mark_inline_partition()
+
+
 def _bind_commit_tracker_object(
     item: object | None, commit_tracker: CommitCompletionPort | None
 ) -> None:
@@ -260,11 +286,13 @@ class _BuildContext:
     def wire_terminal(self, step_id: str, stream: Any) -> None:
         if self.sink is None:
             raise RuntimeError("Bytewax sink is required for terminal output wiring.")
+        self._bind_terminal_tracing(self.sink)
         bw_output(step_id, stream, self.sink)
 
     def wire_branch_terminal(self, step_id: str, stream: Any, path: tuple[int, ...]) -> None:
         sink = self.terminal_sinks.get(path)
         if sink is not None:
+            self._bind_terminal_tracing(sink)
             bw_output(_qualified_step_id(step_id, path), stream, sink)
             return
         # A branch without a terminal still owes its record a completion: the
@@ -283,6 +311,21 @@ class _BuildContext:
             stream,
             _DropSink(self.commit_tracker),
         )
+
+    def _bind_terminal_tracing(self, sink: Any) -> None:
+        """Give one real terminal sink the runtime its death spans open on.
+
+        Called only from the two wiring sites that run for a genuine terminal.
+        ``_BuildContext.inline_sink_partition_for`` builds from the *same*
+        ``terminal_sinks`` mapping for ``WithAsync(process=[..., IntoTopic])``,
+        where the message explicitly does not die; binding any earlier would
+        emit a death span for a message that goes on living.
+
+        Sinks that cannot record a death — storage sinks, drop sinks, test
+        doubles — are left untouched.
+        """
+        if isinstance(sink, _SupportsTerminalTracing):
+            sink.bind_terminal_tracing(self.flow_runtime, self.plan.name, self.flow_run_id)
 
     def wire_node_error(self, kind: ErrorKind, step_id: str, stream: Any) -> None:
         sink = self.error_sinks.get(kind)
@@ -330,10 +373,16 @@ class _BuildContext:
         Returns:
             A ready-to-write ``StatelessSinkPartition``, or ``None`` if no
             sink is registered for *path*.
+
+        Raises:
+            RuntimeError: If the sink for *path* already carries terminal
+                tracing, meaning an inline and a terminal wiring path collided
+                on one compiled sink.
         """
         sink = self.terminal_sinks.get(path)
         if sink is None:
             return None
+        _mark_inline_partition(sink)
         step_id = "inline_" + "_".join(str(p) for p in path)
         return cast(StatelessSinkPartition[Any], sink.build(step_id, 0, 1))
 

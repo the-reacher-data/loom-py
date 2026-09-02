@@ -16,8 +16,29 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.sdk.trace.sampling import Sampler
 
+from loom.core.observability.event import LifecycleEvent, Scope
 from loom.core.observability.otel_ids import LoomMessageIdGenerator
 from loom.core.observability.runtime import ObservabilityRuntime
+
+
+class EventCollector:
+    """Lifecycle observer that keeps every event it receives.
+
+    Span structure answers "what shape is the trace"; lifecycle events answer
+    "was a START matched by an END". ``list.append`` is atomic, which is all the
+    thread safety a collector needs under the multi-worker runtime.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[LifecycleEvent] = []
+
+    def on_event(self, event: LifecycleEvent) -> None:
+        """Record one lifecycle event."""
+        self.events.append(event)
+
+    def scoped(self, scope: Scope) -> list[LifecycleEvent]:
+        """Return every recorded event of one scope, in arrival order."""
+        return [event for event in self.events if event.scope is scope]
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +47,7 @@ class SpanRecorder:
 
     runtime: ObservabilityRuntime
     exporter: InMemorySpanExporter
+    collector: EventCollector
 
     def spans(self) -> tuple[ReadableSpan, ...]:
         """Return every exported span, in completion order."""
@@ -82,12 +104,13 @@ def build_recorder(
         else TracerProvider(id_generator=LoomMessageIdGenerator())
     )
     provider.add_span_processor(SimpleSpanProcessor(exporter))
+    collector = EventCollector()
     runtime = ObservabilityRuntime(
-        [],
+        [collector],
         tracer=provider.get_tracer("loom.test"),
         _max_span_links=max_span_links,
     )
-    return SpanRecorder(runtime=runtime, exporter=exporter)
+    return SpanRecorder(runtime=runtime, exporter=exporter, collector=collector)
 
 
 def hex_trace(span: ReadableSpan) -> str:
@@ -113,6 +136,7 @@ def span_ids(spans: list[ReadableSpan]) -> set[int]:
 
 
 __all__ = [
+    "EventCollector",
     "SpanRecorder",
     "build_recorder",
     "hex_trace",

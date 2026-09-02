@@ -22,7 +22,7 @@ rather than emitting an unusable one.
 | --- | --- |
 | `transport:kafka_consume` | The consumer, from the inbound header — the message's birth |
 | `node:<flow>:<idx>` | Each node the message traverses |
-| `terminal:sink_write` | Written to a storage sink |
+| `terminal:sink_write` | Written to a storage sink or an outbound Kafka topic |
 | `terminal:error_envelope` | Turned into an error envelope or routed to a DLQ |
 | `terminal:dropped_no_route` | Expanded or routed to zero rows |
 
@@ -112,6 +112,27 @@ broken.
   ratio, most batch spans are dropped along with most messages. What holds at
   every ratio is that an exported batch span links to exactly the participation
   spans that were also exported.
-- **`IntoTopic` outputs do not yet emit a terminal span.** A message written to
-  an outbound topic ends its trace at its last node span. Storage sinks, error
-  envelopes and no-route drops are covered.
+- **Two death paths are still untraced.** `_DropSinkPartition` (an unrouted
+  branch or error kind) and `Drain` discard a message without a terminal span,
+  so `TerminalReason.DROPPED_NO_ROUTE` is not emitted on either. Three of the
+  five death paths — outbound topic, storage sink, error envelope — are traced.
+- **A wire decode failure has no terminal span, and cannot have one.** A
+  `DecodeError` never became a message: it carries no `MessageMeta`, so there is
+  no trace id, no message id and no lineage to open a span in. Fabricating a
+  synthetic meta would invent a message that never existed.
+- **A failed outbound batch fails every message in it.** The Kafka producer
+  keeps one pending delivery error and `flush()` raises it for the whole batch,
+  so a single rejected record closes all N terminal spans failed. Those spans
+  carry `terminal.failure_scope="batch"` to say the attribution is batch-wide,
+  not per record. Success carries no such attribute: `flush()` waited for every
+  record, so a successful death is per-message truth.
+- **A batch diverted to a DLQ closes failed, with `terminal.dlq_topic` set.**
+  The diversion never flushes and swallows per-item failures, so at span-close
+  time the DLQ landing is unverified. The batch still commits, as it did before.
+- **A delivery error can be attributed to the wrong batch.** The producer's
+  pending error is consumed by whichever `flush()` observes it, which may be the
+  next batch's. The terminal spans that close failed are then one batch late.
+- **Epoch replay produces duplicate terminal spans.** Bytewax replays an epoch
+  from the last snapshot after a failure, so a message written twice records two
+  `terminal:sink_write` spans under one trace id. That is at-least-once delivery
+  being visible, not a tracing fault; deduplicate on `loom.batch_id`.
