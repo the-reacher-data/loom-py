@@ -1,3 +1,17 @@
+# 🚀 Release 1.7.2 ([#146](https://github.com/the-reacher-data/loom-py/pull/146)) ([`8a5706a`](https://github.com/the-reacher-data/loom-py/commit/8a5706a2f93e7e1f853a46879f56b22983845c9a))
+
+
+
+
+
+
+
+
+
+## 🛠 Chores
+- retire two expired Sonar suppressions and fix two lying test stubs
+
+
 # 🚀 Release 1.7.1 ([#143](https://github.com/the-reacher-data/loom-py/pull/143)) ([`0322dbb`](https://github.com/the-reacher-data/loom-py/commit/0322dbb2))
 
 
