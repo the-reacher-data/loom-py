@@ -10,7 +10,11 @@ from bytewax.operators import flat_map as bw_flat_map
 from bytewax.operators import map as bw_map
 
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.streaming.bytewax._error_boundary import _classify_routing, _execute_in_boundary
+from loom.streaming.bytewax._error_boundary import (
+    ErrorBoundary,
+    _classify_routing,
+    _execute_in_boundary,
+)
 from loom.streaming.bytewax.handlers._shared import (
     _BuildContextProtocol,
     _ExecutableBatchStep,
@@ -43,6 +47,7 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
     router = raw
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     def step(msg: Any) -> Any:
         message = _require_message(msg)
@@ -50,6 +55,7 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
             _classify_routing,
             message,
             lambda: _execute_router_step(observer, flow_name, idx, router, message),
+            boundary,
         )
 
     sid = _step_id(f"router_{idx}", ctx)
@@ -148,16 +154,22 @@ def _wire_row_fanout(
     route matching no row contributes nothing. Accounting by the declared route
     count froze the partition whenever rows < routes and released the offset
     early whenever rows > routes.
+
+    The step is wired even without a commit tracker, because it is also the
+    only place that can see a message expand to zero rows and record that it
+    died there.
     """
     tracker = ctx.commit_tracker
-    if tracker is None:
-        return stream
+    observer = ctx.flow_runtime
+    flow_name = ctx.plan.name
     declared_types = frozenset(node.routes.keys())
     has_default = node.default is not None
     return bw_map(
         _step_id(f"expand_routes_{idx}_fanout", ctx),
         stream,
-        lambda item: _register_row_fanout(item, tracker, declared_types, has_default),
+        lambda item: _register_row_fanout(
+            item, tracker, declared_types, has_default, observer, flow_name
+        ),
     )
 
 

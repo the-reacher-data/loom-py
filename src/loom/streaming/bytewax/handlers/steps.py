@@ -10,6 +10,7 @@ from bytewax.operators import map as bw_map
 
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax._error_boundary import (
+    ErrorBoundary,
     NodeResult,
     _classify_task,
     _execute_batch_in_boundary,
@@ -51,6 +52,7 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
     name = _resolve_node_name(record_step)
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     def step_fn(msg: Any) -> NodeResult:
         message = _require_message(msg)
@@ -58,6 +60,7 @@ def _apply_record_step(stream: Stream, raw: object, idx: int, ctx: _BuildContext
             _classify_task,
             message,
             lambda: _execute_record_step(observer, flow_name, idx, name, record_step, message),
+            boundary,
         )
 
     sid = _step_id(f"record_{idx}_{name}", ctx)
@@ -72,6 +75,7 @@ def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextP
     name = _resolve_node_name(batch_step)
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     def step_fn(batch: list[Any]) -> list[NodeResult]:
         messages = [_require_message(item) for item in batch]
@@ -86,6 +90,7 @@ def _apply_batch_step(stream: Stream, raw: object, idx: int, ctx: _BuildContextP
                 batch_step,
                 messages,
             ),
+            boundary,
         )
 
     sid = _step_id(f"batch_{idx}_{name}", ctx)
@@ -105,6 +110,7 @@ def _apply_expand_step(
     name = _resolve_node_name(expand_step)
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     tracker = ctx.commit_tracker
 
@@ -121,6 +127,7 @@ def _apply_expand_step(
                 expand_step,
                 message,
             ),
+            boundary,
         )
         _reconcile_fanout([message], results, tracker)
         return results
@@ -145,6 +152,7 @@ def _apply_batch_expand_step(
     name = _resolve_node_name(batch_expand_step)
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     tracker = ctx.commit_tracker
 
@@ -161,6 +169,7 @@ def _apply_batch_expand_step(
                 batch_expand_step,
                 messages,
             ),
+            boundary,
         )
         _reconcile_fanout(messages, results, tracker)
         return results
@@ -178,6 +187,7 @@ def _apply_explode(stream: Stream, raw: object, idx: int, ctx: _BuildContextProt
     name = _resolve_node_name(explode_node.exploder)
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
+    boundary = ErrorBoundary(observer=observer, flow=flow_name)
 
     tracker = ctx.commit_tracker
 
@@ -194,6 +204,7 @@ def _apply_explode(stream: Stream, raw: object, idx: int, ctx: _BuildContextProt
                 explode_node,
                 message,
             ),
+            boundary,
         )
         _reconcile_fanout([message], results, tracker)
         return results

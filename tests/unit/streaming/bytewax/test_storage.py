@@ -31,6 +31,7 @@ class _FakeCtx:
         self.plan = type("_Plan", (), {"name": "test_flow"})()
         self.bridge = bridge
         self.flow_runtime = ObservabilityRuntime.noop()
+        self.flow_run_id = "run-1"
         self._session_manager = object()
         self.session_manager_calls: list[dict[str, Any]] = []
 

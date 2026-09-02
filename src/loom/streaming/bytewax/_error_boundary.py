@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
 from bytewax.operators import branch, flat_map
 
 from loom.core.errors.errors import DomainError
 from loom.core.logger import get_logger
+from loom.core.observability.event import TerminalReason
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind, snapshot_message
 from loom.streaming.core._message import Message
+from loom.streaming.core._tracing import open_terminal_span
 from loom.streaming.core._typing import StreamPayload
 
 Stream: TypeAlias = Any
@@ -38,11 +42,38 @@ def _classify_routing(exc: Exception) -> ErrorKind:
     return ErrorKind.ROUTING
 
 
+@dataclass(frozen=True, slots=True)
+class ErrorBoundary:
+    """Where an error envelope is built, and who is told about it.
+
+    Args:
+        observer: Runtime the terminal span of the failing message is opened on.
+        flow: Name of the enclosing flow, stamped on that span.
+    """
+
+    observer: ObservabilityRuntime
+    flow: str
+
+
 def _build_error_envelope(
     kind: ErrorKind,
     reason: str,
     original: Message[StreamPayload],
+    boundary: ErrorBoundary,
 ) -> ErrorEnvelope[StreamPayload]:
+    """Wrap a failed message as an error envelope and close its trace.
+
+    This is where the *original* message dies: what continues downstream is the
+    envelope, whose onward journey is the envelope's own life, correlated by
+    the trace id it inherited. Modelling it as the original continuing would
+    claim a message survived its own failure.
+    """
+    open_terminal_span(
+        boundary.observer,
+        original.meta,
+        TerminalReason.ERROR_ENVELOPE,
+        attributes={"flow": boundary.flow, "error.kind": kind.value, "error.reason": reason},
+    ).end()
     snapshot = snapshot_message(original)
     payload_type = original.payload.__class__.loom_message_type()
     return ErrorEnvelope(
@@ -57,6 +88,7 @@ def _execute_in_boundary(
     classify: Callable[[Exception], ErrorKind],
     original: Message[StreamPayload],
     fn: Callable[[], Message[StreamPayload]],
+    boundary: ErrorBoundary,
 ) -> NodeResult:
     """Execute one message node and capture failures as error envelopes."""
     try:
@@ -64,13 +96,14 @@ def _execute_in_boundary(
     except Exception as exc:
         kind = classify(exc)
         _log_boundary_error(kind, exc, original)
-        return _build_error_envelope(kind, str(exc), original)
+        return _build_error_envelope(kind, str(exc), original, boundary)
 
 
 def _execute_batch_in_boundary(
     classify: Callable[[Exception], ErrorKind],
     originals: Sequence[Message[StreamPayload]],
     fn: Callable[[], Sequence[NodeResult]],
+    boundary: ErrorBoundary,
 ) -> list[NodeResult]:
     """Execute one batch node and capture failures as per-message envelopes."""
     try:
@@ -79,7 +112,7 @@ def _execute_batch_in_boundary(
         kind = classify(exc)
         if originals:
             _log_boundary_error(kind, exc, originals[0], batch_size=len(originals))
-        return [_build_error_envelope(kind, str(exc), message) for message in originals]
+        return [_build_error_envelope(kind, str(exc), message, boundary) for message in originals]
 
 
 def _split_node_result(

@@ -10,7 +10,7 @@ from confluent_kafka import Consumer as _Consumer
 from confluent_kafka import Message as _RawMessage
 from confluent_kafka import TopicPartition
 
-from loom.core.observability.event import LifecycleEvent, Scope
+from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.kafka._config import ConsumerSettings
 from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
@@ -157,16 +157,7 @@ class KafkaConsumerClient:
         if message is None:
             return None
         record = _checked_record(message)
-        if self._obs is not None:
-            self._obs.emit(
-                LifecycleEvent.end(
-                    scope=Scope.TRANSPORT,
-                    name="kafka_consume",
-                    trace_id=_header_trace_id(record.headers),
-                    correlation_id=_header_correlation_id(record.headers),
-                    meta={"topic": record.topic},
-                )
-            )
+        self._observe_birth(record)
         return record
 
     def consume_batch(self, max_records: int) -> list[KafkaRecord[bytes]]:
@@ -200,8 +191,33 @@ class KafkaConsumerClient:
                 raise KafkaPollError(str(error))
             if message.value() is None:
                 continue
-            records.append(_to_record(message))
+            record = _to_record(message)
+            self._observe_birth(record)
+            records.append(record)
         return records
+
+    def _observe_birth(self, record: KafkaRecord[bytes]) -> None:
+        """Open and close the span where one message enters the system.
+
+        This is the message's birth: the first span of its trace, opened in the
+        trace id the producer put on the wire, so the story of this message
+        continues the story of whatever produced it. It was previously an
+        unpaired ``END`` event, which no tracing backend can render as a span.
+
+        The span is a root, and its trace id comes from the Kafka header rather
+        than from the ambient context, which is what makes a trace continuous
+        across services.
+        """
+        if self._obs is None:
+            return
+        self._obs.open_span(
+            Scope.TRANSPORT,
+            "kafka_consume",
+            trace_id=_header_trace_id(record.headers),
+            correlation_id=_header_correlation_id(record.headers),
+            root=True,
+            topic=record.topic,
+        ).end()
 
     def commit(self, *, asynchronous: bool = False) -> None:
         """Commit consumed offsets.

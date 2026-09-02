@@ -19,14 +19,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from datetime import timedelta
-from time import perf_counter
 from typing import Any
 
 import bytewax.testing as bytewax_testing
 from bytewax.outputs import Sink
 
 from loom.core.config import ConfigContext
-from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import generate_trace_id
 from loom.streaming import Message, MessageMeta
@@ -166,37 +165,21 @@ class StreamingTestRunner:
             terminal_sinks=terminal_sinks,
             error_sinks=error_sinks,
         )
-        run_id = generate_trace_id()
-        self._observability_runtime.emit(
-            LifecycleEvent.start(
-                scope=Scope.POLL_CYCLE,
-                name=self._plan.name,
-                id=run_id,
-                meta={"node_count": len(self._plan.nodes)},
-            )
-        )
-        started_at = perf_counter()
-        status = LifecycleStatus.FAILURE
         try:
-            bytewax_testing.run_main(
-                prepared.dataflow,
-                epoch_interval=timedelta(milliseconds=1),
-            )  # type: ignore[no-untyped-call]
-            status = LifecycleStatus.SUCCESS
-        except Exception:
-            status = LifecycleStatus.FAILURE
-            raise
+            # A real span, like the production runner: a harness that emitted a
+            # different event shape than the runtime it stands in for would let
+            # tracing regressions pass their own tests.
+            with self._observability_runtime.span(
+                Scope.POLL_CYCLE,
+                self._plan.name,
+                id=generate_trace_id(),
+                node_count=len(self._plan.nodes),
+            ):
+                bytewax_testing.run_main(
+                    prepared.dataflow,
+                    epoch_interval=timedelta(milliseconds=1),
+                )  # type: ignore[no-untyped-call]
         finally:
-            duration_ms = int((perf_counter() - started_at) * 1000)
-            self._observability_runtime.emit(
-                LifecycleEvent.end(
-                    scope=Scope.POLL_CYCLE,
-                    name=self._plan.name,
-                    id=run_id,
-                    duration_ms=duration_ms,
-                    status=status,
-                )
-            )
             logger.debug("shutting_down_test_runner")
             prepared.shutdown()
 

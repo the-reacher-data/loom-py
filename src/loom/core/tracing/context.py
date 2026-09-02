@@ -18,6 +18,8 @@ Rules:
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 
 _trace_id: ContextVar[str | None] = ContextVar("_trace_id", default=None)
@@ -61,6 +63,35 @@ def reset_trace_id(token: Token[str | None]) -> None:
         token: Token returned by the corresponding :func:`set_trace_id` call.
     """
     _trace_id.reset(token)
+
+
+@contextmanager
+def active_trace_id(tid: str | None) -> Iterator[None]:
+    """Activate a trace identifier for the duration of a block.
+
+    ``None`` leaves the context untouched, so a caller that may or may not
+    know the trace does not have to branch.
+
+    Args:
+        tid: Trace identifier to activate, or ``None`` to leave the current one
+            in place.
+
+    Yields:
+        ``None``, with *tid* active.
+
+    Example::
+
+        with active_trace_id(message.meta.trace_id):
+            handle(message)
+    """
+    if tid is None:
+        yield
+        return
+    token = set_trace_id(tid)
+    try:
+        yield
+    finally:
+        reset_trace_id(token)
 
 
 def generate_trace_id() -> str:

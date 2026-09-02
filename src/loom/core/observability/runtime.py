@@ -15,13 +15,13 @@ is what lets Loom coexist with a host SDK without owning anything global.
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from functools import partial
 from time import perf_counter
 from typing import Self
 
-from opentelemetry.trace import NoOpTracer, Span, Tracer
+from opentelemetry.trace import Link, NoOpTracer, Span, Tracer
 
 from loom.core.logger.config import configure_logging_from_values
 from loom.core.observability.config import (
@@ -40,6 +40,7 @@ from loom.core.observability.span import (
     elapsed_ms,
 )
 from loom.core.observability.topology import ROOT_SCOPES
+from loom.core.tracing.context import active_trace_id
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
 
 try:
@@ -168,6 +169,7 @@ class ObservabilityRuntime:
         _scrape_port: int | None = None,
         _scrape_addr: str = "127.0.0.1",
         _span_flusher: SpanFlusher | None = None,
+        _max_span_links: int = 128,
     ) -> None:
         self._observers = tuple(observers)
         self._tracer: Tracer = tracer if tracer is not None else NoOpTracer()
@@ -175,6 +177,7 @@ class ObservabilityRuntime:
         self._scrape_addr = _scrape_addr
         self._scrape_server_started = False
         self._span_flusher = _span_flusher
+        self._max_span_links = _max_span_links
         self._log = logging.getLogger(__name__)
 
     @property
@@ -186,6 +189,11 @@ class ObservabilityRuntime:
     def tracer(self) -> Tracer:
         """Return the tracer every span of this runtime is opened on."""
         return self._tracer
+
+    @property
+    def max_span_links(self) -> int:
+        """Return the upper bound on the links one batch span may carry."""
+        return self._max_span_links
 
     def start_scrape_server(self) -> None:
         """Start a standalone Prometheus HTTP scrape server on the configured port.
@@ -290,12 +298,15 @@ class ObservabilityRuntime:
             # Both exception flags default to True: leaving them implicit would
             # record the exception and set the status twice, once here and once
             # in the SDK's own exit handler.
-            with self._tracer.start_as_current_span(
-                start_event.otel_span_name(),
-                attributes=start_event.otel_attributes(),
-                record_exception=False,
-                set_status_on_exception=False,
-            ) as otel_span:
+            with (
+                active_trace_id(trace_id),
+                self._tracer.start_as_current_span(
+                    start_event.otel_span_name(),
+                    attributes=start_event.otel_attributes(),
+                    record_exception=False,
+                    set_status_on_exception=False,
+                ) as otel_span,
+            ):
                 self.emit(start_event)
                 try:
                     yield
@@ -317,6 +328,10 @@ class ObservabilityRuntime:
         *,
         trace_id: str | None = None,
         correlation_id: str | None = None,
+        links: Sequence[Link] | None = None,
+        start_time_ns: int | None = None,
+        root: bool = False,
+        attributes: Mapping[str, object] | None = None,
         **meta: object,
     ) -> LoomSpan:
         """Open a span whose end does not share a lexical scope with its start.
@@ -333,7 +348,18 @@ class ObservabilityRuntime:
                 :class:`~loom.core.observability.event.Scope`.
             name: Operation name within the scope.
             trace_id: Trace identifier propagated to every event of the span.
+                When it is a 32-character hex id and the span turns out to be a
+                root, it also becomes the OTEL trace id.
             correlation_id: Business lineage identifier propagated likewise.
+            links: Spans this one fans in from — a batch operation has N
+                parents, which a trace tree cannot express.
+            start_time_ns: Epoch nanoseconds the work really started at, for a
+                span opened after the fact.
+            root: Open the span with no parent, whatever the ambient context
+                is. A message's own span must land in the message's trace, not
+                in the trace of the batch or node that happens to enclose it.
+            attributes: Extra fields merged into ``**meta``, for keys that are
+                not valid Python identifiers such as ``terminal.reason``.
             **meta: Domain-specific fields forwarded as top-level keys in ``event.meta``.
 
         Returns:
@@ -349,14 +375,22 @@ class ObservabilityRuntime:
                     yield frame
         """
         identity = SpanIdentity.build(
-            scope, name, trace_id=trace_id, correlation_id=correlation_id, meta=meta
+            scope,
+            name,
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            meta={**meta, **(attributes or {})},
         )
-        return LoomSpan.open(
-            tracer=self._tracer,
-            identity=identity,
-            emit=self.emit,
-            on_closed=partial(self._flush_root, scope),
-        )
+        with active_trace_id(trace_id):
+            return LoomSpan.open(
+                tracer=self._tracer,
+                identity=identity,
+                emit=self.emit,
+                on_closed=partial(self._flush_root, scope),
+                links=links,
+                start_time_ns=start_time_ns,
+                root=root,
+            )
 
     def _close_span(self, otel_span: Span, event: LifecycleEvent) -> None:
         """Stamp the outcome on the span and emit its closing event."""
@@ -414,6 +448,9 @@ class ObservabilityRuntime:
             _scrape_port=scrape_port,
             _scrape_addr=scrape_addr,
             _span_flusher=flusher,
+            _max_span_links=(
+                config.otel.config.max_span_links if config.otel.config is not None else 128
+            ),
         )
 
     @classmethod

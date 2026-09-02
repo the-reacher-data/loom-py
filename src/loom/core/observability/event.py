@@ -7,8 +7,16 @@ from enum import StrEnum
 from typing import Self
 
 import msgspec
+from opentelemetry.util.types import AttributeValue
 
 from loom.core.model import LoomFrozenStruct
+
+
+def _as_attribute(value: object) -> AttributeValue:
+    """Coerce one meta value to something OTEL can store."""
+    if isinstance(value, bool | int | float | str):
+        return value
+    return str(value)
 
 
 class EventKind(StrEnum):
@@ -61,6 +69,34 @@ class Scope(StrEnum):
 
     # Admin
     MAINTENANCE = "maintenance"
+
+    # End of a message's life
+    TERMINAL = "terminal"
+
+
+class TerminalReason(StrEnum):
+    """Why a streaming message stopped existing.
+
+    A message is traceable from ingestion, through every node, to its death.
+    Death is the part that used to be invisible: a message written to a sink,
+    turned into an error envelope, or expanded to zero rows simply stopped
+    appearing, with nothing to query. Each value names one of those endings and
+    becomes the ``name`` of a :attr:`Scope.TERMINAL` span, so the last span of
+    a trace says how the message ended.
+
+    The set is closed on purpose: a union that governs behaviour has to be
+    closed and tagged, and "some other ending" is not an ending anyone can act
+    on.
+    """
+
+    SINK_WRITE = "sink_write"
+    """Written to a storage sink or an outbound topic."""
+
+    ERROR_ENVELOPE = "error_envelope"
+    """Converted to an error envelope and routed to an error sink or DLQ."""
+
+    DROPPED_NO_ROUTE = "dropped_no_route"
+    """Expanded or routed to zero rows, so nothing downstream ever sees it."""
 
 
 class LifecycleEvent(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -179,16 +215,23 @@ class LifecycleEvent(LoomFrozenStruct, frozen=True, kw_only=True):
         """Return the canonical OTEL span name for this event."""
         return f"{self.scope.value}:{self.name}"
 
-    def otel_attributes(self) -> dict[str, str]:
-        """Return OTEL span attributes derived from this event."""
-        attrs: dict[str, str] = {"scope": self.scope.value, "name": self.name}
+    def otel_attributes(self) -> dict[str, AttributeValue]:
+        """Return OTEL span attributes derived from this event.
+
+        Meta values that OTEL already accepts — ``bool``, ``int``, ``float``,
+        ``str`` — are passed through unchanged so a backend can filter on them
+        (``loom.batch_size > 100``, ``loom.links_truncated = true``). Anything
+        else is stringified, because an attribute of an unsupported type is
+        dropped by the SDK with a warning rather than exported.
+        """
+        attrs: dict[str, AttributeValue] = {"scope": self.scope.value, "name": self.name}
         if self.trace_id:
             attrs["trace_id"] = self.trace_id
         if self.correlation_id:
             attrs["correlation_id"] = self.correlation_id
         if self.id:
             attrs["id"] = self.id
-        attrs.update({k: str(v) for k, v in self.meta.items()})
+        attrs.update({key: _as_attribute(value) for key, value in self.meta.items()})
         return attrs
 
 
@@ -197,4 +240,5 @@ __all__ = [
     "LifecycleEvent",
     "LifecycleStatus",
     "Scope",
+    "TerminalReason",
 ]

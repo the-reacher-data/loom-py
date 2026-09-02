@@ -9,6 +9,7 @@ import pytest
 
 from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import _error_boundary
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message, MessageMeta
@@ -47,11 +48,16 @@ def _raise(exc: Exception) -> NoReturn:
     raise exc
 
 
+def _boundary() -> _error_boundary.ErrorBoundary:
+    return _error_boundary.ErrorBoundary(observer=ObservabilityRuntime.noop(), flow="orders")
+
+
 def test_execute_in_boundary_returns_message_on_success() -> None:
     result = _error_boundary._execute_in_boundary(
         _error_boundary._classify_task,
         _message(),
         lambda: _message("ok"),
+        _boundary(),
     )
 
     assert isinstance(result, Message)
@@ -64,6 +70,7 @@ def test_execute_in_boundary_maps_domain_error_to_business() -> None:
         _error_boundary._classify_task,
         _message(),
         lambda: _raise(RuleViolation("field", "boom")),
+        _boundary(),
     )
 
     assert isinstance(result, ErrorEnvelope)
@@ -84,6 +91,7 @@ def test_execute_in_boundary_logs_managed_domain_error(monkeypatch: pytest.Monke
         _error_boundary._classify_task,
         _message(),
         lambda: _raise(RuleViolation("field", "boom")),
+        _boundary(),
     )
 
     assert ("warning", "managed_boundary_error") in logger.calls
@@ -96,6 +104,7 @@ def test_execute_in_boundary_logs_unhandled_runtime_error(monkeypatch: pytest.Mo
         _error_boundary._classify_task,
         _message(),
         lambda: _raise(RuntimeError("boom")),
+        _boundary(),
     )
 
     assert ("exception", "unhandled_boundary_error") in logger.calls
@@ -108,6 +117,7 @@ def test_execute_batch_in_boundary_returns_per_message_envelopes_on_failure() ->
         _error_boundary._classify_routing,
         originals,
         lambda: _raise(RuntimeError("routing-boom")),
+        _boundary(),
     )
 
     envelopes = [item for item in result if isinstance(item, ErrorEnvelope)]

@@ -1,12 +1,12 @@
-"""Characterisation of the storage sink's batch trace attribution — CURRENT behaviour.
+"""The storage sink's batch trace attribution — one death per message.
 
-``_StorageSinkPartition.write_batch`` labels the whole epoch flush with
-``items[0].meta.trace_id``. One arbitrary message donates its trace to N
-messages: that one message gets a WRITE span it did not cause alone, and the
-other N-1 get no write span at all.
+``_StorageSinkPartition.write_batch`` used to label the whole epoch flush with
+``items[0].meta.trace_id``: one arbitrary message donated its trace to N, and
+the other N-1 got no write span at all.
 
-The assertions below pin that defect on purpose. A later PR changes the
-attribution; this file is where that change has to show up.
+It now emits the N+1 shape. Every message gets its own ``terminal:sink_write``
+span in its own trace, and the flush gets one ``Scope.WRITE`` span in a trace
+of its own. These assertions are the inverse of the ones this file used to pin.
 """
 
 from __future__ import annotations
@@ -40,83 +40,145 @@ class _RecordingObserver:
 
 
 class _RecordingPartition:
-    def __init__(self) -> None:
+    def __init__(self, *, fail: bool = False) -> None:
         self.batches: list[Sequence[Any]] = []
+        self._fail = fail
 
     def write_batch(self, items: Sequence[Any]) -> None:
         self.batches.append(list(items))
+        if self._fail:
+            raise RuntimeError("sink down")
 
     def close(self) -> None:
         return None
 
 
-def _message(index: int) -> Message[Result]:
+def _message(index: int, *, trace_id: str | None = "") -> Message[Result]:
+    resolved = _TRACE_IDS[index] if trace_id == "" else trace_id
     return Message(
         payload=Result(value=f"row-{index}"),
-        meta=MessageMeta(message_id=f"msg-{index}", trace_id=_TRACE_IDS[index]),
+        meta=MessageMeta(message_id=f"msg-{index}", trace_id=resolved),
     )
 
 
+def _sink(partition: Any, recorder: _RecordingObserver) -> _storage._StorageSinkPartition:
+    return _storage._StorageSinkPartition(
+        partition,
+        node_name="results_sink",
+        flow_name="orders",
+        flow_run_id="run-1",
+        observer=ObservabilityRuntime([recorder]),
+    )
+
+
+def _of_scope(recorder: _RecordingObserver, scope: Scope) -> list[LifecycleEvent]:
+    return [event for event in recorder.events if event.scope is scope]
+
+
 class TestStorageBatchTraceAttribution:
-    def test_write_span_takes_the_first_message_trace_and_drops_the_rest(self) -> None:
+    def test_every_message_gets_its_own_terminal_span_in_its_own_trace(self) -> None:
         recorder = _RecordingObserver()
         partition = _RecordingPartition()
-        sink = _storage._StorageSinkPartition(
-            partition,
-            node_name="results_sink",
-            flow_name="orders",
-            observer=ObservabilityRuntime([recorder]),
+
+        _sink(partition, recorder).write_batch([_message(0), _message(1), _message(2)])
+
+        assert partition.batches == [[Result(value=f"row-{i}") for i in range(3)]]
+
+        terminals = _of_scope(recorder, Scope.TERMINAL)
+        assert [event.kind for event in terminals] == [
+            EventKind.START,
+            EventKind.END,
+            EventKind.START,
+            EventKind.END,
+            EventKind.START,
+            EventKind.END,
+        ]
+        # One death per message, each in that message's own trace — the exact
+        # inverse of the old behaviour, where two of the three had no span.
+        assert [event.trace_id for event in terminals] == [
+            _TRACE_IDS[0],
+            _TRACE_IDS[0],
+            _TRACE_IDS[1],
+            _TRACE_IDS[1],
+            _TRACE_IDS[2],
+            _TRACE_IDS[2],
+        ]
+        assert {event.name for event in terminals} == {"sink_write"}
+        for event in terminals:
+            assert event.meta["terminal.reason"] == "sink_write"
+            assert event.meta["sink"] == "results_sink"
+
+    def test_the_batch_span_belongs_to_no_message_and_names_the_batch(self) -> None:
+        recorder = _RecordingObserver()
+
+        _sink(_RecordingPartition(), recorder).write_batch([_message(0), _message(1), _message(2)])
+
+        writes = _of_scope(recorder, Scope.WRITE)
+        assert [event.kind for event in writes] == [EventKind.START, EventKind.END]
+        batch_trace = writes[0].trace_id
+        assert batch_trace is not None
+        assert batch_trace not in _TRACE_IDS, (
+            "the batch borrowed a message's trace and told it a story about the others"
+        )
+        assert writes[0].meta["batch_size"] == 3
+        assert writes[0].meta["loom.batch_size"] == 3
+        assert writes[0].meta["loom.flow_run_id"] == "run-1"
+
+        # Navigable both ways: every terminal carries the batch id the batch
+        # span is identified by.
+        batch_ids = {event.meta["loom.batch_id"] for event in _of_scope(recorder, Scope.TERMINAL)}
+        assert batch_ids == {batch_trace}
+
+    def test_an_untraced_message_does_not_borrow_anybody_elses_trace(self) -> None:
+        recorder = _RecordingObserver()
+
+        _sink(_RecordingPartition(), recorder).write_batch(
+            [_message(0, trace_id=None), _message(1)]
         )
 
-        sink.write_batch([_message(0), _message(1), _message(2)])
+        terminals = _of_scope(recorder, Scope.TERMINAL)
+        assert [event.trace_id for event in terminals] == [
+            None,
+            None,
+            _TRACE_IDS[1],
+            _TRACE_IDS[1],
+        ], "an untraced message minted an id and claimed a trace it does not belong to"
+        assert [event.meta["loom.message_id"] for event in terminals] == [
+            "msg-0",
+            "msg-0",
+            "msg-1",
+            "msg-1",
+        ]
 
-        expected_payloads = [Result(value=f"row-{i}") for i in range(3)]
-        assert partition.batches == [expected_payloads]
+    def test_a_failed_write_still_closes_every_message_and_re_raises(self) -> None:
+        recorder = _RecordingObserver()
 
-        write_events = [event for event in recorder.events if event.scope is Scope.WRITE]
-        assert [event.kind for event in write_events] == [EventKind.START, EventKind.END]
+        with pytest.raises(RuntimeError, match="sink down"):
+            _sink(_RecordingPartition(fail=True), recorder).write_batch([_message(0), _message(1)])
 
-        # BROKEN TODAY: three messages, three traces, one WRITE span — and it is
-        # attributed to items[0]. Messages 1 and 2 have no write span anywhere,
-        # so their story ends at the node that produced them. A later PR changes
-        # this attribution and must invert these assertions.
-        emitted_trace_ids = {event.trace_id for event in recorder.events}
-        assert emitted_trace_ids == {_TRACE_IDS[0]}
-        assert _TRACE_IDS[1] not in emitted_trace_ids
-        assert _TRACE_IDS[2] not in emitted_trace_ids
-        assert write_events[0].meta["batch_size"] == 3
+        terminals = _of_scope(recorder, Scope.TERMINAL)
+        assert [event.kind for event in terminals] == [
+            EventKind.START,
+            EventKind.ERROR,
+            EventKind.START,
+            EventKind.ERROR,
+        ]
+        assert [event.trace_id for event in terminals] == [
+            _TRACE_IDS[0],
+            _TRACE_IDS[0],
+            _TRACE_IDS[1],
+            _TRACE_IDS[1],
+        ]
+        assert [event.kind for event in _of_scope(recorder, Scope.WRITE)] == [
+            EventKind.START,
+            EventKind.ERROR,
+        ]
 
-    def test_missing_first_trace_mints_a_fresh_id_unrelated_to_every_message(self) -> None:
-        def _write_once() -> LifecycleEvent:
-            recorder = _RecordingObserver()
-            untraced = Message(
-                payload=Result(value="row-0"),
-                meta=MessageMeta(message_id="msg-0", trace_id=None),
-            )
-            sink = _storage._StorageSinkPartition(
-                _RecordingPartition(),
-                node_name="results_sink",
-                flow_name="orders",
-                observer=ObservabilityRuntime([recorder]),
-            )
-            sink.write_batch([untraced, _message(1)])
+    def test_an_empty_epoch_stays_silent(self) -> None:
+        recorder = _RecordingObserver()
+        partition = _RecordingPartition()
 
-            write_events = [event for event in recorder.events if event.scope is Scope.WRITE]
-            assert [event.kind for event in write_events] == [EventKind.START, EventKind.END]
-            return write_events[0]
+        _sink(partition, recorder).write_batch([])
 
-        first = _write_once()
-        second = _write_once()
-
-        # BROKEN TODAY: when items[0] carries no trace, ``uuid4().hex`` is minted
-        # per call, so the single WRITE span belongs to no message in the batch —
-        # not even the one that donated its position, and message 1's own trace
-        # is nowhere in the emitted events. The id is random rather than derived
-        # from the batch, so two identical batches get two unrelated stories.
-        for event in (first, second):
-            assert event.trace_id is not None
-            assert len(event.trace_id) == 32
-            int(event.trace_id, 16)
-            assert event.trace_id not in _TRACE_IDS
-            assert event.trace_id != "msg-0"
-        assert first.trace_id != second.trace_id
+        assert partition.batches == [[]]
+        assert recorder.events == []

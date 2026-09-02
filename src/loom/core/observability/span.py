@@ -18,13 +18,14 @@ Only :class:`LoomSpan` is public here. ``SpanIdentity`` and
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Self
 
-from opentelemetry.trace import Span, StatusCode, Tracer, use_span
+from opentelemetry.context import Context
+from opentelemetry.trace import Link, Span, SpanContext, StatusCode, Tracer, use_span
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 
@@ -179,6 +180,9 @@ class LoomSpan:
         identity: SpanIdentity,
         emit: Callable[[LifecycleEvent], None],
         on_closed: Callable[[], None],
+        links: Sequence[Link] | None = None,
+        start_time_ns: int | None = None,
+        root: bool = False,
     ) -> Self:
         """Start the OTEL span and emit its ``START`` event.
 
@@ -192,6 +196,14 @@ class LoomSpan:
             emit: Sink for the lifecycle events of this span.
             on_closed: Called once the span has ended, so its owner can drain
                 the exporter.
+            links: Spans this one fans in from. A batch operation has N
+                parents and a trace is a tree, so fan-in is expressed as links,
+                not as parenthood.
+            start_time_ns: Epoch nanoseconds the span really started at, for a
+                span opened after the work it describes has already run.
+                Defaults to now.
+            root: Start the span with an empty context, so it has no parent
+                whatever the ambient context holds.
 
         Returns:
             The open handle. The caller owns closing it.
@@ -200,6 +212,9 @@ class LoomSpan:
         span = tracer.start_span(
             start_event.otel_span_name(),
             attributes=start_event.otel_attributes(),
+            links=list(links) if links is not None else None,
+            start_time=start_time_ns,
+            context=Context() if root else None,
         )
         handle = cls(span=span, identity=identity, emit=emit, on_closed=on_closed)
         with use_span(
@@ -225,27 +240,73 @@ class LoomSpan:
             set_status_on_exception=False,
         )
 
-    def end(self) -> None:
+    @property
+    def span_context(self) -> SpanContext:
+        """Return the OTEL context of this span, for linking to it.
+
+        A batch span links back to the spans that fanned into it, and those
+        contexts must be read from spans that genuinely exist rather than
+        fabricated.
+        """
+        return self._span.get_span_context()
+
+    def is_recording(self) -> bool:
+        """Return whether this span will be exported.
+
+        A sampler that dropped the span makes it non-recording. Linking to a
+        span nobody exported advertises an edge to nothing, so callers building
+        links must filter on this.
+        """
+        return self._span.is_recording()
+
+    def end(self, *, end_time_ns: int | None = None, duration_ms: float | None = None) -> None:
         """Close the span as a success and emit its ``END`` event.
 
         Calling this after the span is already closed does nothing.
-        """
-        self._close(self._identity.end_event(elapsed_ms(self._started)))
 
-    def fail(self, exc: BaseException) -> None:
+        Args:
+            end_time_ns: Epoch nanoseconds the work really ended at, for a span
+                opened after the fact with an explicit start time. Defaults to
+                now.
+            duration_ms: Duration reported on the ``END`` event. Defaults to
+                the wall-clock time this handle has been open, which is wrong
+                exactly when *end_time_ns* is needed.
+        """
+        self._close(
+            self._identity.end_event(self._duration(duration_ms)),
+            end_time_ns=end_time_ns,
+        )
+
+    def fail(
+        self,
+        exc: BaseException,
+        *,
+        end_time_ns: int | None = None,
+        duration_ms: float | None = None,
+    ) -> None:
         """Close the span as a failure, recording *exc*, and emit ``ERROR``.
 
         Calling this after the span is already closed does nothing.
 
         Args:
             exc: Failure that ended the work this span covers.
+            end_time_ns: Epoch nanoseconds the work really ended at.
+            duration_ms: Duration reported on the ``ERROR`` event.
         """
         if self._closed:
             return
         self._span.record_exception(exc)
-        self._close(self._identity.error_event(exc, elapsed_ms(self._started)))
+        self._close(
+            self._identity.error_event(exc, self._duration(duration_ms)),
+            end_time_ns=end_time_ns,
+        )
 
-    def _close(self, event: LifecycleEvent) -> None:
+    def _duration(self, duration_ms: float | None) -> float:
+        if duration_ms is not None:
+            return duration_ms
+        return elapsed_ms(self._started)
+
+    def _close(self, event: LifecycleEvent, *, end_time_ns: int | None = None) -> None:
         if self._closed:
             return
         self._closed = True
@@ -254,7 +315,7 @@ class LoomSpan:
             self._span, end_on_exit=False, record_exception=False, set_status_on_exception=False
         ):
             self._emit(event)
-        self._span.end()
+        self._span.end(end_time=end_time_ns)
         self._on_closed()
 
 

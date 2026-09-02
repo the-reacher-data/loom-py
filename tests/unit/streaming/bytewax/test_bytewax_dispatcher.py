@@ -16,6 +16,7 @@ from loom.core.errors.errors import RuleViolation
 from loom.core.model import LoomStruct
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.streaming.bytewax._error_boundary import ErrorBoundary
 from loom.streaming.bytewax.handlers import _shared as _shared
 from loom.streaming.bytewax.handlers import dispatcher as _dispatcher
 from loom.streaming.bytewax.handlers import routing as _routing
@@ -33,6 +34,11 @@ from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, R
 from loom.streaming.nodes._with import WithAsync
 
 pytestmark = pytest.mark.bytewax
+
+
+def _boundary() -> ErrorBoundary:
+    """Build the error boundary the production wiring passes to scoped nodes."""
+    return ErrorBoundary(observer=ObservabilityRuntime.noop(), flow="orders")
 
 
 class _Payload(LoomStruct):
@@ -89,7 +95,9 @@ class _RecordingObserver:
                 )
             )
         elif event.scope is Scope.NODE and event.kind is EventKind.ERROR:
-            error_type = (event.error or "Exception").split("(", 1)[0]
+            # ``error_type`` is a structured meta field now; the error text is
+            # ``str(exc)``, which no longer starts with the exception class.
+            error_type = str(event.meta.get("error_type", "Exception"))
             node_idx = cast(int, event.meta.get("node_idx", 0))
             self.events.append(
                 (
@@ -780,8 +788,9 @@ class TestWithAsyncBatch:
             deps: dict[str, object],
             timeout_ms: int | None,
             max_concurrency: int,
+            boundary: object,
         ) -> Any:
-            del inner_steps, sink_partition, deps, timeout_ms
+            del inner_steps, sink_partition, deps, timeout_ms, boundary
             calls["batch"] = [message.meta.message_id for message in messages]
             calls["max_concurrency"] = max_concurrency
             return asyncio.sleep(0, result=[])
@@ -840,6 +849,7 @@ class TestWithAsyncBatch:
             {},
             None,
             2,
+            _boundary(),
         )
 
         successes = [item for item in results if isinstance(item, Message)]
@@ -872,6 +882,7 @@ class TestWithAsyncBatch:
             {},
             None,
             2,
+            _boundary(),
         )
 
         assert len(results) == 2
@@ -904,6 +915,7 @@ class TestWithAsyncBatch:
             {},
             None,
             2,
+            _boundary(),
         )
 
         successes = [item for item in results if isinstance(item, Message)]
@@ -936,6 +948,7 @@ class TestWithAsyncBatch:
             {},
             None,
             1,
+            _boundary(),
         )
 
         successes = [item for item in results if isinstance(item, Message)]
