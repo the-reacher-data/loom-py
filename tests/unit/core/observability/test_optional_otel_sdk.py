@@ -21,6 +21,11 @@ _BLOCKED_PREFIXES = ("opentelemetry.sdk", "opentelemetry.exporter")
 
 _CORE_ROOT = Path(loom.__file__).parent / "core"
 
+# Modules that subclass or configure SDK types and therefore cannot defer their
+# own imports. They are safe only because nothing imports them at module scope,
+# which ``test_sdk_only_modules_are_never_imported_at_module_scope`` enforces.
+_SDK_ONLY_MODULES = frozenset({"otel_ids.py"})
+
 # Makes ``opentelemetry.sdk`` and the OTLP exporters unimportable for the rest
 # of the interpreter, reproducing a core-only install inside a fresh process.
 _BLOCKER_PREAMBLE = """
@@ -265,6 +270,8 @@ class TestCoreImportHygiene:
         scanned = sorted(_CORE_ROOT.rglob("*.py"))
         assert scanned, f"no source files found under {_CORE_ROOT}"
         for path in scanned:
+            if path.name in _SDK_ONLY_MODULES:
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in _module_scope_imports(tree):
                 for module in _imported_modules(node):
@@ -275,4 +282,28 @@ class TestCoreImportHygiene:
             "Modules under 'loom.core' must not import the OpenTelemetry SDK or the "
             "OTLP exporters at module scope — both are extras-only, so a core-only "
             f"install would fail to import. Offenders: {offenders}"
+        )
+
+    def test_sdk_only_modules_are_never_imported_at_module_scope(self) -> None:
+        """The exemption above holds only while nothing imports those modules eagerly.
+
+        ``otel_ids`` subclasses an SDK type, so it cannot defer its own
+        imports. It stays harmless only because every reference to it sits
+        inside a function body. If one moves to module scope, the exemption
+        silently becomes a core-only import failure — which is what this pins.
+        """
+        exempt_paths = {
+            f"loom.core.observability.{name.removesuffix('.py')}" for name in _SDK_ONLY_MODULES
+        }
+        offenders: list[str] = []
+        for path in sorted(_CORE_ROOT.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in _module_scope_imports(tree):
+                for module in _imported_modules(node):
+                    if module in exempt_paths:
+                        offenders.append(f"{path.name}:{node.lineno} -> {module}")
+
+        assert not offenders, (
+            "SDK-only modules must be imported from inside a function so a core-only "
+            f"install never loads them. Offenders: {offenders}"
         )

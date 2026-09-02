@@ -23,6 +23,7 @@ from bytewax.outputs import DynamicSink, StatelessSinkPartition
 from loom.core.async_bridge import AsyncBridge
 from loom.core.logger import get_logger
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.tracing.context import generate_trace_id
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._resource_manager import ResourceManager
@@ -154,6 +155,7 @@ def build_dataflow_with_shutdown(
         plan=plan,
         bridge=resolved_bridge,
         flow_runtime=resolved_runtime,
+        flow_run_id=generate_trace_id(),
         source=source,
         sink=sink,
         terminal_sinks=terminal_sinks,
@@ -222,6 +224,7 @@ class _BuildContext:
         "bridge",
         "commit_tracker",
         "flow_runtime",
+        "flow_run_id",
         "source",
         "sink",
         "error_sinks",
@@ -235,6 +238,7 @@ class _BuildContext:
         plan: CompiledPlan,
         bridge: AsyncBridge | None,
         flow_runtime: ObservabilityRuntime,
+        flow_run_id: str,
         source: Any | None = None,
         sink: Any | None = None,
         terminal_sinks: Mapping[tuple[int, ...], Any] | None = None,
@@ -245,6 +249,7 @@ class _BuildContext:
         self.bridge = bridge
         self.commit_tracker = commit_tracker
         self.flow_runtime = flow_runtime
+        self.flow_run_id = flow_run_id
         self.source = source
         self.sink = sink
         self.terminal_sinks = terminal_sinks or {}

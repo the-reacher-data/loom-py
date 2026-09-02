@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from time import perf_counter
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from bytewax.dataflow import Dataflow
@@ -18,7 +17,7 @@ from loom.core.async_bridge import AsyncBridge, build_backend_options
 from loom.core.config import ConfigContext, ConfigKey
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
-from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import shutdown_runner
 from loom.core.tracing import generate_trace_id
@@ -315,41 +314,25 @@ class StreamingRunner:
                 "(from_yaml / from_context / from_dict) before calling run."
             )
         resolved_runtime = runtime or self._runtime
-        run_id = generate_trace_id()
-        self._observability_runtime.emit(
-            LifecycleEvent.start(
-                scope=Scope.POLL_CYCLE,
-                name=self._plan.name,
-                id=run_id,
-                meta={"node_count": len(self._plan.nodes)},
-            )
-        )
-        started_at = perf_counter()
-        status = LifecycleStatus.FAILURE
         try:
-            self._observability_runtime.start_scrape_server()
-            prepared = self.prepare_run(runtime=resolved_runtime)
+            # One span, not an unpaired START/END pair: the run is a unit of
+            # work with two ends, so it belongs in a span that also opens the
+            # matching OTEL span and drains the exporter when it closes.
             with self._observability_runtime.span(
-                Scope.FLOW,
+                Scope.POLL_CYCLE,
                 self._plan.name,
+                id=generate_trace_id(),
                 node_count=len(self._plan.nodes),
             ):
-                cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
-            status = LifecycleStatus.SUCCESS
-        except Exception:
-            status = LifecycleStatus.FAILURE
-            raise
+                self._observability_runtime.start_scrape_server()
+                prepared = self.prepare_run(runtime=resolved_runtime)
+                with self._observability_runtime.span(
+                    Scope.FLOW,
+                    self._plan.name,
+                    node_count=len(self._plan.nodes),
+                ):
+                    cli_main(prepared.dataflow, **_runtime_kwargs(resolved_runtime))  # type: ignore[no-untyped-call]
         finally:
-            duration_ms = int((perf_counter() - started_at) * 1000)
-            self._observability_runtime.emit(
-                LifecycleEvent.end(
-                    scope=Scope.POLL_CYCLE,
-                    name=self._plan.name,
-                    id=run_id,
-                    duration_ms=duration_ms,
-                    status=status,
-                )
-            )
             shutdown_runner(self)
 
     def shutdown(self) -> None:

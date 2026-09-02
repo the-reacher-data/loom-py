@@ -37,6 +37,7 @@ _ERR_MISSING_SDK = (
     "Install it with: pip install 'loom-py[etl-otel]'"
 )
 _V1_LOGS_SUFFIX = "/v1/logs"
+_log = logging.getLogger(__name__)
 
 
 def _load_span_exporter_cls(protocol: str) -> type[Any]:
@@ -102,11 +103,16 @@ def _load_log_exporter_cls(protocol: str) -> type[Any]:
 def build_tracer(config: OtelConfig) -> tuple[Tracer, SpanFlusher | None]:
     """Build the tracer Loom opens its spans on, and the exporter to flush.
 
-    An empty endpoint shares whatever provider the host process installed —
-    a proxy that resolves lazily when there is none yet — and needs no SDK. A
-    configured endpoint builds a ``TracerProvider`` private to Loom, which is
-    never installed globally, so Loom exports its own spans without taking
-    ownership of the process-wide provider.
+    Where spans go and what trace ids they get are orthogonal. ``endpoint``
+    chooses the first: a configured endpoint builds a ``TracerProvider``
+    private to Loom, never installed globally, so Loom exports its own spans
+    without taking ownership of the process-wide provider; an empty endpoint
+    shares whatever provider the host installed — a proxy that resolves lazily
+    when there is none yet.
+
+    ``adopt_host_id_generator`` chooses the second when the provider is not
+    Loom's. Loom's own provider always gets the generator, which is what makes
+    a message's trace id the OTEL trace id from ingestion to death.
 
     Args:
         config: OTLP exporter configuration.
@@ -121,7 +127,7 @@ def build_tracer(config: OtelConfig) -> tuple[Tracer, SpanFlusher | None]:
     """
     config.validate()
     if not config.endpoint.strip():
-        return trace.get_tracer(config.tracer_name, config.tracer_version or None), None
+        return _host_tracer(config), None
 
     exporter = _build_exporter(config)
     try:
@@ -131,11 +137,52 @@ def build_tracer(config: OtelConfig) -> tuple[Tracer, SpanFlusher | None]:
     except ImportError as exc:
         raise ImportError(_ERR_MISSING_SDK) from exc
 
+    # Imported here rather than at module scope: the whole module reaches the
+    # SDK, which is extras-only (see module docstring).
+    from loom.core.observability.otel_ids import LoomMessageIdGenerator, build_sampler
+
     resource_attrs = {SERVICE_NAME: config.service_name, **config.resource_attributes}
-    provider = TracerProvider(resource=Resource.create(resource_attrs))
+    provider = TracerProvider(
+        resource=Resource.create(resource_attrs),
+        id_generator=LoomMessageIdGenerator(),
+        sampler=build_sampler(config),
+    )
     provider.add_span_processor(BatchSpanProcessor(exporter, **config.span_processor_kwargs))
+    # After the generator is in place: ``get_tracer`` snapshots it, so a tracer
+    # taken before this point would silently keep random trace ids.
     tracer = provider.get_tracer(config.tracer_name, config.tracer_version or None)
     return tracer, provider
+
+
+def _host_tracer(config: OtelConfig) -> Tracer:
+    """Return a tracer from the host-installed provider, adopting ids on request.
+
+    Without adoption the host's random trace ids stand, so a message cannot be
+    followed end to end. That is a legitimate choice — Loom does not mutate
+    another library's provider behind its owner's back — but it is silent, so
+    it is announced once at startup.
+    """
+    provider = trace.get_tracer_provider()
+    if not config.adopt_host_id_generator:
+        _log.info(
+            "otel_host_provider_random_trace_ids",
+            extra={
+                "setting": "observability.otel.config.adopt_host_id_generator",
+                "provider": type(provider).__name__,
+                "consequence": (
+                    "spans are emitted with random trace ids; a streaming message "
+                    "cannot be followed from ingestion to death under one trace"
+                ),
+            },
+        )
+        return trace.get_tracer(config.tracer_name, config.tracer_version or None)
+
+    from loom.core.observability.otel_ids import adopt_host_id_generator
+
+    adopt_host_id_generator(provider)
+    # Taken after the install either way: on failure the provider is unchanged,
+    # so this is the same tracer the non-adopting branch would have returned.
+    return provider.get_tracer(config.tracer_name, config.tracer_version or None)
 
 
 def _build_exporter(config: OtelConfig) -> Any:

@@ -27,6 +27,9 @@ from loom.celery.runner import (
 from loom.core.engine.events import EventKind, RuntimeEvent
 from loom.core.job.job import Job
 from loom.core.observability.event import Scope
+from tests.helpers.spans import build_recorder, hex_trace
+
+_WIRE_TRACE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
 
 # ---------------------------------------------------------------------------
 # Test fixtures / helpers
@@ -432,6 +435,49 @@ class TestMakeJobTaskRetry:
             if c.args[0].kind == EventKind.JOB_STARTED
         )
         assert started.trace_id == "tid-999"
+
+    def test_the_worker_job_span_lands_in_the_trace_the_dispatcher_sent(self) -> None:
+        """Criterion: a job dispatched with a trace id is traced under it.
+
+        No payload-format change is involved — ``trace_id`` already crosses the
+        broker as a task kwarg. The worker installs it in the contextvar, and
+        the id generator turns it into the OTEL trace id of the root JOB span.
+        """
+        recorder = build_recorder()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _mock_factory(_SyncJob()),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            None,
+            recorder.runtime,
+        )
+
+        task_fn(_mock_self(), trace_id=_WIRE_TRACE)
+
+        span = recorder.one("job:_SyncJob")
+        assert hex_trace(span) == _WIRE_TRACE
+        assert span.parent is None, (
+            "no remote parent span id crosses the broker, so the worker span "
+            "shares the trace but has no parent edge"
+        )
+
+    def test_a_job_without_a_trace_id_still_gets_a_span_on_a_random_trace(self) -> None:
+        recorder = build_recorder()
+        task_fn = _make_job_task(
+            _mock_celery_app(),
+            _SyncJob,
+            _mock_factory(_SyncJob()),
+            MagicMock(),
+            _mock_runtime(return_value=0),
+            None,
+            recorder.runtime,
+        )
+
+        task_fn(_mock_self())
+
+        assert hex_trace(recorder.one("job:_SyncJob")) != _WIRE_TRACE
 
     def test_no_metrics_does_not_raise(self) -> None:
         instance = _SyncJob()

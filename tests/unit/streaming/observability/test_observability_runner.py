@@ -72,6 +72,45 @@ def test_streaming_test_runner_emits_flow_observer_events_for_async_flow(
     )
 
 
+def test_the_observer_event_sequence_is_the_old_one_plus_the_new_deaths(
+    drop_flow: StreamFlow[DropItem, DropItem],
+    drop_item: DropItem,
+    recording_flow_observer: RecordingFlowObserver,
+) -> None:
+    """Criterion: observers see the pre-change sequence plus the terminal events.
+
+    Pinning the whole sequence, rather than "some event of kind X exists", is
+    what makes an accidental extra emission — or a lost one — fail here.
+    """
+    config = {
+        "kafka": {
+            "consumer": {"brokers": ["localhost:9092"], "group_id": "g", "topics": ["items"]},
+            "producer": {"brokers": ["localhost:9092"], "topic": "items.out"},
+        }
+    }
+    runner = StreamingTestRunner.from_dict(
+        drop_flow,
+        config,
+        observability_runtime=ObservabilityRuntime([recording_flow_observer]),
+    )
+    trace_id = "a" * 32
+    message = Message(payload=drop_item, meta=MessageMeta(message_id="m1", trace_id=trace_id))
+
+    runner.with_messages([message]).run()
+
+    assert [(event.scope, event.kind, event.name) for event in recording_flow_observer.events] == [
+        (Scope.POLL_CYCLE, EventKind.START, "boom_flow"),
+        (Scope.NODE, EventKind.START, "boom_flow:0"),
+        (Scope.NODE, EventKind.ERROR, "boom_flow:0"),
+        # New: the message dies where its error envelope is built.
+        (Scope.TERMINAL, EventKind.START, "error_envelope"),
+        (Scope.TERMINAL, EventKind.END, "error_envelope"),
+        (Scope.POLL_CYCLE, EventKind.END, "boom_flow"),
+    ]
+    terminals = [event for event in recording_flow_observer.events if event.scope is Scope.TERMINAL]
+    assert {event.trace_id for event in terminals} == {trace_id}
+
+
 def test_streaming_test_runner_reset_clears_buffers(
     drop_flow: StreamFlow[DropItem, DropItem],
 ) -> None:

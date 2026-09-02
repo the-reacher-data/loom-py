@@ -17,6 +17,7 @@ Usage::
 """
 
 from loom.core.tracing.context import (
+    active_trace_id,
     generate_trace_id,
     get_trace_id,
     reset_trace_id,
@@ -24,6 +25,7 @@ from loom.core.tracing.context import (
 )
 
 __all__ = [
+    "active_trace_id",
     "generate_trace_id",
     "get_trace_id",
     "reset_trace_id",

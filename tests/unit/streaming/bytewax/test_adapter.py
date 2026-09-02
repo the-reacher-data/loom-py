@@ -282,6 +282,7 @@ class TestOutputAndErrorWiring:
             plan=build_compiled_plan(),
             bridge=None,
             flow_runtime=ObservabilityRuntime.noop(),
+            flow_run_id="run-1",
             sink=None,
             terminal_sinks={},
             error_sinks={},

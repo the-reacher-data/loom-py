@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import Counter
 from collections.abc import Awaitable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
@@ -12,7 +11,7 @@ from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from loom.core.async_bridge import AsyncBridge
 from loom.core.model import LoomFrozenStruct, LoomStruct
-from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
+from loom.core.observability.event import Scope, TerminalReason
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
@@ -20,6 +19,7 @@ from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
 from loom.streaming.core._errors import ErrorEnvelope, ErrorKind
 from loom.streaming.core._message import Message
+from loom.streaming.core._tracing import open_terminal_span
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig
 
@@ -101,6 +101,7 @@ class _BuildContextProtocol(Protocol):
     bridge: AsyncBridge | None
     commit_tracker: CommitCompletionPort | None
     flow_runtime: ObservabilityRuntime
+    flow_run_id: str
 
     def wire_terminal(self, step_id: str, stream: Stream) -> None:
         """Wire one terminal output branch."""
@@ -177,6 +178,31 @@ def _resolve_node_name(raw: object) -> str:
     return type(raw).__name__
 
 
+def _node_span_name(flow_name: str, idx: int) -> str:
+    """Return the span name of one node position within a flow."""
+    return f"{flow_name}:{idx}"
+
+
+def _node_meta(flow_name: str, idx: int, node_type: str) -> dict[str, object]:
+    """Return the fields every node span of one position carries."""
+    return {"flow": flow_name, "node_idx": idx, "node_type": node_type}
+
+
+@contextmanager
+def _node_log_context(flow_name: str, idx: int, node_type: str) -> Iterator[None]:
+    """Bind the node's identity onto structlog for the duration of its execution."""
+    tokens = bind_contextvars(
+        flow_name=flow_name,
+        node_idx=idx,
+        node_type=node_type,
+        method="execute",
+    )
+    try:
+        yield
+    finally:
+        reset_contextvars(**tokens)
+
+
 @contextmanager
 def _observe_node(
     observer: ObservabilityRuntime,
@@ -186,57 +212,23 @@ def _observe_node(
     trace_id: str | None = None,
     correlation_id: str | None = None,
 ) -> Iterator[None]:
-    """Emit observability events around one node execution."""
-    observer.emit(
-        LifecycleEvent(
-            scope=Scope.NODE,
-            name=f"{flow_name}:{idx}",
-            kind=EventKind.START,
+    """Open the ``NODE`` span of one record-shaped node execution.
+
+    The span is opened on the runtime rather than emitted as a bare pair of
+    events, so the message's trace id becomes the OTEL trace id and the node
+    appears between the message's birth and its death in one trace.
+    """
+    with (
+        _node_log_context(flow_name, idx, node_type),
+        observer.span(
+            Scope.NODE,
+            _node_span_name(flow_name, idx),
             trace_id=trace_id,
             correlation_id=correlation_id,
-            meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
-        )
-    )
-    t0 = time.monotonic()
-    success = False
-    context_tokens = bind_contextvars(
-        flow_name=flow_name,
-        node_idx=idx,
-        node_type=node_type,
-        method="execute",
-    )
-    try:
+            **_node_meta(flow_name, idx, node_type),
+        ),
+    ):
         yield
-        success = True
-    except Exception as exc:
-        observer.emit(
-            LifecycleEvent(
-                scope=Scope.NODE,
-                name=f"{flow_name}:{idx}",
-                kind=EventKind.ERROR,
-                trace_id=trace_id,
-                correlation_id=correlation_id,
-                error=repr(exc),
-                meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
-            )
-        )
-        raise
-    finally:
-        reset_contextvars(**context_tokens)
-        if success:
-            elapsed = int((time.monotonic() - t0) * 1000)
-            observer.emit(
-                LifecycleEvent(
-                    scope=Scope.NODE,
-                    name=f"{flow_name}:{idx}",
-                    kind=EventKind.END,
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    duration_ms=elapsed,
-                    status=LifecycleStatus.SUCCESS,
-                    meta={"flow": flow_name, "node_idx": idx, "node_type": node_type},
-                )
-            )
 
 
 def _resolve_record_result(
@@ -413,9 +405,11 @@ def _identity(items: Any) -> Any:
 
 def _register_row_fanout(
     item: Any,
-    tracker: CommitCompletionPort,
+    tracker: CommitCompletionPort | None,
     declared_types: frozenset[type],
     has_default: bool,
+    observer: ObservabilityRuntime,
+    flow_name: str,
 ) -> Any:
     """Account for the rows an ``ExpandRoutes`` node actually produced.
 
@@ -424,16 +418,48 @@ def _register_row_fanout(
     so the expected completions must match the total row count — which is
     unrelated to how many routes were declared. Zero rows completes the offset
     here, since nothing downstream ever will.
+
+    Zero rows is also where a message silently disappears: nothing downstream
+    ever sees it, so without a span its trace just stops. That is the hardest
+    thing to debug in streaming, so the drop is recorded as the message's
+    ``terminal:dropped_no_route`` death. The branch runs only on the drop path,
+    so a flow that routes everything pays nothing for it.
     """
     message = _require_message(item)
+    total = _expanded_row_total(message, declared_types, has_default)
+    if total == 0:
+        _record_dropped_no_route(observer, message, declared_types, has_default, flow_name)
+    if tracker is None:
+        return message
     key = _commit_key(message)
-    if key is not None:
-        total = _expanded_row_total(message, declared_types, has_default)
-        if total == 0:
-            tracker.complete(key[0], key[1], key[2])
-        elif total > 1:
-            tracker.fork(key[0], key[1], key[2], total - 1)
+    if key is None:
+        return message
+    if total == 0:
+        tracker.complete(key[0], key[1], key[2])
+    elif total > 1:
+        tracker.fork(key[0], key[1], key[2], total - 1)
     return message
+
+
+def _record_dropped_no_route(
+    observer: ObservabilityRuntime,
+    message: Any,
+    declared_types: frozenset[type],
+    has_default: bool,
+    flow_name: str,
+) -> None:
+    """Close the trace of a message that expanded to no rows on any route."""
+    routes = sorted(output_type.__name__ for output_type in declared_types)
+    open_terminal_span(
+        observer,
+        message.meta,
+        TerminalReason.DROPPED_NO_ROUTE,
+        attributes={
+            "flow": flow_name,
+            "loom.declared_routes": ",".join(routes),
+            "loom.has_default_route": has_default,
+        },
+    ).end()
 
 
 def _expanded_row_total(
