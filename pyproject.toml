@@ -267,6 +267,11 @@ extend-immutable-calls = [
 
 [tool.pyright]
 pythonVersion = "3.11"
+# src only, deliberately. Checking tests as well surfaces 294 errors across
+# eight rules — mostly stubs that no longer satisfy the protocol they stand in
+# for. That is real signal and worth burning down, but it is a project, not a
+# flag flip: turning it on without the cleanup would make the gate meaningless
+# on its first run. Tracked in specs/feature/quality/typecheck_tests.md.
 include = [
     "src",
 ]
