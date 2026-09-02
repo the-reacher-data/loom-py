@@ -27,11 +27,14 @@ from loom.ai.errors import (
     a2a_url_invalid,
     endpoint_auth_missing,
     inference_target_incomplete,
+    mcp_auth_conflict,
+    mcp_auth_strategy_unknown,
     mcp_credentials_inline,
     mcp_url_invalid,
     policy_out_of_range,
 )
 from loom.ai.inference import InferenceTarget
+from loom.ai.mcp_auth import is_strategy_registered, registered_strategy_names
 from loom.core.model import LoomFrozenStruct
 
 # Conservative allowlist for a secret *reference*: a name, path, ARN or key id
@@ -46,6 +49,10 @@ _SECRET_MATERIAL_PREFIXES = ("AKIA", "sk-", "ghp_")
 
 # A URL carrying userinfo (``scheme://user:pass@host``) embeds a credential.
 _URL_USERINFO_RE = re.compile(r"://[^/]*@")
+
+# The one reserved key of an ``auth`` block: it names the strategy, every other
+# key is that strategy's own setting.
+_AUTH_KIND_KEY = "kind"
 
 # Bounds of a single remote call, mirroring ``policies.tool_timeout_ms``.
 _TIMEOUT_MS_MIN = 1
@@ -179,12 +186,20 @@ class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     Attributes:
         url: ``https://`` server URL, free of userinfo and query string.
         headers_ref: Reference to headers resolved by the secrets resolver.
-            Never a literal secret.
+            Never a literal secret.  The resolved payload must be a single
+            ``Name=value`` header pair, a shape checked at start-up rather than
+            here; a bearer token belongs in ``auth: {kind: bearer}``.
+            Mutually exclusive with ``auth``.
+        auth: Named authentication strategy and its settings, flattened:
+            ``kind`` selects an entry point registered in ``loom.ai.mcp_auth``
+            and every other key is passed to it as a keyword argument.
+            Mutually exclusive with ``headers_ref``.
         timeout_ms: Deadline of a single call to this server.
     """
 
     url: str
     headers_ref: str | None = None
+    auth: dict[str, str] | None = None
     timeout_ms: int = 20000
 
 
@@ -327,6 +342,33 @@ def _validate_headers_ref(component: str, headers_ref: str | None) -> list[Agent
     return [mcp_credentials_inline(component, "headers_ref")]
 
 
+def _validate_auth(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the issues of one server's ``auth`` block.
+
+    Two credentials on one connection are ambiguous, so ``headers_ref`` and
+    ``auth`` are refused together; every setting in the block is held to the
+    same fail-closed reference test as ``headers_ref``, so no literal secret
+    reaches loom by the back door; and an unregistered strategy is refused here
+    rather than at the first message in production.
+    """
+    auth = server.auth
+    if auth is None:
+        return []
+    if server.headers_ref is not None:
+        return [mcp_auth_conflict(component)]
+    issues = [
+        # The rejected value is deliberately absent from the issue, as for
+        # ``headers_ref``: the message must not leak what it rejects.
+        mcp_credentials_inline(component, f"auth.{key}")
+        for key, value in auth.items()
+        if key != _AUTH_KIND_KEY and not _is_credentials_reference(value)
+    ]
+    kind = auth.get(_AUTH_KIND_KEY, "")
+    if not is_strategy_registered(kind):
+        issues.append(mcp_auth_strategy_unknown(component, kind, registered_strategy_names()))
+    return issues
+
+
 def _validate_mcp_servers(
     servers: Mapping[str, McpServerConfig],
 ) -> list[AgentCompilationIssue]:
@@ -336,6 +378,7 @@ def _validate_mcp_servers(
         component = f"ai.mcp_servers.{name}"
         issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
         issues.extend(_validate_headers_ref(component, server.headers_ref))
+        issues.extend(_validate_auth(component, server))
         if not _TIMEOUT_MS_MIN <= server.timeout_ms <= _TIMEOUT_MS_MAX:
             issues.append(
                 policy_out_of_range(

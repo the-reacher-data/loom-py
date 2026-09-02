@@ -82,7 +82,7 @@ ai:
   mcp_servers:
     runbooks:
       url: https://runbooks.internal.example.com/mcp
-      headers_ref: RUNBOOKS_MCP_HEADERS
+      headers_ref: ${secrets:/loom/runbooks/api-key}
       timeout_ms: 20000
 
   endpoints:

@@ -64,6 +64,10 @@ class AgentErrorCode(StrEnum):
     MCP_SERVER_UNKNOWN = "MCP_SERVER_UNKNOWN"
     MCP_URL_INVALID = "MCP_URL_INVALID"
     MCP_CREDENTIALS_INLINE = "MCP_CREDENTIALS_INLINE"
+    MCP_HEADERS_REF_INVALID = "MCP_HEADERS_REF_INVALID"
+    MCP_AUTH_CONFLICT = "MCP_AUTH_CONFLICT"
+    MCP_AUTH_STRATEGY_UNKNOWN = "MCP_AUTH_STRATEGY_UNKNOWN"
+    MCP_AUTH_STRATEGY_INVALID = "MCP_AUTH_STRATEGY_INVALID"
     SKILLS_LIBRARY_INVALID = "SKILLS_LIBRARY_INVALID"
     SKILLS_LIBRARY_ESCAPES = "SKILLS_LIBRARY_ESCAPES"
     SKILLS_NAME_COLLISION = "SKILLS_NAME_COLLISION"
@@ -385,6 +389,58 @@ def mcp_credentials_inline(component: str, field: str) -> AgentCompilationIssue:
         ),
         component=component,
         field=field,
+    )
+
+
+def mcp_headers_ref_invalid(component: str) -> AgentCompilationIssue:
+    """A resolved ``headers_ref`` payload is not one ``Name=value`` header pair."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_HEADERS_REF_INVALID,
+        message=(
+            f"{component}: 'headers_ref' must resolve to one 'Name=value' header "
+            f"pair; use an 'auth' strategy for anything richer"
+        ),
+        component=component,
+        field="headers_ref",
+    )
+
+
+def mcp_auth_conflict(component: str) -> AgentCompilationIssue:
+    """A server sets both ``headers_ref`` and ``auth``, two credentials for one connection."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_AUTH_CONFLICT,
+        message=(
+            f"{component}: 'headers_ref' and 'auth' are mutually exclusive; "
+            f"one connection carries one credential"
+        ),
+        component=component,
+        field="auth",
+    )
+
+
+def mcp_auth_strategy_unknown(
+    component: str, kind: str, available: Sequence[str]
+) -> AgentCompilationIssue:
+    """A named auth strategy resolves to no entry point in ``loom.ai.mcp_auth``."""
+    installed = ", ".join(available) if available else "none"
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN,
+        message=(
+            f"{component}: auth strategy '{kind}' is not registered in entry-point "
+            f"group 'loom.ai.mcp_auth'; registered: {installed}"
+        ),
+        component=component,
+        field="auth.kind",
+    )
+
+
+def mcp_auth_strategy_invalid(kind: str, reason: str) -> AgentCompilationIssue:
+    """A registered auth strategy could not be constructed, or is unusable."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_AUTH_STRATEGY_INVALID,
+        message=f"auth strategy '{kind}' is unusable: {reason}",
+        component=f"loom.ai.mcp_auth:{kind}",
+        field="auth.kind",
     )
 
 
