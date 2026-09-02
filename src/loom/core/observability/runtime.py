@@ -1,4 +1,10 @@
-"""ObservabilityRuntime — shared fan-out engine for all Loom modules."""
+"""ObservabilityRuntime — shared fan-out engine for all Loom modules.
+
+The OTEL observer is imported lazily from ``from_config``: it reaches the
+OpenTelemetry SDK and OTLP exporters, which ship as extras only. Keeping that
+import out of module scope is what lets ``loom.core.observability`` be imported
+with nothing but ``opentelemetry-api`` installed.
+"""
 
 from __future__ import annotations
 
@@ -16,11 +22,6 @@ from loom.core.observability.event import (
     Scope,
 )
 from loom.core.observability.observer.noop import NoopObserver
-from loom.core.observability.observer.otel import (
-    OtelLifecycleObserver,
-    build_log_correlation_processor,
-    install_otel_log_export,
-)
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
 from loom.core.observability.protocol import LifecycleObserver
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
@@ -60,6 +61,10 @@ def _configure_structlog_logging(config: ObservabilityConfig) -> None:
         return
     extra_processors: tuple[object, ...] = ()
     if config.otel.enabled and config.otel.export_logs:
+        # Imported lazily: the OTEL observer module reaches the OpenTelemetry
+        # SDK, which is an extras-only dependency (see module docstring).
+        from loom.core.observability.observer.otel import build_log_correlation_processor
+
         extra_processors = (build_log_correlation_processor(),)
     configure_logging_from_values(
         name=logger_config.name,
@@ -77,6 +82,8 @@ def _configure_structlog_logging(config: ObservabilityConfig) -> None:
             raise ValueError(
                 "observability.otel.export_logs requires observability.otel.config to be provided."
             )
+        from loom.core.observability.observer.otel import install_otel_log_export
+
         install_otel_log_export(config.otel.config)
 
 
@@ -87,6 +94,8 @@ def _build_observers(config: ObservabilityConfig) -> list[LifecycleObserver]:
         _configure_structlog_logging(config)
         observers.append(StructlogLifecycleObserver())
     if config.otel.enabled and config.otel.config is not None:
+        from loom.core.observability.observer.otel import OtelLifecycleObserver
+
         observers.append(OtelLifecycleObserver(config=config.otel.config))
     if config.prometheus.enabled:
         observers.append(
