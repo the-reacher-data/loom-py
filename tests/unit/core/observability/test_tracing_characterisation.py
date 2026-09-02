@@ -1,61 +1,83 @@
-"""Characterisation corpus for the OTEL tracing defects — pins CURRENT behaviour.
+"""Tracing corpus — the inversion of the pinned OTEL defects.
 
-Every assertion here describes what ``OtelLifecycleObserver`` does **today**,
-including what it does wrong. The defects are real and known; they are pinned
-so that the follow-up PR that fixes them has to invert each assertion
-explicitly, which is the evidence that the fix landed.
-
-Do not "fix" these expectations without fixing the production code in the same
-change.
+Every assertion here was written the other way round one PR ago, when tracing
+was reconstructed after the fact from two independent ``on_event`` calls: a
+child never found its parent (E2), every root span pointed at a fabricated
+parent that was never exported (E5), and two concurrent runs of the same
+``(scope, name)`` collided on one process-wide registry key (E7). Spans are now
+opened by ``ObservabilityRuntime`` itself, in the one lexical scope that covers
+both ends of a unit of work, so each of those assertions is inverted here.
 
 Spans are exported through a real ``TracerProvider`` with a
 ``SimpleSpanProcessor`` and an ``InMemorySpanExporter``, and every assertion is
 about exported span structure — trace ids, parent span ids, span counts. A
-``ProxyTracerProvider`` (what ``endpoint=""`` yields in production) produces
+``ProxyTracerProvider`` (what ``endpoint=""`` yields with no host SDK) produces
 non-recording spans that can never fail such assertions, which is exactly how
-these defects shipped.
+these defects shipped: never assert on types, truthiness, or the absence of an
+exception here.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import logging
+import threading
+from collections.abc import AsyncGenerator
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
+from loom.ai._transport import always_closed
 from loom.core.config.observability import OtelConfig
-from loom.core.observability.event import LifecycleEvent, Scope
+from loom.core.observability.config import ObservabilityConfig, OtelObservabilityConfig
+from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.observer import otel as _otel_module
-from loom.core.observability.observer.otel import OtelLifecycleObserver
-from loom.core.observability.topology import span_parent_key
+from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 
 _TRACE_ID_HEX = "4b3f9a1c2d8e0f7b6a5c3e1d9f2b4a0c"
 _OTHER_TRACE_ID_HEX = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 
-# ``_trace_parent_context`` fabricates this span id for the remote parent it
-# invents from the business trace id (observer/otel.py, E5).
-_FABRICATED_PARENT_SPAN_ID = 1
+_OTEL_CONTEXT_LOGGER = "opentelemetry.context"
+_DETACH_FAILURE = "Failed to detach context"
 
 
-@pytest.fixture
-def recorded_observer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> tuple[OtelLifecycleObserver, InMemorySpanExporter]:
-    """Build a real-SDK observer whose spans land in an in-memory exporter."""
+class RecordingObserver:
+    """Observer that keeps every event, with the span current when it arrived."""
+
+    def __init__(self) -> None:
+        self.events: list[LifecycleEvent] = []
+        self.span_ids: list[int] = []
+
+    def on_event(self, event: LifecycleEvent) -> None:
+        self.events.append(event)
+        self.span_ids.append(trace.get_current_span().get_span_context().span_id)
+
+
+def _exporting_provider() -> tuple[TracerProvider, InMemorySpanExporter]:
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("loom.characterisation")
+    return provider, exporter
 
-    def _fake_build_tracer(config: OtelConfig) -> tuple[Any, Any]:
-        del config
-        return tracer, provider
 
-    monkeypatch.setattr(_otel_module, "_build_tracer", _fake_build_tracer)
-    observer = OtelLifecycleObserver(OtelConfig(endpoint="", service_name="loom-characterisation"))
-    return observer, exporter
+def _exporting_runtime(
+    observer: RecordingObserver | None = None,
+) -> tuple[ObservabilityRuntime, InMemorySpanExporter]:
+    """Build a runtime whose spans land in an in-memory exporter."""
+    provider, exporter = _exporting_provider()
+    observers = [observer] if observer is not None else []
+    runtime = ObservabilityRuntime(observers, tracer=provider.get_tracer("loom.tracing-corpus"))
+    return runtime, exporter
+
+
+@pytest.fixture
+def exporting_runtime() -> tuple[ObservabilityRuntime, InMemorySpanExporter]:
+    return _exporting_runtime()
 
 
 def _span_by_name(spans: tuple[ReadableSpan, ...], name: str) -> ReadableSpan:
@@ -76,163 +98,590 @@ def _trace_id(span: ReadableSpan) -> int:
     return context.trace_id
 
 
-def _open_and_close(observer: OtelLifecycleObserver, **event_kwargs: Any) -> None:
-    observer.on_event(LifecycleEvent.start(**event_kwargs))
-    observer.on_event(LifecycleEvent.end(**event_kwargs))
+def _parent_span_id(span: ReadableSpan) -> int | None:
+    return None if span.parent is None else span.parent.span_id
 
 
-class TestE2ParentingNeverHappens:
-    """E2 — the registry key written and the key read never match.
+def _attribute(span: ReadableSpan, key: str) -> object:
+    assert span.attributes is not None
+    return span.attributes.get(key)
 
-    ``_span_key`` stores ``f"{scope}:{name}:{trace_id}"`` while
-    ``span_parent_key`` looks up ``f"{parent_scope}::{trace_id}"`` with an
-    empty name segment, so a child scope never finds its parent span.
+
+class TestSpanTreeIsExported:
+    """E2 inverted — a child scope is parented to the scope that opened it.
+
+    The parent is no longer looked up in a registry under a key nothing ever
+    wrote: it is the span that is current when the child opens, which is the
+    only definition that cannot drift.
     """
 
-    def test_lookup_key_cannot_match_any_stored_key(self) -> None:
-        parent_event = LifecycleEvent.start(
-            scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX
-        )
-        child_event = LifecycleEvent.start(
-            scope=Scope.NODE, name="transform", trace_id=_TRACE_ID_HEX
-        )
-
-        stored = _otel_module._span_key(parent_event)
-        looked_up = span_parent_key(child_event.scope, child_event.trace_id)
-
-        # BROKEN TODAY. A later PR makes these equal; then this assertion inverts.
-        assert stored == f"poll_cycle:orders:{_TRACE_ID_HEX}"
-        assert looked_up == f"poll_cycle::{_TRACE_ID_HEX}"
-        assert stored != looked_up
-
-    def test_child_scope_is_not_parented_to_its_open_parent_scope(
-        self, recorded_observer: tuple[OtelLifecycleObserver, InMemorySpanExporter]
+    def test_child_scope_is_parented_to_its_open_parent_scope(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
     ) -> None:
-        observer, exporter = recorded_observer
+        runtime, exporter = exporting_runtime
 
-        observer.on_event(
-            LifecycleEvent.start(scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX)
-        )
-        _open_and_close(observer, scope=Scope.NODE, name="transform", trace_id=_TRACE_ID_HEX)
-        observer.on_event(
-            LifecycleEvent.end(scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX)
-        )
+        with (
+            runtime.span(Scope.POLL_CYCLE, "orders", trace_id=_TRACE_ID_HEX),
+            runtime.span(Scope.NODE, "transform", trace_id=_TRACE_ID_HEX),
+        ):
+            pass
 
         spans = exporter.get_finished_spans()
         assert len(spans) == 2
         poll_cycle = _span_by_name(spans, "poll_cycle:orders")
         node = _span_by_name(spans, "node:transform")
 
-        # BROKEN TODAY: the node span should be a child of the poll_cycle span.
-        # Instead both hang off the same fabricated remote parent (see E5), so
-        # the collector shows a flat pair, not a tree. A later PR inverts this
-        # to ``node.parent.span_id == _span_id(poll_cycle)``.
-        assert node.parent is not None
-        assert node.parent.span_id != _span_id(poll_cycle)
-        assert node.parent.span_id == _FABRICATED_PARENT_SPAN_ID
-        assert poll_cycle.parent is not None
-        assert poll_cycle.parent.span_id == _FABRICATED_PARENT_SPAN_ID
+        assert _parent_span_id(node) == _span_id(poll_cycle)
+        assert _parent_span_id(poll_cycle) is None
+        assert _trace_id(node) == _trace_id(poll_cycle)
 
-    def test_without_a_trace_id_parent_and_child_become_two_unrelated_traces(
-        self, recorded_observer: tuple[OtelLifecycleObserver, InMemorySpanExporter]
+    def test_without_a_trace_id_parent_and_child_are_still_one_trace(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
     ) -> None:
-        """This is what the Bytewax runner actually emits: POLL_CYCLE with no trace id."""
-        observer, exporter = recorded_observer
+        """This is what the Bytewax runner emits: a POLL_CYCLE with no trace id."""
+        runtime, exporter = exporting_runtime
 
-        observer.on_event(LifecycleEvent.start(scope=Scope.POLL_CYCLE, name="orders"))
-        _open_and_close(observer, scope=Scope.NODE, name="transform")
-        observer.on_event(LifecycleEvent.end(scope=Scope.POLL_CYCLE, name="orders"))
+        with runtime.span(Scope.POLL_CYCLE, "orders"), runtime.span(Scope.NODE, "transform"):
+            pass
 
         spans = exporter.get_finished_spans()
-        assert len(spans) == 2
         poll_cycle = _span_by_name(spans, "poll_cycle:orders")
         node = _span_by_name(spans, "node:transform")
 
-        # BROKEN TODAY: two roots in two different traces — a poll cycle and
-        # the node it ran cannot be correlated at all. A later PR inverts this
-        # to one trace with the node parented to the poll cycle.
-        assert poll_cycle.parent is None
-        assert node.parent is None
-        assert _trace_id(poll_cycle) != _trace_id(node)
+        assert _parent_span_id(node) == _span_id(poll_cycle)
+        assert _trace_id(node) == _trace_id(poll_cycle)
 
-
-class TestE7SpanKeyCollision:
-    """E7 — the registry key carries no per-run identity.
-
-    Two concurrent runs of the same ``(scope, name, trace_id)`` share one key in
-    the process-wide ``_SpanRegistry``, so the second START overwrites the
-    first, and the first END closes the survivor. One span is exported instead
-    of two, and the lost one is never exported at all.
-    """
-
-    def test_concurrent_runs_of_the_same_scope_and_name_overwrite_each_other(
-        self, recorded_observer: tuple[OtelLifecycleObserver, InMemorySpanExporter]
+    def test_three_levels_export_one_tree(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
     ) -> None:
-        observer, exporter = recorded_observer
+        runtime, exporter = exporting_runtime
 
-        observer.on_event(
-            LifecycleEvent.start(
-                scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX, id="run-a"
-            )
-        )
-        observer.on_event(
-            LifecycleEvent.start(
-                scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX, id="run-b"
-            )
-        )
-        observer.on_event(
-            LifecycleEvent.end(
-                scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX, id="run-a"
-            )
-        )
-        observer.on_event(
-            LifecycleEvent.end(
-                scope=Scope.POLL_CYCLE, name="orders", trace_id=_TRACE_ID_HEX, id="run-b"
-            )
-        )
+        with (
+            runtime.span(Scope.PIPELINE, "DailySales"),
+            runtime.span(Scope.PROCESS, "Staging"),
+            runtime.span(Scope.STEP, "LoadOrders"),
+        ):
+            pass
 
         spans = exporter.get_finished_spans()
+        pipeline = _span_by_name(spans, "pipeline:DailySales")
+        process = _span_by_name(spans, "process:Staging")
+        step = _span_by_name(spans, "step:LoadOrders")
 
-        # BROKEN TODAY: two runs went in, one span came out — and it is run-b's
-        # span, closed by run-a's END event. Run-a's span is leaked, never
-        # ended, never exported. A later PR keys spans per run and inverts this
-        # to two exported spans, one per run id.
+        assert _parent_span_id(step) == _span_id(process)
+        assert _parent_span_id(process) == _span_id(pipeline)
+        assert _parent_span_id(pipeline) is None
+
+    def test_a_failing_body_closes_the_span_as_an_error_without_double_recording(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        with pytest.raises(ValueError), runtime.span(Scope.STEP, "LoadOrders"):
+            raise ValueError("boom")
+
+        spans = exporter.get_finished_spans()
         assert len(spans) == 1
-        assert spans[0].attributes is not None
-        assert spans[0].attributes["id"] == "run-b"
-        exported_ids = {span.attributes["id"] for span in spans if span.attributes is not None}
-        assert "run-a" not in exported_ids
+        step = spans[0]
+        assert step.status.status_code is StatusCode.ERROR
+        assert step.status.description == "boom"
+        # ``record_exception=False`` on the span: exactly one exception event,
+        # recorded by the runtime, not a second one added by the SDK's own
+        # exit handler.
+        assert [event.name for event in step.events] == ["exception"]
+
+    def test_start_is_emitted_with_its_own_span_current(self) -> None:
+        """Log correlation depends on this: the span opens before START is emitted.
+
+        Emitting START before opening the span attaches the *parent* span id to
+        the START log line, or none at all for a root.
+        """
+        observer = RecordingObserver()
+        runtime, exporter = _exporting_runtime(observer)
+
+        with runtime.span(Scope.USE_CASE, "CreateOrder"):
+            pass
+
+        use_case = exporter.get_finished_spans()[0]
+        assert [event.kind for event in observer.events] == [EventKind.START, EventKind.END]
+        assert observer.span_ids == [_span_id(use_case), _span_id(use_case)]
 
 
-class TestE5DanglingParent:
-    """E5 — the parent span id is fabricated, so it points at nothing.
+class TestNoDanglingParent:
+    """E5 inverted — no exported span points at a span nobody exported.
 
-    ``_trace_parent_context`` builds a remote ``SpanContext`` from the business
-    trace id (a uuid4 hex) with a hardcoded ``span_id=1``. No such span exists
-    anywhere, so the collector shows every root-level Loom span as a child of a
-    span it will never receive.
+    The business trace id travels as a span attribute. It no longer fabricates
+    a remote ``SpanContext`` with ``span_id=1`` for every root span to hang off.
     """
 
-    def test_exported_span_points_at_a_parent_that_was_never_exported(
-        self, recorded_observer: tuple[OtelLifecycleObserver, InMemorySpanExporter]
+    def test_every_exported_parent_is_itself_exported(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
     ) -> None:
-        observer, exporter = recorded_observer
+        runtime, exporter = exporting_runtime
 
-        _open_and_close(observer, scope=Scope.NODE, name="transform", trace_id=_TRACE_ID_HEX)
-        _open_and_close(observer, scope=Scope.NODE, name="enrich", trace_id=_OTHER_TRACE_ID_HEX)
+        with (
+            runtime.span(Scope.PIPELINE, "DailySales", trace_id=_TRACE_ID_HEX),
+            runtime.span(Scope.STEP, "LoadOrders", trace_id=_TRACE_ID_HEX),
+        ):
+            pass
+        with runtime.span(Scope.NODE, "enrich", trace_id=_OTHER_TRACE_ID_HEX):
+            pass
 
         spans = exporter.get_finished_spans()
-        assert len(spans) == 2
+        assert len(spans) == 3
         exported_span_ids = {_span_id(span) for span in spans}
 
-        # BROKEN TODAY: every span claims a parent that does not exist. A later
-        # PR makes the business trace id the span's own trace id instead of
-        # inventing a parent, and inverts this to ``span.parent is None``.
         for span in spans:
-            assert span.parent is not None
-            assert span.parent.span_id == _FABRICATED_PARENT_SPAN_ID
-            assert span.parent.span_id not in exported_span_ids
-            assert span.parent.is_remote is True
+            parent = _parent_span_id(span)
+            assert parent is None or parent in exported_span_ids
 
+    def test_unrelated_root_spans_do_not_share_a_parent(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        with runtime.span(Scope.NODE, "transform", trace_id=_TRACE_ID_HEX):
+            pass
+        with runtime.span(Scope.NODE, "enrich", trace_id=_OTHER_TRACE_ID_HEX):
+            pass
+
+        spans = exporter.get_finished_spans()
         transform = _span_by_name(spans, "node:transform")
-        assert _trace_id(transform) == int(_TRACE_ID_HEX, 16)
+        enrich = _span_by_name(spans, "node:enrich")
+
+        assert _parent_span_id(transform) is None
+        assert _parent_span_id(enrich) is None
+        assert _trace_id(transform) != _trace_id(enrich)
+        assert _attribute(transform, "trace_id") == _TRACE_ID_HEX
+        assert _attribute(enrich, "trace_id") == _OTHER_TRACE_ID_HEX
+
+
+class TestConcurrentRunsAreDisjoint:
+    """E7 inverted — two runs of the same scope and name never share a span.
+
+    There is no process-wide registry keyed by ``scope:name:trace_id`` left to
+    collide on: each ``span()`` call owns its own span object.
+    """
+
+    def test_concurrent_runs_of_the_same_scope_and_name_export_two_trees(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+        both_open = threading.Barrier(2, timeout=5)
+
+        def _run(run_id: str) -> None:
+            with (
+                runtime.span(Scope.POLL_CYCLE, "orders", trace_id=_TRACE_ID_HEX, id=run_id),
+                runtime.span(Scope.NODE, "transform", trace_id=_TRACE_ID_HEX, id=run_id),
+            ):
+                both_open.wait()
+
+        threads = [threading.Thread(target=_run, args=(run_id,)) for run_id in ("run-a", "run-b")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 4
+        by_run = {
+            (str(_attribute(span, "scope")), str(_attribute(span, "id"))): span for span in spans
+        }
+        assert set(by_run) == {
+            ("poll_cycle", "run-a"),
+            ("poll_cycle", "run-b"),
+            ("node", "run-a"),
+            ("node", "run-b"),
+        }
+
+        for run_id in ("run-a", "run-b"):
+            parent = by_run[("poll_cycle", run_id)]
+            child = by_run[("node", run_id)]
+            assert _parent_span_id(child) == _span_id(parent)
+            assert _parent_span_id(parent) is None
+
+        assert _trace_id(by_run[("poll_cycle", "run-a")]) != _trace_id(
+            by_run[("poll_cycle", "run-b")]
+        )
+        assert _span_id(by_run[("node", "run-a")]) != _span_id(by_run[("node", "run-b")])
+
+
+class TestSpanAcrossAsendBoundaries:
+    """A span opened in one ``asend`` and closed in another.
+
+    ``span()`` cannot serve this shape: its context token would be created in
+    one ``asend`` and detached in another, which OTEL swallows into a log line
+    and which leaks the span into the consumer between frames. ``open_span``
+    never attaches, so neither happens.
+    """
+
+    @staticmethod
+    def _frames(handle: LoomSpan, *, fail: bool = False) -> AsyncGenerator[str, None]:
+        async def _generate() -> AsyncGenerator[str, None]:
+            with always_closed(handle):
+                yield "first"
+                if fail:
+                    raise RuntimeError("stream broke")
+                yield "second"
+
+        return _generate()
+
+    @staticmethod
+    def _detach_failures(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [
+            record
+            for record in caplog.records
+            if record.name == _OTEL_CONTEXT_LOGGER and _DETACH_FAILURE in record.getMessage()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_frames_pulled_in_one_task_do_not_leak_the_span_between_them(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        """Same-task drive: the failure mode is a leak, not a detach error.
+
+        Both ``asend`` calls share one context, so a token attached in the
+        first would detach cleanly in the second — and stay attached in
+        between, silently reparenting everything the consumer does.
+        """
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        frames = self._frames(handle)
+
+        assert await frames.asend(None) == "first"
+        assert trace.get_current_span() is trace.INVALID_SPAN
+        assert await frames.asend(None) == "second"
+        with pytest.raises(StopAsyncIteration):
+            await frames.asend(None)
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "agent:agent_run"
+        assert spans[0].status.status_code is StatusCode.OK
+
+    @pytest.mark.asyncio
+    async def test_frames_pulled_from_different_tasks_log_no_detach_failure(
+        self,
+        exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Task-per-frame drive: this is the shape that produces the log line.
+
+        Each task copies the context, so a token attached while serving one
+        frame does not exist in the context that serves the next. OTEL catches
+        the ``ValueError`` and logs it, which is why this is asserted on the
+        log and not on a raised exception.
+        """
+        runtime, exporter = exporting_runtime
+        caplog.set_level(logging.DEBUG, logger=_OTEL_CONTEXT_LOGGER)
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        frames = self._frames(handle)
+
+        assert await asyncio.create_task(frames.asend(None)) == "first"
+        assert await asyncio.create_task(frames.asend(None)) == "second"
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.create_task(frames.asend(None))
+
+        assert self._detach_failures(caplog) == []
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code is StatusCode.OK
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_first_frame_closes_the_span_as_an_error(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        frames = self._frames(handle, fail=True)
+
+        assert await frames.asend(None) == "first"
+        with pytest.raises(RuntimeError):
+            await frames.asend(None)
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code is StatusCode.ERROR
+        assert spans[0].status.description == "stream broke"
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_stream_closes_the_span_exactly_once(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        """A client that walks away ends the generator with ``GeneratorExit``."""
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        frames = self._frames(handle)
+        assert await frames.asend(None) == "first"
+        await frames.aclose()
+        # ``aclose`` already closed the span through ``always_closed``; closing
+        # it a second time must not export a second span or emit a second END.
+        handle.end()
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].status.status_code is StatusCode.OK
+
+    def test_an_inner_region_can_still_nest_under_an_open_span(
+        self, exporting_runtime: tuple[ObservabilityRuntime, InMemorySpanExporter]
+    ) -> None:
+        runtime, exporter = exporting_runtime
+
+        handle = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+        with handle.as_current(), runtime.span(Scope.TOOL, "create_order"):
+            pass
+        handle.end()
+
+        spans = exporter.get_finished_spans()
+        agent = _span_by_name(spans, "agent:agent_run")
+        tool = _span_by_name(spans, "tool:create_order")
+        assert _parent_span_id(tool) == _span_id(agent)
+        assert _parent_span_id(agent) is None
+
+
+class TestHostProviderCoexistence:
+    """Loom's own provider next to a host SDK's, sharing only the context.
+
+    Loom never calls ``set_tracer_provider``. The context is global and the
+    provider is not, so nesting works in both directions while each provider
+    exports only its own spans — the property that makes running under logfire
+    (which does own the global provider) work at all.
+    """
+
+    def test_loom_nests_under_a_host_span_and_parents_the_next_host_span(self) -> None:
+        host_provider, host_exporter = _exporting_provider()
+        loom_provider, loom_exporter = _exporting_provider()
+        host_tracer = host_provider.get_tracer("host.sdk")
+        runtime = ObservabilityRuntime([], tracer=loom_provider.get_tracer("loom"))
+
+        with (
+            host_tracer.start_as_current_span("host:request"),
+            runtime.span(Scope.AGENT, "agent_run"),
+        ):
+            with host_tracer.start_as_current_span("host:chat gpt-4"):
+                pass
+            with runtime.span(Scope.TOOL, "create_order"):
+                pass
+
+        host_spans = host_exporter.get_finished_spans()
+        loom_spans = loom_exporter.get_finished_spans()
+        assert {span.name for span in host_spans} == {"host:request", "host:chat gpt-4"}
+        assert {span.name for span in loom_spans} == {"agent:agent_run", "tool:create_order"}
+
+        request = _span_by_name(host_spans, "host:request")
+        llm = _span_by_name(host_spans, "host:chat gpt-4")
+        agent = _span_by_name(loom_spans, "agent:agent_run")
+        tool = _span_by_name(loom_spans, "tool:create_order")
+
+        assert _parent_span_id(agent) == _span_id(request)
+        assert _parent_span_id(llm) == _span_id(agent)
+        assert _parent_span_id(tool) == _span_id(agent)
+        assert len({_trace_id(span) for span in (request, llm, agent, tool)}) == 1
+
+    def test_an_empty_endpoint_resolves_the_host_provider_installed_later(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``endpoint=""`` yields a proxy tracer, so import order does not matter."""
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", None, raising=False)
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", trace.Once(), raising=False)
+
+        runtime = ObservabilityRuntime.from_config(
+            ObservabilityConfig(
+                otel=OtelObservabilityConfig(enabled=True, config=OtelConfig(endpoint=""))
+            )
+        )
+
+        host_provider, host_exporter = _exporting_provider()
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", host_provider, raising=False)
+
+        with runtime.span(Scope.USE_CASE, "CreateOrder"):
+            pass
+
+        spans = host_exporter.get_finished_spans()
+        assert len(spans) == 1
+        assert spans[0].name == "use_case:CreateOrder"
+
+    def test_a_configured_endpoint_exports_the_tree_with_no_host_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A root scope closing drains Loom's own batch processor.
+
+        Without the flush a ``BatchSpanProcessor`` would still be holding the
+        run's spans when a short-lived process exits.
+        """
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", None, raising=False)
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", trace.Once(), raising=False)
+        exporter = InMemorySpanExporter()
+        monkeypatch.setattr(_otel_module, "_build_exporter", lambda config: exporter)
+
+        runtime = ObservabilityRuntime.from_config(
+            ObservabilityConfig(
+                otel=OtelObservabilityConfig(
+                    enabled=True,
+                    config=OtelConfig(endpoint="http://collector.invalid:4318/v1/traces"),
+                )
+            )
+        )
+
+        with (
+            runtime.span(Scope.PIPELINE, "DailySales"),
+            runtime.span(Scope.STEP, "LoadOrders"),
+        ):
+            pass
+
+        spans = exporter.get_finished_spans()
+        assert {span.name for span in spans} == {"pipeline:DailySales", "step:LoadOrders"}
+        pipeline = _span_by_name(spans, "pipeline:DailySales")
+        step = _span_by_name(spans, "step:LoadOrders")
+        assert _parent_span_id(step) == _span_id(pipeline)
+        # Loom built that provider for itself and installed nothing globally:
+        # a host SDK is still free to own the process-wide provider.
+        assert trace._TRACER_PROVIDER is None
+
+
+class TestEventStreamIsUnchanged:
+    """The structlog and Prometheus observers see exactly what they saw before.
+
+    Tracing moved; the lifecycle event stream did not. These are the sequences
+    the fan-out produced before spans were opened by the runtime.
+    """
+
+    @staticmethod
+    def _projection(event: LifecycleEvent) -> tuple[object, ...]:
+        return (
+            event.scope,
+            event.name,
+            event.kind,
+            event.trace_id,
+            event.correlation_id,
+            event.id,
+            event.status,
+            event.error,
+            dict(event.meta),
+            event.duration_ms is not None,
+        )
+
+    def test_a_successful_nested_run_emits_the_same_four_events(self) -> None:
+        observer = RecordingObserver()
+        runtime, _ = _exporting_runtime(observer)
+
+        with (
+            runtime.span(
+                Scope.PIPELINE,
+                "DailySales",
+                trace_id=_TRACE_ID_HEX,
+                correlation_id="corr-1",
+                id="run-1",
+                attempt=1,
+            ),
+            runtime.span(Scope.STEP, "LoadOrders", trace_id=_TRACE_ID_HEX),
+        ):
+            pass
+
+        assert [self._projection(event) for event in observer.events] == [
+            (
+                Scope.PIPELINE,
+                "DailySales",
+                EventKind.START,
+                _TRACE_ID_HEX,
+                "corr-1",
+                "run-1",
+                None,
+                None,
+                {"attempt": 1},
+                False,
+            ),
+            (
+                Scope.STEP,
+                "LoadOrders",
+                EventKind.START,
+                _TRACE_ID_HEX,
+                None,
+                None,
+                None,
+                None,
+                {},
+                False,
+            ),
+            (
+                Scope.STEP,
+                "LoadOrders",
+                EventKind.END,
+                _TRACE_ID_HEX,
+                None,
+                None,
+                "success",
+                None,
+                {},
+                True,
+            ),
+            (
+                Scope.PIPELINE,
+                "DailySales",
+                EventKind.END,
+                _TRACE_ID_HEX,
+                "corr-1",
+                "run-1",
+                "success",
+                None,
+                {"attempt": 1},
+                True,
+            ),
+        ]
+
+    def test_a_failing_run_emits_the_same_error_event(self) -> None:
+        observer = RecordingObserver()
+        runtime, _ = _exporting_runtime(observer)
+
+        with (
+            pytest.raises(ValueError),
+            runtime.span(Scope.STEP, "LoadOrders", trace_id=_TRACE_ID_HEX, id="step-1"),
+        ):
+            raise ValueError("boom")
+
+        assert [self._projection(event) for event in observer.events] == [
+            (
+                Scope.STEP,
+                "LoadOrders",
+                EventKind.START,
+                _TRACE_ID_HEX,
+                None,
+                "step-1",
+                None,
+                None,
+                {},
+                False,
+            ),
+            (
+                Scope.STEP,
+                "LoadOrders",
+                EventKind.ERROR,
+                _TRACE_ID_HEX,
+                None,
+                "step-1",
+                "failure",
+                "boom",
+                {"error_type": "ValueError"},
+                True,
+            ),
+        ]
+
+    def test_an_observer_failure_still_does_not_interrupt_the_body(self) -> None:
+        class _Broken:
+            def on_event(self, event: LifecycleEvent) -> None:
+                raise RuntimeError("observer is down")
+
+        observer = RecordingObserver()
+        provider, exporter = _exporting_provider()
+        runtime = ObservabilityRuntime([_Broken(), observer], tracer=provider.get_tracer("loom"))
+
+        with runtime.span(Scope.USE_CASE, "CreateOrder"):
+            pass
+
+        assert [event.kind for event in observer.events] == [EventKind.START, EventKind.END]
+        assert len(exporter.get_finished_spans()) == 1

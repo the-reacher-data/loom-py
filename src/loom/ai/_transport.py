@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from typing import Final
 
 from starlette.requests import Request
@@ -30,6 +30,7 @@ from loom.ai.abc import ErrorEvent
 from loom.ai.config import AgentEndpointConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity, current_identity
+from loom.core.observability.span import LoomSpan
 
 BODY_OVERHEAD_BYTES: Final[int] = 64 * 1024
 """Headroom over ``max_prompt_bytes`` for the JSON envelope around the prompt.
@@ -159,39 +160,42 @@ def require_caller(name: str, endpoint: AgentEndpointConfig | None) -> Identity:
 
 
 @contextmanager
-def always_closed(span: AbstractContextManager[None]) -> Iterator[None]:
-    """Enter *span* and close it whatever ends the body, including a disconnect.
+def always_closed(span: LoomSpan) -> Iterator[None]:
+    """Close *span* whatever ends the body, including a client disconnect.
 
-    :meth:`~loom.core.observability.runtime.ObservabilityRuntime.span` emits its
-    terminal event for a normal exit or an ``Exception`` only. A client that
-    walks away from a stream ends the generator serving it with
+    A client that walks away from a stream ends the generator serving it with
     ``CancelledError`` or ``GeneratorExit`` — neither is an ``Exception`` — so
     without this adapter every abandoned stream would leave a span that emitted
     ``START`` and nothing else. A disconnect closes the span as a normal end:
     the run was not the thing that failed.
 
+    The span is an already-open
+    :class:`~loom.core.observability.span.LoomSpan` rather than a context
+    manager entered here: the two ends of a streaming run happen in two
+    different ``asend`` calls, so a span made current on entry would have its
+    context token detached in a context that never attached it.
+
     Args:
-        span: Span context manager to enter, and to close exactly once.
+        span: Open span handle to close exactly once.
 
     Yields:
         ``None``, with the span open.
 
     Example::
 
-        with always_closed(observability.span(Scope.AGENT, "agent_run")):
+        with always_closed(observability.open_span(Scope.AGENT, "agent_run")):
             ...
     """
-    span.__enter__()
     try:
         yield
     except Exception as exc:
-        span.__exit__(type(exc), exc, exc.__traceback__)
+        span.fail(exc)
         raise
     except BaseException:
-        span.__exit__(None, None, None)
+        span.end()
         raise
     else:
-        span.__exit__(None, None, None)
+        span.end()
 
 
 def failure_event(exc: BaseException) -> ErrorEvent:

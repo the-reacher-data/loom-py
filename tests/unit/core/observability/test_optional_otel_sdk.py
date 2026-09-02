@@ -115,12 +115,14 @@ with runtime.span(Scope.JOB, "sdk-less"):
 
 assert not sdk_was_imported(), "the shared-provider path must not need the SDK"
 print("OBSERVERS:" + str([type(o).__name__ for o in runtime.observers]))
+print("TRACER:" + type(runtime.tracer).__name__)
 """
         )
 
-        assert _marked_lines(result, "OBSERVERS") == [
-            "['StructlogLifecycleObserver', 'OtelLifecycleObserver']"
-        ]
+        assert _marked_lines(result, "OBSERVERS") == ["['StructlogLifecycleObserver']"]
+        # The API's proxy, not the API's no-op: it resolves to the host's
+        # provider whenever one is installed, without importing the SDK here.
+        assert _marked_lines(result, "TRACER") == ["ProxyTracer"]
 
 
 class TestOtelRequestedWithoutTheSdk:

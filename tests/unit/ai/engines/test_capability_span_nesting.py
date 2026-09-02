@@ -1,0 +1,103 @@
+"""The tool span of a capability call nests under the run's agent span.
+
+The two spans are opened by different layers — the agent span by the HTTP or
+A2A surface, the tool span by the engine's capability wrapper — and they only
+meet through the OTEL context. This drives the engine's real
+``capability_call`` inside a real agent span and asserts the exported tree.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
+
+from loom.ai.engines.pydantic_ai._guards import BuildContext, capability_call
+from loom.ai.errors import AgentRunError, AgentRunErrorCode
+from loom.core.di import LoomContainer
+from loom.core.identity import Identity
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
+
+_IDENTITY = Identity(subject="tester")
+
+
+def _tracing_runtime() -> tuple[ObservabilityRuntime, InMemorySpanExporter]:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return ObservabilityRuntime([], tracer=provider.get_tracer("loom.ai")), exporter
+
+
+def _by_name(spans: tuple[ReadableSpan, ...], name: str) -> ReadableSpan:
+    matches = [span for span in spans if span.name == name]
+    assert len(matches) == 1, f"expected exactly one {name!r} span, got {len(matches)}"
+    return matches[0]
+
+
+def _span_id(span: ReadableSpan) -> int:
+    context = span.get_span_context()
+    assert context is not None
+    return context.span_id
+
+
+def _parent_span_id(span: ReadableSpan) -> int | None:
+    return None if span.parent is None else span.parent.span_id
+
+
+@pytest.mark.asyncio
+async def test_tool_span_is_a_child_of_the_agent_span() -> None:
+    runtime, exporter = _tracing_runtime()
+    context = BuildContext(
+        agent="analyst",
+        container=LoomContainer(),
+        observability=runtime,
+        timeout_s=5.0,
+    )
+
+    agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+    with agent.as_current():
+        async with capability_call(context, "usecase", "create_order", _IDENTITY):
+            await asyncio.sleep(0)
+    agent.end()
+
+    spans = exporter.get_finished_spans()
+    agent_span = _by_name(spans, "agent:agent_run")
+    tool_span = _by_name(spans, "tool:create_order")
+    assert _parent_span_id(tool_span) == _span_id(agent_span)
+    assert _parent_span_id(agent_span) is None
+    assert tool_span.status.status_code is StatusCode.OK
+    assert tool_span.attributes is not None
+    assert tool_span.attributes["capability"] == "usecase"
+    assert tool_span.attributes["subject"] == "tester"
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_tool_closes_its_span_as_an_error_under_the_agent_span() -> None:
+    runtime, exporter = _tracing_runtime()
+    context = BuildContext(
+        agent="analyst",
+        container=LoomContainer(),
+        observability=runtime,
+        timeout_s=0.001,
+    )
+
+    agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
+    with agent.as_current(), pytest.raises(AgentRunError) as raised:
+        async with capability_call(context, "usecase", "create_order", _IDENTITY):
+            await asyncio.sleep(0.5)
+    agent.end()
+
+    assert raised.value.code is AgentRunErrorCode.TOOL_TIMEOUT
+    spans = exporter.get_finished_spans()
+    tool_span = _by_name(spans, "tool:create_order")
+    agent_span = _by_name(spans, "agent:agent_run")
+    assert tool_span.status.status_code is StatusCode.ERROR
+    assert _parent_span_id(tool_span) == _span_id(agent_span)
+    # The agent span outlives the tool failure: the run reports it, the
+    # transport decides the outcome.
+    assert agent_span.status.status_code is StatusCode.OK

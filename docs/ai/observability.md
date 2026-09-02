@@ -56,15 +56,17 @@ own**:
 - **`endpoint: "https://collector…"`** — loom constructs its own
   `TracerProvider` with its own `BatchSpanProcessor` and its own exporter.
 
-Set both and you get **two providers in one process**: loom's spans go to
-loom's collector, Logfire's instrumented spans go to Logfire's, they carry
-different trace ids, and neither view is complete. Nothing raises — it simply
-produces two half-traces.
+Set both and you get **two providers in one process**. The trace itself stays
+intact — the OTel *context* is global even though the provider is not, so the
+spans still nest and still share one trace id — but each provider exports only
+its own spans, so loom's half lands in loom's collector and Logfire's half in
+Logfire's. Nothing raises; you simply have to query two backends to see one
+trace.
 
-**Pick one.** Using Logfire (or any other OTel distribution that configures
-the global provider) means `endpoint` stays empty and that distribution owns
-the export. Configuring `endpoint` means loom owns the export and you should
-not also call `logfire.configure()`.
+**Pick one**, unless both exporters point at the same collector. Using Logfire
+(or any other OTel distribution that configures the global provider) means
+`endpoint` stays empty and that distribution owns the export. Configuring
+`endpoint` means loom owns the export.
 ```
 
 Without Logfire nothing changes: leave `endpoint` set and loom builds and
@@ -80,41 +82,29 @@ call, the tool calls, the FastAPI handler) end up in the same backend and
 **share a trace id**. You can retrieve everything belonging to one request, and
 correlate a slow agent run with the model call inside it.
 
-```{admonition} Span nesting does not work yet
+Spans **nest**: loom opens each of its spans as the *current* span for the
+duration of the work it covers, so an LLM call instrumented by Logfire hangs
+off the agent run that made it, and a tool span hangs off the same run. A
+waterfall view shows one tree.
+
+The same holds in the other direction, and across pillars: a loom span opened
+inside a Logfire-instrumented FastAPI handler is a child of that handler's
+span, and ETL's `PIPELINE` / `PROCESS` / `STEP` and streaming's `POLL_CYCLE` /
+`NODE` spans form trees of their own.
+
+```{admonition} One exception: parallel ETL groups
 :class: warning
 
-Spans from loom and spans from the engine share a trace id but **do not hang
-off each other**. You get two flat sets of spans correlated by id, not one
-nested tree. A waterfall view will not show the model call indented under the
-agent run.
-
-The cause is in `OtelLifecycleObserver`, which has two independent
-parent-linking mechanisms and **neither of them works**:
-
-1. It calls `start_span()` and never makes the span *current* in the OTel
-   context. Anything started inside a loom span — including everything
-   Logfire instruments, which resolves its parent from the current context —
-   cannot see it.
-2. Its own registry-based parent lookup builds the key in a different format
-   from the one it stores under, so the parent is never found.
-
-This is not specific to the AI pillar: the same flatness affects the
-streaming pillar's `POLL_CYCLE` / `NODE` / `WRITE` spans.
-
-Fixing it is neither small nor additive — activating spans changes trace
-shape for ETL, streaming and REST simultaneously, and the observer's
-START/END-as-two-calls design makes both `use_span` and `attach`/`detach`
-unsafe as written. It was therefore deliberately taken out of this feature
-and specified separately in
-`specs/feature/observability/otel_span_nesting_and_logfire.md`.
-
-Until that lands: **correlate by trace id, not by parentage.**
+Processes and steps inside a `ParallelProcessGroup` or `ParallelStepGroup` are
+submitted to a thread pool without copying the OTel context, so their spans
+are roots rather than children of the pipeline span. Sequential runs are
+unaffected.
 ```
 
-Sharing a provider gives a shared trace id. Nesting needs a shared *active
-context*, and that is exactly what is missing. Claiming "one correlated trace"
-would look right in a demo and be wrong in an incident, so it is not claimed
-here.
+Sharing a provider gives a shared trace id; nesting comes from the shared
+*active context*, which is global whether or not the provider is. That is why
+loom never calls `set_tracer_provider`: it takes ownership of nothing, and
+still parents correctly in both directions.
 
 ## What the spans carry
 

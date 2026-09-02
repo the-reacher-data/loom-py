@@ -1,8 +1,12 @@
-"""OpenTelemetry lifecycle observer — emits spans and optional log correlation.
+"""OpenTelemetry wiring — tracer construction, log correlation, log export.
 
 Only ``opentelemetry-api`` is imported at module scope. The SDK and the OTLP
 exporters are extras-only, so every import that touches them is deferred to the
 call that needs them and guarded with an actionable error.
+
+Spans are not opened here: they are opened by
+:class:`~loom.core.observability.runtime.ObservabilityRuntime`, the only place
+that owns one lexical scope covering both ends of a unit of work.
 """
 
 from __future__ import annotations
@@ -10,24 +14,15 @@ from __future__ import annotations
 import atexit
 import logging
 import os
-import threading
 from collections.abc import Callable, MutableMapping
 from typing import TYPE_CHECKING, Any, cast
 
 from opentelemetry import _logs as otel_logs
 from opentelemetry import trace
-from opentelemetry.trace import (
-    NonRecordingSpan,
-    SpanContext,
-    StatusCode,
-    TraceFlags,
-    TraceState,
-    set_span_in_context,
-)
+from opentelemetry.trace import Tracer
 
 from loom.core.config.observability import OtelConfig
-from loom.core.observability.event import EventKind, LifecycleEvent
-from loom.core.observability.topology import ROOT_SCOPES, span_parent_key
+from loom.core.observability.protocol import SpanFlusher
 
 if TYPE_CHECKING:  # SDK types are extras-only: never import them at runtime here.
     from opentelemetry.sdk._logs import LoggingHandler
@@ -104,100 +99,27 @@ def _load_log_exporter_cls(protocol: str) -> type[Any]:
     return HttpLogExporter
 
 
-class OtelLifecycleObserver:
-    """Lifecycle observer that emits OpenTelemetry spans for every ``span()`` call.
+def build_tracer(config: OtelConfig) -> tuple[Tracer, SpanFlusher | None]:
+    """Build the tracer Loom opens its spans on, and the exporter to flush.
 
-    Each ``START`` event opens a span keyed by ``scope:name:trace_id``. The
-    matching ``END`` or ``ERROR`` event closes it. Concurrent spans with
-    different ``trace_id`` values are tracked independently.
-
-    When the runtime enables log export, it installs a structlog processor
-    that adds the active OTEL trace and span IDs to every log entry.
+    An empty endpoint shares whatever provider the host process installed —
+    a proxy that resolves lazily when there is none yet — and needs no SDK. A
+    configured endpoint builds a ``TracerProvider`` private to Loom, which is
+    never installed globally, so Loom exports its own spans without taking
+    ownership of the process-wide provider.
 
     Args:
         config: OTLP exporter configuration.
+
+    Returns:
+        The tracer, and the provider to force-flush when Loom owns one.
+
+    Raises:
+        ValueError: If the protocol is unsupported or its OTLP exporter
+            package is not installed.
+        ImportError: If ``opentelemetry-sdk`` is not installed.
     """
-
-    def __init__(self, config: OtelConfig) -> None:
-        config.validate()
-        self._tracer, self._provider = _build_tracer(config)
-        self._spans = _SpanRegistry()
-
-    def on_event(self, event: LifecycleEvent) -> None:
-        """Handle one lifecycle event.
-
-        Args:
-            event: Lifecycle event from the runtime.
-        """
-        match event.kind:
-            case EventKind.START:
-                self._open_span(event)
-            case EventKind.END:
-                self._close_span(event, ok=True)
-            case EventKind.ERROR:
-                self._close_span(event, ok=False)
-
-    def _open_span(self, event: LifecycleEvent) -> None:
-        attrs = event.otel_attributes()
-
-        parent_span = self._spans.get(span_parent_key(event.scope, event.trace_id))
-        parent_ctx = (
-            set_span_in_context(parent_span)
-            if parent_span is not None
-            else _trace_parent_context(event.trace_id)
-        )
-
-        span = self._tracer.start_span(
-            event.otel_span_name(),
-            context=parent_ctx,
-            attributes=attrs,
-        )
-        self._spans.put(_span_key(event), span)
-
-    def _close_span(self, event: LifecycleEvent, *, ok: bool) -> None:
-        span = self._spans.pop(_span_key(event))
-        if span is None:
-            return
-        if event.duration_ms is not None:
-            span.set_attribute("duration_ms", event.duration_ms)
-        if ok:
-            span.set_status(StatusCode.OK)
-        else:
-            span.set_status(StatusCode.ERROR, event.error or "")
-        span.end()
-        if (
-            event.scope in ROOT_SCOPES
-            and self._provider is not None
-            and hasattr(self._provider, "force_flush")
-        ):
-            self._provider.force_flush()
-
-
-class _SpanRegistry:
-    """Thread-safe in-memory registry mapping span keys to active spans."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._spans: dict[str, Any] = {}
-
-    def put(self, key: str, span: Any) -> None:
-        with self._lock:
-            self._spans[key] = span
-
-    def get(self, key: str) -> Any | None:
-        with self._lock:
-            return self._spans.get(key)
-
-    def pop(self, key: str) -> Any | None:
-        with self._lock:
-            return self._spans.pop(key, None)
-
-
-def _span_key(event: LifecycleEvent) -> str:
-    return f"{event.scope}:{event.name}:{event.trace_id or ''}"
-
-
-def _build_tracer(config: OtelConfig) -> tuple[Any, Any | None]:
+    config.validate()
     if not config.endpoint.strip():
         return trace.get_tracer(config.tracer_name, config.tracer_version or None), None
 
@@ -224,27 +146,6 @@ def _build_exporter(config: OtelConfig) -> Any:
     if config.protocol == "grpc":
         kwargs["insecure"] = config.insecure
     return exporter_cls(**kwargs)
-
-
-def _trace_parent_context(trace_id: str | None) -> Any | None:
-    if trace_id is None:
-        return None
-    try:
-        trace_id_int = int(trace_id, 16)
-    except ValueError:
-        return None
-    if trace_id_int == 0:
-        return None
-    parent = NonRecordingSpan(
-        SpanContext(
-            trace_id=trace_id_int,
-            span_id=1,
-            is_remote=True,
-            trace_flags=TraceFlags(TraceFlags.SAMPLED),
-            trace_state=TraceState(),
-        )
-    )
-    return set_span_in_context(parent)
 
 
 def build_log_correlation_processor() -> Callable[
@@ -366,7 +267,7 @@ def _resolve_log_protocol(config: OtelConfig) -> str:
 
 
 __all__ = [
-    "OtelLifecycleObserver",
     "build_log_correlation_processor",
+    "build_tracer",
     "install_otel_log_export",
 ]

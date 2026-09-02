@@ -12,12 +12,14 @@ from loom.core.observability.config import (
 from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.protocol import LifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 
 __all__ = [
     "EventKind",
     "LifecycleEvent",
     "LifecycleObserver",
     "LifecycleStatus",
+    "LoomSpan",
     "ObservabilityRuntime",
     "Scope",
     "LogObservabilityConfig",

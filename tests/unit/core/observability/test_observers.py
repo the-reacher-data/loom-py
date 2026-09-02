@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import cast
 
 import pytest
 import structlog
-from opentelemetry import trace
-from opentelemetry.context import Context
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 
 from loom.core.config.observability import OtelConfig
@@ -16,12 +13,11 @@ from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.observer import otel as _otel_module
 from loom.core.observability.observer.noop import NoopObserver
 from loom.core.observability.observer.otel import (
-    OtelLifecycleObserver,
     build_log_correlation_processor,
     install_otel_log_export,
 )
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
-from loom.core.observability.topology import ROOT_SCOPES, parent_scope, span_parent_key
+from loom.core.observability.topology import ROOT_SCOPES
 
 
 class TestNoopObserver:
@@ -62,68 +58,6 @@ class TestLifecycleEventHelpers:
             "trace_id": "trace-1",
             "id": "run-1",
             "correlation_id": "corr-1",
-            "flow": "ingest",
-        }
-
-
-class TestOtelLifecycleObserver:
-    def test_start_event_uses_message_trace_as_parent_context(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        captured: dict[str, object] = {}
-
-        class _FakeSpan:
-            def end(self) -> None:
-                return None
-
-            def set_attribute(self, *_: object, **__: object) -> None:
-                return None
-
-            def set_status(self, *_: object, **__: object) -> None:
-                return None
-
-        class _FakeTracer:
-            def start_span(
-                self, name: str, *, context: object | None = None, attributes: object | None = None
-            ) -> _FakeSpan:
-                captured["name"] = name
-                captured["context"] = context
-                captured["attributes"] = attributes
-                return _FakeSpan()
-
-        monkeypatch.setattr(
-            "loom.core.observability.observer.otel._build_tracer",
-            lambda config: (_FakeTracer(), None),
-        )
-
-        observer = OtelLifecycleObserver(
-            OtelConfig(endpoint="", service_name="loom", tracer_name="loom.test")
-        )
-        event = LifecycleEvent.start(
-            scope=Scope.NODE,
-            name="transform",
-            trace_id="4b3f9a1c2d8e0f7b6a5c3e1d9f2b4a0c",
-            correlation_id="corr-1",
-            id="run-1",
-            meta={"flow": "ingest"},
-        )
-
-        observer.on_event(event)
-
-        parent_ctx = captured["context"]
-        assert parent_ctx is not None
-        typed_ctx = cast(Context | None, parent_ctx)
-        current_span = trace.get_current_span(typed_ctx)
-        assert event.trace_id is not None
-        assert current_span.get_span_context().trace_id == int(event.trace_id, 16)
-        assert captured["name"] == "node:transform"
-        assert captured["attributes"] == {
-            "scope": "node",
-            "name": "transform",
-            "trace_id": "4b3f9a1c2d8e0f7b6a5c3e1d9f2b4a0c",
-            "correlation_id": "corr-1",
-            "id": "run-1",
             "flow": "ingest",
         }
 
@@ -400,11 +334,3 @@ class TestObservabilityTopology:
     def test_root_scopes_are_declared_explicitly(self) -> None:
         assert Scope.USE_CASE in ROOT_SCOPES
         assert Scope.NODE not in ROOT_SCOPES
-
-    def test_parent_scope_mapping_is_explicit(self) -> None:
-        assert parent_scope(Scope.NODE) is Scope.POLL_CYCLE
-        assert parent_scope(Scope.TRANSPORT) is Scope.POLL_CYCLE
-        assert parent_scope(Scope.USE_CASE) is None
-
-    def test_span_parent_key_uses_parent_scope_and_trace_id(self) -> None:
-        assert span_parent_key(Scope.NODE, "t-1") == "poll_cycle::t-1"

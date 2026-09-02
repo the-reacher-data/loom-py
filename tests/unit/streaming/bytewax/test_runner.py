@@ -9,11 +9,14 @@ import msgspec
 import pytest
 import uvloop
 from bytewax.dataflow import Dataflow
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from loom.core.async_bridge import build_backend_options as _build_backend_options
 from loom.core.config import ConfigContext
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
-from loom.core.observability.observer.otel import OtelLifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow
 from loom.streaming.bytewax.runner import (
@@ -160,13 +163,19 @@ class TestStreamingRunner:
         self,
         bytewax_stream_flow: StreamFlow[Order, Result],
         bytewax_runtime_config_dict: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """``endpoint=""`` wires the host's provider, so its spans are exported."""
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        monkeypatch.setattr(trace, "_TRACER_PROVIDER", provider, raising=False)
 
-        assert any(
-            isinstance(obs, OtelLifecycleObserver)
-            for obs in runner._observability_runtime.observers
-        )
+        with runner._observability_runtime.span(Scope.POLL_CYCLE, "orders"):
+            pass
+
+        assert [span.name for span in exporter.get_finished_spans()] == ["poll_cycle:orders"]
 
     def test_from_yaml_loads_runtime_section(
         self,
@@ -405,11 +414,17 @@ class TestPrepareRunErrorSinks:
         bytewax_runtime_config_dict: dict[str, object],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        from loom.streaming.bytewax.runner import ErrorSink
         from loom.streaming.core._errors import ErrorKind
 
         runner = StreamingRunner.from_dict(bytewax_stream_flow, bytewax_runtime_config_dict)
         received_kwargs: dict[str, object] = {}
-        error_sink_value = object()
+
+        class _StubErrorSink:
+            def build(self, step_id: str, worker_index: int, worker_count: int) -> object:
+                return object()
+
+        error_sink_value: ErrorSink = _StubErrorSink()
 
         def _fake_prepare_run(
             plan: object,
