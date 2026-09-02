@@ -93,25 +93,25 @@ class TestBuildTracerSdkGuard:
     """``_build_tracer`` resolves the exporter before the SDK, and says so."""
 
     def test_returns_the_ambient_tracer_without_an_endpoint(self) -> None:
-        tracer, provider = otel._build_tracer(OtelConfig(endpoint=""))
+        tracer, provider = otel.build_tracer(OtelConfig(endpoint=""))
         assert provider is None
         assert tracer is not None
 
     def test_names_the_missing_exporter_before_the_missing_sdk(self) -> None:
         config = OtelConfig(endpoint="http://collector:4318/v1/traces")
         with _without(_HTTP, "opentelemetry.sdk"), pytest.raises(ValueError) as excinfo:
-            otel._build_tracer(config)
+            otel.build_tracer(config)
         assert "http" in str(excinfo.value)
 
     def test_names_the_missing_sdk_when_the_exporter_is_present(self) -> None:
         config = OtelConfig(endpoint="http://collector:4318/v1/traces")
         with _without("opentelemetry.sdk"), pytest.raises(ImportError) as excinfo:
-            otel._build_tracer(config)
+            otel.build_tracer(config)
         assert "opentelemetry-sdk" in str(excinfo.value)
 
     def test_builds_a_private_provider_when_both_are_present(self) -> None:
         config = OtelConfig(endpoint="http://collector:4318/v1/traces")
-        tracer, provider = otel._build_tracer(config)
+        tracer, provider = otel.build_tracer(config)
         assert provider is not None
         assert tracer is not None
         provider.shutdown()

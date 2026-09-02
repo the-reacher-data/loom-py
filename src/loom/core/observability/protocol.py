@@ -1,4 +1,4 @@
-"""LifecycleObserver protocol — the single contract for all observers."""
+"""Structural contracts of the observability runtime."""
 
 from __future__ import annotations
 
@@ -31,4 +31,26 @@ class LifecycleObserver(Protocol):
         ...
 
 
-__all__ = ["LifecycleObserver"]
+class SpanFlusher(Protocol):
+    """Span exporter pipeline the runtime may drain on demand.
+
+    Implemented by ``opentelemetry.sdk.trace.TracerProvider``. Declaring it
+    structurally keeps the SDK — an extras-only dependency — out of the
+    runtime's imports.
+
+    Example::
+
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        flusher: SpanFlusher = provider
+    """
+
+    def force_flush(self) -> bool:
+        """Export every span already ended.
+
+        Returns:
+            ``True`` when the pipeline drained before its own timeout.
+        """
+        ...
+
+
+__all__ = ["LifecycleObserver", "SpanFlusher"]

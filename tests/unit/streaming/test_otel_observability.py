@@ -1,11 +1,15 @@
-"""Tests for streaming OpenTelemetry wiring through core observers."""
+"""Tests for streaming OpenTelemetry wiring through the observability runtime."""
 
 from __future__ import annotations
 
-from loom.core.config.observability import OtelConfig
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
+
 from loom.core.observability.config import ObservabilityConfig
-from loom.core.observability.event import LifecycleEvent, LifecycleStatus, Scope
-from loom.core.observability.observer.otel import OtelLifecycleObserver
+from loom.core.observability.event import Scope
+from loom.core.observability.runtime import ObservabilityRuntime
 
 
 def test_observability_config_defaults() -> None:
@@ -17,17 +21,20 @@ def test_observability_config_defaults() -> None:
     assert cfg.prometheus.enabled is False
 
 
-def test_otel_lifecycle_observer_accepts_streaming_lifecycle_events() -> None:
-    observer = OtelLifecycleObserver(config=OtelConfig(endpoint="", service_name="loom"))
+def test_streaming_scopes_export_one_nested_trace() -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    runtime = ObservabilityRuntime([], tracer=provider.get_tracer("loom.streaming"))
 
-    observer.on_event(LifecycleEvent.start(scope=Scope.POLL_CYCLE, name="orders"))
-    observer.on_event(
-        LifecycleEvent.end(
-            scope=Scope.POLL_CYCLE,
-            name="orders",
-            duration_ms=50,
-            status=LifecycleStatus.SUCCESS,
-        )
-    )
+    with runtime.span(Scope.POLL_CYCLE, "orders"), runtime.span(Scope.NODE, "transform"):
+        pass
 
-    assert isinstance(observer, OtelLifecycleObserver)
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert set(spans) == {"poll_cycle:orders", "node:transform"}
+    node_parent = spans["node:transform"].parent
+    poll_cycle_context = spans["poll_cycle:orders"].get_span_context()
+    assert node_parent is not None
+    assert poll_cycle_context is not None
+    assert node_parent.span_id == poll_cycle_context.span_id
+    assert spans["poll_cycle:orders"].status.status_code is StatusCode.OK

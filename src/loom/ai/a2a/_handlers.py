@@ -207,7 +207,7 @@ def _make_stream_handler(
 
         async def _framed() -> AsyncIterator[bytes]:
             with always_closed(
-                observability_runtime.span(
+                observability_runtime.open_span(
                     Scope.AGENT,
                     "agent_run",
                     trace_id=get_trace_id(),

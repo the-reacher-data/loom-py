@@ -1,9 +1,15 @@
 """ObservabilityRuntime — shared fan-out engine for all Loom modules.
 
-The OTEL observer is imported lazily from ``from_config``: it reaches the
+The tracer factory is imported lazily from ``from_config``: it reaches the
 OpenTelemetry SDK and OTLP exporters, which ship as extras only. Keeping that
 import out of module scope is what lets ``loom.core.observability`` be imported
 with nothing but ``opentelemetry-api`` installed.
+
+Loom never calls ``set_tracer_provider``. The OTEL *context* is global, the
+*provider* is not: a span from Loom's own provider therefore nests correctly
+under a host span (logfire, an operator agent) and correctly parents the host
+spans opened inside it, with each provider exporting only its own spans. That
+is what lets Loom coexist with a host SDK without owning anything global.
 """
 
 from __future__ import annotations
@@ -11,19 +17,29 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
+from functools import partial
 from time import perf_counter
 from typing import Self
 
+from opentelemetry.trace import NoOpTracer, Span, Tracer
+
 from loom.core.logger.config import configure_logging_from_values
-from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
-from loom.core.observability.event import (
-    LifecycleEvent,
-    LifecycleStatus,
-    Scope,
+from loom.core.observability.config import (
+    ObservabilityConfig,
+    OtelObservabilityConfig,
+    PrometheusObservabilityConfig,
 )
+from loom.core.observability.event import LifecycleEvent, Scope
 from loom.core.observability.observer.noop import NoopObserver
 from loom.core.observability.observer.structlog import StructlogLifecycleObserver
-from loom.core.observability.protocol import LifecycleObserver
+from loom.core.observability.protocol import LifecycleObserver, SpanFlusher
+from loom.core.observability.span import (
+    LoomSpan,
+    SpanIdentity,
+    apply_terminal_state,
+    elapsed_ms,
+)
+from loom.core.observability.topology import ROOT_SCOPES
 from loom.prometheus.lifecycle import PrometheusLifecycleAdapter
 
 try:
@@ -87,16 +103,29 @@ def _configure_structlog_logging(config: ObservabilityConfig) -> None:
         install_otel_log_export(config.otel.config)
 
 
+def _resolve_tracer(config: OtelObservabilityConfig) -> tuple[Tracer, SpanFlusher | None]:
+    """Resolve the tracer spans are opened on, and the exporter to flush.
+
+    Three cases, in order: OTEL disabled yields an injected no-op tracer with
+    no ambient lookup at all; a configured endpoint yields Loom's own private
+    ``TracerProvider``; an empty endpoint yields whatever provider the host
+    process installed — or a proxy that resolves to it later.
+    """
+    if not config.enabled or config.config is None:
+        return NoOpTracer(), None
+    # Imported lazily: the tracer factory reaches the OpenTelemetry SDK and
+    # OTLP exporters, which are extras-only (see module docstring).
+    from loom.core.observability.observer.otel import build_tracer
+
+    return build_tracer(config.config)
+
+
 def _build_observers(config: ObservabilityConfig) -> list[LifecycleObserver]:
     """Build the observer chain declared by the observability config."""
     observers: list[LifecycleObserver] = []
     if config.log.enabled:
         _configure_structlog_logging(config)
         observers.append(StructlogLifecycleObserver())
-    if config.otel.enabled and config.otel.config is not None:
-        from loom.core.observability.observer.otel import OtelLifecycleObserver
-
-        observers.append(OtelLifecycleObserver(config=config.otel.config))
     if config.prometheus.enabled:
         observers.append(
             PrometheusLifecycleAdapter(
@@ -113,11 +142,15 @@ class ObservabilityRuntime:
     registered observer. Observer failures are logged and discarded — they
     never interrupt the main execution path.
 
+    Spans are opened on the injected tracer. No tracer means no tracing at
+    all: an injected no-op tracer, with no lookup of the ambient provider.
+
     Use :meth:`from_config` to build an instance from YAML-parsed config.
     Use :meth:`noop` in tests and environments without observability.
 
     Args:
         observers: Sequence of lifecycle observers to fan events out to.
+        tracer: Tracer every span is opened on. Defaults to a no-op tracer.
 
     Example::
 
@@ -131,19 +164,28 @@ class ObservabilityRuntime:
         self,
         observers: Sequence[LifecycleObserver],
         *,
+        tracer: Tracer | None = None,
         _scrape_port: int | None = None,
         _scrape_addr: str = "127.0.0.1",
+        _span_flusher: SpanFlusher | None = None,
     ) -> None:
         self._observers = tuple(observers)
+        self._tracer: Tracer = tracer if tracer is not None else NoOpTracer()
         self._scrape_port = _scrape_port
         self._scrape_addr = _scrape_addr
         self._scrape_server_started = False
+        self._span_flusher = _span_flusher
         self._log = logging.getLogger(__name__)
 
     @property
     def observers(self) -> tuple[LifecycleObserver, ...]:
         """Return the configured observer chain."""
         return self._observers
+
+    @property
+    def tracer(self) -> Tracer:
+        """Return the tracer every span of this runtime is opened on."""
+        return self._tracer
 
     def start_scrape_server(self) -> None:
         """Start a standalone Prometheus HTTP scrape server on the configured port.
@@ -171,10 +213,24 @@ class ObservabilityRuntime:
 
         Observer failures are caught, logged at WARNING, and discarded.
 
+        Use this for genuinely unpaired events only: anything with a start and
+        an end belongs in :meth:`span` or :meth:`open_span`, which also open
+        the matching OTEL span.
+
         Args:
             event: Lifecycle event to dispatch.
         """
         self._dispatch(event)
+
+    def _flush_root(self, scope: Scope) -> None:
+        """Drain Loom's own span exporter once a root-scope span has ended.
+
+        A batch processor would otherwise still be holding the spans of a
+        short-lived process — an ETL run, a job — when it exits. Only Loom's
+        own provider is drained: a host-owned provider is not Loom's to drive.
+        """
+        if self._span_flusher is not None and scope in ROOT_SCOPES:
+            self._span_flusher.force_flush()
 
     def _dispatch(self, event: LifecycleEvent) -> None:
         """Forward one event to each observer with isolated failures."""
@@ -198,10 +254,19 @@ class ObservabilityRuntime:
         correlation_id: str | None = None,
         **meta: object,
     ) -> Generator[None, None, None]:
-        """Context manager that emits ``START`` on entry and ``END`` or ``ERROR`` on exit.
+        """Open one span, emitting ``START`` on entry and ``END``/``ERROR`` on exit.
 
-        Duration is measured with ``perf_counter`` and attached to the closing event.
-        If the body raises, ``ERROR`` is emitted and the exception re-raised.
+        The OTEL span is made current for the whole body, so anything that
+        opens a span inside — a Loom span, a third-party instrumentation, the
+        host SDK — nests under it. Duration is measured with ``perf_counter``
+        and attached to the closing event. If the body raises an ``Exception``,
+        the failure is recorded on the span, ``ERROR`` is emitted, and the
+        exception is re-raised.
+
+        Precondition: the ``with`` block is entered and exited in the same
+        context. Driving it by hand across ``asend`` boundaries of an async
+        generator detaches a context token in a context that never attached
+        it. Use :meth:`open_span` for that shape.
 
         Args:
             scope: Logical unit of work — one of the values in
@@ -216,60 +281,100 @@ class ObservabilityRuntime:
             with runtime.span(Scope.NODE, "transform", trace_id=tid, flow="ingest"):
                 result = transform(message)
         """
-        start = perf_counter()
-        meta_dict = dict(meta)
-        # Promote ``id`` from meta to the LifecycleEvent's first-class ``id``
-        # field so observers can correlate START/END/ERROR events without
-        # reaching into the ``meta`` dict.
-        _raw_event_id = meta_dict.pop("id", None)
-        event_id: str | None = str(_raw_event_id) if _raw_event_id is not None else None
-        self.emit(
-            LifecycleEvent.start(
-                scope=scope,
-                name=name,
-                trace_id=trace_id,
-                correlation_id=correlation_id,
-                id=event_id,
-                meta=meta_dict,
-            )
+        identity = SpanIdentity.build(
+            scope, name, trace_id=trace_id, correlation_id=correlation_id, meta=meta
         )
+        start_event = identity.start_event()
+        started = perf_counter()
         try:
-            yield
-        except Exception as exc:
-            self.emit(
-                LifecycleEvent.exception(
-                    scope=scope,
-                    name=name,
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    id=event_id,
-                    duration_ms=(perf_counter() - start) * 1000,
-                    error=str(exc),
-                    meta={**meta_dict, "error_type": type(exc).__name__},
-                )
-            )
-            raise
-        else:
-            self.emit(
-                LifecycleEvent.end(
-                    scope=scope,
-                    name=name,
-                    trace_id=trace_id,
-                    correlation_id=correlation_id,
-                    id=event_id,
-                    duration_ms=(perf_counter() - start) * 1000,
-                    status=LifecycleStatus.SUCCESS,
-                    meta=meta_dict,
-                )
-            )
+            # Both exception flags default to True: leaving them implicit would
+            # record the exception and set the status twice, once here and once
+            # in the SDK's own exit handler.
+            with self._tracer.start_as_current_span(
+                start_event.otel_span_name(),
+                attributes=start_event.otel_attributes(),
+                record_exception=False,
+                set_status_on_exception=False,
+            ) as otel_span:
+                self.emit(start_event)
+                try:
+                    yield
+                except Exception as exc:
+                    otel_span.record_exception(exc)
+                    self._close_span(otel_span, identity.error_event(exc, elapsed_ms(started)))
+                    raise
+                else:
+                    self._close_span(otel_span, identity.end_event(elapsed_ms(started)))
+        finally:
+            # Outside the ``with``: the span of this run is already ended by
+            # the time its exporter is drained.
+            self._flush_root(scope)
+
+    def open_span(
+        self,
+        scope: Scope,
+        name: str,
+        *,
+        trace_id: str | None = None,
+        correlation_id: str | None = None,
+        **meta: object,
+    ) -> LoomSpan:
+        """Open a span whose end does not share a lexical scope with its start.
+
+        The returned handle is never made current, so it can be closed from a
+        different context than the one that opened it — the shape a streaming
+        response has, where the span opens on one ``asend`` and closes on
+        another. Its parent is captured now, from the current context.
+
+        Prefer :meth:`span` whenever the span opens and closes together.
+
+        Args:
+            scope: Logical unit of work — one of the values in
+                :class:`~loom.core.observability.event.Scope`.
+            name: Operation name within the scope.
+            trace_id: Trace identifier propagated to every event of the span.
+            correlation_id: Business lineage identifier propagated likewise.
+            **meta: Domain-specific fields forwarded as top-level keys in ``event.meta``.
+
+        Returns:
+            The open span handle. The caller owns closing it exactly once with
+            :meth:`~loom.core.observability.span.LoomSpan.end` or
+            :meth:`~loom.core.observability.span.LoomSpan.fail`.
+
+        Example::
+
+            handle = runtime.open_span(Scope.AGENT, "agent_run", agent=name)
+            with always_closed(handle):
+                async for frame in frames:
+                    yield frame
+        """
+        identity = SpanIdentity.build(
+            scope, name, trace_id=trace_id, correlation_id=correlation_id, meta=meta
+        )
+        return LoomSpan.open(
+            tracer=self._tracer,
+            identity=identity,
+            emit=self.emit,
+            on_closed=partial(self._flush_root, scope),
+        )
+
+    def _close_span(self, otel_span: Span, event: LifecycleEvent) -> None:
+        """Stamp the outcome on the span and emit its closing event."""
+        apply_terminal_state(otel_span, event)
+        self.emit(event)
 
     @classmethod
     def from_config(cls, config: ObservabilityConfig) -> Self:
         """Build an ``ObservabilityRuntime`` from an ``ObservabilityConfig``.
 
-        Observers are instantiated in order: structlog → OTEL → Prometheus.
-        When no backend is enabled, a :class:`~loom.core.observability.observer.noop.NoopObserver`
-        is used so the runtime is always safe to call.
+        Observers are instantiated in order: structlog → Prometheus. When no
+        backend is enabled, a
+        :class:`~loom.core.observability.observer.noop.NoopObserver` is used so
+        the runtime is always safe to call.
+
+        The tracer is resolved from the OTEL section: none when OTEL is off,
+        Loom's own provider when an endpoint is configured, and the host's
+        provider when the endpoint is empty.
 
         Calling ``configure_logging_from_values`` from inside this method
         guarantees that the structlog pipeline is configured before any
@@ -300,10 +405,15 @@ class ObservabilityRuntime:
             )
 
         observers = _build_observers(config)
+        tracer, flusher = _resolve_tracer(config.otel)
         scrape_port = _resolve_scrape_port(config.prometheus)
         scrape_addr = _resolve_scrape_addr(config.prometheus)
         return cls(
-            observers or [NoopObserver()], _scrape_port=scrape_port, _scrape_addr=scrape_addr
+            observers or [NoopObserver()],
+            tracer=tracer,
+            _scrape_port=scrape_port,
+            _scrape_addr=scrape_addr,
+            _span_flusher=flusher,
         )
 
     @classmethod
@@ -311,9 +421,10 @@ class ObservabilityRuntime:
         """Build a no-op runtime for tests and environments without observability.
 
         Returns:
-            ``ObservabilityRuntime`` backed by a single ``NoopObserver``.
+            ``ObservabilityRuntime`` backed by a single ``NoopObserver`` and a
+            no-op tracer — no observer call, no span, no ambient lookup.
         """
-        return cls([NoopObserver()])
+        return cls([NoopObserver()], tracer=NoOpTracer())
 
 
 __all__ = ["ObservabilityRuntime"]

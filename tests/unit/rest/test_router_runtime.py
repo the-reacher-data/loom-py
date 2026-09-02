@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from loom.core.bootstrap.bootstrap import BootstrapResult, bootstrap_app
 from loom.core.command import Command, Internal
@@ -670,6 +673,66 @@ def test_create_fastapi_app_emits_use_case_span() -> None:
     assert observer.events[0].name == "PingUseCase"
     assert observer.events[0].meta["route"] == "/ping/"
     assert observer.events[1].meta["status_code"] == 200
+
+
+def test_use_case_span_nests_under_the_request_span_of_a_host_sdk() -> None:
+    """A host's request span parents the use case span, in the host's own trace.
+
+    The ASGI middleware stands in for what an OTEL HTTP instrumentation does in
+    production. Loom never installs a tracer provider globally, so the two
+    providers export separately while sharing one context and one trace.
+    """
+
+    class IFace(RestInterface[str]):
+        prefix = "/ping"
+        routes = (RestRoute(use_case=PingUseCase, method="GET", path="/"),)
+
+    host_exporter = InMemorySpanExporter()
+    host_provider = TracerProvider()
+    host_provider.add_span_processor(SimpleSpanProcessor(host_exporter))
+    loom_exporter = InMemorySpanExporter()
+    loom_provider = TracerProvider()
+    loom_provider.add_span_processor(SimpleSpanProcessor(loom_exporter))
+    host_tracer = host_provider.get_tracer("host.sdk")
+
+    class _HostSpanMiddleware:
+        """Pure-ASGI middleware, so its span is current in the endpoint's task."""
+
+        def __init__(self, app: Any) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            with host_tracer.start_as_current_span("host:request"):
+                await self.app(scope, receive, send)
+
+    result = _bootstrap(PingUseCase)
+    app = create_fastapi_app(
+        result,
+        interfaces=[IFace],
+        observability_runtime=ObservabilityRuntime(
+            [], tracer=loom_provider.get_tracer("loom.rest")
+        ),
+    )
+    app.add_middleware(_HostSpanMiddleware)
+
+    assert TestClient(app).get("/ping/").status_code == 200
+
+    host_spans = host_exporter.get_finished_spans()
+    loom_spans = loom_exporter.get_finished_spans()
+    assert [span.name for span in host_spans] == ["host:request"]
+    assert [span.name for span in loom_spans] == ["use_case:PingUseCase"]
+
+    request_context = host_spans[0].get_span_context()
+    use_case_context = loom_spans[0].get_span_context()
+    use_case_parent = loom_spans[0].parent
+    assert request_context is not None
+    assert use_case_context is not None
+    assert use_case_parent is not None
+    assert use_case_parent.span_id == request_context.span_id
+    assert use_case_context.trace_id == request_context.trace_id
 
 
 def test_create_fastapi_app_routes_work() -> None:

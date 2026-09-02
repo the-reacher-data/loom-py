@@ -172,7 +172,7 @@ def _stream_frames(
 
     The run's single span is opened inside the generator, not around the
     handler: the handler returns as soon as the response exists, while the run
-    lasts for as long as the frames are pulled. Entering it here makes the span
+    lasts for as long as the frames are pulled. Opening it here makes the span
     open on the first frame and close on generator exit — including the
     cancellation of a disconnected client, which
     :func:`~loom.ai._transport.always_closed` turns into a terminal event.
@@ -185,7 +185,7 @@ def _stream_frames(
 
     async def _frames() -> AsyncIterator[bytes]:
         with always_closed(
-            observability_runtime.span(
+            observability_runtime.open_span(
                 Scope.AGENT,
                 "agent_run",
                 trace_id=get_trace_id(),
