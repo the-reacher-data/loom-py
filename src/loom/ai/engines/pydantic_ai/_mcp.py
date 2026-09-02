@@ -12,8 +12,10 @@ Two entry points, one connection recipe — the shape :mod:`._a2a` already uses:
   boundary for the run itself.
 
 Both build the same ``MCPToolset``: the connection rules of one grant — its
-validated URL, and the refusal of a ``headers_ref`` the engine cannot resolve —
-live here once, so start-up cannot validate a server the run would not reach.
+validated URL and its credential — live here once, so start-up cannot validate
+a server the run would not reach.  The credential itself is resolved by
+:mod:`loom.ai.mcp_auth`, which is where the deployment's own strategy plugs in;
+this module only carries the result to the client.
 
 The MCP client ships as an optional ``pydantic-ai-slim`` dependency, so it is
 imported inside the function that needs it: importing it at module load would
@@ -28,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from loom.ai.compiler import CompiledMcpCapability
 from loom.ai.errors import AgentCompilationError, provider_not_installed
+from loom.ai.mcp_auth import headers_from_ref, shared_auth
 
 if TYPE_CHECKING:
     from pydantic_ai.mcp import MCPToolset
@@ -68,17 +71,24 @@ class _ToolsetSession:
 def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     """Build the unfiltered toolset of one grant, applying its connection rules.
 
+    The credential is applied exactly as the deployment declared it: fixed
+    headers from ``headers_ref``, or the object the named strategy builds —
+    one instance per server, shared by every agent granted it.  A server that
+    declares neither is connected exactly as before, which is what lets one
+    artifact move between environments unchanged.
+
     Args:
-        capability: Compiled grant carrying the validated server URL.
+        capability: Compiled grant carrying the validated server URL and the
+            credential resolved for it.
 
     Returns:
         The unfiltered, not yet connected toolset; the caller applies the
         grant's tool filter and the capability boundary.
 
     Raises:
-        AgentCompilationError: When the MCP client is not installed, or the
-            grant carries a ``headers_ref`` no deployment secret resolver
-            reaches from here.
+        AgentCompilationError: When the MCP client is not installed, the
+            ``headers_ref`` payload is not one ``Name=value`` pair, or the
+            named strategy cannot be built.
 
     Example::
 
@@ -88,14 +98,10 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
         from pydantic_ai.mcp import MCPToolset
     except ImportError as exc:
         raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
-    if capability.headers_ref is not None:
-        raise AgentCompilationError(
-            [
-                f"mcp server '{capability.server}': headers_ref cannot be resolved by "
-                f"the engine; the deployment secret resolver does not reach it"
-            ]
-        )
-    toolset: MCPToolset[Any] = MCPToolset(capability.url)
+    component = f"mcp server '{capability.server}'"
+    headers = headers_from_ref(component, capability.headers_ref) or None
+    auth = shared_auth(capability.server, capability.auth)
+    toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=auth)
     return toolset
 
 
@@ -116,7 +122,7 @@ async def create_mcp_client(capability: CompiledMcpCapability) -> AsyncIterator[
 
     Raises:
         AgentCompilationError: When the MCP client is not installed, or the
-            grant carries an unresolvable ``headers_ref``.
+            grant's credential cannot be resolved.
 
     Example::
 

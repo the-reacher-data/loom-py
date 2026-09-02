@@ -81,6 +81,24 @@ class CompiledSqlCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     max_result_bytes: int
 
 
+class CompiledMcpAuth(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Authentication strategy of one MCP server, resolved to a name and settings.
+
+    ``kind`` is separated from the rest of the ``auth`` block once, here, so the
+    engine never re-reads configuration to find out which strategy to build.
+    The settings are carried as ordered pairs rather than a mapping because the
+    plan is a frozen, hashable value.
+
+    Attributes:
+        kind: Strategy name registered in the ``loom.ai.mcp_auth`` group.
+        settings: The rest of the ``auth`` block, passed to the strategy as
+            keyword arguments in declaration order.
+    """
+
+    kind: str
+    settings: tuple[tuple[str, str], ...] = ()
+
+
 class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     """MCP server grant, resolved against ``ai.mcp_servers``.
 
@@ -95,6 +113,8 @@ class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
         server: Configured server name, carried for the self-description.
         url: Validated ``https://`` server URL, free of inline credentials.
         headers_ref: Reference to deployment-resolved headers; never a secret.
+        auth: Named authentication strategy, mutually exclusive with
+            ``headers_ref``; ``None`` when the server needs no credential.
         timeout_ms: Deadline of a single call to this server.
         include: Tool names or glob patterns to expose; empty means all.
         exclude: Tool names or glob patterns to omit, applied after ``include``.
@@ -105,6 +125,7 @@ class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     server: str
     url: str
     headers_ref: str | None = None
+    auth: CompiledMcpAuth | None = None
     timeout_ms: int = 20000
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()

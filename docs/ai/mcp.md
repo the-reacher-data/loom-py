@@ -80,7 +80,7 @@ ai:
   mcp_servers:
     runbooks:
       url: https://runbooks.internal.example.com/mcp
-      headers_ref: RUNBOOKS_MCP_HEADERS   # a reference, never a literal secret
+      headers_ref: ${secrets:/loom/runbooks/api-key}   # resolved, never literal
       timeout_ms: 20000
 ```
 
@@ -105,6 +105,162 @@ rejected fail-closed.
 
 Tool filters are matched against the tools the server really advertises, not
 against what the artifact hoped for.
+
+## Authentication
+
+The MCP specification standardises OAuth 2.0 for HTTP transports, so an
+authenticated server is the expected case. Loom ships **no login flow of its
+own** and hard-codes no vendor: a server names a strategy, and the deployment
+supplies it.
+
+The artifact never changes. It keeps saying `server: runbooks` whether that
+server needs no credential, a fixed key, or a token exchange.
+
+### Which one to reach for
+
+| Your server wants | Use |
+|---|---|
+| A key in a custom header, e.g. `X-API-Key` | `headers_ref` |
+| `Authorization: Bearer <token>` | `auth: {kind: bearer}` |
+| The standard OAuth 2.0 flow | `auth: {kind: oauth}` |
+| Anything else — a token exchange, an identity provider, renewal logic | a strategy you register |
+
+### A fixed key: `headers_ref`
+
+`${secrets:...}` is an OmegaConf resolver, so the value that reaches loom is
+already the resolved payload. That payload is **one `Name=value` header pair**:
+
+```yaml
+ai:
+  mcp_servers:
+    knowledge:
+      url: https://kb.internal.example.com/mcp
+      headers_ref: ${secrets:/loom/kb/api-key}     # stores e.g. X-API-Key=abc123
+```
+
+Anything richer — several headers, a value carrying spaces, a credential that
+must be renewed — belongs in a strategy. A payload that is not one `Name=value`
+pair is refused at start-up with `MCP_HEADERS_REF_INVALID` rather than silently
+sending nothing. Note that `Authorization: Bearer <token>` is *not* expressible
+here, deliberately: the space is what the inline-credential check refuses. Use
+`kind: bearer`, below.
+
+### A strategy: `auth`
+
+```yaml
+ai:
+  mcp_servers:
+    catalog:
+      url: https://catalog.internal.example.com/mcp
+      auth:
+        kind: bearer                               # Authorization: Bearer <token>
+        token_ref: ${secrets:/loom/catalog/token}
+    directory:
+      url: https://directory.internal.example.com/mcp
+      auth:
+        kind: oauth                                # the client's own flow
+    orders:
+      url: https://orders.internal.example.com/mcp
+      auth:
+        kind: agent-session                        # a deployment's own
+        session_url: https://orders.internal.example.com/auth/agent/session
+        bootstrap_ref: ${secrets:/agents/prod/agent-sales}
+```
+
+`kind` names an entry point in the group `loom.ai.mcp_auth`; every other key in
+the block is passed to it as a **keyword argument**. Loom registers three, all
+thin delegations to what the libraries already provide:
+
+| `kind` | Settings | What it does |
+|---|---|---|
+| `oauth` | — | Runs the MCP client library's own standard OAuth flow. Loom implements no part of it. |
+| `bearer` | `token_ref` | Sends `Authorization: Bearer <token>`. |
+| `static` | `headers_ref` | Fixed headers, from the same payload as the shorthand above. |
+
+`bearer` exists because the strategy must **compose the header itself**. The
+composed value carries a space, and configuration refuses a space precisely so
+that no literal credential can hide in one; a token on its own — a JWT is
+base64url with dots — passes that test. So the deployment stores the token and
+loom writes the header.
+
+`headers_ref` and `auth` are **mutually exclusive** on one server: two ways to
+set credentials on one connection is ambiguous, and compilation refuses it with
+`MCP_AUTH_CONFLICT`.
+
+### Writing your own
+
+The contract is [`httpx.Auth`](https://www.python-httpx.org/advanced/authentication/)
+itself, not an abstraction of loom's — nobody has to learn one of ours, and any
+existing `httpx.Auth` in the ecosystem works with no adapter. Register the class
+from **your own package**; loom does not change:
+
+```toml
+# pyproject.toml of your own distribution
+[project.entry-points."loom.ai.mcp_auth"]
+agent-session = "my_package.auth:AgentSessionAuth"
+```
+
+A worked example — a server exposing a session endpoint, where the agent
+presents a long-lived bootstrap secret and receives short-lived tokens:
+
+```python
+import httpx
+
+
+class AgentSessionAuth(httpx.Auth):
+    """Exchange a bootstrap secret for a token, renewed when rejected."""
+
+    def __init__(self, *, session_url: str, bootstrap_ref: str) -> None:
+        self._url = session_url
+        self._ref = bootstrap_ref
+        self._token: str | None = None
+
+    def auth_flow(self, request):
+        if self._token is None:
+            self._token = yield from self._mint()
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        response = yield request
+        if response.status_code == 401:            # expired or revoked
+            self._token = yield from self._mint()  # one renewal, not a loop
+            request.headers["Authorization"] = f"Bearer {self._token}"
+            yield request
+
+    def _mint(self):
+        response = yield httpx.Request(
+            "POST", self._url, json={"secret_path": self._ref}
+        )
+        return response.json()["access_token"]
+```
+
+Retry-with-a-refreshed-credential is httpx's standard generator shape; loom does
+not reimplement it.
+
+If you are designing such an endpoint: this is OAuth 2.0 `client_credentials`
+by another name — `secret_path` is the client id and the bootstrap secret is the
+client secret. Using the standard grant means every MCP client works with no
+custom code on either side. Two properties are easy to add early and painful
+later: the bootstrap secret is a long-lived bearer credential, so plan rotation
+and per-agent revocation; and if the client names the secret path, scope the
+server's read permissions to that prefix and log failed attempts per path.
+
+### What compilation guarantees
+
+- A `kind` that resolves to **no installed entry point** fails at compile time
+  with `MCP_AUTH_STRATEGY_UNKNOWN`, naming the strategy and listing what is
+  registered — not at the first message in production.
+- **No literal secret anywhere in the block.** Every setting is held to the same
+  fail-closed reference test as `headers_ref`, and the rejection never repeats
+  the value it rejected (`MCP_CREDENTIALS_INLINE`).
+- A strategy that cannot be built from its settings fails at start-up with
+  `MCP_AUTH_STRATEGY_INVALID`.
+
+### One instance per server
+
+The authentication object is built **once per server and shared by every agent
+granted it**. The credential belongs to the deployment, not to the agent: a
+renewing strategy holds the live token, so sharing means one renewal instead of
+one per agent, and no burst of simultaneous logins when several agents start
+together.
 
 ## The rule: your own tools are a `usecase` grant
 

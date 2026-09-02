@@ -138,6 +138,14 @@ celery = [
 [project.entry-points."loom.ai.engines"]
 pydantic-ai = "loom.ai.engines.pydantic_ai.provider:PydanticAIEngineProvider"
 
+# Authentication strategies for outbound MCP connections. A deployment plugs
+# in its own from its own package under the same group; loom ships only these
+# three thin delegations. See docs/ai/mcp.md.
+[project.entry-points."loom.ai.mcp_auth"]
+oauth = "loom.ai.mcp_auth:standard_oauth"
+bearer = "loom.ai.mcp_auth:bearer_token"
+static = "loom.ai.mcp_auth:static_headers"
+
 [project.entry-points."loom.etl.backends"]
 polars = "loom.etl.backends.polars.provider:PolarsProvider"
 spark = "loom.etl.backends.spark.provider:SparkProvider"
@@ -149,13 +157,15 @@ requires = [
 build-backend = "hatchling.build"
 
 [dependency-groups]
-# Isolated on purpose: fastmcp pulls ~26 packages and resolves
-# py-key-value-aio backwards (0.4.5 -> 0.3.0), a transitive shared with
-# prefect. The MCP end-to-end test is the only consumer, so the cost is paid
-# by whoever asks for it — `uv sync --group mcp-tests` — not by every
-# contributor's default install. The test skips when fastmcp is absent.
+# Isolated on purpose: fastmcp pulls a large transitive tree that only the MCP
+# tests need, so the cost is paid by whoever asks for it — `uv sync --group
+# mcp-tests` — not by every contributor's default install. Those tests skip
+# when fastmcp is absent.
+# The 4.x floor is not cosmetic: pydantic-ai builds its HTTP transport with
+# `verify=`, which fastmcp only accepts from 4.0 on, so `headers` and `auth`
+# — the whole of MCP authentication — raise TypeError against 2.x.
 mcp-tests = [
-    "fastmcp>=2.12,<3",
+    "fastmcp>=4,<5",
 ]
 
 dev = [
