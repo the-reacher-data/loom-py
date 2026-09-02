@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 from confluent_kafka import TopicPartition
 
+from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming.bytewax import RuntimeConfigurationError, _adapter
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
 from loom.streaming.bytewax.handlers import _shared
@@ -188,7 +189,12 @@ class TestExpandRoutesAccounting:
         declared = frozenset({Order, Result})
 
         _routing._register_row_fanout(
-            self._expanded({Order: [Order(order_id="a")]}), tracker, declared, False
+            self._expanded({Order: [Order(order_id="a")]}),
+            tracker,
+            declared,
+            False,
+            ObservabilityRuntime.noop(),
+            "orders",
         )
         tracker.complete(TOPIC, PARTITION, OFFSET)
 
@@ -201,7 +207,14 @@ class TestExpandRoutesAccounting:
         declared = frozenset({Order})
         rows = [Order(order_id=str(index)) for index in range(4)]
 
-        _routing._register_row_fanout(self._expanded({Order: rows}), tracker, declared, False)
+        _routing._register_row_fanout(
+            self._expanded({Order: rows}),
+            tracker,
+            declared,
+            False,
+            ObservabilityRuntime.noop(),
+            "orders",
+        )
         tracker.complete(TOPIC, PARTITION, OFFSET)
 
         assert tracker.flush_partition(TOPIC, PARTITION) == [], (
@@ -216,7 +229,14 @@ class TestExpandRoutesAccounting:
     def test_no_rows_releases_the_record(self) -> None:
         tracker, _ = _tracker(OFFSET)
 
-        _routing._register_row_fanout(self._expanded({}), tracker, frozenset({Order}), False)
+        _routing._register_row_fanout(
+            self._expanded({}),
+            tracker,
+            frozenset({Order}),
+            False,
+            ObservabilityRuntime.noop(),
+            "orders",
+        )
 
         assert tracker.flush_partition(TOPIC, PARTITION) == [
             TopicPartition(TOPIC, PARTITION, OFFSET + 1)
@@ -231,6 +251,8 @@ class TestExpandRoutesAccounting:
             tracker,
             frozenset({Order}),
             True,
+            ObservabilityRuntime.noop(),
+            "orders",
         )
         tracker.complete(TOPIC, PARTITION, OFFSET)
 
@@ -251,6 +273,8 @@ class TestExpandRoutesAccounting:
             tracker,
             frozenset({Order}),
             False,
+            ObservabilityRuntime.noop(),
+            "orders",
         )
         tracker.complete(TOPIC, PARTITION, OFFSET)
 

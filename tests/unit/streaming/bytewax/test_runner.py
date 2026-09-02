@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from loom.core.async_bridge import build_backend_options as _build_backend_options
 from loom.core.config import ConfigContext
-from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+from loom.core.observability.event import EventKind, LifecycleEvent, LifecycleStatus, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.streaming import Drain, FromMongoCDC, Process, StreamFlow
 from loom.streaming.bytewax.runner import (
@@ -404,7 +404,12 @@ class TestRunFlowSpan:
 
         poll_cycle = [e for e in events if e.scope == Scope.POLL_CYCLE]
         assert poll_cycle[0].kind is EventKind.START
-        assert poll_cycle[1].kind is EventKind.END
+        # The run is one span now, so a failure closes it as ERROR rather than
+        # as an END carrying a FAILURE status. Prometheus counts it, and the
+        # OTEL span carries the exception.
+        assert poll_cycle[1].kind is EventKind.ERROR
+        assert poll_cycle[1].status is LifecycleStatus.FAILURE
+        assert poll_cycle[1].error == "prep failed"
 
 
 class TestPrepareRunErrorSinks:

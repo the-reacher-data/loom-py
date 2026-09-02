@@ -1,3 +1,42 @@
+# Unreleased
+
+## ✨ Features
+### observability
+- **observability:** trace a message from ingestion to its death<br>
+  > The Loom trace id is now the OTEL trace id. A ``LoomMessageIdGenerator``
+  > installed on the tracer provider returns the active message trace id for
+  > root spans and delegates otherwise, so a message ingested from Kafka,
+  > traversing N nodes, and written to a sink produces one trace whose id is
+  > the inbound ``x-trace-id`` header.
+  > New ``Scope.TERMINAL`` and ``TerminalReason`` (``sink_write``,
+  > ``error_envelope``, ``dropped_no_route``) give every message exactly one
+  > span that says how it ended — including the silent drop of a payload that
+  > expands to zero rows, which previously left no trace at all.
+  > Batch operations follow the N+1 rule: one participation span per message in
+  > that message's own trace carrying ``loom.batch_id``, plus one batch span in
+  > a trace of its own with one OTEL link per *recorded* participation span.
+  > This replaces the storage sink's old attribution, which labelled a whole
+  > epoch flush with ``items[0].meta.trace_id`` and left the other N-1 messages
+  > with no write span at all.
+  > New ``OtelConfig`` settings: ``adopt_host_id_generator`` (opt-in install of
+  > the generator on a host-owned provider; a no-op with one warning on a
+  > ``ProxyTracerProvider``), ``sampler``, ``sampler_ratio`` and
+  > ``max_span_links``. Because the sampling decision is taken on the message
+  > trace id, a sampled message yields a complete trace and an unsampled one
+  > yields none.
+  > ``LifecycleEvent.otel_attributes`` now passes ``bool``/``int``/``float``
+  > values through instead of stringifying them, so ``loom.batch_size`` and
+  > ``loom.links_truncated`` are filterable in a tracing backend.
+
+## 🔧 Changes
+### streaming
+- **streaming:** ``StreamingTestRunner.run`` opens a real ``POLL_CYCLE`` span
+  instead of emitting an unpaired ``START``/``END`` pair, matching the
+  production runner. A run that fails now closes that span as ``ERROR`` rather
+  than as an ``END`` carrying a failure status. Observers of the public test
+  harness see the same event shape as in production; a harness that emitted a
+  different shape would let tracing regressions pass their own tests.
+
 # 🚀 Release 1.5.0 ([#131](https://github.com/the-reacher-data/loom-py/pull/131)) ([`f5ed4f7`](https://github.com/the-reacher-data/loom-py/commit/f5ed4f7229ebcd954ff9ae6d4acf952a8e33c8a1))
 
 

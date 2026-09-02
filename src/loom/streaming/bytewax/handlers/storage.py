@@ -6,26 +6,33 @@ Bytewax worker, built via node.build_partition(config, worker_index, worker_coun
 
 Observability
 -------------
-``_StorageSinkPartition.write_batch`` emits a ``Scope.WRITE`` span around
-every epoch flush.  The loom ``SinkPartition`` implementation stays free of
+``_StorageSinkPartition.write_batch`` is where most messages die, so it emits
+the N+1 shape of :mod:`loom.streaming.bytewax._batch_spans`: one
+``terminal:sink_write`` span per message, in that message's own trace, plus one
+``Scope.WRITE`` span for the flush itself, in a trace of its own, linking back
+to all of them.  The loom ``SinkPartition`` implementation stays free of
 framework dependencies — observability lives entirely in the adapter layer.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from time import time_ns
 from typing import Any
-from uuid import uuid4
 
 from bytewax.operators import output as bw_output
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
 
 from loom.core.logger import get_logger
-from loom.core.observability.event import Scope
+from loom.core.observability.event import Scope, TerminalReason
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
+from loom.streaming.bytewax._batch_spans import BatchSpan, BatchWindow, emit_batch_spans
 from loom.streaming.bytewax.handlers._shared import _BuildContextProtocol, _step_id
 from loom.streaming.compiler._plan import CompiledStorageSink
 from loom.streaming.core._exceptions import UnsupportedNodeError
-from loom.streaming.core._message import Message
+from loom.streaming.core._message import Message, MessageMeta
+from loom.streaming.core._tracing import open_terminal_span
 from loom.streaming.nodes._sink import IntoSink, SinkPartition
 from loom.streaming.nodes._table import Backend, IntoTable
 
@@ -35,15 +42,16 @@ Stream = Any
 class _StorageSinkPartition(StatelessSinkPartition[Message[Any]]):
     """Bytewax sink partition that delegates writes to a loom SinkPartition.
 
-    Extracts the typed payload from each Loom ``Message`` envelope, emits a
-    ``Scope.WRITE`` observability span around the batch flush, then forwards
-    to the underlying partition.  Storage backends remain free of transport
-    and observability concerns.
+    Extracts the typed payload from each Loom ``Message`` envelope, forwards
+    the batch to the underlying partition, then records the flush as one
+    terminal span per message plus one batch span.  Storage backends remain
+    free of transport and observability concerns.
 
     Args:
         partition:  Loom SinkPartition built by ``IntoSink.build_partition``.
         node_name:  Human-readable sink identifier used in observability events.
         flow_name:  Name of the enclosing streaming flow.
+        flow_run_id: Identifier of the flow run this partition belongs to.
         observer:   Observability runtime that receives WRITE lifecycle events.
     """
 
@@ -53,41 +61,84 @@ class _StorageSinkPartition(StatelessSinkPartition[Message[Any]]):
         *,
         node_name: str,
         flow_name: str,
+        flow_run_id: str,
         observer: ObservabilityRuntime,
     ) -> None:
         self._partition = partition
         self._node_name = node_name
         self._flow_name = flow_name
+        self._flow_run_id = flow_run_id
         self._observer = observer
 
     def write_batch(self, items: list[Message[Any]]) -> None:
         """Extract payloads and forward to the underlying partition.
 
-        Emits ``Scope.WRITE`` START / END (or ERROR) events so that every
-        non-empty epoch flush appears in logs, OTEL traces, and Prometheus
-        metrics alongside regular node lifecycle events.  Empty epochs are
+        Every message in the batch gets its own ``terminal:sink_write`` span in
+        its own trace — this write is where it dies — and the flush itself gets
+        one ``Scope.WRITE`` span linking back to all of them.  Empty epochs are
         forwarded without a span to keep logs quiet during idle periods.
 
         Args:
             items: Loom messages delivered by Bytewax for the current epoch.
+
+        Raises:
+            Exception: Whatever the underlying partition raises, after the
+                failure has been recorded on every span of the batch.
         """
         payloads = [item.payload for item in items]
         if not payloads:
             self._partition.write_batch(payloads)
             return
-        first_meta = items[0].meta
-        trace_id = first_meta.trace_id or uuid4().hex
-        correlation_id = first_meta.correlation_id or first_meta.message_id
-        with self._observer.span(
-            Scope.WRITE,
-            f"{self._flow_name}:{self._node_name}",
-            trace_id=trace_id,
-            correlation_id=correlation_id,
-            flow=self._flow_name,
-            sink=self._node_name,
-            batch_size=len(payloads),
-        ):
+        started_ns = time_ns()
+        try:
             self._partition.write_batch(payloads)
+        except Exception as exc:
+            self._emit_spans(items, BatchWindow.since(started_ns), exc)
+            raise
+        self._emit_spans(items, BatchWindow.since(started_ns), None)
+
+    def _emit_spans(
+        self,
+        items: list[Message[Any]],
+        window: BatchWindow,
+        error: BaseException | None,
+    ) -> None:
+        """Emit the per-message terminal spans and the batch write span."""
+        emit_batch_spans(
+            self._observer,
+            [item.meta for item in items],
+            batch=BatchSpan(
+                scope=Scope.WRITE,
+                name=f"{self._flow_name}:{self._node_name}",
+                attributes={
+                    "flow": self._flow_name,
+                    "sink": self._node_name,
+                    "batch_size": len(items),
+                    "loom.flow_run_id": self._flow_run_id,
+                },
+            ),
+            open_participation=self._open_terminal,
+            window=window,
+            error=error,
+        )
+
+    def _open_terminal(
+        self,
+        meta: MessageMeta,
+        batch_attributes: Mapping[str, object],
+        started_ns: int,
+    ) -> LoomSpan:
+        return open_terminal_span(
+            self._observer,
+            meta,
+            TerminalReason.SINK_WRITE,
+            start_time_ns=started_ns,
+            attributes={
+                "flow": self._flow_name,
+                "sink": self._node_name,
+                **batch_attributes,
+            },
+        )
 
     def close(self) -> None:
         """Delegate close to the underlying partition."""
@@ -166,6 +217,7 @@ class _StorageDynamicSink(DynamicSink[Message[Any]]):
             partition,
             node_name=node_name,
             flow_name=self._ctx.plan.name,
+            flow_run_id=self._ctx.flow_run_id,
             observer=self._ctx.flow_runtime,
         )
 
