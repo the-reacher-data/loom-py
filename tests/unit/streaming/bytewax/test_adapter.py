@@ -310,6 +310,18 @@ class TestDropSinkCompletion:
         completed: list[tuple[str, int, int]] = []
 
         class _Tracker:
+            """The whole of ``CommitCompletionPort``, so the stub is checkable.
+
+            ``fork`` is part of the port a drop sink is handed; leaving it out
+            made the stub structurally not a ``CommitCompletionPort``, which
+            only surfaced once the type checker started reading tests.
+            """
+
+            def fork(
+                self, topic: str, partition: int, offset: int, extra_outputs: int
+            ) -> None:
+                raise AssertionError("a drop sink must not fork a record")
+
             def complete(self, topic: str, partition: int, offset: int) -> None:
                 completed.append((topic, partition, offset))
 

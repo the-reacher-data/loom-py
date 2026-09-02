@@ -347,7 +347,7 @@ def test_require_message_rejects_non_message() -> None:
 
 
 def test_replace_payloads_rejects_mismatched_lengths() -> None:
-    messages = [_message("a")]
+    messages: list[Message[StreamPayload]] = [_message("a")]
     with pytest.raises(RuntimeError, match="must match input length"):
         _shared._replace_payloads(messages, [])
 
@@ -514,7 +514,7 @@ def test_execute_batch_step_replaces_payloads_and_observes() -> None:
 def test_execute_batch_step_rejects_non_list_result() -> None:
     noop = ObservabilityRuntime.noop()
     step = _InvalidBatchStep()
-    messages = [_message("a"), _message("b")]
+    messages: list[Message[StreamPayload]] = [_message("a"), _message("b")]
     with pytest.raises(TypeError, match="UpperBatch must return a list of payloads."):
         _steps._execute_batch_step(
             noop,
@@ -600,7 +600,7 @@ def test_execute_batch_expand_step_replaces_payloads_and_observes() -> None:
 def test_execute_batch_expand_step_rejects_non_iterable_result() -> None:
     noop = ObservabilityRuntime.noop()
     step = _InvalidBatchExpandStep()
-    messages = [_message("a"), _message("b")]
+    messages: list[Message[StreamPayload]] = [_message("a"), _message("b")]
     with pytest.raises(
         TypeError,
         match="UpperBatchExpand must return an iterable of payloads.",
