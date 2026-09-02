@@ -1,3 +1,47 @@
+# 🧵 Unreleased
+
+
+## 💥 Breaking changes
+### ai
+- **ai:** the entry-point group `loom.ai.mcp_auth` is renamed `loom.ai.remote_auth`<br>
+  > The group is a registry of outbound credential strategies, and the contract
+  > is `httpx.Auth`, which knows nothing of MCP: the same strategies now serve
+  > the remote A2A agents of `ai.a2a_agents` as well as the MCP servers of
+  > `ai.mcp_servers`. Keeping the old name would have made it a lie for half its
+  > contents and left a third party unable to tell which transports its
+  > registration was offered to.
+  >
+  > **Anything registered under `loom.ai.mcp_auth` stops being found.** Change
+  > the group name in your own `pyproject.toml`; nothing else about a strategy
+  > changes. There is no compatibility shim and no deprecation cycle: the group
+  > shipped in 1.7.0 and is renamed the release after, before it had consumers.
+  >
+  > The module moves with the group, `loom.ai.mcp_auth` → `loom.ai.remote_auth`;
+  > `shared_auth` becomes `shared_mcp_auth`, alongside the new `shared_a2a_auth`;
+  > and the plan struct `CompiledMcpAuth` becomes `CompiledRemoteAuth`. The error
+  > codes are unchanged, `MCP_AUTH_*` included: they are stable identifiers a
+  > deployment may already match on, and `MCP_CREDENTIALS_INLINE` was already
+  > raised for model roles and A2A agents before this change.
+
+
+## ✨ Features
+### ai
+- **ai:** authenticate to remote A2A agents<br>
+  > `A2AAgentConfig.headers_ref` was declared, documented, validated by the
+  > compiler and carried into the plan — and then dropped by the transport,
+  > which built its HTTP client with no headers and no auth. A deployment
+  > configured credentials, everything compiled, and the agent connected
+  > **unauthenticated without a word**.
+  >
+  > Remote agents now declare `headers_ref` or an `auth` strategy exactly as MCP
+  > servers do, resolved through the same registry, with the same refusals:
+  > mutually exclusive, no literal secret anywhere in the block, and an
+  > unregistered strategy failing at compile time naming what is installed. The
+  > credential is set on the HTTP client, so the card fetch — the first request
+  > of the session — carries it too. `kind: oauth` is refused for A2A, since it
+  > delegates to the MCP client's own flow, rather than connecting bare.
+
+
 # 🚀 Release 1.7.1 ([#143](https://github.com/the-reacher-data/loom-py/pull/143)) ([`0322dbb`](https://github.com/the-reacher-data/loom-py/commit/0322dbb2))
 
 

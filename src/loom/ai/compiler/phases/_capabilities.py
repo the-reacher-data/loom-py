@@ -23,9 +23,9 @@ from loom.ai._filters import select_names
 from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledCapability,
-    CompiledMcpAuth,
     CompiledMcpCapability,
     CompiledPythonCapability,
+    CompiledRemoteAuth,
     CompiledSkillsCapability,
     CompiledSqlCapability,
     CompiledUsecaseCapability,
@@ -221,7 +221,7 @@ def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult
             server=capability.server,
             url=server.url,
             headers_ref=server.headers_ref,
-            auth=_compile_mcp_auth(server.auth),
+            auth=_compile_auth(server.auth),
             timeout_ms=server.timeout_ms,
             include=capability.include,
             exclude=capability.exclude,
@@ -230,16 +230,17 @@ def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult
     )
 
 
-def _compile_mcp_auth(auth: Mapping[str, str] | None) -> CompiledMcpAuth | None:
+def _compile_auth(auth: Mapping[str, str] | None) -> CompiledRemoteAuth | None:
     """Split a validated ``auth`` block into the strategy name and its settings.
 
-    Configuration already refused a block whose ``kind`` names no registered
-    strategy, so the split is the only work left: ``kind`` selects the entry
-    point and everything else becomes its keyword arguments.
+    Shared by the ``mcp`` and ``a2a`` grants: both endpoints declare the same
+    block.  Configuration already refused a block whose ``kind`` names no
+    registered strategy, so the split is the only work left: ``kind`` selects
+    the entry point and everything else becomes its keyword arguments.
     """
     if auth is None:
         return None
-    return CompiledMcpAuth(
+    return CompiledRemoteAuth(
         kind=auth["kind"],
         settings=tuple((key, value) for key, value in auth.items() if key != "kind"),
     )
@@ -254,6 +255,7 @@ def _compile_a2a(capability: A2ACapability, context: _Context) -> _HandlerResult
             agent=capability.agent,
             url=agent.url,
             headers_ref=agent.headers_ref,
+            auth=_compile_auth(agent.auth),
             include=capability.include,
             exclude=capability.exclude,
         ),

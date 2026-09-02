@@ -14,6 +14,13 @@ Two entry points, one connection recipe:
   per delegation, bounded by ``tool_timeout_ms`` like the call it precedes, and
   it buys a stateless toolset — no cached client, no connection nobody closes.
 
+The remote agent's credential is applied to the HTTP client itself, not to a
+single request, so **every** call carries it — the card fetch included. The card
+is the first request made, and an agent that authenticates its card endpoint
+would otherwise fail start-up before a skill was ever called. The credential is
+resolved by :mod:`loom.ai.remote_auth`, the same registry the MCP transport
+uses; this module only carries the result to the client.
+
 **The remote agent's reply is untrusted input (FR-044a).** It is returned as a
 tool *value*, never merged into instructions; it is never logged; and no byte
 of it reaches an error message, so a remote agent cannot dictate what the
@@ -34,8 +41,10 @@ from typing import TYPE_CHECKING, Final
 from loom.ai._filters import matches, select_names
 from loom.ai.compiler import CompiledA2ACapability
 from loom.ai.errors import AgentCompilationError, provider_not_installed
+from loom.ai.remote_auth import headers_from_ref, shared_a2a_auth
 
 if TYPE_CHECKING:
+    import httpx
     from a2a.client import Client
     from a2a.types.a2a_pb2 import AgentCard
 
@@ -57,6 +66,42 @@ def require_a2a_sdk() -> None:
         raise AgentCompilationError([provider_not_installed("a2a", "ai-a2a")])
 
 
+def build_a2a_http_client(capability: CompiledA2ACapability) -> httpx.AsyncClient:
+    """Build the HTTP client of one grant, carrying the credential it declared.
+
+    Fixed headers from ``headers_ref``, or the object the named strategy
+    builds — one instance per configured agent, shared by every agent granted
+    it.  Both are set on the client, so the card fetch presents them exactly as
+    the delegations that follow do.  A remote agent that declares neither is
+    connected exactly as before, which is what lets one artifact move between
+    environments unchanged.
+
+    Args:
+        capability: Compiled grant carrying the validated remote agent URL and
+            the credential resolved for it.
+
+    Returns:
+        The unopened client the card resolver and the session both speak
+        through; the caller closes it.
+
+    Raises:
+        AgentCompilationError: When the ``headers_ref`` payload is not one
+            ``Name=value`` pair, or the named strategy cannot be built.
+
+    Example::
+
+        async with build_a2a_http_client(capability) as http_client:
+            ...
+    """
+    import httpx
+
+    component = f"a2a agent '{capability.agent}'"
+    return httpx.AsyncClient(
+        headers=headers_from_ref(component, capability.headers_ref),
+        auth=shared_a2a_auth(capability.agent, capability.auth),
+    )
+
+
 @asynccontextmanager
 async def create_a2a_client(capability: CompiledA2ACapability) -> AsyncIterator[Client]:
     """Open one session against a remote agent, card fetched and checked.
@@ -66,14 +111,16 @@ async def create_a2a_client(capability: CompiledA2ACapability) -> AsyncIterator[
     of it and a failure is reported as a coded start-up issue.
 
     Args:
-        capability: Compiled grant carrying the validated ``https://`` URL and
-            the ``include``/``exclude`` filter selecting the skills the
-            artifact delegates to.
+        capability: Compiled grant carrying the validated ``https://`` URL, the
+            credential the deployment declared for the remote agent, and the
+            ``include``/``exclude`` filter selecting the skills the artifact
+            delegates to.
 
     Yields:
         The connected client, closed together with its HTTP client on exit.
 
     Raises:
+        AgentCompilationError: When the grant's credential cannot be resolved.
         AgentCardResolutionError: When the card cannot be fetched, decoded or
             validated.
         ValueError: When the card advertises no transport this client speaks,
@@ -83,10 +130,9 @@ async def create_a2a_client(capability: CompiledA2ACapability) -> AsyncIterator[
 
         runtime = AgentRuntime(..., a2a_client_factory=create_a2a_client)
     """
-    import httpx
     from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
 
-    async with httpx.AsyncClient() as http_client:
+    async with build_a2a_http_client(capability) as http_client:
         card = await A2ACardResolver(http_client, capability.url).get_agent_card()
         _reject_ungranted_card(capability, card)
         config = ClientConfig(

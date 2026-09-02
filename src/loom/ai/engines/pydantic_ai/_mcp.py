@@ -14,7 +14,7 @@ Two entry points, one connection recipe — the shape :mod:`._a2a` already uses:
 Both build the same ``MCPToolset``: the connection rules of one grant — its
 validated URL and its credential — live here once, so start-up cannot validate
 a server the run would not reach.  The credential itself is resolved by
-:mod:`loom.ai.mcp_auth`, which is where the deployment's own strategy plugs in;
+:mod:`loom.ai.remote_auth`, which is where the deployment's own strategy plugs in;
 this module only carries the result to the client.
 
 The MCP client ships as an optional ``pydantic-ai-slim`` dependency, so it is
@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from loom.ai.compiler import CompiledMcpCapability
 from loom.ai.errors import AgentCompilationError, provider_not_installed
-from loom.ai.mcp_auth import headers_from_ref, shared_auth
+from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 
 if TYPE_CHECKING:
     from pydantic_ai.mcp import MCPToolset
@@ -100,7 +100,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
         raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
     component = f"mcp server '{capability.server}'"
     headers = headers_from_ref(component, capability.headers_ref) or None
-    auth = shared_auth(capability.server, capability.auth)
+    auth = shared_mcp_auth(capability.server, capability.auth)
     toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=auth)
     return toolset
 

@@ -1,17 +1,18 @@
-"""MCP authentication: what the deployment declares, and what loom refuses.
+"""Outbound authentication: what the deployment declares, and what loom refuses.
 
 Two layers are pinned here and nothing else:
 
-* ``loom.ai.config`` — the compile-time refusals. An unregistered strategy, a
-  literal secret anywhere in the ``auth`` block, and ``headers_ref`` together
-  with ``auth`` are all faults of the deployment, so they must be found while
-  the configuration is decoded rather than at the first message in production.
-* ``loom.ai.mcp_auth`` — resolution itself: the strategy name is looked up in a
-  real entry-point group, constructed from its settings, and the instance is
-  shared per server.
+* ``loom.ai.config`` — the compile-time refusals, applied identically to an
+  MCP server and to an A2A agent. An unregistered strategy, a literal secret
+  anywhere in the ``auth`` block, and ``headers_ref`` together with ``auth``
+  are all faults of the deployment, so they must be found while the
+  configuration is decoded rather than at the first message in production.
+* ``loom.ai.remote_auth`` — resolution itself: the strategy name is looked up in
+  a real entry-point group, constructed from its settings, and the instance is
+  shared per endpoint.
 
 The third-party strategy is installed as a genuine distribution (see
-``tests.helpers.mcp_auth_plugin``) rather than by patching the loader: the
+``tests.helpers.remote_auth_plugin``) rather than by patching the loader: the
 extension point only means something if someone who is not loom can use it.
 """
 
@@ -22,23 +23,25 @@ from pathlib import Path
 
 import pytest
 
-from loom.ai.compiler import CompiledMcpAuth
-from loom.ai.config import AiConfig, McpServerConfig
+from loom.ai.compiler import CompiledRemoteAuth
+from loom.ai.config import A2AAgentConfig, AiConfig, McpServerConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
-from loom.ai.mcp_auth import (
+from loom.ai.remote_auth import (
     bearer_token,
     headers_from_ref,
     is_strategy_registered,
     registered_strategy_names,
-    shared_auth,
+    shared_a2a_auth,
+    shared_mcp_auth,
     standard_oauth,
     static_headers,
 )
 
-from ...helpers.mcp_auth_plugin import third_party_strategy
+from ...helpers.remote_auth_plugin import third_party_strategy
 
 _URL = "https://knowledge.example.com/mcp"
+_AGENT_URL = "https://market.example.com/a2a"
 
 
 def _config_with(server: McpServerConfig) -> AiConfig:
@@ -51,23 +54,33 @@ def _config_with(server: McpServerConfig) -> AiConfig:
     )
 
 
+def _config_with_agent(agent: A2AAgentConfig) -> AiConfig:
+    """Build a valid ``AiConfig`` around the one remote agent under test."""
+    return AiConfig(
+        engine="pydantic-ai",
+        specs=("ai/agents/*/agent.yaml",),
+        models={"default": InferenceTarget(provider="openai", model="gpt-test")},
+        a2a_agents={"market": agent},
+    )
+
+
 def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:
     return [issue.code for issue in error.issues]
 
 
 @pytest.fixture(autouse=True)
 def _isolated_sharing() -> Iterator[None]:
-    """Empty the per-server sharing map so one test cannot seed another.
+    """Empty the per-endpoint sharing map so one test cannot seed another.
 
     Reaching into the private map is deliberate: the sharing is process-wide by
     design, and a test asserting *identity* would otherwise depend on whichever
     test ran first.
     """
-    from loom.ai import mcp_auth
+    from loom.ai import remote_auth
 
-    mcp_auth._STRATEGIES._by_server.clear()
+    remote_auth._STRATEGIES._by_endpoint.clear()
     yield
-    mcp_auth._STRATEGIES._by_server.clear()
+    remote_auth._STRATEGIES._by_endpoint.clear()
 
 
 class TestConfiguracionDelBloqueAuth:
@@ -246,11 +259,11 @@ class TestResolucionCompartidaPorServidor:
     """One instance per server: the credential belongs to the deployment."""
 
     def test_devuelve_none_cuando_el_servidor_no_declara_estrategia(self) -> None:
-        assert shared_auth("knowledge", None) is None
+        assert shared_mcp_auth("knowledge", None) is None
 
     def test_construye_la_estrategia_de_terceros_con_sus_ajustes(self, tmp_path: Path) -> None:
         """Settings become keyword arguments of the registered object."""
-        auth = CompiledMcpAuth(
+        auth = CompiledRemoteAuth(
             kind="agent-session",
             settings=(
                 ("session_url", "https://orders.example.com/auth/agent/session"),
@@ -259,7 +272,7 @@ class TestResolucionCompartidaPorServidor:
         )
 
         with third_party_strategy(tmp_path, name="agent-session"):
-            built = shared_auth("orders", auth)
+            built = shared_mcp_auth("orders", auth)
 
         assert (built.session_url, built.bootstrap_ref) == (  # type: ignore[union-attr]
             "https://orders.example.com/auth/agent/session",
@@ -270,7 +283,7 @@ class TestResolucionCompartidaPorServidor:
         self, tmp_path: Path
     ) -> None:
         """Identity, not equality: a renewing strategy holds the live token."""
-        auth = CompiledMcpAuth(
+        auth = CompiledRemoteAuth(
             kind="agent-session",
             settings=(
                 ("session_url", "https://orders.example.com/auth/agent/session"),
@@ -279,14 +292,14 @@ class TestResolucionCompartidaPorServidor:
         )
 
         with third_party_strategy(tmp_path, name="agent-session"):
-            first = shared_auth("orders", auth)
-            second = shared_auth("orders", auth)
+            first = shared_mcp_auth("orders", auth)
+            second = shared_mcp_auth("orders", auth)
 
         assert first is second
 
     def test_no_comparte_entre_servidores_distintos(self, tmp_path: Path) -> None:
         """Two servers are two credentials, however alike their settings look."""
-        auth = CompiledMcpAuth(
+        auth = CompiledRemoteAuth(
             kind="agent-session",
             settings=(
                 ("session_url", "https://orders.example.com/auth/agent/session"),
@@ -295,8 +308,8 @@ class TestResolucionCompartidaPorServidor:
         )
 
         with third_party_strategy(tmp_path, name="agent-session"):
-            orders = shared_auth("orders", auth)
-            catalog = shared_auth("catalog", auth)
+            orders = shared_mcp_auth("orders", auth)
+            catalog = shared_mcp_auth("catalog", auth)
 
         assert orders is not catalog
 
@@ -304,13 +317,154 @@ class TestResolucionCompartidaPorServidor:
         self, tmp_path: Path
     ) -> None:
         """A settings key the strategy does not take is a deployment fault, named as one."""
-        auth = CompiledMcpAuth(kind="agent-session", settings=(("unexpected", "value"),))
+        auth = CompiledRemoteAuth(kind="agent-session", settings=(("unexpected", "value"),))
 
         with third_party_strategy(tmp_path, name="agent-session"):  # noqa: SIM117
             with pytest.raises(AgentCompilationError) as excinfo:
-                shared_auth("orders", auth)
+                shared_mcp_auth("orders", auth)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
     def test_is_strategy_registered_es_falso_para_un_nombre_vacio(self) -> None:
         assert is_strategy_registered("") is False
+
+
+class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
+    """``ai.a2a_agents.<name>.auth`` is held to exactly the MCP rules."""
+
+    def test_falla_con_auth_strategy_unknown_cuando_la_estrategia_no_esta_registrada(self) -> None:
+        """Otherwise the agent would connect unauthenticated at the first delegation."""
+        agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "nobody-registers-this"})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with_agent(agent)
+
+        assert AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN in _codes(excinfo.value)
+
+    def test_el_mensaje_nombra_la_estrategia_y_las_registradas_cuando_no_existe(self) -> None:
+        agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "nobody-registers-this"})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with_agent(agent)
+
+        message = str(excinfo.value)
+        assert "nobody-registers-this" in message
+        assert "bearer" in message and "static" in message
+
+    def test_falla_con_credentials_inline_cuando_un_ajuste_lleva_un_secreto_literal(self) -> None:
+        agent = A2AAgentConfig(
+            url=_AGENT_URL, auth={"kind": "bearer", "token_ref": "sk-abc123def456ghi789"}
+        )
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with_agent(agent)
+
+        assert AgentErrorCode.MCP_CREDENTIALS_INLINE in _codes(excinfo.value)
+
+    def test_el_mensaje_no_contiene_el_secreto_cuando_rechaza_un_ajuste(self) -> None:
+        literal = "sk-abc123def456ghi789"
+        agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "bearer", "token_ref": literal})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with_agent(agent)
+
+        assert literal not in str(excinfo.value)
+
+    def test_falla_con_auth_conflict_cuando_convive_con_headers_ref(self) -> None:
+        """Two credentials on one connection is as ambiguous here as it is for MCP."""
+        agent = A2AAgentConfig(
+            url=_AGENT_URL, headers_ref="X-API-Key=abc123", auth={"kind": "bearer"}
+        )
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with_agent(agent)
+
+        assert AgentErrorCode.MCP_AUTH_CONFLICT in _codes(excinfo.value)
+
+    def test_acepta_el_agente_cuando_la_estrategia_esta_registrada(self) -> None:
+        agent = A2AAgentConfig(url=_AGENT_URL, auth={"kind": "bearer", "token_ref": "a.b-c_1"})
+
+        config = _config_with_agent(agent)
+
+        assert config.a2a_agents["market"].auth == {"kind": "bearer", "token_ref": "a.b-c_1"}
+
+    def test_acepta_una_estrategia_de_terceros_cuando_su_distribucion_esta_instalada(
+        self, tmp_path: Path
+    ) -> None:
+        """One group: a strategy registered for MCP is offered to A2A unchanged."""
+        agent = A2AAgentConfig(
+            url=_AGENT_URL,
+            auth={
+                "kind": "agent-session",
+                "session_url": "https://market.example.com/auth/agent/session",
+                "bootstrap_ref": "/agents/prod/agent-sales",
+            },
+        )
+
+        with third_party_strategy(tmp_path, name="agent-session"):
+            config = _config_with_agent(agent)
+
+        assert config.a2a_agents["market"].auth is not None
+
+
+class TestResolucionCompartidaPorAgenteRemoto:
+    """One instance per configured agent, from the same registry MCP uses."""
+
+    def test_devuelve_none_cuando_el_agente_no_declara_estrategia(self) -> None:
+        assert shared_a2a_auth("market", None) is None
+
+    def test_construye_la_estrategia_de_terceros_con_sus_ajustes(self, tmp_path: Path) -> None:
+        auth = CompiledRemoteAuth(
+            kind="agent-session",
+            settings=(
+                ("session_url", "https://market.example.com/auth/agent/session"),
+                ("bootstrap_ref", "/agents/prod/agent-sales"),
+            ),
+        )
+
+        with third_party_strategy(tmp_path, name="agent-session"):
+            built = shared_a2a_auth("market", auth)
+
+        assert (built.session_url, built.bootstrap_ref) == (  # type: ignore[attr-defined]
+            "https://market.example.com/auth/agent/session",
+            "/agents/prod/agent-sales",
+        )
+
+    def test_comparte_una_sola_instancia_cuando_dos_agentes_nombran_el_mismo_remoto(
+        self,
+    ) -> None:
+        """Identity, not equality: the credential belongs to the deployment."""
+        auth = CompiledRemoteAuth(kind="bearer", settings=(("token_ref", "a.b-c_1"),))
+
+        first = shared_a2a_auth("market", auth)
+        second = shared_a2a_auth("market", auth)
+
+        assert first is second
+
+    def test_no_comparte_con_un_servidor_mcp_del_mismo_nombre(self) -> None:
+        """A server and an agent registered alike are two endpoints, two credentials."""
+        auth = CompiledRemoteAuth(kind="bearer", settings=(("token_ref", "a.b-c_1"),))
+
+        assert shared_a2a_auth("orders", auth) is not shared_mcp_auth("orders", auth)
+
+    def test_falla_con_auth_strategy_invalid_cuando_la_estrategia_es_el_centinela_oauth(
+        self,
+    ) -> None:
+        """``oauth`` delegates to the MCP client's flow; A2A must refuse, not connect bare."""
+        auth = CompiledRemoteAuth(kind="oauth")
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            shared_a2a_auth("market", auth)
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
+
+    def test_falla_con_auth_strategy_invalid_cuando_la_estrategia_rechaza_sus_ajustes(
+        self, tmp_path: Path
+    ) -> None:
+        auth = CompiledRemoteAuth(kind="agent-session", settings=(("unexpected", "value"),))
+
+        with third_party_strategy(tmp_path, name="agent-session"):  # noqa: SIM117
+            with pytest.raises(AgentCompilationError) as excinfo:
+                shared_a2a_auth("market", auth)
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]

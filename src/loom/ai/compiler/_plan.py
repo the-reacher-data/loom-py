@@ -81,8 +81,12 @@ class CompiledSqlCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     max_result_bytes: int
 
 
-class CompiledMcpAuth(LoomFrozenStruct, frozen=True, kw_only=True):
-    """Authentication strategy of one MCP server, resolved to a name and settings.
+class CompiledRemoteAuth(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Authentication strategy of one remote endpoint, resolved to name and settings.
+
+    One struct serves both outbound transports, MCP servers and A2A agents, as
+    the one registry that builds it does: the strategy contract is
+    ``httpx.Auth``, which knows nothing of either protocol.
 
     ``kind`` is separated from the rest of the ``auth`` block once, here, so the
     engine never re-reads configuration to find out which strategy to build.
@@ -90,7 +94,7 @@ class CompiledMcpAuth(LoomFrozenStruct, frozen=True, kw_only=True):
     plan is a frozen, hashable value.
 
     Attributes:
-        kind: Strategy name registered in the ``loom.ai.mcp_auth`` group.
+        kind: Strategy name registered in the ``loom.ai.remote_auth`` group.
         settings: The rest of the ``auth`` block, passed to the strategy as
             keyword arguments in declaration order.
     """
@@ -125,7 +129,7 @@ class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     server: str
     url: str
     headers_ref: str | None = None
-    auth: CompiledMcpAuth | None = None
+    auth: CompiledRemoteAuth | None = None
     timeout_ms: int = 20000
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
@@ -176,6 +180,9 @@ class CompiledA2ACapability(LoomFrozenStruct, frozen=True, kw_only=True):
         agent: Configured agent name, carried for the self-description.
         url: Validated ``https://`` remote agent URL, free of credentials.
         headers_ref: Reference to deployment-resolved headers; never a secret.
+            Applied to every request the client makes, the card fetch included.
+        auth: Named authentication strategy, mutually exclusive with
+            ``headers_ref``; ``None`` when the agent needs no credential.
         include: Skill names or glob patterns to expose; empty means all.
         exclude: Skill names or glob patterns to omit, applied after ``include``.
     """
@@ -185,6 +192,7 @@ class CompiledA2ACapability(LoomFrozenStruct, frozen=True, kw_only=True):
     agent: str
     url: str
     headers_ref: str | None = None
+    auth: CompiledRemoteAuth | None = None
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
 
