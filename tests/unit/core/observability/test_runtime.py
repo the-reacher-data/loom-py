@@ -167,8 +167,10 @@ class TestFromConfig:
             "loom.core.observability.runtime.configure_logging_from_values",
             _fake_configure_logging_from_values,
         )
+        # Patched on the owning module: ``runtime`` imports the OTEL bootstrap
+        # lazily so that core stays importable without the OpenTelemetry SDK.
         monkeypatch.setattr(
-            "loom.core.observability.runtime.install_otel_log_export",
+            "loom.core.observability.observer.otel.install_otel_log_export",
             _fake_install_otel_log_export,
         )
 
