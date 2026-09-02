@@ -138,13 +138,15 @@ celery = [
 [project.entry-points."loom.ai.engines"]
 pydantic-ai = "loom.ai.engines.pydantic_ai.provider:PydanticAIEngineProvider"
 
-# Authentication strategies for outbound MCP connections. A deployment plugs
-# in its own from its own package under the same group; loom ships only these
-# three thin delegations. See docs/ai/mcp.md.
-[project.entry-points."loom.ai.mcp_auth"]
-oauth = "loom.ai.mcp_auth:standard_oauth"
-bearer = "loom.ai.mcp_auth:bearer_token"
-static = "loom.ai.mcp_auth:static_headers"
+# Authentication strategies for the remote endpoints loom calls out to: MCP
+# servers and A2A agents alike, since the contract is httpx.Auth and knows
+# nothing of either protocol. A deployment plugs in its own from its own
+# package under the same group; loom ships only these three thin delegations.
+# See docs/ai/mcp.md and docs/ai/a2a.md.
+[project.entry-points."loom.ai.remote_auth"]
+oauth = "loom.ai.remote_auth:standard_oauth"
+bearer = "loom.ai.remote_auth:bearer_token"
+static = "loom.ai.remote_auth:static_headers"
 
 [project.entry-points."loom.etl.backends"]
 polars = "loom.etl.backends.polars.provider:PolarsProvider"

@@ -421,13 +421,13 @@ def mcp_auth_conflict(component: str) -> AgentCompilationIssue:
 def mcp_auth_strategy_unknown(
     component: str, kind: str, available: Sequence[str]
 ) -> AgentCompilationIssue:
-    """A named auth strategy resolves to no entry point in ``loom.ai.mcp_auth``."""
+    """A named auth strategy resolves to no entry point in ``loom.ai.remote_auth``."""
     installed = ", ".join(available) if available else "none"
     return AgentCompilationIssue(
         code=AgentErrorCode.MCP_AUTH_STRATEGY_UNKNOWN,
         message=(
             f"{component}: auth strategy '{kind}' is not registered in entry-point "
-            f"group 'loom.ai.mcp_auth'; registered: {installed}"
+            f"group 'loom.ai.remote_auth'; registered: {installed}"
         ),
         component=component,
         field="auth.kind",
@@ -439,7 +439,7 @@ def mcp_auth_strategy_invalid(kind: str, reason: str) -> AgentCompilationIssue:
     return AgentCompilationIssue(
         code=AgentErrorCode.MCP_AUTH_STRATEGY_INVALID,
         message=f"auth strategy '{kind}' is unusable: {reason}",
-        component=f"loom.ai.mcp_auth:{kind}",
+        component=f"loom.ai.remote_auth:{kind}",
         field="auth.kind",
     )
 

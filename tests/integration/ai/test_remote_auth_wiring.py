@@ -16,10 +16,10 @@ from typing import Any
 
 import pytest
 
-from loom.ai.compiler import CompiledMcpAuth, CompiledMcpCapability
+from loom.ai.compiler import CompiledMcpCapability, CompiledRemoteAuth
 from loom.ai.engines.pydantic_ai._mcp import build_mcp_toolset
 
-from ...helpers.mcp_auth_plugin import third_party_strategy
+from ...helpers.remote_auth_plugin import third_party_strategy
 
 pytest.importorskip(
     "pydantic_ai.mcp", reason="the MCP client is not installed: uv sync --group mcp-tests"
@@ -35,12 +35,12 @@ def _transport(capability: CompiledMcpCapability) -> Any:
 
 @pytest.fixture(autouse=True)
 def _isolated_sharing() -> Any:
-    """Empty the per-server sharing map: identity assertions must not leak between tests."""
-    from loom.ai import mcp_auth
+    """Empty the per-endpoint sharing map: identity assertions must not leak between tests."""
+    from loom.ai import remote_auth
 
-    mcp_auth._STRATEGIES._by_server.clear()
+    remote_auth._STRATEGIES._by_endpoint.clear()
     yield
-    mcp_auth._STRATEGIES._by_server.clear()
+    remote_auth._STRATEGIES._by_endpoint.clear()
 
 
 class TestHeadersRefLlegaAlCliente:
@@ -72,7 +72,7 @@ class TestEstrategiaOauth:
         capability = CompiledMcpCapability(
             server="catalog",
             url="https://catalog.example.com/mcp",
-            auth=CompiledMcpAuth(kind="oauth"),
+            auth=CompiledRemoteAuth(kind="oauth"),
         )
 
         assert isinstance(_transport(capability).auth, OAuth)
@@ -89,7 +89,7 @@ class TestEstrategiaBearer:
         capability = CompiledMcpCapability(
             server="catalog",
             url="https://catalog.example.com/mcp",
-            auth=CompiledMcpAuth(kind="bearer", settings=(("token_ref", token),)),
+            auth=CompiledRemoteAuth(kind="bearer", settings=(("token_ref", token),)),
         )
 
         auth = _transport(capability).auth
@@ -107,7 +107,7 @@ class TestEstrategiaDeTerceros:
         capability = CompiledMcpCapability(
             server="orders",
             url=_URL,
-            auth=CompiledMcpAuth(
+            auth=CompiledRemoteAuth(
                 kind="agent-session",
                 settings=(
                     ("session_url", "https://orders.example.com/auth/agent/session"),
@@ -131,7 +131,7 @@ class TestEstrategiaDeTerceros:
         capability = CompiledMcpCapability(
             server="orders",
             url=_URL,
-            auth=CompiledMcpAuth(
+            auth=CompiledRemoteAuth(
                 kind="agent-session",
                 settings=(
                     ("session_url", "https://orders.example.com/auth/agent/session"),

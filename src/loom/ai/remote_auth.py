@@ -1,18 +1,30 @@
-"""Pluggable authentication for the MCP servers an agent calls out to.
+"""Pluggable authentication for the remote endpoints an agent calls out to.
 
-Loom ships **no login flow of its own**.  A deployment names a strategy in
-``ai.mcp_servers.<name>.auth.kind``; loom resolves that name in the entry-point
-group :data:`MCP_AUTH_ENTRY_POINT_GROUP`, calls the registered object with the
-rest of the block as keyword arguments, and hands the result to the MCP client.
-The artifact keeps saying only ``server: <name>``, so it moves between
-environments unchanged whether that server needs no credential, a fixed header,
-or a token exchange.
+One registry serves both outbound transports — the MCP servers of
+``ai.mcp_servers`` and the remote agents of ``ai.a2a_agents``.  Loom ships
+**no login flow of its own**.  A deployment names a strategy in that endpoint's
+``auth.kind``; loom resolves the name in the entry-point group
+:data:`REMOTE_AUTH_ENTRY_POINT_GROUP`, calls the registered object with the rest
+of the block as keyword arguments, and hands the result to the client.  The
+artifact keeps saying only ``server: <name>`` or ``agent: <name>``, so it moves
+between environments unchanged whether that endpoint needs no credential, a
+fixed header, or a token exchange.
 
-The contract for a strategy is :class:`httpx.Auth` itself — not an abstraction
-of ours.  Any existing ``httpx.Auth`` class in the ecosystem is registered as
-it stands, with no adapter::
+**One group, named for what it authenticates, not for who called first.**  The
+contract for a strategy is :class:`httpx.Auth` itself — not an abstraction of
+ours — and nothing about ``Authorization: Bearer <token>`` is MCP-specific, so
+a deployment that authenticates to one internal service registers its strategy
+once and grants it to either transport.  The group was introduced in 1.7.0 as
+``loom.ai.mcp_auth``, when MCP was its only consumer; keeping that name for
+A2A strategies too would make it a lie for half its contents and would leave a
+third party unable to tell which transports its registration is offered to, so
+the group was renamed the release after it appeared, with no deprecation cycle
+because it had no consumers yet.
 
-    [project.entry-points."loom.ai.mcp_auth"]
+Any existing ``httpx.Auth`` class in the ecosystem is registered as it stands,
+with no adapter::
+
+    [project.entry-points."loom.ai.remote_auth"]
     agent-session = "my_package.auth:AgentSessionAuth"
 
 Loom registers three strategies, all thin delegations to what the libraries
@@ -20,20 +32,23 @@ already provide:
 
 ``oauth``
     Returns the sentinel the MCP client understands, so the client's own
-    standard OAuth flow runs.  Loom implements none of it.
+    standard OAuth flow runs.  Loom implements none of it.  It is the one
+    strategy that is not an ``httpx.Auth`` and therefore the one an A2A agent
+    cannot use: :func:`shared_a2a_auth` refuses it by name rather than
+    connecting without it.
 ``bearer``
     ``Authorization: Bearer <token>`` from a token the deployment resolves.
 ``static``
     Fixed headers, resolved by the deployment's secret resolver.
 
-``headers_ref`` and ``auth`` are mutually exclusive on one server, and
+``headers_ref`` and ``auth`` are mutually exclusive on one endpoint, and
 ``auth: {kind: static, ...}`` is the long spelling of the shorthand: both read
 the same ``Name=value`` payload through :func:`headers_from_ref`.  Reach for
 ``bearer`` whenever the credential is a token, since the composed header cannot
 be written in configuration at all.
 
 Nothing here imports ``httpx`` at module load: ``httpx`` reaches a deployment
-with the MCP client, which is optional, while the strategy-name check runs
+with the MCP or A2A client, both optional, while the strategy-name check runs
 during configuration decode in every deployment.
 """
 
@@ -58,22 +73,25 @@ if TYPE_CHECKING:  # annotations only: importing the plan at runtime would
 
     import httpx
 
-    from loom.ai.compiler import CompiledMcpAuth
+    from loom.ai.compiler import CompiledRemoteAuth
 
-MCP_AUTH_ENTRY_POINT_GROUP = "loom.ai.mcp_auth"
-"""Entry-point group every MCP authentication strategy registers under."""
+REMOTE_AUTH_ENTRY_POINT_GROUP = "loom.ai.remote_auth"
+"""Entry-point group every outbound authentication strategy registers under."""
 
 _HEADER_SEPARATOR = "="
+
+_MCP_SCOPE = "mcp"
+_A2A_SCOPE = "a2a"
 
 
 def registered_strategy_names() -> list[str]:
     """List the strategy names installed distributions register.
 
     Returns:
-        Every name registered in :data:`MCP_AUTH_ENTRY_POINT_GROUP`, sorted,
+        Every name registered in :data:`REMOTE_AUTH_ENTRY_POINT_GROUP`, sorted,
         as the "not registered, available: ..." message reports them.
     """
-    return sorted({ep.name for ep in list_entry_points(MCP_AUTH_ENTRY_POINT_GROUP)})
+    return sorted({ep.name for ep in list_entry_points(REMOTE_AUTH_ENTRY_POINT_GROUP)})
 
 
 def is_strategy_registered(kind: str) -> bool:
@@ -84,14 +102,14 @@ def is_strategy_registered(kind: str) -> bool:
     production.
 
     Args:
-        kind: Strategy name from ``ai.mcp_servers.<name>.auth.kind``.
+        kind: Strategy name from an endpoint's ``auth.kind``.
 
     Returns:
         ``True`` when a distribution registers ``kind``.
     """
     if not kind:
         return False
-    return select_entry_point(MCP_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error") is not None
+    return select_entry_point(REMOTE_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error") is not None
 
 
 def headers_from_ref(component: str, headers_ref: str | None) -> dict[str, str]:
@@ -130,8 +148,8 @@ def headers_from_ref(component: str, headers_ref: str | None) -> dict[str, str]:
     return {name: value}
 
 
-def shared_auth(server: str, auth: CompiledMcpAuth | None) -> httpx.Auth | str | None:
-    """Return the authentication object of ``server``, built once per server.
+def shared_mcp_auth(server: str, auth: CompiledRemoteAuth | None) -> httpx.Auth | str | None:
+    """Return the authentication object of an MCP server, built once per server.
 
     **One instance per server, shared by every agent granted it.**  The
     credential belongs to the deployment, not to the agent: a renewing strategy
@@ -155,11 +173,57 @@ def shared_auth(server: str, auth: CompiledMcpAuth | None) -> httpx.Auth | str |
 
     Example::
 
-        auth = shared_auth("orders", capability.auth)
+        auth = shared_mcp_auth("orders", capability.auth)
     """
     if auth is None:
         return None
-    return _STRATEGIES.get(server, auth)
+    return _STRATEGIES.get(f"{_MCP_SCOPE}:{server}", auth)
+
+
+def shared_a2a_auth(agent: str, auth: CompiledRemoteAuth | None) -> httpx.Auth | None:
+    """Return the authentication object of a remote agent, built once per agent.
+
+    Shares per configured agent exactly as :func:`shared_mcp_auth` shares per
+    server, and from the same registry: the sharing keys are scoped by transport
+    so that an MCP server and an A2A agent registered under the same name remain
+    two credentials.
+
+    Args:
+        agent: Configured agent name, the sharing key.
+        auth: Compiled strategy name and settings, or ``None`` when the agent
+            declares none.
+
+    Returns:
+        The :class:`httpx.Auth` the A2A HTTP client presents, or ``None`` when
+        the agent declares no strategy.
+
+    Raises:
+        AgentCompilationError: With ``MCP_AUTH_STRATEGY_INVALID`` when the
+            strategy cannot be loaded, rejects its settings, or resolves to the
+            MCP client's OAuth sentinel, which no HTTP client can present.
+
+    Example::
+
+        auth = shared_a2a_auth("market", capability.auth)
+    """
+    if auth is None:
+        return None
+    built = _STRATEGIES.get(f"{_A2A_SCOPE}:{agent}", auth)
+    if isinstance(built, str):
+        # ``oauth`` delegates to the MCP client's own flow, which the A2A
+        # transport does not have. Refusing by name is the point: connecting
+        # without the credential the deployment declared is the failure this
+        # module exists to prevent.
+        raise AgentCompilationError(
+            [
+                mcp_auth_strategy_invalid(
+                    auth.kind,
+                    "it delegates to the MCP client's own flow, which the A2A transport "
+                    "cannot run; an A2A agent needs an httpx.Auth strategy",
+                )
+            ]
+        )
+    return built
 
 
 def standard_oauth() -> str:
@@ -210,33 +274,35 @@ def static_headers(*, headers_ref: str) -> httpx.Auth:
         AgentCompilationError: With ``MCP_HEADERS_REF_INVALID`` when the payload
             is not one ``Name=value`` pair.
     """
-    headers = headers_from_ref("mcp auth strategy 'static'", headers_ref)
+    headers = headers_from_ref("auth strategy 'static'", headers_ref)
     return _static_headers_auth_class()(headers)
 
 
 class _SharedStrategies:
-    """The one authentication instance of each MCP server, built on demand.
+    """The one authentication instance of each remote endpoint, built on demand.
 
     Construction happens while the deployment starts up, from however many
-    agents were granted the same server; the lock makes that first build happen
-    once, and every later caller receives the same object.
+    agents were granted the same endpoint; the lock makes that first build
+    happen once, and every later caller receives the same object.  Keys are
+    transport-scoped, so an MCP server and an A2A agent sharing a configured
+    name do not share a credential.
     """
 
     def __init__(self) -> None:
-        self._by_server: dict[str, httpx.Auth | str] = {}
+        self._by_endpoint: dict[str, httpx.Auth | str] = {}
         self._lock = Lock()
 
-    def get(self, server: str, auth: CompiledMcpAuth) -> httpx.Auth | str:
+    def get(self, endpoint: str, auth: CompiledRemoteAuth) -> httpx.Auth | str:
         with self._lock:
-            existing = self._by_server.get(server)
+            existing = self._by_endpoint.get(endpoint)
             if existing is not None:
                 return existing
             built = _build(auth)
-            self._by_server[server] = built
+            self._by_endpoint[endpoint] = built
             return built
 
 
-def _build(auth: CompiledMcpAuth) -> httpx.Auth | str:
+def _build(auth: CompiledRemoteAuth) -> httpx.Auth | str:
     """Load the named strategy and construct it from its settings."""
     strategy = _load_strategy(auth.kind)
     settings = dict(auth.settings)
@@ -250,7 +316,7 @@ def _build(auth: CompiledMcpAuth) -> httpx.Auth | str:
 
 
 def _load_strategy(kind: str) -> Any:
-    ep = select_entry_point(MCP_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error")
+    ep = select_entry_point(REMOTE_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error")
     if ep is None:
         # Unreachable through configuration, which refuses an unregistered
         # strategy at decode; reached only if a distribution is uninstalled
@@ -260,7 +326,7 @@ def _load_strategy(kind: str) -> Any:
 
 
 def _checked(kind: str, built: object) -> httpx.Auth | str:
-    """Accept only what the MCP client can use, structurally, never by class.
+    """Accept only what a client can use, structurally, never by class.
 
     The handshake mirrors the engine registry's: an ``auth_flow`` attribute is
     what ``httpx`` calls, so a strategy satisfying that contract is accepted
@@ -299,16 +365,17 @@ def _static_headers_auth_class() -> Callable[[Mapping[str, str]], httpx.Auth]:
 
 
 _STRATEGIES = _SharedStrategies()
-"""Process-wide sharing of one authentication instance per MCP server."""
+"""Process-wide sharing of one authentication instance per remote endpoint."""
 
 
 __all__: Sequence[str] = [
-    "MCP_AUTH_ENTRY_POINT_GROUP",
+    "REMOTE_AUTH_ENTRY_POINT_GROUP",
     "bearer_token",
     "headers_from_ref",
     "is_strategy_registered",
     "registered_strategy_names",
-    "shared_auth",
+    "shared_a2a_auth",
+    "shared_mcp_auth",
     "standard_oauth",
     "static_headers",
 ]

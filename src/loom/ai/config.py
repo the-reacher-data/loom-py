@@ -34,7 +34,7 @@ from loom.ai.errors import (
     policy_out_of_range,
 )
 from loom.ai.inference import InferenceTarget
-from loom.ai.mcp_auth import is_strategy_registered, registered_strategy_names
+from loom.ai.remote_auth import is_strategy_registered, registered_strategy_names
 from loom.core.model import LoomFrozenStruct
 
 # Conservative allowlist for a secret *reference*: a name, path, ARN or key id
@@ -191,7 +191,7 @@ class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             here; a bearer token belongs in ``auth: {kind: bearer}``.
             Mutually exclusive with ``auth``.
         auth: Named authentication strategy and its settings, flattened:
-            ``kind`` selects an entry point registered in ``loom.ai.mcp_auth``
+            ``kind`` selects an entry point registered in ``loom.ai.remote_auth``
             and every other key is passed to it as a keyword argument.
             Mutually exclusive with ``headers_ref``.
         timeout_ms: Deadline of a single call to this server.
@@ -206,14 +206,26 @@ class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
 class A2AAgentConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     """One named remote A2A agent (``ai.a2a_agents.<name>``).
 
+    The credential is declared exactly as an MCP server declares it, and for
+    the same reason: the artifact names the agent, the deployment says how to
+    authenticate to it.
+
     Attributes:
         url: ``https://`` agent URL, free of userinfo and query string.
         headers_ref: Reference to headers resolved by the secrets resolver.
-            Never a literal secret.
+            Never a literal secret.  The resolved payload must be a single
+            ``Name=value`` header pair, a shape checked at start-up rather than
+            here; a bearer token belongs in ``auth: {kind: bearer}``.
+            Mutually exclusive with ``auth``.
+        auth: Named authentication strategy and its settings, flattened:
+            ``kind`` selects an entry point registered in ``loom.ai.remote_auth``
+            and every other key is passed to it as a keyword argument.
+            Mutually exclusive with ``headers_ref``.
     """
 
     url: str
     headers_ref: str | None = None
+    auth: dict[str, str] | None = None
 
 
 class AgentEndpointConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -342,19 +354,22 @@ def _validate_headers_ref(component: str, headers_ref: str | None) -> list[Agent
     return [mcp_credentials_inline(component, "headers_ref")]
 
 
-def _validate_auth(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
-    """Collect the issues of one server's ``auth`` block.
+def _validate_auth(
+    component: str, headers_ref: str | None, auth: Mapping[str, str] | None
+) -> list[AgentCompilationIssue]:
+    """Collect the issues of one endpoint's ``auth`` block.
 
-    Two credentials on one connection are ambiguous, so ``headers_ref`` and
-    ``auth`` are refused together; every setting in the block is held to the
-    same fail-closed reference test as ``headers_ref``, so no literal secret
-    reaches loom by the back door; and an unregistered strategy is refused here
-    rather than at the first message in production.
+    Applied to MCP servers and A2A agents alike, since both declare the same
+    block and resolve it through the same registry.  Two credentials on one
+    connection are ambiguous, so ``headers_ref`` and ``auth`` are refused
+    together; every setting in the block is held to the same fail-closed
+    reference test as ``headers_ref``, so no literal secret reaches loom by the
+    back door; and an unregistered strategy is refused here rather than at the
+    first message in production.
     """
-    auth = server.auth
     if auth is None:
         return []
-    if server.headers_ref is not None:
+    if headers_ref is not None:
         return [mcp_auth_conflict(component)]
     issues = [
         # The rejected value is deliberately absent from the issue, as for
@@ -378,7 +393,7 @@ def _validate_mcp_servers(
         component = f"ai.mcp_servers.{name}"
         issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
         issues.extend(_validate_headers_ref(component, server.headers_ref))
-        issues.extend(_validate_auth(component, server))
+        issues.extend(_validate_auth(component, server.headers_ref, server.auth))
         if not _TIMEOUT_MS_MIN <= server.timeout_ms <= _TIMEOUT_MS_MAX:
             issues.append(
                 policy_out_of_range(
@@ -401,4 +416,5 @@ def _validate_a2a_agents(
         component = f"ai.a2a_agents.{name}"
         issues.extend(_validate_remote_url(component, agent.url, a2a_url_invalid))
         issues.extend(_validate_headers_ref(component, agent.headers_ref))
+        issues.extend(_validate_auth(component, agent.headers_ref, agent.auth))
     return issues

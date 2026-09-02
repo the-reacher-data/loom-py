@@ -167,7 +167,7 @@ ai:
         bootstrap_ref: ${secrets:/agents/prod/agent-sales}
 ```
 
-`kind` names an entry point in the group `loom.ai.mcp_auth`; every other key in
+`kind` names an entry point in the group `loom.ai.remote_auth`; every other key in
 the block is passed to it as a **keyword argument**. Loom registers three, all
 thin delegations to what the libraries already provide:
 
@@ -196,7 +196,7 @@ from **your own package**; loom does not change:
 
 ```toml
 # pyproject.toml of your own distribution
-[project.entry-points."loom.ai.mcp_auth"]
+[project.entry-points."loom.ai.remote_auth"]
 agent-session = "my_package.auth:AgentSessionAuth"
 ```
 
@@ -253,6 +253,14 @@ server's read permissions to that prefix and log failed attempts per path.
   the value it rejected (`MCP_CREDENTIALS_INLINE`).
 - A strategy that cannot be built from its settings fails at start-up with
   `MCP_AUTH_STRATEGY_INVALID`.
+
+The group is `loom.ai.remote_auth`, not `loom.ai.mcp_auth`: one registry serves
+the MCP servers of `ai.mcp_servers` **and** the remote agents of `ai.a2a_agents`
+(see [a2a.md](a2a.md)), because the contract is `httpx.Auth` and knows neither
+protocol. A strategy is registered once and granted to either. The one
+exception is `kind: oauth`, which delegates to the MCP client library's own
+flow: an A2A agent naming it is refused with `MCP_AUTH_STRATEGY_INVALID` rather
+than connected without a credential.
 
 ### One instance per server
 

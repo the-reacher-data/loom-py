@@ -36,7 +36,7 @@ ai:
   a2a_agents:
     oncall:
       url: https://oncall.partner.example.com/a2a/rota
-      headers_ref: ONCALL_A2A_HEADERS
+      headers_ref: ${secrets:/loom/oncall/api-key}   # stores e.g. X-API-Key=abc123
 ```
 
 At start-up the remote card is fetched and validated. An unreachable agent fails
@@ -56,6 +56,55 @@ A delegation is a capability like any other, with none of the exemptions a
 The remote URL must be `https://`, with no credentials in its userinfo and no
 query string. Compilation refuses anything else, and the offending URL is
 redacted in the error message.
+
+### Authenticating to the remote agent
+
+A remote agent declares its credential exactly as an MCP server does, and loom
+resolves it through the same registry — see
+[mcp.md § Authentication](mcp.md#authentication) for the full reference:
+
+```yaml
+ai:
+  a2a_agents:
+    oncall:
+      url: https://oncall.partner.example.com/a2a/rota
+      headers_ref: ${secrets:/loom/oncall/api-key}   # one Name=value pair
+    market:
+      url: https://market.partner.example.com/a2a
+      auth:
+        kind: bearer                                 # Authorization: Bearer <token>
+        token_ref: ${secrets:/loom/market/token}
+    orders:
+      url: https://orders.internal.example.com/a2a
+      auth:
+        kind: agent-session                          # a strategy you register
+        session_url: https://orders.internal.example.com/auth/agent/session
+        bootstrap_ref: ${secrets:/agents/prod/agent-sales}
+```
+
+The credential is set on the HTTP client, not on one request, so **every** call
+carries it — including the card fetch, which is the *first* request of the
+session. An agent that authenticates its card endpoint would otherwise fail
+start-up before a skill was ever called.
+
+`kind` names an entry point in the group `loom.ai.remote_auth`, the same group
+MCP servers resolve against: the strategy contract is
+[`httpx.Auth`](https://www.python-httpx.org/advanced/authentication/), which
+knows nothing of either protocol, so a deployment registers its strategy once
+and grants it to either transport. The one strategy an A2A agent cannot use is
+`kind: oauth`, which delegates to the MCP client library's own flow; naming it
+here is refused with `MCP_AUTH_STRATEGY_INVALID` rather than connecting without
+the credential the deployment asked for.
+
+What compilation guarantees is what it guarantees for an MCP server:
+`headers_ref` and `auth` are **mutually exclusive** (`MCP_AUTH_CONFLICT`); a
+`kind` nobody registers fails at compile time naming what is installed
+(`MCP_AUTH_STRATEGY_UNKNOWN`); and no literal secret is accepted anywhere in the
+block (`MCP_CREDENTIALS_INLINE`, and the rejection never repeats the value).
+
+The authentication object is built **once per configured agent and shared by
+every agent granted it**: the credential belongs to the deployment, so a
+renewing strategy renews once rather than once per caller.
 
 ## Inbound — publishing your agent
 
