@@ -317,9 +317,7 @@ class TestDropSinkCompletion:
             only surfaced once the type checker started reading tests.
             """
 
-            def fork(
-                self, topic: str, partition: int, offset: int, extra_outputs: int
-            ) -> None:
+            def fork(self, topic: str, partition: int, offset: int, extra_outputs: int) -> None:
                 raise AssertionError("a drop sink must not fork a record")
 
             def complete(self, topic: str, partition: int, offset: int) -> None:

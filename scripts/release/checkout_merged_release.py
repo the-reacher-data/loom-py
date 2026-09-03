@@ -195,9 +195,25 @@ def _is_ready_to_merge(merge_state: str, check_outcomes: Sequence[CheckOutcome])
     # reports through the Checks API, and no workflow runs on a branch pushed by
     # GITHUB_TOKEN, so no coverage is ever uploaded for it. Merging is still
     # safe as long as every check that did report has passed.
-    return bool(check_outcomes) and all(
-        outcome is CheckOutcome.PASSED for outcome in check_outcomes
-    )
+    #
+    # And an empty rollup is the *normal* state, not a missing signal. The branch
+    # and the PR are created with GITHUB_TOKEN, and GitHub deliberately emits no
+    # event for actions taken with it -- the protection against workflows
+    # triggering workflows without end. So no run is ever queued against a release
+    # PR and no check can ever appear. Requiring at least one made the wait
+    # unsatisfiable by construction: every release timed out and was published by
+    # hand.
+    #
+    # What guards a release PR is not CI on a version bump -- the code it describes
+    # already passed CI in the pull requests that composed it. It is that the PR
+    # changes exactly CHANGELOG.md, pyproject.toml and uv.lock and nothing else,
+    # asserted by _validate_snapshot at the top of every poll before this function
+    # is reached. A PR carrying anything more never gets this far.
+    #
+    # This cannot open the loop the token protection exists to prevent: the release
+    # workflow's own `prepare` job refuses a head ref starting with `docs/`, so
+    # merging a release PR never starts another release.
+    return all(outcome is CheckOutcome.PASSED for outcome in check_outcomes)
 
 
 def _validate_polling_bounds(timeout_seconds: float, poll_interval_seconds: float) -> None:
