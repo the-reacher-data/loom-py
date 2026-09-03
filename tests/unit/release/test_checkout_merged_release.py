@@ -412,10 +412,41 @@ def test_unstable_pr_is_merged_once_every_reported_check_passed(
     )
 
 
+def test_unstable_pr_with_no_checks_is_merged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty rollup is the normal state of a release PR, not a missing signal.
+
+    The branch and the PR are created with ``GITHUB_TOKEN``, and GitHub emits no
+    event for actions taken with it, so no workflow is ever queued against a
+    release PR and no check can ever appear.  Requiring one made the wait
+    unsatisfiable: every release timed out and was published by hand.  What
+    guards the merge is the file scope asserted on every poll, not CI on a
+    version bump.
+    """
+    repository = _create_remote_repository(tmp_path, merge_on_master=False)
+    unstable = _snapshot(
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="UNSTABLE",
+        merge_sha=None,
+        check_outcomes=(),
+    )
+    merged = _snapshot(head_sha=repository.head_sha, merge_sha=repository.merge_sha)
+    merger = MergeRecorder(repository)
+    _install_fake_uv(tmp_path, monkeypatch)
+
+    resolved_sha = _checkout(repository, _reader(repository, unstable, merged), merger, FakeClock())
+
+    assert (resolved_sha, merger.calls) == (
+        repository.merge_sha,
+        [(unstable.number, repository.head_sha)],
+    )
+
+
 @pytest.mark.parametrize(
     "check_outcomes",
     [
-        pytest.param((), id="no-check-reported"),
         pytest.param(
             (release.CheckOutcome.PASSED, release.CheckOutcome.PENDING),
             id="check-still-running",
