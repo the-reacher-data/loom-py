@@ -1,45 +1,43 @@
-# 🧵 Unreleased
-
-
-## 💥 Breaking changes
-### ai
-- **ai:** the entry-point group `loom.ai.mcp_auth` is renamed `loom.ai.remote_auth`<br>
-  > The group is a registry of outbound credential strategies, and the contract
-  > is `httpx.Auth`, which knows nothing of MCP: the same strategies now serve
-  > the remote A2A agents of `ai.a2a_agents` as well as the MCP servers of
-  > `ai.mcp_servers`. Keeping the old name would have made it a lie for half its
-  > contents and left a third party unable to tell which transports its
-  > registration was offered to.
-  >
-  > **Anything registered under `loom.ai.mcp_auth` stops being found.** Change
-  > the group name in your own `pyproject.toml`; nothing else about a strategy
-  > changes. There is no compatibility shim and no deprecation cycle: the group
-  > shipped in 1.7.0 and is renamed the release after, before it had consumers.
-  >
-  > The module moves with the group, `loom.ai.mcp_auth` → `loom.ai.remote_auth`;
-  > `shared_auth` becomes `shared_mcp_auth`, alongside the new `shared_a2a_auth`;
-  > and the plan struct `CompiledMcpAuth` becomes `CompiledRemoteAuth`. The error
-  > codes are unchanged, `MCP_AUTH_*` included: they are stable identifiers a
-  > deployment may already match on, and `MCP_CREDENTIALS_INLINE` was already
-  > raised for model roles and A2A agents before this change.
+# 🚀 Release 1.8.0 ([#147](https://github.com/the-reacher-data/loom-py/pull/147)) ([`1d9667e`](https://github.com/the-reacher-data/loom-py/commit/1d9667e3))
 
 
 ## ✨ Features
 ### ai
-- **ai:** authenticate to remote A2A agents<br>
-  > `A2AAgentConfig.headers_ref` was declared, documented, validated by the
-  > compiler and carried into the plan — and then dropped by the transport,
-  > which built its HTTP client with no headers and no auth. A deployment
-  > configured credentials, everything compiled, and the agent connected
-  > **unauthenticated without a word**.
+- **ai:** authenticate to remote A2A agents, and share one strategy registry ([#147](https://github.com/the-reacher-data/loom-py/pull/147))<br>
+  > `A2AAgentConfig.headers_ref` was declared, validated by the compiler and
+  > carried into the plan — then dropped, so an agent configured with
+  > credentials connected **unauthenticated, silently**. MCP at least refused.
   >
-  > Remote agents now declare `headers_ref` or an `auth` strategy exactly as MCP
-  > servers do, resolved through the same registry, with the same refusals:
-  > mutually exclusive, no literal secret anywhere in the block, and an
-  > unregistered strategy failing at compile time naming what is installed. The
-  > credential is set on the HTTP client, so the card fetch — the first request
-  > of the session — carries it too. `kind: oauth` is refused for A2A, since it
-  > delegates to the MCP client's own flow, rather than connecting bare.
+  > **BREAKING**: the entry-point group `loom.ai.mcp_auth` is renamed
+  > `loom.ai.remote_auth`, and `mcp_auth.py` becomes `remote_auth.py`. Anything
+  > registered under the old name stops being found. No deprecation cycle was
+  > run because the group shipped one release earlier with no consumers.
+  >
+  > One registry now serves both outbound transports: nothing about `bearer`,
+  > `oauth` or `static` is MCP-specific, since the contract is `httpx.Auth`.
+  > Sharing keys are scoped by transport, so an MCP server and an A2A agent of
+  > the same name remain two credentials. The credential is set on the client,
+  > so the card fetch — the *first* request of a session — carries it too.
+
+
+## 🐛 Fixes
+### ai
+- **ai:** give a plugin the setting types its signature declares ([#150](https://github.com/the-reacher-data/loom-py/pull/150))<br>
+  > Auth settings arrive as strings, because each passes the inline-credential
+  > refusal, which admits no spaces. A strategy declaring `timeout: int` got
+  > `"30"`, and one declaring `verify: bool` got `"false"` — which is truthy, so
+  > a deployment asking to turn verification off got it turned on.
+  >
+  > A setting whose parameter declares `str`, `int`, `float` or `bool` is now
+  > converted to it; a custom type or an unannotated parameter is passed exactly
+  > as before, so no existing strategy changes behaviour.
+
+
+## 🧹 Chores
+- **chore:** retire two expired Sonar suppressions and fix two lying test stubs ([#146](https://github.com/the-reacher-data/loom-py/pull/146))<br>
+  > Both suppressions carried a written expiry condition that the 1.7.0 split
+  > met; one pointed at a file that no longer exists. Two test stubs had
+  > silently stopped satisfying the protocols they stand in for.
 
 
 # 🚀 Release 1.7.1 ([#143](https://github.com/the-reacher-data/loom-py/pull/143)) ([`0322dbb`](https://github.com/the-reacher-data/loom-py/commit/0322dbb2))
