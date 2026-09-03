@@ -1,3 +1,18 @@
+# 🚀 Release 1.8.1 ([#152](https://github.com/the-reacher-data/loom-py/pull/152)) ([`e8d1d81`](https://github.com/the-reacher-data/loom-py/commit/e8d1d81cf2b3fe15e8351108b893d6076950f0cd))
+
+
+
+## 🐛 Fixes
+### release
+- **release:** merge the release PR when its check rollup is empty
+
+
+
+
+
+
+
+
 # 🚀 Release 1.8.0 ([#147](https://github.com/the-reacher-data/loom-py/pull/147)) ([`1d9667e`](https://github.com/the-reacher-data/loom-py/commit/1d9667e3))
 
 
