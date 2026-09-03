@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AbstractAsyncContextManager
-from typing import Any, ClassVar, Literal, Protocol
+from typing import Any, ClassVar, Final, Literal, Protocol
 
 from loom.ai.errors import AgentRunErrorCode
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.model import LoomFrozenStruct
+
+CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
+"""Longest ``conversation_id`` a run accepts; the value itself is opaque."""
 
 
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -43,10 +46,15 @@ class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):
         output: Answer already decoded and validated against the declared
             output shape.
         usage: Resource accounting of the run.
+        interaction_id: Identifier the runtime minted for this run.
+        hook_result: Return value of the ``on_output`` use case, when the plan
+            declares one.
     """
 
     output: object
     usage: AgentUsage
+    interaction_id: str | None = None
+    hook_result: object | None = None
 
 
 class TextDeltaEvent(
@@ -97,10 +105,13 @@ class ErrorEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="error", tag_f
     Attributes:
         code: Stable run-time failure code; the retry policy reads its class.
         message: Human-readable description.
+        interaction_id: Identifier of the admitted run this failure belongs
+            to; ``None`` before admission.
     """
 
     code: AgentRunErrorCode
     message: str
+    interaction_id: str | None = None
 
 
 class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_field="type"):
@@ -110,10 +121,15 @@ class FinalEvent(LoomFrozenStruct, frozen=True, kw_only=True, tag="final", tag_f
         output: Answer already decoded and validated against the declared
             output shape.
         usage: Resource accounting of the whole run.
+        interaction_id: Identifier the runtime minted for this run.
+        hook_result: Return value of the ``on_output`` use case, when the plan
+            declares one.
     """
 
     output: object
     usage: AgentUsage
+    interaction_id: str | None = None
+    hook_result: object | None = None
 
 
 AgentEvent = TextDeltaEvent | ToolCallEvent | ToolResultEvent | ErrorEvent | FinalEvent

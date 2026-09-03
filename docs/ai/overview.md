@@ -99,7 +99,10 @@ Exposure is always an explicit opt-in, never a default.
 ## Where to go next
 
 - **[Artifact reference](artifacts.md)** — the complete `spec_version: 1`
-  format, field by field, and the folder layout an agent lives in.
+  format, field by field, and the folder layout an agent lives in. It includes
+  [`on_output`](artifacts.md#on_output--a-use-case-run-once-per-completed-run),
+  the use case the runtime executes once per completed run with the validated
+  output.
 - **[Model providers](providers.md)** — the provider matrix, and why an
   OpenAI-compatible endpoint is one provider covering many vendors.
 - **[A2A surface](a2a.md)** — publishing an agent to other agents, and exactly

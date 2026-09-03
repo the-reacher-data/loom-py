@@ -218,7 +218,7 @@ def failure_event(exc: BaseException) -> ErrorEvent:
         event = failure_event(AgentRunError(AgentRunErrorCode.RUN_TIMEOUT, "late"))
     """
     if isinstance(exc, AgentRunError):
-        return ErrorEvent(code=exc.code, message=str(exc))
+        return ErrorEvent(code=exc.code, message=str(exc), interaction_id=exc.interaction_id)
     return ErrorEvent(code=AgentRunErrorCode.PROVIDER_UNAVAILABLE, message=_UNEXPECTED_FAILURE)
 
 
@@ -231,16 +231,25 @@ async def _next_frame(frames: AsyncIterator[bytes]) -> bytes | None:
 
 
 async def _drain(pending: asyncio.Future[bytes | None] | None) -> None:
-    """Cancel the awaited frame and wait for it, so nothing outlives the stream."""
+    """Cancel the awaited frame and wait for it, so nothing outlives the stream.
+
+    The wait is shielded and repeated until the frame task is done. A server
+    that cancels its handler again at every checkpoint (an ``anyio`` cancel
+    scope does, after a disconnect) would otherwise cancel the frame task a
+    second time through the bare await — cutting the output hook it shields —
+    and then return early, letting the caller close a generator that task is
+    still running.
+    """
     if pending is None:
         return
     pending.cancel()
-    try:
-        await pending
-    except (Exception, asyncio.CancelledError):
-        # The consumer is already gone: neither the cancellation just requested
-        # nor a late failure has anybody left to be reported to.
-        return
+    while not pending.done():
+        try:
+            await asyncio.shield(pending)
+        except (Exception, asyncio.CancelledError):
+            # The consumer is already gone: neither the cancellation just
+            # requested nor a late failure has anybody left to be reported to.
+            continue
 
 
 async def with_heartbeats(

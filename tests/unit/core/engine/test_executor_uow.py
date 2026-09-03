@@ -83,6 +83,13 @@ class _FailingUseCase(UseCase[Any, str]):
         raise ValueError("boom")
 
 
+class _CancellingUseCase(UseCase[Any, str]):
+    """Models a use case cut by cancellation while it awaits."""
+
+    async def execute(self) -> str:
+        raise asyncio.CancelledError
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -165,6 +172,57 @@ async def test_rollback_called_on_failure() -> None:
     assert uow.begun
     assert uow.rolled_back
     assert not uow.committed
+
+
+@pytest.mark.asyncio
+async def test_hace_rollback_cuando_la_ejecucion_se_cancela() -> None:
+    """A cancellation is not an ``Exception``, yet the begun transaction must close."""
+    uow = _StubUoW()
+    executor = _make_executor(uow)
+
+    with (
+        patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await executor.execute(_CancellingUseCase())
+
+    assert uow.begun
+    assert uow.rolled_back
+    assert not uow.committed
+    mock_clear.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_completa_el_rollback_cuando_llega_una_segunda_cancelacion() -> None:
+    """A second cancel while rolling back must not cut the rollback short."""
+    release = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _RollbackGatedUoW(_StubUoW):
+        async def rollback(self) -> None:
+            await release.wait()
+            self.rolled_back = True
+
+    class _WaitingUseCase(UseCase[Any, str]):
+        async def execute(self) -> str:
+            await gate.wait()
+            return "unreachable"
+
+    uow = _RollbackGatedUoW()
+    executor = _make_executor(uow)
+    run = asyncio.ensure_future(executor.execute(_WaitingUseCase()))
+    await asyncio.sleep(0)
+    run.cancel()  # cuts the use case: the rollback starts and blocks on ``release``
+    await asyncio.sleep(0)
+    run.cancel()  # arrives while the rollback is in flight
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert not uow.rolled_back
+
+    release.set()
+    await asyncio.sleep(0)
+
+    assert uow.rolled_back
 
 
 @pytest.mark.asyncio

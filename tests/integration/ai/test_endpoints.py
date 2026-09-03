@@ -16,34 +16,42 @@ import logging
 import os
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import httpx
+import msgspec
 import pytest
 import yaml
 from fastapi import FastAPI
 
 from loom.ai.a2a.card import card_path
 from loom.ai.a2a.server import bind_a2a_endpoints
-from loom.ai.abc import AgentEvent, ErrorEvent, FinalEvent, TextDeltaEvent
-from loom.ai.compiler._plan import AgentPlan
+from loom.ai.abc import AgentEvent, DepsFactory, ErrorEvent, FinalEvent, TextDeltaEvent
+from loom.ai.compiler._plan import AgentPlan, CompiledOutputHook
 from loom.ai.config import A2AConfig, AgentEndpointConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode, AgentRunErrorCode
 from loom.ai.fastapi.endpoints import bind_agent_endpoints
 from loom.ai.runtime import AgentRuntime
+from loom.ai.runtime._hooks import HOOK_FAILED_MESSAGE
+from loom.core.command import Command
 from loom.core.config.errors import ConfigError
 from loom.core.di import LoomContainer
+from loom.core.errors import Forbidden
 from loom.core.identity import Identity, reset_identity, set_identity
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.use_case import Caller, Input, UseCase
+from loom.core.use_case.keys import use_case_key
 from loom.rest.auth.middleware import AuthenticationMiddleware
 from tests.integration.ai.conftest import (
     DEFAULT_OUTPUT,
     DEFAULT_USAGE,
     CountingEngineProvider,
+    RecordingDepsFactory,
     RecordingMcpSession,
     ScriptedEngine,
     StubDepsFactory,
@@ -60,6 +68,8 @@ _AGENT = "analyst"
 _PREFIX = "/agents"
 _MCP_SERVER = "tools"
 _SRC = Path(__file__).resolve().parents[3] / "src"
+_INTERACTION_ID_LENGTH = 32
+"""Length of the ``uuid4().hex`` the runtime mints per admitted run."""
 
 
 class StubAuthenticator:
@@ -107,7 +117,7 @@ class _IdentityMiddleware:
 @asynccontextmanager
 async def _serving(
     *,
-    deps: StubDepsFactory,
+    deps: DepsFactory,
     container: LoomContainer,
     plans: Sequence[AgentPlan] | None = None,
     engines: Mapping[str, ScriptedEngine] | None = None,
@@ -116,6 +126,7 @@ async def _serving(
     authenticator: object | None = None,
     max_prompt_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
+    max_concurrent_runs: int = 8,
     observability_runtime: ObservabilityRuntime | None = None,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     """Serve an entered runtime over an in-process ASGI client."""
@@ -124,6 +135,7 @@ async def _serving(
         mcp_servers=make_mcp_servers(_MCP_SERVER),
         max_prompt_bytes=max_prompt_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
+        max_concurrent_runs=max_concurrent_runs,
     )
     runtime = AgentRuntime(
         plans=list(plans if plans is not None else (make_plan(_AGENT),)),
@@ -166,23 +178,37 @@ async def _asgi_post(
     path: str,
     chunks: Sequence[bytes],
     headers: Sequence[tuple[bytes, bytes]],
+    *,
+    on_body: Callable[[bytes], None] | None = None,
 ) -> int:
-    """POST raw body chunks over ASGI and return the response status."""
+    """POST raw body chunks over ASGI and return the response status.
+
+    Args:
+        app: Application under test.
+        path: Request path.
+        chunks: Body chunks, sent one ASGI message each.
+        headers: Raw request headers.
+        on_body: Called with every non-empty response body chunk the moment it
+            reaches the wire, so a test can order it against other work.
+    """
     messages: list[dict[str, Any]] = [
         {"type": "http.request", "body": chunk, "more_body": True} for chunk in chunks
     ]
     messages.append({"type": "http.request", "body": b"", "more_body": False})
-    consumed = 0
     sent: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:
-        nonlocal consumed
-        message = messages[min(consumed, len(messages) - 1)]
-        consumed += 1
-        return message
+        if messages:
+            return messages.pop(0)
+        # A streaming response listens for the disconnect concurrently with
+        # the body: a receive that never suspends would starve the frames.
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
 
     async def send(message: Any) -> None:
         sent.append(dict(message))
+        if on_body is not None and message["type"] == "http.response.body" and message.get("body"):
+            on_body(message["body"])
 
     scope: dict[str, Any] = {
         "type": "http",
@@ -200,6 +226,141 @@ async def _asgi_post(
     }
     await app(scope, receive, send)
     return int(next(m["status"] for m in sent if m["type"] == "http.response.start"))
+
+
+# ---------------------------------------------------------------------------
+# Incident-triage output hook, as the composition root would wire it
+# ---------------------------------------------------------------------------
+
+
+class TriageRecorded(msgspec.Struct, frozen=True):
+    """Result of recording one triage: what ``hook_result`` carries to the client."""
+
+    triage_id: str
+
+
+class TriageCommand(Command, frozen=True):
+    """What the triage recorder wants from a run: the output, the id, the thread."""
+
+    output: dict[str, Any]
+    interaction_id: str
+    conversation_id: str | None = None
+
+
+@dataclass
+class TriageRecorder:
+    """Shared observer of every hook execution, resolved from the container.
+
+    Attributes:
+        commands: One entry per execution, in order.
+        timeline: ``"hook"`` appended when a hook runs; tests append frames.
+        entered: Set when the first execution starts.
+        gate: When set, an execution waits on it before completing.
+        failure: Exception an execution raises instead of completing.
+    """
+
+    commands: list[TriageCommand] = field(default_factory=list)
+    timeline: list[str] = field(default_factory=list)
+    entered: asyncio.Event = field(default_factory=asyncio.Event)
+    gate: asyncio.Event | None = None
+    failure: Exception | None = None
+
+    async def record(self, command: TriageCommand) -> None:
+        """Record one execution, honouring the gate and raising the failure if any."""
+        self.commands.append(command)
+        self.timeline.append("hook")
+        self.entered.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.failure is not None:
+            raise self.failure
+
+
+@use_case_key("incidents.record_triage_over_http")
+class RecordTriage(UseCase[Any, TriageRecorded]):
+    """Records a triage report once the agent has produced it."""
+
+    def __init__(self, recorder: TriageRecorder) -> None:
+        self._recorder = recorder
+
+    async def execute(
+        self, cmd: TriageCommand = Input(), caller: Identity = Caller()
+    ) -> TriageRecorded:
+        del caller
+        await self._recorder.record(cmd)
+        return TriageRecorded(triage_id=cmd.interaction_id)
+
+
+def _hooked_plan() -> AgentPlan:
+    """Build the plan whose ``on_output`` names the triage recorder, as the compiler would."""
+    hook = CompiledOutputHook(
+        usecase="incidents.record_triage_over_http",
+        use_case=RecordTriage,
+        accepted=frozenset(info.name for info in msgspec.structs.fields(TriageCommand)),
+    )
+    return msgspec.structs.replace(make_plan(_AGENT), on_output=hook)
+
+
+@pytest.fixture
+def recorder(container: LoomContainer) -> TriageRecorder:
+    """Recorder the hook use case resolves from the container."""
+    recorder = TriageRecorder()
+    container.register_instance(TriageRecorder, recorder)
+    return recorder
+
+
+@pytest.fixture
+def hook_deps() -> RecordingDepsFactory:
+    """Deps factory serving the triage recorder through a real executor."""
+    return RecordingDepsFactory((RecordTriage,))
+
+
+async def _abandon_stream_when(app: FastAPI, path: str, signal: asyncio.Event) -> None:
+    """Drive one ``/stream`` request over ASGI and disconnect once *signal* is set.
+
+    ``httpx.ASGITransport`` buffers the whole response, so it cannot express a
+    client that walks away; the raw ASGI call can.
+    """
+    pending: list[dict[str, Any]] = [
+        {"type": "http.request", "body": b'{"prompt": "p"}', "more_body": False}
+    ]
+
+    async def receive() -> dict[str, Any]:
+        if pending:
+            return pending.pop(0)
+        await signal.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Any) -> None:
+        del message
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("testclient", 50000),
+        "server": ("agents.test", 80),
+    }
+    await app(scope, receive, send)
+
+
+def _final_frame(payload: str) -> dict[str, Any]:
+    """Return the decoded data of the single ``final`` frame of an SSE payload."""
+    return _frame(payload, "final")
+
+
+def _frame(payload: str, name: str) -> dict[str, Any]:
+    """Return the decoded data of the single ``name`` frame of an SSE payload."""
+    lines = payload.splitlines()
+    (position,) = [index for index, line in enumerate(lines) if line == f"event: {name}"]
+    return dict(msgspec.json.decode(lines[position + 1][len("data: ") :]))
 
 
 class TestMontaje:
@@ -230,6 +391,24 @@ class TestMontaje:
             response = await client.post(f"{_PREFIX}/hidden/run", json={"prompt": "p"})
 
             assert response.status_code == 404
+
+    async def test_responde_interaction_id_nulo_cuando_falla_antes_de_la_admision(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """A refusal before any run exists still carries the key, as ``null``."""
+        async with _serving(
+            deps=deps,
+            container=container,
+            plans=(make_plan(_AGENT), make_plan("hidden")),
+            identity=identity,
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/hidden/run", json={"prompt": "p"})
+
+            assert response.json() == {
+                "code": "AGENT_NOT_FOUND",
+                "message": "no agent named 'hidden' is exposed",
+                "interaction_id": None,
+            }
 
     async def test_no_monta_ruta_cuando_el_agente_esta_deshabilitado(
         self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
@@ -377,7 +556,9 @@ class TestRun:
         async with _serving(deps=deps, container=container, identity=identity) as (_app, client):
             response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
 
-            assert response.json() == {
+            body = response.json()
+            assert len(body.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert body == {
                 "output": dict(DEFAULT_OUTPUT),
                 "usage": {
                     "input_tokens": DEFAULT_USAGE.input_tokens,
@@ -385,7 +566,222 @@ class TestRun:
                     "requests": DEFAULT_USAGE.requests,
                     "duration_ms": DEFAULT_USAGE.duration_ms,
                 },
+                "hook_result": None,
             }
+
+    async def test_responde_422_cuando_el_cuerpo_lleva_una_clave_desconocida(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity
+    ) -> None:
+        """The body accepts nothing beyond the documented keys."""
+        async with _serving(deps=deps, container=container, identity=identity) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "history": []}
+            )
+
+            assert response.status_code == 422
+            assert response.json()["code"] == "INVALID_REQUEST"
+
+
+class TestConversationId:
+    """``conversation_id`` is an opaque body field copied into the hook's command (AC12)."""
+
+    async def test_entrega_el_conversation_id_al_command_cuando_se_indica(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """The value on the body reaches the command untouched."""
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": "c-42"}
+            )
+
+            assert response.status_code == 200
+            assert [command.conversation_id for command in recorder.commands] == ["c-42"]
+
+    async def test_entrega_none_cuando_no_se_indica_conversation_id(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """A body without the field delivers ``None``."""
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            assert [command.conversation_id for command in recorder.commands] == [None]
+
+    @pytest.mark.parametrize("value", ["x" * 129, ""])
+    async def test_responde_422_cuando_el_conversation_id_esta_fuera_de_limites(
+        self, deps: StubDepsFactory, container: LoomContainer, identity: Identity, value: str
+    ) -> None:
+        """Out-of-bound values are refused at decode, before any run is admitted."""
+        async with _serving(deps=deps, container=container, identity=identity) as (_app, client):
+            response = await client.post(
+                f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p", "conversation_id": value}
+            )
+
+            assert response.status_code == 422
+            assert response.json()["code"] == "INVALID_REQUEST"
+            assert response.json()["interaction_id"] is None
+
+
+class TestHookEnHttp:
+    """The output hook seen from the wire: ids, results and failures (AC13)."""
+
+    async def test_devuelve_interaction_id_y_hook_result_cuando_el_hook_completa(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """The ``/run`` body carries the id the hook saw and what the hook returned."""
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            body = response.json()
+            assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
+            assert body["hook_result"] == {"triage_id": body["interaction_id"]}
+            assert [command.interaction_id for command in recorder.commands] == [
+                body["interaction_id"]
+            ]
+
+    async def test_emite_final_con_el_resultado_del_hook_cuando_se_hace_stream(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """The ``final`` frame carries the id and the hook's result, and the hook ran first."""
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (app, _client):
+            chunks: list[bytes] = []
+
+            def _on_body(chunk: bytes) -> None:
+                chunks.append(chunk)
+                if b"event: final" in chunk:
+                    recorder.timeline.append("final")
+
+            status = await _asgi_post(
+                app,
+                f"{_PREFIX}/{_AGENT}/stream",
+                [b'{"prompt": "p"}'],
+                [(b"content-type", b"application/json")],
+                on_body=_on_body,
+            )
+
+            assert status == 200
+            assert recorder.timeline == ["hook", "final"]
+            final = _final_frame(b"".join(chunks).decode("utf-8"))
+            assert len(final["interaction_id"]) == _INTERACTION_ID_LENGTH
+            assert final["hook_result"] == {"triage_id": final["interaction_id"]}
+
+    async def test_responde_500_hook_failed_con_interaction_id_cuando_el_hook_lanza(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """The body is the fixed text plus the id; the exception detail stays server-side."""
+        recorder.failure = ValueError("secret detail")
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            assert response.status_code == 500
+            body = response.json()
+            assert len(body.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert body == {"code": "HOOK_FAILED", "message": HOOK_FAILED_MESSAGE}
+            assert "secret detail" not in response.text
+
+    async def test_emite_error_con_interaction_id_cuando_el_hook_lanza_en_stream(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """On ``/stream`` the same failure is one ``error`` frame carrying the id."""
+        recorder.failure = ValueError("secret detail")
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/stream", json={"prompt": "p"})
+
+            assert _sse_names(response.text) == ["text_delta", "error"]
+            error = _frame(response.text, "error")
+            assert len(error.pop("interaction_id")) == _INTERACTION_ID_LENGTH
+            assert error == {"code": "HOOK_FAILED", "message": HOOK_FAILED_MESSAGE}
+            assert "secret detail" not in response.text
+
+    async def test_confirma_una_vez_y_libera_el_permiso_cuando_el_cliente_abandona_durante_el_hook(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A disconnect mid-hook neither cuts the record nor closes a running generator."""
+        recorder.gate = asyncio.Event()
+        async with _serving(
+            deps=hook_deps,
+            container=container,
+            plans=(_hooked_plan(),),
+            identity=identity,
+            max_concurrent_runs=1,
+        ) as (app, client):
+            with caplog.at_level(logging.WARNING):
+                request = asyncio.ensure_future(
+                    _abandon_stream_when(app, f"{_PREFIX}/{_AGENT}/stream", recorder.entered)
+                )
+                await recorder.entered.wait()
+                await asyncio.sleep(0.05)  # the disconnect reaches the stream
+
+                refused = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+                recorder.gate.set()
+                await request
+                admitted = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+        assert refused.status_code == 429
+        assert refused.json()["code"] == AgentRunErrorCode.TOO_MANY_RUNS
+        assert admitted.status_code == 200
+        assert hook_deps.uow.log == ["begin", "commit", "begin", "commit"]
+        assert "aclose" not in caplog.text
+
+    async def test_responde_403_cuando_las_reglas_del_hook_rechazan(
+        self,
+        hook_deps: RecordingDepsFactory,
+        recorder: TriageRecorder,
+        container: LoomContainer,
+        identity: Identity,
+    ) -> None:
+        """A ``Forbidden`` raised by the hook keeps its meaning on the wire."""
+        recorder.failure = Forbidden("triage of INC-1 is restricted")
+        async with _serving(
+            deps=hook_deps, container=container, plans=(_hooked_plan(),), identity=identity
+        ) as (_app, client):
+            response = await client.post(f"{_PREFIX}/{_AGENT}/run", json={"prompt": "p"})
+
+            assert response.status_code == 403
+            body = response.json()
+            assert body["code"] == "UNAUTHORIZED"
+            assert len(body["interaction_id"]) == _INTERACTION_ID_LENGTH
 
 
 class TestTopeDeCuerpo:
@@ -448,6 +844,7 @@ class TestMapeoDeErrores:
             (AgentRunErrorCode.RUN_TIMEOUT, 504),
             (AgentRunErrorCode.TOO_MANY_RUNS, 429),
             (AgentRunErrorCode.UNAUTHORIZED, 403),
+            (AgentRunErrorCode.HOOK_FAILED, 500),
         ],
     )
     async def test_mapea_el_status_cuando_la_ejecucion_falla(

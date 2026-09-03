@@ -41,6 +41,9 @@
     "output": {
       "$ref": "#/$defs/output"
     },
+    "on_output": {
+      "$ref": "#/$defs/on_output"
+    },
     "capabilities": {
       "type": "array",
       "default": [],
@@ -98,6 +101,20 @@
           }
         }
       ]
+    },
+    "on_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "usecase"
+      ],
+      "properties": {
+        "usecase": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Use-case key of the registry executed once per completed run with the validated output. Not a tool: the model never sees it, and the same key must not also be granted as a usecase capability."
+        }
+      }
     },
     "capability": {
       "oneOf": [

@@ -55,11 +55,17 @@ def _tool_result_payload(event: ToolResultEvent) -> Mapping[str, object]:
 
 
 def _error_payload(event: ErrorEvent) -> Mapping[str, object]:
-    return {"code": event.code, "message": event.message}
+    return {"code": event.code, "message": event.message, "interaction_id": event.interaction_id}
 
 
 def _final_payload(event: FinalEvent) -> Mapping[str, object]:
-    return {"output": event.output, "usage": event.usage}
+    # Both keys are always present, ``null`` when absent: a fixed shape.
+    return {
+        "output": event.output,
+        "usage": event.usage,
+        "interaction_id": event.interaction_id,
+        "hook_result": event.hook_result,
+    }
 
 
 # The event class is the key: one mapping lookup per event, no reflection.

@@ -31,6 +31,7 @@ from pydantic_ai.tools import RunContext, Tool, ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from loom.ai._filters import matches
+from loom.ai._usecase import invoke_as, require_invoker
 from loom.ai.compiler import (
     AgentPlan,
     CompiledA2ACapability,
@@ -76,11 +77,10 @@ from loom.ai.errors import (
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.engine.plan import ExecutionPlan
-from loom.core.identity import Identity, reset_identity, set_identity
+from loom.core.identity import Identity
 from loom.core.sql.abc import RoleNotAllowedError, RolesNotBoundError, SqlQueryResult
 from loom.core.sql.roles import resolve_query_roles
 from loom.core.sql.service import SqlQueryService
-from loom.core.use_case.invoker import ApplicationInvoker
 
 _logger = logging.getLogger(__name__)
 
@@ -243,37 +243,14 @@ def _usecase_tool(grant: _UsecaseGrant, context: BuildContext) -> Tool[Any]:
     )
 
 
-def _require_invoker(deps: CapabilityDeps, tool: str) -> ApplicationInvoker:
-    """Return the bundle's invoker, refusing a bundle that carries none.
-
-    Read from the bundle rather than resolved from the container: the bundle's
-    invoker is the one the composition root already bound to this invocation's
-    caller, and the container holds only the unbound singleton.
-
-    Raises:
-        AgentRunError: ``UNAUTHORIZED`` when the bundle carries no invoker.
-    """
-    invoker = getattr(deps, "invoker", None)
-    if isinstance(invoker, ApplicationInvoker):
-        return invoker
-    raise AgentRunError(
-        AgentRunErrorCode.UNAUTHORIZED,
-        f"tool '{tool}' requires a dependency bundle exposing an 'invoker' bound to its caller",
-    )
-
-
 async def _invoke(
     grant: _UsecaseGrant, deps: CapabilityDeps, arguments: Mapping[str, Any]
 ) -> object:
     """Invoke the granted use case as the caller, ambient identity included."""
-    invoker = _require_invoker(deps, grant.tool_name)
+    invoker = require_invoker(deps, f"tool '{grant.tool_name}'")
     params = {name: arguments[name] for name in grant.param_names if name in arguments}
     payload = _payload_of(grant, arguments)
-    token = set_identity(deps.identity)
-    try:
-        return await invoker.invoke(grant.use_case, params=params, payload=payload)
-    finally:
-        reset_identity(token)
+    return await invoke_as(invoker, grant.use_case, deps.identity, params=params, payload=payload)
 
 
 def _payload_of(grant: _UsecaseGrant, arguments: Mapping[str, Any]) -> dict[str, Any] | None:

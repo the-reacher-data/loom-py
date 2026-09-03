@@ -68,6 +68,8 @@ model_role: reasoning
 output:
   kind: type_ref
   ref: myapp.domain.incidents:IncidentReport
+on_output:
+  usecase: incidents.record_report
 capabilities:
   - kind: usecase
     keys:
@@ -109,6 +111,7 @@ metadata:
 | `instructions` | yes | — | Non-empty. **Never published.** Never a place to encode authorization. |
 | `model_role` | no | `default` | `^[a-z][a-z0-9_-]{0,31}$`. A logical role, never a vendor name or a model id. |
 | `output` | yes | — | The declared answer shape. See below. |
+| `on_output` | no | — | Use case executed once per completed run with the validated output; see below. |
 | `capabilities` | no | `[]` | Explicit grants. Empty means the agent can only talk. |
 | `policies` | no | see below | Execution limits. |
 | `metadata` | no | `{}` | Free-form `string: string` labels. **Never published**, never read by the runtime. |
@@ -164,6 +167,200 @@ output:
 
 The reference is `module:Symbol`. Filesystem paths are not representable by the
 pattern.
+
+## `on_output` — a use case run once per completed run
+
+```yaml
+output:
+  kind: type_ref
+  ref: myapp.domain.triage:TriageReport
+on_output:
+  usecase: incidents.record_triage   # a use-case key of the registry; must not also be a grant
+```
+
+For every run that **completes** with an output validated against the declared
+shape, the runtime executes that use case **exactly once**, as the caller,
+through the normal use-case path — executor, rules, unit of work. The use
+case's return value comes back to the caller as `hook_result`.
+
+It is **not a tool: the model never sees it.** It never enters the
+instructions, it is never offered to the model, and the model cannot call it,
+skip it or choose its arguments. Whether a triage is recorded is decided by the
+deployment that wrote the artifact, not by the model on each run — which is
+what makes the record deterministic. Granting the same operation as a
+`kind: usecase` tool gives you the opposite: a record that exists only when the
+model felt like calling it, with whatever arguments it wrote.
+
+Only a completed run fires the hook. A run that ends in an `error`, breaches a
+declared limit (`run_timeout_ms`, `max_iterations`, …) or whose client leaves
+the stream before the `final` event never runs it.
+
+### What the use case receives
+
+The command nests the validated output under `output` and offers the run's
+context beside it:
+
+| Name | Value |
+|---|---|
+| `output` | The validated answer, as **one nested value**, whatever the artifact's `output` block declares. |
+| `interaction_id` | Identifier the runtime mints for every admitted run. |
+| `conversation_id` | The request's `conversation_id`, verbatim; `None` when the request carried none. |
+| `subject`, `mechanism` | The caller's identity. |
+| `agent`, `provider`, `model` | The agent's name, and the provider and model its `model_role` resolved to. |
+
+**The Command declares what it wants** and receives only that: the runtime
+filters the offered names down to the ones the Input declares, so a strict
+Command (`forbid_unknown_fields=True`) decodes without listing every context
+name. Because `output` is always nested, a field called `subject` inside the
+model's answer can never shadow the caller's.
+
+```python
+class RecordTriageCommand(Command):
+    output: TriageReport                # the type_ref type itself; dict[str, Any] also works
+    interaction_id: str
+    conversation_id: str | None = None
+    agent: str
+    model: str
+    # `subject`, `mechanism`, `provider` are offered but not declared: filtered out.
+
+
+class TriageRecorded(msgspec.Struct, frozen=True):
+    triage_id: str
+
+
+@use_case_key("incidents.record_triage")
+class RecordTriage(UseCase[Triage, TriageRecorded]):
+    def __init__(self, triages: TriageRepository) -> None:
+        self._triages = triages
+
+    async def execute(
+        self,
+        cmd: RecordTriageCommand = Input(),
+        caller: Identity = Caller(),      # the agent's caller
+    ) -> TriageRecorded:
+        report = cmd.output
+        await self._triages.save(
+            Triage(
+                id=cmd.interaction_id, conversation_id=cmd.conversation_id,
+                subject=caller.subject, agent=cmd.agent, model=cmd.model,
+                incident_ref=report.incident_ref, severity=report.severity,
+                confidence=report.confidence,
+            )
+        )
+        return TriageRecorded(triage_id=cmd.interaction_id)
+```
+
+The verdict the on-call engineer gives later ("wrong severity") is an ordinary
+use case of your application, called with the `interaction_id` the app already
+holds. Loom stores nothing.
+
+### The compile-time rule
+
+The compiler proves that the run can feed the use case, so a missing field is
+never discovered at the end of a paid run. The key is resolved against the
+same registry as a `kind: usecase` grant, and the use case's `execute` must
+take an `Input()` whose required fields are all among `output` and the context
+names above. Four coded issues:
+
+| Code | When |
+|---|---|
+| `ON_OUTPUT_USECASE_UNKNOWN` | The key is not registered. |
+| `ON_OUTPUT_INPUT_UNSATISFIED` | The use case cannot be fed from a run: it is not compiled, its `execute` declares primitive parameters, declares no `Input()`, or its Input requires a name the run does not offer. `internal` and `calculated` command fields and `Caller()` are never demanded. |
+| `ON_OUTPUT_USECASE_ALSO_GRANTED` | The same key also appears in a `kind: usecase` grant. A hook use case must not be callable by the model. |
+| `ON_OUTPUT_INVOKER_MISSING` | Start-up: an agent declares a hook but the dependency bundle carries no `invoker` bound to the caller. Probed before any client opens, so a misconfigured deployment fails at start-up rather than after every run. |
+
+The offline validator (`python -m loom.ai.validate`) accepts the field but
+does not resolve the key: it runs only the configuration-independent phases,
+and a use-case registry is deployment state. The four issues above surface
+when the application compiles its agents.
+
+### `on_output` versus a `kind: usecase` grant
+
+Same vocabulary, same registry, same caller identity, same executor — and
+opposite owners. A **grant** is a tool the *model* may call, when and how it
+decides. A **hook** is a use case the *runtime* calls, once, with the
+validated output. That is why one key cannot be both. Deciding whether an
+operation is a tool at all follows
+[the rule](mcp.md#the-rule-your-own-tools-are-a-usecase-grant) on the MCP page;
+`on_output` is for the operation that must happen after every answer,
+regardless of what the model did.
+
+### When the hook fails, the run fails
+
+The model's answer is withheld and the caller gets a coded error. The hook is
+**never retried**: it runs outside the engine's retry loop, and `HOOK_FAILED`
+is not a retriable code.
+
+| The hook… | The caller gets |
+|---|---|
+| raises | `500` `HOOK_FAILED` with a fixed message — `the output hook failed; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
+| raises `Forbidden`, `Unauthenticated`, `RoleNotAllowedError` or `RolesNotBoundError` | `403` `UNAUTHORIZED`, exactly as a `kind: usecase` tool would. |
+| exceeds `tool_timeout_ms` | Cut at the bound and reported as `HOOK_FAILED`. |
+| is cancelled internally | `HOOK_FAILED`: a hook that cancels itself is a hook failure, not a client exit. |
+
+On `/stream` the failure is a single `error` frame and no `final`.
+
+An anonymous caller — an endpoint declaring `allow_anonymous` — runs the hook
+with `Caller()` bound to `ANONYMOUS`, so the command's `subject` is `""`.
+Recording those is the deployment's choice: a use case whose rules refuse an
+anonymous caller answers `403 UNAUTHORIZED` like any other denial.
+
+### Timing and the concurrency permit
+
+The hook runs after the model has finished, but **inside** the run: the
+`max_concurrent_runs` permit is held until it ends. It is bounded by the same
+`tool_timeout_ms` as a capability call, so the worst-case duration of an
+admitted run is `run_timeout_ms + tool_timeout_ms + 1 s` of grace given to a
+cut hook to observe its cancellation. A hook that ignores that grace runs
+detached afterwards; the permit is released regardless.
+
+A client that disconnects while the hook is running does not interrupt it:
+the hook is shielded, so a record that has begun finishes or fails cleanly and
+its unit of work is committed or rolled back as usual.
+
+A hook cut at its bound is rolled back; on a non-transactional backend such
+as DynamoDB, partial writes may remain, so a hook use case should be
+idempotent on `interaction_id`, and `HOOK_FAILED` means "unknown", not "not
+recorded".
+
+### What the caller receives
+
+Every result carries `interaction_id`, hook or no hook: `AgentResult`, the
+`final` and `error` SSE frames, and every HTTP error body. It is `null` only
+when the failure happened before a run was admitted — a `422` body, a `429`
+`TOO_MANY_RUNS` — because a fixed shape beats a conditional one. `hook_result`
+is on `final` and on `AgentResult`, `null` when the artifact declares no hook.
+The hook's return value is a client-facing DTO delivered verbatim to the caller
+— public on an `allow_anonymous` mount — so return a purpose-built struct,
+never a domain entity.
+
+The request body accepts an optional `conversation_id`: a string of 1 to 128
+characters that loom never reads and never keys anything on. It is copied
+verbatim into the hook's command and nowhere else; an out-of-range value is a
+`422`.
+
+`POST /agents/incident-triage/run` with
+`{"prompt": "Checkout latency doubled since 09:40…", "conversation_id": "c-42"}`:
+
+```json
+{
+  "output": {"incident_ref": "INC-1", "severity": "high", "confidence": 0.71, "alerts": ["A-7", "A-9"]},
+  "usage": {"input_tokens": 1840, "output_tokens": 412, "requests": 3, "duration_ms": 5210},
+  "interaction_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c",
+  "hook_result": {"triage_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c"}
+}
+```
+
+Over `/stream`, the last frame is:
+
+```
+event: final
+data: {"output":{...},"usage":{...},"interaction_id":"7f3c...","hook_result":{"triage_id":"7f3c..."}}
+```
+
+Had `RecordTriage` raised, the app would instead get
+`500 {"code":"HOOK_FAILED","message":"the output hook failed; the detail is recorded server-side","interaction_id":"7f3c..."}`
+— or an `error` frame with the same three fields — and no answer.
 
 ## `capabilities` — the six kinds
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any
 
@@ -47,8 +48,14 @@ from loom.ai.engines.pydantic_ai import create_a2a_client, create_mcp_client
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
+from loom.core.engine.compilable import Compilable
+from loom.core.engine.compiler import UseCaseCompiler
+from loom.core.engine.executor import RuntimeExecutor
 from loom.core.identity import Identity
 from loom.core.sql.config import SqlConfig, SqlConnectionConfig
+from loom.core.use_case.factory import UseCaseFactory
+from loom.core.use_case.invoker import AppInvoker
+from loom.core.use_case.registry import UseCaseRegistry
 
 DEFAULT_USAGE = AgentUsage(input_tokens=11, output_tokens=7, requests=1, duration_ms=3)
 """Fixed usage every scripted terminal event carries."""
@@ -343,6 +350,104 @@ class StubDepsFactory:
         """Return the dependency bundle for one invocation."""
         del container
         return {"identity": identity}
+
+
+class FakeUow:
+    """Unit of work recording its transaction calls into a shared log.
+
+    Args:
+        log: Shared sequence receiving ``begin``/``commit``/``rollback``.
+    """
+
+    def __init__(self, log: list[str]) -> None:
+        self._log = log
+
+    async def begin(self) -> None:
+        """Record the start of the transaction."""
+        self._log.append("begin")
+
+    async def commit(self) -> None:
+        """Record the commit."""
+        self._log.append("commit")
+
+    async def rollback(self) -> None:
+        """Record the rollback."""
+        self._log.append("rollback")
+
+    async def __aenter__(self) -> FakeUow:
+        """Begin on entry, as the protocol prescribes."""
+        await self.begin()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        """Commit on a clean exit, roll back otherwise."""
+        if exc_type is None:
+            await self.commit()
+        else:
+            await self.rollback()
+
+
+class FakeUowFactory:
+    """Unit-of-work factory whose every unit records into one shared log.
+
+    Attributes:
+        log: Transaction calls in the order the executor issued them.
+    """
+
+    def __init__(self) -> None:
+        self.log: list[str] = []
+
+    def create(self) -> FakeUow:
+        """Return a fresh recording unit of work."""
+        return FakeUow(self.log)
+
+
+@dataclass(frozen=True)
+class RecordingDeps:
+    """Bundle shaped as the composition root's: caller, container, bound invoker."""
+
+    identity: Identity
+    container: LoomContainer
+    invoker: AppInvoker
+
+
+@dataclass
+class RecordingDepsFactory:
+    """Deps factory running real use cases through a real executor, no database.
+
+    Built the way the composition root builds it: the use cases are compiled
+    by a :class:`UseCaseCompiler`, executed by a :class:`RuntimeExecutor` over
+    a recording unit of work, resolved through a :class:`UseCaseRegistry`, and
+    the invoker handed to each bundle is bound to that invocation's caller.
+
+    Args:
+        use_cases: Use-case types to compile and register.
+
+    Attributes:
+        uow: The recording unit-of-work factory, for transaction assertions.
+    """
+
+    use_cases: Sequence[type[Compilable]]
+    uow: FakeUowFactory = field(default_factory=FakeUowFactory)
+
+    def __post_init__(self) -> None:
+        compiler = UseCaseCompiler()
+        for use_case in self.use_cases:
+            compiler.compile(use_case)
+        self._registry = UseCaseRegistry.build(list(self.use_cases))
+        self._executor = RuntimeExecutor(compiler, uow_factory=self.uow)
+
+    def build(self, identity: Identity, container: LoomContainer) -> object:
+        """Return the bundle for one invocation, its invoker bound to ``identity``."""
+        invoker = AppInvoker(UseCaseFactory(container), self._executor, self._registry)
+        return RecordingDeps(
+            identity=identity, container=container, invoker=invoker.for_identity(identity)
+        )
 
 
 # ---------------------------------------------------------------------------

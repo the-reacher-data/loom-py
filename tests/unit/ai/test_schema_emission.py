@@ -116,6 +116,11 @@ def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_constru
     ]
 
 
+def test_el_hook_de_salida_emitido_exige_el_usecase_cuando_se_construye() -> None:
+    """``on_output`` names one use case and naming it is the whole declaration (002/AC1)."""
+    assert _emitted()["$defs"]["on_output"]["required"] == ["usecase"]
+
+
 @pytest.mark.parametrize(
     ("kind", "reference"),
     [("mcp", "server"), ("a2a", "agent"), ("skills", "library")],

@@ -50,6 +50,7 @@ RUN_ERROR_DETAILS: Final[Mapping[AgentRunErrorCode, str]] = MappingProxyType(
         AgentRunErrorCode.TOO_MANY_RUNS: "the agent is at its concurrency limit",
         AgentRunErrorCode.UNAUTHORIZED: "the caller is not permitted to perform this run",
         AgentRunErrorCode.CANCELLED: "the run was cancelled",
+        AgentRunErrorCode.HOOK_FAILED: "the output hook failed",
     }
 )
 
