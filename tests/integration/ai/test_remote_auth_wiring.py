@@ -5,6 +5,12 @@ Everything here asserts on the transport the engine hands to
 than on the absence of an exception. A toolset that constructs cleanly while
 sending no credential is exactly the failure this module exists to catch.
 
+The two strategies loom ships are pinned twice over: the transport keeps the
+object the strategy built, and that object puts the header on the wire through
+**both** HTTP libraries in play — ``httpx2``, which the MCP transport speaks,
+and ``httpx``, which loom's own A2A client speaks. One credential, two
+flavours, is the whole point of returning a callable.
+
 The MCP client lives in the optional ``mcp-tests`` group, so the module skips
 where it is absent, as ``test_mcp_end_to_end.py`` does.
 """
@@ -18,6 +24,7 @@ import pytest
 
 from loom.ai.compiler import CompiledMcpCapability, CompiledRemoteAuth
 from loom.ai.engines.pydantic_ai._mcp import build_mcp_toolset
+from loom.ai.remote_auth import shared_mcp_auth
 
 from ...helpers.remote_auth_plugin import third_party_strategy
 
@@ -26,6 +33,52 @@ pytest.importorskip(
 )
 
 _URL = "https://orders.example.com/mcp"
+_CATALOG_URL = "https://catalog.example.com/mcp"
+
+_TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhLWIifQ.s_g-9"
+
+_BEARER = CompiledMcpCapability(
+    server="catalog",
+    url=_CATALOG_URL,
+    auth=CompiledRemoteAuth(kind="bearer", settings=(("token_ref", _TOKEN),)),
+)
+
+_STATIC = CompiledMcpCapability(
+    server="catalog",
+    url=_CATALOG_URL,
+    auth=CompiledRemoteAuth(kind="static", settings=(("headers_ref", "X-API-Key=abc123"),)),
+)
+
+_FLAVOURS = ("httpx2", "httpx")
+"""The HTTP libraries an auth object built here has to satisfy.
+
+``httpx2`` is what fastmcp's transport drives for MCP; ``httpx`` is what loom
+builds the A2A client with. Neither is a loom dependency, so each parametrised
+case skips when its library is absent.
+"""
+
+
+def _header_on_the_wire(flavour: str, auth: Any, name: str) -> str | None:
+    """Drive one request through a client of ``flavour`` and read the header it sent.
+
+    Args:
+        flavour: Module name of the HTTP library to drive, skipped when absent.
+        auth: The object the strategy built, handed to the client's ``auth=``.
+        name: Header whose value the assertion is about.
+
+    Returns:
+        The value the client put on the request, or ``None`` when it sent none.
+    """
+    library = pytest.importorskip(flavour)
+    sent: dict[str, str | None] = {}
+
+    def _capture(request: Any) -> Any:
+        sent["value"] = request.headers.get(name)
+        return library.Response(200)
+
+    with library.Client(auth=auth, transport=library.MockTransport(_capture)) as client:
+        client.post(_CATALOG_URL)
+    return sent["value"]
 
 
 def _transport(capability: CompiledMcpCapability) -> Any:
@@ -81,21 +134,35 @@ class TestEstrategiaOauth:
 class TestEstrategiaBearer:
     """``kind: bearer`` is the shape configuration cannot express by hand."""
 
-    def test_la_peticion_del_cliente_lleva_authorization_bearer(self) -> None:
-        """Asserted on the request the transport's auth actually produces."""
-        import httpx
+    def test_el_transporte_conserva_el_objeto_que_construyo_la_estrategia(self) -> None:
+        """fastmcp special-cases only OAuth and strings; everything else passes through."""
+        built = shared_mcp_auth(_BEARER.server, _BEARER.auth)
 
-        token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhLWIifQ.s_g-9"
-        capability = CompiledMcpCapability(
-            server="catalog",
-            url="https://catalog.example.com/mcp",
-            auth=CompiledRemoteAuth(kind="bearer", settings=(("token_ref", token),)),
-        )
+        assert _transport(_BEARER).auth is built
 
-        auth = _transport(capability).auth
-        request = next(auth.auth_flow(httpx.Request("POST", "https://catalog.example.com/mcp")))
+    @pytest.mark.parametrize("flavour", _FLAVOURS)
+    def test_la_peticion_lleva_authorization_bearer_en_las_dos_librerias(
+        self, flavour: str
+    ) -> None:
+        """Asserted on the wire, through the client the transport really drives."""
+        auth = _transport(_BEARER).auth
 
-        assert request.headers["Authorization"] == f"Bearer {token}"
+        assert _header_on_the_wire(flavour, auth, "Authorization") == f"Bearer {_TOKEN}"
+
+
+class TestEstrategiaStatic:
+    """``kind: static`` is the ``auth`` block's spelling of the ``headers_ref`` shorthand."""
+
+    def test_el_transporte_conserva_el_objeto_que_construyo_la_estrategia(self) -> None:
+        built = shared_mcp_auth(_STATIC.server, _STATIC.auth)
+
+        assert _transport(_STATIC).auth is built
+
+    @pytest.mark.parametrize("flavour", _FLAVOURS)
+    def test_la_peticion_lleva_la_cabecera_fija_en_las_dos_librerias(self, flavour: str) -> None:
+        auth = _transport(_STATIC).auth
+
+        assert _header_on_the_wire(flavour, auth, "X-API-Key") == "abc123"
 
 
 class TestEstrategiaDeTerceros:

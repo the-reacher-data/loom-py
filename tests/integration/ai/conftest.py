@@ -159,6 +159,8 @@ class StubMcpClient:
         connect_delay_ms: Delay before the connection is considered open.
         never_connects: When true the connection never completes, standing in
             for an unreachable server.
+        connect_error: When set, the connection fails with this text instead of
+            completing, standing in for a server that refuses the connection.
     """
 
     def __init__(
@@ -169,15 +171,19 @@ class StubMcpClient:
         log: list[str],
         connect_delay_ms: int = 0,
         never_connects: bool = False,
+        connect_error: str | None = None,
     ) -> None:
         self.label = label
         self.session = session
         self.log = log
         self.connect_delay_ms = connect_delay_ms
         self.never_connects = never_connects
+        self.connect_error = connect_error
 
     async def __aenter__(self) -> object:
         """Connect the stub and record the open in the shared log."""
+        if self.connect_error is not None:
+            raise ConnectionError(self.connect_error)
         if self.never_connects:
             await asyncio.Event().wait()
         if self.connect_delay_ms:
@@ -562,6 +568,7 @@ def make_ai_config(
     max_concurrent_runs: int = 8,
     max_prompt_bytes: int = 65536,
     health_cache_ttl_ms: int = 20,
+    remote_clients: str = "required",
 ) -> AiConfig:
     """Build an ``AiConfig`` with test-sized budgets and no model secrets."""
     return AiConfig(
@@ -576,6 +583,7 @@ def make_ai_config(
         max_concurrent_runs=max_concurrent_runs,
         max_prompt_bytes=max_prompt_bytes,
         health_cache_ttl_ms=health_cache_ttl_ms,
+        remote_clients=remote_clients,
     )
 
 

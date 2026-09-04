@@ -259,6 +259,13 @@ class TestAiConfigDefaults:
     ) -> None:
         assert config.health_cache_ttl_ms == 5000
 
+    def test_remote_clients_es_required_por_defecto_cuando_no_se_declara(
+        self,
+        config: AiConfig,
+    ) -> None:
+        """Start-up keeps failing on an unreachable remote unless opted out (D4)."""
+        assert config.remote_clients == "required"
+
     def test_a2a_es_none_cuando_no_se_declara(self, config: AiConfig) -> None:
         """Absent ``a2a`` means no card and no A2A endpoints (FR-041)."""
         assert config.a2a is None
@@ -412,3 +419,40 @@ class TestAggregatedRegistryIssues:
             AgentErrorCode.MCP_URL_INVALID,
             AgentErrorCode.A2A_URL_INVALID,
         }
+
+
+class TestRemoteClients:
+    """``ai.remote_clients`` decides whether a remote that will not open is fatal."""
+
+    @pytest.mark.parametrize("mode", ["required", "optional"])
+    def test_conserva_el_modo_cuando_es_uno_de_los_validos(self, mode: str) -> None:
+        assert _config_with(remote_clients=mode).remote_clients == mode
+
+    def test_falla_con_remote_clients_unknown_cuando_el_modo_no_existe(self) -> None:
+        """An unknown mode must fail the config load, not silently mean ``required``."""
+        document = b"""
+engine: pydantic-ai
+specs:
+  - ai/agents/*/agent.yaml
+models:
+  default:
+    provider: openai
+    model: gpt-test
+remote_clients: maybe
+"""
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            msgspec.yaml.decode(document, type=AiConfig)
+
+        assert _codes(excinfo.value) == [AgentErrorCode.REMOTE_CLIENTS_UNKNOWN]
+
+    def test_el_mensaje_nombra_la_clave_y_los_dos_modos_cuando_rechaza_el_valor(self) -> None:
+        """The reader must learn what to write without opening the source."""
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(remote_clients="maybe")
+
+        message = excinfo.value.issues[0].message
+        assert "ai.remote_clients" in message
+        assert "maybe" in message
+        assert "required" in message
+        assert "optional" in message

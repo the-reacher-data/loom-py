@@ -106,6 +106,7 @@ class AgentErrorCode(StrEnum):
     A2A_AGENT_UNREACHABLE = "A2A_AGENT_UNREACHABLE"
     AGENT_SPECS_CONFLICT = "AGENT_SPECS_CONFLICT"
     AGENT_SPECS_MISSING = "AGENT_SPECS_MISSING"
+    REMOTE_CLIENTS_UNKNOWN = "REMOTE_CLIENTS_UNKNOWN"
 
     # Compatibility
     SPEC_VERSION_DEPRECATED = "SPEC_VERSION_DEPRECATED"
@@ -868,6 +869,26 @@ def agent_specs_missing() -> AgentCompilationIssue:
         ),
         component="ai",
         field="ai.specs",
+    )
+
+
+def remote_clients_unknown(value: str, valid: Sequence[str]) -> AgentCompilationIssue:
+    """The start-up tolerance of remote clients names no known mode.
+
+    Args:
+        value: The rejected value of ``ai.remote_clients``.
+        valid: The accepted modes, supplied by the caller so this module keeps
+            no knowledge of the configuration domain.
+    """
+    accepted = ", ".join(f"'{mode}'" for mode in valid)
+    return AgentCompilationIssue(
+        code=AgentErrorCode.REMOTE_CLIENTS_UNKNOWN,
+        message=(
+            f"ai.remote_clients: '{value}' is not a known start-up mode for remote "
+            f"clients; accepted: {accepted}"
+        ),
+        component="ai",
+        field="ai.remote_clients",
     )
 
 

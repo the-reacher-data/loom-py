@@ -106,6 +106,58 @@ rejected fail-closed.
 Tool filters are matched against the tools the server really advertises, not
 against what the artifact hoped for.
 
+### Booting without the network: `ai.remote_clients`
+
+Granting `kind: mcp` makes every server the grant names a start-up dependency.
+That is right in production and awkward everywhere else — a laptop, a CI job, an
+environment brought up before its side-cars. `ai.remote_clients` says how a
+client that will not open is treated:
+
+```yaml
+ai:
+  remote_clients: optional     # required (default) | optional
+```
+
+| Value | A client that fails to *connect* |
+|---|---|
+| `required` (default) | Aborts start-up, by name, with `MCP_SERVER_UNREACHABLE` — or `A2A_AGENT_UNREACHABLE` for a remote agent. |
+| `optional` | Logged at WARNING and dropped; the runtime starts without it. |
+
+The switch is process-wide and covers the remote agents of `ai.a2a_agents` as
+well as the servers of `ai.mcp_servers`. An unknown value fails configuration
+load with `REMOTE_CLIENTS_UNKNOWN`, naming the key and both accepted values.
+
+Under `optional`, the WARNING carries the error code and the registered name
+only: the transport's own reason is an arbitrary library's exception text and
+can name a URL, so it goes to DEBUG, where an operator asks for it deliberately,
+rather than into routine logs on every boot. The health probe reports the
+dependency `unavailable` once its first pass has run.
+
+`optional` tolerates a network that is not there. It tolerates nothing else, and
+three carve-outs are deliberate:
+
+**A missing client factory is still fatal.** A plan declaring an `mcp` grant in a
+deployment that wired no MCP client factory is a wiring bug, not an offline
+network. It is collected apart, where the factory is found missing, never told
+from a connection failure by reading its message, and aborts start-up under
+**both** values.
+
+**Tool-filter verification still fails closed for a server that did open.** The
+waiver covers only servers that never connected: a server with no session is
+skipped, and a filter on it does not fail start-up. A server that opened has its
+declared filters verified as usual, and a listing that times out still aborts
+start-up under `optional`. Because a tolerated connection failure has already
+spent the shared start-up budget, the verification pass is given a fresh
+`startup_timeout_ms` rather than the exhausted one — otherwise one hanging
+server would fail the filters of every server that answered.
+
+**Nothing becomes lazy.** A start-up client that never opened is not reconnected
+later; the clients are session-affine and closing one from a foreign task is
+refused, so reconnecting them needs a supervisor task that does not exist yet.
+This says nothing about the run path, which builds its own toolset and connects
+on its own: under `optional`, a run against a server that never opened at
+start-up connects then and there, and succeeds if the network came back.
+
 ## Authentication
 
 The MCP specification standardises OAuth 2.0 for HTTP transports, so an
@@ -187,12 +239,62 @@ loom writes the header.
 set credentials on one connection is ambiguous, and compilation refuses it with
 `MCP_AUTH_CONFLICT`.
 
+### Two HTTP libraries, one callable
+
+A strategy is handed to an HTTP client, and the two outbound transports do not
+use the same one.
+
+An `mcp` grant becomes a pydantic-ai `MCPToolset`, which connects through one of
+fastmcp's HTTP transports — `StreamableHttpTransport`, or `SSETransport` when the
+URL ends in `/sse`. Those transports special-case OAuth and pass any other auth
+object straight through to their client, and their client is **`httpx2`**. An
+`a2a` grant goes to a client loom builds itself, with **`httpx`**.
+
+Each library accepts an auth object only when it is an instance of *its own*
+`Auth` class, a two-tuple, or a callable. So an `httpx.Auth` subclass is refused
+by the MCP transport's client, and an `httpx2.Auth` subclass by the A2A one.
+**Loom adapts neither**, and publishes no recipe for a class that satisfies both
+at once: nothing in its test suite would keep such a recipe honest.
+
+| Grant | Client library | A class must subclass |
+|---|---|---|
+| `kind: mcp` | `httpx2`, reached through fastmcp's transport | `httpx2.Auth` |
+| `kind: a2a` | `httpx`, in the client loom builds | `httpx.Auth` |
+
+**A plain callable is the supported answer for both.** Each library wraps a
+callable in a `FunctionAuth` of its own, so one function serves either transport
+— and whatever flavour either library moves to next. It takes the outgoing
+request, sets its headers, and **returns** it:
+
+```python
+def incident_api_key(*, key_ref: str):
+    """Register this as a strategy: it returns the callable both clients wrap."""
+
+    def add_key(request):
+        request.headers["X-API-Key"] = key_ref
+        return request
+
+    return add_key
+```
+
+Returning the request is not optional: the wrapper's flow is
+`yield self._func(request)`, so a callable returning `None` sends `None`.
+Nothing in the inner signature names a library, which is exactly the point — the
+request it receives is of whichever flavour drove it. The two strategies loom
+ships, `bearer` and `static`, are this shape.
+
+A callable is a single-shot flow: it never sees the response, so it cannot
+inspect a `401` or renew. A strategy that needs the response is a class.
+
 ### Writing your own
 
-The contract is [`httpx.Auth`](https://www.python-httpx.org/advanced/authentication/)
-itself, not an abstraction of loom's — nobody has to learn one of ours, and any
-existing `httpx.Auth` in the ecosystem works with no adapter. Register the class
-from **your own package**; loom does not change:
+The contract is the HTTP client's own
+[`Auth`](https://www.python-httpx.org/advanced/authentication/), not an
+abstraction of loom's — nobody has to learn one of ours, and an existing `Auth`
+class works with no adapter, provided it is the flavour of the transport that
+will use it (above). This example authenticates an MCP server, so it subclasses
+`httpx2.Auth`; the identical class written for an A2A agent subclasses
+`httpx.Auth`. Register it from **your own package**; loom does not change:
 
 ```toml
 # pyproject.toml of your own distribution
@@ -204,10 +306,10 @@ A worked example — a server exposing a session endpoint, where the agent
 presents a long-lived bootstrap secret and receives short-lived tokens:
 
 ```python
-import httpx
+import httpx2       # the flavour the MCP transport's client uses
 
 
-class AgentSessionAuth(httpx.Auth):
+class AgentSessionAuth(httpx2.Auth):
     """Exchange a bootstrap secret for a token, renewed when rejected."""
 
     def __init__(self, *, session_url: str, bootstrap_ref: str) -> None:
@@ -226,14 +328,22 @@ class AgentSessionAuth(httpx.Auth):
             yield request
 
     def _mint(self):
-        response = yield httpx.Request(
+        response = yield httpx2.Request(
             "POST", self._url, json={"secret_path": self._ref}
         )
         return response.json()["access_token"]
 ```
 
-Retry-with-a-refreshed-credential is httpx's standard generator shape; loom does
-not reimplement it.
+Retry-with-a-refreshed-credential is the library's standard generator shape;
+loom does not reimplement it.
+
+```{warning}
+`requires_response_body` is honoured by `Auth`'s **own** base flow, not by the
+client. A strategy that overrides `async_auth_flow` — which any asynchronous
+token exchange must — replaces the very code that reads the flag, and has to
+`await response.aread()` itself before touching the body. Setting the attribute
+and overriding the flow leaves the body unread, silently.
+```
 
 If you are designing such an endpoint: this is OAuth 2.0 `client_credentials`
 by another name — `secret_path` is the client id and the bootstrap secret is the
@@ -256,11 +366,12 @@ server's read permissions to that prefix and log failed attempts per path.
 
 The group is `loom.ai.remote_auth`, not `loom.ai.mcp_auth`: one registry serves
 the MCP servers of `ai.mcp_servers` **and** the remote agents of `ai.a2a_agents`
-(see [a2a.md](a2a.md)), because the contract is `httpx.Auth` and knows neither
-protocol. A strategy is registered once and granted to either. The one
-exception is `kind: oauth`, which delegates to the MCP client library's own
-flow: an A2A agent naming it is refused with `MCP_AUTH_STRATEGY_INVALID` rather
-than connected without a credential.
+(see [a2a.md](a2a.md)), because the contract is the HTTP client's and knows
+neither protocol. A strategy returning a callable is registered once and granted
+to either; one registered as a class is granted to the transports of its own
+flavour. The one exception is `kind: oauth`, which delegates to the MCP client
+library's own flow: an A2A agent naming it is refused with
+`MCP_AUTH_STRATEGY_INVALID` rather than connected without a credential.
 
 ### One instance per server
 
@@ -269,6 +380,22 @@ granted it**. The credential belongs to the deployment, not to the agent: a
 renewing strategy holds the live token, so sharing means one renewal instead of
 one per agent, and no burst of simultaneous logins when several agents start
 together.
+
+What is shared is what the strategy returned. A class instance is shared as
+itself, so a strategy that must renew once, for everybody, stays a class and
+keeps that identity. A callable is shared as itself too, but each client wraps
+it in a `FunctionAuth` of its own, so two clients built from one credential no
+longer hold the same `client.auth` object — they hold two wrappers around one
+function. For a fixed header that is a distinction without a difference, and it
+is the reason a stateful strategy is a class.
+
+```{admonition} Public contract
+:class: note
+`shared_mcp_auth` and `shared_a2a_auth` are exported, and their return type has
+widened from `httpx.Auth | str` to what a client accepts, which now includes a
+callable. Code doing `isinstance(value, httpx.Auth)` on the result stops
+matching for the built-in `bearer` and `static` strategies.
+```
 
 ## The rule: your own tools are a `usecase` grant
 
