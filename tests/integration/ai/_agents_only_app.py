@@ -150,7 +150,7 @@ def _assert_block_effective() -> None:
         import loom.core.backend  # noqa: F401
     except ModuleNotFoundError:
         return
-    raise AssertionError("loom.core.backend imported although sqlalchemy is blocked")
+    raise RuntimeError("loom.core.backend imported although sqlalchemy is blocked")
 
 
 def main() -> int:
@@ -159,7 +159,8 @@ def main() -> int:
         entrypoints_module.entry_points = _FakeEntryPoints  # type: ignore[attr-defined]
         config_path = _write_project(root)
         app = create_app(config_path)
-        assert app is not None
+        if app is None:
+            raise RuntimeError("create_app returned no application")
         _assert_block_effective()
     except Exception:
         traceback.print_exc()

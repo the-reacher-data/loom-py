@@ -165,8 +165,10 @@ def test_discover_components_accepts_agents_only_result(
 def test_discover_components_rejects_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _no_models())
 
+    app_cfg = _AppConfig(name="demo")
+
     with pytest.raises(RuntimeError, match="Nothing discovered") as exc_info:
-        _discover_components(_AppConfig(name="demo"))
+        _discover_components(app_cfg)
 
     message = str(exc_info.value)
     assert "discovery.mode: manifest" in message
@@ -178,8 +180,11 @@ def test_build_bootstrap_sqlalchemy_without_models_names_backend_none(
 ) -> None:
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
+    app_cfg = _AppConfig(name="demo")
+    ctx = _ctx()
+
     with pytest.raises(RuntimeError, match="No BaseModel classes discovered") as exc_info:
-        _build_bootstrap(_AppConfig(name="demo"), _ctx())
+        _build_bootstrap(app_cfg, ctx)
 
     assert "persistence.backend: none" in str(exc_info.value)
 

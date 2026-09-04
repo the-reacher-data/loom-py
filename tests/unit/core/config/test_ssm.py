@@ -301,8 +301,10 @@ class TestSsmResolverUnexpandedKey:
             {"Error": {"Code": "AccessDeniedException", "Message": self.EXPANDED}},
         )
         mock_client.get_parameter.side_effect = cause
-        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
-            SsmResolver().resolve(self.KEY)
+        with patch("boto3.client", return_value=mock_client):
+            resolver = SsmResolver()
+            with pytest.raises(ConfigError) as info:
+                resolver.resolve(self.KEY)
         text = str(info.value)
         assert "AccessDeniedException" in text
         assert self.EXPANDED not in text
@@ -311,8 +313,10 @@ class TestSsmResolverUnexpandedKey:
 
     def test_fetch_error_message_falls_back_to_type_name(self, mock_client: MagicMock) -> None:
         mock_client.get_parameter.side_effect = TimeoutError("boom")
-        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
-            SsmResolver().resolve(self.KEY)
+        with patch("boto3.client", return_value=mock_client):
+            resolver = SsmResolver()
+            with pytest.raises(ConfigError) as info:
+                resolver.resolve(self.KEY)
         assert "TimeoutError" in str(info.value)
 
     def test_invalid_json_error_carries_unexpanded_key_without_cause(

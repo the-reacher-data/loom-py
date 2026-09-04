@@ -228,7 +228,8 @@ class TestOutputMode:
         tool = build_output_type(_plan_with_output_mode("tool"))
         native = build_output_type(_plan_with_output_mode("native"))
 
-        assert tool is not None and native is not None
+        assert tool is not None
+        assert native is not None
         assert isinstance(tool, ToolOutput)
         assert isinstance(native, NativeOutput)
         assert (tool.name, tool.description) == (None, None)
