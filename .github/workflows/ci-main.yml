@@ -3,6 +3,12 @@ name: ci-main
 on:
   push:
     branches: ["master"]
+  # The release helper merges the version bump through the API with
+  # GITHUB_TOKEN, and GitHub deliberately emits no `push` for it, so that commit
+  # would otherwise reach master without ever being validated. `workflow_dispatch`
+  # is the documented exception that does start a run from that token, so the
+  # release asks for this workflow by hand right after it merges.
+  workflow_dispatch:
 
 permissions:
   contents: read
