@@ -20,11 +20,27 @@ values and ``__post_init__`` wraps them afterwards.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import Any
+from typing import Any, Final, Literal, get_args
 
 from msgspec import field, structs
 
 from loom.core.model import LoomFrozenStruct
+
+OutputMode = Literal["tool", "native"]
+"""How the engine asks the model for the structured answer.
+
+``prompted`` is deliberately absent: the engine strips markdown fences before
+validating a prompted answer while loom decodes the raw text part, so a fenced
+answer would pass the engine and fail loom.
+
+This is the single source of truth for the set: adding a member here makes
+every exhaustive dispatch over it (``_spec.build_output_type``) fail type
+checking until it handles the new mode, instead of degrading to a default at
+run time.
+"""
+
+OUTPUT_MODES: Final[tuple[OutputMode, ...]] = get_args(OutputMode)
+"""Values ``InferenceTarget.output_mode`` accepts, derived from :data:`OutputMode`."""
 
 
 class _RedactedRef(str):
@@ -77,7 +93,8 @@ class _RedactedOptions(Mapping[str, Any]):
 class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
     """One resolved model binding for a model role (``ai.models.<role>``).
 
-    ``repr``/``str`` show ``provider``, ``model``, ``region`` and ``endpoint``
+    ``repr``/``str`` show ``provider``, ``model``, ``region``, ``endpoint``
+    and ``output_mode``
     but never the values of ``credentials_ref`` or ``options`` — the plan
     carries this struct, so an unredacted repr in a start-up traceback is the
     concrete leak path.  Encoding the struct with msgspec raises when either
@@ -88,6 +105,14 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
         model: Vendor model id.
         region: Region for regional providers such as Bedrock.
         endpoint: Gateway or compatible endpoint URL.
+        output_mode: How the engine asks the model for the structured
+            answer (``tool`` or ``native``, see :data:`OutputMode`).
+            ``None`` leaves the choice to the engine.  Typed ``str`` rather
+            than :data:`OutputMode` because msgspec validates a ``Literal``
+            during the decode, before ``__post_init__``: an unknown value
+            would surface as a raw ``ValidationError`` instead of the
+            ``OUTPUT_MODE_UNKNOWN`` issue naming the role.  The set is
+            enforced by ``loom.ai.config._validate_model_binding``.
         credentials_ref: Reference resolved by the existing secrets resolver.
             Never a literal secret (FR-018).
         options: Vendor-specific settings.  Confined here; never reaches the
@@ -98,6 +123,7 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
     model: str
     region: str | None = None
     endpoint: str | None = None
+    output_mode: str | None = None
     credentials_ref: str | None = None
     options: Mapping[str, Any] = field(default_factory=dict)
 
@@ -115,6 +141,7 @@ class InferenceTarget(LoomFrozenStruct, frozen=True, kw_only=True):
             f" model={self.model!r},"
             f" region={self.region!r},"
             f" endpoint={self.endpoint!r},"
+            f" output_mode={self.output_mode!r},"
             f" credentials_ref={credentials},"
             f" options={options})"
         )

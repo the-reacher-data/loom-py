@@ -86,6 +86,7 @@ class AgentErrorCode(StrEnum):
     # Model and policy
     MODEL_ROLE_UNBOUND = "MODEL_ROLE_UNBOUND"
     INFERENCE_TARGET_INCOMPLETE = "INFERENCE_TARGET_INCOMPLETE"
+    OUTPUT_MODE_UNKNOWN = "OUTPUT_MODE_UNKNOWN"
     POLICY_OUT_OF_RANGE = "POLICY_OUT_OF_RANGE"
 
     # Deployment resolution
@@ -628,6 +629,20 @@ def inference_target_incomplete(role: str, setting: str) -> AgentCompilationIssu
         message=f"model role '{role}': required setting '{setting}' is missing",
         component=f"model role '{role}'",
         field=setting,
+    )
+
+
+def output_mode_unknown(role: str, value: str, valid: Sequence[str]) -> AgentCompilationIssue:
+    """A model-role binding names an ``output_mode`` loom does not offer.
+
+    The valid set is a parameter, as in every sibling factory that names one:
+    it keeps this module free of domain imports.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.OUTPUT_MODE_UNKNOWN,
+        message=(f"model role '{role}': output_mode '{value}' is not one of {', '.join(valid)}"),
+        component=f"model role '{role}'",
+        field="output_mode",
     )
 
 

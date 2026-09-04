@@ -31,9 +31,10 @@ from loom.ai.errors import (
     mcp_auth_strategy_unknown,
     mcp_credentials_inline,
     mcp_url_invalid,
+    output_mode_unknown,
     policy_out_of_range,
 )
-from loom.ai.inference import InferenceTarget
+from loom.ai.inference import OUTPUT_MODES, InferenceTarget
 from loom.ai.remote_auth import is_strategy_registered, registered_strategy_names
 from loom.core.model import LoomFrozenStruct
 
@@ -168,6 +169,8 @@ def _validate_model_binding(role: str, target: InferenceTarget) -> list[AgentCom
     for setting in required:
         if not getattr(target, setting):
             issues.append(inference_target_incomplete(role, setting))
+    if target.output_mode is not None and target.output_mode not in OUTPUT_MODES:
+        issues.append(output_mode_unknown(role, target.output_mode, OUTPUT_MODES))
     ref = target.credentials_ref
     if ref is not None and not _is_credentials_reference(ref):
         # The rejected value is deliberately absent from the issue: the error

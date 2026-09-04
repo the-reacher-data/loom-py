@@ -8,7 +8,7 @@ from loom.core.discovery._utils import (
     collect_use_cases_from_interfaces,
     import_modules,
 )
-from loom.core.discovery.base import DiscoveryResult
+from loom.core.discovery.base import AGENTS_ONLY_HINT, DiscoveryResult
 from loom.core.use_case.use_case import UseCase
 
 
@@ -26,10 +26,14 @@ class ModulesDiscoveryEngine:
             discovered models, use cases, and interfaces.
 
         Raises:
-            ValueError: When no module paths are provided.
+            ValueError: When no module paths are provided. The message points
+                at ``app.discovery.mode: manifest`` with ``AGENTS`` for an
+                application whose only content is agents.
         """
         if not self._module_paths:
-            raise ValueError("modules discovery requires at least one module path.")
+            raise ValueError(
+                f"modules discovery requires at least one module path. {AGENTS_ONLY_HINT}"
+            )
 
         modules = import_modules(self._module_paths)
         models, use_cases, interfaces, _ = collect_from_modules(modules)

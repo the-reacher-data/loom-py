@@ -14,6 +14,9 @@ except where the contract is precisely about the message (secret absence).
 
 from __future__ import annotations
 
+from typing import get_args
+
+import msgspec
 import pytest
 
 from loom.ai.config import (
@@ -24,7 +27,7 @@ from loom.ai.config import (
     McpServerConfig,
 )
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
-from loom.ai.inference import InferenceTarget
+from loom.ai.inference import OUTPUT_MODES, InferenceTarget, OutputMode
 
 
 def _codes(error: AgentCompilationError) -> list[AgentErrorCode]:
@@ -83,6 +86,73 @@ class TestModelBindingValidation:
             _config({"default": incomplete})
 
         assert AgentErrorCode.INFERENCE_TARGET_INCOMPLETE in _codes(excinfo.value)
+
+    @pytest.mark.parametrize("mode", ["prompted", "xml"])
+    def test_falla_con_output_mode_unknown_cuando_el_modo_no_es_tool_ni_native(
+        self, mode: str
+    ) -> None:
+        """Only ``tool`` and ``native`` are offered; the issue names the role and both."""
+        target = InferenceTarget(provider="openai", model="gpt-test", output_mode=mode)
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config({"reporting": target})
+
+        issue = next(
+            issue
+            for issue in excinfo.value.issues
+            if issue.code is AgentErrorCode.OUTPUT_MODE_UNKNOWN
+        )
+        assert "reporting" in issue.message
+        assert "tool, native" in issue.message
+
+    @pytest.mark.parametrize("mode", ["tool", "native", None])
+    def test_acepta_el_binding_cuando_output_mode_es_valido_o_no_se_declara(
+        self, mode: str | None
+    ) -> None:
+        """A declared valid mode, or none at all, loads without issues."""
+        target = InferenceTarget(provider="openai", model="gpt-test", output_mode=mode)
+
+        config = _config({"default": target})
+
+        assert config.models["default"].output_mode == mode
+
+    def test_falla_con_output_mode_unknown_cuando_el_modo_llega_por_yaml(self) -> None:
+        """The decode path reports the loom issue, not a raw msgspec error.
+
+        The struct field is deliberately ``str``: a ``Literal`` would make
+        msgspec refuse the value during the decode, before ``__post_init__``
+        could name the role in an ``OUTPUT_MODE_UNKNOWN`` issue.
+        """
+        document = b"""
+engine: pydantic-ai
+specs: ["ai/agents/*/agent.yaml"]
+models:
+  reporting:
+    provider: openai
+    model: gpt-test
+    output_mode: prompted
+"""
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            msgspec.yaml.decode(document, type=AiConfig)
+
+        issue = next(
+            issue
+            for issue in excinfo.value.issues
+            if issue.code is AgentErrorCode.OUTPUT_MODE_UNKNOWN
+        )
+        assert "reporting" in issue.message
+        assert "tool, native" in issue.message
+
+    def test_las_constantes_de_modo_derivan_del_tipo(self) -> None:
+        """``OUTPUT_MODES`` and ``OutputMode`` cannot drift: one derives from the other."""
+        assert get_args(OutputMode) == OUTPUT_MODES
+
+    def test_el_repr_muestra_output_mode_cuando_se_declara(self) -> None:
+        """``output_mode`` is not a secret, so the redacting repr shows it."""
+        target = InferenceTarget(provider="openai", model="gpt-test", output_mode="native")
+
+        assert "output_mode='native'" in repr(target)
 
 
 class TestLiteralSecretRejection:

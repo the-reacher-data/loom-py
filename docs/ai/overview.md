@@ -96,6 +96,74 @@ Every agent matched by `specs` is compiled. Only the agents named in
 agent absent from `endpoints` exists in the process and is reachable by nobody.
 Exposure is always an explicit opt-in, never a default.
 
+## An application that is only agents
+
+An application does not need a model, a use case or a REST interface to run an
+agent. Its manifest module declares `AGENTS` and nothing else, discovery runs in
+`manifest` mode, and persistence is switched off:
+
+```python
+# myapp/manifest.py
+AGENTS = ["agents/*.yaml"]          # globs resolve against app.code_path
+```
+
+```yaml
+# config/api.yaml
+app:
+  name: incident-triage
+  discovery:
+    mode: manifest
+    manifest:
+      module: myapp.manifest
+
+persistence:
+  backend: none
+
+ai:
+  engine: pydantic-ai
+  models:
+    default:
+      provider: bedrock
+      model: <model id>
+      region: eu-west-1
+      output_mode: native          # optional, see Model providers
+  endpoints:
+    incident-triage:
+      enabled: true
+      auth: jwt
+```
+
+```bash
+pip install "loom-kernel[rest,ai-pydantic,ai-bedrock]"   # swap the provider extra for yours
+```
+
+The `sqlalchemy` extra is not needed: `create_app` imports the SQLAlchemy backend
+only inside the `sqlalchemy` wiring, so an agents-only process never loads it.
+(`loom.celery` still imports it at module level; this recipe is about the REST
+application, not every loom module.)
+
+What `persistence.backend: none` means:
+
+- No unit of work and no repositories. A granted `usecase` capability still
+  runs through the kernel executor, just without a transaction around it.
+- Discovered models are accepted but **not compiled**, and they get no
+  repository. Declaring them under `none` is harmless and pointless.
+- A `database:` section is ignored, silently.
+- Deferred job dispatch does not fire. `JobService.dispatch` queues the call to
+  run after the unit of work commits, and with no unit of work nothing flushes
+  the queue, so a job dispatched from a use case is dropped without an error.
+  An agents-only application that needs background jobs keeps a real backend.
+
+Only `manifest` discovery can describe this application: the `interfaces` and
+`modules` engines require at least one module path, and their errors — like the
+`RuntimeError` raised when discovery finds no use case, no interface and no
+agent — say so by naming `app.discovery.mode: manifest` and `AGENTS`.
+
+`persistence.backend` still defaults to `sqlalchemy`; loom never infers `none`
+from the absence of models or of a `database:` section. Leaving the default
+in place with no models fails start-up with a message that names
+`persistence.backend: none` as the way out.
+
 ## Where to go next
 
 - **[Artifact reference](artifacts.md)** — the complete `spec_version: 1`

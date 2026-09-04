@@ -6,15 +6,23 @@ No network: building a model object configures a client, it does not call one.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from msgspec import structs
+from pydantic import TypeAdapter
+from pydantic_ai import NativeOutput, ToolOutput
+from pydantic_ai.models.bedrock import BedrockConverseModel
+from pydantic_ai.models.test import TestModel
 
 from loom.ai.compiler._plan import AgentPlan
 from loom.ai.engines.pydantic_ai._models import SUPPORTED_PROVIDERS, resolve_model
-from loom.ai.engines.pydantic_ai._spec import build_agent_spec
+from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
+from loom.ai.engines.pydantic_ai.provider import PydanticAIEngineProvider
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
-from tests.helpers.pydantic_ai_engine import make_plan
+from loom.core.di import LoomContainer
+from tests.helpers.pydantic_ai_engine import STRICT_SCHEMA, NullDeps, make_plan
 
 
 @pytest.fixture
@@ -41,6 +49,7 @@ class TestModelBinding:
 
         model = resolve_model(target)
 
+        assert isinstance(model, BedrockConverseModel)
         assert model.model_name == target.model
         assert model.client.meta.region_name == "eu-west-1"
         assert model.client._request_signer._credentials.access_key == "AKIAPROFILE"
@@ -108,6 +117,122 @@ class TestSpecTranslation:
 
         assert spec.metadata is None
         assert spec.model is None
+
+
+def _plan_with_output_mode(mode: str | None) -> AgentPlan:
+    """A plan whose binding pins ``mode`` (or leaves it to the engine)."""
+    plan = make_plan(schema=STRICT_SCHEMA)
+    return structs.replace(plan, inference=structs.replace(plan.inference, output_mode=mode))
+
+
+def _wrapped_schema(wrapped: Any) -> dict[str, Any]:
+    """The schema pydantic derives from the marker's payload, sans decoration."""
+    schema = TypeAdapter(wrapped).json_schema()
+    schema.pop("title", None)
+    schema.pop("description", None)
+    return schema
+
+
+class _FromSpecRecorder:
+    """Stands in for ``Agent.from_spec`` and keeps the keywords it received.
+
+    Also keeps the marker the provider built, because ``StructuredDict`` mints
+    a new class per call: only identity proves the provider passed on the
+    very object :func:`build_output_type` returned.
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] | None = None
+        self.built: ToolOutput[Any] | NativeOutput[Any] | None = None
+
+    def __call__(self, spec: object, **kwargs: Any) -> object:
+        self.kwargs = kwargs
+        return object()
+
+    def build(self, plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:
+        self.built = build_output_type(plan)
+        return self.built
+
+
+@pytest.fixture
+def from_spec(monkeypatch: pytest.MonkeyPatch) -> _FromSpecRecorder:
+    """Patch ``Agent.from_spec`` and record the provider's marker, in its module."""
+    recorder = _FromSpecRecorder()
+    monkeypatch.setattr("loom.ai.engines.pydantic_ai.provider.Agent.from_spec", recorder)
+    monkeypatch.setattr("loom.ai.engines.pydantic_ai.provider.build_output_type", recorder.build)
+    return recorder
+
+
+def _create_engine(plan: AgentPlan) -> None:
+    provider = PydanticAIEngineProvider(model_resolver=lambda target: TestModel())
+    provider.create_engine(plan, deps=NullDeps(), container=LoomContainer())
+
+
+class TestOutputMode:
+    def test_tool_envuelve_el_esquema_en_tool_output_y_llega_a_from_spec(
+        self, from_spec: _FromSpecRecorder
+    ) -> None:
+        """``tool`` pins the tool-call mode around the plan's own schema."""
+        plan = _plan_with_output_mode("tool")
+
+        _create_engine(plan)
+
+        marker = from_spec.built
+        assert marker is not None
+        assert type(marker) is ToolOutput
+        assert _wrapped_schema(marker.output) == dict(plan.output.schema)
+        assert from_spec.kwargs is not None
+        assert from_spec.kwargs["output_type"] is marker
+
+    def test_native_envuelve_el_esquema_en_native_output_y_llega_a_from_spec(
+        self, from_spec: _FromSpecRecorder
+    ) -> None:
+        """``native`` pins the provider's structured-output mode, one type only."""
+        plan = _plan_with_output_mode("native")
+
+        _create_engine(plan)
+
+        marker = from_spec.built
+        assert marker is not None
+        assert type(marker) is NativeOutput
+        assert not isinstance(marker.outputs, list | tuple)
+        assert _wrapped_schema(marker.outputs) == dict(plan.output.schema)
+        assert from_spec.kwargs is not None
+        assert from_spec.kwargs["output_type"] is marker
+
+    def test_no_pasa_output_type_cuando_el_binding_no_declara_modo(
+        self, from_spec: _FromSpecRecorder
+    ) -> None:
+        """Absent mode: the call is today's call, no ``output_type`` keyword at all."""
+        plan = _plan_with_output_mode(None)
+
+        assert build_output_type(plan) is None
+        _create_engine(plan)
+
+        assert from_spec.kwargs is not None
+        assert "output_type" not in from_spec.kwargs
+
+    def test_falla_cuando_el_modo_no_es_ninguno_de_los_dos(self) -> None:
+        """Fail closed: an unhandled mode raises instead of degrading to ``native``.
+
+        Reachable only past the config check (a plan built in process), which
+        is exactly the path the defaulted dispatch used to serve silently.
+        """
+        plan = _plan_with_output_mode("prompted")
+
+        with pytest.raises(AssertionError):
+            build_output_type(plan)
+
+    def test_el_marcador_no_lleva_nombre_ni_descripcion(self) -> None:
+        """Mirrors the engine's own wrapping of ``output_schema``: bare marker."""
+        tool = build_output_type(_plan_with_output_mode("tool"))
+        native = build_output_type(_plan_with_output_mode("native"))
+
+        assert tool is not None and native is not None
+        assert isinstance(tool, ToolOutput)
+        assert isinstance(native, NativeOutput)
+        assert (tool.name, tool.description) == (None, None)
+        assert (native.name, native.description) == (None, None)
 
 
 class TestEntryPoint:

@@ -23,6 +23,14 @@ def mock_client() -> MagicMock:
     return client
 
 
+class _BotocoreShapedError(Exception):
+    """Stand-in for ``botocore.exceptions.ClientError`` (not a test dep)."""
+
+    def __init__(self, message: str, response: dict[str, object]) -> None:
+        super().__init__(message)
+        self.response = response
+
+
 class TestSsmResolverIdentity:
     def test_name_returns_ssm(self) -> None:
         assert SsmResolver().name == "ssm"
@@ -197,7 +205,7 @@ class TestSsmResolverLogging:
             f"Log must not contain the secret value '{secret_value}', got: {messages}"
         )
 
-    def test_log_uses_expanded_path_not_original(
+    def test_log_uses_original_key_not_expanded_path(
         self,
         mock_client: MagicMock,
         monkeypatch: pytest.MonkeyPatch,
@@ -211,9 +219,123 @@ class TestSsmResolverLogging:
         ):
             SsmResolver().resolve("/app/%STAGE%/db")
         messages = [r.message for r in caplog.records]
-        assert any("/app/prod/db" in msg for msg in messages), (
-            f"Expected a log record containing '/app/prod/db', got: {messages}"
+        assert any("/app/%STAGE%/db" in msg for msg in messages), (
+            f"Expected a log record containing '/app/%STAGE%/db', got: {messages}"
         )
-        assert all("%STAGE%" not in msg for msg in messages), (
-            f"Log must not contain the unexpanded placeholder '%STAGE%', got: {messages}"
+        assert all("/app/prod/db" not in msg for msg in messages), (
+            f"Log must not contain the expanded path '/app/prod/db', got: {messages}"
         )
+
+
+class TestSsmResolverUnexpandedKey:
+    """AC7: logs and ConfigError text carry the key as written, never the env value."""
+
+    KEY = "/app/%MY_ENV%/db"
+    EXPANDED = "/app/super-secret/db"
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MY_ENV", "super-secret")
+
+    def test_log_carries_unexpanded_key_and_client_gets_expanded_path(
+        self, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with (
+            caplog.at_level(logging.INFO, logger="loom.core.config.ssm"),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            SsmResolver().resolve(self.KEY)
+        messages = [r.message for r in caplog.records]
+        assert all("super-secret" not in msg for msg in messages), messages
+        assert any(self.KEY in msg for msg in messages), messages
+        mock_client.get_parameter.assert_called_once_with(Name=self.EXPANDED, WithDecryption=True)
+
+    def test_fetch_error_carries_unexpanded_key_and_chains_cause(
+        self, mock_client: MagicMock
+    ) -> None:
+        cause = Exception(f"ParameterNotFound: {self.EXPANDED}")
+        mock_client.get_parameter.side_effect = cause
+        resolver = SsmResolver()
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
+            resolver.resolve(self.KEY)
+        text = str(info.value)
+        assert self.KEY in text
+        assert "super-secret" not in text
+        assert info.value.__cause__ is cause
+
+    def test_dotted_env_value_in_last_segment_is_fetched_whole(
+        self,
+        mock_client: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Splitting before expansion keeps a dotted env value out of navigation."""
+        monkeypatch.setenv("DOTTED_ENV", "db.prod-secret")
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db"}'}}
+        with (
+            caplog.at_level(logging.INFO, logger="loom.core.config.ssm"),
+            patch("boto3.client", return_value=mock_client),
+        ):
+            value = SsmResolver().resolve("/app/svc/%DOTTED_ENV%")
+        assert value == '{"host": "db"}'
+        mock_client.get_parameter.assert_called_once_with(
+            Name="/app/svc/db.prod-secret", WithDecryption=True
+        )
+        messages = [r.message for r in caplog.records]
+        assert all("prod-secret" not in msg for msg in messages), messages
+
+    def test_env_token_in_base_segment_still_expands_and_navigates(
+        self, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db-1"}'}}
+        with patch("boto3.client", return_value=mock_client):
+            value = SsmResolver().resolve(f"{self.KEY}.host")
+        assert value == "db-1"
+        mock_client.get_parameter.assert_called_once_with(Name=self.EXPANDED, WithDecryption=True)
+
+    def test_fetch_error_message_carries_aws_error_code_not_expanded_path(
+        self, mock_client: MagicMock
+    ) -> None:
+        cause = _BotocoreShapedError(
+            f"An error occurred: {self.EXPANDED}",
+            {"Error": {"Code": "AccessDeniedException", "Message": self.EXPANDED}},
+        )
+        mock_client.get_parameter.side_effect = cause
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
+            SsmResolver().resolve(self.KEY)
+        text = str(info.value)
+        assert "AccessDeniedException" in text
+        assert self.EXPANDED not in text
+        assert "super-secret" not in text
+        assert info.value.__cause__ is cause
+
+    def test_fetch_error_message_falls_back_to_type_name(self, mock_client: MagicMock) -> None:
+        mock_client.get_parameter.side_effect = TimeoutError("boom")
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
+            SsmResolver().resolve(self.KEY)
+        assert "TimeoutError" in str(info.value)
+
+    def test_invalid_json_error_carries_unexpanded_key_without_cause(
+        self, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": "not-json-at-all"}}
+        resolver = SsmResolver()
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
+            resolver.resolve(f"{self.KEY}.host")
+        text = str(info.value)
+        assert self.KEY in text
+        assert "super-secret" not in text
+        assert "not-json-at-all" not in text
+        assert info.value.__cause__ is None
+
+    def test_missing_json_key_error_carries_unexpanded_key_without_cause(
+        self, mock_client: MagicMock
+    ) -> None:
+        mock_client.get_parameter.return_value = {"Parameter": {"Value": '{"host": "db"}'}}
+        resolver = SsmResolver()
+        with patch("boto3.client", return_value=mock_client), pytest.raises(ConfigError) as info:
+            resolver.resolve(f"{self.KEY}.missing_key")
+        text = str(info.value)
+        assert self.KEY in text
+        assert "super-secret" not in text
+        assert info.value.__cause__ is None

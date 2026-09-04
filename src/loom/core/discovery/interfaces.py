@@ -10,7 +10,7 @@ from loom.core.discovery._utils import (
     import_modules,
     infer_model_from_use_case,
 )
-from loom.core.discovery.base import DiscoveryResult
+from loom.core.discovery.base import AGENTS_ONLY_HINT, DiscoveryResult
 from loom.core.model import BaseModel
 
 
@@ -39,15 +39,21 @@ class InterfacesDiscoveryEngine:
 
         Raises:
             ValueError: When no interface module paths are provided, or when
-                no ``RestInterface`` subclasses are found.
+                no ``RestInterface`` subclasses are found. Both messages point
+                at ``app.discovery.mode: manifest`` with ``AGENTS`` for an
+                application whose only content is agents.
         """
         if not self._interface_modules:
-            raise ValueError("interfaces discovery requires at least one module path.")
+            raise ValueError(
+                f"interfaces discovery requires at least one module path. {AGENTS_ONLY_HINT}"
+            )
 
         modules = import_modules(self._interface_modules)
         _, _, interfaces, _ = collect_from_modules(modules)
         if not interfaces:
-            raise ValueError("No RestInterface subclasses discovered in interface modules.")
+            raise ValueError(
+                f"No RestInterface subclasses discovered in interface modules. {AGENTS_ONLY_HINT}"
+            )
 
         use_cases = collect_use_cases_from_interfaces(list(interfaces))
 

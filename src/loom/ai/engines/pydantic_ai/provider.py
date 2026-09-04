@@ -4,11 +4,16 @@ The provider is what the ``ai.engine: pydantic-ai`` setting resolves to. It
 builds one engine per plan — called exactly once per plan by
 :class:`~loom.ai.runtime.AgentRuntime`, in ``__aenter__``, never per request —
 and answers which capability kinds this adapter can serve.
+
+The plan's output schema reaches the engine through the spec; a pinned
+``output_mode`` on the model binding reaches it as ``output_type=`` on
+``Agent.from_spec`` (see :func:`~loom.ai.engines.pydantic_ai._spec.build_output_type`),
+and that keyword is absent when no mode is pinned.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic_ai import Agent
 
@@ -19,7 +24,7 @@ from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
-from loom.ai.engines.pydantic_ai._spec import build_agent_spec
+from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
 from loom.core.di import LoomContainer
 
 
@@ -78,12 +83,18 @@ class PydanticAIEngineProvider:
         model = self._resolve_model(plan.inference)
         toolsets = build_toolsets(plan, container)
         capabilities = build_capabilities(plan)
+        output_type = build_output_type(plan)
+        # The keyword is absent, not ``None``, when no mode is pinned: the
+        # engine's default for ``output_type`` is ``str``, and passing ``None``
+        # would override the resolution ``output_schema`` alone triggers.
+        pinned: dict[str, Any] = {} if output_type is None else {"output_type": output_type}
         agent = Agent.from_spec(
             build_agent_spec(plan),
             model=model,
             deps_type=object,
             toolsets=toolsets or None,
             capabilities=capabilities or None,
+            **pinned,
         )
         return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
 

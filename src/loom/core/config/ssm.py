@@ -21,30 +21,42 @@ try:
 except ImportError:
     _boto3_module = None
 
-from loom.core.config._resolver_utils import _expand_env_vars, _navigate_json, _split_resolver_key
+from loom.core.config._resolver_utils import (
+    _aws_error_code,
+    _expand_env_vars,
+    _navigate_json,
+    _split_resolver_key,
+)
 from loom.core.config.errors import ConfigError
 
 logger = logging.getLogger(__name__)
 
 
-def _fetch_parameter(client: Any, name: str, with_decryption: bool) -> str:
+def _fetch_parameter(client: Any, name: str, with_decryption: bool, *, label: str) -> str:
     """Fetch a single parameter value from AWS SSM.
 
     Args:
         client: Boto3 SSM client.
-        name: Fully-qualified SSM parameter name.
+        name: Fully-qualified SSM parameter name, with ``%VAR%`` tokens
+            already expanded.
         with_decryption: Whether to decrypt SecureString parameters.
+        label: Key as written in the configuration (unexpanded); used only
+            in error messages so that they never carry expanded values.
 
     Returns:
         The parameter value as a string.
 
     Raises:
-        ConfigError: On any SSM API error.
+        ConfigError: On any SSM API error. The message carries the AWS error
+            code (or the exception type name when absent), never the expanded
+            *name*. The chained cause may carry the expanded *name*.
     """
     try:
         result = client.get_parameter(Name=name, WithDecryption=with_decryption)
     except Exception as exc:
-        raise ConfigError(f"Failed to fetch SSM parameter {name!r}: {exc}") from exc
+        raise ConfigError(
+            f"Failed to fetch SSM parameter {label!r}: {_aws_error_code(exc)}"
+        ) from exc
     return str(result["Parameter"]["Value"])
 
 
@@ -57,6 +69,18 @@ class SsmResolver:
     Env-var tokens in the form ``%VAR_NAME%`` (uppercase letters, digits,
     and underscores only) are expanded from ``os.environ`` before the
     SSM request is made.
+
+    Keys are trusted deployment configuration: they come from the
+    deployment's own config files, never from request input. The resolver
+    logs and reports the key as written (with its ``%VAR%`` tokens), never
+    the expanded path. Two channels remain for a caller that lets untrusted
+    input reach a resolver key: a missing variable raises
+    ``ConfigError("Env var 'X' not found ...")``, a deterministic existence
+    oracle for any attacker-chosen variable name, and the chained cause
+    (``__cause__``) of a fetch error may carry the expanded path echoed by
+    the AWS client. The client is also called with the expanded path, so
+    botocore's DEBUG request logging reproduces it — keep botocore at INFO
+    or above in production.
 
     Args:
         region: AWS region name. Passed directly to ``boto3.client``.
@@ -111,14 +135,17 @@ class SsmResolver:
     def resolve(self, key: str) -> object:
         """Resolve an SSM parameter path to its stored value.
 
-        Expands ``%VAR_NAME%`` tokens in *key* from the environment, then
-        fetches the parameter from AWS SSM Parameter Store.
+        Splits the dot-notation tail off *key* as written, expands
+        ``%VAR_NAME%`` tokens in the remaining base path from the
+        environment, then fetches the parameter from AWS SSM Parameter Store.
 
         Args:
             key: SSM parameter path, optionally containing ``%VAR_NAME%``
                 placeholders that are replaced with environment variable values.
                 Supports dot-notation for JSON key navigation: ``/path/param.key``
-                fetches ``/path/param`` and returns ``param["key"]``.
+                fetches ``/path/param`` and returns ``param["key"]``. Dots are read
+                from the key as written, so an expanded value containing a dot
+                is part of the path and never a navigation separator.
 
         Returns:
             Resolved value. A plain string for parameters without dot-notation;
@@ -131,11 +158,11 @@ class SsmResolver:
         """
         if not key:
             raise ConfigError("SSM key must not be empty")
-        expanded = _expand_env_vars(key)
-        ssm_path, json_keys = _split_resolver_key(expanded)
-        logger.info("ssm_resolver: fetching %s", ssm_path)
+        base, json_keys = _split_resolver_key(key)
+        ssm_path = _expand_env_vars(base)
+        logger.info("ssm_resolver: fetching %s", key)
         client = self._get_client()
-        raw = _fetch_parameter(client, ssm_path, self._with_decryption)
+        raw = _fetch_parameter(client, ssm_path, self._with_decryption, label=key)
         if not json_keys:
             return raw
-        return _navigate_json(raw, json_keys, ssm_path)
+        return _navigate_json(raw, json_keys, key)

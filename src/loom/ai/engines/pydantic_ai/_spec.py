@@ -29,15 +29,21 @@ What is deliberately **not** projected:
 replays a failed *tool* call inside one run, loom's replays a failed
 *provider* call across runs. They share one artifact field on purpose — a
 single operator-facing knob — but neither enforcement subsumes the other.
+
+``output_mode`` (``ai.models.<role>``) is projected next to the spec rather than
+inside it: ``AgentSpec.output_schema`` has no mode field, so the mode travels as
+``Agent.from_spec(output_type=...)`` via :func:`build_output_type`. Absent, the
+engine keeps resolving the mode itself from ``output_schema``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, assert_never, cast
 
-from pydantic_ai import AgentSpec
+from pydantic_ai import AgentSpec, NativeOutput, StructuredDict, ToolOutput
 
 from loom.ai.compiler import AgentPlan
+from loom.ai.inference import OutputMode
 
 
 def build_agent_spec(plan: AgentPlan) -> AgentSpec:
@@ -45,7 +51,9 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
 
     ``output_schema`` instructs the model on the shape to produce; it does not
     validate the answer (research R-004), which is why the plan's decoder owns
-    validation at the boundary (see ``_output``).
+    validation at the boundary (see ``_output``). How the engine asks for that
+    shape (tool call or native structured output) is not part of the spec;
+    :func:`build_output_type` overrides it when the binding pins a mode.
 
     Args:
         plan: Compiled agent plan.
@@ -61,3 +69,44 @@ def build_agent_spec(plan: AgentPlan) -> AgentSpec:
         output_schema=schema,
         retries=plan.policies.retries,
     )
+
+
+def build_output_type(plan: AgentPlan) -> ToolOutput[Any] | NativeOutput[Any] | None:
+    """Pin the engine's output mode when the model binding declares one.
+
+    Wraps the plan's output schema in the engine's own marker, with no name
+    or description, so the engine builds the same ``StructuredDict`` it would
+    build from ``output_schema`` alone but with the mode fixed instead of
+    resolved per provider. The value has already been validated against
+    :data:`~loom.ai.inference.OUTPUT_MODES` when the config loaded.
+
+    The dispatch is exhaustive rather than defaulted: an unhandled mode fails
+    type checking here (``assert_never``) and raises at run time, so a value
+    that reached this point without the config check — a plan built in
+    process, a mode loom deliberately excludes such as ``prompted`` — cannot
+    be silently served as ``native``.
+
+    Args:
+        plan: Compiled agent plan.
+
+    Returns:
+        ``ToolOutput`` for ``tool``, ``NativeOutput`` for ``native``, ``None``
+        when the binding leaves the mode to the engine.
+
+    Raises:
+        AssertionError: The binding names a mode loom does not offer.
+    """
+    declared = plan.inference.output_mode
+    if declared is None:
+        return None
+    # The struct field is ``str`` (msgspec would reject a Literal during the
+    # decode, before the config check could name the role), so the narrowing
+    # happens here, where the dispatch below either handles the value or
+    # refuses it.
+    mode = cast("OutputMode", declared)
+    structured = StructuredDict(dict(plan.output.schema))
+    if mode == "tool":
+        return ToolOutput(structured)
+    if mode == "native":
+        return NativeOutput(structured)
+    assert_never(mode)

@@ -53,22 +53,21 @@ def _split_resolver_key(key: str) -> tuple[str, list[str]]:
     Note: ARN-style SecretIds (``arn:aws:secretsmanager:...``) are not
     supported for dot-notation — use short names instead.
 
-    **Limitation — env-var values with dots in the final path segment:**
-    If a ``%VAR%`` token expands to a value that contains a dot *and* that
-    token appears in the last path segment (after the final ``/``), the dot
-    will be interpreted as a JSON navigation separator, producing a confusing
-    ``ConfigError``. Example: ``/app/svc/%ENV%`` where ``ENV=db.prod`` becomes
-    ``/app/svc/db`` with JSON key ``["prod"]``.  Use env-var tokens only in
-    path segments that are guaranteed to be dot-free (environment names,
-    region codes, etc.).
+    **Dot-notation comes from the key as written.** Callers must split
+    *before* expanding ``%VAR%`` tokens and expand only the returned base
+    path, so an expanded environment value can never introduce a JSON
+    separator. Example: ``/app/svc/%ENV%`` with ``ENV=db.prod`` fetches
+    ``/app/svc/db.prod`` whole, and ``/app/%ENV%/db.host`` fetches
+    ``/app/prod/db`` and navigates ``host``. A dot is a navigation token
+    only when the operator typed it in the key.
 
     Args:
-        key: Expanded resolver key, e.g. ``"/app/prod/db_config.host"``.
+        key: Unexpanded resolver key, e.g. ``"/app/%ENV%/db_config.host"``.
 
     Returns:
         A 2-tuple ``(base_path, json_keys)`` where *base_path* is the path
-        to fetch and *json_keys* is a list of dict keys to navigate
-        (empty list when no dot-notation is present).
+        to expand and fetch and *json_keys* is a list of dict keys to
+        navigate (empty list when no dot-notation is present).
     """
     if not key:
         return key, []
@@ -88,7 +87,10 @@ def _navigate_json(raw: str, keys: list[str], path: str) -> object:
     Args:
         raw: Raw string value from the resolver backend.
         keys: Ordered list of dict keys to traverse.
-        path: Original path, used only in error messages.
+        path: Key as written in the configuration (unexpanded ``%VAR%``
+            tokens), used only in error messages. Neither error chains a
+            cause: the decode error carries the raw value and the
+            key-not-found branch has none.
 
     Returns:
         The value at the navigated position. May be any JSON-compatible type.
@@ -113,4 +115,30 @@ def _navigate_json(raw: str, keys: list[str], path: str) -> object:
     return current
 
 
-__all__ = ["_expand_env_vars", "_split_resolver_key", "_navigate_json"]
+def _aws_error_code(exc: BaseException) -> str:
+    """Return the AWS error code of *exc*, or its exception type name.
+
+    ``botocore.exceptions.ClientError`` is raised for nearly every AWS API
+    failure, so its type name alone cannot tell a missing parameter from an
+    access denial, a disabled KMS key, or throttling. The ``Error.Code``
+    field of the response carries that distinction. It is an enum-like
+    constant chosen by AWS, so it can never echo the expanded path.
+
+    Args:
+        exc: Exception raised by the AWS client.
+
+    Returns:
+        The AWS error code when the exception carries a botocore-shaped
+        ``response`` mapping, otherwise ``type(exc).__name__``.
+    """
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error = response.get("Error")
+        if isinstance(error, dict):
+            code = error.get("Code")
+            if isinstance(code, str) and code:
+                return code
+    return type(exc).__name__
+
+
+__all__ = ["_expand_env_vars", "_split_resolver_key", "_navigate_json", "_aws_error_code"]
