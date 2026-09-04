@@ -1,3 +1,61 @@
+# 🚀 Release 1.9.0 ([#154](https://github.com/the-reacher-data/loom-py/pull/154)) ([`22d9a89`](https://github.com/the-reacher-data/loom-py/commit/22d9a894c766d2414ee6607e990b6473dd5ebfe3))
+
+
+## ✨ Features
+### ai
+- **ai:** run a deployment use case on every completed agent run (on_output)<br>
+  > An agent artifact may declare `on_output: {usecase: <key>}`. The runtime
+  > then executes that use case exactly once per run that completes with a
+  > validated output, as the caller, through the normal use-case path
+  > (executor, rules, unit of work), with a command carrying the output under
+  > `output` plus runtime context (interaction_id, conversation_id, subject,
+  > mechanism, agent, provider, model). The use case's return value comes back
+  > as `hook_result`; a failing hook fails the run with HOOK_FAILED (500), an
+  > authorization denial with UNAUTHORIZED (403); the model never sees the hook.
+  > Every admitted run now carries an `interaction_id` on its result, its SSE
+  > `final`/`error` frame and its HTTP error body, and the request accepts an
+  > opaque `conversation_id` (1..128) propagated verbatim to the hook.
+  > Compile-time refusals: unknown use case, unsatisfiable Input, a use case
+  > that is both a `kind: usecase` grant and the hook, and a deps bundle whose
+  > invoker is missing or unbound (checked at start-up before any client opens).
+  > The hook is shielded from client disconnects and bounded by
+  > tool_timeout_ms; RuntimeExecutor now rolls back its unit of work on
+  > cancellation as well as on exceptions, and the SSE transport settles the
+  > frame task before closing the event generator.
+  > pyright now resolves imports against the project venv when invoked
+  > directly, so a globally installed dependency cannot shadow the pinned one.
+  > Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_01Gr9ww7Ut7iiPZcukawEXzH
+
+
+
+
+
+
+## ♻️ Refactor
+### ai
+- **ai:** clear the SonarCloud findings of the on_output hook<br>
+  > The quality gate of #154 failed on a single reliability finding (S7497):
+  > the hook runner's `except asyncio.CancelledError` turned an internal
+  > cancellation into `RuntimeError` instead of re-raising. Wait on the hook
+  > task with `asyncio.wait` instead of `asyncio.shield`, which returns once
+  > the task ends, cancelled included; the consumer's cancellation is then
+  > the only `CancelledError` reaching the handler, always re-raised, and the
+  > internal cancel is detected after the wait. `_consumer_cancelled` and its
+  > `cancelling()` probe go away. `_settle` bounds its wait with
+  > `asyncio.timeout` (S7483).
+
+- **ai:** name _settle's bound so Sonar S7483 stops matching the parameter<br>
+  > Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+  > --------
+  > Co-authored-by: Claude Fable 5.1 <noreply@anthropic.com>
+
+
+
+
+
+
 # 🚀 Release 1.8.1 ([#152](https://github.com/the-reacher-data/loom-py/pull/152)) ([`e8d1d81`](https://github.com/the-reacher-data/loom-py/commit/e8d1d81cf2b3fe15e8351108b893d6076950f0cd))
 
 
