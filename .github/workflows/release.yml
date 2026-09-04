@@ -22,6 +22,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Dispatching ci-main for the merged version bump; see that step.
+      actions: write
     outputs:
       deploy: ${{ steps.version.outputs.deploy }}
       version: ${{ steps.version.outputs.version }}
@@ -227,6 +229,23 @@ jobs:
             --expected-owner "${EXPECTED_OWNER}" \
             --timeout-seconds "${MERGE_TIMEOUT_SECONDS}")
           echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
+
+      # The bump is on master now, and no `push` event announced it: GitHub
+      # emits none for a merge performed with GITHUB_TOKEN. Ask for the run
+      # explicitly, so CHANGELOG.md, pyproject.toml and uv.lock are validated on
+      # master like every other commit. Never fatal: this asks for a check, it is
+      # not one, and a release must not fail because a follow-up run could not be
+      # queued. It dispatches on `master`, so what it validates is master's tip,
+      # which is what ci-main validates on any other day.
+      - name: Validate the merged version bump on master
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ci-main.yml --repo "${GITHUB_REPOSITORY}" --ref master
 
       - name: Store release notes
         if: ${{ steps.version.outputs.deploy == 'true' }}

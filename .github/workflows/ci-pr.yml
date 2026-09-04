@@ -10,7 +10,17 @@ permissions:
   security-events: write
 
 jobs:
+  # A release PR carries a version bump and nothing else, and it is the only way
+  # CHANGELOG.md, pyproject.toml and uv.lock reach master. Validating it is not
+  # possible and not useful: the branch and the PR are pushed with GITHUB_TOKEN,
+  # so any run queued against them sits waiting for manual approval and expires
+  # unapproved — a red check nobody can turn green. Worse, the release helper
+  # merges only when every check that reported has passed, so an expired run that
+  # concludes before the helper polls blocks the release outright. Skipping is
+  # what the helper already documents as the normal state. The code the bump
+  # describes was validated in the pull requests that composed it.
   validate:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -229,6 +239,29 @@ jobs:
               --project-name="loom-py/extra-${extra}"
           done
 
+      - name: Report the Snyk outcome
+        if: ${{ always() && env.SNYK_TOKEN != '' }}
+        env:
+          OUTCOME: ${{ steps.snyk.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Snyk dependency scan: \`${OUTCOME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${OUTCOME}" != "success" ]; then
+            {
+              echo
+              echo "The scan did not complete, so **no dependency was cleared and none was"
+              echo "reported vulnerable**. This does NOT block the build: a scanner that is"
+              echo "unreachable, rate-limited or refusing an expired \`SNYK_TOKEN\` says"
+              echo "nothing about this code. Read the step log: an \`Authentication error"
+              echo "(SNYK-0005)\` with \`401 Unauthorized\` means the token needs renewing"
+              echo "in Snyk and updating in the repository secrets."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Snyk scan did not complete::No dependency was scanned. This does NOT block the build. A 401 with SNYK-0005 means the SNYK_TOKEN is expired or unprovisioned; renew it in Snyk and update the repository secret."
+          fi
+
       - name: Publish prerelease package to TestPyPI
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.TEST_PYPI_API_TOKEN != '' && steps.version.outputs.deploy == 'true' }}
         env:
@@ -290,6 +323,7 @@ jobs:
   #
   # No `--frozen` and no `uv.lock` here — resolving fresh is the entire point.
   pydantic-ai-canary:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -402,6 +436,7 @@ jobs:
   # is not evidence that Apache Kafka agrees.
   # ---------------------------------------------------------------------------
   integration:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
