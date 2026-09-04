@@ -1,3 +1,48 @@
+# 🚀 Release 1.9.1 ([#155](https://github.com/the-reacher-data/loom-py/pull/155)) ([`587affc`](https://github.com/the-reacher-data/loom-py/commit/587affcfbf46301ccd3e02a5edeb34e63b460628))
+
+
+## ✨ Features
+### rest
+- **rest:** let an application whose only content is agents boot<br>
+  > Reported from downstream: an app whose manifest declares only AGENTS failed
+  > six times in a row on `create_app`, each message naming a symptom rather than
+  > the cause ("no module named 'sqlalchemy'", "No UseCase classes discovered.",
+  > "the greenlet library is required...").
+  > `persistence.backend: none`: no unit of work, no repositories, no model
+  > compilation, `database:` ignored. `sqlalchemy` stays the default and its
+  > no-models error now names the way out.
+  > `create_app` imports the SQLAlchemy backend lazily, inside the wiring that
+  > needs it, so the `sqlalchemy` extra is no longer required to import it.
+  > One discovery guard instead of three: an app fails only when it has no use
+  > case, no interface and no agent, and every discovery error now names
+  > `app.discovery.mode: manifest` and `AGENTS`.
+  > `ai.models.<role>.output_mode: tool | native` pins the structured-output
+  > mode a deployment needs; absent keeps the engine's own resolution.
+  > The AWS resolvers log and report the key as written, never the `%VAR%`
+  > expanded path, and split dot-notation before expanding so an environment
+  > value can never introduce a JSON separator or reach an error message.
+  > Fetch errors carry the AWS error code instead of the client's message.
+  > Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+
+
+
+
+
+
+
+## ✅ Tests
+### quality
+- **quality:** clear the SonarCloud findings of the agents-only slice<br>
+  > The quality gate failed on one reliability issue: the subprocess helper
+  > asserted inside a `try` whose `except Exception` also catches
+  > `AssertionError`, so a failed check reported itself as a caught error
+  > (S5779). It raises `RuntimeError` now, and the block check does too.
+
+
+
+
 # 🚀 Release 1.9.0 ([#154](https://github.com/the-reacher-data/loom-py/pull/154)) ([`22d9a89`](https://github.com/the-reacher-data/loom-py/commit/22d9a894c766d2414ee6607e990b6473dd5ebfe3))
 
 
