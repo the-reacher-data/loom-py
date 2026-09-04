@@ -65,17 +65,23 @@ class AgentJSONResponse(MsgspecJSONResponse):
         return ENCODER.encode(content)
 
 
-def error_response(status_code: int, code: str, message: str) -> Response:
-    """Build the flat ``{"code", "message"}`` body agent surfaces refuse with.
+def error_response(
+    status_code: int, code: str, message: str, *, interaction_id: str | None = None
+) -> Response:
+    """Build the flat ``{"code", "message", "interaction_id"}`` body agent surfaces refuse with.
 
     Both the HTTP surface and the A2A one answer a pre-first-byte failure with
-    the same two fields, so the shape is defined once here rather than once per
-    transport.
+    the same fields, so the shape is defined once here rather than once per
+    transport. ``interaction_id`` is always on the wire — ``null`` when the
+    failure happened before a run was admitted — because a fixed shape beats a
+    conditional one.
 
     Args:
         status_code: HTTP status of the response.
         code: Stable machine-readable code.
         message: Human-readable description, safe to return to the caller.
+        interaction_id: Identifier of the admitted run the failure belongs to,
+            the only handle correlating it with the server-side log line.
 
     Returns:
         The encoded error response.
@@ -84,4 +90,7 @@ def error_response(status_code: int, code: str, message: str) -> Response:
 
         return error_response(404, "AGENT_NOT_FOUND", "no agent named 'x' is exposed")
     """
-    return AgentJSONResponse(content={"code": code, "message": message}, status_code=status_code)
+    return AgentJSONResponse(
+        content={"code": code, "message": message, "interaction_id": interaction_id},
+        status_code=status_code,
+    )

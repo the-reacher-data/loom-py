@@ -19,6 +19,10 @@ from loom.ai.errors import (
     AgentErrorCode,
     a2a_agent_unreachable,
     mcp_server_unreachable,
+    on_output_input_unsatisfied,
+    on_output_invoker_missing,
+    on_output_usecase_also_granted,
+    on_output_usecase_unknown,
     provider_unknown,
 )
 
@@ -61,3 +65,46 @@ def test_provider_unknown_enumera_los_soportados_sin_mandar_instalar_nada() -> N
     assert "anthropic, openai" in issue.message
     assert "extra" not in issue.message
     assert "install" not in issue.message
+
+
+def test_on_output_usecase_unknown_apunta_al_campo_on_output_usecase() -> None:
+    """The unknown key is attributed to the hook field, not to the capabilities."""
+    issue = on_output_usecase_unknown("triage-bot", "incidents.record_triage")
+
+    assert issue.code is AgentErrorCode.ON_OUTPUT_USECASE_UNKNOWN
+    assert issue.component == "triage-bot"
+    assert issue.field == "on_output.usecase"
+    assert "incidents.record_triage" in issue.message
+
+
+def test_on_output_input_unsatisfied_lleva_la_razon_en_el_mensaje() -> None:
+    """The reason is the only clue the author gets about which Input field fails."""
+    issue = on_output_input_unsatisfied(
+        "triage-bot", "incidents.record_triage", "field 'reviewer_email' has no default"
+    )
+
+    assert issue.code is AgentErrorCode.ON_OUTPUT_INPUT_UNSATISFIED
+    assert issue.component == "triage-bot"
+    assert issue.field == "on_output.usecase"
+    assert "incidents.record_triage" in issue.message
+    assert "field 'reviewer_email' has no default" in issue.message
+
+
+def test_on_output_usecase_also_granted_apunta_al_campo_on_output_usecase() -> None:
+    """A key that is both hook and capability is reported once, on the hook field."""
+    issue = on_output_usecase_also_granted("triage-bot", "incidents.record_triage")
+
+    assert issue.code is AgentErrorCode.ON_OUTPUT_USECASE_ALSO_GRANTED
+    assert issue.component == "triage-bot"
+    assert issue.field == "on_output.usecase"
+    assert "incidents.record_triage" in issue.message
+
+
+def test_on_output_invoker_missing_es_un_problema_de_despliegue_que_nombra_los_agentes() -> None:
+    """No single agent owns the missing invoker, so the issue belongs to ``ai``."""
+    issue = on_output_invoker_missing(["triage-bot", "escalation-bot"])
+
+    assert issue.code is AgentErrorCode.ON_OUTPUT_INVOKER_MISSING
+    assert issue.component == "ai"
+    assert issue.field == "on_output"
+    assert "triage-bot, escalation-bot" in issue.message

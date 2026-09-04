@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Callable, Mapping
-from typing import Final
+from typing import Annotated, Final
 
 import msgspec
 from fastapi import FastAPI
@@ -38,7 +38,7 @@ from loom.ai._transport import (
     read_body_capped,
     require_caller,
 )
-from loom.ai.abc import ErrorEvent
+from loom.ai.abc import CONVERSATION_ID_MAX_LENGTH, ErrorEvent
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.fastapi.response import AgentJSONResponse, error_response
@@ -69,13 +69,22 @@ _STATUS_BY_CODE: Mapping[AgentRunErrorCode, int] = {
     AgentRunErrorCode.RUN_TIMEOUT: 504,
     AgentRunErrorCode.TOO_MANY_RUNS: 429,
     AgentRunErrorCode.UNAUTHORIZED: 403,
+    AgentRunErrorCode.HOOK_FAILED: 500,
 }
 
 
 class _AgentRunRequest(LoomFrozenStruct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    """Body accepted by ``/run`` and ``/stream``: one prompt, nothing else."""
+    """Body accepted by ``/run`` and ``/stream``: one prompt and an optional thread.
+
+    ``conversation_id`` is opaque to the runtime: it is only ever copied into
+    the output hook's command. Its bounds are enforced here, at decode, so an
+    out-of-range value is a ``422`` and never reaches the runtime.
+    """
 
     prompt: str
+    conversation_id: (
+        Annotated[str, msgspec.Meta(min_length=1, max_length=CONVERSATION_ID_MAX_LENGTH)] | None
+    ) = None
 
 
 _REQUEST_DECODER = msgspec.json.Decoder(_AgentRunRequest)
@@ -83,11 +92,16 @@ _REQUEST_DECODER = msgspec.json.Decoder(_AgentRunRequest)
 
 def _run_error_response(error: AgentRunError) -> Response:
     """Map a run-error code onto its published HTTP status."""
-    return error_response(_STATUS_BY_CODE.get(error.code, 500), str(error.code), str(error))
+    return error_response(
+        _STATUS_BY_CODE.get(error.code, 500),
+        str(error.code),
+        str(error),
+        interaction_id=error.interaction_id,
+    )
 
 
-async def _read_prompt(request: Request, *, max_prompt_bytes: int) -> str:
-    """Read and validate the prompt of one invocation.
+async def _read_request(request: Request, *, max_prompt_bytes: int) -> _AgentRunRequest:
+    """Read and validate the body of one invocation.
 
     Raises:
         TransportError: 413 when the body or the prompt exceeds its cap, 422
@@ -104,7 +118,7 @@ async def _read_prompt(request: Request, *, max_prompt_bytes: int) -> str:
             "PROMPT_TOO_LARGE",
             f"Request body exceeds the maximum accepted size ({max_prompt_bytes} bytes)",
         )
-    return parsed.prompt
+    return parsed
 
 
 def _require_agent(
@@ -134,7 +148,7 @@ def _make_run_handler(
         try:
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
-            prompt = await _read_prompt(request, max_prompt_bytes=config.max_prompt_bytes)
+            body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
             with observability_runtime.span(
                 Scope.AGENT,
                 "agent_run",
@@ -146,7 +160,9 @@ def _make_run_handler(
                 subject=identity.subject,
                 mechanism=identity.mechanism,
             ):
-                result = await runtime.run(name, prompt, identity=identity)
+                result = await runtime.run(
+                    name, body.prompt, identity=identity, conversation_id=body.conversation_id
+                )
             return AgentJSONResponse(content=result)
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -162,7 +178,7 @@ def _make_run_handler(
 def _stream_frames(
     runtime: AgentRuntime,
     name: str,
-    prompt: str,
+    body: _AgentRunRequest,
     identity: Identity,
     *,
     path: str,
@@ -197,13 +213,17 @@ def _stream_frames(
             )
         ):
             try:
-                async with runtime.run_stream(name, prompt, identity=identity) as events:
+                async with runtime.run_stream(
+                    name, body.prompt, identity=identity, conversation_id=body.conversation_id
+                ) as events:
                     async for frame in stream_sse(events, heartbeat_ms=HEARTBEAT_MS):
                         yield frame
             except AgentRunError as exc:
                 # Admission failures surface once the response exists, so they
                 # can only travel in-band, as this stream's terminal frame.
-                yield encode_sse_event(ErrorEvent(code=exc.code, message=str(exc)))
+                yield encode_sse_event(
+                    ErrorEvent(code=exc.code, message=str(exc), interaction_id=exc.interaction_id)
+                )
 
     return _frames()
 
@@ -222,14 +242,14 @@ def _make_stream_handler(
         try:
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
-            prompt = await _read_prompt(request, max_prompt_bytes=config.max_prompt_bytes)
+            body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         return StreamingResponse(
             _stream_frames(
                 runtime,
                 name,
-                prompt,
+                body,
                 identity,
                 path=path,
                 observability_runtime=observability_runtime,

@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Final
 
 from loom.core.model import LoomFrozenStruct
 
@@ -51,6 +52,10 @@ class AgentErrorCode(StrEnum):
     OUTPUT_SCHEMA_INVALID = "OUTPUT_SCHEMA_INVALID"
     OUTPUT_TYPE_REF_UNRESOLVABLE = "OUTPUT_TYPE_REF_UNRESOLVABLE"
     OUTPUT_TYPE_REF_UNSUPPORTED = "OUTPUT_TYPE_REF_UNSUPPORTED"
+    ON_OUTPUT_USECASE_UNKNOWN = "ON_OUTPUT_USECASE_UNKNOWN"
+    ON_OUTPUT_INPUT_UNSATISFIED = "ON_OUTPUT_INPUT_UNSATISFIED"
+    ON_OUTPUT_USECASE_ALSO_GRANTED = "ON_OUTPUT_USECASE_ALSO_GRANTED"
+    ON_OUTPUT_INVOKER_MISSING = "ON_OUTPUT_INVOKER_MISSING"
 
     # Capabilities
     CAPABILITY_KIND_UNSUPPORTED = "CAPABILITY_KIND_UNSUPPORTED"
@@ -265,6 +270,60 @@ def output_type_ref_unsupported(component: str, ref: str, reason: str) -> AgentC
         message=f"{component}: output type reference '{ref}' is unsupported: {reason}",
         component=component,
         field="output.ref",
+    )
+
+
+_ON_OUTPUT_USECASE_FIELD: Final[str] = "on_output.usecase"
+"""Spec field every ``on_output`` compilation issue points at."""
+
+
+def on_output_usecase_unknown(component: str, key: str) -> AgentCompilationIssue:
+    """The output hook names a use-case key absent from the registry."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.ON_OUTPUT_USECASE_UNKNOWN,
+        message=f"{component}: on_output use case '{key}' is not registered",
+        component=component,
+        field=_ON_OUTPUT_USECASE_FIELD,
+    )
+
+
+def on_output_input_unsatisfied(component: str, key: str, reason: str) -> AgentCompilationIssue:
+    """The hook cannot build the use case's Input from the run context and output."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.ON_OUTPUT_INPUT_UNSATISFIED,
+        message=(f"{component}: on_output use case '{key}' cannot be fed from the run: {reason}"),
+        component=component,
+        field=_ON_OUTPUT_USECASE_FIELD,
+    )
+
+
+def on_output_usecase_also_granted(component: str, key: str) -> AgentCompilationIssue:
+    """The hook's use case is also granted to the model as a capability."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.ON_OUTPUT_USECASE_ALSO_GRANTED,
+        message=(
+            f"{component}: on_output use case '{key}' is also granted as a capability; "
+            "a hook use case must not be callable by the model"
+        ),
+        component=component,
+        field=_ON_OUTPUT_USECASE_FIELD,
+    )
+
+
+def on_output_invoker_missing(
+    agents: Sequence[str], *, reason: str = "no use-case invoker is configured"
+) -> AgentCompilationIssue:
+    """Agents declare an output hook but the deployment has no usable use-case invoker.
+
+    Args:
+        agents: Names of the agents declaring a hook.
+        reason: What is wrong with the invoker, when it is not simply absent.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.ON_OUTPUT_INVOKER_MISSING,
+        message=f"agents declare an output hook but {reason}: {', '.join(agents)}",
+        component="ai",
+        field="on_output",
     )
 
 
@@ -827,6 +886,7 @@ class AgentRunErrorClass(StrEnum):
     LIMIT = "LIMIT"
     AUTHORIZATION = "AUTHORIZATION"
     CLIENT = "CLIENT"
+    APPLICATION = "APPLICATION"
 
 
 class AgentRunErrorCode(StrEnum):
@@ -842,6 +902,7 @@ class AgentRunErrorCode(StrEnum):
     TOO_MANY_RUNS = "TOO_MANY_RUNS"
     UNAUTHORIZED = "UNAUTHORIZED"
     CANCELLED = "CANCELLED"
+    HOOK_FAILED = "HOOK_FAILED"
 
 
 class AgentRunError(Exception):
@@ -856,18 +917,24 @@ class AgentRunError(Exception):
     Args:
         code: Run-time failure code; the retry policy reads its class.
         message: Human-readable description, safe to return to the caller.
+        interaction_id: Identifier of the admitted run, when the failure
+            happened after admission; ``None`` for pre-admission failures.
 
     Attributes:
         code: The failure code carried by this error.
+        interaction_id: The run this error belongs to, or ``None``.
 
     Example::
 
         raise AgentRunError(AgentRunErrorCode.RUN_TIMEOUT, "the run took too long")
     """
 
-    def __init__(self, code: AgentRunErrorCode, message: str) -> None:
+    def __init__(
+        self, code: AgentRunErrorCode, message: str, *, interaction_id: str | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.interaction_id = interaction_id
 
 
 _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProxyType(
@@ -882,6 +949,7 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.TOO_MANY_RUNS: AgentRunErrorClass.LIMIT,
         AgentRunErrorCode.UNAUTHORIZED: AgentRunErrorClass.AUTHORIZATION,
         AgentRunErrorCode.CANCELLED: AgentRunErrorClass.CLIENT,
+        AgentRunErrorCode.HOOK_FAILED: AgentRunErrorClass.APPLICATION,
     }
 )
 
@@ -909,7 +977,8 @@ def is_retriable(code: AgentRunErrorCode) -> bool:
     """Return whether a run-time failure may be retried by the caller.
 
     Only :data:`AgentRunErrorClass.INFRASTRUCTURE` failures are retriable;
-    model behaviour, limits, authorization and client cancellation are final.
+    model behaviour, limits, authorization, client cancellation and
+    application failures are final.
 
     Args:
         code: Run-time error code to test.

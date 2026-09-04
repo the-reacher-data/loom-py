@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
@@ -179,7 +180,7 @@ class RuntimeExecutor:
         When a ``uow_factory`` was provided at construction and no UoW is
         already active in the current async context, opens a fresh UoW
         (begin), runs the pipeline, and commits on success or rolls back on
-        any exception.  Nested calls reuse the existing UoW transparently.
+        any exception, cancellation included.  Nested calls reuse the existing UoW transparently.
 
         Args:
             compilable: Constructed instance to execute.
@@ -239,9 +240,15 @@ class RuntimeExecutor:
             await uow.commit()
             await flush_pending_dispatches()
             return result
-        except Exception:
-            await uow.rollback()
-            clear_pending_dispatches()
+        except BaseException:
+            # ``BaseException``: a cancellation must roll back too, or a use
+            # case cut mid-flight leaves its transaction begun and never
+            # closed.  The rollback is shielded so a second cancellation
+            # arriving while it runs lets it finish instead of cutting it.
+            try:
+                await asyncio.shield(uow.rollback())
+            finally:
+                clear_pending_dispatches()
             raise
         finally:
             _active_uow.reset(token)

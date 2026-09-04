@@ -21,8 +21,10 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from dataclasses import dataclass
 from types import MappingProxyType, TracebackType
 from typing import Any, Self
+from uuid import uuid4
 
 from loom.ai.abc import (
+    CONVERSATION_ID_MAX_LENGTH,
     AgentEngine,
     AgentEngineProvider,
     AgentEvent,
@@ -46,9 +48,11 @@ from loom.ai.errors import (
     AgentRunErrorCode,
     a2a_agent_unreachable,
     mcp_server_unreachable,
+    on_output_invoker_missing,
     sql_readonly_drift,
 )
 from loom.ai.runtime._health import AgentHealth, worst
+from loom.ai.runtime._hooks import HookRun, hooked_events, no_terminal_message
 from loom.ai.runtime._limits import cancel_task, supervised_events
 from loom.ai.runtime._mcp import (
     FilterTarget,
@@ -61,8 +65,9 @@ from loom.ai.runtime._mcp import (
     mcp_key,
 )
 from loom.core.di import LoomContainer
-from loom.core.identity import Identity
+from loom.core.identity import ANONYMOUS, Identity
 from loom.core.sql.config import SqlConfig
+from loom.core.use_case.invoker import ApplicationInvoker
 
 _logger = logging.getLogger(__name__)
 
@@ -76,6 +81,8 @@ _PROBE_FAILED = "the health probe failed; the detail is recorded server-side"
 """Detail of an agent whose engine probe raised. No exception text: the probe
 reaches a model provider, so its failures carry endpoints and credential
 references that an anonymous ``/health`` scrape must never receive."""
+
+_INVOKER_UNBOUND = "the use-case invoker is not bound to a caller"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +205,7 @@ class AgentRuntime:
         deadline = asyncio.get_running_loop().time() + self._config.startup_timeout_ms / 1000
         try:
             self._verify_sql_readonly()
+            self._verify_hook_invoker()
             await self._open_clients(stack, deadline)
             await self._verify_tool_filters(deadline)
             self._build_engines()
@@ -278,38 +286,62 @@ class AgentRuntime:
         kinds = {capability.kind: None for capability in plan.capabilities}
         return tuple(kinds)
 
-    async def run(self, name: str, prompt: str, *, identity: Identity) -> AgentResult:
+    async def run(
+        self,
+        name: str,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation_id: str | None = None,
+    ) -> AgentResult:
         """Run one agent to completion.
 
         Args:
             name: Agent to run.
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation_id: Opaque value the application supplies; copied
+                verbatim into the output hook's command, never read.
 
         Returns:
-            The decoded output and the run's usage.
+            The decoded output, the run's usage, its ``interaction_id`` and the
+            output hook's result.
 
         Raises:
             KeyError: When no agent is named *name*.
+            ValueError: When ``conversation_id`` is empty or longer than
+                :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: When the run is refused (``TOO_MANY_RUNS``), breaches
                 a declared limit, or ends in a failure event.
         """
         result: AgentResult | None = None
-        async with self._run_stream(name, prompt, identity=identity) as events:
+        stream = self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
+        async with stream as events:
             async for event in events:
                 if type(event) is ErrorEvent:
-                    raise AgentRunError(event.code, str(event.message))
+                    raise AgentRunError(
+                        event.code, str(event.message), interaction_id=event.interaction_id
+                    )
                 if type(event) is FinalEvent:
-                    result = AgentResult(output=event.output, usage=event.usage)
+                    result = AgentResult(
+                        output=event.output,
+                        usage=event.usage,
+                        interaction_id=event.interaction_id,
+                        hook_result=event.hook_result,
+                    )
         if result is None:
-            raise AgentRunError(
-                AgentRunErrorCode.PROVIDER_UNAVAILABLE,
-                f"agent {name!r} produced no terminal event",
-            )
+            # Defensive only: ``hooked_events`` closes every exhausted stream
+            # with a named error, so this guard cannot be reached today.
+            raise AgentRunError(AgentRunErrorCode.PROVIDER_UNAVAILABLE, no_terminal_message(name))
         return result
 
     def run_stream(
-        self, name: str, prompt: str, *, identity: Identity
+        self,
+        name: str,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation_id: str | None = None,
     ) -> AbstractAsyncContextManager[AsyncIterator[AgentEvent]]:
         """Run one agent, streaming its supervised events.
 
@@ -320,16 +352,21 @@ class AgentRuntime:
             name: Agent to run.
             prompt: Caller prompt.
             identity: Verified caller; every capability call runs as them.
+            conversation_id: Opaque value the application supplies; copied
+                verbatim into the output hook's command, never read.
 
         Returns:
-            An async context manager yielding the limit-supervised events.
+            An async context manager yielding the limit-supervised events; the
+            terminal event carries the run's ``interaction_id``.
 
         Raises:
             KeyError: When no agent is named *name*.
+            ValueError: On entry, when ``conversation_id`` is empty or longer
+                than :data:`~loom.ai.abc.CONVERSATION_ID_MAX_LENGTH`.
             AgentRunError: On entry, when the worker's ``max_concurrent_runs``
                 is already taken (``TOO_MANY_RUNS``).
         """
-        return self._run_stream(name, prompt, identity=identity)
+        return self._run_stream(name, prompt, identity=identity, conversation_id=conversation_id)
 
     async def health(self, name: str) -> AgentHealth:
         """Return the cached health of one agent — never network I/O per call.
@@ -348,6 +385,25 @@ class AgentRuntime:
         return self._health.get(name, _PROBING)
 
     # -- lifecycle ---------------------------------------------------------
+
+    def _verify_hook_invoker(self) -> None:
+        """Abort start-up when a hook is declared but no bundle carries an invoker.
+
+        Probed once, before any client opens: without it a misconfigured
+        deployment would fail only after every paid run.
+        """
+        hooked = [name for name, plan in self._plans.items() if plan.on_output is not None]
+        if not hooked:
+            return
+        invoker = getattr(self._deps.build(ANONYMOUS, self._container), "invoker", None)
+        if not isinstance(invoker, ApplicationInvoker):
+            raise AgentCompilationError([on_output_invoker_missing(hooked)])
+        # An invoker built for a caller carries that caller (``ANONYMOUS`` here);
+        # one carrying ``None`` was never bound and would run every hook as nobody.
+        if getattr(invoker, "identity", ANONYMOUS) is None:
+            raise AgentCompilationError(
+                [on_output_invoker_missing(hooked, reason=_INVOKER_UNBOUND)]
+            )
 
     def _verify_sql_readonly(self) -> None:
         """Abort start-up when a SQL grant's read-only state drifted (FR-046)."""
@@ -546,16 +602,30 @@ class AgentRuntime:
 
     @asynccontextmanager
     async def _run_stream(
-        self, name: str, prompt: str, *, identity: Identity
+        self,
+        name: str,
+        prompt: str,
+        *,
+        identity: Identity,
+        conversation_id: str | None,
     ) -> AsyncIterator[AsyncIterator[AgentEvent]]:
         slot = self._require_slot(name)
+        _check_conversation_id(conversation_id)
         await self._admit(name)
         try:
+            run = HookRun(
+                plan=slot.plan,
+                identity=identity,
+                interaction_id=uuid4().hex,
+                conversation_id=conversation_id,
+            )
             async with slot.engine.run_stream(prompt, identity=identity) as events:
                 supervised = supervised_events(events, slot.plan.policies)
+                hooked = hooked_events(supervised, run, self._deps, self._container)
                 try:
-                    yield supervised
+                    yield hooked
                 finally:
+                    await hooked.aclose()
                     await supervised.aclose()
         finally:
             self._runs.release()
@@ -588,6 +658,17 @@ class AgentRuntime:
                 "'async with runtime:' to open its clients and build its engines"
             )
         return slot
+
+
+def _check_conversation_id(conversation_id: str | None) -> None:
+    """Refuse an out-of-bound ``conversation_id``: a programming error, not a run failure."""
+    if conversation_id is None:
+        return
+    if not 1 <= len(conversation_id) <= CONVERSATION_ID_MAX_LENGTH:
+        raise ValueError(
+            f"conversation_id must be between 1 and {CONVERSATION_ID_MAX_LENGTH} "
+            f"characters long, got {len(conversation_id)}"
+        )
 
 
 def _a2a_key(capability: CompiledA2ACapability) -> str:

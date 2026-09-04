@@ -18,7 +18,7 @@ from JSON, which is why fields may hold arbitrary runtime handles.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 import msgspec
 
@@ -208,6 +208,44 @@ CompiledCapability = (
 """Union of every compiled capability; each exposes its ``kind`` and handle."""
 
 
+HOOK_CONTEXT_FIELDS: Final[tuple[str, ...]] = (
+    "interaction_id",
+    "conversation_id",
+    "subject",
+    "mechanism",
+    "agent",
+    "provider",
+    "model",
+)
+"""Run-context names the output hook offers to its use case's Input."""
+
+HOOK_OUTPUT_FIELD: Final[str] = "output"
+"""Input name under which the hook nests the validated output."""
+
+
+class CompiledOutputHook(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Use case executed once per completed run, resolved and proven feedable.
+
+    The compiler proves that every required, user-supplied name of the use
+    case's Input is one of :data:`HOOK_OUTPUT_FIELD` or
+    :data:`HOOK_CONTEXT_FIELDS`, so the runtime never discovers a missing
+    field at the end of a run.  ``accepted`` is computed here, once, from
+    ``msgspec.structs.fields``: the runtime filters the offered dict to it
+    before ``from_payload`` so a strict Command works without per-run
+    reflection.
+
+    Attributes:
+        usecase: Use-case key as written in the artifact, for messages.
+        use_case: Registered use-case type, as
+            :attr:`CompiledUsecaseCapability.use_cases` carries them.
+        accepted: Internal names the Input declares; the run-time filter.
+    """
+
+    usecase: str
+    use_case: type[Compilable]
+    accepted: frozenset[str]
+
+
 class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     """Immutable compiled agent, the only input to every downstream stage.
 
@@ -220,6 +258,7 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
         output: Structured-output contract with its built decoder.
         capabilities: Compiled capabilities with resolved handles.
         policies: Validated execution limits.
+        on_output: Output hook, when the artifact declares one.
         metadata: Free-form string labels carried alongside the agent.
         source_path: Artifact provenance for error messages, when known.
     """
@@ -232,5 +271,6 @@ class AgentPlan(LoomFrozenStruct, frozen=True, kw_only=True):
     output: CompiledOutput
     capabilities: tuple[CompiledCapability, ...] = ()
     policies: PolicySpec
+    on_output: CompiledOutputHook | None = None
     metadata: Mapping[str, str]
     source_path: str | None = None

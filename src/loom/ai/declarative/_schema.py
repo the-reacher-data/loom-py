@@ -82,6 +82,7 @@ def _v1_properties() -> dict[str, Any]:
             ),
         },
         "output": {"$ref": "#/$defs/output"},
+        "on_output": {"$ref": "#/$defs/on_output"},
         "capabilities": {
             "type": "array",
             "default": [],
@@ -279,9 +280,29 @@ def _v1_a2a_capability() -> dict[str, Any]:
     }
 
 
+def _v1_output_hook_def() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["usecase"],
+        "properties": {
+            "usecase": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Use-case key of the registry executed once per completed run "
+                    "with the validated output. Not a tool: the model never sees it, "
+                    "and the same key must not also be granted as a usecase capability."
+                ),
+            },
+        },
+    }
+
+
 def _v1_defs() -> dict[str, Any]:
     return {
         "output": _v1_output_def(),
+        "on_output": _v1_output_hook_def(),
         "capability": {
             "oneOf": [
                 _v1_usecase_capability(),

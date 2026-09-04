@@ -45,7 +45,7 @@ _EVENTS: dict[str, tuple[AgentEvent, dict[str, Any]]] = {
     ),
     "error": (
         ErrorEvent(code=AgentRunErrorCode.PROVIDER_RATE_LIMITED, message="rate limited"),
-        {"code": "PROVIDER_RATE_LIMITED", "message": "rate limited"},
+        {"code": "PROVIDER_RATE_LIMITED", "message": "rate limited", "interaction_id": None},
     ),
     "final": (
         FinalEvent(output={"answer": "42"}, usage=_USAGE),
@@ -57,6 +57,8 @@ _EVENTS: dict[str, tuple[AgentEvent, dict[str, Any]]] = {
                 "requests": 3,
                 "duration_ms": 5210,
             },
+            "interaction_id": None,
+            "hook_result": None,
         },
     ),
 }
@@ -114,6 +116,28 @@ class TestFormatoDeTrama:
         event, _ = _EVENTS[name]
 
         assert "type" not in _split_frame(encode_sse_event(event))[1]
+
+    def test_emite_interaction_id_y_hook_result_cuando_el_final_los_lleva(self) -> None:
+        """A ``final`` minted by the runtime carries the id and the hook's result verbatim."""
+        event = FinalEvent(
+            output={"answer": "42"},
+            usage=_USAGE,
+            interaction_id="a" * 32,
+            hook_result={"triage_id": "a" * 32},
+        )
+
+        payload = _split_frame(encode_sse_event(event))[1]
+
+        assert payload["interaction_id"] == "a" * 32
+        assert payload["hook_result"] == {"triage_id": "a" * 32}
+
+    def test_emite_interaction_id_cuando_el_error_lo_lleva(self) -> None:
+        """An ``error`` raised after admission carries the id that names the server log line."""
+        event = ErrorEvent(
+            code=AgentRunErrorCode.HOOK_FAILED, message="hook failed", interaction_id="b" * 32
+        )
+
+        assert _split_frame(encode_sse_event(event))[1]["interaction_id"] == "b" * 32
 
 
 class TestTerminacion:

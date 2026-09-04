@@ -104,6 +104,25 @@ OutputSpec = JsonSchemaOutput | TypeRefOutput
 """Union of every supported output declaration, tagged on ``kind``."""
 
 
+class OutputHookSpec(
+    msgspec.Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+):
+    """Use case the runtime executes once per completed run, with the validated output.
+
+    The key uses the same vocabulary as :attr:`UsecaseCapability.keys` and is
+    resolved against the same registry at compile time. The model never sees
+    it: it is not a tool, and it never enters the instructions.
+
+    Args:
+        usecase: Use-case key of the registry to execute with the validated output.
+    """
+
+    usecase: _NonEmptyStr
+
+
 class UsecaseCapability(
     msgspec.Struct,
     frozen=True,
@@ -295,6 +314,8 @@ class AgentSpecV1(
         model_role:    Logical model role bound to a concrete provider and
             model by deployment configuration.
         output:        Declaration of the structured answer the agent returns.
+        on_output:     Use case executed once per completed run with the
+            validated output; ``None`` when the artifact declares no hook.
         capabilities:  Explicitly granted capabilities; empty by default.
         policies:      Execution limits; documented defaults when omitted.
         metadata:      Free-form string labels carried alongside the agent.
@@ -306,6 +327,7 @@ class AgentSpecV1(
     instructions: _NonEmptyStr
     model_role: Annotated[str, msgspec.Meta(pattern=MODEL_ROLE_PATTERN)] = DEFAULT_MODEL_ROLE
     output: OutputSpec
+    on_output: OutputHookSpec | None = None
     capabilities: tuple[CapabilitySpec, ...] = ()
     policies: PolicySpec = msgspec.field(default_factory=PolicySpec)
     metadata: Mapping[str, str] = msgspec.field(default_factory=dict)

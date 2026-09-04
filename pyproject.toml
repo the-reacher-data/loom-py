@@ -269,6 +269,11 @@ extend-immutable-calls = [
 
 [tool.pyright]
 pythonVersion = "3.11"
+# Resolve imports against the project venv even when pyright is invoked
+# directly (editor, hooks) instead of through `uv run`, so a globally
+# installed, older dependency never shadows the pinned one.
+venvPath = "."
+venv = ".venv"
 # src only, deliberately. Checking tests as well surfaces 294 errors across
 # eight rules — mostly stubs that no longer satisfy the protocol they stand in
 # for. That is real signal and worth burning down, but it is a project, not a
