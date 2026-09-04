@@ -10,7 +10,17 @@ permissions:
   security-events: write
 
 jobs:
+  # A release PR carries a version bump and nothing else, and it is the only way
+  # CHANGELOG.md, pyproject.toml and uv.lock reach master. Validating it is not
+  # possible and not useful: the branch and the PR are pushed with GITHUB_TOKEN,
+  # so any run queued against them sits waiting for manual approval and expires
+  # unapproved — a red check nobody can turn green. Worse, the release helper
+  # merges only when every check that reported has passed, so an expired run that
+  # concludes before the helper polls blocks the release outright. Skipping is
+  # what the helper already documents as the normal state. The code the bump
+  # describes was validated in the pull requests that composed it.
   validate:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -313,6 +323,7 @@ jobs:
   #
   # No `--frozen` and no `uv.lock` here — resolving fresh is the entire point.
   pydantic-ai-canary:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -425,6 +436,7 @@ jobs:
   # is not evidence that Apache Kafka agrees.
   # ---------------------------------------------------------------------------
   integration:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

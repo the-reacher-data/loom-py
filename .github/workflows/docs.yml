@@ -26,7 +26,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # A release PR carries a version bump and nothing else, and it is the only way
+  # CHANGELOG.md, pyproject.toml and uv.lock reach master. Validating it is not
+  # possible and not useful: the branch and the PR are pushed with GITHUB_TOKEN,
+  # so any run queued against them sits waiting for manual approval and expires
+  # unapproved — a red check nobody can turn green. Worse, the release helper
+  # merges only when every check that reported has passed, so an expired run that
+  # concludes before the helper polls blocks the release outright. Skipping is
+  # what the helper already documents as the normal state. The code the bump
+  # describes was validated in the pull requests that composed it.
   build:
+    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
     runs-on: ubuntu-latest
     # contents: read is scoped here — build does not need pages or id-token.
     permissions:
