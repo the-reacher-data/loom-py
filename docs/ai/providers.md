@@ -118,7 +118,7 @@ redacts itself:
 
 ```pycon
 >>> print(target)
-InferenceTarget(provider='bedrock', model='anthropic.claude-sonnet-4-...', region='eu-west-1', endpoint=None, credentials_ref=<redacted>, options=<redacted>)
+InferenceTarget(provider='bedrock', model='anthropic.claude-sonnet-4-...', region='eu-west-1', endpoint=None, output_mode=None, credentials_ref=<redacted>, options=<redacted>)
 ```
 
 and **refuses** to be serialised at all when it carries a secret reference —
@@ -147,6 +147,44 @@ ai:
 
 `options` is confined to the deployment configuration and, like
 `credentials_ref`, never reaches the artifact and never survives serialisation.
+
+## Pinning the structured-output mode
+
+Every agent answers with a structured object, and the engine has more than one
+way of asking a model for it. Left alone, the engine picks the mode per
+provider and model. When that choice is wrong for a particular model — it
+accepts tool calls but not a native JSON-schema response, or the reverse — the
+binding pins it with `output_mode`:
+
+| `output_mode` | The engine asks for the answer as | When to set it |
+|---|---|---|
+| *absent* | whatever the engine resolves for that provider and model | the default; leave it unless a run fails at the provider |
+| `tool` | a tool call whose arguments carry the object | the model supports tool calling and rejects the native mode |
+| `native` | the provider's own structured-output response | the model supports structured output and misbehaves with the tool mode |
+
+```yaml
+ai:
+  models:
+    reasoning:
+      provider: bedrock
+      model: <model id>
+      region: eu-west-1
+      output_mode: tool
+```
+
+The mode is per binding and per deployment: the artifact never sees it, and
+loom does not infer it per provider. Two consequences follow from that:
+
+- An unknown value fails **start-up** with `OUTPUT_MODE_UNKNOWN`, naming the
+  role and the two values loom offers. `prompted` is deliberately not one of
+  them: the engine strips markdown fences before validating a prompted answer,
+  while loom decodes the raw text part, so a fenced answer would pass the
+  engine and fail loom.
+- A mode the model rejects at **request time** is a provider refusal, and it
+  surfaces as `PROVIDER_UNAVAILABLE`. The provider's detail stays server-side,
+  in the logs; the caller sees the code. Loom cannot check a mode against a
+  model before the first request, so a wrong pin is found there, not at
+  start-up.
 
 ## What does not happen
 

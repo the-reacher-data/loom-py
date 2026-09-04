@@ -9,6 +9,12 @@ from loom.core.model import BaseModel
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface
 
+AGENTS_ONLY_HINT = (
+    "An application whose only content is agents uses app.discovery.mode: manifest "
+    "and declares AGENTS in the manifest module."
+)
+"""Hint appended to discovery/bootstrap errors an agents-only app can hit."""
+
 
 @dataclass(frozen=True)
 class DiscoveryResult:
