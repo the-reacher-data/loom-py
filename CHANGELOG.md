@@ -1,3 +1,18 @@
+# 🚀 Release 1.9.2 ([#157](https://github.com/the-reacher-data/loom-py/pull/157)) ([`3b32161`](https://github.com/the-reacher-data/loom-py/commit/3b32161dfcfe12fe25fe05ff7ccb4d6a71a6b64a))
+
+
+
+## 🐛 Fixes
+### ai
+- **ai:** make outbound auth work for MCP and let a grant boot offline
+
+
+
+
+
+
+
+
 # 🚀 Release 1.9.1 ([#155](https://github.com/the-reacher-data/loom-py/pull/155)) ([`587affc`](https://github.com/the-reacher-data/loom-py/commit/587affcfbf46301ccd3e02a5edeb34e63b460628))
 
 
