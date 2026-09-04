@@ -9,7 +9,10 @@ declared tool filters against the tools each server really exposes, re-verifies
 the read-only state of every SQL grant against live configuration, and builds
 one engine per plan. Connecting and validating share a single absolute
 deadline, so ``startup_timeout_ms`` bounds the whole of start-up once, whatever
-the number of servers. Leaving closes everything in strict reverse order.
+the number of servers -- unless ``ai.remote_clients`` is ``optional`` and a
+connection failure was tolerated, in which case the validation pass is given a
+fresh budget rather than the one the unreachable server spent. Leaving closes
+everything in strict reverse order.
 """
 
 from __future__ import annotations
@@ -84,6 +87,9 @@ references that an anonymous ``/health`` scrape must never receive."""
 
 _INVOKER_UNBOUND = "the use-case invoker is not bound to a caller"
 
+_OPTIONAL_REMOTE_CLIENTS = "optional"
+"""Value of ``ai.remote_clients`` under which a connection failure is tolerated."""
+
 
 @dataclass(frozen=True, slots=True)
 class _AgentSlot:
@@ -134,7 +140,9 @@ class AgentRuntime:
         mcp_client_factory: Builds the client of one MCP capability. Required
             when any plan declares an ``mcp`` capability: without it the
             declared tool filters cannot be validated, so start-up fails
-            closed rather than serving unvalidated grants.
+            closed rather than serving unvalidated grants. A missing factory is
+            a wiring bug, not an offline network, so ``ai.remote_clients:
+            optional`` does not tolerate it either.
         a2a_client_factory: Builds the client of one A2A capability, with the
             same fail-closed rule.
 
@@ -146,7 +154,8 @@ class AgentRuntime:
     Raises:
         AgentCompilationError: From ``__aenter__``, aggregating every start-up
             failure — an unreachable server (named as the deployment
-            registered it, never by URL), a tool filter
+            registered it, never by URL; tolerated under
+            ``ai.remote_clients: optional``), a tool filter
             matching nothing, or a SQL connection whose read-only state drifted.
 
     Example::
@@ -202,12 +211,14 @@ class AgentRuntime:
         stack = AsyncExitStack()
         self._stack = stack
         self._owner = asyncio.current_task()
-        deadline = asyncio.get_running_loop().time() + self._config.startup_timeout_ms / 1000
+        deadline = self._startup_deadline()
         try:
             self._verify_sql_readonly()
             self._verify_hook_invoker()
-            await self._open_clients(stack, deadline)
-            await self._verify_tool_filters(deadline)
+            tolerated = await self._open_clients(stack, deadline)
+            # A tolerated failure spent the shared budget on a server start-up
+            # is proceeding without, so the filter pass gets a fresh one.
+            await self._verify_tool_filters(self._startup_deadline() if tolerated else deadline)
             self._build_engines()
             self._start_health_probe(stack)
         except BaseException:
@@ -424,38 +435,69 @@ class AgentRuntime:
         )
         return live is None or live.readonly != capability.config.readonly
 
-    async def _open_clients(self, stack: AsyncExitStack, deadline: float) -> None:
-        """Open every live client concurrently, before the start-up deadline."""
+    async def _open_clients(self, stack: AsyncExitStack, deadline: float) -> bool:
+        """Open every live client concurrently, before the start-up deadline.
+
+        Under ``ai.remote_clients: optional`` a client that does not connect is
+        logged and dropped instead of aborting start-up: the runtime serves the
+        agents whose other dependencies are live and the health probe reports
+        the missing key ``unavailable``. A client that was never wired --- no
+        factory for a declared grant --- is a deployment bug rather than an
+        offline network, so it is collected apart, at the point the factory is
+        found ``None``, and stays fatal under both values.
+
+        Returns:
+            Whether a connection failure was tolerated, so the caller knows the
+            shared budget was spent on a server start-up proceeds without.
+
+        Raises:
+            AgentCompilationError: Aggregating every fatal start-up failure.
+        """
         mcp, a2a = _remote_capabilities(self._plans.values())
         if not mcp and not a2a:
-            return
+            return False
         opened: list[_OpenedClient] = []
-        failures: list[AgentCompilationIssue] = []
+        unreachable: list[AgentCompilationIssue] = []
+        unwired: list[AgentCompilationIssue] = []
         try:
             async with asyncio.timeout_at(deadline):
                 async with asyncio.TaskGroup() as group:
                     for capability in mcp:
-                        group.create_task(self._open_mcp(capability, opened, failures))
+                        group.create_task(self._open_mcp(capability, opened, unreachable, unwired))
                     for remote in a2a:
-                        group.create_task(self._open_a2a(remote, opened, failures))
+                        group.create_task(self._open_a2a(remote, opened, unreachable, unwired))
         except TimeoutError:
-            failures.extend(self._timeout_issues(mcp, a2a, opened))
+            unreachable.extend(self._timeout_issues(mcp, a2a, opened))
         finally:
             # Registered from the entering task, in completion order, so the
             # exit stack unwinds them in strict reverse order.
             self._register_opened(stack, opened)
-        if failures:
-            raise AgentCompilationError(failures)
+        tolerated = bool(unreachable) and self._tolerates_unreachable()
+        if tolerated:
+            _log_tolerated(unreachable)
+            unreachable = []
+        if unwired or unreachable:
+            raise AgentCompilationError([*unwired, *unreachable])
+        return tolerated
+
+    def _tolerates_unreachable(self) -> bool:
+        """Report whether ``ai.remote_clients`` tolerates a failed connection."""
+        return self._config.remote_clients == _OPTIONAL_REMOTE_CLIENTS
+
+    def _startup_deadline(self) -> float:
+        """Return an absolute deadline one whole ``startup_timeout_ms`` away."""
+        return asyncio.get_running_loop().time() + self._config.startup_timeout_ms / 1000
 
     async def _open_mcp(
         self,
         capability: CompiledMcpCapability,
         opened: list[_OpenedClient],
-        failures: list[AgentCompilationIssue],
+        unreachable: list[AgentCompilationIssue],
+        unwired: list[AgentCompilationIssue],
     ) -> None:
         factory = self._mcp_client_factory
         if factory is None:
-            failures.append(
+            unwired.append(
                 mcp_server_unreachable(capability.server, "no MCP client factory is configured")
             )
             return
@@ -463,7 +505,7 @@ class AgentRuntime:
         try:
             session = await client.__aenter__()
         except Exception as exc:  # recovery: reported as a coded start-up issue
-            failures.append(mcp_server_unreachable(capability.server, str(exc)))
+            unreachable.append(mcp_server_unreachable(capability.server, str(exc)))
             return
         opened.append(_OpenedClient(key=mcp_key(capability), client=client, session=session))
 
@@ -471,11 +513,12 @@ class AgentRuntime:
         self,
         capability: CompiledA2ACapability,
         opened: list[_OpenedClient],
-        failures: list[AgentCompilationIssue],
+        unreachable: list[AgentCompilationIssue],
+        unwired: list[AgentCompilationIssue],
     ) -> None:
         factory = self._a2a_client_factory
         if factory is None:
-            failures.append(
+            unwired.append(
                 a2a_agent_unreachable(capability.agent, "no A2A client factory is configured")
             )
             return
@@ -483,7 +526,7 @@ class AgentRuntime:
         try:
             session = await client.__aenter__()
         except Exception as exc:  # recovery: reported as a coded start-up issue
-            failures.append(a2a_agent_unreachable(capability.agent, str(exc)))
+            unreachable.append(a2a_agent_unreachable(capability.agent, str(exc)))
             return
         opened.append(_OpenedClient(key=_a2a_key(capability), client=client, session=session))
 
@@ -523,6 +566,21 @@ class AgentRuntime:
         capability) pair: sessions are shared per server, so two plans pointing
         at the same server would otherwise pay two serialised round trips for
         identical data.
+
+        This pass never fails open. Under ``ai.remote_clients: optional`` the
+        waiver covers only servers that never connected --- ``_list_tools_once``
+        skips a server with no session and ``filter_issues`` skips a key that
+        was never listed. A server that did open still has its filters
+        verified, and its listing timing out still aborts start-up, which is
+        why the caller hands this pass a fresh budget rather than the one an
+        unreachable server exhausted.
+
+        Args:
+            deadline: Absolute loop time the whole listing must complete by.
+
+        Raises:
+            AgentCompilationError: When a listing does not complete in the
+                budget, or a declared filter matches no offered tool.
         """
         targets = filter_targets(self._plans.values())
         if not targets:
@@ -669,6 +727,25 @@ def _check_conversation_id(conversation_id: str | None) -> None:
             f"conversation_id must be between 1 and {CONVERSATION_ID_MAX_LENGTH} "
             f"characters long, got {len(conversation_id)}"
         )
+
+
+def _log_tolerated(issues: Iterable[AgentCompilationIssue]) -> None:
+    """Report the clients start-up went on without, without leaking their address.
+
+    Only the stable code and the registered name reach WARNING: the issue's
+    message carries a reason built from ``str(exc)`` of an arbitrary transport,
+    which can name a URL, and under ``ai.remote_clients: optional`` it would
+    otherwise land in routine logs on every boot. The reason stays available at
+    DEBUG, where an operator asks for it deliberately.
+
+    Args:
+        issues: The tolerated connection failures, one per client.
+    """
+    for issue in issues:
+        _logger.warning(
+            "start-up continued without a remote client: %s (%s)", issue.code, issue.component
+        )
+        _logger.debug("remote client %r was not opened: %s", issue.component, issue.message)
 
 
 def _a2a_key(capability: CompiledA2ACapability) -> str:

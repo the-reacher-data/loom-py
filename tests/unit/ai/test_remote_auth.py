@@ -18,8 +18,11 @@ extension point only means something if someone who is not loom can use it.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +31,7 @@ from loom.ai.config import A2AAgentConfig, AiConfig, McpServerConfig
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.ai.remote_auth import (
+    _checked,
     bearer_token,
     headers_from_ref,
     is_strategy_registered,
@@ -231,12 +235,11 @@ class TestEstrategiasQueLoomRegistra:
         assert standard_oauth() == "oauth"
 
     def test_static_anade_la_cabecera_a_cada_peticion(self) -> None:
-        """The strategy is exercised through the httpx contract, not by inspection."""
+        """The strategy is exercised as a client drives it, not by inspection."""
         httpx = pytest.importorskip("httpx")
         auth = static_headers(headers_ref="X-API-Key=abc123")
 
-        flow = auth.auth_flow(httpx.Request("GET", "https://knowledge.example.com/mcp"))
-        request = next(flow)
+        request = auth(httpx.Request("GET", "https://knowledge.example.com/mcp"))
 
         assert request.headers["X-API-Key"] == "abc123"
 
@@ -245,14 +248,81 @@ class TestEstrategiasQueLoomRegistra:
         httpx = pytest.importorskip("httpx")
         auth = bearer_token(token_ref="eyJhbGci.eyJzdWIi-abc_123")
 
-        flow = auth.auth_flow(httpx.Request("GET", "https://catalog.example.com/mcp"))
-        request = next(flow)
+        request = auth(httpx.Request("GET", "https://catalog.example.com/mcp"))
 
         assert request.headers["Authorization"] == "Bearer eyJhbGci.eyJzdWIi-abc_123"
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            lambda: bearer_token(token_ref="a.b-c_1"),
+            lambda: static_headers(headers_ref="X-API-Key=abc123"),
+        ],
+        ids=["bearer", "static"],
+    )
+    def test_la_estrategia_devuelve_la_peticion_que_recibe(self, build: Any) -> None:
+        """Both clients wrap the callable as ``yield self._func(request)``.
+
+        A callable that mutated the request but returned ``None`` would send
+        ``None`` instead of it, and no header assertion would notice.
+        """
+        httpx = pytest.importorskip("httpx")
+        request = httpx.Request("GET", "https://knowledge.example.com/mcp")
+
+        assert build()(request) is request
+
+    def test_ninguna_estrategia_importa_una_libreria_http(self) -> None:
+        """Checked in a fresh interpreter, which is the only place it means anything.
+
+        ``loom.ai.config`` imports this module at load time, so an in-process
+        check finds whatever the running test session already imported and
+        passes however the strategies are written.
+        """
+        probe = subprocess.run(  # noqa: S603 - the interpreter running the suite
+            [sys.executable, "-c", _NO_HTTP_IMPORT_PROBE],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert probe.returncode == 0, probe.stderr
 
     def test_loom_registra_oauth_bearer_y_static_y_nada_mas(self) -> None:
         """Loom hard-codes no vendor: the three names it ships are generic."""
         assert registered_strategy_names() == ["bearer", "oauth", "static"]
+
+
+class TestLoQueLoomAceptaDeUnaEstrategia:
+    """``_checked`` accepts what both clients accept, and nothing else."""
+
+    def test_acepta_un_invocable(self) -> None:
+        """The shape both clients wrap in their own ``FunctionAuth``."""
+
+        def auth(request: Any) -> Any:
+            return request
+
+        assert _checked("callable-strategy", auth) is auth
+
+    def test_acepta_un_objeto_con_auth_flow(self) -> None:
+        """A class written against either flavour satisfies the same probe."""
+
+        class _Flavoured:
+            def auth_flow(self, request: Any) -> Any:
+                yield request
+
+        built = _Flavoured()
+
+        assert _checked("agent-session", built) is built
+
+    def test_acepta_el_centinela_del_cliente_mcp(self) -> None:
+        assert _checked("oauth", "oauth") == "oauth"
+
+    def test_falla_con_auth_strategy_invalid_cuando_no_es_ninguna_de_las_tres_formas(self) -> None:
+        """An object no client can use would otherwise connect unauthenticated."""
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _checked("agent-session", object())
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
 
 
 class TestResolucionCompartidaPorServidor:
@@ -468,3 +538,21 @@ class TestResolucionCompartidaPorAgenteRemoto:
                 shared_a2a_auth("market", auth)
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
+
+
+_NO_HTTP_IMPORT_PROBE = """
+import sys
+
+from loom.ai.remote_auth import bearer_token, static_headers
+
+bearer_token(token_ref="a.b-c_1")
+static_headers(headers_ref="X-API-Key=abc123")
+
+resident = sorted(name for name in ("httpx", "httpx2") if name in sys.modules)
+assert not resident, f"remote_auth imported an HTTP library: {resident}"
+"""
+"""Source of the fresh interpreter that pins AC2.
+
+Kept as a module constant so the probe reads as code rather than as an
+argument, and so the test body stays about the assertion.
+"""

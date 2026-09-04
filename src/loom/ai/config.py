@@ -33,6 +33,7 @@ from loom.ai.errors import (
     mcp_url_invalid,
     output_mode_unknown,
     policy_out_of_range,
+    remote_clients_unknown,
 )
 from loom.ai.inference import OUTPUT_MODES, InferenceTarget
 from loom.ai.remote_auth import is_strategy_registered, registered_strategy_names
@@ -54,6 +55,11 @@ _URL_USERINFO_RE = re.compile(r"://[^/]*@")
 # The one reserved key of an ``auth`` block: it names the strategy, every other
 # key is that strategy's own setting.
 _AUTH_KIND_KEY = "kind"
+
+# Accepted values of ``ai.remote_clients``: whether a remote client that will
+# not open aborts start-up (``required``) or is dropped with a warning
+# (``optional``).
+_REMOTE_CLIENTS_MODES: tuple[str, ...] = ("required", "optional")
 
 # Bounds of a single remote call, mirroring ``policies.tool_timeout_ms``.
 _TIMEOUT_MS_MIN = 1
@@ -299,6 +305,15 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         startup_timeout_ms: Total budget of start-up: opening every live
             client concurrently and validating the declared tool filters
             share one deadline, whatever the number of servers.
+        remote_clients: Start-up tolerance for the MCP servers and A2A agents
+            the deployment connects to, ``required`` (the default) or
+            ``optional``.  Under ``optional`` a client that fails to *connect*
+            is logged and dropped instead of aborting start-up, so an
+            application can boot with no network.  It tolerates nothing else:
+            a missing client factory is a wiring bug and stays fatal, a server
+            that did open and whose tool listing times out still fails
+            start-up, and no client becomes lazy — one that never opened is
+            not reconnected later.
         max_concurrent_runs: Per-worker run limit (FR-033a).
         max_prompt_bytes: Enforced while reading the request body.
         health_cache_ttl_ms: Refresh period of the health probe.
@@ -307,8 +322,8 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         AgentCompilationError: Aggregating one issue per invalid model binding
             (incomplete provider settings, literal secret in
             ``credentials_ref``), per unsafe remote server or agent (bad URL,
-            inline credentials, out-of-range timeout) and per endpoint without
-            a named ``auth``.
+            inline credentials, out-of-range timeout), per endpoint without
+            a named ``auth``, and for an unknown ``remote_clients`` mode.
     """
 
     engine: str
@@ -320,6 +335,7 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
     a2a: A2AConfig | None = None
     endpoints: dict[str, AgentEndpointConfig] = field(default_factory=dict)
     startup_timeout_ms: int = 10000
+    remote_clients: str = "required"
     max_concurrent_runs: int = 8
     max_prompt_bytes: int = 65536
     health_cache_ttl_ms: int = 5000
@@ -333,6 +349,8 @@ class AiConfig(LoomFrozenStruct, frozen=True, kw_only=True):
         for name, endpoint in self.endpoints.items():
             if not endpoint.auth.strip():
                 issues.append(endpoint_auth_missing(name))
+        if self.remote_clients not in _REMOTE_CLIENTS_MODES:
+            issues.append(remote_clients_unknown(self.remote_clients, _REMOTE_CLIENTS_MODES))
         if issues:
             raise AgentCompilationError(issues)
 

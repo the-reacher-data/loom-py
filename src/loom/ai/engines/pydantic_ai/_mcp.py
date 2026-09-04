@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from loom.ai.compiler import CompiledMcpCapability
 from loom.ai.errors import AgentCompilationError, provider_not_installed
@@ -101,7 +101,12 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     component = f"mcp server '{capability.server}'"
     headers = headers_from_ref(component, capability.headers_ref) or None
     auth = shared_mcp_auth(capability.server, capability.auth)
-    toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=auth)
+    # ``MCPToolset`` annotates auth as ``httpx.Auth | Literal['oauth'] | str | None``,
+    # which admits no callable, while what really consumes it is fastmcp's HTTP
+    # transport: its ``_set_auth`` special-cases only ``"oauth"``, ``OAuth``, the
+    # OAuth providers and ``str``, and hands anything else to its ``httpx2`` client
+    # untouched — including the callable loom's own strategies return.
+    toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=cast("Any", auth))
     return toolset
 
 

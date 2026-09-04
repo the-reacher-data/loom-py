@@ -2,7 +2,9 @@
 
 The point of ``loom.ai.remote_auth`` is that someone who is not loom can register
 a strategy for the endpoints loom calls out to — MCP servers and A2A agents
-alike, since the contract is ``httpx.Auth`` and knows neither protocol.
+alike, since what loom accepts is what an HTTP client accepts and knows neither
+protocol.  A class must target its transport's HTTP library (``httpx2`` for MCP,
+``httpx`` for A2A); a plain callable serves both.
 Monkey-patching the loader would prove nothing about that, so this helper
 writes a genuine distribution — a module plus its ``.dist-info`` with an
 ``entry_points.txt`` — onto ``sys.path``. ``importlib.metadata.entry_points``

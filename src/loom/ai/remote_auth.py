@@ -11,10 +11,10 @@ between environments unchanged whether that endpoint needs no credential, a
 fixed header, or a token exchange.
 
 **One group, named for what it authenticates, not for who called first.**  The
-contract for a strategy is :class:`httpx.Auth` itself — not an abstraction of
-ours — and nothing about ``Authorization: Bearer <token>`` is MCP-specific, so
-a deployment that authenticates to one internal service registers its strategy
-once and grants it to either transport.  The group was introduced in 1.7.0 as
+contract for a strategy is whatever the HTTP client accepts — not an
+abstraction of ours — and nothing about ``Authorization: Bearer <token>`` is
+MCP-specific, so a deployment that authenticates to one internal service
+registers its strategy once and grants it to either transport.  The group was introduced in 1.7.0 as
 ``loom.ai.mcp_auth``, when MCP was its only consumer; keeping that name for
 A2A strategies too would make it a lie for half its contents and would leave a
 third party unable to tell which transports its registration is offered to, so
@@ -33,8 +33,8 @@ already provide:
 ``oauth``
     Returns the sentinel the MCP client understands, so the client's own
     standard OAuth flow runs.  Loom implements none of it.  It is the one
-    strategy that is not an ``httpx.Auth`` and therefore the one an A2A agent
-    cannot use: :func:`shared_a2a_auth` refuses it by name rather than
+    strategy that returns no auth object at all, and therefore the one an A2A
+    agent cannot use: :func:`shared_a2a_auth` refuses it by name rather than
     connecting without it.
 ``bearer``
     ``Authorization: Bearer <token>`` from a token the deployment resolves.
@@ -47,16 +47,35 @@ the same ``Name=value`` payload through :func:`headers_from_ref`.  Reach for
 ``bearer`` whenever the credential is a token, since the composed header cannot
 be written in configuration at all.
 
-Nothing here imports ``httpx`` at module load: ``httpx`` reaches a deployment
-with the MCP or A2A client, both optional, while the strategy-name check runs
-during configuration decode in every deployment.
+**Two HTTP libraries, one callable.**  The MCP toolset comes from
+``pydantic-ai``, whose HTTP client is ``httpx2``, and it reaches that client
+through the MCP transport, which passes any auth object it does not recognise
+straight through; loom builds the A2A client itself, with ``httpx``.  Each of
+the two libraries accepts an auth object only when it is an instance of *its
+own* ``Auth`` class, a two-tuple, or a **callable**, so a class written against
+one flavour is refused by the other and loom adapts neither.  The two
+strategies loom ships therefore return a plain callable — the one shape both
+clients accept, and the supported answer for a deployment's own fixed-header
+strategy.  A strategy that needs a real flow registers a class, written against
+the flavour of the transport that will use it.
+
+A callable is a single-shot flow: it sets headers on the request it is handed,
+returns it, and never sees the response.  A class that does need the response
+body must know that ``requires_response_body`` is honoured by ``Auth``'s own
+base flow, not by the client, so a strategy that overrides ``async_auth_flow``
+replaces the very code that reads the flag and has to ``await response.aread()``
+itself.
+
+Nothing here imports an HTTP library at all, at module load or later: ``httpx``
+reaches a deployment with the A2A client and ``httpx2`` with the MCP one, both
+optional, while the strategy-name check runs during configuration decode in
+every deployment.
 """
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from functools import cache
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Final, cast, get_type_hints
 
@@ -72,11 +91,29 @@ from loom.core.plugins.entrypoints import list_entry_points, select_entry_point
 if TYPE_CHECKING:  # annotations only: importing the plan at runtime would
     # close a cycle, since the configuration this module validates is what the
     # compiler reads to build that plan.
-    from collections.abc import Generator
+    from typing import TypeAlias
 
     import httpx
 
     from loom.ai.compiler import CompiledRemoteAuth
+
+    AuthObject: TypeAlias = "httpx.Auth | Callable[[Any], Any]"
+    """What an HTTP client presents on a request.
+
+    The two shapes of ``httpx._client._build_auth`` and its ``httpx2`` twin
+    that a strategy has reason to return — an ``Auth`` instance of that
+    client's own flavour, or a callable the client wraps in its own
+    ``FunctionAuth`` — leaving out the two-tuple, which no strategy returns.
+    """
+
+    ClientAuth: TypeAlias = "AuthObject | str"
+    """What a strategy may resolve to: an auth object, or the MCP sentinel.
+
+    The sentinel never reaches a client's ``auth=``; the MCP client reads it and
+    runs its own OAuth flow, so :func:`shared_a2a_auth` refuses it.  Both
+    aliases are named only while type-checking: this module imports no HTTP
+    library at runtime.
+    """
 
 REMOTE_AUTH_ENTRY_POINT_GROUP = "loom.ai.remote_auth"
 """Entry-point group every outbound authentication strategy registers under."""
@@ -151,7 +188,7 @@ def headers_from_ref(component: str, headers_ref: str | None) -> dict[str, str]:
     return {name: value}
 
 
-def shared_mcp_auth(server: str, auth: CompiledRemoteAuth | None) -> httpx.Auth | str | None:
+def shared_mcp_auth(server: str, auth: CompiledRemoteAuth | None) -> ClientAuth | None:
     """Return the authentication object of an MCP server, built once per server.
 
     **One instance per server, shared by every agent granted it.**  The
@@ -165,9 +202,10 @@ def shared_mcp_auth(server: str, auth: CompiledRemoteAuth | None) -> httpx.Auth 
             declares none.
 
     Returns:
-        What the MCP client's ``auth`` parameter accepts — an
-        :class:`httpx.Auth`, the sentinel the client's own OAuth flow answers
-        to, or ``None`` when the server declares no strategy.
+        What the MCP client's ``auth`` parameter accepts — a callable, an
+        ``Auth`` of the client's own flavour, the sentinel the client's own
+        OAuth flow answers to, or ``None`` when the server declares no
+        strategy.
 
     Raises:
         AgentCompilationError: With ``MCP_AUTH_STRATEGY_INVALID`` when the
@@ -183,7 +221,7 @@ def shared_mcp_auth(server: str, auth: CompiledRemoteAuth | None) -> httpx.Auth 
     return _STRATEGIES.get(f"{_MCP_SCOPE}:{server}", auth)
 
 
-def shared_a2a_auth(agent: str, auth: CompiledRemoteAuth | None) -> httpx.Auth | None:
+def shared_a2a_auth(agent: str, auth: CompiledRemoteAuth | None) -> AuthObject | None:
     """Return the authentication object of a remote agent, built once per agent.
 
     Shares per configured agent exactly as :func:`shared_mcp_auth` shares per
@@ -197,8 +235,9 @@ def shared_a2a_auth(agent: str, auth: CompiledRemoteAuth | None) -> httpx.Auth |
             declares none.
 
     Returns:
-        The :class:`httpx.Auth` the A2A HTTP client presents, or ``None`` when
-        the agent declares no strategy.
+        What the A2A HTTP client's ``auth`` parameter accepts — a callable or
+        an :class:`httpx.Auth` — or ``None`` when the agent declares no
+        strategy.
 
     Raises:
         AgentCompilationError: With ``MCP_AUTH_STRATEGY_INVALID`` when the
@@ -222,7 +261,7 @@ def shared_a2a_auth(agent: str, auth: CompiledRemoteAuth | None) -> httpx.Auth |
                 mcp_auth_strategy_invalid(
                     auth.kind,
                     "it delegates to the MCP client's own flow, which the A2A transport "
-                    "cannot run; an A2A agent needs an httpx.Auth strategy",
+                    "cannot run; an A2A agent needs an httpx.Auth or a callable",
                 )
             ]
         )
@@ -242,7 +281,7 @@ def standard_oauth() -> str:
     return "oauth"
 
 
-def bearer_token(*, token_ref: str) -> httpx.Auth:
+def bearer_token(*, token_ref: str) -> Callable[[Any], Any]:
     """Send ``Authorization: Bearer <token>``, the most common MCP credential.
 
     Registered as the ``bearer`` strategy.  The strategy composes the header
@@ -255,12 +294,13 @@ def bearer_token(*, token_ref: str) -> httpx.Auth:
         token_ref: Resolved bearer token, never the composed header.
 
     Returns:
-        An ``httpx.Auth`` that presents the token on every request.
+        A callable that presents the token on every request, which is the one
+        shape both HTTP flavours accept — see the module docstring.
     """
-    return _static_headers_auth_class()({"Authorization": f"Bearer {token_ref}"})
+    return _header_auth({"Authorization": f"Bearer {token_ref}"})
 
 
-def static_headers(*, headers_ref: str) -> httpx.Auth:
+def static_headers(*, headers_ref: str) -> Callable[[Any], Any]:
     """Attach fixed headers, resolved by the deployment's secret resolver.
 
     Registered as the ``static`` strategy.  It is the ``auth`` block's spelling
@@ -271,14 +311,15 @@ def static_headers(*, headers_ref: str) -> httpx.Auth:
         headers_ref: Resolved ``Name=value`` payload, as ``headers_ref`` carries.
 
     Returns:
-        An ``httpx.Auth`` that adds those headers to every request.
+        A callable that adds those headers to every request, which is the one
+        shape both HTTP flavours accept — see the module docstring.
 
     Raises:
         AgentCompilationError: With ``MCP_HEADERS_REF_INVALID`` when the payload
             is not one ``Name=value`` pair.
     """
     headers = headers_from_ref("auth strategy 'static'", headers_ref)
-    return _static_headers_auth_class()(headers)
+    return _header_auth(headers)
 
 
 class _SharedStrategies:
@@ -292,10 +333,10 @@ class _SharedStrategies:
     """
 
     def __init__(self) -> None:
-        self._by_endpoint: dict[str, httpx.Auth | str] = {}
+        self._by_endpoint: dict[str, ClientAuth] = {}
         self._lock = Lock()
 
-    def get(self, endpoint: str, auth: CompiledRemoteAuth) -> httpx.Auth | str:
+    def get(self, endpoint: str, auth: CompiledRemoteAuth) -> ClientAuth:
         with self._lock:
             existing = self._by_endpoint.get(endpoint)
             if existing is not None:
@@ -366,7 +407,7 @@ def _coerce_settings(strategy: Any, settings: dict[str, str]) -> dict[str, objec
     return coerced
 
 
-def _build(auth: CompiledRemoteAuth) -> httpx.Auth | str:
+def _build(auth: CompiledRemoteAuth) -> ClientAuth:
     """Load the named strategy and construct it from its settings."""
     strategy = _load_strategy(auth.kind)
     try:
@@ -394,43 +435,58 @@ def _load_strategy(kind: str) -> Any:
     return ep.load()
 
 
-def _checked(kind: str, built: object) -> httpx.Auth | str:
-    """Accept only what a client can use, structurally, never by class.
+def _checked(kind: str, built: object) -> ClientAuth:
+    """Accept what both clients accept, structurally, never by class.
 
-    The handshake mirrors the engine registry's: an ``auth_flow`` attribute is
-    what ``httpx`` calls, so a strategy satisfying that contract is accepted
-    whichever ``httpx`` it was written against.
+    ``_build_auth`` — the same function in ``httpx`` and in ``httpx2`` — takes
+    three shapes: an ``Auth``, a two-tuple, or a callable it wraps in its own
+    ``FunctionAuth``.  Loom accepts the first structurally, by the ``auth_flow``
+    attribute the client calls, so a strategy satisfying that contract is
+    accepted whichever flavour it was written against; the third as it stands;
+    and the MCP OAuth sentinel, which never reaches a client's ``auth=`` at all.
+    The two-tuple is left out: no strategy has reason to return one, and
+    accepting it would make every mistaken two-element result look valid.
+
+    The ``auth_flow`` probe stays first, ahead of the callable one, so that a
+    real auth object is recognised as the auth object it is: an ``Auth``
+    instance is not callable, while a class object is, and probing the other way
+    round would report a class as a callable.
     """
-    if isinstance(built, str) or callable(getattr(built, "auth_flow", None)):
-        return cast("httpx.Auth | str", built)
+    if isinstance(built, str) or callable(getattr(built, "auth_flow", None)) or callable(built):
+        return cast("ClientAuth", built)
     raise AgentCompilationError(
-        [mcp_auth_strategy_invalid(kind, "it returned no httpx.Auth and no client sentinel")]
+        [
+            mcp_auth_strategy_invalid(
+                kind, "it returned no httpx.Auth, no callable and no client sentinel"
+            )
+        ]
     )
 
 
-@cache
-def _static_headers_auth_class() -> Callable[[Mapping[str, str]], httpx.Auth]:
-    """Build the ``static`` strategy's class on first use.
+def _header_auth(headers: Mapping[str, str]) -> Callable[[Any], Any]:
+    """Build the fixed-header callable both HTTP flavours wrap as their own auth.
 
-    ``httpx`` is not a loom dependency — it arrives with the MCP client — so the
-    class cannot be defined at module level without breaking every deployment
-    that declares no ``mcp`` grant.
+    The callable must **return** the request: each client wraps it in its own
+    ``FunctionAuth``, whose flow is ``yield self._func(request)``, so a callable
+    returning ``None`` would send that instead of the request.  It receives a
+    request of whichever flavour drove it, which is the whole point and the
+    reason nothing here is typed against one library.
+
+    Args:
+        headers: Headers to add to every request, copied so that a later change
+            to the caller's mapping cannot alter a live credential.
+
+    Returns:
+        The callable a strategy returns.
     """
-    import httpx
+    frozen = dict(headers)
 
-    class _StaticHeadersAuth(httpx.Auth):
-        """Adds the same headers to every request, and never renews them."""
+    def add_fixed_headers(request: Any) -> Any:
+        """Add this strategy's fixed headers to one outgoing request."""
+        request.headers.update(frozen)
+        return request
 
-        def __init__(self, headers: Mapping[str, str]) -> None:
-            self._headers = dict(headers)
-
-        def auth_flow(
-            self, request: httpx.Request
-        ) -> Generator[httpx.Request, httpx.Response, None]:
-            request.headers.update(self._headers)
-            yield request
-
-    return _StaticHeadersAuth
+    return add_fixed_headers
 
 
 _STRATEGIES = _SharedStrategies()

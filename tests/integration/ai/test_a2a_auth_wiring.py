@@ -30,6 +30,7 @@ import pytest
 
 from loom.ai.compiler import CompiledA2ACapability, CompiledRemoteAuth
 from loom.ai.engines.pydantic_ai._a2a import build_a2a_http_client, create_a2a_client
+from loom.ai.remote_auth import shared_a2a_auth
 
 from ...helpers.remote_auth_plugin import third_party_strategy
 
@@ -194,6 +195,14 @@ class TestUnaSolaCredencialPorAgenteRemoto:
     async def test_dos_concesiones_del_mismo_remoto_comparten_la_instancia(
         self, remote_agent: _RecordingAgent
     ) -> None:
+        """Asserted on the credential loom resolves, not on ``client.auth``.
+
+        The built-in strategies return a callable and ``httpx`` wraps a callable
+        in a ``FunctionAuth`` of its own, one per client, so two clients sharing
+        one credential no longer share one ``client.auth`` object. What has to
+        be a single object is the credential itself — the thing a renewing
+        strategy holds a token in — and both clients are built from it.
+        """
         auth = CompiledRemoteAuth(kind="bearer", settings=(("token_ref", _TOKEN),))
         capability = CompiledA2ACapability(agent=_AGENT, url=remote_agent.url, auth=auth)
         other = CompiledA2ACapability(
@@ -204,4 +213,7 @@ class TestUnaSolaCredencialPorAgenteRemoto:
             build_a2a_http_client(capability) as first,
             build_a2a_http_client(other) as second,
         ):
-            assert first.auth is second.auth
+            presented = (first.auth, second.auth)
+
+        assert None not in presented
+        assert shared_a2a_auth(_AGENT, capability.auth) is shared_a2a_auth(_AGENT, other.auth)

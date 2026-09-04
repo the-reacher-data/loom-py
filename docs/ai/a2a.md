@@ -88,11 +88,16 @@ session. An agent that authenticates its card endpoint would otherwise fail
 start-up before a skill was ever called.
 
 `kind` names an entry point in the group `loom.ai.remote_auth`, the same group
-MCP servers resolve against: the strategy contract is
-[`httpx.Auth`](https://www.python-httpx.org/advanced/authentication/), which
-knows nothing of either protocol, so a deployment registers its strategy once
-and grants it to either transport. The one strategy an A2A agent cannot use is
-`kind: oauth`, which delegates to the MCP client library's own flow; naming it
+MCP servers resolve against: the strategy contract is the HTTP client's own
+[`Auth`](https://www.python-httpx.org/advanced/authentication/), which knows
+nothing of either protocol, so a deployment registers its strategy once and
+grants it to either transport. The A2A client is loom's own, built with `httpx`,
+while an MCP server is reached through a client using `httpx2` — a strategy
+registered as a class is refused by the other flavour, and a strategy returning
+a plain callable serves both: see
+[mcp.md § Two HTTP libraries, one callable](mcp.md#two-http-libraries-one-callable).
+
+The one strategy an A2A agent cannot use is `kind: oauth`, which delegates to the MCP client library's own flow; naming it
 here is refused with `MCP_AUTH_STRATEGY_INVALID` rather than connecting without
 the credential the deployment asked for.
 
