@@ -183,11 +183,11 @@ async def execute_hook(
     return task.result()
 
 
-async def _settle(task: asyncio.Future[object], timeout: float, run: HookRun) -> None:
-    """Wait for the hook task without cancelling it, then record how it ended."""
+async def _settle(task: asyncio.Future[object], bound: float, run: HookRun) -> None:
+    """Wait up to ``bound`` seconds for the hook task, never cancelling it; record how it ended."""
     if not task.done():
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout(bound):
                 await asyncio.wait({task})
         except TimeoutError:
             pass
