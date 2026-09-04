@@ -136,9 +136,9 @@ async def execute_hook(
 
     A started record finishes or fails cleanly even when the consumer leaves:
     the executor only rolls back on ``Exception``, so an unshielded
-    cancellation would leave a begun unit of work without rollback.  The
-    shielded task is awaited on every exit path, so no outcome goes
-    unretrieved.
+    cancellation would leave a begun unit of work without rollback.  The hook
+    runs as its own task and is only waited on, never cancelled by the
+    consumer's cancellation; its outcome is retrieved on every exit path.
 
     Args:
         hook: Compiled hook of the plan.
@@ -164,10 +164,10 @@ async def execute_hook(
     task = asyncio.ensure_future(_invoke_hook(hook, output, run, deps, container))
     try:
         async with asyncio.timeout_at(deadline):
-            return await asyncio.shield(task)
+            # ``wait`` never cancels the task and returns once it is done,
+            # cancelled included: a ``CancelledError`` here is the consumer's.
+            await asyncio.wait({task})
     except asyncio.CancelledError:
-        if task.cancelled() and not _consumer_cancelled():
-            raise RuntimeError("the output hook was cancelled internally") from None
         try:
             await _settle(task, max(deadline - loop.time(), 0.0), run)
         except asyncio.CancelledError:
@@ -178,22 +178,19 @@ async def execute_hook(
         task.cancel()
         await _settle(task, _CANCEL_GRACE_S, run)
         raise
-
-
-def _consumer_cancelled() -> bool:
-    """Report whether the current task itself has a cancellation pending.
-
-    ``asyncio.shield`` raises ``CancelledError`` both when the awaiting task is
-    cancelled and when the shielded task ended cancelled on its own; only the
-    task's own cancel count tells the two apart.
-    """
-    current = asyncio.current_task()
-    return current is not None and current.cancelling() > 0
+    if task.cancelled():
+        raise RuntimeError("the output hook was cancelled internally")
+    return task.result()
 
 
 async def _settle(task: asyncio.Future[object], timeout: float, run: HookRun) -> None:
     """Wait for the hook task without cancelling it, then record how it ended."""
-    await asyncio.wait({task}, timeout=timeout)
+    if not task.done():
+        try:
+            async with asyncio.timeout(timeout):
+                await asyncio.wait({task})
+        except TimeoutError:
+            pass
     if not task.done():
         task.cancel()
         # The task runs detached from here on: retrieve a late outcome so an

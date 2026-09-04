@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from types import MappingProxyType
+from typing import Final
 
 from loom.core.model import LoomFrozenStruct
 
@@ -272,13 +273,17 @@ def output_type_ref_unsupported(component: str, ref: str, reason: str) -> AgentC
     )
 
 
+_ON_OUTPUT_USECASE_FIELD: Final[str] = "on_output.usecase"
+"""Spec field every ``on_output`` compilation issue points at."""
+
+
 def on_output_usecase_unknown(component: str, key: str) -> AgentCompilationIssue:
     """The output hook names a use-case key absent from the registry."""
     return AgentCompilationIssue(
         code=AgentErrorCode.ON_OUTPUT_USECASE_UNKNOWN,
         message=f"{component}: on_output use case '{key}' is not registered",
         component=component,
-        field="on_output.usecase",
+        field=_ON_OUTPUT_USECASE_FIELD,
     )
 
 
@@ -288,7 +293,7 @@ def on_output_input_unsatisfied(component: str, key: str, reason: str) -> AgentC
         code=AgentErrorCode.ON_OUTPUT_INPUT_UNSATISFIED,
         message=(f"{component}: on_output use case '{key}' cannot be fed from the run: {reason}"),
         component=component,
-        field="on_output.usecase",
+        field=_ON_OUTPUT_USECASE_FIELD,
     )
 
 
@@ -301,7 +306,7 @@ def on_output_usecase_also_granted(component: str, key: str) -> AgentCompilation
             "a hook use case must not be callable by the model"
         ),
         component=component,
-        field="on_output.usecase",
+        field=_ON_OUTPUT_USECASE_FIELD,
     )
 
 

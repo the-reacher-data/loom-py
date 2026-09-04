@@ -77,9 +77,10 @@ def test_decode_spec_falla_con_spec_unknown_field_cuando_on_output_lleva_una_cla
     """An unrecognised key inside ``on_output`` is rejected, never dropped (AC1, FR-005)."""
     payload = _payload_with_hook()
     payload["on_output"]["retries"] = 3
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError) as exc:
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
     assert _codes(exc.value) == [AgentErrorCode.SPEC_UNKNOWN_FIELD]
 
@@ -88,9 +89,10 @@ def test_decode_spec_falla_cuando_on_output_no_nombra_ningun_usecase() -> None:
     """``usecase`` is the whole declaration; an empty hook object is malformed."""
     payload = _payload_with_hook()
     payload["on_output"] = {}
+    encoded = _encode(payload)
 
     with pytest.raises(AgentCompilationError):
-        decode_spec(_encode(payload))
+        decode_spec(encoded)
 
 
 def test_el_esquema_publicado_acepta_el_artefacto_cuando_declara_on_output() -> None:

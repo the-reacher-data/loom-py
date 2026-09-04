@@ -91,8 +91,10 @@ def test_require_invoker_usa_la_etiqueta_tal_cual_cuando_el_llamador_es_un_hook(
 
 
 def test_require_invoker_rechaza_cuando_el_atributo_no_es_un_invoker() -> None:
+    bundle = _Bundle(invoker=object())
+
     with pytest.raises(AgentRunError) as excinfo:
-        require_invoker(_Bundle(invoker=object()), "tool")
+        require_invoker(bundle, "tool")
 
     assert excinfo.value.code is AgentRunErrorCode.UNAUTHORIZED
 
@@ -119,10 +121,11 @@ async def test_invoke_as_restaura_la_identidad_previa_cuando_el_invoker_falla() 
         async def invoke(self, use_case: type[Compilable], **_: Any) -> Any:
             raise RuntimeError("boom")
 
+    invoker = _Failing()
+    identity = Identity(subject="caller")
+
     with pytest.raises(RuntimeError):
-        await invoke_as(
-            _Failing(), _USE_CASE, Identity(subject="caller"), params=None, payload=None
-        )
+        await invoke_as(invoker, _USE_CASE, identity, params=None, payload=None)
 
     assert current_identity() is ANONYMOUS
 

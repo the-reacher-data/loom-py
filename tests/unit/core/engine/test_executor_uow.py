@@ -179,12 +179,13 @@ async def test_hace_rollback_cuando_la_ejecucion_se_cancela() -> None:
     """A cancellation is not an ``Exception``, yet the begun transaction must close."""
     uow = _StubUoW()
     executor = _make_executor(uow)
+    use_case = _CancellingUseCase()
 
     with (
         patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
         pytest.raises(asyncio.CancelledError),
     ):
-        await executor.execute(_CancellingUseCase())
+        await executor.execute(use_case)
 
     assert uow.begun
     assert uow.rolled_back
