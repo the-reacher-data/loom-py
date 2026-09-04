@@ -119,8 +119,14 @@ jobs:
         env:
           SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
 
+      # Non-blocking, exactly as the same scan is on a pull request: a scanner
+      # that is unreachable or refusing an expired token says nothing about this
+      # code, and master turning red for it hides the failures that do mean
+      # something. The outcome is reported loudly in the step below instead.
       - name: Snyk monitor by dependency scope (core/dev/extras)
+        id: snyk
         if: ${{ env.SNYK_TOKEN != '' }}
+        continue-on-error: true
         shell: bash
         env:
           SNYK_TOKEN: ${{ env.SNYK_TOKEN }}
@@ -168,6 +174,29 @@ jobs:
               --project-name="loom-py/extra-${extra}" \
               --target-reference="${GITHUB_REF_NAME:-master}"
           done
+
+      - name: Report the Snyk outcome
+        if: ${{ always() && env.SNYK_TOKEN != '' }}
+        env:
+          OUTCOME: ${{ steps.snyk.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Snyk dependency scan: \`${OUTCOME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${OUTCOME}" != "success" ]; then
+            {
+              echo
+              echo "The scan did not complete, so **no dependency was cleared and none was"
+              echo "reported vulnerable**. This does NOT block the build: a scanner that is"
+              echo "unreachable, rate-limited or refusing an expired \`SNYK_TOKEN\` says"
+              echo "nothing about this code. Read the step log: an \`Authentication error"
+              echo "(SNYK-0005)\` with \`401 Unauthorized\` means the token needs renewing"
+              echo "in Snyk and updating in the repository secrets."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Snyk scan did not complete::No dependency was scanned. This does NOT block the build. A 401 with SNYK-0005 means the SNYK_TOKEN is expired or unprovisioned; renew it in Snyk and update the repository secret."
+          fi
 
   # ---------------------------------------------------------------------------
   # Churn canary (plan.md risk table): run the agent suites against the LATEST

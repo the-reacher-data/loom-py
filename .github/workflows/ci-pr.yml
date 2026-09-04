@@ -229,6 +229,29 @@ jobs:
               --project-name="loom-py/extra-${extra}"
           done
 
+      - name: Report the Snyk outcome
+        if: ${{ always() && env.SNYK_TOKEN != '' }}
+        env:
+          OUTCOME: ${{ steps.snyk.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Snyk dependency scan: \`${OUTCOME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${OUTCOME}" != "success" ]; then
+            {
+              echo
+              echo "The scan did not complete, so **no dependency was cleared and none was"
+              echo "reported vulnerable**. This does NOT block the build: a scanner that is"
+              echo "unreachable, rate-limited or refusing an expired \`SNYK_TOKEN\` says"
+              echo "nothing about this code. Read the step log: an \`Authentication error"
+              echo "(SNYK-0005)\` with \`401 Unauthorized\` means the token needs renewing"
+              echo "in Snyk and updating in the repository secrets."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Snyk scan did not complete::No dependency was scanned. This does NOT block the build. A 401 with SNYK-0005 means the SNYK_TOKEN is expired or unprovisioned; renew it in Snyk and update the repository secret."
+          fi
+
       - name: Publish prerelease package to TestPyPI
         if: ${{ github.event.pull_request.head.repo.full_name == github.repository && env.TEST_PYPI_API_TOKEN != '' && steps.version.outputs.deploy == 'true' }}
         env:
