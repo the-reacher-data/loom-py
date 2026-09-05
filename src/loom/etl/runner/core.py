@@ -32,7 +32,11 @@ from loom.etl.runner.config_loader import _load_yaml
 from loom.etl.runner.errors import InvalidStageError
 from loom.etl.runner.filtering import _filter_plan
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
-from loom.etl.storage._config import StorageConfig, convert_storage_config
+from loom.etl.storage._config import (
+    StorageConfig,
+    convert_storage_config,
+    normalise_storage_section,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -152,8 +156,12 @@ class ETLRunner:
         dispatcher: ParallelDispatcher | None = None,
         cleaner: TempCleaner | None = None,
     ) -> ETLRunner:
-        """Build an :class:`ETLRunner` from pre-resolved plain Python dicts."""
-        storage_config = convert_storage_config(storage)
+        """Build an :class:`ETLRunner` from pre-resolved plain Python dicts.
+
+        ``storage.tables`` and ``storage.files`` accept the list form or a
+        mapping keyed by logical name.
+        """
+        storage_config = convert_storage_config(normalise_storage_section(storage))
         storage_config.validate()
         obs_config = (
             msgspec.convert(observability, ETLObservabilityConfig)

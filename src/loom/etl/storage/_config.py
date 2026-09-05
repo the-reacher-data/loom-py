@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -20,6 +20,11 @@ from deltalake import CommitProperties, WriterProperties
 
 from loom.core.model import LoomFrozenStruct
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
+
+STORAGE_KEYED_COLLECTIONS: Final = ("storage.tables", "storage.files", "storage.profiles")
+"""Dotted paths of the ``storage:`` collections merged by key across ``includes``."""
+
+_ROUTE_COLLECTIONS: Final = ("tables", "files")
 
 
 class StorageEngine(StrEnum):
@@ -457,6 +462,48 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
 def convert_storage_config(raw: dict[str, Any]) -> StorageConfig:
     """Convert a resolved plain dict into :class:`StorageConfig`."""
     return msgspec.convert(raw, StorageConfig)
+
+
+def normalise_storage_section(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalise a raw ``storage:`` section into the shape :class:`StorageConfig` binds to.
+
+    ``tables`` and ``files`` given as a mapping keyed by logical name become a
+    list of routes carrying ``name``; the list form is returned unchanged.
+    Values that are not mappings are left untouched so that conversion
+    reports them.
+
+    Args:
+        raw: Resolved ``storage:`` section.
+
+    Returns:
+        A new dict ready for :func:`convert_storage_config`.
+
+    Raises:
+        ValueError: When a mapping entry carries a ``name`` different from its key.
+    """
+    normalised = dict(raw)
+    for collection in _ROUTE_COLLECTIONS:
+        if collection in normalised:
+            normalised[collection] = _normalise_routes(normalised[collection], collection)
+    return normalised
+
+
+def _normalise_routes(routes: Any, collection: str) -> Any:
+    if not isinstance(routes, Mapping):
+        return routes
+    return [_route_from_entry(key, value, collection) for key, value in routes.items()]
+
+
+def _route_from_entry(key: Any, value: Any, collection: str) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    inner_name = value.get("name", key)
+    if inner_name != key:
+        raise ValueError(
+            f"storage.{collection}[{key!r}] declares name {inner_name!r}; "
+            "the mapping key is the route name"
+        )
+    return {"name": key, **value}
 
 
 def _validate_ref(ref: str, *, context: str) -> None:

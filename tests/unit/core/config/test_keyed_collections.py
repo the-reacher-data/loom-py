@@ -203,3 +203,33 @@ def test_without_keyed_a_duplicate_across_includes_is_overridden(tmp_path: Path)
     cfg = load_config(str(tmp_path / "root.yaml"))
 
     assert _as_dict(cfg) == {"things": {"items": {"alpha": {"size": 9}}}}
+
+
+# ---------------------------------------------------------------------------
+# Keyed path that OmegaConf cannot select
+# ---------------------------------------------------------------------------
+
+
+def test_keyed_path_under_a_list_parent_is_a_config_error(tmp_path: Path) -> None:
+    _write_tree(tmp_path, {"root.yaml": "things:\n  - 1\n"})
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(str(tmp_path / "root.yaml"), keyed=KEYED)
+
+    message = str(exc_info.value)
+    assert "things.items" in message
+    assert "root.yaml" in message
+
+
+def test_keyed_path_with_unresolvable_interpolation_is_a_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LOOM_TEST_KEYED_MISSING", raising=False)
+    _write_tree(tmp_path, {"root.yaml": "things:\n  items: ${oc.env:LOOM_TEST_KEYED_MISSING}\n"})
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(str(tmp_path / "root.yaml"), keyed=KEYED)
+
+    message = str(exc_info.value)
+    assert "things.items" in message
+    assert "root.yaml" in message

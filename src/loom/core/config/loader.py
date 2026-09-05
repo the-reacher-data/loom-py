@@ -269,7 +269,7 @@ def _own_provenance(uri: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -
     """
     provenance: Provenance = {}
     for path in keyed:
-        node = omega_conf.select(cfg, path, default=None)
+        node = _select_keyed(uri, cfg, path, omega_conf)
         if omega_conf.is_dict(node):
             provenance[path] = dict.fromkeys((str(k) for k in node), uri)
     return provenance
@@ -311,7 +311,7 @@ def _check_form(path: str, layers: Sequence[_Layer], omega_conf: Any) -> None:
     list_file: str | None = None
     mapping_file: str | None = None
     for uri, cfg, _ in layers:
-        node = omega_conf.select(cfg, path, default=None)
+        node = _select_keyed(uri, cfg, path, omega_conf)
         if list_file is None and omega_conf.is_list(node):
             list_file = uri
         if mapping_file is None and omega_conf.is_dict(node):
@@ -322,6 +322,31 @@ def _check_form(path: str, layers: Sequence[_Layer], omega_conf: Any) -> None:
         f"{path} is a list in {list_file!r} and a mapping in {mapping_file!r}; "
         "use one form within a composition"
     )
+
+
+def _select_keyed(uri: str, cfg: Any, path: str, omega_conf: Any) -> Any:
+    """Select the node at keyed ``path`` in ``cfg``, or ``None`` when absent.
+
+    Args:
+        uri: File ``cfg`` was loaded from.
+        cfg: Config to inspect.
+        path: Dotted path of the keyed collection.
+        omega_conf: OmegaConf module.
+
+    Returns:
+        The selected node, or ``None`` when the path is absent.
+
+    Raises:
+        ConfigError: When the path cannot be selected, e.g. its parent is not
+            a container or the node is an unresolvable interpolation.
+    """
+    # Lazy import: this module keeps omegaconf behind ``_ensure_omegaconf``.
+    from omegaconf.errors import OmegaConfBaseException
+
+    try:
+        return omega_conf.select(cfg, path, default=None)
+    except OmegaConfBaseException as exc:
+        raise ConfigError(f"Cannot read keyed collection {path!r} in {uri!r}: {exc}") from exc
 
 
 def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
