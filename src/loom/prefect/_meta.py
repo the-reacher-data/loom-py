@@ -23,7 +23,8 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     Args:
         name: Logical ETL name (used as the Prefect flow name AND the
             deployment name).
-        config_path: Absolute path to the per-ETL YAML.
+        config_path: Resolved absolute path of the per-ETL YAML, or the cloud
+            URI verbatim.
         source_file: Absolute path to the user's flow module (``__file__``).
         correlation_field: Name of the parameter used as correlation
             value, or ``None`` for random suffixes.

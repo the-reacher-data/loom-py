@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 
-def extract_pool_config(raw_cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def extract_pool_config(raw_cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Return per-environment work-pool overrides from the per-ETL YAML.
 
     Args:

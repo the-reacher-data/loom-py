@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import textwrap
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -12,6 +13,9 @@ from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, Int
 from loom.prefect import etl_flow
 from loom.prefect._meta import LOOM_ETL_META_ATTR as _LOOM_ETL_META_ATTR
 from loom.prefect._placeholders import resolve_placeholder
+from loom.prefect.deploy._yaml import read_yaml
+from loom.prefect.flow._assemble import flow_attribute_name, flow_settings_from_mapping
+from loom.prefect.flow._factory import _build_etl_flow
 from loom.prefect.flow._signature import (
     normalize_datetime_fields as _normalize_datetime_fields,
 )
@@ -377,3 +381,64 @@ def test_etl_flow_rejects_non_struct_params_type(tmp_path: Path) -> None:
             config_path=config_path,
             source_file=__file__,
         )
+
+
+def test_build_etl_flow_from_mapping_matches_file_metadata(tmp_path: Path) -> None:
+    cfg = _write_cfg(tmp_path)
+    from_file = etl_flow(
+        name="sample-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        config_path=str(cfg),
+        source_file=__file__,
+    )
+    settings = flow_settings_from_mapping(read_yaml(str(cfg)))
+    from_mapping = _build_etl_flow(
+        name="sample-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        settings=settings,
+        config_path=str(cfg),
+        source_file=__file__,
+        storage_config_path="/app/config.yaml",
+        manifest_store=None,
+        flow_config=settings.retry_policy,
+    )
+    assert getattr(from_mapping, _LOOM_ETL_META_ATTR) == getattr(from_file, _LOOM_ETL_META_ATTR)
+    assert from_mapping.name == from_file.name
+    assert from_mapping.retries == from_file.retries
+    assert from_mapping.retry_delay_seconds == from_file.retry_delay_seconds
+    assert inspect.signature(from_mapping) == inspect.signature(from_file)
+
+
+def test_build_etl_flow_keeps_cloud_uri_config_path_verbatim(tmp_path: Path) -> None:
+    settings = flow_settings_from_mapping(read_yaml(str(_write_cfg(tmp_path))))
+    flow_obj = _build_etl_flow(
+        name="sample-etl",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        settings=settings,
+        config_path="s3://b/x.yaml",
+        source_file=__file__,
+        storage_config_path="/app/config.yaml",
+        manifest_store=None,
+        flow_config=settings.retry_policy,
+    )
+    assert getattr(flow_obj, _LOOM_ETL_META_ATTR).config_path == "s3://b/x.yaml"
+
+
+def test_flow_attribute_name_replaces_hyphens() -> None:
+    assert flow_attribute_name("daily-orders") == "daily_orders"
+    assert flow_attribute_name("daily_orders") == "daily_orders"
+
+
+def test_dashed_name_keeps_prefect_flow_name_and_identifier(tmp_path: Path) -> None:
+    flow_obj = etl_flow(
+        name="daily-orders",
+        pipeline=_SamplePipeline,
+        params_type=_SampleParams,
+        config_path=str(_write_cfg(tmp_path)),
+        source_file=__file__,
+    )
+    assert flow_obj.name == "daily-orders"
+    assert flow_obj.fn.__name__ == "daily_orders"
