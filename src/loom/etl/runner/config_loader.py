@@ -21,7 +21,9 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
     Accepts local filesystem paths and cloud storage URIs
     (``s3://``, ``gs://``, ``abfss://``, ``r2://`` …).  ``storage.tables``
     and ``storage.files`` accept the list form or a mapping keyed by logical
-    name; both are merged by key across ``includes``.
+    name; both and ``storage.profiles`` are merged by key across ``includes``.
+    A ``path.profile: <name>`` key is replaced by the fields of
+    ``storage.profiles[<name>]`` the path does not set itself.
 
     Args:
         path: Local path or cloud URI pointing to a YAML file with a
@@ -37,7 +39,8 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
             duplicate key or mixes list and mapping forms, or the config
             shape is invalid.
         ValueError: When a mapping entry carries a ``name`` different from
-            its key.
+            its key, a ``path.profile`` is not declared in ``storage.profiles``,
+            or a profile carries ``uri`` or an unknown field.
     """
     ctx = ConfigContext.from_yaml(path, keyed=STORAGE_KEYED_COLLECTIONS)
     raw = ctx.section(ConfigKey.STORAGE, dict)

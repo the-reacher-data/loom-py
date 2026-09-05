@@ -340,7 +340,6 @@ def _select_keyed(uri: str, cfg: Any, path: str, omega_conf: Any) -> Any:
         ConfigError: When the path cannot be selected, e.g. its parent is not
             a container or the node is an unresolvable interpolation.
     """
-    # Lazy import: this module keeps omegaconf behind ``_ensure_omegaconf``.
     from omegaconf.errors import OmegaConfBaseException
 
     try:
