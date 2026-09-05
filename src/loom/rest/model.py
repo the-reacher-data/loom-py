@@ -135,10 +135,10 @@ class RestInterface(Generic[T]):
         tags: OpenAPI tags applied to every route.
         auto: When ``True``, signals intent to use standard CRUD URL conventions.
         include: Whitelist of CRUD operation names to expose when ``auto=True``.
-        auto_crud_model: Model whose repository the generated CRUD routes need;
-            set only when routes were actually generated.
             Accepted values: ``"create"``, ``"get"``, ``"list"``, ``"update"``,
             ``"delete"``.  Empty tuple means all operations are allowed.
+        auto_crud_model: Model whose repository the generated CRUD routes need;
+            set only when routes were actually generated.
         routes: Explicit route declarations.  Custom routes always override
             auto-CRUD routes with the same ``(method, path)``.
         pagination_mode: Default pagination strategy for list endpoints in this

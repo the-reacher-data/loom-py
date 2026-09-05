@@ -223,6 +223,47 @@ def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
     assert "app.discovery" in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "persistence",
+    [
+        pytest.param({"backend": "none"}, id="none"),
+        pytest.param(
+            {
+                "backend": "dynamodb",
+                "dynamodb": {
+                    "region": "eu-west-1",
+                    "table": "orphans",
+                    "endpoint_url": "http://localhost:8000",
+                },
+            },
+            id="dynamodb",
+        ),
+    ],
+)
+def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
+    persistence: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The coherence of an interface with its model does not depend on the backend."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+    class OrphanOnAnyBackend(RestInterface[PersistenceNoneRecord]):
+        prefix = "/orphans"
+        auto = True
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(OrphanOnAnyBackend,), agent_specs=()
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="OrphanOnAnyBackend"):
+        _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence=persistence))
+
+
 def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

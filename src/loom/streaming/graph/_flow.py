@@ -17,7 +17,6 @@ from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach
-from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import Step
 from loom.streaming.nodes._with import With, WithAsync
 
@@ -31,7 +30,6 @@ ProcessNode: TypeAlias = (
     | ForEach
     | Drain
     | IntoTopic[Any]
-    | IntoSink[Any]
     | Fork[Any]
     | Router[Any, Any]
     | Broadcast[Any]

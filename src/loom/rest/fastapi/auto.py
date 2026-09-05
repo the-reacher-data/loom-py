@@ -309,16 +309,15 @@ def _build_bootstrap(
 ) -> tuple[KernelRuntime, _PersistenceWiring, DiscoveryResult]:
     discovered = _discover_components(app_cfg)
     persistence_cfg = _load_persistence_config(ctx)
-    # Fail before any backend allocates resources (e.g. a SQLAlchemy engine):
-    # resolving persistence is what creates them, so this guard runs first.
-    if _is_relational_backend(persistence_cfg):
-        _reject_autocrud_without_model(discovered)
-        if not discovered.models:
-            _logger.warning(
-                "no BaseModel classes discovered: the application starts with an empty "
-                "relational schema. Declare your first model, or set "
-                "persistence.backend: none if it never persists."
-            )
+    # Both checks run before any backend allocates resources (e.g. a SQLAlchemy
+    # engine): resolving persistence is what creates them.
+    _reject_autocrud_without_model(discovered)
+    if _is_relational_backend(persistence_cfg) and not discovered.models:
+        _logger.warning(
+            "no BaseModel classes discovered: the application starts with an empty "
+            "relational schema. Declare your first model, or set "
+            "persistence.backend: none if it never persists."
+        )
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
     if _compiles_discovered_models(persistence_cfg):
         _compile_discovered_models(discovered)
@@ -331,15 +330,16 @@ def _reject_autocrud_without_model(discovered: DiscoveryResult) -> None:
 
     Auto-CRUD derives its operations from the model's repository, so an
     interface whose generated routes name an undiscovered model would mount
-    routes that fail on their first request. An interface that declared its own
-    routes generates none and is left alone.
+    routes that fail on their first request — whatever backend serves them, and
+    including ``none``, which registers no repository at all. An interface that
+    declared its own routes generates none and is left alone.
 
     Raises:
         RuntimeError: When such an interface exists, naming both classes.
     """
     known = set(discovered.models)
     for interface in discovered.interfaces:
-        model = getattr(interface, "auto_crud_model", None)
+        model = interface.auto_crud_model
         if model is not None and model not in known:
             raise RuntimeError(
                 f"{interface.__name__} generates CRUD routes over "
