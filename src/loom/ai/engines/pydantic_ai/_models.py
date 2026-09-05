@@ -23,6 +23,7 @@ settings dialect of its own.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from importlib import import_module
 from types import MappingProxyType
 from typing import Protocol, cast
 
@@ -113,6 +114,38 @@ _BUILDERS: Mapping[str, Callable[[InferenceTarget], Model]] = MappingProxyType(
 
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset(_BUILDERS)
 """Provider identifiers this release binds to a pydantic-ai model."""
+
+
+_MODEL_CLASS_IMPORTS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
+    {
+        "bedrock": ("bedrock", "pydantic_ai.models.bedrock", "BedrockConverseModel"),
+        "openai": ("openai", "pydantic_ai.models.openai", "OpenAIChatModel"),
+        "anthropic": ("anthropic", "pydantic_ai.models.anthropic", "AnthropicModel"),
+        "gateway": ("openai", "pydantic_ai.models.openai", "OpenAIChatModel"),
+    }
+)
+
+
+def model_class_for(target: InferenceTarget) -> type[Model]:
+    """Return the model class a target binds, without building it.
+
+    Answers questions a compiled plan asks about a binding — which
+    provider-run tools it admits — with no client, no credential and no request.
+
+    Raises:
+        AgentCompilationError: With ``PROVIDER_UNKNOWN`` when no provider of
+            that name exists in this release, or ``PROVIDER_NOT_INSTALLED``
+            when its SDK is missing.
+    """
+    binding = _MODEL_CLASS_IMPORTS.get(target.provider)
+    if binding is None:
+        raise AgentCompilationError(
+            [provider_unknown(target.provider, sorted(SUPPORTED_PROVIDERS))]
+        )
+    provider, module_name, class_name = binding
+    require_provider_sdk(provider, module_name, f"ai-{provider}")
+    module = import_module(module_name)
+    return cast("type[Model]", getattr(module, class_name))
 
 
 def resolve_model(target: InferenceTarget) -> Model:

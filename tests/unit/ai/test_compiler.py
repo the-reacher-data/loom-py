@@ -26,6 +26,7 @@ from loom.ai.compiler import (
 )
 from loom.ai.config import AiConfig
 from loom.ai.declarative import (
+    NATIVE_TOOLS,
     AgentSpecV1,
     DecodedSpec,
     JsonSchemaOutput,
@@ -43,7 +44,16 @@ from .conftest import CORPUS_PATTERN
 
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
 
-ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+ALL_KINDS: frozenset[str] = frozenset(
+    {"usecase", "sql", "mcp", "skills", "python", "a2a", "native"}
+)
+
+
+def _admits_every_native_tool(target: object) -> frozenset[str]:
+    """Oracle standing in for an engine that admits every provider tool."""
+    del target
+    return frozenset(NATIVE_TOOLS)
+
 
 BROKEN_SOURCE = "agents/broken.agent.yaml"
 
@@ -88,6 +98,7 @@ def compiler(
         registry=compiler_env_registry,
         supported_kinds=ALL_KINDS,
         sql=compiler_env_sql,
+        native_tools=_admits_every_native_tool,
     )
 
 
@@ -209,9 +220,9 @@ class TestCorpus:
         self, compiler: AgentCompiler
     ) -> None:
         decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
-        assert len(decoded) == 9
+        assert len(decoded) == 10
         plans = compiler.compile_all(decoded)
-        assert len(plans) == 9
+        assert len(plans) == 10
 
     def test_compile_all_resolves_local_skill_libraries_when_specs_keep_their_path(
         self, compiler: AgentCompiler

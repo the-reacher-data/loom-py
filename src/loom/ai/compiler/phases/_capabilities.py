@@ -20,10 +20,12 @@ from pathlib import Path
 from typing import Any, Final
 
 from loom.ai._filters import select_names
+from loom.ai.abc import NativeToolSupport
 from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledRemoteAuth,
     CompiledSkillsCapability,
@@ -37,18 +39,22 @@ from loom.ai.declarative import (
     AgentSpecV1,
     CapabilitySpec,
     McpCapability,
+    NativeCapability,
     PythonCapability,
     SkillsCapability,
     SqlCapability,
     UsecaseCapability,
 )
 from loom.ai.errors import (
+    AgentCompilationError,
     AgentCompilationIssue,
     a2a_agent_unknown,
     anonymous_with_data_capability,
     capability_empty,
     capability_kind_unsupported,
     mcp_server_unknown,
+    native_tool_duplicate,
+    native_tool_unsupported,
     python_factory_not_callable,
     python_factory_unresolvable,
     skills_library_escapes,
@@ -62,6 +68,7 @@ from loom.ai.errors import (
     sql_result_bound_missing,
     usecase_key_unknown,
 )
+from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
 from loom.core.sql.config import SqlConfig, roles_need_identity_binding
 from loom.core.use_case.registry import UseCaseRegistry
@@ -94,6 +101,9 @@ class _Context:
     a2a_agents: Mapping[str, A2AAgentConfig]
     source_path: str | None
     anonymous: bool
+    inference: InferenceTarget | None
+    native_tools: NativeToolSupport | None
+    model_role: str
 
 
 def compile_capabilities(
@@ -104,6 +114,8 @@ def compile_capabilities(
     registry: UseCaseRegistry,
     sql: SqlConfig | None,
     supported_kinds: frozenset[str],
+    inference: InferenceTarget | None = None,
+    native_tools: NativeToolSupport | None = None,
     source_path: str | None = None,
 ) -> _CompileResult:
     """Validate every declared capability and resolve it to a handle.
@@ -115,6 +127,10 @@ def compile_capabilities(
         registry: Use-case registry the ``usecase`` grants resolve against.
         sql: Data-layer configuration; ``None`` fails every ``sql`` grant.
         supported_kinds: Kinds the configured engine serves, as a plain value.
+        inference: Model binding of this agent's role; ``native`` grants are
+            checked against it and skipped when the role is unbound.
+        native_tools: Oracle answering which provider tools a binding admits;
+            resolved from the engine by the bootstrap, never imported here.
         source_path: Artifact file, when known; a ``./`` skill library resolves
             beside it and cannot be resolved without it.
 
@@ -130,6 +146,9 @@ def compile_capabilities(
         a2a_agents=config.a2a_agents,
         source_path=source_path,
         anonymous=_is_anonymous(spec.name, config),
+        inference=inference,
+        native_tools=native_tools,
+        model_role=spec.model_role,
     )
     compiled: list[CompiledCapability] = []
     issues: list[AgentCompilationIssue] = []
@@ -145,7 +164,25 @@ def compile_capabilities(
         if item is not None:
             compiled.append(item)
     issues.extend(_skill_collision_issues(compiled, component))
+    issues.extend(_native_duplicate_issues(compiled, component))
     return tuple(compiled), issues
+
+
+def _native_duplicate_issues(
+    compiled: list[CompiledCapability],
+    component: str,
+) -> list[AgentCompilationIssue]:
+    """Report a provider tool granted more than once to the same agent."""
+    seen: set[str] = set()
+    issues: list[AgentCompilationIssue] = []
+    for capability in compiled:
+        if not isinstance(capability, CompiledNativeCapability):
+            continue
+        if capability.tool in seen:
+            issues.append(native_tool_duplicate(component, capability.tool))
+            continue
+        seen.add(capability.tool)
+    return issues
 
 
 def _skill_collision_issues(
@@ -348,8 +385,37 @@ def _compile_python(capability: PythonCapability, context: _Context) -> _Handler
 # Dispatch map keyed by the declared capability type.  ``Any`` in the handler
 # parameter is the dispatch boundary: each handler is statically typed for its
 # own capability, and the map guarantees the pairing.
+def _compile_native(capability: NativeCapability, context: _Context) -> _HandlerResult:
+    """Resolve a provider tool against the model bound to the agent's role.
+
+    An unbound role is reported once by the role resolution, so the grant is
+    dropped without a second issue.
+    """
+    if context.inference is None:
+        return None, []
+    if context.native_tools is None:
+        return None, [capability_kind_unsupported(context.component, "native", "unknown")]
+    try:
+        supported = context.native_tools(context.inference)
+    except AgentCompilationError as exc:
+        return None, list(exc.issues)
+    if capability.tool not in supported:
+        return None, [
+            native_tool_unsupported(
+                context.component,
+                tool=capability.tool,
+                role=context.model_role,
+                provider=context.inference.provider,
+                model=context.inference.model,
+                supported=sorted(supported),
+            )
+        ]
+    return CompiledNativeCapability(tool=capability.tool), []
+
+
 _HANDLERS: Final[Mapping[type[CapabilitySpec], Callable[[Any, _Context], _HandlerResult]]] = {
     UsecaseCapability: _compile_usecase,
+    NativeCapability: _compile_native,
     SqlCapability: _compile_sql,
     McpCapability: _compile_mcp,
     SkillsCapability: _compile_skills,

@@ -197,6 +197,22 @@ class CompiledA2ACapability(LoomFrozenStruct, frozen=True, kw_only=True):
     exclude: tuple[str, ...] = ()
 
 
+class CompiledNativeCapability(LoomFrozenStruct, frozen=True, kw_only=True):
+    """Provider tool granted to an agent, already checked against its model.
+
+    The plan carries the stable loom name and not the engine's class: the
+    compiler never imports an engine, and the name was validated against the
+    binding before reaching here.
+
+    Attributes:
+        tool: Provider tool, as :data:`~loom.ai.declarative.NATIVE_TOOLS` names it.
+    """
+
+    kind: ClassVar[str] = "native"
+
+    tool: str
+
+
 CompiledCapability = (
     CompiledUsecaseCapability
     | CompiledSqlCapability
@@ -204,6 +220,7 @@ CompiledCapability = (
     | CompiledSkillsCapability
     | CompiledPythonCapability
     | CompiledA2ACapability
+    | CompiledNativeCapability
 )
 """Union of every compiled capability; each exposes its ``kind`` and handle."""
 

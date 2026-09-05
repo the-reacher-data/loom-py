@@ -34,6 +34,7 @@ from ._v1 import (
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
     MODEL_ROLE_PATTERN,
+    NATIVE_TOOLS,
     RETRIES_DEFAULT,
     RETRIES_MAX,
     RETRIES_MIN,
@@ -280,6 +281,28 @@ def _v1_a2a_capability() -> dict[str, Any]:
     }
 
 
+def _v1_native_capability() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["kind", "tool"],
+        "properties": {
+            "kind": {
+                "const": "native",
+                "description": "Tool the model provider runs in its own infrastructure.",
+            },
+            "tool": {
+                "type": "string",
+                "enum": list(NATIVE_TOOLS),
+                "description": (
+                    "Provider tool by its stable name. Whether the model bound to "
+                    "model_role admits it is checked at compile time."
+                ),
+            },
+        },
+    }
+
+
 def _v1_output_hook_def() -> dict[str, Any]:
     return {
         "type": "object",
@@ -311,6 +334,7 @@ def _v1_defs() -> dict[str, Any]:
                 _v1_skills_capability(),
                 _v1_python_capability(),
                 _v1_a2a_capability(),
+                _v1_native_capability(),
             ]
         },
         "policies": {

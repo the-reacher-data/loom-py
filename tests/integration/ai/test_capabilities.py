@@ -726,7 +726,7 @@ class TestSupportedCapabilityKinds:
         """Every kind the adapter can serve is announced, ``a2a`` included."""
         kinds = PydanticAIEngineProvider().supported_capability_kinds()
 
-        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a", "native"})
 
 
 # ---------------------------------------------------------------------------

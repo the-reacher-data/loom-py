@@ -24,7 +24,12 @@ from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
+from loom.ai.engines.pydantic_ai._native import (
+    build_native_capabilities,
+    supported_native_tools,
+)
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
+from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 
 
@@ -82,7 +87,7 @@ class PydanticAIEngineProvider:
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
         model = self._resolve_model(plan.inference)
         toolsets = build_toolsets(plan, container)
-        capabilities = build_capabilities(plan)
+        capabilities = (*build_capabilities(plan), *build_native_capabilities(plan))
         output_type = build_output_type(plan)
         # The keyword is absent, not ``None``, when no mode is pinned: the
         # engine's default for ``output_type`` is ``str``, and passing ``None``
@@ -98,6 +103,25 @@ class PydanticAIEngineProvider:
         )
         return PydanticAIEngine(plan=plan, agent=agent, deps=deps, container=container)
 
+    def native_tool_support(self, target: InferenceTarget) -> frozenset[str]:
+        """Return the provider tools the model bound to *target* admits.
+
+        Satisfies :data:`~loom.ai.abc.NativeToolSupport`, which the bootstrap
+        hands to the compiler so a ``native`` grant fails at compile time rather
+        than on the first request.
+
+        Args:
+            target: Resolved model binding of the agent's role.
+
+        Returns:
+            The tool names this binding admits.
+
+        Raises:
+            AgentCompilationError: When the provider is unknown or its SDK is
+                not installed.
+        """
+        return supported_native_tools(target)
+
     def supported_capability_kinds(self) -> frozenset[str]:
         """Capability kinds this adapter can serve.
 
@@ -105,6 +129,9 @@ class PydanticAIEngineProvider:
         can actually serve. ``skills`` produces no toolset: it becomes a
         deferred harness capability instead, built by
         :func:`~loom.ai.engines.pydantic_ai._capabilities.build_capabilities`.
+        ``native`` produces no toolset either: the provider runs the tool, so
+        the grant becomes an engine capability built by
+        :func:`~loom.ai.engines.pydantic_ai._native.build_native_capabilities`.
         ``a2a`` produces the single delegation tool of
         :func:`~loom.ai.engines.pydantic_ai._a2a.send_to_remote_agent`, and the
         runtime opens its start-up client through
@@ -113,4 +140,4 @@ class PydanticAIEngineProvider:
         Returns:
             The supported ``kind`` identifiers.
         """
-        return frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+        return frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a", "native"})

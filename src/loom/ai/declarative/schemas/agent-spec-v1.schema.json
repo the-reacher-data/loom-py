@@ -291,6 +291,29 @@
               "description": "Names or glob patterns to omit."
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "tool"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native",
+              "description": "Tool the model provider runs in its own infrastructure."
+            },
+            "tool": {
+              "type": "string",
+              "enum": [
+                "web_search",
+                "web_fetch",
+                "code_execution"
+              ],
+              "description": "Provider tool by its stable name. Whether the model bound to model_role admits it is checked at compile time."
+            }
+          }
         }
       ]
     },

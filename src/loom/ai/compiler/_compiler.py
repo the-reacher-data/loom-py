@@ -12,6 +12,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from types import MappingProxyType
 
+from loom.ai.abc import NativeToolSupport
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledCapability,
@@ -63,11 +64,13 @@ class AgentCompiler:
         registry: UseCaseRegistry,
         supported_kinds: frozenset[str],
         sql: SqlConfig | None = None,
+        native_tools: NativeToolSupport | None = None,
     ) -> None:
         self._config = config
         self._registry = registry
         self._supported_kinds = supported_kinds
         self._sql = sql
+        self._native_tools = native_tools
 
     def compile(self, spec: AgentSpecV1, *, source_path: str | None = None) -> AgentPlan:
         """Validate one spec statically and return its immutable plan.
@@ -142,6 +145,8 @@ class AgentCompiler:
             registry=self._registry,
             sql=self._sql,
             supported_kinds=self._supported_kinds,
+            inference=inference,
+            native_tools=self._native_tools,
             source_path=source_path,
         )
         issues.extend(capability_issues)

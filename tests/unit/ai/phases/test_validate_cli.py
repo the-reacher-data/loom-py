@@ -32,6 +32,20 @@ policies:
   retries: 99
 """
 
+UNKNOWN_NATIVE_TOOL_ARTIFACT = """\
+spec_version: 1
+name: unknown-native-tool-agent
+description: Declares a provider tool that is not in the v1 vocabulary.
+instructions: Answer using only the prompt.
+output:
+  kind: json_schema
+  schema:
+    type: object
+capabilities:
+  - kind: native
+    tool: telepathy
+"""
+
 
 def _run_validate(*globs: str) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
@@ -68,6 +82,17 @@ def test_exits_nonzero_with_one_coded_line_per_issue_when_artifact_is_broken(
     for code in ("OUTPUT_SCHEMA_INVALID", "POLICY_OUT_OF_RANGE"):
         matching = [line for line in lines if code in line]
         assert len(matching) == 1, (code, lines)
+
+
+def test_exits_one_with_spec_malformed_when_native_tool_is_unknown(tmp_path: Path) -> None:
+    """An unknown provider tool is a format error the validator catches offline (030/AC-3)."""
+    artifact = tmp_path / "unknown-native-tool.agent.yaml"
+    artifact.write_text(UNKNOWN_NATIVE_TOOL_ARTIFACT)
+    result = _run_validate(str(artifact))
+    assert result.returncode == 1
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert [line for line in lines if "SPEC_MALFORMED" in line] == lines
+    assert len(lines) == 1
 
 
 def test_un_patron_que_no_casa_nada_falla_en_vez_de_pasar(tmp_path: Path) -> None:

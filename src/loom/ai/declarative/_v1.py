@@ -16,7 +16,7 @@ minimum and maximum from them so the schema cannot drift from the structs.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, Literal, get_args
 
 import msgspec
 
@@ -56,6 +56,17 @@ MAX_ITERATIONS_MAX: Final[int] = 100
 RUN_TIMEOUT_MS_DEFAULT: Final[int] = 120000
 RUN_TIMEOUT_MS_MIN: Final[int] = 1000
 RUN_TIMEOUT_MS_MAX: Final[int] = 1800000
+
+NativeToolName = Literal["web_search", "web_fetch", "code_execution"]
+"""Tool the model provider runs in its own infrastructure, by its stable v1 name.
+
+Each name is the ``kind`` the engine's native-tool class reports for itself, so
+an artifact names the tool and the engine resolves the class. A name published
+here is part of the v1 format forever.
+"""
+
+NATIVE_TOOLS: Final[tuple[NativeToolName, ...]] = get_args(NativeToolName)
+"""Values ``NativeCapability.tool`` accepts, derived from :data:`NativeToolName`."""
 
 _SymbolRef = Annotated[str, msgspec.Meta(pattern=SYMBOL_REF_PATTERN)]
 _NonEmptyStr = Annotated[str, msgspec.Meta(min_length=1)]
@@ -258,6 +269,27 @@ class A2ACapability(
     exclude: tuple[str, ...] = ()
 
 
+class NativeCapability(
+    msgspec.Struct,
+    frozen=True,
+    kw_only=True,
+    forbid_unknown_fields=True,
+    tag="native",
+    tag_field="kind",
+):
+    """Tool the model provider executes in its own infrastructure.
+
+    The artifact *names* the tool; whether the model bound to ``model_role``
+    admits it is a deployment fact checked at compile time, and the provider
+    runs it, so no toolset, timeout or credential of loom is involved.
+
+    Args:
+        tool: Provider tool, one of :data:`NATIVE_TOOLS`.
+    """
+
+    tool: NativeToolName
+
+
 CapabilitySpec = (
     UsecaseCapability
     | SqlCapability
@@ -265,6 +297,7 @@ CapabilitySpec = (
     | SkillsCapability
     | PythonCapability
     | A2ACapability
+    | NativeCapability
 )
 """Union of every supported capability declaration, tagged on ``kind``."""
 

@@ -22,6 +22,7 @@ from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledOutput,
     CompiledPythonCapability,
     CompiledSkillsCapability,
@@ -270,6 +271,10 @@ class TestAjustesPorKind:
     def test_publica_solo_las_claves_cuando_la_capacidad_es_usecase(self) -> None:
         """The granted keys are public; the resolved use-case types are not."""
         assert _settings_of(_usecase_capability()) == {"keys": _USECASE_KEYS}
+
+    def test_publica_la_herramienta_cuando_la_capacidad_es_native(self) -> None:
+        """A provider tool publishes its name, which is the whole of the grant."""
+        assert _settings_of(CompiledNativeCapability(tool="web_search")) == {"tool": "web_search"}
 
     def test_publica_conexion_y_limites_cuando_la_capacidad_es_sql(self) -> None:
         """The connection name and its caps are public; the DSN is not."""

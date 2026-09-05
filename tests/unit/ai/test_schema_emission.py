@@ -135,6 +135,15 @@ def test_la_capacidad_emitida_exige_su_referencia_por_nombre_cuando_se_construye
     assert variant["required"] == ["kind", reference]
 
 
+def test_la_capacidad_native_emitida_cierra_el_vocabulario_de_tools_cuando_se_construye() -> None:
+    """``native`` names one provider tool from a closed list, and nothing else (030/AC-1)."""
+    variant = _capability_variant(_emitted(), "native")
+
+    assert variant["required"] == ["kind", "tool"]
+    assert variant["additionalProperties"] is False
+    assert variant["properties"]["tool"]["enum"] == ["web_search", "web_fetch", "code_execution"]
+
+
 @pytest.mark.parametrize("kind", ["mcp", "a2a", "skills"])
 def test_la_capacidad_emitida_declara_el_filtro_plano_cuando_se_construye(kind: str) -> None:
     """The three filtered kinds share one flat include/exclude vocabulary."""

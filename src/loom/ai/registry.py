@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # import cycle at runtime: runtime.py imports the compiler,
 from importlib import import_module
 from types import ModuleType
 
-from loom.ai.abc import AgentEngineProvider
+from loom.ai.abc import AgentEngineProvider, NativeToolSupport
 from loom.ai.errors import (
     AgentCompilationError,
     engine_api_mismatch,
@@ -144,6 +144,26 @@ def _distributions_for(name: str) -> list[str]:
         for ep in list_entry_points(ENGINE_ENTRY_POINT_GROUP)
         if ep.name == name
     ]
+
+
+def engine_native_tool_support(provider: object) -> NativeToolSupport | None:
+    """Return the oracle a provider supplies for provider-run tools.
+
+    Read off the resolved provider with ``getattr``, the same handshake shape as
+    the client factories: the compiler learns what a model binding admits
+    without importing an engine.
+
+    Args:
+        provider: Engine provider resolved from the entry point group.
+
+    Returns:
+        The oracle, or ``None`` when the engine serves no ``native`` grant.
+
+    Example::
+
+        support = engine_native_tool_support(resolve_engine_provider("pydantic-ai"))
+    """
+    return cast("NativeToolSupport | None", getattr(provider, "native_tool_support", None))
 
 
 def engine_client_factories(
