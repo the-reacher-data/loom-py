@@ -759,37 +759,94 @@ ETL and an application.
 
 ## Pluggable config resolvers
 
-Extend the YAML loader with custom `${prefix:key}` placeholders to fetch secrets
-from external stores (AWS SSM, Azure Key Vault, …) at parse time:
+`${prefix:key}` placeholders in YAML are filled in at parse time by *resolvers*.
+loom ships two, backed by AWS: `secrets` (Secrets Manager) and `ssm` (SSM
+Parameter Store). `ETLRunner.from_yaml` registers both by default, so a project
+booted through the factory reads a secret with no code beyond the factory call:
 
-```python
-from loom.core.config import load_config
-
-class SsmResolver:
-    name = "ssm"
-
-    def __init__(self, region: str) -> None:
-        self._region = region
-
-    def resolve(self, key: str) -> str:
-        import boto3
-        client = boto3.client("ssm", region_name=self._region)
-        return client.get_parameter(Name=key, WithDecryption=True)["Parameter"]["Value"]
-
-cfg = load_config("config/etl.yaml", resolvers=[SsmResolver("eu-west-1")])
+```yaml
+# config/etl.yaml
+storage:
+  catalogs:
+    main:
+      token: ${secrets:/prod/lakehouse/token}
+      workspace: ${ssm:/prod/lakehouse/workspace}
 ```
 
-In YAML, reference secrets via `${ssm:/path/to/secret}`:
+```python
+from loom.etl import ETLRunner
+
+runner = ETLRunner.from_yaml("config/etl.yaml")
+```
+
+The built-in resolvers use boto3's default region and credential chain (the
+environment, an instance or task role, `~/.aws/config`). Nothing talks to AWS
+until a placeholder actually resolves: a YAML without `${secrets:...}` or
+`${ssm:...}` never creates a client and boots without boto3 installed. When a
+placeholder does resolve and boto3 is missing, the error names the extra to
+install, `loom-kernel[config-ssm]`.
+
+Resolvers run at job startup — secret rotation takes effect on the next run
+without redeployment.
+
+### Your own resolvers
+
+Pass `resolvers=` to add custom prefixes (Azure Key Vault, HashiCorp Vault, …).
+A resolver is any object with a `name` and a `resolve(key) -> object`:
+
+```python
+from loom.etl import ETLRunner
+
+class VaultResolver:
+    name = "vault"
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+
+    def resolve(self, key: str) -> str:
+        return read_vault_secret(self._url, key)
+
+runner = ETLRunner.from_yaml(
+    "config/etl.yaml",
+    resolvers=[VaultResolver("https://vault.internal")],
+)
+```
 
 ```yaml
 storage:
   catalogs:
     main:
-      token: ${ssm:/prod/databricks/token}
+      token: ${vault:kv/prod/lakehouse/token}
 ```
 
-Resolvers run at job startup — secret rotation takes effect on the next run
-without redeployment.
+Precedence is by name:
+
+- A resolver you pass with the same name as a built-in (`secrets`, `ssm`) is
+  the one used. Pin a region that way instead of relying on the default chain:
+
+  ```python
+  from loom.core.config.ssm import SsmResolver
+
+  runner = ETLRunner.from_yaml("config/etl.yaml", resolvers=[SsmResolver(region="eu-west-1")])
+  ```
+
+- A built-in default never replaces a resolver already registered in the
+  process, whether by an earlier factory call or by `load_config`. Calling the
+  factory repeatedly in one process is safe.
+- Resolvers passed explicitly, to a factory or to `load_config`, replace an
+  earlier registration of the same name.
+
+`load_config` itself registers no defaults. When you load YAML by hand, pass
+the resolvers you need; `default_resolvers()` returns loom's built-ins:
+
+```python
+from loom.core.config import default_resolvers, load_config
+
+cfg = load_config("config/etl.yaml", resolvers=default_resolvers())
+```
+
+The same `resolvers=` parameter, with the same defaults and precedence, is on
+the REST and Celery `create_app` and on `StreamingRunner.from_yaml`.
 
 ---
 

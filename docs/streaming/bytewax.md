@@ -101,6 +101,64 @@ msgspec struct or a class variable all satisfy them, and `config` and
 resolves. `write_batch` runs per epoch, per worker; `close` may be called even
 when `write_batch` never was.
 
+## Booting from YAML (`resolvers=`)
+
+`StreamingRunner.from_yaml(flow, path)` loads the config and builds the runner;
+`run(config_path=...)` does the same load on an existing runner. Both register
+loom's built-in AWS resolvers, `secrets` (Secrets Manager) and `ssm` (SSM
+Parameter Store), by default, so a flow booted through the factory reads a
+secret with no code beyond the factory call:
+
+```yaml
+# config/streaming.yaml
+kafka:
+  consumer:
+    brokers:
+      - ${ssm:/prod/incidents/kafka-broker}
+    group_id: incidents-service
+    topics: ["incidents.in"]
+    security:
+      protocol: SASL_SSL
+      sasl_mechanism: SCRAM-SHA-512
+      sasl_username: incidents
+      sasl_password: "${secrets:/prod/incidents/kafka-password}"
+```
+
+```python
+from loom.streaming.bytewax import StreamingRunner
+
+runner = StreamingRunner.from_yaml(incident_flow, "config/streaming.yaml")
+runner.run()
+```
+
+The built-in resolvers use boto3's default region and credential chain, and
+create their client only when a placeholder resolves: a YAML with no
+`${secrets:...}` or `${ssm:...}` never touches AWS and boots without boto3.
+When a placeholder does resolve and boto3 is missing, the error names the extra
+to install, `loom-kernel[config-ssm]`.
+
+`resolvers=` adds your own prefixes or overrides a built-in by name, on
+`from_yaml` and on `run(config_path=...)`. Any object with a `name` and a
+`resolve(key) -> object` works:
+
+```python
+class VaultResolver:
+    name = "vault"
+
+    def resolve(self, key: str) -> str:
+        return read_vault_secret(key)
+
+runner = StreamingRunner.from_yaml(
+    incident_flow, "config/streaming.yaml", resolvers=[VaultResolver()]
+)
+```
+
+A resolver you pass with the same name as a built-in wins; a built-in default
+never replaces a resolver already registered earlier in the process, so
+calling the factory more than once is safe. `load_config` registers no
+defaults, and resolvers passed to it explicitly replace an earlier registration
+of the same name.
+
 ## Runtime notes
 
 - `WithAsync` executes one message per task, concurrently.
