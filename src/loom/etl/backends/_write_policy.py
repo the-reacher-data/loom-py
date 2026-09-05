@@ -8,8 +8,8 @@ while delegating backend-specific operations to abstract hooks.
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from loom.core.logger import get_logger
 from loom.etl.declarative.target import (
@@ -41,7 +41,18 @@ InputFrameT = TypeVar("InputFrameT")
 WriteFrameT = TypeVar("WriteFrameT")
 PhysicalSchemaT = TypeVar("PhysicalSchemaT")
 
-TableWriteHandler: TypeAlias = Callable[[InputFrameT, ResolvedTarget, TargetSpec, Any, bool], None]
+
+@dataclass(frozen=True, slots=True)
+class _PreparedWrite(Generic[WriteFrameT, PhysicalSchemaT]):
+    """A write-ready frame aligned to the schema of an already existing table.
+
+    Attributes:
+        frame:           Materialised frame, aligned to ``existing_schema``.
+        existing_schema: Physical schema read from the destination table.
+    """
+
+    frame: WriteFrameT
+    existing_schema: PhysicalSchemaT
 
 
 def _ensure_can_create_missing_table(
@@ -145,99 +156,85 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         params_instance: Any,
         streaming: bool,
     ) -> None:
-        """Dispatch table write to the registered handler for ``spec``."""
-        handler = self._table_write_handlers().get(type(spec))
-        if handler is None:
-            raise TypeError(f"Unsupported target spec: {type(spec)!r}")
-        handler(frame, target, spec, params_instance, streaming)
-
-    def _table_write_handlers(self) -> dict[type[object], TableWriteHandler[InputFrameT]]:
-        """Return handlers for concrete table-target spec types."""
-        return {
-            AppendSpec: self._dispatch_append,
-            ReplaceSpec: self._dispatch_replace,
-            ReplacePartitionsSpec: self._dispatch_replace_partitions,
-            ReplaceWhereSpec: self._dispatch_replace_where,
-            UpsertSpec: self._dispatch_upsert,
-            UpdateSpec: self._dispatch_update,
-            HistorifySpec: self._dispatch_historify,
-        }
-
-    def _dispatch_append(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        _params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_append(frame, target, cast(AppendSpec, spec), streaming)
-
-    def _dispatch_replace(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        _params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_replace(frame, target, cast(ReplaceSpec, spec), streaming)
-
-    def _dispatch_replace_partitions(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        _params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_replace_partitions(frame, target, cast(ReplacePartitionsSpec, spec), streaming)
-
-    def _dispatch_replace_where(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_replace_where(
-            frame, target, cast(ReplaceWhereSpec, spec), params_instance, streaming
-        )
-
-    def _dispatch_upsert(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        _params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_upsert(frame, target, cast(UpsertSpec, spec), streaming)
-
-    def _dispatch_update(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        _params_instance: Any,
-        streaming: bool,
-    ) -> None:
-        self._do_update(frame, target, cast(UpdateSpec, spec), streaming)
-
-    def _dispatch_historify(
-        self,
-        frame: InputFrameT,
-        target: ResolvedTarget,
-        spec: TargetSpec,
-        params_instance: Any,
-        _streaming: bool,
-    ) -> None:
-        self._do_historify(frame, target, cast(HistorifySpec, spec), params_instance)
+        """Route a table write to the policy method of the spec's write mode."""
+        match spec:
+            case AppendSpec():
+                self._do_append(frame, target, spec, streaming)
+            case ReplaceSpec():
+                self._do_replace(frame, target, spec, streaming)
+            case ReplacePartitionsSpec():
+                self._do_replace_partitions(frame, target, spec, streaming)
+            case ReplaceWhereSpec():
+                self._do_replace_where(frame, target, spec, params_instance, streaming)
+            case UpsertSpec():
+                self._do_upsert(frame, target, spec, streaming)
+            case UpdateSpec():
+                self._do_update(frame, target, spec, streaming)
+            case HistorifySpec():
+                self._do_historify(frame, target, spec, params_instance)
+            case _:
+                raise TypeError(f"Unsupported target spec: {type(spec)!r}")
 
     # ========================================================================
     # Template Methods (shared policy)
     # ========================================================================
+
+    def _prepare_write(
+        self,
+        frame: InputFrameT,
+        target: ResolvedTarget,
+        *,
+        schema_mode: SchemaMode,
+        streaming: bool,
+        create_partition_cols: tuple[str, ...] = (),
+        require_physical_partitions: tuple[str, ...] | None = None,
+    ) -> _PreparedWrite[WriteFrameT, PhysicalSchemaT] | None:
+        """Run the shared policy up to the point where the write mode differs.
+
+        The policy is the same for every mode that may create its destination:
+        read the physical schema; when the table is absent, check that creating
+        it is allowed and create it from *frame*; when it is present, align
+        *frame* to it and materialise the result.
+
+        Args:
+            frame:                       Input frame for the write.
+            target:                      Resolved destination.
+            schema_mode:                 Schema mode declared by the spec.
+            streaming:                   Hint for lazy backends to stream the
+                                         materialisation.
+            create_partition_cols:       Partition columns for the created
+                                         table; empty for unpartitioned modes.
+            require_physical_partitions: Partition columns the existing table
+                                         must physically carry, or ``None`` to
+                                         skip that check.
+
+        Returns:
+            The prepared write when the table already exists and the caller
+            must still issue its mode-specific write, or ``None`` when the
+            table was absent and has just been created from *frame*.
+        """
+        existing = self._physical_schema(target)
+        if existing is None:
+            _ensure_can_create_missing_table(
+                target=target,
+                schema_mode=schema_mode,
+                missing_table_policy=self._missing_table_policy,
+            )
+            materialized = self._materialize_checked(frame, target, streaming)
+            self._create(
+                materialized,
+                target,
+                schema_mode=schema_mode,
+                partition_cols=create_partition_cols,
+            )
+            return None
+        if require_physical_partitions is not None:
+            self._require_physical_partitions(target, require_physical_partitions)
+        aligned = self._align(frame, existing, schema_mode)
+        return _PreparedWrite(
+            frame=self._materialize_checked(aligned, target, streaming),
+            existing_schema=existing,
+        )
 
     def _do_append(
         self,
@@ -247,19 +244,12 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Append policy: check exists → create OR align → write."""
-        existing = self._physical_schema(target)
-        if existing is None:
-            _ensure_can_create_missing_table(
-                target=target,
-                schema_mode=spec.schema_mode,
-                missing_table_policy=self._missing_table_policy,
-            )
-            materialized = self._materialize_checked(frame, target, streaming)
-            self._create(materialized, target, schema_mode=spec.schema_mode)
+        prepared = self._prepare_write(
+            frame, target, schema_mode=spec.schema_mode, streaming=streaming
+        )
+        if prepared is None:
             return
-        aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_checked(aligned, target, streaming)
-        self._append(materialized, target, schema_mode=spec.schema_mode)
+        self._append(prepared.frame, target, schema_mode=spec.schema_mode)
 
     def _do_replace(
         self,
@@ -269,19 +259,12 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Replace policy: check exists → create OR align → write."""
-        existing = self._physical_schema(target)
-        if existing is None:
-            _ensure_can_create_missing_table(
-                target=target,
-                schema_mode=spec.schema_mode,
-                missing_table_policy=self._missing_table_policy,
-            )
-            materialized = self._materialize_checked(frame, target, streaming)
-            self._create(materialized, target, schema_mode=spec.schema_mode)
+        prepared = self._prepare_write(
+            frame, target, schema_mode=spec.schema_mode, streaming=streaming
+        )
+        if prepared is None:
             return
-        aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_checked(aligned, target, streaming)
-        self._replace(materialized, target, schema_mode=spec.schema_mode)
+        self._replace(prepared.frame, target, schema_mode=spec.schema_mode)
 
     def _do_replace_partitions(
         self,
@@ -291,27 +274,18 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Replace partitions policy: check exists → create OR align → write."""
-        existing = self._physical_schema(target)
-        if existing is None:
-            _ensure_can_create_missing_table(
-                target=target,
-                schema_mode=spec.schema_mode,
-                missing_table_policy=self._missing_table_policy,
-            )
-            materialized = self._materialize_checked(frame, target, streaming)
-            self._create(
-                materialized,
-                target,
-                schema_mode=spec.schema_mode,
-                partition_cols=spec.partition_cols,
-            )
+        prepared = self._prepare_write(
+            frame,
+            target,
+            schema_mode=spec.schema_mode,
+            streaming=streaming,
+            create_partition_cols=spec.partition_cols,
+            require_physical_partitions=spec.partition_cols if spec.require_physical else None,
+        )
+        if prepared is None:
             return
-        if spec.require_physical:
-            self._require_physical_partitions(target, spec.partition_cols)
-        aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_checked(aligned, target, streaming)
         self._replace_partitions(
-            materialized,
+            prepared.frame,
             target,
             partition_cols=spec.partition_cols,
             schema_mode=spec.schema_mode,
@@ -350,23 +324,15 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Replace where policy: check exists → create OR align → write."""
-        existing = self._physical_schema(target)
-        if existing is None:
-            _ensure_can_create_missing_table(
-                target=target,
-                schema_mode=spec.schema_mode,
-                missing_table_policy=self._missing_table_policy,
-            )
-            materialized = self._materialize_checked(frame, target, streaming)
-            self._create(materialized, target, schema_mode=spec.schema_mode)
+        prepared = self._prepare_write(
+            frame, target, schema_mode=spec.schema_mode, streaming=streaming
+        )
+        if prepared is None:
             return
-        predicate = self._predicate_to_sql(spec.replace_predicate, params_instance)
-        aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_checked(aligned, target, streaming)
         self._replace_where(
-            materialized,
+            prepared.frame,
             target,
-            predicate=predicate,
+            predicate=self._predicate_to_sql(spec.replace_predicate, params_instance),
             schema_mode=spec.schema_mode,
         )
 
@@ -378,28 +344,20 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         streaming: bool,
     ) -> None:
         """Upsert policy: check exists → create OR align+write."""
-        existing = self._physical_schema(target)
-        if existing is None:
-            _ensure_can_create_missing_table(
-                target=target,
-                schema_mode=spec.schema_mode,
-                missing_table_policy=self._missing_table_policy,
-            )
-            materialized = self._materialize_checked(frame, target, streaming=False)
-            self._create(
-                materialized,
-                target,
-                schema_mode=spec.schema_mode,
-                partition_cols=spec.partition_cols,
-            )
+        prepared = self._prepare_write(
+            frame,
+            target,
+            schema_mode=spec.schema_mode,
+            streaming=False,
+            create_partition_cols=spec.partition_cols,
+        )
+        if prepared is None:
             return
-        aligned = self._align(frame, existing, spec.schema_mode)
-        materialized = self._materialize_checked(aligned, target, streaming=False)
         self._upsert(
-            materialized,
+            prepared.frame,
             target,
             spec=spec,
-            existing_schema=existing,
+            existing_schema=prepared.existing_schema,
         )
 
     def _do_update(

@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+from loom.etl.backends._format_registry import UnsupportedFormatError
 from loom.etl.backends.polars import _file_writer as file_mod
 from loom.etl.backends.polars._file_writer import PolarsFileWriter
 from loom.etl.declarative._format import Format
@@ -69,3 +71,26 @@ def test_streaming_csv_write_applies_options(tmp_path: Path) -> None:
     writer.write(pl.DataFrame({"id": [1], "value": [10]}).lazy(), spec, streaming=True)
 
     assert out.read_text(encoding="utf-8").strip() == "1;10"
+
+
+def test_a_format_polars_cannot_write_fails_with_a_coded_error() -> None:
+    writer = PolarsFileWriter()
+    spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=False)
+
+    assert excinfo.value.code == "unsupported_format"
+    assert "xlsx" in str(excinfo.value)
+    assert "csv" in str(excinfo.value)
+
+
+def test_a_format_polars_cannot_stream_fails_with_a_coded_error() -> None:
+    writer = PolarsFileWriter()
+    spec = FileSpec(path="out.xlsx", format=Format.XLSX)
+
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        writer.write(pl.DataFrame({"id": [1]}).lazy(), spec, streaming=True)
+
+    assert excinfo.value.code == "unsupported_format"
+    assert "xlsx" in str(excinfo.value)

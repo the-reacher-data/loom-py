@@ -1,20 +1,23 @@
-"""Unit tests for _WritePolicy dispatch — HistorifySpec routing.
+"""Unit tests for _WritePolicy dispatch — write-mode routing.
 
 Verifies that:
+* Every table write mode reaches its own backend hook and no other.
 * HistorifySpec is routed to _do_historify (not any other handler).
 * _do_historify validates missing-table policy before delegating.
 * _do_historify materializes the frame and delegates to _historify.
-* Temp specs still raise TypeError (unchanged).
-* Unsupported specs still raise TypeError (unchanged).
+* Temp specs still raise TypeError.
+* Specs that are not a table write mode raise TypeError.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from loom.etl import col
 from loom.etl.backends._write_policy import _WritePolicy
 from loom.etl.declarative.expr._params import params
 from loom.etl.declarative.expr._refs import TableRef
@@ -25,7 +28,14 @@ from loom.etl.declarative.target._history import (
     HistorifySpec,
 )
 from loom.etl.declarative.target._schema_mode import SchemaMode
-from loom.etl.declarative.target._table import AppendSpec
+from loom.etl.declarative.target._table import (
+    AppendSpec,
+    ReplacePartitionsSpec,
+    ReplaceSpec,
+    ReplaceWhereSpec,
+    UpdateSpec,
+    UpsertSpec,
+)
 from loom.etl.declarative.target._temp import TempSpec
 from loom.etl.schema._schema import SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
@@ -301,3 +311,68 @@ class TestHistorifyRepairReportPassthrough:
         writer = _ReportingWriter(schema_exists=True)
         result = writer._do_historify([1], writer._resolver.resolve(None), _spec(), None)
         assert result is report
+
+
+# ---------------------------------------------------------------------------
+# Write-mode routing — every mode reaches its own hook
+# ---------------------------------------------------------------------------
+
+_HOOKS = (
+    "_append",
+    "_replace",
+    "_replace_partitions",
+    "_replace_where",
+    "_upsert",
+    "_update",
+    "_historify",
+)
+
+_TABLE_REF = TableRef("wh.players")
+
+_WRITE_MODES: tuple[tuple[Any, str], ...] = (
+    (AppendSpec(table_ref=_TABLE_REF), "_append"),
+    (ReplaceSpec(table_ref=_TABLE_REF), "_replace"),
+    (
+        ReplacePartitionsSpec(table_ref=_TABLE_REF, partition_cols=("season",)),
+        "_replace_partitions",
+    ),
+    (
+        ReplaceWhereSpec(
+            table_ref=_TABLE_REF,
+            replace_predicate=col("season") == params.run_date.year,
+        ),
+        "_replace_where",
+    ),
+    (UpsertSpec(table_ref=_TABLE_REF, upsert_keys=("player_id",)), "_upsert"),
+    (UpdateSpec(table_ref=_TABLE_REF, keys=("player_id",)), "_update"),
+    (_spec(), "_historify"),
+)
+
+
+def _recorder(log: list[str], name: str) -> Callable[..., None]:
+    """Return a hook stand-in that records its own name when invoked."""
+
+    def record(*_args: Any, **_kwargs: Any) -> None:
+        log.append(name)
+
+    return record
+
+
+class TestWriteModeRouting:
+    @pytest.mark.parametrize(("spec", "hook"), _WRITE_MODES)
+    def test_a_write_mode_reaches_only_its_own_hook(
+        self, spec: Any, hook: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        writer = _StubWritePolicy(schema_exists=True)
+        reached: list[str] = []
+        for name in _HOOKS:
+            monkeypatch.setattr(writer, name, _recorder(reached, name))
+
+        writer.write([1], spec, None)
+
+        assert reached == [hook]
+
+    def test_a_spec_that_is_not_a_table_write_mode_raises(self) -> None:
+        writer = _StubWritePolicy(schema_exists=True)
+        with pytest.raises(TypeError, match="Unsupported target spec"):
+            writer.write([1], MagicMock(), None)
