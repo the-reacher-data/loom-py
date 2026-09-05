@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -68,6 +69,8 @@ from loom.rest.fastapi.sql import (
     bind_sql_endpoints,
 )
 from loom.rest.middleware import TraceIdMiddleware
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Annotations only: the AI pillar, the ClickHouse extra and the SQLAlchemy
@@ -306,18 +309,44 @@ def _build_bootstrap(
 ) -> tuple[KernelRuntime, _PersistenceWiring, DiscoveryResult]:
     discovered = _discover_components(app_cfg)
     persistence_cfg = _load_persistence_config(ctx)
-    # Fail before any backend allocates resources (e.g. a SQLAlchemy engine):
-    # resolving persistence is what creates them, so this guard runs first.
-    if _requires_relational_models(persistence_cfg) and not discovered.models:
-        raise RuntimeError(
-            "No BaseModel classes discovered. "
-            "An application without persistence sets persistence.backend: none."
+    # Both checks run before any backend allocates resources (e.g. a SQLAlchemy
+    # engine): resolving persistence is what creates them.
+    _reject_autocrud_without_model(discovered)
+    if _is_relational_backend(persistence_cfg) and not discovered.models:
+        _logger.warning(
+            "no BaseModel classes discovered: the application starts with an empty "
+            "relational schema. Declare your first model, or set "
+            "persistence.backend: none if it never persists."
         )
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
     if _compiles_discovered_models(persistence_cfg):
         _compile_discovered_models(discovered)
     result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
     return result, wiring, discovered
+
+
+def _reject_autocrud_without_model(discovered: DiscoveryResult) -> None:
+    """Reject generated CRUD routes over a model discovery never found.
+
+    Auto-CRUD derives its operations from the model's repository, so an
+    interface whose generated routes name an undiscovered model would mount
+    routes that fail on their first request — whatever backend serves them, and
+    including ``none``, which registers no repository at all. An interface that
+    declared its own routes generates none and is left alone.
+
+    Raises:
+        RuntimeError: When such an interface exists, naming both classes.
+    """
+    known = set(discovered.models)
+    for interface in discovered.interfaces:
+        model = interface.auto_crud_model
+        if model is not None and model not in known:
+            raise RuntimeError(
+                f"{interface.__name__} generates CRUD routes over "
+                f"{model.__name__}, which discovery did not find. Add it to MODELS in "
+                "your manifest module, or include its module in app.discovery, so its "
+                "repository is registered."
+            )
 
 
 def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
@@ -339,8 +368,8 @@ def _load_persistence_config(ctx: ConfigContext) -> _PersistenceConfig:
     return ctx.section_or_default(ConfigKey.PERSISTENCE, _PersistenceConfig, _PersistenceConfig())
 
 
-def _requires_relational_models(persistence_cfg: _PersistenceConfig) -> bool:
-    """Whether the configured backend needs at least one discovered ``BaseModel``.
+def _is_relational_backend(persistence_cfg: _PersistenceConfig) -> bool:
+    """Whether the configured backend maps discovered ``BaseModel`` classes to tables.
 
     Read from config alone so the caller can enforce the requirement *before*
     :func:`_resolve_persistence` allocates any backend resource (e.g. an engine).

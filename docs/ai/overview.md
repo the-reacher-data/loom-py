@@ -160,9 +160,10 @@ Only `manifest` discovery can describe this application: the `interfaces` and
 agent — say so by naming `app.discovery.mode: manifest` and `AGENTS`.
 
 `persistence.backend` still defaults to `sqlalchemy`; loom never infers `none`
-from the absence of models or of a `database:` section. Leaving the default
-in place with no models fails start-up with a message that names
-`persistence.backend: none` as the way out.
+from the absence of models or of a `database:` section. Leaving the default in
+place with no models starts the application with a WARNING that names
+`persistence.backend: none` as the way out, and still requires a reachable
+database.
 
 ## Where to go next
 

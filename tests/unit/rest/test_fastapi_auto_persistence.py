@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from loom.core.backend import sqlalchemy as sqlalchemy_backend
@@ -10,6 +12,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel, ColumnField
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.use_case.use_case import UseCase
 from loom.rest.fastapi import auto
 from loom.rest.fastapi.auto import (
     _AppConfig,
@@ -19,6 +22,7 @@ from loom.rest.fastapi.auto import (
     _noop_lifespan,
     _resolve_persistence,
 )
+from loom.rest.model import RestInterface, RestRoute
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -175,18 +179,117 @@ def test_discover_components_rejects_empty_result(monkeypatch: pytest.MonkeyPatc
     assert "AGENTS" in message
 
 
-def test_build_bootstrap_sqlalchemy_without_models_names_backend_none(
+def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """A project whose relational schema is still empty boots, with a warning."""
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
     app_cfg = _AppConfig(name="demo")
     ctx = _ctx()
 
-    with pytest.raises(RuntimeError, match="No BaseModel classes discovered") as exc_info:
-        _build_bootstrap(app_cfg, ctx)
+    with caplog.at_level(logging.WARNING, logger=auto.__name__):
+        runtime, wiring, discovered = _build_bootstrap(app_cfg, ctx)
 
-    assert "persistence.backend: none" in str(exc_info.value)
+    assert discovered.models == ()
+    assert runtime is not None
+    assert wiring is not None
+    assert "no BaseModel classes discovered" in caplog.text
+    assert "persistence.backend: none" in caplog.text
+
+
+def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generated CRUD routes over a model discovery never found are refused by name."""
+
+    class OrphanInterface(RestInterface[PersistenceNoneRecord]):
+        prefix = "/orphans"
+        auto = True
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(OrphanInterface,), agent_specs=()
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="OrphanInterface") as exc_info:
+        _build_bootstrap(_AppConfig(name="demo"), _ctx())
+
+    assert "PersistenceNoneRecord" in str(exc_info.value)
+    assert "app.discovery" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "persistence",
+    [
+        pytest.param({"backend": "none"}, id="none"),
+        pytest.param(
+            {
+                "backend": "dynamodb",
+                "dynamodb": {
+                    "region": "eu-west-1",
+                    "table": "orphans",
+                    "endpoint_url": "http://localhost:8000",
+                },
+            },
+            id="dynamodb",
+        ),
+    ],
+)
+def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
+    persistence: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The coherence of an interface with its model does not depend on the backend."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+    class OrphanOnAnyBackend(RestInterface[PersistenceNoneRecord]):
+        prefix = "/orphans"
+        auto = True
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(OrphanOnAnyBackend,), agent_specs=()
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="OrphanOnAnyBackend"):
+        _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence=persistence))
+
+
+def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interface that declares its own routes generates no CRUD, so it is left alone."""
+
+    class _ListRecords(UseCase[PersistenceNoneRecord, None]):
+        async def execute(self) -> None:  # pragma: no cover - never invoked
+            return None
+
+    class HandWrittenInterface(RestInterface[PersistenceNoneRecord]):
+        prefix = "/hand-written"
+        auto = True
+        routes = (RestRoute(use_case=_ListRecords, method="GET", path=""),)
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(HandWrittenInterface,), agent_specs=()
+        ),
+    )
+
+    runtime, _wiring, discovered = _build_bootstrap(_AppConfig(name="demo"), _ctx())
+
+    assert runtime is not None
+    assert discovered.models == ()
 
 
 def test_build_bootstrap_none_with_models_builds_without_compiling(

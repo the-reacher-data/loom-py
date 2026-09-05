@@ -11,6 +11,18 @@ Usage::
 
 from __future__ import annotations
 
+try:  # pragma: no cover - exercised in a clean interpreter
+    import bytewax as _bytewax
+except ImportError as exc:  # pragma: no cover - exercised in a clean interpreter
+    raise ImportError(
+        "The bytewax runtime is missing. Bytewax publishes no wheel for Python 3.13, "
+        "so loom-kernel[streaming] omits it there: pin requires-python to "
+        '">=3.11,<3.13" or install bytewax yourself.'
+    ) from exc
+else:
+    del _bytewax
+
+
 from loom.streaming.bytewax._adapter import build_dataflow, build_dataflow_with_shutdown
 from loom.streaming.bytewax._errors import RuntimeConfigurationError
 from loom.streaming.bytewax._runtime_io import KafkaPartitionedSource

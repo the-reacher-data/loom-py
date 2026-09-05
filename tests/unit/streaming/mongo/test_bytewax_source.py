@@ -141,7 +141,7 @@ def test_build_mongo_client_raises_helpful_import_error(monkeypatch: Any) -> Non
     monkeypatch.setattr(builtins, "__import__", _fake_import)
 
     source = _compiled_source()
-    with pytest.raises(ImportError, match="optional 'pymongo' dependency"):
+    with pytest.raises(ImportError, match=r"loom-kernel\[mongo\]"):
         _build_mongo_client(source)
 
 

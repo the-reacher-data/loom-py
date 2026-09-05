@@ -6,7 +6,6 @@ from collections.abc import Coroutine, Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from loom.core.async_bridge import AsyncBridge
-from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming.bytewax._operators import ResourceLifecycle, lifecycle_for
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig
@@ -92,7 +91,7 @@ class ResourceManager:
             resolved = config
         key = _session_manager_key(resolved)
         if key not in self._session_managers:
-            self._session_managers[key] = SessionManager.from_config(resolved)
+            self._session_managers[key] = _session_manager_factory().from_config(resolved)
         return self._session_managers[key]
 
     def shutdown_all(self) -> None:
@@ -122,6 +121,18 @@ class ResourceManager:
                 self._bridge = None
         if errors:
             raise ExceptionGroup("shutdown errors", errors)
+
+
+def _session_manager_factory() -> _SessionManagerFactoryProtocol:
+    """Return the SQLAlchemy session-manager class, or fail naming the extra that provides it."""
+    try:
+        from loom.core.repository.sqlalchemy.session_manager import SessionManager
+    except ImportError as exc:
+        raise ImportError(
+            "IntoTable(backend=SQLALCHEMY) requires SQLAlchemy. "
+            "Install loom-kernel[sqlalchemy] to write to SQLAlchemy tables."
+        ) from exc
+    return SessionManager
 
 
 def _freeze_mapping(mapping: Mapping[str, object]) -> tuple[tuple[str, object], ...]:

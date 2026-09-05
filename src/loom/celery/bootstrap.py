@@ -54,9 +54,10 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 import msgspec
 from celery import Celery  # type: ignore[import-untyped]
@@ -80,7 +81,6 @@ from loom.celery.runner import (
     _make_job_task,
 )
 from loom.core.async_bridge import build_backend_options
-from loom.core.backend.sqlalchemy import compile_all, reset_registry
 from loom.core.bootstrap import create_kernel
 from loom.core.config import ConfigContext, ConfigKey
 from loom.core.config.errors import ConfigError
@@ -92,13 +92,15 @@ from loom.core.job.job import Job
 from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
-from loom.core.repository.sqlalchemy.session_manager import SessionManager
-from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.runner import shutdown_runner
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.autocrud import build_auto_routes
+
+_logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
 _T = TypeVar("_T")
 
@@ -284,6 +286,12 @@ def _resolve_uow_factory(
     except ConfigError:
         return None, None
 
+    try:
+        from loom.core.repository.sqlalchemy.session_manager import SessionManager
+        from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+    except ImportError as exc:
+        raise _sqlalchemy_extra_error() from exc
+
     # SessionManager is created pre-fork. The async engine is lazy — no TCP
     # connections are opened until the first async context manager usage in
     # the child process after the async bridge initializes.
@@ -291,6 +299,14 @@ def _resolve_uow_factory(
         db_cfg.url, echo=db_cfg.echo, pool_pre_ping=db_cfg.pool_pre_ping
     )
     return SQLAlchemyUnitOfWorkFactory(session_manager), session_manager
+
+
+def _sqlalchemy_extra_error() -> ImportError:
+    """Build the error raised when a ``database`` section is configured without SQLAlchemy."""
+    return ImportError(
+        "A database section is configured but SQLAlchemy is not installed. "
+        "Install loom-kernel[sqlalchemy] to run worker jobs against a database."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -571,8 +587,8 @@ def _resolve_compilables_and_jobs(
         ) from exc
     discovered = _discover_compilables_from_config(app_cfg.discovery)
     if not discovered.jobs:
-        raise RuntimeError(
-            "No Job classes discovered. "
+        _logger.warning(
+            "no Job classes discovered: the worker starts with no task registered. "
             "Add JOBS to manifest or include job modules in app.discovery."
         )
     return discovered
@@ -588,6 +604,12 @@ def _register_repositories(
     models: Sequence[type[BaseModel]],
 ) -> Callable[[LoomContainer], None]:
     """Build a container module that registers SQLAlchemy repositories."""
+    try:
+        from loom.core.repository.sqlalchemy import (
+            build_sqlalchemy_repository_registration_module,
+        )
+    except ImportError as exc:
+        raise _sqlalchemy_extra_error() from exc
     return build_sqlalchemy_repository_registration_module(session_manager, models)
 
 
@@ -595,6 +617,10 @@ def _compile_models(models: Sequence[type[BaseModel]]) -> tuple[type[BaseModel],
     """Compile and normalize discovered models for SQLAlchemy repositories."""
     if not models:
         return ()
+    try:
+        from loom.core.backend.sqlalchemy import compile_all, reset_registry
+    except ImportError as exc:
+        raise _sqlalchemy_extra_error() from exc
     ordered = tuple(dict.fromkeys(models))
     reset_registry()
     compile_all(*ordered)

@@ -378,7 +378,7 @@ discovery:
 
 | `persistence.backend` | Reads | What the app gets |
 |---|---|---|
-| `sqlalchemy` (default) | `database:` | unit of work, repositories and compiled tables for every discovered model; requires at least one model and the `sqlalchemy` extra |
+| `sqlalchemy` (default) | `database:` | unit of work, repositories and compiled tables for every discovered model; needs the `sqlalchemy` extra, a driver and a reachable database even with zero models |
 | `dynamodb` | `persistence.dynamodb:` | the DynamoDB repositories, no relational tables |
 | `none` | nothing | no unit of work, no repositories; discovered models are accepted but not compiled, a `database:` section is ignored, and deferred job dispatch never fires |
 
@@ -389,8 +389,9 @@ persistence:
 
 `none` is for an application whose only content is agents (see
 [An application that is only agents](../ai/overview.md#an-application-that-is-only-agents)).
-It is never inferred: with the default backend and no discovered models,
-start-up fails with a message that names `persistence.backend: none`.
+It is never inferred: with the default backend and no discovered models the
+application starts with a WARNING that names `persistence.backend: none`, and
+still opens a connection — so the driver and the database have to be there.
 
 ---
 

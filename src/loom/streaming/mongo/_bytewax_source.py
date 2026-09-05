@@ -174,7 +174,8 @@ def _build_mongo_client(source: CompiledMongoCDCSource) -> _DatabaseLike:
         from pymongo.server_api import ServerApi
     except ImportError as exc:
         raise ImportError(
-            "MongoDB CDC support requires the optional 'pymongo' dependency."
+            "MongoDB CDC support requires the 'mongo' extra (pymongo). "
+            "Install loom-kernel[mongo] to use FromMongoCDC."
         ) from exc
 
     kwargs: dict[str, Any] = {"datetime_conversion": "DATETIME_AUTO"}
