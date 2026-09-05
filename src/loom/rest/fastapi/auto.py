@@ -23,8 +23,7 @@ from loom.core.config import (
     ConfigContext,
     ConfigKey,
     ConfigResolver,
-    default_resolvers,
-    merge_resolvers,
+    with_default_resolvers,
 )
 from loom.core.config.errors import ConfigError
 from loom.core.di.container import LoomContainer
@@ -1313,9 +1312,7 @@ def create_app(
     if not config_paths:
         raise ConfigError("create_app requires at least one config file path.")
 
-    ctx = ConfigContext.from_yaml(
-        *config_paths, resolvers=merge_resolvers(resolvers, default_resolvers())
-    )
+    ctx = ConfigContext.from_yaml(*config_paths, resolvers=with_default_resolvers(resolvers))
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)

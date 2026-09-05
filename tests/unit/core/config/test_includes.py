@@ -328,6 +328,93 @@ def test_local_includes_and_globs_work_without_fsspec(
     assert _as_dict(cfg) == {"base": 1, "a": 1, "b": 0, "c": 1}
 
 
+class _SentinelResolver:
+    @property
+    def name(self) -> str:
+        return "secrets"
+
+    def resolve(self, key: str) -> object:
+        return "SENTINEL"
+
+
+def test_include_error_names_literal_entry_not_resolved_secret(tmp_path: Path) -> None:
+    main = tmp_path / "a.yaml"
+    main.write_text("includes:\n  - ${secrets:/x}/base.yaml\n")
+
+    with pytest.raises(ConfigError) as info:
+        load_config(str(main), resolvers=[_SentinelResolver()])
+
+    message = str(info.value)
+    assert "SENTINEL" not in message
+    assert "'${secrets:/x}/base.yaml'" in message
+    assert f"(included from {str(main)!r})" in message
+
+
+def test_glob_no_match_names_literal_entry_not_resolved_secret(tmp_path: Path) -> None:
+    main = tmp_path / "a.yaml"
+    main.write_text("includes:\n  - ${secrets:/x}/*.yaml\n")
+
+    with pytest.raises(ConfigError) as info:
+        load_config(str(main), resolvers=[_SentinelResolver()])
+
+    message = str(info.value)
+    assert "SENTINEL" not in message
+    assert "Include '${secrets:/x}/*.yaml' matches no configuration file" in message
+
+
+def test_parse_error_in_plain_glob_match_names_that_file(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {"a.yaml": "includes:\n  - parts/*.yaml\n", "parts/ok.yaml": "x: 1\n"},
+    )
+    broken = tmp_path / "parts" / "broken.yaml"
+    broken.write_text("key: [unclosed\n")
+
+    with pytest.raises(ConfigError) as info:
+        load_config(str(tmp_path / "a.yaml"))
+
+    assert f"Failed to parse configuration file {str(broken)!r}" in str(info.value)
+
+
+def test_parse_error_behind_interpolated_include_hides_resolved_path(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "SENTINEL/base.yaml": "key: [unclosed\n",
+            "a.yaml": "includes:\n  - ${secrets:/x}/base.yaml\n",
+        },
+    )
+
+    with pytest.raises(ConfigError) as info:
+        load_config(str(tmp_path / "a.yaml"), resolvers=[_SentinelResolver()])
+
+    message = str(info.value)
+    assert "SENTINEL" not in message
+    assert "Failed to parse configuration file '${secrets:/x}/base.yaml'" in message
+    assert info.value.__cause__ is not None
+
+
+def test_keyed_duplicate_across_interpolated_includes_names_literal_entries(
+    tmp_path: Path,
+) -> None:
+    _write_tree(
+        tmp_path,
+        {
+            "SENTINEL/left.yaml": "tables:\n  t: {a: 1}\n",
+            "SENTINEL/right.yaml": "tables:\n  t: {a: 2}\n",
+            "a.yaml": "includes:\n  - ${secrets:/x}/left.yaml\n  - ${secrets:/x}/right.yaml\n",
+        },
+    )
+
+    with pytest.raises(ConfigError) as info:
+        load_config(str(tmp_path / "a.yaml"), resolvers=[_SentinelResolver()], keyed=("tables",))
+
+    message = str(info.value)
+    assert "SENTINEL" not in message
+    assert "'${secrets:/x}/left.yaml'" in message
+    assert "'${secrets:/x}/right.yaml'" in message
+
+
 def test_include_entry_interpolation_resolves_before_glob(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

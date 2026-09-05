@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,6 +18,7 @@ from loom.core.config import (
     default_resolvers,
     load_config,
     merge_resolvers,
+    with_default_resolvers,
 )
 
 
@@ -81,6 +85,46 @@ def test_merge_resolvers_drops_default_already_registered(secrets_yaml: str) -> 
 
     assert _names(merged) == ("ssm",)
     assert load_config(secrets_yaml, resolvers=merged).token == "vault:k"
+
+
+def test_merge_resolvers_logs_skipped_default_already_registered(
+    secrets_yaml: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    load_config(secrets_yaml, resolvers=[StubResolver("secrets", "vault")])
+
+    with caplog.at_level(logging.INFO, logger="loom.core.config.resolver"):
+        merge_resolvers((), default_resolvers())
+
+    assert caplog.messages == ["config resolver 'secrets' already registered; loom default skipped"]
+
+
+def test_merge_resolvers_does_not_log_default_taken_by_explicit(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="loom.core.config.resolver"):
+        merge_resolvers([StubResolver("secrets", "vault")], default_resolvers())
+
+    assert caplog.messages == []
+
+
+def test_with_default_resolvers_matches_merge_of_defaults() -> None:
+    vault = StubResolver("secrets", "vault")
+
+    merged = with_default_resolvers([vault])
+
+    assert merged[0] is vault
+    assert _names(merged) == ("secrets", "ssm")
+    assert _names(with_default_resolvers()) == ("secrets", "ssm")
+
+
+def test_importing_config_package_does_not_import_omegaconf() -> None:
+    script = "import sys; import loom.core.config; print('omegaconf' in sys.modules)"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "False"
 
 
 def test_merge_resolvers_keeps_free_defaults() -> None:

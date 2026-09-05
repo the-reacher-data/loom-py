@@ -86,8 +86,7 @@ from loom.core.config import (
     ConfigContext,
     ConfigKey,
     ConfigResolver,
-    default_resolvers,
-    merge_resolvers,
+    with_default_resolvers,
 )
 from loom.core.config.errors import ConfigError
 from loom.core.di.container import LoomContainer
@@ -808,9 +807,7 @@ def bootstrap_worker(
         )
         result.celery_app.start()
     """
-    ctx = ConfigContext.from_yaml(
-        *config_paths, resolvers=merge_resolvers(resolvers, default_resolvers())
-    )
+    ctx = ConfigContext.from_yaml(*config_paths, resolvers=with_default_resolvers(resolvers))
     app_cfg = ctx.section_optional(ConfigKey.APP, _WorkerAppConfig) or _WorkerAppConfig()
     celery_cfg = ctx.section(ConfigKey.CELERY, CeleryConfig)
     observability_runtime = _build_observability_runtime(ctx)

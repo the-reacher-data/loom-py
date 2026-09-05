@@ -267,9 +267,9 @@ def test_diamond_include_parses_the_shared_file_once(
     parsed: list[str] = []
     original = loader._parse_local_file
 
-    def counting(path: str, omega_conf: Any) -> Any:
+    def counting(path: str, label: str, omega_conf: Any) -> Any:
         parsed.append(Path(path).name)
-        return original(path, omega_conf)
+        return original(path, label, omega_conf)
 
     monkeypatch.setattr(loader, "_parse_local_file", counting)
 

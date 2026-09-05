@@ -35,8 +35,8 @@ def resolve_include(base: str, entry: str) -> str:
 
     Args:
         base: Path or URI of the declaring file.
-        entry: Include entry as written: a URI, an absolute path, or a path
-            relative to the declaring file.
+        entry: Resolved include entry text: a URI, an absolute path, or a
+            path relative to the declaring file.
 
     Returns:
         The entry as is when it carries a scheme or is absolute; otherwise
@@ -66,11 +66,49 @@ def expand_config_glob(pattern: str) -> list[str]:
         ConfigError: When a glob matches no configuration file or the cloud
             backend fails to list it.
     """
+    return expand_include(pattern, pattern)
+
+
+def failure_detail(exc: BaseException, label: str) -> str:
+    """Return the text of *exc* safe to append to an error naming *label*.
+
+    A label holding an interpolation (``${``) stands for a resolved value
+    that must not be echoed; backend messages and YAML marks embed the
+    resolved path, so only the exception type is returned for them.
+
+    Args:
+        exc: Underlying failure.
+        label: Text naming the file in the loom error message.
+
+    Returns:
+        ``str(exc)`` for a plain label, the exception class name otherwise.
+    """
+    return type(exc).__name__ if "${" in label else str(exc)
+
+
+def expand_include(pattern: str, label: str) -> list[str]:
+    """Expand *pattern* like :func:`expand_config_glob`, naming *label* in errors.
+
+    Args:
+        pattern: Resolved local path or cloud URI, optionally a glob.
+        label: Text identifying the entry in error messages, typically the
+            include entry as written in YAML before interpolation.
+
+    Returns:
+        ``[pattern]`` for a plain entry; for a glob, the matching regular
+        ``.yaml``/``.yml`` files sorted lexicographically by resolved path.
+
+    Raises:
+        ConfigError: When a glob matches no configuration file or the cloud
+            backend fails to list it; the message names ``label``.
+    """
     if not glob.has_magic(pattern):
         return [pattern]
-    matches = _expand_cloud_glob(pattern) if is_cloud_uri(pattern) else _expand_local_glob(pattern)
+    matches = (
+        _expand_cloud_glob(pattern, label) if is_cloud_uri(pattern) else _expand_local_glob(pattern)
+    )
     if not matches:
-        raise ConfigError(f"Include {pattern!r} matches no configuration file")
+        raise ConfigError(f"Include {label!r} matches no configuration file")
     return sorted(matches)
 
 
@@ -106,7 +144,7 @@ def _expand_local_glob(pattern: str) -> list[str]:
     return [p for p in glob.glob(pattern) if os.path.isfile(p) and _is_config_file(p)]
 
 
-def _expand_cloud_glob(uri: str) -> list[str]:
+def _expand_cloud_glob(uri: str, label: str) -> list[str]:
     """Return the regular YAML files matching a cloud glob, as full URIs."""
     from fsspec.core import url_to_fs
 
@@ -114,7 +152,9 @@ def _expand_cloud_glob(uri: str) -> list[str]:
         fs, path = url_to_fs(uri)
         entries = fs.glob(path, detail=True)
     except Exception as exc:
-        raise ConfigError(f"Failed to expand include {uri!r}: {exc}") from exc
+        raise ConfigError(
+            f"Failed to expand include {label!r}: {failure_detail(exc, label)}"
+        ) from exc
     return [
         str(fs.unstrip_protocol(name))
         for name, info in entries.items()

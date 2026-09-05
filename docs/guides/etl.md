@@ -787,7 +787,9 @@ placeholder does resolve and boto3 is missing, the error names the extra to
 install, `loom-kernel[config-ssm]`.
 
 Resolvers run at job startup — secret rotation takes effect on the next run
-without redeployment.
+without redeployment. Values are fetched once per loaded config object
+(OmegaConf caches resolver results), so a rotated secret is seen on the next
+boot, not mid-run.
 
 ### Your own resolvers
 
