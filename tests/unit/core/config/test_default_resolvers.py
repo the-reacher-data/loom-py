@@ -92,7 +92,7 @@ def test_merge_resolvers_logs_skipped_default_already_registered(
 ) -> None:
     load_config(secrets_yaml, resolvers=[StubResolver("secrets", "vault")])
 
-    with caplog.at_level(logging.INFO, logger="loom.core.config.resolver"):
+    with caplog.at_level(logging.DEBUG, logger="loom.core.config.resolver"):
         merge_resolvers((), default_resolvers())
 
     assert caplog.messages == ["config resolver 'secrets' already registered; loom default skipped"]
@@ -101,7 +101,7 @@ def test_merge_resolvers_logs_skipped_default_already_registered(
 def test_merge_resolvers_does_not_log_default_taken_by_explicit(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.INFO, logger="loom.core.config.resolver"):
+    with caplog.at_level(logging.DEBUG, logger="loom.core.config.resolver"):
         merge_resolvers([StubResolver("secrets", "vault")], default_resolvers())
 
     assert caplog.messages == []

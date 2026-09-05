@@ -176,9 +176,9 @@ class ETLRunner:
         Raises:
             ValueError: When a mapping entry carries a ``name`` different from
                 its key, a ``path.profile`` is not declared in
-                ``storage.profiles``, or a profile carries ``uri`` or an
-                unknown field.
-            msgspec.ValidationError: When the storage shape is invalid.
+                ``storage.profiles``, or a profile carries ``uri``.
+            msgspec.ValidationError: When the storage shape is invalid,
+                including a profile with an unknown field.
         """
         storage_config = convert_storage_config(normalise_storage_section(storage))
         storage_config.validate()

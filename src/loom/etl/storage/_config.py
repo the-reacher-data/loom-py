@@ -131,11 +131,11 @@ class FilePathConfig(LoomFrozenStruct, frozen=True):
             raise ValueError(f"storage.{context}.uri must be a non-empty string")
 
 
-_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
+_ROUTE_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
     "tables": frozenset(TablePathConfig.__struct_fields__) - {"uri"},
     "files": frozenset(FilePathConfig.__struct_fields__) - {"uri"},
 }
-"""Profile fields each route collection takes through ``profile:``."""
+"""Route collections normalised by key, each with the profile fields it takes."""
 
 
 class StorageDefaults(LoomFrozenStruct, frozen=True):
@@ -513,10 +513,11 @@ def normalise_storage_section(raw: Mapping[str, Any]) -> dict[str, Any]:
     Raises:
         ValueError: When a mapping entry carries a ``name`` different from its
             key, when a ``profile`` is not declared in ``profiles``, or when a
-            profile carries ``uri`` or a field unknown to :class:`StorageProfile`.
+            profile carries ``uri``. Other fields unknown to
+            :class:`StorageProfile` are reported by :func:`convert_storage_config`.
     """
     normalised = dict(raw)
-    for collection in _PROFILE_FIELDS:
+    for collection in _ROUTE_PROFILE_FIELDS:
         if collection in normalised:
             normalised[collection] = _normalise_routes(normalised[collection], collection)
     return _apply_profiles(normalised)
@@ -526,7 +527,7 @@ def _apply_profiles(normalised: dict[str, Any]) -> dict[str, Any]:
     profiles = normalised.get("profiles")
     profiles = profiles if isinstance(profiles, Mapping) else {}
     result = dict(normalised)
-    for collection, fields in _PROFILE_FIELDS.items():
+    for collection, fields in _ROUTE_PROFILE_FIELDS.items():
         if isinstance(result.get(collection), list):
             result[collection] = [
                 _route_with_profile(
@@ -540,7 +541,7 @@ def _apply_profiles(normalised: dict[str, Any]) -> dict[str, Any]:
             defaults["table_path"],
             "storage.defaults.table_path",
             profiles,
-            _PROFILE_FIELDS["tables"],
+            _ROUTE_PROFILE_FIELDS["tables"],
         )
         result["defaults"] = {**defaults, "table_path": table_path}
     return result
@@ -583,9 +584,8 @@ def _resolve_profile(name: Any, context: str, profiles: Mapping[str, Any]) -> di
     declared = profiles[name]
     if not isinstance(declared, Mapping):
         return {}
-    unknown = sorted(set(declared) - set(StorageProfile.__struct_fields__))
-    if unknown:
-        raise ValueError(f"storage.profiles[{name!r}] has unknown field(s): {', '.join(unknown)}")
+    if "uri" in declared:
+        raise ValueError(f"storage.profiles[{name!r}] must not define uri")
     return dict(declared)
 
 

@@ -53,6 +53,16 @@ Function-level composition is still available::
 
     cfg = load_config("config/base.yaml", "config/production.yaml")
 
+Typed sections
+--------------
+:func:`section` binds a subtree to a user-defined type::
+
+    class DatabaseConfig(msgspec.Struct, kw_only=True):
+        url: str
+        pool_size: int = 5
+
+    db = section(cfg, "database", DatabaseConfig)
+
 Keyed collections
 -----------------
 ``keyed=`` names dotted paths whose mapping form merges by key across the
@@ -63,18 +73,13 @@ same composition, or a list form mixed with a mapping form, raises
 reported across them::
 
     cfg = load_config("config/app.yaml", keyed=("storage.tables",))
-
-    class DatabaseConfig(msgspec.Struct, kw_only=True):
-        url: str
-        pool_size: int = 5
-
-    db = section(cfg, "database", DatabaseConfig)
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 import msgspec
 
@@ -97,8 +102,29 @@ T = TypeVar("T")
 Provenance = dict[str, dict[str, str]]
 """Keyed path -> key -> file declaring that key."""
 
-_Layer = tuple[str, Any, Provenance]
-"""Label of the file, its config and the provenance of its keyed entries."""
+
+class _Layer(NamedTuple):
+    """One loaded file: its label, config and the provenance of its keyed entries."""
+
+    label: str
+    cfg: Any
+    provenance: Provenance
+
+
+@dataclass(frozen=True)
+class _LoadState:
+    """Invariants shared by every file loaded in one :func:`load_config` call.
+
+    Attributes:
+        omega_conf: OmegaConf module.
+        keyed: Dotted paths of the collections merged by key.
+        cache: Layers already loaded, by canonical key, so a file reached
+            through several include branches is parsed once.
+    """
+
+    omega_conf: Any
+    keyed: Sequence[str]
+    cache: dict[str, _Layer]
 
 
 def _ensure_omegaconf() -> Any:
@@ -183,26 +209,16 @@ def _parse_local_file(path: str, label: str, omega_conf: Any) -> Any:
         ) from exc
 
 
-def _load_file(
-    uri: str,
-    label: str,
-    omega_conf: Any,
-    seen: set[str],
-    keyed: Sequence[str],
-    cache: dict[str, _Layer],
-) -> _Layer:
+def _load_file(uri: str, label: str, seen: set[str], state: _LoadState) -> _Layer:
     """Load a YAML file from any scheme, resolving its ``includes`` recursively.
 
     Args:
         uri: Local path or cloud URI of the YAML file.
         label: Text naming the file in error messages: the path as passed to
             :func:`load_config`, or the include entry as written in YAML.
-        omega_conf: OmegaConf module.
         seen: Canonical keys of the files already in the call stack, used to
             detect circular references.
-        keyed: Dotted paths of the collections merged by key.
-        cache: Layers already loaded in this call, by canonical key, so a
-            file reached through several include branches is parsed once.
+        state: Invariants of the enclosing :func:`load_config` call.
 
     Returns:
         The file label, its merged :class:`omegaconf.DictConfig` (includes
@@ -217,9 +233,10 @@ def _load_file(
     key = canonical_key(uri)
     if key in seen:
         raise ConfigError(f"Circular include detected: {label!r} is already being loaded.")
-    if key in cache:
-        return cache[key]
+    if key in state.cache:
+        return state.cache[key]
 
+    omega_conf = state.omega_conf
     cfg = (
         _parse_cloud_file(uri, label, omega_conf)
         if is_cloud_uri(uri)
@@ -227,11 +244,11 @@ def _load_file(
     )
     entries = _include_entries(omega_conf.select(cfg, "includes", default=None), omega_conf)
     own = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
-    layers = _load_includes((key, label), entries, omega_conf, seen | {key}, keyed, cache)
-    layers.append((label, own, _own_provenance(label, own, keyed, omega_conf)))
-    provenance = _check_keyed(layers, keyed, omega_conf)
-    cache[key] = (label, _merge_layers(layers, omega_conf), provenance)
-    return cache[key]
+    layers = _load_includes(key, label, entries, seen | {key}, state)
+    layers.append(_Layer(label, own, _own_provenance(label, own, state.keyed, omega_conf)))
+    provenance = _check_keyed(layers, state.keyed, omega_conf)
+    state.cache[key] = _Layer(label, _merge_layers(layers, omega_conf), provenance)
+    return state.cache[key]
 
 
 def _include_entries(raw_includes: Any, omega_conf: Any) -> list[tuple[str, str]]:
@@ -253,23 +270,21 @@ def _include_entries(raw_includes: Any, omega_conf: Any) -> list[tuple[str, str]
 
 
 def _load_includes(
-    declaring: tuple[str, str],
+    base: str,
+    label: str,
     entries: Sequence[tuple[str, str]],
-    omega_conf: Any,
     seen: set[str],
-    keyed: Sequence[str],
-    cache: dict[str, _Layer],
+    state: _LoadState,
 ) -> list[_Layer]:
     """Load every file designated by the ``includes`` entries of one file.
 
     Args:
-        declaring: Canonical key and label of the file declaring the entries.
+        base: Canonical key of the file declaring the entries.
+        label: Label of the file declaring the entries.
         entries: ``(literal, resolved)`` include entries.
-        omega_conf: OmegaConf module.
         seen: Canonical keys of the files in the call stack, including the
             declaring file.
-        keyed: Dotted paths of the collections merged by key.
-        cache: Layers already loaded in this call, by canonical key.
+        state: Invariants of the enclosing :func:`load_config` call.
 
     Returns:
         One loaded layer per matched file, in include order and, within a
@@ -279,13 +294,12 @@ def _load_includes(
         ConfigError: Any loading error, naming the entry per :func:`_labels`
             and suffixed with the declaring file's label.
     """
-    base, label = declaring
     layers: list[_Layer] = []
     for literal, resolved in entries:
         pattern = resolve_include(base, resolved)
         try:
             for match, match_label in _labels(literal, pattern):
-                layers.append(_load_file(match, match_label, omega_conf, seen, keyed, cache))
+                layers.append(_load_file(match, match_label, seen, state))
         except ConfigError as exc:
             raise ConfigError(f"{exc} (included from {label!r})") from exc
     return layers
@@ -324,7 +338,7 @@ def _merge_layers(layers: Sequence[_Layer], omega_conf: Any) -> Any:
     Returns:
         The merged :class:`omegaconf.DictConfig`.
     """
-    return omega_conf.merge(*(cfg for _, cfg, _ in layers))
+    return omega_conf.merge(*(layer.cfg for layer in layers))
 
 
 def _own_provenance(label: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -> Provenance:
@@ -382,12 +396,12 @@ def _check_form(path: str, layers: Sequence[_Layer], omega_conf: Any) -> None:
     """
     list_file: str | None = None
     mapping_file: str | None = None
-    for label, cfg, _ in layers:
-        node = _select_keyed(label, cfg, path, omega_conf)
+    for layer in layers:
+        node = _select_keyed(layer.label, layer.cfg, path, omega_conf)
         if list_file is None and omega_conf.is_list(node):
-            list_file = label
+            list_file = layer.label
         if mapping_file is None and omega_conf.is_dict(node):
-            mapping_file = label
+            mapping_file = layer.label
     if list_file is None or mapping_file is None:
         return
     raise ConfigError(
@@ -437,8 +451,8 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
         ConfigError: Naming the key and both declaring files.
     """
     declared: dict[str, str] = {}
-    for _, _, provenance in layers:
-        for key, declaring in provenance.get(path, {}).items():
+    for layer in layers:
+        for key, declaring in layer.provenance.get(path, {}).items():
             if declared.get(key, declaring) != declaring:
                 raise ConfigError(
                     f"{path}[{key!r}] is declared in {declared[key]!r} and in {declaring!r}"
@@ -539,8 +553,8 @@ def load_config(
     omega_conf = _ensure_omegaconf()
     _register_resolvers(resolvers, omega_conf)
 
-    cache: dict[str, _Layer] = {}
-    layers = [_load_file(path, path, omega_conf, set(), keyed, cache) for path in config_files]
+    state = _LoadState(omega_conf=omega_conf, keyed=keyed, cache={})
+    layers = [_load_file(path, path, set(), state) for path in config_files]
     for path in keyed:
         _check_form(path, layers, omega_conf)
     return _merge_layers(layers, omega_conf)  # type: ignore[no-any-return]

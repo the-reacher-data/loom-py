@@ -95,6 +95,10 @@ def default_resolvers() -> tuple[ConfigResolver, ...]:
 
     Both use the AWS SDK's default region and credential chain and create
     their client lazily on the first resolution.
+
+    Returns:
+        A :class:`~loom.core.config.secrets.SecretsManagerResolver` followed
+        by a :class:`~loom.core.config.ssm.SsmResolver`, both freshly built.
     """
     # Local imports keep this protocol module free of the AWS implementations.
     from loom.core.config.secrets import SecretsManagerResolver
@@ -110,7 +114,16 @@ def merge_resolvers(
 
     A default is dropped when an explicit resolver takes its name or when a
     resolver with that name is already registered in OmegaConf; the latter
-    is logged at INFO level.
+    is logged at DEBUG level.
+
+    Args:
+        explicit: Resolvers that keep their position and always win their
+            name.
+        defaults: Candidate resolvers appended after ``explicit`` when their
+            name is not taken.
+
+    Returns:
+        ``explicit`` in order, followed by the kept ``defaults`` in order.
     """
     # Local import keeps omegaconf out of the import of ``loom.core.config``.
     from omegaconf import OmegaConf
@@ -121,7 +134,7 @@ def merge_resolvers(
         if resolver.name in taken:
             continue
         if OmegaConf.has_resolver(resolver.name):
-            logger.info(
+            logger.debug(
                 "config resolver %r already registered; loom default skipped", resolver.name
             )
             continue
@@ -134,6 +147,14 @@ def with_default_resolvers(explicit: Sequence[ConfigResolver] = ()) -> tuple[Con
 
     Equivalent to ``merge_resolvers(explicit, default_resolvers())``; the
     factories use it to register ``secrets`` and ``ssm`` behind user resolvers.
+
+    Args:
+        explicit: User resolvers that keep their position and always win
+            their name.
+
+    Returns:
+        ``explicit`` in order, followed by the built-in resolvers whose
+        name is neither taken by ``explicit`` nor already registered.
     """
     return merge_resolvers(explicit, default_resolvers())
 

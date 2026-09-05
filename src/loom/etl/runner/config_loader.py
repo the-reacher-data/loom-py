@@ -50,10 +50,10 @@ def _load_yaml(
         loom.core.config.ConfigError: When the file cannot be read or parsed,
             the ``storage:`` key is absent, a keyed collection holds a
             duplicate key or mixes list and mapping forms, or the config
-            shape is invalid.
+            shape is invalid, including a profile with an unknown field.
         ValueError: When a mapping entry carries a ``name`` different from
             its key, a ``path.profile`` is not declared in ``storage.profiles``,
-            or a profile carries ``uri`` or an unknown field.
+            or a profile carries ``uri``.
     """
     ctx = ConfigContext.from_yaml(
         path,
