@@ -1,4 +1,4 @@
-"""Tests for ``loom.prefect.deploy._yaml.read_yaml`` (delegates to
+"""Tests for ``loom.prefect._flow_yaml.read_yaml`` (delegates to
 ``loom.core.config.load_config``).
 """
 
@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from loom.prefect.deploy._yaml import read_yaml
+from loom.core.config import ConfigError
+from loom.prefect._flow_yaml import read_yaml
 
 
 def _write(tmp_path: Path, name: str, body: str) -> Path:
@@ -132,3 +133,10 @@ def test_read_yaml_rejects_non_mapping_top_level(tmp_path: Path) -> None:
     cfg = _write(tmp_path, "list.yaml", "- item1\n- item2\n")
     with pytest.raises(ValueError, match="mapping"):
         read_yaml(str(cfg))
+
+
+def test_read_yaml_duplicate_key_raises_config_error_naming_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "dup.yaml"
+    path.write_text("etl: a\netl: b\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match=str(path)):
+        read_yaml(str(path))

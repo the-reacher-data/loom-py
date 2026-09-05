@@ -2,9 +2,9 @@
 
 The ``etl_flow()`` factory attaches a frozen ``ETLFlowMeta`` to each
 decorated flow at ``__loom_etl_meta__``. The deployer reads it back to
-build the matching Prefect Deployment. Keeping the type in its own
-module breaks the otherwise-cyclic dependency between ``loom.prefect.flow``
-and ``loom.prefect.deploy``.
+build the matching Prefect Deployment. The type lives here, next to
+``loom.prefect._flow_yaml``, so that ``loom.prefect.flow`` imports nothing
+from ``loom.prefect.deploy``; the only cross-package edge is deploy → flow.
 """
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from loom.core.model import LoomFrozenStruct
 # Attribute name used to attach discovery metadata to each flow.
 LOOM_ETL_META_ATTR = "__loom_etl_meta__"
 
+# Storage YAML path baked into the worker image, read at flow-run time.
+DEFAULT_STORAGE_CONFIG_PATH = "/app/config.yaml"
+
+# Environment variable naming the YAML file a YAML-declared ETL is rebuilt from.
+LOOM_ETL_CONFIG = "LOOM_ETL_CONFIG"
+
 
 class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     """Per-flow metadata consumed by :func:`discover_and_deploy_etls`.
@@ -23,7 +29,8 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     Args:
         name: Logical ETL name (used as the Prefect flow name AND the
             deployment name).
-        config_path: Absolute path to the per-ETL YAML.
+        config_path: Resolved absolute path of the per-ETL YAML, or the cloud
+            URI verbatim.
         source_file: Absolute path to the user's flow module (``__file__``).
         correlation_field: Name of the parameter used as correlation
             value, or ``None`` for random suffixes.
@@ -31,6 +38,7 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         raw_params: Default parameter mapping pre-bound at deploy time.
         pool_config: Per-environment work-pool overrides
             (``environment → {"work_pool", "job_variables"}``).
+        tags: Extra deployment tags from the YAML, appended after ``name``.
     """
 
     name: str
@@ -43,4 +51,4 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     tags: tuple[str, ...] = ()
 
 
-__all__ = ["LOOM_ETL_META_ATTR", "ETLFlowMeta"]
+__all__ = ["DEFAULT_STORAGE_CONFIG_PATH", "LOOM_ETL_CONFIG", "LOOM_ETL_META_ATTR", "ETLFlowMeta"]

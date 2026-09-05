@@ -10,7 +10,7 @@ the metadata contract is made in exactly one place.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -18,9 +18,8 @@ from typing import Any
 import prefect
 
 from loom.prefect._config import FlowConfig, flow_config_from_mapping
+from loom.prefect._flow_yaml import extract_pool_config, read_yaml, resolve_config_uri
 from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
-from loom.prefect.deploy._schedule import extract_pool_config
-from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._common import coerce_tags
 from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
@@ -44,12 +43,23 @@ def load_flow_settings(config_path: str) -> FlowSettings:
     """Read the per-flow YAML into the settings every factory needs.
 
     Args:
-        config_path: Path to the per-flow YAML (schedule, params, tags, …).
+        config_path: Path or URI of the per-flow YAML (schedule, params, tags, …).
 
     Returns:
         Parsed :class:`FlowSettings`.
     """
-    raw_cfg = read_yaml(config_path)
+    return flow_settings_from_mapping(read_yaml(config_path))
+
+
+def flow_settings_from_mapping(raw_cfg: Mapping[str, Any]) -> FlowSettings:
+    """Build the settings every factory needs from an already-loaded YAML body.
+
+    Args:
+        raw_cfg: Top-level mapping of a per-flow YAML document.
+
+    Returns:
+        Parsed :class:`FlowSettings`.
+    """
     return FlowSettings(
         correlation_field=raw_cfg.get("correlation_field"),
         schedule=raw_cfg.get("schedule"),
@@ -59,6 +69,18 @@ def load_flow_settings(config_path: str) -> FlowSettings:
         notifiers=build_notifiers(raw_cfg.get("notifications")),
         retry_policy=flow_config_from_mapping(raw_cfg.get("retry")),
     )
+
+
+def flow_attribute_name(name: str) -> str:
+    """Derive the Python attribute name a flow body carries for *name*.
+
+    Args:
+        name: Logical flow name, free-form (hyphens allowed).
+
+    Returns:
+        *name* with hyphens replaced by underscores.
+    """
+    return name.replace("-", "_")
 
 
 def assemble_flow(
@@ -80,7 +102,8 @@ def assemble_flow(
         body: The ``**kwargs`` flow-body callable produced by a factory.
         signature: Synthesised ``inspect.Signature`` exposed to Prefect.
         settings: Parsed per-flow YAML settings.
-        config_path: Path to the per-flow YAML (resolved into the metadata).
+        config_path: Path or URI of the per-flow YAML. A local path is
+            resolved into the metadata; a cloud URI is recorded verbatim.
         source_file: ``__file__`` of the user's flow module.
         correlation_field: Parameter whose value seeds the run name and the
             correlation id, or ``None`` for timestamp/random naming.
@@ -92,8 +115,8 @@ def assemble_flow(
         The ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``
         attached at :data:`~loom.prefect._meta.LOOM_ETL_META_ATTR`.
     """
-    safe_name = name.replace("-", "_")
-    flow_body: Any = body  # cast to Any — __signature__ is a valid runtime attribute
+    safe_name = flow_attribute_name(name)
+    flow_body: Any = body
     flow_body.__signature__ = signature
     flow_body.__name__ = safe_name
     flow_body.__qualname__ = safe_name
@@ -113,7 +136,7 @@ def assemble_flow(
         LOOM_ETL_META_ATTR,
         ETLFlowMeta(
             name=name,
-            config_path=str(Path(config_path).resolve()),
+            config_path=resolve_config_uri(config_path),
             source_file=str(Path(source_file).resolve()),
             correlation_field=correlation_field,
             schedule=settings.schedule,
@@ -125,4 +148,10 @@ def assemble_flow(
     return decorated
 
 
-__all__ = ["FlowSettings", "assemble_flow", "load_flow_settings"]
+__all__ = [
+    "FlowSettings",
+    "assemble_flow",
+    "flow_attribute_name",
+    "flow_settings_from_mapping",
+    "load_flow_settings",
+]

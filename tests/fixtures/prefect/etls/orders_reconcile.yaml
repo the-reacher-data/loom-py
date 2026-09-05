@@ -1,0 +1,3 @@
+pipeline: tests.fixtures.prefect.pipelines.OrdersPipeline
+params:
+  run_date: ${today}

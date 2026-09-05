@@ -1,0 +1,12 @@
+etls:
+  monthly_close:
+    pipeline: tests.fixtures.prefect.pipelines.OrdersPipeline
+    schedule:
+      cron: "0 3 1 * *"
+    params:
+      run_date: ${today-1d}
+    tags: [billing]
+  invoice_sync:
+    pipeline: tests.fixtures.prefect.pipelines.OrdersChildPipeline
+    params:
+      run_date: ${today}

@@ -12,7 +12,7 @@ Example::
     db = section(cfg, "database", DatabaseConfig)
 """
 
-from loom.core.config._includes import expand_config_glob
+from loom.core.config._includes import expand_config_glob, is_cloud_uri
 from loom.core.config.binder import StructBinder
 from loom.core.config.configurable import ConfigBinding, Configurable
 from loom.core.config.context import ConfigContext
@@ -42,6 +42,7 @@ __all__ = [
     "StructBinder",
     "default_resolvers",
     "expand_config_glob",
+    "is_cloud_uri",
     "load_config",
     "merge_resolvers",
     "section",

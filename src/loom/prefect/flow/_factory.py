@@ -10,10 +10,26 @@ import msgspec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.pipeline import ETLPipeline
 from loom.prefect._config import FlowConfig, _load_flow_config
+from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
 from loom.prefect.flow._assemble import FlowSettings, assemble_flow, load_flow_settings
 from loom.prefect.flow._body import build_flow_body
 from loom.prefect.flow._signature import synthesise_flow_signature
 from loom.prefect.manifest import ManifestStore
+
+_EXTRA_PARAMETERS = (
+    inspect.Parameter(
+        "correlation_id",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=None,
+        annotation=str | None,
+    ),
+    inspect.Parameter(
+        "processes",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=None,
+        annotation=list[str] | None,
+    ),
+)
 
 
 def etl_flow(
@@ -23,7 +39,7 @@ def etl_flow(
     params_type: type[msgspec.Struct],
     config_path: str,
     source_file: str,
-    storage_config_path: str = "/app/config.yaml",
+    storage_config_path: str = DEFAULT_STORAGE_CONFIG_PATH,
     flow_config_path: str | None = None,
     manifest_store: ManifestStore | None = None,
 ) -> Any:
@@ -54,9 +70,51 @@ def etl_flow(
         attached at ``__loom_etl_meta__``.
     """
     settings = load_flow_settings(config_path)
-    plan = ETLCompiler().compile(pipeline)
-    flow_cfg = _resolve_flow_config(flow_config_path, pipeline, settings)
+    return build_etl_flow(
+        name=name,
+        pipeline=pipeline,
+        params_type=params_type,
+        settings=settings,
+        config_path=config_path,
+        source_file=source_file,
+        storage_config_path=storage_config_path,
+        manifest_store=manifest_store,
+        flow_config=_resolve_flow_config(flow_config_path, pipeline, settings),
+    )
 
+
+def build_etl_flow(
+    *,
+    name: str,
+    pipeline: type[ETLPipeline[Any]],
+    params_type: type[msgspec.Struct],
+    settings: FlowSettings,
+    config_path: str,
+    source_file: str,
+    storage_config_path: str = DEFAULT_STORAGE_CONFIG_PATH,
+    manifest_store: ManifestStore | None = None,
+    flow_config: FlowConfig | None = None,
+) -> Any:
+    """Assemble the per-ETL flow from already-resolved settings.
+
+    Args:
+        name: Logical ETL name (Prefect flow name AND deployment name).
+        pipeline: ``ETLPipeline`` subclass to execute.
+        params_type: ``msgspec.Struct`` whose fields become flow kwargs.
+        settings: Parsed per-flow settings (from a file or a mapping).
+        config_path: Path or URI of the per-ETL YAML recorded in the metadata.
+        source_file: ``__file__`` of the module Prefect loads the flow from.
+        storage_config_path: Storage YAML path read at flow-run time.
+        manifest_store: Optional store for cross-attempt resume.
+        flow_config: Retry policy applied to the Prefect flow; defaults to
+            ``settings.retry_policy``.
+
+    Returns:
+        A ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``.
+    """
+    if flow_config is None:
+        flow_config = settings.retry_policy
+    plan = ETLCompiler().compile(pipeline)
     flow_body = build_flow_body(
         flow_name=name,
         pipeline=pipeline,
@@ -66,33 +124,16 @@ def etl_flow(
         storage_config_path=storage_config_path,
         manifest_store=manifest_store,
     )
-    signature = synthesise_flow_signature(
-        params_type,
-        extra_parameters=[
-            inspect.Parameter(
-                "correlation_id",
-                inspect.Parameter.KEYWORD_ONLY,
-                default=None,
-                annotation=str | None,
-            ),
-            inspect.Parameter(
-                "processes",
-                inspect.Parameter.KEYWORD_ONLY,
-                default=None,
-                annotation=list[str] | None,
-            ),
-        ],
-    )
     return assemble_flow(
         name=name,
         body=flow_body,
-        signature=signature,
+        signature=synthesise_flow_signature(params_type, extra_parameters=_EXTRA_PARAMETERS),
         settings=settings,
         config_path=config_path,
         source_file=source_file,
         correlation_field=settings.correlation_field,
-        retries=flow_cfg.flow_retries,
-        retry_delay_seconds=flow_cfg.flow_retry_delay_seconds,
+        retries=flow_config.flow_retries,
+        retry_delay_seconds=flow_config.flow_retry_delay_seconds,
     )
 
 
