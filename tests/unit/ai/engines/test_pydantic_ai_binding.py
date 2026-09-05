@@ -83,14 +83,26 @@ class TestModelBinding:
 
         assert model.client.api_key == "the-real-key"
 
-    @pytest.mark.parametrize("provider", ["openai", "anthropic"])
+    def test_lee_la_variable_por_defecto_del_sdk_cuando_no_hay_credentials_ref(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a reference the vendor SDK reads its own variable."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sdk-default")
+        target = InferenceTarget(provider="openai", model="a-model")
+
+        assert resolve_model(target).client.api_key == "sdk-default"
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "gateway"])
     def test_falla_nombrando_la_variable_cuando_no_esta_puesta(
         self, provider: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An unset variable is a start-up failure, not a 401 on the first call."""
         monkeypatch.delenv("VENDOR_API_KEY", raising=False)
         target = InferenceTarget(
-            provider=provider, model="a-model", credentials_ref="VENDOR_API_KEY"
+            provider=provider,
+            model="a-model",
+            endpoint="https://gateway.example.com/v1" if provider == "gateway" else None,
+            credentials_ref="VENDOR_API_KEY",
         )
 
         with pytest.raises(AgentCompilationError) as failure:
@@ -99,6 +111,7 @@ class TestModelBinding:
         issue = failure.value.issues[0]
         assert issue.code is AgentErrorCode.PROVIDER_SETTING_MISSING
         assert "VENDOR_API_KEY" in issue.message
+        assert provider in issue.message
 
     def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido(self) -> None:
         """An unknown provider dies at start-up, naming what this release binds."""

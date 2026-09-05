@@ -330,6 +330,7 @@ def _announce_mount(
             name,
         )
         return
+    kinds = runtime.capability_kinds(name)
     _logger.warning(
         "Agent endpoints mounted: path=%s/%s/{run,stream,health} agent=%s auth=%s "
         "allow_anonymous=%s capabilities=%s. %s",
@@ -338,8 +339,8 @@ def _announce_mount(
         name,
         endpoint.auth,
         endpoint.allow_anonymous,
-        ",".join(runtime.capability_kinds(name)) or "none",
-        _identity_notice(endpoint, runtime.capability_kinds(name)),
+        ",".join(kinds) or "none",
+        _identity_notice(endpoint, kinds),
     )
 
 

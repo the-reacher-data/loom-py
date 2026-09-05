@@ -28,7 +28,7 @@ Usage::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar, get_args, get_origin
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
 from loom.core.repository.abc.query import PaginationMode
 from loom.core.use_case.use_case import UseCase
@@ -135,6 +135,8 @@ class RestInterface(Generic[T]):
         tags: OpenAPI tags applied to every route.
         auto: When ``True``, signals intent to use standard CRUD URL conventions.
         include: Whitelist of CRUD operation names to expose when ``auto=True``.
+        auto_crud_model: Model whose repository the generated CRUD routes need;
+            set only when routes were actually generated.
             Accepted values: ``"create"``, ``"get"``, ``"list"``, ``"update"``,
             ``"delete"``.  Empty tuple means all operations are allowed.
         routes: Explicit route declarations.  Custom routes always override
@@ -169,6 +171,7 @@ class RestInterface(Generic[T]):
     prefix: str = ""
     tags: tuple[str, ...] = ()
     auto: bool = False
+    auto_crud_model: ClassVar[type[Any] | None] = None
     include: tuple[str, ...] = ()
     routes: tuple[RestRoute, ...] = ()
     pagination_mode: PaginationMode | None = None
@@ -197,6 +200,7 @@ class RestInterface(Generic[T]):
         from loom.rest.autocrud import build_auto_routes  # lazy — avoids circular import
 
         cls.routes = build_auto_routes(model_type, cls.include)
+        cls.auto_crud_model = model_type
 
 
 @dataclass(frozen=True)

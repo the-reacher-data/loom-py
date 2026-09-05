@@ -12,6 +12,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel, ColumnField
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
+from loom.core.use_case.use_case import UseCase
 from loom.rest.fastapi import auto
 from loom.rest.fastapi.auto import (
     _AppConfig,
@@ -21,7 +22,7 @@ from loom.rest.fastapi.auto import (
     _noop_lifespan,
     _resolve_persistence,
 )
-from loom.rest.model import RestInterface
+from loom.rest.model import RestInterface, RestRoute
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -201,7 +202,7 @@ def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
 def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Auto-CRUD over a model discovery never found is refused by name."""
+    """Generated CRUD routes over a model discovery never found are refused by name."""
 
     class OrphanInterface(RestInterface[PersistenceNoneRecord]):
         prefix = "/orphans"
@@ -220,6 +221,34 @@ def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
 
     assert "PersistenceNoneRecord" in str(exc_info.value)
     assert "app.discovery" in str(exc_info.value)
+
+
+def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interface that declares its own routes generates no CRUD, so it is left alone."""
+
+    class _ListRecords(UseCase[PersistenceNoneRecord, None]):
+        async def execute(self) -> None:  # pragma: no cover - never invoked
+            return None
+
+    class HandWrittenInterface(RestInterface[PersistenceNoneRecord]):
+        prefix = "/hand-written"
+        auto = True
+        routes = (RestRoute(use_case=_ListRecords, method="GET", path=""),)
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(HandWrittenInterface,), agent_specs=()
+        ),
+    )
+
+    runtime, _wiring, discovered = _build_bootstrap(_AppConfig(name="demo"), _ctx())
+
+    assert runtime is not None
+    assert discovered.models == ()
 
 
 def test_build_bootstrap_none_with_models_builds_without_compiling(

@@ -29,7 +29,8 @@ def test_mongo_extra_installs_pymongo() -> None:
     requirements = _extra_requirements("mongo")
 
     assert "pymongo" in requirements
-    assert str(requirements["pymongo"].specifier) == "<5.0,>=4.6"
+    assert requirements["pymongo"].specifier.contains("4.6")
+    assert not requirements["pymongo"].specifier.contains("5.0")
 
 
 def test_sqlalchemy_extra_pins_greenlet_explicitly() -> None:

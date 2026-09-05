@@ -106,9 +106,8 @@ class PolarsProvider(BackendProvider):
 def _build_mongo_client(cfg: MongoConfig) -> Any:
     """Build a PyMongo client for the configured Mongo source.
 
-    ``pymongo`` ships with the ``mongo`` extra and is imported only when a
-    Mongo URI is configured, so ``loom-kernel[etl-polars]`` loads this provider
-    without it.
+    Raises:
+        ImportError: When the ``mongo`` extra is not installed.
     """
     try:
         from pymongo import MongoClient

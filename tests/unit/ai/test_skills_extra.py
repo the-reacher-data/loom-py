@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -12,11 +13,11 @@ from loom.ai.errors import AgentCompilationError, AgentErrorCode
 
 
 def test_falla_nombrando_ai_harness_cuando_el_harness_no_esta_instalado(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The message names ``ai-harness``, not the missing module."""
     monkeypatch.setitem(sys.modules, "pydantic_ai_harness", None)
-    plan = _plan_with_skills()
+    plan = _plan_with_skills(tmp_path)
 
     with pytest.raises(AgentCompilationError) as failure:
         build_capabilities(plan)
@@ -26,13 +27,13 @@ def test_falla_nombrando_ai_harness_cuando_el_harness_no_esta_instalado(
     assert "ai-harness" in issue.message
 
 
-def _plan_with_skills() -> object:
+def _plan_with_skills(directory: Path) -> object:
     """Minimal stand-in carrying one compiled ``skills`` grant."""
 
     class _Plan:
         capabilities = (
             CompiledSkillsCapability(
-                library="./skills", directory="/tmp/skills", names=("triage",)
+                library="./skills", directory=str(directory), names=("triage",)
             ),
         )
 
