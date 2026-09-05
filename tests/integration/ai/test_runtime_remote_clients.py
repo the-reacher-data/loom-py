@@ -34,6 +34,7 @@ from tests.integration.ai.conftest import (
     RecordingMcpSession,
     StubDepsFactory,
     StubMcpClient,
+    _until,
     make_ai_config,
     make_mcp_capability,
     make_mcp_servers,
@@ -124,16 +125,6 @@ def _hanging_client(server: str, log: list[str]) -> StubMcpClient:
         log=log,
         never_connects=True,
     )
-
-
-async def _until(predicate: Callable[[], bool], *, timeout: float = 2.0) -> None:
-    """Poll *predicate* until it holds, failing the test if it never does."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("the runtime never reached the expected state")
 
 
 class TestArranqueRequerido:

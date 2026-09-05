@@ -40,7 +40,7 @@ import datetime
 import os
 import socket
 import threading
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,9 +52,6 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart
-from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 
 from loom.ai.abc import AgentEvent, ToolResultEvent
 from loom.ai.compiler import AgentCompiler, AgentPlan
@@ -66,6 +63,7 @@ from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.use_case.registry import UseCaseRegistry
+from tests.integration.ai.conftest import CANARY, CapabilityDepsFactory, ScriptedToolModel
 
 # fastmcp lives in the optional 'mcp-tests' group, not in 'dev': it pulls
 # ~26 packages and resolves py-key-value-aio backwards, a transitive shared
@@ -79,8 +77,6 @@ _AGENT = "order-clerk"
 _SERVER = "orders"
 _PROMPT = "What has acme ordered?"
 
-CANARY = "canary-9d41-order-payload"
-"""Marker the served payload carries; no stream event may ever contain it."""
 
 _ANSWER_SCHEMA: Mapping[str, Any] = {
     "type": "object",
@@ -205,96 +201,6 @@ def server_url(mcp_server: LiveMcpServer, monkeypatch: pytest.MonkeyPatch) -> st
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class CapabilityDeps:
-    """Bundle satisfying the capability boundary: a verified caller and a container."""
-
-    identity: Identity
-    container: LoomContainer
-
-
-class CapabilityDepsFactory:
-    """Per-invocation factory producing a well-formed :class:`CapabilityDeps`."""
-
-    def build(self, identity: Identity, container: LoomContainer) -> object:
-        """Return the bundle every MCP tool call is guarded against."""
-        return CapabilityDeps(identity=identity, container=container)
-
-
-class ScriptedToolModel:
-    """A model that issues a fixed tool call, then answers.
-
-    It records the tool surface the engine offered it, which is how a test
-    observes what the grant's filter actually let through.
-
-    Args:
-        calls: ``(tool name, arguments)`` pairs to issue, in order.
-    """
-
-    def __init__(self, *, calls: Sequence[tuple[str, Mapping[str, Any]]] = ()) -> None:
-        self.calls = tuple(calls)
-        self.offered_tools: tuple[str, ...] = ()
-        self.tool_returns: list[str] = []
-        self._answer = msgspec.json.encode({"answer": "done"}).decode()
-        self._step = 0
-        self._seen: set[str] = set()
-
-    def as_model(self) -> Model:
-        """Return the ``FunctionModel`` the engine will drive.
-
-        Both modes are scripted: the runtime always drives the engine through
-        ``run_stream``, so a response-only ``FunctionModel`` would fail the run
-        before the MCP toolset was ever consulted.
-        """
-        return FunctionModel(self._respond, stream_function=self._stream)
-
-    def _respond(self, messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        self.offered_tools = tuple(tool.name for tool in info.function_tools)
-        self._collect(messages)
-        if self._step < len(self.calls):
-            name, arguments = self.calls[self._step]
-            self._step += 1
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name=name, args=dict(arguments), tool_call_id=f"call-{self._step}"
-                    )
-                ]
-            )
-        return ModelResponse(
-            parts=[ToolCallPart(tool_name=info.output_tools[0].name, args=self._answer)]
-        )
-
-    async def _stream(
-        self, messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[DeltaToolCalls]:
-        self.offered_tools = tuple(tool.name for tool in info.function_tools)
-        self._collect(messages)
-        if self._step < len(self.calls):
-            name, arguments = self.calls[self._step]
-            self._step += 1
-            yield {
-                0: DeltaToolCall(
-                    name=name,
-                    json_args=msgspec.json.encode(dict(arguments)).decode(),
-                    tool_call_id=f"call-{self._step}",
-                )
-            }
-            return
-        yield {
-            0: DeltaToolCall(
-                name=info.output_tools[0].name, json_args=self._answer, tool_call_id="final"
-            )
-        }
-
-    def _collect(self, messages: Sequence[ModelMessage]) -> None:
-        for message in messages:
-            for part in getattr(message, "parts", ()):
-                if isinstance(part, ToolReturnPart) and part.tool_call_id not in self._seen:
-                    self._seen.add(part.tool_call_id)
-                    self.tool_returns.append(str(part.content))
-
-
 def _config(url: str) -> AiConfig:
     """Deployment configuration registering the live server under its name."""
     return AiConfig(
@@ -337,12 +243,6 @@ def _runtime(url: str, plan: AgentPlan, model: ScriptedToolModel) -> Any:
         container=LoomContainer(),
         mcp_client_factory=create_mcp_client,
     )
-
-
-@pytest.fixture
-def caller() -> Identity:
-    """Verified caller every run in this module executes as."""
-    return Identity(subject="clerk-1", roles=("clerk",), mechanism="test")
 
 
 # ---------------------------------------------------------------------------

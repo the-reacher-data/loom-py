@@ -41,6 +41,38 @@ every governed capability into an anonymous one. MCP is an **outbound** edge
 from the agent, always.
 ```
 
+## Configuring a server
+
+The artifact **names** a server; it never locates it:
+
+```yaml
+# ai/agents/incident-triage/agent.yaml
+capabilities:
+  - kind: mcp
+    server: runbooks
+    include: ["search_*"]      # empty means all
+    exclude: ["execute_*"]     # applied after include
+```
+
+```yaml
+# config/api.yaml
+ai:
+  mcp_servers:
+    runbooks:
+      url: https://runbooks.internal.example.com/mcp
+      headers_ref: ${secrets:/loom/runbooks/api-key}   # resolved, never literal
+      timeout_ms: 20000
+```
+
+That separation is what lets the same artifact run against a staging server and
+a production one with no edit.
+
+Under `transport: http` (the default) the URL must be `https://`, carry no
+credentials in its userinfo and no query string — compilation refuses anything
+else and redacts the URL in the error, so the message cannot leak the credential
+it just rejected. `headers_ref` is a reference the deployment's secret resolver
+looks up; a literal secret is rejected fail-closed.
+
 ### stdio: a subprocess in your container
 
 The MCP specification also defines a stdio transport, where the client launches
@@ -79,47 +111,15 @@ What stdio does not do:
 - **it does not inherit your environment.** The child receives only `HOME`,
   `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` plus what `env` declares, so a
   secret in the worker's environment cannot leak into the tool by accident;
-- **it does not precompile your command.** The handshake has a five-second
-  budget, so a cold `uvx`/`npx` download will miss it: install the server in the
-  image and let `command` run it.
+- **it does not precompile your command.** The client gives the handshake a
+  five-second budget, so a cold `uvx`/`npx` download will miss it: install the
+  server in the image and let `command` run it.
 
 Values in `env` reach loom already resolved — `${secrets:…}` is an OmegaConf
 resolver that runs before this configuration is validated — so loom cannot tell a
 resolved secret from a literal one. It rejects only what cannot be a value at
 all (spaces, braces, quotes, userinfo), which is what catches a broken
 interpolation; keeping real secrets out of the file is the deployment's job.
-
-## Configuring a server
-
-The artifact **names** a server; it never locates it:
-
-```yaml
-# ai/agents/incident-triage/agent.yaml
-capabilities:
-  - kind: mcp
-    server: runbooks
-    include: ["search_*"]      # empty means all
-    exclude: ["execute_*"]     # applied after include
-```
-
-```yaml
-# config/api.yaml
-ai:
-  mcp_servers:
-    runbooks:
-      url: https://runbooks.internal.example.com/mcp
-      headers_ref: ${secrets:/loom/runbooks/api-key}   # resolved, never literal
-      timeout_ms: 20000
-```
-
-That separation is what lets the same artifact run against a staging server and
-a production one with no edit.
-
-Under `transport: http` (the default) the URL must be `https://`, carry no
-credentials in its userinfo and no query string — compilation refuses anything else and redacts the URL in the error, so
-the message cannot leak the credential it just rejected. `headers_ref` is a
-reference the deployment's secret resolver looks up; a literal secret is
-rejected fail-closed.
 
 ### Failures happen at start-up
 

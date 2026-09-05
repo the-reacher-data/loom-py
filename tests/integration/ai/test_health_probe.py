@@ -9,8 +9,6 @@ agent as ``unavailable`` and keep going.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from loom.ai.abc import HealthStatus
@@ -20,6 +18,7 @@ from tests.integration.ai.conftest import (
     CountingEngineProvider,
     ScriptedEngine,
     StubDepsFactory,
+    _until,
     make_ai_config,
     make_plan,
 )
@@ -50,17 +49,6 @@ class ProbeFailingEngine(ScriptedEngine):
             self.remaining -= 1
             raise RuntimeError("the provider endpoint https://vendor.internal/v1 refused")
         return await super().health()
-
-
-async def _until(predicate: object, *, timeout: float = 2.0) -> None:
-    """Poll *predicate* until it holds, failing the test if it never does."""
-    assert callable(predicate)
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("the probe never reached the expected state")
 
 
 @pytest.fixture

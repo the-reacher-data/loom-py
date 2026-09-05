@@ -454,12 +454,12 @@ def _validate_mcp_transport(component: str, server: McpServerConfig) -> list[Age
             )
         ]
     if server.transport == "stdio":
-        return _validate_stdio_fields(component, server)
-    return _validate_http_fields(component, server)
+        return _validate_stdio_server(component, server)
+    return _validate_http_server(component, server)
 
 
-def _validate_http_fields(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
-    """Collect the coherence issues of a ``transport: http`` server."""
+def _validate_http_server(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the coherence, URL and credential issues of a ``transport: http`` server."""
     issues: list[AgentCompilationIssue] = []
     if server.url is None:
         issues.append(mcp_transport_invalid(component, "transport 'http' requires 'url'"))
@@ -473,11 +473,15 @@ def _validate_http_fields(component: str, server: McpServerConfig) -> list[Agent
         issues.append(
             mcp_transport_invalid(component, f"{stdio_only} do not apply to transport 'http'")
         )
+    if server.url is not None:
+        issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
+    issues.extend(_validate_headers_ref(component, server.headers_ref))
+    issues.extend(_validate_auth(component, server.headers_ref, server.auth))
     return issues
 
 
-def _validate_stdio_fields(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
-    """Collect the coherence issues of a ``transport: stdio`` server."""
+def _validate_stdio_server(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the coherence and environment issues of a ``transport: stdio`` server."""
     issues: list[AgentCompilationIssue] = []
     if not server.command:
         issues.append(
@@ -510,16 +514,6 @@ def _validate_mcp_env(component: str, env: Mapping[str, str] | None) -> list[Age
     return issues
 
 
-def _validate_http_endpoint(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
-    """Collect the URL and credential issues of a ``transport: http`` server."""
-    issues: list[AgentCompilationIssue] = []
-    if server.url is not None:
-        issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
-    issues.extend(_validate_headers_ref(component, server.headers_ref))
-    issues.extend(_validate_auth(component, server.headers_ref, server.auth))
-    return issues
-
-
 def _validate_mcp_servers(
     servers: Mapping[str, McpServerConfig],
 ) -> list[AgentCompilationIssue]:
@@ -528,8 +522,6 @@ def _validate_mcp_servers(
     for name, server in servers.items():
         component = f"ai.mcp_servers.{name}"
         issues.extend(_validate_mcp_transport(component, server))
-        if server.transport == "http":
-            issues.extend(_validate_http_endpoint(component, server))
         if not _TIMEOUT_MS_MIN <= server.timeout_ms <= _TIMEOUT_MS_MAX:
             issues.append(
                 policy_out_of_range(

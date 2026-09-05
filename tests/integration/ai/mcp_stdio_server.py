@@ -1,7 +1,8 @@
 """MCP server over stdio, run as a child process by the stdio end-to-end test.
 
 Writes its pid to the path given as the first argument so the test can assert
-the process is gone once the runtime that spawned it has exited.
+the process is gone once the runtime that spawned it has exited; the second
+argument is the marker a tool result carries back.
 """
 
 from __future__ import annotations
@@ -12,15 +13,13 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-CANARY = "canary-9d41-order-payload"
-
 server: FastMCP = FastMCP("orders-stdio")
 
 
 @server.tool
 def read_orders(customer: str) -> str:
     """Return the orders of one customer."""
-    return f"{customer}: 2 orders ({CANARY})"
+    return f"{customer}: 2 orders ({sys.argv[2]})"
 
 
 @server.tool
@@ -36,7 +35,11 @@ def echo_env(name: str) -> str:
 
 
 def main() -> None:
-    """Publish the pid and serve over stdio until the parent closes stdin."""
+    """Publish the pid and serve over stdio until the parent closes stdin.
+
+    Arguments: the file to write the pid to, and the marker the test looks for
+    in a tool result.
+    """
     Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
     server.run()
 

@@ -33,6 +33,7 @@ from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provide
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 
 if TYPE_CHECKING:
+    from fastmcp.client.transports import ClientTransport
     from pydantic_ai.mcp import MCPToolset
 
 
@@ -112,7 +113,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     return toolset
 
 
-def _mcp_client(component: str, capability: CompiledMcpCapability) -> Any:
+def _mcp_client(component: str, capability: CompiledMcpCapability) -> str | ClientTransport:
     """Return what ``MCPToolset`` connects to for the grant's transport.
 
     Under ``http`` that is the validated server URL.  Under ``stdio`` it is a
@@ -127,12 +128,12 @@ def _mcp_client(component: str, capability: CompiledMcpCapability) -> Any:
     if capability.transport == "http" and capability.url is not None:
         return capability.url
     if capability.transport == "stdio" and capability.command is not None:
-        return _stdio_transport(capability)
+        return _stdio_transport(capability.command, capability)
     reason = f"transport {capability.transport!r} is not served by the pydantic-ai engine"
     raise AgentCompilationError([mcp_transport_invalid(component, reason)])
 
 
-def _stdio_transport(capability: CompiledMcpCapability) -> Any:
+def _stdio_transport(command: str, capability: CompiledMcpCapability) -> ClientTransport:
     """Build the stdio transport of one grant, tied to its owner's lifetime.
 
     Raises:
@@ -142,9 +143,6 @@ def _stdio_transport(capability: CompiledMcpCapability) -> Any:
         from fastmcp.client.transports import StdioTransport
     except ImportError as exc:
         raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
-    command = capability.command
-    if command is None:  # pragma: no cover - configuration guarantees it
-        raise AgentCompilationError([provider_not_installed("mcp", "mcp")])
     return StdioTransport(
         command=command,
         args=list(capability.args),

@@ -25,10 +25,9 @@ from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.use_case.registry import UseCaseRegistry
+from tests.integration.ai.conftest import CANARY, CapabilityDepsFactory, ScriptedToolModel, _until
 
 pytest.importorskip("fastmcp", reason="fastmcp is not installed: uv sync --group mcp-tests")
-
-from .test_mcp_end_to_end import CANARY, CapabilityDepsFactory, ScriptedToolModel  # noqa: E402
 
 _AGENT = "order-clerk"
 _SERVER = "orders"
@@ -59,7 +58,7 @@ def _config(
             _SERVER: McpServerConfig(
                 transport="stdio",
                 command=command,
-                args=(_SCRIPT, str(pid_file)),
+                args=(_SCRIPT, str(pid_file), CANARY),
                 env=env,
             )
         },
@@ -101,18 +100,6 @@ def _runtime(config: AiConfig, plan: AgentPlan, model: ScriptedToolModel) -> Any
     )
 
 
-async def _until(predicate: Any, *, timeout_s: float = 2.0) -> None:
-    """Poll *predicate* until it holds, failing the test if it never does."""
-    import asyncio
-
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    raise AssertionError("the runtime never reached the expected state")
-
-
 def _wait_until_gone(pid: int, *, timeout_s: float = 5.0) -> bool:
     """Return whether the process is gone before the deadline."""
     deadline = time.monotonic() + timeout_s
@@ -123,12 +110,6 @@ def _wait_until_gone(pid: int, *, timeout_s: float = 5.0) -> bool:
             return True
         time.sleep(0.05)
     return False
-
-
-@pytest.fixture
-def caller() -> Identity:
-    """Verified caller every run in this module executes as."""
-    return Identity(subject="clerk-1", roles=("clerk",), mechanism="test")
 
 
 class TestServidorStdio:
@@ -147,22 +128,6 @@ class TestServidorStdio:
 
         assert model.offered_tools == ("read_orders",)
         assert any(CANARY in returned for returned in model.tool_returns)
-
-    async def test_el_arranque_falla_cuando_el_include_no_casa_ninguna_tool(
-        self, tmp_path: Path
-    ) -> None:
-        """A filter selecting none of the real tools aborts start-up."""
-        config = _config(tmp_path / "pid")
-        model = ScriptedToolModel()
-        plan = _compile(config, McpCapability(server=_SERVER, include=("purge_*",)))
-
-        with pytest.raises(AgentCompilationError) as failure:
-            async with _runtime(config, plan, model):
-                pass
-
-        assert AgentErrorCode.TOOL_FILTER_MATCHES_NOTHING in {
-            issue.code for issue in failure.value.issues
-        }
 
     async def test_el_subproceso_muere_al_salir_el_runtime(
         self, tmp_path: Path, caller: Identity
