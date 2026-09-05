@@ -11,6 +11,9 @@ Public surface
   month or year), then finalizes once after all chunks.
 - :data:`BackfillChunk` — chunk granularity literal accepted by
   :func:`backfill_flow`.
+- :func:`build_etl_flow`, :func:`flow_settings_from_mapping` and
+  :func:`flow_attribute_name` — the seams the deployer uses to rebuild an
+  ETL flow from an already-loaded YAML body.
 
 The sub-modules here split the factory's concerns:
 
@@ -33,8 +36,17 @@ The sub-modules here split the factory's concerns:
   schedules when the flow finally fails).
 """
 
+from loom.prefect.flow._assemble import flow_attribute_name, flow_settings_from_mapping
 from loom.prefect.flow._backfill import BackfillChunk, backfill_flow
-from loom.prefect.flow._factory import etl_flow
+from loom.prefect.flow._factory import build_etl_flow, etl_flow
 from loom.prefect.flow._maintenance import maintenance_flow
 
-__all__ = ["BackfillChunk", "backfill_flow", "etl_flow", "maintenance_flow"]
+__all__ = [
+    "BackfillChunk",
+    "backfill_flow",
+    "build_etl_flow",
+    "etl_flow",
+    "flow_attribute_name",
+    "flow_settings_from_mapping",
+    "maintenance_flow",
+]

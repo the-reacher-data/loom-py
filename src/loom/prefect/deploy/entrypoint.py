@@ -14,14 +14,21 @@ import os
 from typing import Any
 
 from loom.core.config import ConfigError
+from loom.prefect._meta import LOOM_ETL_CONFIG
 from loom.prefect.deploy._yaml_etls import EtlDeclaration, load_declaration
-from loom.prefect.flow._factory import build_etl_flow
-
-LOOM_ETL_CONFIG = "LOOM_ETL_CONFIG"
+from loom.prefect.flow import build_etl_flow
 
 
-def _build_flow(declaration: EtlDeclaration) -> Any:
-    """Build the Prefect flow of a YAML declaration, sourced from this module."""
+def build_flow(declaration: EtlDeclaration) -> Any:
+    """Build the Prefect flow of a YAML declaration, sourced from this module.
+
+    Args:
+        declaration: Resolved ETL declaration.
+
+    Returns:
+        A ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``
+        attached.
+    """
     return build_etl_flow(
         name=declaration.name,
         pipeline=declaration.pipeline,
@@ -42,7 +49,7 @@ def __getattr__(attribute: str) -> Any:
             f"{LOOM_ETL_CONFIG} is not set; it must name the YAML file declaring "
             f"the ETL behind entrypoint attribute {attribute!r}"
         )
-    return _build_flow(load_declaration(config_uri, attribute))
+    return build_flow(load_declaration(config_uri, attribute))
 
 
-__all__ = ["LOOM_ETL_CONFIG"]
+__all__ = ["LOOM_ETL_CONFIG", "build_flow"]

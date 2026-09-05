@@ -165,6 +165,31 @@ def test_declaration_setting_the_variable_itself_is_rejected_naming_the_etl(
     recorder.deploy.assert_not_called()
 
 
+def test_offending_declaration_after_a_valid_one_deploys_nothing(
+    tmp_path: Path, recorder: _Recorder
+) -> None:
+    path = _write(
+        tmp_path,
+        "etls.yaml",
+        f"""\
+        etls:
+          good:
+            pipeline: {PIPELINES}.OrdersPipeline
+          bad:
+            pipeline: {PIPELINES}.OrdersPipeline
+            environments:
+              staging:
+                job_variables:
+                  env:
+                    {ENV_VAR}: user-value
+        """,
+    )
+    with pytest.raises(ConfigError, match=f"'bad'.*staging.*{ENV_VAR}"):
+        discover_and_deploy_etls(config=str(path))
+    assert recorder.calls == []
+    recorder.deploy.assert_not_called()
+
+
 # --- SC-003: package path and YAML path agree ---------------------------------
 
 

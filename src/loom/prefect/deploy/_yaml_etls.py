@@ -22,12 +22,9 @@ import msgspec
 from loom.core.config import ConfigError, expand_config_glob
 from loom.etl import ETLPipeline
 from loom.prefect._flow_yaml import read_yaml, resolve_config_uri
-from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
-from loom.prefect.flow._assemble import (
-    FlowSettings,
-    flow_attribute_name,
-    flow_settings_from_mapping,
-)
+from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH, LOOM_ETL_CONFIG
+from loom.prefect.flow import flow_attribute_name, flow_settings_from_mapping
+from loom.prefect.flow._assemble import FlowSettings
 
 
 @dataclass(frozen=True)
@@ -64,7 +61,8 @@ def read_declarations(config: str) -> tuple[EtlDeclaration, ...]:
 
     Raises:
         ConfigError: When a file declares no ETL, a dotted path does not import
-            or has the wrong type, a name yields no identifier, or two
+            or has the wrong type, a name yields no identifier, a declaration
+            sets ``LOOM_ETL_CONFIG`` under ``job_variables.env``, or two
             declarations share a name or an attribute.
     """
     declarations: list[EtlDeclaration] = []
@@ -124,15 +122,28 @@ def _declaration(name: str, body: Any, uri: str) -> EtlDeclaration:
     if not isinstance(body, Mapping):
         raise ConfigError(f"{uri}: ETL {name!r} must be a mapping")
     pipeline = _import_pipeline(name, body.get("pipeline"), uri)
+    settings = flow_settings_from_mapping(body)
+    _reject_reserved_env(name, settings, uri)
     return EtlDeclaration(
         name=name,
         attribute=_attribute_for(name, uri),
         config_uri=uri,
         pipeline=pipeline,
         params_type=_resolve_params_type(name, body.get("params_type"), pipeline, uri),
-        settings=flow_settings_from_mapping(body),
+        settings=settings,
         storage_config_path=str(body.get("storage_config_path", DEFAULT_STORAGE_CONFIG_PATH)),
     )
+
+
+def _reject_reserved_env(name: str, settings: FlowSettings, uri: str) -> None:
+    """Refuse a declaration that sets the variable the deployer records itself."""
+    for environment, pool in settings.pool_config.items():
+        user_env = pool.get("job_variables", {}).get("env") or {}
+        if LOOM_ETL_CONFIG in user_env:
+            raise ConfigError(
+                f"{uri}: ETL {name!r}: environments.{environment}.job_variables.env may not "
+                f"set {LOOM_ETL_CONFIG}; the deployer records it from the validated declaration"
+            )
 
 
 def _attribute_for(name: str, uri: str) -> str:
@@ -206,22 +217,23 @@ def _import_object(etl: str, dotted: str, uri: str) -> Any:
 
 
 def _check_unique(declarations: list[EtlDeclaration]) -> None:
-    by_name: dict[str, str] = {}
+    by_name: dict[str, EtlDeclaration] = {}
     by_attribute: dict[str, EtlDeclaration] = {}
     for declaration in declarations:
-        if declaration.name in by_name:
+        same_name = by_name.get(declaration.name)
+        if same_name is not None:
             raise ConfigError(
-                f"ETL {declaration.name!r} is declared in {by_name[declaration.name]!r} "
+                f"ETL {declaration.name!r} is declared in {same_name.config_uri!r} "
                 f"and in {declaration.config_uri!r}"
             )
-        previous = by_attribute.get(declaration.attribute)
-        if previous is not None:
+        same_attribute = by_attribute.get(declaration.attribute)
+        if same_attribute is not None:
             raise ConfigError(
-                f"ETLs {previous.name!r} ({previous.config_uri}) and {declaration.name!r} "
-                f"({declaration.config_uri}) both map to entrypoint attribute "
-                f"{declaration.attribute!r}"
+                f"ETLs {same_attribute.name!r} ({same_attribute.config_uri}) and "
+                f"{declaration.name!r} ({declaration.config_uri}) both map to entrypoint "
+                f"attribute {declaration.attribute!r}"
             )
-        by_name[declaration.name] = declaration.config_uri
+        by_name[declaration.name] = declaration
         by_attribute[declaration.attribute] = declaration
 
 

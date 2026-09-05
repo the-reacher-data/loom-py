@@ -48,7 +48,7 @@ def resolve_config_uri(config_path: str) -> str:
         config_path: Local path (optionally a glob) or cloud URI.
 
     Returns:
-        The value recorded in flow metadata and job variables.
+        The resolved absolute path of a local entry, or the cloud URI verbatim.
     """
     if is_cloud_uri(config_path):
         return config_path

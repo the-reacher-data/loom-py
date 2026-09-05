@@ -16,7 +16,7 @@ from loom.prefect.flow._body import build_flow_body
 from loom.prefect.flow._signature import synthesise_flow_signature
 from loom.prefect.manifest import ManifestStore
 
-_EXTRA_PARAMETERS = [
+_EXTRA_PARAMETERS = (
     inspect.Parameter(
         "correlation_id",
         inspect.Parameter.KEYWORD_ONLY,
@@ -29,7 +29,7 @@ _EXTRA_PARAMETERS = [
         default=None,
         annotation=list[str] | None,
     ),
-]
+)
 
 
 def etl_flow(

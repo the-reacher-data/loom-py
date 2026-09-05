@@ -5,20 +5,16 @@ from __future__ import annotations
 import importlib
 import os
 import pkgutil
-import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from loom.core.config import ConfigError
-from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
+from loom.prefect._meta import LOOM_ETL_CONFIG, LOOM_ETL_META_ATTR, ETLFlowMeta
 from loom.prefect.deploy import entrypoint
 from loom.prefect.deploy._schedule import build_cron_schedule
 from loom.prefect.deploy._yaml_etls import EtlDeclaration, read_declarations
-
-_ENV_LOCK = threading.Lock()
 
 
 def discover_and_deploy_etls(
@@ -36,6 +32,9 @@ def discover_and_deploy_etls(
     ``work_pool`` (an ECS-typed pool in prod, a docker-typed pool in local
     dev) and carries the per-ETL ``job_variables`` from the YAML's
     ``environments.<env>`` block.
+
+    The ``config`` path exports ``LOOM_ETL_CONFIG`` in the process
+    environment around each ``from_source`` call, so it is not thread-safe.
 
     Args:
         flows_package: Dotted package containing one module per ETL.
@@ -79,54 +78,6 @@ def _deploy_package(flows_package: str, work_pool: str, env: str) -> list[str]:
     return deployment_ids
 
 
-def _deploy_declaration(declaration: EtlDeclaration, work_pool: str, env: str) -> str:
-    flow_obj = entrypoint._build_flow(declaration)
-    meta = getattr(flow_obj, LOOM_ETL_META_ATTR)
-    recorded_env = {entrypoint.LOOM_ETL_CONFIG: declaration.config_uri}
-    plan = _plan(meta, work_pool, env, extra_env=recorded_env)
-    with _exported(entrypoint.LOOM_ETL_CONFIG, declaration.config_uri):
-        sourced = flow_obj.from_source(
-            source=plan.working_dir,
-            entrypoint=f"{entrypoint.__name__}.{declaration.attribute}",
-        )
-    return _register(sourced, meta, plan)
-
-
-@contextmanager
-def _exported(name: str, value: str) -> Iterator[None]:
-    """Set ``name`` in the process environment, restoring the previous state on exit.
-
-    Serialised with a lock so concurrent deployers in one process never see
-    each other's value.
-    """
-    with _ENV_LOCK:
-        previous = os.environ.get(name)
-        os.environ[name] = value
-        try:
-            yield
-        finally:
-            if previous is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = previous
-
-
-def _deploy_single(flow_obj: Any, meta: ETLFlowMeta, work_pool: str, env: str) -> str:
-    """Register one deployment of a flow defined in a user module.
-
-    Prefect 3 quirk: ``Flow.deploy()`` does NOT accept an ``entrypoint``
-    kwarg. For flows with synthesised signatures (our case — ``flow.fn``
-    points back at this module), the canonical override is
-    ``flow.from_source(source=..., entrypoint=...).deploy(image=..., ...)``.
-    """
-    plan = _plan(meta, work_pool, env, extra_env={})
-    sourced = flow_obj.from_source(
-        source=plan.working_dir,
-        entrypoint=_file_entrypoint(flow_obj, meta, plan.working_dir),
-    )
-    return _register(sourced, meta, plan)
-
-
 @dataclass(frozen=True)
 class _DeploymentPlan:
     """Work-pool settings of one deployment, resolved from ``meta.pool_config``."""
@@ -137,37 +88,66 @@ class _DeploymentPlan:
     job_variables: dict[str, Any]
 
 
-def _plan(
-    meta: ETLFlowMeta, work_pool: str, env: str, *, extra_env: Mapping[str, str]
-) -> _DeploymentPlan:
-    """Resolve the pool, image and job variables of ``meta`` for ``env``.
+def _deploy_declaration(declaration: EtlDeclaration, work_pool: str, env: str) -> str:
+    flow_obj = entrypoint.build_flow(declaration)
+    meta = getattr(flow_obj, LOOM_ETL_META_ATTR)
+    plan = _with_recorded_env(_plan(meta, work_pool, env), declaration.config_uri)
+    with _exported(LOOM_ETL_CONFIG, declaration.config_uri):
+        sourced = flow_obj.from_source(
+            source=plan.working_dir,
+            entrypoint=f"{entrypoint.__name__}.{declaration.attribute}",
+        )
+    return _register(sourced, meta, plan)
 
-    ``extra_env`` holds the keys the deployer records under
-    ``job_variables.env``; a declaration that sets one of them itself is
-    rejected so the recorded value is always the validated one.
+
+def _with_recorded_env(plan: _DeploymentPlan, config_uri: str) -> _DeploymentPlan:
+    """Record the declaration file under ``job_variables.env`` for the worker."""
+    user_env = plan.job_variables.get("env") or {}
+    env = {**user_env, LOOM_ETL_CONFIG: config_uri}
+    return replace(plan, job_variables={**plan.job_variables, "env": env})
+
+
+@contextmanager
+def _exported(name: str, value: str) -> Iterator[None]:
+    """Set ``name`` in the process environment, restoring the previous state on exit."""
+    previous = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = previous
+
+
+def _deploy_single(flow_obj: Any, meta: ETLFlowMeta, work_pool: str, env: str) -> str:
+    """Register one deployment of a flow defined in a user module.
+
+    Prefect 3 quirk: ``Flow.deploy()`` does NOT accept an ``entrypoint``
+    kwarg. For flows with synthesised signatures (our case — ``flow.fn``
+    points back at this module), the canonical override is
+    ``flow.from_source(source=..., entrypoint=...).deploy(image=..., ...)``.
     """
+    plan = _plan(meta, work_pool, env)
+    sourced = flow_obj.from_source(
+        source=plan.working_dir,
+        entrypoint=_file_entrypoint(flow_obj, meta, plan.working_dir),
+    )
+    return _register(sourced, meta, plan)
+
+
+def _plan(meta: ETLFlowMeta, work_pool: str, env: str) -> _DeploymentPlan:
+    """Resolve the pool, image and job variables of ``meta`` for ``env``."""
     pool_env_config = meta.pool_config.get(env, {})
     job_variables = dict(pool_env_config.get("job_variables") or {})
     image = job_variables.pop("image", None)
-    if extra_env:
-        job_variables["env"] = _merged_env(meta.name, job_variables.get("env"), extra_env)
     return _DeploymentPlan(
         work_pool=pool_env_config.get("work_pool") or work_pool,
         working_dir=job_variables.get("working_dir", "/app/src"),
         image=image,
         job_variables=job_variables,
     )
-
-
-def _merged_env(etl: str, user_env: Any, extra_env: Mapping[str, str]) -> dict[str, Any]:
-    env = dict(user_env or {})
-    reserved = sorted(set(env) & set(extra_env))
-    if reserved:
-        raise ConfigError(
-            f"ETL {etl!r}: job_variables.env may not set {', '.join(reserved)}; "
-            "the deployer records it from the validated declaration"
-        )
-    return {**env, **extra_env}
 
 
 def _register(sourced: Any, meta: ETLFlowMeta, plan: _DeploymentPlan) -> str:
