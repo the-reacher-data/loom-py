@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 
 from loom.core.config import ConfigError
+from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.deploy._yaml_etls import (
-    DEFAULT_STORAGE_CONFIG_PATH,
     EtlDeclaration,
     load_declaration,
     read_declarations,
@@ -20,7 +20,6 @@ from tests.fixtures.prefect.pipelines import (
     OrdersChildPipeline,
     OrdersParams,
     OrdersPipeline,
-    UnboundPipeline,
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "prefect" / "etls"
@@ -154,7 +153,6 @@ def test_explicit_params_type_wins_over_inference(tmp_path: Path) -> None:
 
 def test_unbound_pipeline_without_params_type_names_etl(tmp_path: Path) -> None:
     path = _write(tmp_path, "orders.yaml", f"pipeline: {PIPELINES}.UnboundPipeline\n")
-    assert UnboundPipeline
     with pytest.raises(ConfigError, match="'orders'.*params_type"):
         read_declarations(str(path))
 
@@ -198,6 +196,11 @@ def test_load_declaration_finds_by_attribute() -> None:
 def test_load_declaration_unknown_attribute_lists_known_ones() -> None:
     with pytest.raises(ConfigError, match="invoice_sync.*monthly_close"):
         load_declaration(str(FIXTURES / "billing.yaml"), "nope")
+
+
+def test_load_declaration_rejects_a_glob() -> None:
+    with pytest.raises(ConfigError, match="glob"):
+        load_declaration(str(FIXTURES / "*.yaml"), "daily_orders")
 
 
 # --- read_yaml keyed etls -----------------------------------------------------

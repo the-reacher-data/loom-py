@@ -16,6 +16,9 @@ from loom.core.model import LoomFrozenStruct
 # Attribute name used to attach discovery metadata to each flow.
 LOOM_ETL_META_ATTR = "__loom_etl_meta__"
 
+# Storage YAML path baked into the worker image, read at flow-run time.
+DEFAULT_STORAGE_CONFIG_PATH = "/app/config.yaml"
+
 
 class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     """Per-flow metadata consumed by :func:`discover_and_deploy_etls`.
@@ -44,4 +47,4 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
     tags: tuple[str, ...] = ()
 
 
-__all__ = ["LOOM_ETL_META_ATTR", "ETLFlowMeta"]
+__all__ = ["DEFAULT_STORAGE_CONFIG_PATH", "LOOM_ETL_META_ATTR", "ETLFlowMeta"]

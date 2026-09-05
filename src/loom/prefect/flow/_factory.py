@@ -10,6 +10,7 @@ import msgspec
 from loom.etl.compiler import ETLCompiler
 from loom.etl.pipeline import ETLPipeline
 from loom.prefect._config import FlowConfig, _load_flow_config
+from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
 from loom.prefect.flow._assemble import FlowSettings, assemble_flow, load_flow_settings
 from loom.prefect.flow._body import build_flow_body
 from loom.prefect.flow._signature import synthesise_flow_signature
@@ -38,7 +39,7 @@ def etl_flow(
     params_type: type[msgspec.Struct],
     config_path: str,
     source_file: str,
-    storage_config_path: str = "/app/config.yaml",
+    storage_config_path: str = DEFAULT_STORAGE_CONFIG_PATH,
     flow_config_path: str | None = None,
     manifest_store: ManifestStore | None = None,
 ) -> Any:

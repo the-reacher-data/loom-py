@@ -36,11 +36,13 @@ def read_yaml(config_path: str) -> dict[str, Any]:
 
 
 def _ensure_mapping_top_level(config_path: str) -> None:
+    """Reject a non-mapping document; unreadable or malformed files are left to ``load_config``."""
+    import yaml  # noqa: PLC0415
     from omegaconf import DictConfig, OmegaConf  # noqa: PLC0415
 
     try:
         raw = OmegaConf.load(config_path)
-    except OSError:
+    except (OSError, yaml.YAMLError):
         return
     if not isinstance(raw, DictConfig):
         raise ValueError(f"{config_path}: top-level YAML must be a mapping")

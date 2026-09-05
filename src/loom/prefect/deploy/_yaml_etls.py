@@ -9,6 +9,7 @@ before any deployment is registered. This module never deploys.
 
 from __future__ import annotations
 
+import glob
 import importlib
 import os
 import typing
@@ -21,14 +22,13 @@ import msgspec
 
 from loom.core.config import ConfigError, expand_config_glob, is_cloud_uri
 from loom.etl import ETLPipeline
+from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
 from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._assemble import (
     FlowSettings,
     flow_attribute_name,
     flow_settings_from_mapping,
 )
-
-DEFAULT_STORAGE_CONFIG_PATH = "/app/config.yaml"
 
 
 @dataclass(frozen=True)
@@ -87,9 +87,11 @@ def load_declaration(config_uri: str, attribute: str) -> EtlDeclaration:
         The matching declaration.
 
     Raises:
-        ConfigError: When no declaration maps to ``attribute``; the message
-            lists the known attributes.
+        ConfigError: When ``config_uri`` is a glob, or when no declaration maps
+            to ``attribute``; the message lists the known attributes.
     """
+    if glob.has_magic(config_uri):
+        raise ConfigError(f"{config_uri}: a glob cannot identify one ETL declaration file")
     declarations = read_declarations(config_uri)
     for declaration in declarations:
         if declaration.attribute == attribute:
@@ -235,4 +237,4 @@ def _check_unique(declarations: list[EtlDeclaration]) -> None:
         by_attribute[declaration.attribute] = declaration
 
 
-__all__ = ["DEFAULT_STORAGE_CONFIG_PATH", "EtlDeclaration", "load_declaration", "read_declarations"]
+__all__ = ["EtlDeclaration", "load_declaration", "read_declarations"]

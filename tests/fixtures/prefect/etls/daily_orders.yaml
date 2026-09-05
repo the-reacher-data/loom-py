@@ -16,5 +16,5 @@ environments:
     job_variables:
       cpu: 1024
 retry:
-  retries: 2
-  retry_delay_seconds: 30
+  flow_retries: 3
+  flow_retry_delay_seconds: 30
