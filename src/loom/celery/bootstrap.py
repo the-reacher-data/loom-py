@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
@@ -95,6 +96,8 @@ from loom.core.runner import shutdown_runner
 from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.factory import UseCaseFactory
 from loom.rest.autocrud import build_auto_routes
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -584,8 +587,8 @@ def _resolve_compilables_and_jobs(
         ) from exc
     discovered = _discover_compilables_from_config(app_cfg.discovery)
     if not discovered.jobs:
-        raise RuntimeError(
-            "No Job classes discovered. "
+        _logger.warning(
+            "no Job classes discovered: the worker starts with no task registered. "
             "Add JOBS to manifest or include job modules in app.discovery."
         )
     return discovered

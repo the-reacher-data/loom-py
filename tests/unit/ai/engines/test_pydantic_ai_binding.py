@@ -59,12 +59,46 @@ class TestModelBinding:
         [("openai", "gpt-5.2"), ("anthropic", "claude-sonnet-4-5")],
     )
     def test_el_modelo_lleva_el_id_del_vendor_cuando_se_resuelve(
-        self, provider: str, model_id: str
+        self, provider: str, model_id: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """OpenAI and Anthropic bind the vendor model id unchanged."""
-        target = InferenceTarget(provider=provider, model=model_id, credentials_ref="a-key")
+        monkeypatch.setenv("VENDOR_API_KEY", "a-key")
+        target = InferenceTarget(
+            provider=provider, model=model_id, credentials_ref="VENDOR_API_KEY"
+        )
 
         assert resolve_model(target).model_name == model_id
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic"])
+    def test_lee_la_clave_de_la_variable_que_nombra_credentials_ref(
+        self, provider: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``credentials_ref`` names the variable holding the key, never the key."""
+        monkeypatch.setenv("VENDOR_API_KEY", "the-real-key")
+        target = InferenceTarget(
+            provider=provider, model="a-model", credentials_ref="VENDOR_API_KEY"
+        )
+
+        model = resolve_model(target)
+
+        assert model.client.api_key == "the-real-key"
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic"])
+    def test_falla_nombrando_la_variable_cuando_no_esta_puesta(
+        self, provider: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unset variable is a start-up failure, not a 401 on the first call."""
+        monkeypatch.delenv("VENDOR_API_KEY", raising=False)
+        target = InferenceTarget(
+            provider=provider, model="a-model", credentials_ref="VENDOR_API_KEY"
+        )
+
+        with pytest.raises(AgentCompilationError) as failure:
+            resolve_model(target)
+
+        issue = failure.value.issues[0]
+        assert issue.code is AgentErrorCode.PROVIDER_SETTING_MISSING
+        assert "VENDOR_API_KEY" in issue.message
 
     def test_falla_nombrando_los_proveedores_cuando_el_vendor_es_desconocido(self) -> None:
         """An unknown provider dies at start-up, naming what this release binds."""

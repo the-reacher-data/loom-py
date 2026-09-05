@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
@@ -68,6 +69,8 @@ from loom.rest.fastapi.sql import (
     bind_sql_endpoints,
 )
 from loom.rest.middleware import TraceIdMiddleware
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Annotations only: the AI pillar, the ClickHouse extra and the SQLAlchemy
@@ -308,16 +311,44 @@ def _build_bootstrap(
     persistence_cfg = _load_persistence_config(ctx)
     # Fail before any backend allocates resources (e.g. a SQLAlchemy engine):
     # resolving persistence is what creates them, so this guard runs first.
-    if _requires_relational_models(persistence_cfg) and not discovered.models:
-        raise RuntimeError(
-            "No BaseModel classes discovered. "
-            "An application without persistence sets persistence.backend: none."
-        )
+    if _requires_relational_models(persistence_cfg):
+        _reject_autocrud_without_model(discovered)
+        if not discovered.models:
+            _logger.warning(
+                "no BaseModel classes discovered: the application starts with an empty "
+                "relational schema. Declare your first model, or set "
+                "persistence.backend: none if it never persists."
+            )
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
     if _compiles_discovered_models(persistence_cfg):
         _compile_discovered_models(discovered)
     result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
     return result, wiring, discovered
+
+
+def _reject_autocrud_without_model(discovered: DiscoveryResult) -> None:
+    """Reject an auto-CRUD interface whose model discovery never found.
+
+    Auto-CRUD derives its operations from the model's repository, so an
+    interface parameterised with an undiscovered model would mount routes that
+    fail on their first request.
+
+    Raises:
+        RuntimeError: When such an interface exists, naming both classes.
+    """
+    from loom.rest.model import _extract_model_type
+
+    known = set(discovered.models)
+    for interface in discovered.interfaces:
+        if not getattr(interface, "auto", False):
+            continue
+        model = _extract_model_type(interface)
+        if model is not None and model not in known:
+            raise RuntimeError(
+                f"{interface.__name__} declares auto = True over "
+                f"{model.__name__}, which discovery did not find. Add its module to "
+                "app.discovery so its repository is registered."
+            )
 
 
 def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:

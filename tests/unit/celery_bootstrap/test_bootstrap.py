@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 import sys
 import types
 from typing import Any, cast
@@ -255,6 +256,26 @@ class TestBootstrapWorkerTaskRegistration:
         result = self._run(tmp_path, extra_cfg=cfg)
         expected = f"{TASK_JOB_PREFIX}.{_SyncJob.__qualname__}"
         assert expected in result.celery_app.tasks
+
+    def test_warns_and_starts_when_no_job_is_discovered(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A worker whose first job is still to come starts, with a warning."""
+        module_name = "tests.unit.celery_bootstrap._manifest_without_jobs_for_test"
+        module = types.ModuleType(module_name)
+        cast(Any, module).MODELS = [_DiscoveredModel]
+        cast(Any, module).JOBS = []
+        sys.modules[module_name] = module
+
+        cfg = {"app": {"discovery": {"mode": "manifest", "manifest": {"module": module_name}}}}
+        try:
+            with caplog.at_level(logging.WARNING, logger="loom.celery.bootstrap"):
+                result = self._run(tmp_path, extra_cfg=cfg, jobs=None)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        assert result.celery_app is not None
+        assert "no Job classes discovered" in caplog.text
 
     def test_discovers_jobs_from_manifest_when_jobs_not_passed(self, tmp_path: Any) -> None:
         module_name = "tests.unit.celery_bootstrap._manifest_jobs_for_test"

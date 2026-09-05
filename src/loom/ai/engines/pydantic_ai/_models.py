@@ -22,6 +22,7 @@ settings dialect of its own.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import Protocol, cast
@@ -78,12 +79,32 @@ def _bedrock_model(target: InferenceTarget) -> Model:
     return BedrockConverseModel(target.model, provider=provider, settings=_model_settings(target))
 
 
+def _api_key(provider: str, target: InferenceTarget) -> str | None:
+    """Read the API key of a target whose ``credentials_ref`` names a variable.
+
+    ``credentials_ref`` is the name of an environment variable, never the key
+    itself, so a deployment declares where the secret lives instead of putting
+    it in configuration. Without it the provider SDK reads its own default
+    variable.
+
+    Raises:
+        AgentCompilationError: With ``PROVIDER_SETTING_MISSING`` when the named
+            variable is unset or empty.
+    """
+    reference = target.credentials_ref
+    if reference is None:
+        return None
+    value = os.environ.get(reference)
+    require_provider_setting(provider, f"credentials_ref -> ${reference}", value)
+    return value
+
+
 def _openai_model(target: InferenceTarget) -> Model:
     require_provider_sdk("openai", "pydantic_ai.models.openai", "ai-openai")
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    provider = OpenAIProvider(base_url=target.endpoint, api_key=target.credentials_ref)
+    provider = OpenAIProvider(base_url=target.endpoint, api_key=_api_key("openai", target))
     return OpenAIChatModel(target.model, provider=provider, settings=_model_settings(target))
 
 
@@ -92,7 +113,7 @@ def _anthropic_model(target: InferenceTarget) -> Model:
     from pydantic_ai.models.anthropic import AnthropicModel
     from pydantic_ai.providers.anthropic import AnthropicProvider
 
-    provider = AnthropicProvider(api_key=target.credentials_ref, base_url=target.endpoint)
+    provider = AnthropicProvider(api_key=_api_key("anthropic", target), base_url=target.endpoint)
     return AnthropicModel(target.model, provider=provider, settings=_model_settings(target))
 
 

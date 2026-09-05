@@ -55,6 +55,7 @@ from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._step import BatchExpandStep, BatchStep, ExpandStep, RecordStep
 from loom.streaming.nodes._table import Backend, IntoTable
 from loom.streaming.nodes._table.config import (
+    resolve_clickhouse_table_config,
     resolve_delta_table_config,
     resolve_sqlalchemy_table_config,
 )
@@ -318,6 +319,8 @@ def _validate_storage_sink_node(node: IntoSink[Any], ctx: ConfigContext) -> list
         return _validate_storage_sink_resolution(node, ctx, resolve_sqlalchemy_table_config)
     if node.backend is Backend.DELTA:
         return _validate_storage_sink_resolution(node, ctx, resolve_delta_table_config)
+    if node.backend is Backend.CLICKHOUSE:
+        return _validate_storage_sink_resolution(node, ctx, resolve_clickhouse_table_config)
     return []
 
 

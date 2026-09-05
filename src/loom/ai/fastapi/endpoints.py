@@ -22,7 +22,7 @@ they are properties of an agent transport, not of this wire protocol.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Annotated, Final
 
 import msgspec
@@ -339,16 +339,24 @@ def _announce_mount(
         endpoint.auth,
         endpoint.allow_anonymous,
         ",".join(runtime.capability_kinds(name)) or "none",
-        _identity_notice(endpoint),
+        _identity_notice(endpoint, runtime.capability_kinds(name)),
     )
 
 
-def _identity_notice(endpoint: AgentEndpointConfig) -> str:
+_DEPLOYMENT_CREDENTIAL_KINDS = frozenset({"mcp", "a2a"})
+"""Capability kinds reached with the deployment's credential, not the caller's."""
+
+
+def _identity_notice(endpoint: AgentEndpointConfig, kinds: Sequence[str]) -> str:
     """State plainly which identity the capability calls of this mount run as.
 
     ``allow_anonymous`` is not a relaxation of the caller check on top of an
     otherwise verified identity: it removes the identity altogether, so the
     reassuring sentence of an authenticated mount would be false next to it.
+
+    Remote kinds are named separately because their authorisation does not
+    depend on who calls: a remote server sees the credential the deployment
+    configured for it, shared by every caller of every agent granted it.
     """
     if endpoint.allow_anonymous:
         return (
@@ -357,9 +365,17 @@ def _identity_notice(endpoint: AgentEndpointConfig) -> str:
             "behalf of an unidentified caller — only 'max_concurrent_runs' and "
             "'run_timeout_ms' bound that cost, there is no rate limit"
         )
+    remote = sorted(_DEPLOYMENT_CREDENTIAL_KINDS.intersection(kinds))
+    if not remote:
+        return (
+            "'auth' only authenticates the caller; every capability call then runs as that "
+            "verified identity"
+        )
     return (
-        "'auth' only authenticates the caller; every capability call then runs as that "
-        "verified identity"
+        "'auth' only authenticates the caller; local capability calls then run as that "
+        f"verified identity, but {', '.join(remote)} reach their remote endpoint with the "
+        "credential this deployment configured for it, shared by every caller: who calls "
+        "does not bound what the remote side allows"
     )
 
 

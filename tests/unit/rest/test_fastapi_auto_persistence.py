@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from loom.core.backend import sqlalchemy as sqlalchemy_backend
@@ -19,6 +21,7 @@ from loom.rest.fastapi.auto import (
     _noop_lifespan,
     _resolve_persistence,
 )
+from loom.rest.model import RestInterface
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -175,18 +178,48 @@ def test_discover_components_rejects_empty_result(monkeypatch: pytest.MonkeyPatc
     assert "AGENTS" in message
 
 
-def test_build_bootstrap_sqlalchemy_without_models_names_backend_none(
+def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """A project whose relational schema is still empty boots, with a warning."""
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
     app_cfg = _AppConfig(name="demo")
     ctx = _ctx()
 
-    with pytest.raises(RuntimeError, match="No BaseModel classes discovered") as exc_info:
-        _build_bootstrap(app_cfg, ctx)
+    with caplog.at_level(logging.WARNING, logger=auto.__name__):
+        runtime, wiring, discovered = _build_bootstrap(app_cfg, ctx)
 
-    assert "persistence.backend: none" in str(exc_info.value)
+    assert discovered.models == ()
+    assert runtime is not None
+    assert wiring is not None
+    assert "no BaseModel classes discovered" in caplog.text
+    assert "persistence.backend: none" in caplog.text
+
+
+def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-CRUD over a model discovery never found is refused by name."""
+
+    class OrphanInterface(RestInterface[PersistenceNoneRecord]):
+        prefix = "/orphans"
+        auto = True
+
+    monkeypatch.setattr(
+        auto,
+        "_build_discovery_result",
+        lambda _cfg: DiscoveryResult(
+            models=(), use_cases=(), interfaces=(OrphanInterface,), agent_specs=()
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="OrphanInterface") as exc_info:
+        _build_bootstrap(_AppConfig(name="demo"), _ctx())
+
+    assert "PersistenceNoneRecord" in str(exc_info.value)
+    assert "app.discovery" in str(exc_info.value)
 
 
 def test_build_bootstrap_none_with_models_builds_without_compiling(

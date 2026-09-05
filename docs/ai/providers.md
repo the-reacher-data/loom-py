@@ -22,9 +22,9 @@ with `MODEL_ROLE_UNBOUND`. It is never deferred to the first request.
 | `provider` | Extra | Required settings | `credentials_ref` means | Covers |
 |---|---|---|---|---|
 | `bedrock` | `ai-bedrock` | `region` | an **AWS profile name**; omit it to use the standard boto3 chain (environment, role, instance profile) | AWS Bedrock, all its hosted model families |
-| `openai` | `ai-openai` | — | the **API key** | OpenAI's own API |
-| `anthropic` | `ai-anthropic` | — | the **API key** | Anthropic's own API |
-| `gateway` | `ai-openai` | `endpoint` | the **API key** the endpoint expects | **any OpenAI-compatible endpoint** — see below |
+| `openai` | `ai-openai` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads its own default | OpenAI's own API |
+| `anthropic` | `ai-anthropic` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads its own default | Anthropic's own API |
+| `gateway` | `ai-openai` | `endpoint` | the **name of the environment variable** holding the API key the endpoint expects | **any OpenAI-compatible endpoint** — see below |
 
 An unknown `provider` fails start-up with `PROVIDER_UNKNOWN`, naming the ones
 this release binds. A provider whose SDK is not installed fails with
@@ -105,9 +105,14 @@ redeploy of the agent definition.
 
 ## Credentials never live in the artifact — or in the config
 
-`credentials_ref` is a **reference** the deployment's existing secret resolver
-looks up: a name, a path, an ARN, a key id. It is never the secret itself, and
-the value is validated fail-closed at start-up — a value shaped like literal
+`credentials_ref` is a **reference**, never the secret itself: an AWS profile
+name for `bedrock`, and for the API-key providers the **name of an environment
+variable** loom reads at start-up. An unset variable fails start-up with
+`PROVIDER_SETTING_MISSING` naming it, instead of a 401 on the first call; omit
+`credentials_ref` and each SDK reads its own default variable
+(`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+
+The value is validated fail-closed at start-up — a value shaped like literal
 secret material (`AKIA…`, `sk-…`, `ghp_…`, a URL with credentials in its
 userinfo, anything containing whitespace, quotes or braces) is **rejected**, and
 the rejected value is deliberately absent from the error message so the error
