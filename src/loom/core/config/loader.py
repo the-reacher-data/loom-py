@@ -17,10 +17,9 @@ files are fetched via ``fsspec`` at parse time, which means the config is
 always resolved against the current state of object storage — no baking
 into images or wheels.
 
-The ``includes`` directive is **not** supported for cloud URIs.  Use
-explicit multi-file composition via :func:`load_config` instead::
-
-    cfg = load_config("s3://bucket/config/base.yaml", "s3://bucket/config/prod.yaml")
+Cloud files honour the ``includes`` directive exactly like local files:
+relative entries resolve against the including URI, and entries may point
+to any scheme.
 
 Custom resolvers
 ----------------
@@ -31,18 +30,21 @@ resolve ``${prefix:key}`` placeholders at parse time::
 
 YAML ``includes`` directive
 ---------------------------
-A local config file may declare a top-level ``includes`` list to merge other
-files before its own values.  Paths are resolved relative to the declaring
-file.  The declaring file always takes precedence over its includes.
-Includes are resolved recursively; circular references raise
+A config file may declare a top-level ``includes`` list to merge other
+files before its own values.  Entries are resolved relative to the declaring
+file, on any scheme, and may be globs (``*``, ``?``, ``[``); glob matches
+are merged in lexicographic order of their resolved path.  The declaring
+file always takes precedence over its includes.  Includes are resolved
+recursively; circular references and entries matching no file raise
 :class:`ConfigError`.
 
 Example::
 
     # config/app.yaml
     includes:
-      - base.yaml       # relative to config/
-      - secrets.yaml
+      - base.yaml            # relative to config/
+      - tables/*.yaml        # every YAML under config/tables/
+      - s3://bucket/shared.yaml
 
     app:
       name: my-service  # overrides anything in base.yaml or secrets.yaml
@@ -62,12 +64,11 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
-from urllib.parse import urlparse
 
 import msgspec
 
+from loom.core.config._includes import canonical_key, expand_include, is_cloud_uri, resolve_include
 from loom.core.config.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -76,8 +77,6 @@ if TYPE_CHECKING:
     from loom.core.config.resolver import ConfigResolver
 
 T = TypeVar("T")
-
-_CLOUD_SCHEMES = frozenset({"s3", "gs", "gcs", "abfss", "abfs", "az", "r2"})
 
 
 def _ensure_omegaconf() -> Any:
@@ -91,11 +90,6 @@ def _ensure_omegaconf() -> Any:
             "omegaconf is required for load_config. "
             "Install it with: pip install loom-kernel[config]"
         ) from exc
-
-
-def _is_cloud_uri(path: str) -> bool:
-    """Return ``True`` when *path* is a cloud storage URI."""
-    return urlparse(str(path).strip()).scheme.lower() in _CLOUD_SCHEMES
 
 
 def _fetch_cloud_content(uri: str) -> str:
@@ -119,10 +113,8 @@ def _fetch_cloud_content(uri: str) -> str:
         raise ConfigError(f"Failed to fetch config from {uri!r}: {exc}") from exc
 
 
-def _load_cloud_file(uri: str, omega_conf: Any) -> Any:
-    """Parse a YAML fetched from a cloud URI.
-
-    The ``includes`` directive is not supported for cloud paths.
+def _parse_cloud_file(uri: str, omega_conf: Any) -> Any:
+    """Fetch and parse a YAML file from a cloud URI.
 
     Args:
         uri: Cloud storage URI.
@@ -132,71 +124,100 @@ def _load_cloud_file(uri: str, omega_conf: Any) -> Any:
         Parsed :class:`omegaconf.DictConfig`.
 
     Raises:
-        ConfigError: On fetch failure, parse error, or ``includes`` usage.
+        ConfigError: On fetch failure or parse error.
     """
     content = _fetch_cloud_content(uri)
     try:
-        cfg = omega_conf.create(content)
+        return omega_conf.create(content)
     except Exception as exc:
         raise ConfigError(f"Failed to parse config from {uri!r}: {exc}") from exc
-    if omega_conf.select(cfg, "includes", default=None) is not None:
-        raise ConfigError(
-            f"'includes' directive is not supported for cloud URIs ({uri!r}). "
-            "Use explicit multi-file composition via load_config() instead."
-        )
-    return cfg
 
 
-def _load_local_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
-    """Load a single local YAML file, resolving its ``includes`` recursively.
+def _parse_local_file(path: str, omega_conf: Any) -> Any:
+    """Parse a YAML file from the local filesystem.
 
     Args:
         path: Absolute or relative local path to the YAML file.
         omega_conf: OmegaConf module.
-        seen: Set of resolved absolute paths already in the call stack,
-            used to detect circular references.
+
+    Returns:
+        Parsed :class:`omegaconf.DictConfig`.
+
+    Raises:
+        ConfigError: On missing file or parse error.
+    """
+    try:
+        return omega_conf.load(path)
+    except FileNotFoundError as exc:
+        raise ConfigError(f"Configuration file not found: {path!r}") from exc
+    except Exception as exc:
+        raise ConfigError(f"Failed to parse configuration file {path!r}: {exc}") from exc
+
+
+def _load_file(uri: str, omega_conf: Any, seen: set[str]) -> Any:
+    """Load a YAML file from any scheme, resolving its ``includes`` recursively.
+
+    Args:
+        uri: Local path or cloud URI of the YAML file.
+        omega_conf: OmegaConf module.
+        seen: Canonical keys of the files already in the call stack, used to
+            detect circular references.
 
     Returns:
         Merged :class:`omegaconf.DictConfig` for the file (includes merged in,
         ``includes`` key stripped from the result).
 
     Raises:
-        ConfigError: On missing file, parse error, or circular include.
+        ConfigError: On missing file, fetch failure, parse error, unmatched
+            include, or circular include.
     """
-    resolved = str(Path(path).resolve())
-    if resolved in seen:
-        raise ConfigError(f"Circular include detected: {path!r} is already being loaded.")
-    seen = seen | {resolved}
+    key = canonical_key(uri)
+    if key in seen:
+        raise ConfigError(f"Circular include detected: {uri!r} is already being loaded.")
 
-    try:
-        cfg = omega_conf.load(path)
-    except FileNotFoundError as exc:
-        raise ConfigError(f"Configuration file not found: {path!r}") from exc
-    except Exception as exc:
-        raise ConfigError(f"Failed to parse configuration file {path!r}: {exc}") from exc
-
+    cfg = (
+        _parse_cloud_file(uri, omega_conf)
+        if is_cloud_uri(uri)
+        else _parse_local_file(uri, omega_conf)
+    )
     raw_includes = omega_conf.select(cfg, "includes", default=None)
     if raw_includes is None:
         return cfg
 
-    include_paths = list(omega_conf.to_container(raw_includes, resolve=True))
-    cfg = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
-
-    base_dir = Path(resolved).parent
-    layers: list[Any] = []
-    for inc in include_paths:
-        inc_path = str((base_dir / inc).resolve())
-        layers.append(_load_local_file(inc_path, omega_conf, seen))
-
-    layers.append(cfg)
+    entries = list(omega_conf.to_container(raw_includes, resolve=True))
+    own = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
+    layers = _load_includes(key, entries, omega_conf, seen | {key})
+    layers.append(own)
     return omega_conf.merge(*layers) if len(layers) > 1 else layers[0]
 
 
-def _load_file(path: str, omega_conf: Any, seen: set[str]) -> Any:
-    """Dispatch to cloud or local loader based on URI scheme."""
-    if _is_cloud_uri(path):
-        return _load_cloud_file(path, omega_conf)
-    return _load_local_file(path, omega_conf, seen)
+def _load_includes(
+    declaring: str, entries: list[Any], omega_conf: Any, seen: set[str]
+) -> list[Any]:
+    """Load every file designated by the ``includes`` entries of one file.
+
+    Args:
+        declaring: Canonical key of the file declaring the entries.
+        entries: Include entries with interpolations already resolved.
+        omega_conf: OmegaConf module.
+        seen: Canonical keys of the files in the call stack, including
+            ``declaring``.
+
+    Returns:
+        One loaded layer per matched file, in include order and, within a
+        glob, in lexicographic order of resolved path.
+
+    Raises:
+        ConfigError: Any loading error, suffixed with the declaring file.
+    """
+    layers: list[Any] = []
+    for entry in entries:
+        try:
+            for match in expand_include(resolve_include(declaring, str(entry))):
+                layers.append(_load_file(match, omega_conf, seen))
+        except ConfigError as exc:
+            raise ConfigError(f"{exc} (included from {declaring!r})") from exc
+    return layers
 
 
 def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
@@ -231,10 +252,10 @@ def load_config(
     OmegaConf.  Custom ``resolvers`` are registered before parsing so their
     ``${name:key}`` placeholders resolve during the same pass.
 
-    Local files may declare a top-level ``includes`` list to pull in
-    additional files before their own values.  Included paths are relative
-    to the declaring file.  Circular includes raise :class:`ConfigError`.
-    The ``includes`` directive is not supported for cloud URIs.
+    Any file may declare a top-level ``includes`` list to pull in
+    additional files before its own values.  Entries are relative to the
+    declaring file, may live on any scheme, and may be globs.  Circular
+    includes and entries matching no file raise :class:`ConfigError`.
 
     The framework does not impose any shape on the resulting config — the
     user owns the structure entirely.  Use :func:`section` to extract typed
@@ -252,8 +273,8 @@ def load_config(
 
     Raises:
         ConfigError: If no files are provided, a file is not found, parsing
-            fails, a circular include is detected, omegaconf is not installed,
-            or a cloud URI fetch fails.
+            fails, an include matches no file, a circular include is detected,
+            omegaconf is not installed, or a cloud URI fetch fails.
 
     Example — single local file with inline includes::
 

@@ -363,21 +363,26 @@ def test_load_config_from_cloud_uri() -> None:
     mock_open.assert_called_once_with("s3://my-bucket/config/prod.yaml", mode="r", encoding="utf-8")
 
 
-def test_load_config_cloud_uri_raises_on_includes() -> None:
+def test_load_config_cloud_uri_resolves_includes_relative_to_uri() -> None:
     from io import StringIO
     from unittest.mock import MagicMock, patch
 
-    yaml_content = "includes:\n  - base.yaml\ndatabase:\n  url: sqlite:///dev.db\n"
+    contents = {
+        "s3://my-bucket/config/prod.yaml": "includes:\n  - base.yaml\ndatabase:\n  url: sqlite:///dev.db\n",
+        "s3://my-bucket/config/base.yaml": "database:\n  url: ignored\n  pool_size: 4\n",
+    }
 
-    mock_open = MagicMock()
-    mock_open.return_value.__enter__ = MagicMock(return_value=StringIO(yaml_content))
-    mock_open.return_value.__exit__ = MagicMock(return_value=False)
+    def fake_open(uri: str, **kwargs: object) -> MagicMock:
+        handle = MagicMock()
+        handle.__enter__ = MagicMock(return_value=StringIO(contents[uri]))
+        handle.__exit__ = MagicMock(return_value=False)
+        return handle
 
-    with (
-        patch("fsspec.open", mock_open),
-        pytest.raises(ConfigError, match="includes.*not supported"),
-    ):
-        load_config("s3://my-bucket/config/prod.yaml")
+    with patch("fsspec.open", side_effect=fake_open):
+        cfg = load_config("s3://my-bucket/config/prod.yaml")
+
+    assert cfg.database.url == "sqlite:///dev.db"
+    assert cfg.database.pool_size == 4
 
 
 def test_load_config_cloud_uri_merged_with_local(tmp_path: Path) -> None:
