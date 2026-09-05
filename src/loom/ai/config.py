@@ -504,7 +504,9 @@ def _validate_mcp_env(component: str, env: Mapping[str, str] | None) -> list[Age
         if _ENV_NAME_PATTERN.fullmatch(name) is None:
             issues.append(
                 mcp_transport_invalid(
-                    component, f"'{name}' is not a valid environment variable name"
+                    component,
+                    f"'{name}' is not a valid environment variable name",
+                    field=f"env.{name}",
                 )
             )
         if not _has_reference_shape(value):

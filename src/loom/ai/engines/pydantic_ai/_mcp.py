@@ -161,7 +161,7 @@ async def create_mcp_client(capability: CompiledMcpCapability) -> AsyncIterator[
     exception escaping ``create_app``.
 
     Args:
-        capability: Compiled grant carrying the validated server URL.
+        capability: Compiled grant carrying the validated address of its transport.
 
     Yields:
         The connected session, closed with its transport on exit.

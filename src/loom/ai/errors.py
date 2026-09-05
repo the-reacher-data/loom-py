@@ -480,13 +480,22 @@ def mcp_auth_conflict(component: str) -> AgentCompilationIssue:
     )
 
 
-def mcp_transport_invalid(component: str, reason: str) -> AgentCompilationIssue:
-    """An MCP server declares fields that its ``transport`` does not accept, or an unknown one."""
+def mcp_transport_invalid(
+    component: str, reason: str, *, field: str = "transport"
+) -> AgentCompilationIssue:
+    """An MCP server declares fields that its ``transport`` does not accept, or an unknown one.
+
+    Args:
+        component: Configuration entry the issue points at.
+        reason: What about the transport is invalid.
+        field: Configuration key to blame; the transport itself unless a nested
+            key, such as one ``env`` name, is the culprit.
+    """
     return AgentCompilationIssue(
         code=AgentErrorCode.MCP_TRANSPORT_INVALID,
         message=f"{component}: invalid mcp transport: {reason}",
         component=component,
-        field="transport",
+        field=field,
     )
 
 

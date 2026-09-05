@@ -492,6 +492,7 @@ class TestMcpStdioTransport:
             _config_with(mcp_servers={"search": server})
 
         assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
+        assert [issue.field for issue in excinfo.value.issues] == ["env.BAD KEY"]
 
     def test_falla_con_policy_out_of_range_cuando_el_timeout_es_cero_bajo_stdio(self) -> None:
         """The per-call deadline is bounded whatever the transport (FR-003, FR-004)."""
