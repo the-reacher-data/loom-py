@@ -9,10 +9,10 @@ zero per-request reflection.
 from __future__ import annotations
 
 import inspect
-import typing
 from typing import Any, TypeVar
 
 from loom.core.di.container import LoomContainer
+from loom.core.model.introspection import generic_type_arg, resolve_type_hints
 from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
 
@@ -98,8 +98,9 @@ class UseCaseFactory:
     def _get_deps(self, use_case_type: type[Any]) -> list[tuple[str, DepToken]]:
         """Return the cached (or freshly computed) dependency list for a UseCase.
 
-        Inspection uses ``typing.get_type_hints`` so ``from __future__ import
-        annotations`` is handled transparently.
+        Inspection resolves annotations, so ``from __future__ import
+        annotations`` is handled transparently; when they cannot be resolved the
+        raw ``inspect`` signature is used instead.
 
         Args:
             use_case_type: UseCase subclass to inspect.
@@ -125,9 +126,8 @@ class UseCaseFactory:
             self._dep_cache[use_case_type] = []
             return []
 
-        try:
-            hints = typing.get_type_hints(init)
-        except Exception:
+        hints = resolve_type_hints(init)
+        if not hints:
             # Fallback: use inspect for non-resolvable annotations
             hints = {
                 name: param.annotation
@@ -149,12 +149,5 @@ class UseCaseFactory:
         return deps
 
     def _extract_repo_model(self, annotation: object) -> type[Any] | None:
-        origin = typing.get_origin(annotation)
-        if origin is None:
-            return None
-        if origin is not RepoFor:
-            return None
-        args = typing.get_args(annotation)
-        if len(args) != 1 or not isinstance(args[0], type):
-            return None
-        return args[0]
+        """Return the model behind a ``RepoFor[Model]`` annotation, if that is what it is."""
+        return generic_type_arg(annotation, RepoFor)

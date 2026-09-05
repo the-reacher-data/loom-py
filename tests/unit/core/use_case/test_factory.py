@@ -289,3 +289,39 @@ def test_build_auto_infers_main_repo_with_explicit_contract() -> None:
     factory = UseCaseFactory(container)
     uc = factory.build(AutoMainRepoCustomContractUseCase)
     assert uc.main_repo is repo
+
+
+def _use_case_with_unresolvable_annotations() -> type[UseCase]:
+    """Build a UseCase whose ``__init__`` annotations only ``inspect`` can read."""
+
+    def __init__(self: Any, repo: Any) -> None:
+        self._repo = repo
+
+    async def execute(self: Any) -> None:
+        return None
+
+    __init__.__annotations__ = {"repo": IOrderRepo, "return": "NotImportable"}
+    return type(
+        "UnresolvableAnnotationsUseCase",
+        (UseCase,),
+        {"__init__": __init__, "execute": execute},
+    )
+
+
+def test_annotation_free_init_takes_the_inspect_fallback_and_yields_no_deps() -> None:
+    class UntypedUseCase(UseCase):
+        def __init__(self, repo):
+            self._repo = repo
+
+    factory = UseCaseFactory(LoomContainer())
+
+    assert factory._get_deps(UntypedUseCase) == []
+
+
+def test_unresolvable_annotations_fall_back_to_the_inspect_signature() -> None:
+    use_case_type = _use_case_with_unresolvable_annotations()
+    repo = FakeOrderRepo()
+    factory = UseCaseFactory(_container_with((IOrderRepo, repo)))
+
+    assert factory._get_deps(use_case_type) == [("repo", IOrderRepo)]
+    assert cast(Any, factory.build(use_case_type))._repo is repo

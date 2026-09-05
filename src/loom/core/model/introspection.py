@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -142,6 +143,147 @@ def _extract_metadata(annotation: Any) -> tuple[Any, ...]:
     return getattr(annotation, "__metadata__", ())
 
 
+def resolve_type_hints(obj: Any, *, include_extras: bool = False) -> dict[str, Any]:
+    """Return the resolved annotations of *obj*, or ``{}`` when they cannot be resolved.
+
+    An annotation naming a class that is not importable from the defining
+    module — a forward reference to a model declared elsewhere, for instance —
+    is not fatal for callers that read annotations as one source of evidence
+    among several. They treat a missing hint as "unknown" and fall back to
+    other signals, so an empty mapping is the useful answer here.
+
+    Args:
+        obj: Class, function, or module whose annotations should be resolved.
+        include_extras: Keep ``Annotated[T, ...]`` metadata instead of stripping it.
+
+    Returns:
+        Mapping of attribute name to resolved annotation, empty when unresolvable.
+    """
+    try:
+        return get_type_hints(obj, include_extras=include_extras)
+    except Exception:
+        return {}
+
+
+def _union_members(hint: Any) -> tuple[Any, ...] | None:
+    """Return the members of a Union annotation, normalising ``X | Y`` and ``Union[X, Y]``.
+
+    Args:
+        hint: Any annotation object.
+
+    Returns:
+        The declared union members, or ``None`` when *hint* is not a Union.
+    """
+    if isinstance(hint, UnionType):
+        return hint.__args__
+    if getattr(hint, "__origin__", None) is Union:
+        return getattr(hint, "__args__", ())
+    return None
+
+
+def _union_inner_args(hint: Any) -> tuple[Any, ...] | None:
+    """Return the non-``None``, non-``UnsetType`` members of a Union annotation.
+
+    Args:
+        hint: Any annotation object.
+
+    Returns:
+        The meaningful union members, or ``None`` when *hint* is not a Union.
+    """
+    members = _union_members(hint)
+    if members is None:
+        return None
+    return tuple(a for a in members if a is not type(None) and a is not msgspec.UnsetType)
+
+
+def _first_union_match(
+    members: tuple[Any, ...], resolve: Callable[[Any], type | None]
+) -> type | None:
+    """Return the first non-``None`` result of *resolve* over *members*.
+
+    Args:
+        members: Union members, as returned by :func:`_union_inner_args`.
+        resolve: Walker applied to each member.
+
+    Returns:
+        The first resolved class, or ``None`` when no member resolves.
+    """
+    for member in members:
+        result = resolve(member)
+        if result is not None:
+            return result
+    return None
+
+
+def extract_model_from_hint(hint: Any) -> type | None:
+    """Unwrap list, Union and ``UnsetType`` layers down to the concrete class.
+
+    ``list[Note]``, ``Note | UnsetType`` and ``list[Note] | None`` all resolve
+    to ``Note``. An annotation whose innermost element is not a class, such as
+    ``list[dict[str, Any]]``, resolves to ``None``.
+
+    Args:
+        hint: Any annotation object.
+
+    Returns:
+        The wrapped class, or ``None`` when the annotation wraps no class.
+    """
+    union_args = _union_inner_args(hint)
+    if union_args is not None:
+        return _first_union_match(union_args, extract_model_from_hint)
+
+    origin = getattr(hint, "__origin__", None)
+    args: tuple[Any, ...] = getattr(hint, "__args__", ())
+
+    if origin is list and len(args) == 1:
+        return extract_model_from_hint(args[0])
+
+    return hint if isinstance(hint, type) else None
+
+
+def list_element_type(annotation: Any) -> type | None:
+    """Return ``T`` for a ``list[T]`` annotation, or ``None`` when there is no list.
+
+    Unlike :func:`extract_model_from_hint` a list layer is required, so a bare
+    ``Note`` yields ``None``. The union arms produced when ``LoomStructMeta``
+    widens a relation field to ``list[T] | UnsetType`` are unwrapped first.
+
+    Args:
+        annotation: Any annotation object.
+
+    Returns:
+        The list element class, or ``None`` when absent or not a class.
+    """
+    union_args = _union_inner_args(annotation)
+    if union_args is not None:
+        return _first_union_match(union_args, list_element_type)
+
+    if get_origin(annotation) is list:
+        args = get_args(annotation)
+        if args and isinstance(args[0], type):
+            return args[0]
+    return None
+
+
+def generic_type_arg(annotation: Any, origin: Any) -> type | None:
+    """Return the single class argument of ``origin[X]``, such as ``X`` in ``RepoFor[X]``.
+
+    Args:
+        annotation: Any annotation object.
+        origin: The generic origin the annotation is expected to parametrise.
+
+    Returns:
+        The class argument, or ``None`` when the origin differs, the annotation
+        is not generic, or its argument is not a single class.
+    """
+    if get_origin(annotation) is not origin:
+        return None
+    args = get_args(annotation)
+    if len(args) != 1 or not isinstance(args[0], type):
+        return None
+    return args[0]
+
+
 def _extract_origin_type(annotation: Any) -> type[Any]:
     """Return the base type from ``Annotated[T, ...]``."""
     origin = getattr(annotation, "__origin__", None)
@@ -164,11 +306,12 @@ def _extract_origin_type(annotation: Any) -> type[Any]:
 
 
 def _unwrap_optional(annotation: Any) -> Any:
-    origin = get_origin(annotation)
-    if origin in (UnionType, Union):
-        args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
-        if len(args) == 1:
-            return args[0]
+    members = _union_members(annotation)
+    if members is None:
+        return annotation
+    args = tuple(arg for arg in members if arg is not type(None))
+    if len(args) == 1:
+        return args[0]
     return annotation
 
 

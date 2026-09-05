@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import types
-import typing
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, TypeGuard, TypeVar
 
 import msgspec
+
+from loom.core.model.introspection import (
+    extract_model_from_hint,
+    get_relations,
+    resolve_type_hints,
+)
 
 _MISSING = object()
 
@@ -31,6 +35,101 @@ def _related_values(obj: Any, relation: str) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 
+class ProjectionDescriptor(Protocol):
+    """A public projection loader declared on a model class.
+
+    A descriptor states *what* to derive and from which related model; it also
+    knows how to build its own memory-path loader, so the compiler never needs
+    to branch on the descriptor kind. The SQL-path counterpart is looked up in
+    the factory table owned by the SQL repository layer.
+
+    The two attributes are read-only so that a frozen dataclass — what every
+    descriptor is — satisfies the protocol.
+    """
+
+    @property
+    def model(self) -> Any:
+        """Related model the projection derives from, or a reference to it."""
+        ...
+
+    @property
+    def via(self) -> str | None:
+        """Relation name to traverse, or ``None`` to infer it."""
+        ...
+
+    def build_memory_loader(self, relation: str) -> Any:
+        """Return the memory-path loader reading *relation* from a parent object."""
+        ...
+
+
+_DescriptorT = TypeVar("_DescriptorT", bound=ProjectionDescriptor)
+
+_DESCRIPTOR_TYPES: list[type[ProjectionDescriptor]] = []
+
+
+def projection_descriptor(cls: type[_DescriptorT]) -> type[_DescriptorT]:
+    """Register *cls* as a public projection descriptor.
+
+    The registry is the single source of truth for "is this loader a
+    descriptor?", which every layer answers through
+    :func:`is_projection_descriptor`.
+
+    Registering the same class twice is a no-op.
+
+    Args:
+        cls: The descriptor class to register.
+
+    Returns:
+        *cls* unchanged, so the call reads as a class decorator.
+    """
+    if cls not in _DESCRIPTOR_TYPES:
+        _DESCRIPTOR_TYPES.append(cls)
+    return cls
+
+
+def projection_descriptor_types() -> tuple[type[ProjectionDescriptor], ...]:
+    """Return every registered public projection descriptor class."""
+    return tuple(_DESCRIPTOR_TYPES)
+
+
+def is_projection_descriptor(loader: Any) -> TypeGuard[ProjectionDescriptor]:
+    """Return whether *loader* is an instance of a registered descriptor class.
+
+    Args:
+        loader: Any projection loader object, descriptor or custom.
+
+    Returns:
+        ``True`` for descriptors and their subclasses, ``False`` for custom loaders.
+    """
+    return isinstance(loader, projection_descriptor_types())
+
+
+def resolve_model_reference(model_ref: Any) -> type | None:
+    """Resolve a descriptor ``model`` reference to a class.
+
+    Accepts a direct class (``CountLoader(model=Note)``) and the zero-argument
+    callable used for forward references (``CountLoader(model=lambda: Note)``).
+
+    Args:
+        model_ref: The value declared as the descriptor's ``model``.
+
+    Returns:
+        The referenced class, or ``None`` when the reference is neither a class
+        nor a callable that returns one — including when the callable raises
+        because the target model is not importable yet.
+    """
+    if isinstance(model_ref, type):
+        return model_ref
+    if callable(model_ref):
+        try:
+            resolved = model_ref()
+        except Exception:
+            return None
+        return resolved if isinstance(resolved, type) else None
+    return None
+
+
+@projection_descriptor
 @dataclass(frozen=True, slots=True)
 class CountLoader:
     """Projection loader descriptor: counts related rows per parent entity.
@@ -56,7 +155,12 @@ class CountLoader:
     model: type
     via: str | None = None
 
+    def build_memory_loader(self, relation: str) -> _MemoryCountLoader:
+        """Return the memory-path loader counting *relation* on a parent object."""
+        return _MemoryCountLoader(relation=relation)
 
+
+@projection_descriptor
 @dataclass(frozen=True, slots=True)
 class ExistsLoader:
     """Projection loader descriptor: checks if related rows exist per parent entity.
@@ -77,7 +181,12 @@ class ExistsLoader:
     model: type
     via: str | None = None
 
+    def build_memory_loader(self, relation: str) -> _MemoryExistsLoader:
+        """Return the memory-path loader testing *relation* on a parent object."""
+        return _MemoryExistsLoader(relation=relation)
 
+
+@projection_descriptor
 @dataclass(frozen=True, slots=True)
 class JoinFieldsLoader:
     """Projection loader descriptor: fetches selected columns from related rows.
@@ -110,6 +219,10 @@ class JoinFieldsLoader:
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "value_columns", tuple(value_columns))
         object.__setattr__(self, "via", via)
+
+    def build_memory_loader(self, relation: str) -> _MemoryJoinFieldsLoader:
+        """Return the memory-path loader projecting *relation* on a parent object."""
+        return _MemoryJoinFieldsLoader(relation=relation, value_columns=self.value_columns)
 
 
 # ---------------------------------------------------------------------------
@@ -174,19 +287,15 @@ def make_memory_loader(loader: Any, rel_name: str) -> Any:
     """Convert a public loader descriptor to its memory-path counterpart.
 
     Args:
-        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader`` descriptor.
+        loader: A projection loader descriptor, or any custom loader.
         rel_name: The relation attribute name to read from the object.
 
     Returns:
-        The corresponding ``_Memory*`` loader instance, or ``loader`` unchanged
-        if it is not a recognised descriptor type.
+        The memory-path loader built by the descriptor, or ``loader`` unchanged
+        when it is not a registered descriptor.
     """
-    if isinstance(loader, CountLoader):
-        return _MemoryCountLoader(relation=rel_name)
-    if isinstance(loader, ExistsLoader):
-        return _MemoryExistsLoader(relation=rel_name)
-    if isinstance(loader, JoinFieldsLoader):
-        return _MemoryJoinFieldsLoader(relation=rel_name, value_columns=loader.value_columns)
+    if is_projection_descriptor(loader):
+        return loader.build_memory_loader(rel_name)
     return loader
 
 
@@ -198,64 +307,26 @@ def find_relation_name_for_loader(loader: Any, parent_model: type) -> str | None
     to ``loader.model`` (unwrapping ``list[X]``, ``X | UnsetType``, etc.).
 
     Args:
-        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader``.
+        loader: A projection loader descriptor, or any custom loader.
         parent_model: The domain model class that owns the projection.
 
     Returns:
         The relation attribute name, or ``None`` if no match is found.
     """
-    if not isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+    if not is_projection_descriptor(loader):
         return None
     if loader.via is not None:
         return loader.via
 
-    from loom.core.model.introspection import get_relations
-
-    relations = get_relations(parent_model)
-    try:
-        hints = typing.get_type_hints(parent_model)
-    except Exception:
+    hints = resolve_type_hints(parent_model)
+    if not hints:
         return None
 
     target_model = loader.model
-    for rel_name in relations:
+    for rel_name in get_relations(parent_model):
         hint = hints.get(rel_name)
         if hint is None:
             continue
-        if _extract_model_from_hint(hint) is target_model:
+        if extract_model_from_hint(hint) is target_model:
             return rel_name
     return None
-
-
-def _union_inner_args(hint: Any) -> tuple[Any, ...] | None:
-    """Return the non-None, non-UnsetType args of a Union annotation.
-
-    Normalises both ``X | Y`` (Python 3.10+) and ``Union[X, Y]`` forms.
-    Returns ``None`` when *hint* is not a Union annotation.
-    """
-    if isinstance(hint, types.UnionType):
-        raw = hint.__args__
-    elif getattr(hint, "__origin__", None) is typing.Union:
-        raw = getattr(hint, "__args__", ())
-    else:
-        return None
-    return tuple(a for a in raw if a is not type(None) and a is not msgspec.UnsetType)
-
-
-def _extract_model_from_hint(hint: Any) -> type | None:
-    """Unwrap list/Union/UnsetType annotations to extract the concrete model type."""
-    union_args = _union_inner_args(hint)
-    if union_args is not None:
-        for arg in union_args:
-            result = _extract_model_from_hint(arg)
-            if result is not None:
-                return result
-        return None
-
-    origin = getattr(hint, "__origin__", None)
-    args: tuple[Any, ...] = getattr(hint, "__args__", ())
-
-    if origin is list and len(args) == 1:
-        return _extract_model_from_hint(args[0])
-
-    return hint if isinstance(hint, type) else None
