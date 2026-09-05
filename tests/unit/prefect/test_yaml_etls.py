@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 
 from loom.core.config import ConfigError
+from loom.prefect._flow_yaml import read_yaml
 from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
-from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.deploy._yaml_etls import (
     EtlDeclaration,
     load_declaration,
@@ -111,6 +111,16 @@ def test_invalid_pipeline_path_names_etl_and_path(tmp_path: Path, dotted: str) -
     assert dotted in str(excinfo.value)
 
 
+def test_module_raising_at_import_is_a_config_error_naming_etl_and_path(tmp_path: Path) -> None:
+    dotted = "tests.fixtures.prefect.raising.Pipeline"
+    path = _write(tmp_path, "orders.yaml", f"etl: orders\npipeline: {dotted}\n")
+    with pytest.raises(ConfigError) as excinfo:
+        read_declarations(str(path))
+    assert "'orders'" in str(excinfo.value)
+    assert dotted in str(excinfo.value)
+    assert "boom at import" in str(excinfo.value)
+
+
 def test_missing_pipeline_in_etls_entry_names_etl(tmp_path: Path) -> None:
     path = _write(tmp_path, "etls.yaml", "etls:\n  orders:\n    params: {}\n")
     with pytest.raises(ConfigError, match="'orders'.*pipeline"):
@@ -201,6 +211,32 @@ def test_load_declaration_unknown_attribute_lists_known_ones() -> None:
 def test_load_declaration_rejects_a_glob() -> None:
     with pytest.raises(ConfigError, match="glob"):
         load_declaration(str(FIXTURES / "*.yaml"), "daily_orders")
+
+
+def _write_valid_and_broken_siblings(tmp_path: Path) -> Path:
+    return _write(
+        tmp_path,
+        "etls.yaml",
+        f"""\
+        etls:
+          good:
+            pipeline: {PIPELINES}.OrdersPipeline
+          broken:
+            pipeline: no.such.module.Cls
+        """,
+    )
+
+
+def test_load_declaration_validates_only_the_requested_attribute(tmp_path: Path) -> None:
+    path = _write_valid_and_broken_siblings(tmp_path)
+    declaration = load_declaration(str(path), "good")
+    assert declaration.pipeline is OrdersPipeline
+
+
+def test_read_declarations_still_rejects_the_broken_sibling(tmp_path: Path) -> None:
+    path = _write_valid_and_broken_siblings(tmp_path)
+    with pytest.raises(ConfigError, match="'broken'.*no.such.module.Cls"):
+        read_declarations(str(path))
 
 
 # --- read_yaml keyed etls -----------------------------------------------------

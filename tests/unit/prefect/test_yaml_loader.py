@@ -1,4 +1,4 @@
-"""Tests for ``loom.prefect.deploy._yaml.read_yaml`` (delegates to
+"""Tests for ``loom.prefect._flow_yaml.read_yaml`` (delegates to
 ``loom.core.config.load_config``).
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from loom.core.config import ConfigError
-from loom.prefect.deploy._yaml import read_yaml
+from loom.prefect._flow_yaml import read_yaml
 
 
 def _write(tmp_path: Path, name: str, body: str) -> Path:

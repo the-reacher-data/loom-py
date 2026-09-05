@@ -17,11 +17,9 @@ from typing import Any
 
 import prefect
 
-from loom.core.config import is_cloud_uri
 from loom.prefect._config import FlowConfig, flow_config_from_mapping
+from loom.prefect._flow_yaml import extract_pool_config, read_yaml, resolve_config_uri
 from loom.prefect._meta import LOOM_ETL_META_ATTR, ETLFlowMeta
-from loom.prefect.deploy._schedule import extract_pool_config
-from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._common import coerce_tags
 from loom.prefect.flow._hooks import make_notification_hooks, pause_schedule_on_failure
 from loom.prefect.flow._run_name import make_run_name_callback
@@ -85,13 +83,6 @@ def flow_attribute_name(name: str) -> str:
     return name.replace("-", "_")
 
 
-def _record_config_path(config_path: str) -> str:
-    """Resolve a local YAML path for the metadata; keep a cloud URI verbatim."""
-    if is_cloud_uri(config_path):
-        return config_path
-    return str(Path(config_path).resolve())
-
-
 def assemble_flow(
     *,
     name: str,
@@ -125,7 +116,7 @@ def assemble_flow(
         attached at :data:`~loom.prefect._meta.LOOM_ETL_META_ATTR`.
     """
     safe_name = flow_attribute_name(name)
-    flow_body: Any = body  # cast to Any — __signature__ is a valid runtime attribute
+    flow_body: Any = body
     flow_body.__signature__ = signature
     flow_body.__name__ = safe_name
     flow_body.__qualname__ = safe_name
@@ -145,7 +136,7 @@ def assemble_flow(
         LOOM_ETL_META_ATTR,
         ETLFlowMeta(
             name=name,
-            config_path=_record_config_path(config_path),
+            config_path=resolve_config_uri(config_path),
             source_file=str(Path(source_file).resolve()),
             correlation_field=correlation_field,
             schedule=settings.schedule,

@@ -121,7 +121,7 @@ def test_variable_is_restored_to_previous_value(
     assert os.environ[ENV_VAR] == "previous"
 
 
-def test_job_variables_env_records_uri_and_user_keys_win(
+def test_job_variables_env_records_uri_and_keeps_user_keys(
     tmp_path: Path, recorder: _Recorder
 ) -> None:
     path = _write(
@@ -143,7 +143,9 @@ def test_job_variables_env_records_uri_and_user_keys_win(
     assert job_variables == {"cpu": 512, "env": {"OTHER": "keep", ENV_VAR: str(path)}}
 
 
-def test_user_env_key_wins_over_deployer_value(tmp_path: Path, recorder: _Recorder) -> None:
+def test_declaration_setting_the_variable_itself_is_rejected_naming_the_etl(
+    tmp_path: Path, recorder: _Recorder
+) -> None:
     path = _write(
         tmp_path,
         "orders.yaml",
@@ -157,9 +159,10 @@ def test_user_env_key_wins_over_deployer_value(tmp_path: Path, recorder: _Record
                 {ENV_VAR}: user-value
         """,
     )
-    discover_and_deploy_etls(config=str(path))
-    job_variables = recorder.deploy.call_args.kwargs["job_variables"]
-    assert job_variables["env"] == {ENV_VAR: "user-value"}
+    with pytest.raises(ConfigError, match=f"'orders'.*{ENV_VAR}"):
+        discover_and_deploy_etls(config=str(path))
+    assert recorder.calls == []
+    recorder.deploy.assert_not_called()
 
 
 # --- SC-003: package path and YAML path agree ---------------------------------

@@ -981,7 +981,9 @@ process for the duration of each deployment call (Prefect imports the
 entrypoint on the deploy host too) and records it in the deployment's
 `job_variables.env` as `LOOM_ETL_CONFIG=<uri of the declaring file>` so the
 worker sees the same value. Keys you set under
-`environments.<env>.job_variables.env` are merged with it and win on conflict.
+`environments.<env>.job_variables.env` are merged with it; a declaration
+that sets `LOOM_ETL_CONFIG` itself is a `ConfigError` naming the ETL, so the
+recorded value is always the validated one.
 
 Two consequences for the worker image:
 
@@ -994,6 +996,23 @@ Two consequences for the worker image:
 
 `LOOM_ETL_CONFIG` unset, or naming a file with no ETL for the requested
 attribute, is a `ConfigError` at import time listing the known attributes.
+The worker imports and validates only the requested ETL; sibling declarations
+in the same file are checked at deploy time.
+
+YAML-declared ETLs have no manifest store and take their retries from
+`retry:` only; use `flows_package=` when an ETL needs a `ManifestStore` or a
+dedicated `flow_config_path`.
+
+### Trust boundary
+
+A declaration file is executed configuration: its dotted paths are imported on
+the deploy host and inside the worker, and the worker reads the file at every
+run. Write access to it, and to anything it `includes`, therefore equals
+deploy rights. Keep it in the image, or in a bucket whose write ACL matches the
+image registry. Never embed credentials in the URI: it is stored in the
+deployment's job variables in clear text. Anyone who can override job variables
+in Prefect can override `LOOM_ETL_CONFIG`, and a declaration may not set
+`LOOM_ETL_CONFIG` itself.
 
 ### Duplicates inside one file versus across files
 

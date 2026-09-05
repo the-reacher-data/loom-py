@@ -11,11 +11,11 @@ import pytest
 
 from loom.etl import ETLParams, ETLPipeline, ETLProcess, ETLStep, FromTable, IntoTable
 from loom.prefect import etl_flow
+from loom.prefect._flow_yaml import read_yaml
 from loom.prefect._meta import LOOM_ETL_META_ATTR as _LOOM_ETL_META_ATTR
 from loom.prefect._placeholders import resolve_placeholder
-from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._assemble import flow_attribute_name, flow_settings_from_mapping
-from loom.prefect.flow._factory import _build_etl_flow
+from loom.prefect.flow._factory import build_etl_flow
 from loom.prefect.flow._signature import (
     normalize_datetime_fields as _normalize_datetime_fields,
 )
@@ -393,16 +393,13 @@ def test_build_etl_flow_from_mapping_matches_file_metadata(tmp_path: Path) -> No
         source_file=__file__,
     )
     settings = flow_settings_from_mapping(read_yaml(str(cfg)))
-    from_mapping = _build_etl_flow(
+    from_mapping = build_etl_flow(
         name="sample-etl",
         pipeline=_SamplePipeline,
         params_type=_SampleParams,
         settings=settings,
         config_path=str(cfg),
         source_file=__file__,
-        storage_config_path="/app/config.yaml",
-        manifest_store=None,
-        flow_config=settings.retry_policy,
     )
     assert getattr(from_mapping, _LOOM_ETL_META_ATTR) == getattr(from_file, _LOOM_ETL_META_ATTR)
     assert from_mapping.name == from_file.name
@@ -413,16 +410,13 @@ def test_build_etl_flow_from_mapping_matches_file_metadata(tmp_path: Path) -> No
 
 def test_build_etl_flow_keeps_cloud_uri_config_path_verbatim(tmp_path: Path) -> None:
     settings = flow_settings_from_mapping(read_yaml(str(_write_cfg(tmp_path))))
-    flow_obj = _build_etl_flow(
+    flow_obj = build_etl_flow(
         name="sample-etl",
         pipeline=_SamplePipeline,
         params_type=_SampleParams,
         settings=settings,
         config_path="s3://b/x.yaml",
         source_file=__file__,
-        storage_config_path="/app/config.yaml",
-        manifest_store=None,
-        flow_config=settings.retry_policy,
     )
     assert getattr(flow_obj, _LOOM_ETL_META_ATTR).config_path == "s3://b/x.yaml"
 

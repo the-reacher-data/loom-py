@@ -1,32 +1,8 @@
-"""Schedule + work-pool configuration helpers."""
+"""Prefect schedule construction from the per-ETL YAML."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
-
-
-def extract_pool_config(raw_cfg: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Return per-environment work-pool overrides from the per-ETL YAML.
-
-    Args:
-        raw_cfg: Top-level YAML mapping returned by ``read_yaml``.
-
-    Returns:
-        Mapping ``environment → {"work_pool": str | None,
-        "job_variables": dict}``. Empty when the YAML has no
-        ``environments`` block.
-    """
-    environments = raw_cfg.get("environments") or {}
-    out: dict[str, dict[str, Any]] = {}
-    for env_name, env_block in environments.items():
-        if not isinstance(env_block, dict):
-            continue
-        out[env_name] = {
-            "work_pool": env_block.get("work_pool"),
-            "job_variables": env_block.get("job_variables", {}) or {},
-        }
-    return out
 
 
 def build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:
@@ -58,4 +34,4 @@ def build_cron_schedule(schedule: dict[str, Any] | None) -> Any | None:
     )
 
 
-__all__ = ["build_cron_schedule", "extract_pool_config"]
+__all__ = ["build_cron_schedule"]

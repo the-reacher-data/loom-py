@@ -2,9 +2,9 @@
 
 The ``etl_flow()`` factory attaches a frozen ``ETLFlowMeta`` to each
 decorated flow at ``__loom_etl_meta__``. The deployer reads it back to
-build the matching Prefect Deployment. Keeping the type in its own
-module breaks the otherwise-cyclic dependency between ``loom.prefect.flow``
-and ``loom.prefect.deploy``.
+build the matching Prefect Deployment. The type lives here, next to
+``loom.prefect._flow_yaml``, so that ``loom.prefect.flow`` imports nothing
+from ``loom.prefect.deploy``; the only cross-package edge is deploy → flow.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ class ETLFlowMeta(LoomFrozenStruct, frozen=True, kw_only=True):
         raw_params: Default parameter mapping pre-bound at deploy time.
         pool_config: Per-environment work-pool overrides
             (``environment → {"work_pool", "job_variables"}``).
+        tags: Extra deployment tags from the YAML, appended after ``name``.
     """
 
     name: str

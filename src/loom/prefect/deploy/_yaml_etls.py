@@ -1,9 +1,9 @@
 """ETL declarations read from YAML, the input of ``discover_and_deploy_etls(config=...)``.
 
 A declaration file has one of two shapes: a per-ETL document (the YAML
-``etl_flow`` reads today plus ``pipeline`` and ``params_type`` dotted paths,
-named by ``etl:`` or the file stem) or an ``etls:`` mapping of name to such a
-body. Dotted paths are imported and type-checked here, so every error surfaces
+``etl_flow`` reads plus ``pipeline`` and ``params_type`` dotted paths, named by
+``etl:`` or the file stem) or an ``etls:`` mapping of name to such a body.
+Dotted paths are imported and type-checked here, so every error surfaces
 before any deployment is registered. This module never deploys.
 """
 
@@ -11,19 +11,18 @@ from __future__ import annotations
 
 import glob
 import importlib
-import os
 import typing
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 import msgspec
 
-from loom.core.config import ConfigError, expand_config_glob, is_cloud_uri
+from loom.core.config import ConfigError, expand_config_glob
 from loom.etl import ETLPipeline
+from loom.prefect._flow_yaml import read_yaml, resolve_config_uri
 from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH
-from loom.prefect.deploy._yaml import read_yaml
 from loom.prefect.flow._assemble import (
     FlowSettings,
     flow_attribute_name,
@@ -55,7 +54,7 @@ class EtlDeclaration:
 
 
 def read_declarations(config: str) -> tuple[EtlDeclaration, ...]:
-    """Read every ETL declared by the files ``config`` names.
+    """Read and validate every ETL declared by the files ``config`` names.
 
     Args:
         config: Local path, cloud URI or glob of declaration files.
@@ -68,16 +67,18 @@ def read_declarations(config: str) -> tuple[EtlDeclaration, ...]:
             or has the wrong type, a name yields no identifier, or two
             declarations share a name or an attribute.
     """
-    pattern = config if is_cloud_uri(config) else os.path.abspath(config)
     declarations: list[EtlDeclaration] = []
-    for uri in expand_config_glob(pattern):
-        declarations.extend(_declarations_in_file(_source_uri(uri)))
+    for uri in expand_config_glob(resolve_config_uri(config)):
+        declarations.extend(_declaration(name, body, uri) for name, body in _bodies_in_file(uri))
     _check_unique(declarations)
     return tuple(declarations)
 
 
 def load_declaration(config_uri: str, attribute: str) -> EtlDeclaration:
     """Return the declaration in ``config_uri`` whose entrypoint attribute matches.
+
+    Only the matching body is imported and validated; sibling declarations in
+    the same file are left untouched.
 
     Args:
         config_uri: Declaration file (not a glob).
@@ -92,42 +93,31 @@ def load_declaration(config_uri: str, attribute: str) -> EtlDeclaration:
     """
     if glob.has_magic(config_uri):
         raise ConfigError(f"{config_uri}: a glob cannot identify one ETL declaration file")
-    declarations = read_declarations(config_uri)
-    for declaration in declarations:
-        if declaration.attribute == attribute:
-            return declaration
-    known = ", ".join(sorted(d.attribute for d in declarations))
+    bodies = list(_bodies_in_file(config_uri))
+    for name, body in bodies:
+        if flow_attribute_name(name) == attribute:
+            return _declaration(name, body, config_uri)
+    known = ", ".join(sorted(flow_attribute_name(name) for name, _ in bodies))
     raise ConfigError(
         f"{config_uri}: no ETL maps to entrypoint attribute {attribute!r}; known: {known}"
     )
 
 
-def _source_uri(uri: str) -> str:
-    if is_cloud_uri(uri):
-        return uri
-    return str(Path(uri).resolve())
-
-
-def _declarations_in_file(uri: str) -> Iterator[EtlDeclaration]:
+def _bodies_in_file(uri: str) -> Iterator[tuple[str, Any]]:
     document = read_yaml(uri)
     if "etls" in document:
-        yield from _declarations_in_mapping(document["etls"], uri)
+        entries = document["etls"]
+        if not isinstance(entries, Mapping):
+            raise ConfigError(f"{uri}: 'etls' must be a mapping of ETL name to declaration")
+        yield from ((str(name), body) for name, body in entries.items())
         return
     if "pipeline" in document:
-        name = document.get("etl") or PurePosixPath(uri).stem
-        yield _declaration(str(name), document, uri)
+        yield str(document.get("etl") or PurePosixPath(uri).stem), document
         return
     raise ConfigError(
         f"{uri}: declares neither 'etls' nor 'pipeline'; ETL declarations live in "
         "their own directory or in one 'etls:' file"
     )
-
-
-def _declarations_in_mapping(entries: Any, uri: str) -> Iterator[EtlDeclaration]:
-    if not isinstance(entries, Mapping):
-        raise ConfigError(f"{uri}: 'etls' must be a mapping of ETL name to declaration")
-    for name, body in entries.items():
-        yield _declaration(str(name), body, uri)
 
 
 def _declaration(name: str, body: Any, uri: str) -> EtlDeclaration:
@@ -182,18 +172,14 @@ def _resolve_params_type(
 
 
 def _bound_params_type(pipeline: type[ETLPipeline[Any]]) -> type[msgspec.Struct] | None:
-    for base in _pipeline_bases(pipeline):
-        args = typing.get_args(base)
-        if args and _is_struct_type(args[0]):
-            return args[0]
-    return None
-
-
-def _pipeline_bases(pipeline: type[Any]) -> Iterator[Any]:
     for klass in pipeline.__mro__:
         for base in vars(klass).get("__orig_bases__", ()):
-            if typing.get_origin(base) is ETLPipeline:
-                yield base
+            if typing.get_origin(base) is not ETLPipeline:
+                continue
+            args = typing.get_args(base)
+            if args and _is_struct_type(args[0]):
+                return args[0]
+    return None
 
 
 def _is_struct_type(obj: Any) -> typing.TypeGuard[type[msgspec.Struct]]:
@@ -206,8 +192,10 @@ def _import_object(etl: str, dotted: str, uri: str) -> Any:
         raise ConfigError(f"{uri}: ETL {etl!r}: {dotted!r} is not a 'package.module.Name' path")
     try:
         module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise ConfigError(f"{uri}: ETL {etl!r}: cannot import {dotted!r}: {exc}") from exc
+    except Exception as exc:
+        raise ConfigError(
+            f"{uri}: ETL {etl!r}: cannot import {dotted!r}: {type(exc).__name__}: {exc}"
+        ) from exc
     try:
         return getattr(module, attribute)
     except AttributeError as exc:

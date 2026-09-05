@@ -70,7 +70,7 @@ def etl_flow(
         attached at ``__loom_etl_meta__``.
     """
     settings = load_flow_settings(config_path)
-    return _build_etl_flow(
+    return build_etl_flow(
         name=name,
         pipeline=pipeline,
         params_type=params_type,
@@ -83,7 +83,7 @@ def etl_flow(
     )
 
 
-def _build_etl_flow(
+def build_etl_flow(
     *,
     name: str,
     pipeline: type[ETLPipeline[Any]],
@@ -91,9 +91,9 @@ def _build_etl_flow(
     settings: FlowSettings,
     config_path: str,
     source_file: str,
-    storage_config_path: str,
-    manifest_store: ManifestStore | None,
-    flow_config: FlowConfig,
+    storage_config_path: str = DEFAULT_STORAGE_CONFIG_PATH,
+    manifest_store: ManifestStore | None = None,
+    flow_config: FlowConfig | None = None,
 ) -> Any:
     """Assemble the per-ETL flow from already-resolved settings.
 
@@ -106,11 +106,14 @@ def _build_etl_flow(
         source_file: ``__file__`` of the module Prefect loads the flow from.
         storage_config_path: Storage YAML path read at flow-run time.
         manifest_store: Optional store for cross-attempt resume.
-        flow_config: Retry policy applied to the Prefect flow.
+        flow_config: Retry policy applied to the Prefect flow; defaults to
+            ``settings.retry_policy``.
 
     Returns:
         A ``@prefect.flow``-decorated callable with ``__loom_etl_meta__``.
     """
+    if flow_config is None:
+        flow_config = settings.retry_policy
     plan = ETLCompiler().compile(pipeline)
     flow_body = build_flow_body(
         flow_name=name,

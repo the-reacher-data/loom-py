@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,50 @@ def test_unknown_attribute_lists_known_ones(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv(ENV_VAR, str(FIXTURES / "billing.yaml"))
     with pytest.raises(ConfigError, match="invoice_sync.*monthly_close"):
         entrypoint.nope  # noqa: B018 - attribute access is the behaviour under test
+
+
+def test_attribute_loads_despite_a_broken_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "etls.yaml"
+    path.write_text(
+        textwrap.dedent(
+            """\
+            etls:
+              good:
+                pipeline: tests.fixtures.prefect.pipelines.OrdersPipeline
+              broken:
+                pipeline: no.such.module.Cls
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_VAR, str(path))
+    flow_obj = load_flow_from_entrypoint("loom.prefect.deploy.entrypoint.good")
+    assert flow_obj.name == "good"
+
+
+def test_flow_package_never_imports_the_deploy_package() -> None:
+    """Import ``loom.prefect.flow`` under a stub parent so ``loom.prefect.__init__``
+    (which re-exports the deployer) does not mask a flow → deploy edge."""
+    probe = textwrap.dedent(
+        """\
+        import sys, types
+        import loom.prefect as real
+        parent = types.ModuleType("loom.prefect")
+        parent.__path__ = list(real.__path__)
+        for name in [m for m in sys.modules if m.startswith("loom.prefect")]:
+            del sys.modules[name]
+        sys.modules["loom.prefect"] = parent
+        import loom.prefect.flow
+        print([m for m in sys.modules if m.startswith("loom.prefect.deploy")])
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
 
 
 @pytest.mark.parametrize(

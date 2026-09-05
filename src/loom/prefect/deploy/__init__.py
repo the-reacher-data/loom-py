@@ -10,11 +10,13 @@ Public surface
 Internal helpers split by concern:
 
 - ``_discovery`` — walks the flows package or the YAML declarations and
-  drives ``_deploy_single``.
+  registers one deployment per ETL.
 - ``_yaml_etls`` — reads and type-checks ETL declarations from YAML.
-- ``_schedule`` — builds Prefect ``DeploymentScheduleCreate`` objects
-  and pulls work-pool overrides out of each ETL's YAML.
-- ``_yaml`` — loads the per-ETL YAML with a single level of ``extends:``.
+- ``_schedule`` — builds Prefect ``DeploymentScheduleCreate`` objects.
+
+Per-ETL YAML loading and work-pool extraction live in
+``loom.prefect._flow_yaml``, shared with ``loom.prefect.flow``; this package
+imports from the flow package, never the reverse.
 """
 
 from loom.prefect.deploy._discovery import discover_and_deploy_etls
