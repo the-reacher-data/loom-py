@@ -164,6 +164,15 @@ def test_load_backend_provider_rejects_unknown_engine() -> None:
         load_backend_provider("duckdb")
 
 
+def test_load_backend_provider_names_the_registered_engines_when_rejecting() -> None:
+    """The failure must tell the operator which engines it could have asked for."""
+    with pytest.raises(ValueError) as excinfo:
+        load_backend_provider("duckdb")
+
+    message = str(excinfo.value)
+    assert "polars" in message and "spark" in message
+
+
 def test_load_backend_provider_legacy_entry_points_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     class _DummyEP:
         name = "polars"

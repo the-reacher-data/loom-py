@@ -86,7 +86,13 @@ from loom.ai.errors import (
     mcp_auth_strategy_invalid,
     mcp_headers_ref_invalid,
 )
-from loom.core.plugins.entrypoints import list_entry_points, select_entry_point
+from loom.core.plugins.entrypoints import (
+    DuplicateEntryPointError,
+    EntryPointNotFoundError,
+    list_entry_points,
+    load_entry_point,
+    select_entry_point,
+)
 
 if TYPE_CHECKING:  # annotations only: importing the plan at runtime would
     # close a cycle, since the configuration this module validates is what the
@@ -426,13 +432,26 @@ def _build(auth: CompiledRemoteAuth) -> ClientAuth:
 
 
 def _load_strategy(kind: str) -> Any:
-    ep = select_entry_point(REMOTE_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error")
-    if ep is None:
+    """Load the registered strategy, reporting either failure as a coded issue."""
+    try:
+        return load_entry_point(REMOTE_AUTH_ENTRY_POINT_GROUP, kind, on_duplicate="error")
+    except EntryPointNotFoundError as exc:
         # Unreachable through configuration, which refuses an unregistered
         # strategy at decode; reached only if a distribution is uninstalled
         # between decode and start-up.
-        raise AgentCompilationError([mcp_auth_strategy_invalid(kind, "it is not registered")])
-    return ep.load()
+        available = ", ".join(exc.available) if exc.available else "none"
+        raise AgentCompilationError(
+            [mcp_auth_strategy_invalid(kind, f"it is not registered; registered: {available}")]
+        ) from exc
+    except DuplicateEntryPointError as exc:
+        raise AgentCompilationError(
+            [
+                mcp_auth_strategy_invalid(
+                    kind,
+                    f"it is provided by more than one distribution: {', '.join(exc.distributions)}",
+                )
+            ]
+        ) from exc
 
 
 def _checked(kind: str, built: object) -> ClientAuth:
