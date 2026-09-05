@@ -25,7 +25,7 @@ def read_yaml(config_path: str) -> dict[str, Any]:
     from omegaconf import DictConfig, OmegaConf  # noqa: PLC0415
 
     _ensure_mapping_top_level(config_path)
-    merged = load_config(config_path)
+    merged = load_config(config_path, keyed=("etls",))
     if not isinstance(merged, DictConfig):
         raise ValueError(f"{config_path}: top-level YAML must be a mapping")
     container = OmegaConf.to_container(merged, resolve=False)

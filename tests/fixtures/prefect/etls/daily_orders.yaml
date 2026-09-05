@@ -1,0 +1,20 @@
+etl: daily-orders
+pipeline: tests.fixtures.prefect.pipelines.OrdersPipeline
+params_type: tests.fixtures.prefect.pipelines.OrdersParams
+storage_config_path: /srv/orders/config.yaml
+correlation_field: run_date
+schedule:
+  cron: "0 6 * * *"
+  timezone: Europe/Madrid
+  enabled: true
+params:
+  run_date: ${today-1d}
+tags: [orders, daily]
+environments:
+  prod:
+    work_pool: loom-fargate
+    job_variables:
+      cpu: 1024
+retry:
+  retries: 2
+  retry_delay_seconds: 30
