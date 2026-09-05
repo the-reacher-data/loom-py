@@ -1,0 +1,120 @@
+"""Tests for ``default_resolvers``, ``merge_resolvers`` and registration precedence."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from omegaconf import OmegaConf
+
+from loom.core.config import (
+    ConfigError,
+    ConfigResolver,
+    default_resolvers,
+    load_config,
+    merge_resolvers,
+)
+
+
+class StubResolver:
+    def __init__(self, name: str, prefix: str) -> None:
+        self._name = name
+        self._prefix = prefix
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def resolve(self, key: str) -> object:
+        return f"{self._prefix}:{key}"
+
+
+def _names(resolvers: tuple[ConfigResolver, ...]) -> tuple[str, ...]:
+    return tuple(r.name for r in resolvers)
+
+
+@pytest.fixture
+def secrets_yaml(tmp_path: Path) -> str:
+    path = tmp_path / "app.yaml"
+    path.write_text("token: ${secrets:k}\n")
+    return str(path)
+
+
+@pytest.fixture
+def plain_yaml(tmp_path: Path) -> str:
+    path = tmp_path / "plain.yaml"
+    path.write_text("app:\n  name: demo\n")
+    return str(path)
+
+
+def test_load_config_registers_no_default_resolvers(plain_yaml: str) -> None:
+    load_config(plain_yaml)
+
+    assert not OmegaConf.has_resolver("secrets")
+    assert not OmegaConf.has_resolver("ssm")
+
+
+def test_explicit_resolver_replaces_earlier_registration(secrets_yaml: str) -> None:
+    first = load_config(secrets_yaml, resolvers=[StubResolver("secrets", "first")])
+    assert first.token == "first:k"
+
+    second = load_config(secrets_yaml, resolvers=[StubResolver("secrets", "second")])
+
+    assert second.token == "second:k"
+
+
+def test_merge_resolvers_drops_default_taken_by_explicit() -> None:
+    vault = StubResolver("secrets", "vault")
+
+    merged = merge_resolvers([vault], default_resolvers())
+
+    assert merged[0] is vault
+    assert _names(merged) == ("secrets", "ssm")
+
+
+def test_merge_resolvers_drops_default_already_registered(secrets_yaml: str) -> None:
+    load_config(secrets_yaml, resolvers=[StubResolver("secrets", "vault")])
+
+    merged = merge_resolvers((), default_resolvers())
+
+    assert _names(merged) == ("ssm",)
+    assert load_config(secrets_yaml, resolvers=merged).token == "vault:k"
+
+
+def test_merge_resolvers_keeps_free_defaults() -> None:
+    merged = merge_resolvers((), default_resolvers())
+
+    assert _names(merged) == ("secrets", "ssm")
+
+
+def test_merge_resolvers_keeps_explicit_order() -> None:
+    a = StubResolver("a", "a")
+    b = StubResolver("b", "b")
+
+    assert merge_resolvers([a, b], ()) == (a, b)
+
+
+def test_default_resolvers_construct_without_boto3(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
+    monkeypatch.setattr("loom.core.config.ssm._boto3_module", None)
+
+    resolvers = default_resolvers()
+
+    assert _names(resolvers) == ("secrets", "ssm")
+    for resolver in resolvers:
+        with pytest.raises(ConfigError, match=r"loom-kernel\[config-ssm\]"):
+            resolver.resolve("/x")
+
+
+def test_no_client_created_without_placeholders(
+    plain_yaml: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boto3 = MagicMock()
+    monkeypatch.setattr("loom.core.config.secrets._boto3_module", boto3)
+    monkeypatch.setattr("loom.core.config.ssm._boto3_module", boto3)
+
+    cfg = load_config(plain_yaml, resolvers=default_resolvers())
+
+    assert cfg.app.name == "demo"
+    boto3.client.assert_not_called()

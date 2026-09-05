@@ -31,7 +31,13 @@ for AWS SSM Parameter Store.  Install ``loom-kernel[config-ssm]`` to use it::
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
+
+from omegaconf import OmegaConf
+
+from loom.core.config.secrets import SecretsManagerResolver
+from loom.core.config.ssm import SsmResolver
 
 
 @runtime_checkable
@@ -86,4 +92,30 @@ class ConfigResolver(Protocol):
         ...
 
 
-__all__ = ["ConfigResolver"]
+def default_resolvers() -> tuple[ConfigResolver, ...]:
+    """Return loom's built-in resolvers: ``secrets`` and ``ssm``.
+
+    Both use the AWS SDK's default region and credential chain and create
+    their client lazily on the first resolution.
+    """
+    return (SecretsManagerResolver(), SsmResolver())
+
+
+def merge_resolvers(
+    explicit: Sequence[ConfigResolver], defaults: Sequence[ConfigResolver]
+) -> tuple[ConfigResolver, ...]:
+    """Return *explicit* followed by the *defaults* whose names are still free.
+
+    A default is dropped when an explicit resolver takes its name or when a
+    resolver with that name is already registered in OmegaConf.
+    """
+    taken = {resolver.name for resolver in explicit}
+    kept = tuple(
+        resolver
+        for resolver in defaults
+        if resolver.name not in taken and not OmegaConf.has_resolver(resolver.name)
+    )
+    return (*explicit, *kept)
+
+
+__all__ = ["ConfigResolver", "default_resolvers", "merge_resolvers"]
