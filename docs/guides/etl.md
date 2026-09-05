@@ -852,6 +852,159 @@ the REST and Celery `create_app` and on `StreamingRunner.from_yaml`.
 
 ---
 
+## Deploying ETLs to Prefect
+
+`discover_and_deploy_etls` registers one Prefect deployment per ETL. The ETLs
+come from one of two sources, and exactly one must be given (both or neither is
+a `ValueError`):
+
+- `flows_package=`: a dotted Python package with one module per ETL, each
+  calling `etl_flow(...)` at import time. This is the existing path and its
+  behaviour is unchanged.
+- `config=`: YAML declarations, with no Python module per ETL. `config` is a
+  local path, a cloud URI (`s3://`, `gs://`, …) or a glob on either:
+
+```python
+from loom.prefect.deploy import discover_and_deploy_etls
+
+deployment_ids = discover_and_deploy_etls(
+    config="config/etls/*.yaml",
+    work_pool="loom-fargate",   # default; "loom-docker" for local dev
+    env="prod",                 # picks environments.<env> from each declaration
+)
+```
+
+Globs follow the rules of [`includes`](#composing-files-with-includes): only
+regular `.yaml` / `.yml` files match, sorted by resolved path, and a pattern
+that matches nothing is a `ConfigError`.
+
+### Declaring ETLs in YAML
+
+A declaration file has one of two shapes. The first is a **per-ETL document**:
+the YAML `etl_flow` already reads (`schedule`, `params`, `tags`, `environments`,
+`retry`, `notifications`, `correlation_field`) plus the keys that replace the
+Python module:
+
+```yaml
+# config/etls/daily-orders.yaml
+etl: daily-orders                              # optional; defaults to the file stem
+pipeline: orders.pipelines.DailyOrdersPipeline  # dotted path to an ETLPipeline subclass
+params_type: orders.pipelines.DailyOrdersParams # optional, see below
+storage_config_path: /app/config.yaml          # optional; this is the default
+correlation_field: run_date
+schedule:
+  cron: "0 6 * * *"
+  timezone: Europe/Madrid
+params:
+  run_date: ${today-1d}
+tags: [orders, daily]
+environments:
+  prod:
+    work_pool: loom-fargate
+    job_variables:
+      cpu: 1024
+      image: registry.example.com/orders:latest
+retry:
+  flow_retries: 2
+  flow_retry_delay_seconds: 300
+```
+
+- `pipeline` (required): dotted path `package.module.Class` to an `ETLPipeline`
+  subclass.
+- `params_type` (optional): dotted path to the `msgspec.Struct` whose fields
+  become the flow's typed parameters. When omitted it is inferred from the
+  pipeline's generic binding, `class DailyOrdersPipeline(ETLPipeline[DailyOrdersParams])`.
+  An explicit `params_type` always wins; a pipeline that leaves the parameter
+  unbound and omits the key is a `ConfigError` naming the ETL.
+- `storage_config_path` (optional): the loom storage YAML the runner reads at
+  flow-run time inside the container. Defaults to `/app/config.yaml`, as with
+  `etl_flow`; `LOOM_STORAGE_CONFIG_PATH` still overrides it at run time.
+- The ETL name is `etl:` when present, otherwise the file stem
+  (`daily-orders.yaml` → `daily-orders`). It is the Prefect flow name and the
+  deployment name, verbatim.
+
+The second shape is one file with an **`etls:` mapping** of name to the same
+body:
+
+```yaml
+# config/etls/billing.yaml
+etls:
+  monthly-close:
+    pipeline: billing.pipelines.MonthlyClosePipeline
+    schedule:
+      cron: "0 3 1 * *"
+    params:
+      run_date: ${today-1d}
+    tags: [billing]
+  invoice-sync:
+    pipeline: billing.pipelines.InvoiceSyncPipeline
+    params:
+      run_date: ${today}
+```
+
+Both shapes may appear across the files of one glob. A matched file that
+declares neither `etls:` nor `pipeline` is a `ConfigError` naming the file, so
+keep ETL declarations in their own directory (`config/etls/`) or in one `etls:`
+file rather than next to the storage YAML.
+
+### Validation before any deployment
+
+Every declaration is read and checked before the first deployment is
+registered, so a broken file fails the whole run instead of leaving a partial
+set of deployments behind. Each error is a `ConfigError` naming the ETL and the
+offending value:
+
+- `pipeline` and `params_type` must import and have the right kind: an
+  `ETLPipeline` subclass and a `msgspec.Struct` subclass respectively.
+- The same ETL name declared in two files, or twice across `etls:` entries, is
+  rejected; the message names both files.
+- Names stay free-form, but each must map to a Python identifier once hyphens
+  are replaced by underscores (the same rule `etl_flow` applies to its flow
+  body): `daily-orders` → `daily_orders` is fine; `sales.daily` or
+  `2024-close` are rejected. Two names that collapse to one identifier
+  (`daily-orders` and `daily_orders`) are rejected as well.
+
+Deployment metadata (name, tags, parameters, schedule, work-pool job variables,
+retry policy, correlation field, notifications) is derived exactly as
+`etl_flow` derives it, through the same loader.
+
+### What the worker runs
+
+A YAML-declared ETL has no module of its own, so the deployment's entrypoint is
+a module loom owns, `loom.prefect.deploy.entrypoint.<attribute>`, where
+`<attribute>` is the identifier derived above (`daily-orders` →
+`loom.prefect.deploy.entrypoint.daily_orders`). That module rebuilds the flow
+from the declaration file named by the `LOOM_ETL_CONFIG` environment variable.
+
+The deployer fills that variable in two places: it exports it in its own
+process for the duration of each deployment call (Prefect imports the
+entrypoint on the deploy host too) and records it in the deployment's
+`job_variables.env` as `LOOM_ETL_CONFIG=<uri of the declaring file>` so the
+worker sees the same value. Keys you set under
+`environments.<env>.job_variables.env` are merged with it and win on conflict.
+
+Two consequences for the worker image:
+
+- loom must be installed, since the entrypoint module lives in it.
+- The declaration file must be reachable at the recorded URI from inside the
+  container: bake `config/etls/` into the image at the same path, or point
+  `config=` at a cloud URI the task role can read. The recorded value is the
+  resolved path of the file (never the glob), so each deployment names exactly
+  one file.
+
+`LOOM_ETL_CONFIG` unset, or naming a file with no ETL for the requested
+attribute, is a `ConfigError` at import time listing the known attributes.
+
+### Duplicates inside one file versus across files
+
+A duplicate ETL name is always rejected as a `ConfigError`, and nothing is
+deployed. Inside a single YAML document a repeated key (two `etls:` entries
+with the same name) is refused while the file is parsed, and the error names
+the file. Across files (two matched files, or a file and one it `includes`)
+the error names both files.
+
+---
+
 ## End-to-end example
 
 A full working example with Polars and Spark pipelines, Delta Lake, and observability is
