@@ -1,17 +1,24 @@
 """Provider-run tools: the loom name of each, and which binding admits it.
 
 The mapping is by class, never by the engine's own identifier, so a rename in
-pydantic-ai surfaces as a failed import here instead of a silently unsupported
-grant.
+pydantic-ai fails the import of this module instead of leaving a grant silently
+unsupported.
 """
 
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
+
+from pydantic_ai.capabilities import NativeTool
+from pydantic_ai.native_tools import (
+    AbstractNativeTool,
+    CodeExecutionTool,
+    WebFetchTool,
+    WebSearchTool,
+)
 
 from loom.ai.compiler._plan import CompiledNativeCapability
-from loom.ai.errors import AgentCompilationError, provider_not_installed
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -19,28 +26,14 @@ if TYPE_CHECKING:
     from loom.ai.compiler import AgentPlan
     from loom.ai.inference import InferenceTarget
 
-
-def _tool_classes() -> Mapping[str, type[Any]]:
-    """Return the loom tool name of every provider tool this release grants.
-
-    Raises:
-        AgentCompilationError: When the engine SDK is not installed.
-    """
-    try:
-        from pydantic_ai.native_tools import CodeExecutionTool, WebFetchTool, WebSearchTool
-    except ImportError as exc:  # pragma: no cover - the SDK is a hard dependency here
-        raise AgentCompilationError([provider_not_installed("native", "ai-pydantic")]) from exc
-    return MappingProxyType(
-        {
-            "web_search": WebSearchTool,
-            "web_fetch": WebFetchTool,
-            "code_execution": CodeExecutionTool,
-        }
-    )
-
-
-NATIVE_TOOL_NAMES: Final[tuple[str, ...]] = ("web_search", "web_fetch", "code_execution")
-"""Tool names this engine maps, in the order the artifact schema lists them."""
+TOOL_CLASSES: Final[Mapping[str, type[AbstractNativeTool]]] = MappingProxyType(
+    {
+        "web_search": WebSearchTool,
+        "web_fetch": WebFetchTool,
+        "code_execution": CodeExecutionTool,
+    }
+)
+"""Provider tool class behind every name an artifact may declare."""
 
 
 def supported_native_tools(target: InferenceTarget) -> frozenset[str]:
@@ -56,22 +49,13 @@ def supported_native_tools(target: InferenceTarget) -> frozenset[str]:
     from loom.ai.engines.pydantic_ai._models import model_class_for
 
     admitted = model_class_for(target).supported_native_tools()
-    classes = _tool_classes()
-    return frozenset(name for name, cls in classes.items() if cls in admitted)
+    return frozenset(name for name, cls in TOOL_CLASSES.items() if cls in admitted)
 
 
-def build_native_capabilities(plan: AgentPlan) -> tuple[Any, ...]:
-    """Build one engine capability per granted provider tool, in plan order.
-
-    Raises:
-        AgentCompilationError: When the engine SDK is not installed.
-    """
-    grants = [c for c in plan.capabilities if isinstance(c, CompiledNativeCapability)]
-    if not grants:
-        return ()
-    try:
-        from pydantic_ai.capabilities import NativeTool
-    except ImportError as exc:  # pragma: no cover - the SDK is a hard dependency here
-        raise AgentCompilationError([provider_not_installed("native", "ai-pydantic")]) from exc
-    classes = _tool_classes()
-    return tuple(NativeTool(classes[grant.tool]()) for grant in grants)
+def build_native_capabilities(plan: AgentPlan) -> tuple[NativeTool[object], ...]:
+    """Build one engine capability per granted provider tool, in plan order."""
+    return tuple(
+        NativeTool(TOOL_CLASSES[capability.tool]())
+        for capability in plan.capabilities
+        if isinstance(capability, CompiledNativeCapability)
+    )

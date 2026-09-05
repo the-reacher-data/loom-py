@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from importlib import import_module
 from types import MappingProxyType
-from typing import Protocol, cast
+from typing import NamedTuple, Protocol, cast
 
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
@@ -103,27 +103,52 @@ def _gateway_model(target: InferenceTarget) -> Model:
     return _openai_model(target)
 
 
-_BUILDERS: Mapping[str, Callable[[InferenceTarget], Model]] = MappingProxyType(
+class _Binding(NamedTuple):
+    """How one provider identifier resolves to a pydantic-ai model.
+
+    Attributes:
+        sdk: Vendor SDK name, for the extra a missing import should name.
+        module: Module the model class lives in.
+        model_class: Model class name inside that module.
+        builder: Factory building a configured model of that class.
+    """
+
+    sdk: str
+    module: str
+    model_class: str
+    builder: Callable[[InferenceTarget], Model]
+
+
+_BINDINGS: Mapping[str, _Binding] = MappingProxyType(
     {
-        "bedrock": _bedrock_model,
-        "openai": _openai_model,
-        "anthropic": _anthropic_model,
-        "gateway": _gateway_model,
+        "bedrock": _Binding(
+            "bedrock", "pydantic_ai.models.bedrock", "BedrockConverseModel", _bedrock_model
+        ),
+        "openai": _Binding("openai", "pydantic_ai.models.openai", "OpenAIChatModel", _openai_model),
+        "anthropic": _Binding(
+            "anthropic", "pydantic_ai.models.anthropic", "AnthropicModel", _anthropic_model
+        ),
+        "gateway": _Binding(
+            "openai", "pydantic_ai.models.openai", "OpenAIChatModel", _gateway_model
+        ),
     }
 )
 
-SUPPORTED_PROVIDERS: frozenset[str] = frozenset(_BUILDERS)
+SUPPORTED_PROVIDERS: frozenset[str] = frozenset(_BINDINGS)
 """Provider identifiers this release binds to a pydantic-ai model."""
 
 
-_MODEL_CLASS_IMPORTS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
-    {
-        "bedrock": ("bedrock", "pydantic_ai.models.bedrock", "BedrockConverseModel"),
-        "openai": ("openai", "pydantic_ai.models.openai", "OpenAIChatModel"),
-        "anthropic": ("anthropic", "pydantic_ai.models.anthropic", "AnthropicModel"),
-        "gateway": ("openai", "pydantic_ai.models.openai", "OpenAIChatModel"),
-    }
-)
+def _binding_for(provider: str) -> _Binding:
+    """Return the binding of one provider identifier.
+
+    Raises:
+        AgentCompilationError: With ``PROVIDER_UNKNOWN`` when this release binds
+            no provider of that name.
+    """
+    binding = _BINDINGS.get(provider)
+    if binding is None:
+        raise AgentCompilationError([provider_unknown(provider, sorted(SUPPORTED_PROVIDERS))])
+    return binding
 
 
 def model_class_for(target: InferenceTarget) -> type[Model]:
@@ -137,15 +162,10 @@ def model_class_for(target: InferenceTarget) -> type[Model]:
             that name exists in this release, or ``PROVIDER_NOT_INSTALLED``
             when its SDK is missing.
     """
-    binding = _MODEL_CLASS_IMPORTS.get(target.provider)
-    if binding is None:
-        raise AgentCompilationError(
-            [provider_unknown(target.provider, sorted(SUPPORTED_PROVIDERS))]
-        )
-    provider, module_name, class_name = binding
-    require_provider_sdk(provider, module_name, f"ai-{provider}")
-    module = import_module(module_name)
-    return cast("type[Model]", getattr(module, class_name))
+    binding = _binding_for(target.provider)
+    require_provider_sdk(binding.sdk, binding.module, f"ai-{binding.sdk}")
+    module = import_module(binding.module)
+    return cast("type[Model]", getattr(module, binding.model_class))
 
 
 def resolve_model(target: InferenceTarget) -> Model:
@@ -164,9 +184,4 @@ def resolve_model(target: InferenceTarget) -> Model:
             ``PROVIDER_SETTING_MISSING`` when a setting the vendor requires is
             absent.
     """
-    builder = _BUILDERS.get(target.provider)
-    if builder is None:
-        raise AgentCompilationError(
-            [provider_unknown(target.provider, sorted(SUPPORTED_PROVIDERS))]
-        )
-    return builder(target)
+    return _binding_for(target.provider).builder(target)

@@ -476,7 +476,8 @@ re-check after upgrading):
 ¹ The class admits it, but the provider narrows it again per model name when the
 request is made — OpenAI chat models only run web search on `*-search-preview`
 models. A binding that passes compilation can still be refused by the provider
-on its first call.
+on its first call, and that refusal reaches you as the engine's own error, not
+as a loom error code.
 
 What a `native` grant does not get:
 

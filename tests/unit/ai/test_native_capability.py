@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from loom.ai.compiler import CompiledNativeCapability
+from loom.ai.abc import NativeToolSupport
+from loom.ai.compiler import CompiledCapability, CompiledNativeCapability
 from loom.ai.compiler.phases._capabilities import compile_capabilities
 from loom.ai.config import AiConfig
 from loom.ai.declarative import AgentSpecV1, JsonSchemaOutput, NativeCapability
-from loom.ai.errors import AgentCompilationError, AgentErrorCode, provider_not_installed
+from loom.ai.errors import (
+    AgentCompilationError,
+    AgentCompilationIssue,
+    AgentErrorCode,
+    provider_not_installed,
+)
 from loom.ai.inference import InferenceTarget
 from loom.core.use_case.registry import UseCaseRegistry
 
@@ -28,7 +34,12 @@ def _spec(*tools: str) -> AgentSpecV1:
     )
 
 
-def _compile(spec: AgentSpecV1, **kwargs: object) -> tuple[object, list[object]]:
+def _compile(
+    spec: AgentSpecV1,
+    *,
+    inference: InferenceTarget | None = None,
+    native_tools: NativeToolSupport | None = None,
+) -> tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]:
     """Compile the capabilities of *spec* with the given deployment inputs."""
     return compile_capabilities(
         spec,
@@ -37,7 +48,8 @@ def _compile(spec: AgentSpecV1, **kwargs: object) -> tuple[object, list[object]]
         registry=UseCaseRegistry.build([]),
         sql=None,
         supported_kinds=_KINDS,
-        **kwargs,  # type: ignore[arg-type]
+        inference=inference,
+        native_tools=native_tools,
     )
 
 
@@ -66,10 +78,10 @@ def test_falla_nombrando_proveedor_modelo_rol_y_admitidas_cuando_no_la_admite() 
 
     assert len(issues) == 1
     issue = issues[0]
-    assert issue.code is AgentErrorCode.NATIVE_TOOL_UNSUPPORTED  # type: ignore[attr-defined]
-    assert issue.field == "capabilities.tool"  # type: ignore[attr-defined]
+    assert issue.code is AgentErrorCode.NATIVE_TOOL_UNSUPPORTED
+    assert issue.field == "capabilities.tool"
     for expected in ("bedrock", "anthropic.claude-x", "default", "web_search", "code_execution"):
-        assert expected in issue.message  # type: ignore[attr-defined]
+        assert expected in issue.message
 
 
 def test_falla_una_sola_vez_cuando_la_misma_herramienta_se_concede_dos_veces() -> None:
@@ -80,7 +92,7 @@ def test_falla_una_sola_vez_cuando_la_misma_herramienta_se_concede_dos_veces() -
         native_tools=lambda _t: frozenset({"web_search"}),
     )
 
-    assert [issue.code for issue in issues] == [AgentErrorCode.NATIVE_TOOL_DUPLICATE]  # type: ignore[attr-defined]
+    assert [issue.code for issue in issues] == [AgentErrorCode.NATIVE_TOOL_DUPLICATE]
 
 
 def test_no_añade_incidencia_cuando_el_rol_no_esta_ligado() -> None:
@@ -99,14 +111,14 @@ def test_propaga_la_incidencia_del_oraculo_cuando_el_sdk_falta() -> None:
 
     _compiled, issues = _compile(_spec("web_search"), inference=_BEDROCK, native_tools=_missing)
 
-    assert [issue.code for issue in issues] == [AgentErrorCode.PROVIDER_NOT_INSTALLED]  # type: ignore[attr-defined]
+    assert [issue.code for issue in issues] == [AgentErrorCode.PROVIDER_NOT_INSTALLED]
 
 
 def test_rechaza_el_kind_cuando_el_motor_no_aporta_oraculo() -> None:
     """Without an oracle the grant cannot be checked, so it is refused."""
     _compiled, issues = _compile(_spec("web_search"), inference=_BEDROCK, native_tools=None)
 
-    assert [issue.code for issue in issues] == [AgentErrorCode.CAPABILITY_KIND_UNSUPPORTED]  # type: ignore[attr-defined]
+    assert [issue.code for issue in issues] == [AgentErrorCode.CAPABILITY_KIND_UNSUPPORTED]
 
 
 @pytest.mark.parametrize("tool", ["web_search", "web_fetch", "code_execution"])

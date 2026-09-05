@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import sys
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final
 
 import msgspec
 import prometheus_client
@@ -601,24 +601,6 @@ class _AiWiring:
     plans: tuple[AgentPlan, ...] = ()
 
 
-def _kinds_with_oracle(provider: Any, native_tools: object) -> frozenset[str]:
-    """Return the kinds the engine serves, minus what it cannot answer for.
-
-    An engine advertising ``native`` without the oracle the compiler needs to
-    check a grant against its model would let the grant through unchecked, so
-    the kind is dropped and the artifact is refused for the right reason.
-    """
-    kinds = frozenset(cast("Iterable[str]", provider.supported_capability_kinds()))
-    if "native" in kinds and native_tools is None:
-        _logger.warning(
-            "engine %r serves 'native' grants but supplies no native_tool_support: "
-            "the kind is refused until it does.",
-            getattr(provider, "__class__", provider).__name__,
-        )
-        return kinds - {"native"}
-    return kinds
-
-
 def _effective_agent_specs(
     config_specs: tuple[str, ...],
     manifest_specs: tuple[str, ...],
@@ -671,6 +653,7 @@ def _resolve_ai(
     from loom.ai.registry import (
         engine_client_factories,
         engine_native_tool_support,
+        engine_supported_kinds,
         resolve_engine_provider,
     )
     from loom.ai.runtime import AgentRuntime
@@ -682,7 +665,7 @@ def _resolve_ai(
     compiler = AgentCompiler(
         config=ai_cfg,
         registry=kernel.registry,
-        supported_kinds=_kinds_with_oracle(provider, native_tools),
+        supported_kinds=engine_supported_kinds(provider, ai_cfg.engine),
         sql=sql_cfg,
         native_tools=native_tools,
     )

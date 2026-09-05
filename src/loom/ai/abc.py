@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, Protocol, TypeAlias
+from typing import Any, ClassVar, Final, Literal, Protocol
 
 from loom.ai.errors import AgentRunErrorCode
+from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.model import LoomFrozenStruct
@@ -244,11 +245,7 @@ class DepsFactory(Protocol):
         ...
 
 
-if TYPE_CHECKING:
-    from loom.ai.inference import InferenceTarget
-
-
-NativeToolSupport: TypeAlias = Callable[["InferenceTarget"], frozenset[str]]
+NativeToolSupport = Callable[[InferenceTarget], frozenset[str]]
 """Answers which provider tools a model binding admits, by loom tool name.
 
 Supplied by an engine as an optional ``native_tool_support`` attribute and read

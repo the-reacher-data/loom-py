@@ -37,6 +37,7 @@ from loom.ai.compiler import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledSkillsCapability,
     CompiledSqlCapability,
@@ -115,8 +116,9 @@ def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractT
             at build time, and every other toolset resolves through the
             per-invocation bundle instead.
 
-    ``skills`` is deliberately absent: it publishes no tool, so it is built by
-    :func:`build_capabilities` instead.
+    ``skills`` and ``native`` are deliberately absent: neither publishes a tool
+    this process calls, so they are built by :func:`build_capabilities` and
+    :func:`~loom.ai.engines.pydantic_ai._native.build_native_capabilities`.
 
     Returns:
         The toolsets, in the plan's capability order.
@@ -132,7 +134,7 @@ def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractT
     return tuple(
         _toolset(capability, context)
         for capability in plan.capabilities
-        if not isinstance(capability, CompiledSkillsCapability)
+        if not isinstance(capability, CompiledSkillsCapability | CompiledNativeCapability)
     )
 
 

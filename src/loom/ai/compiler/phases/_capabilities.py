@@ -94,6 +94,7 @@ class _Context:
     """Deployment inputs one capability handler may consult."""
 
     component: str
+    engine: str
     registry: UseCaseRegistry
     sql: SqlConfig | None
     skills_root: str | None
@@ -139,6 +140,7 @@ def compile_capabilities(
     """
     context = _Context(
         component=component,
+        engine=config.engine,
         registry=registry,
         sql=sql,
         skills_root=config.skills_root,
@@ -382,9 +384,6 @@ def _compile_python(capability: PythonCapability, context: _Context) -> _Handler
     return CompiledPythonCapability(factory_ref=capability.factory, factory=factory), []
 
 
-# Dispatch map keyed by the declared capability type.  ``Any`` in the handler
-# parameter is the dispatch boundary: each handler is statically typed for its
-# own capability, and the map guarantees the pairing.
 def _compile_native(capability: NativeCapability, context: _Context) -> _HandlerResult:
     """Resolve a provider tool against the model bound to the agent's role.
 
@@ -394,7 +393,7 @@ def _compile_native(capability: NativeCapability, context: _Context) -> _Handler
     if context.inference is None:
         return None, []
     if context.native_tools is None:
-        return None, [capability_kind_unsupported(context.component, "native", "unknown")]
+        return None, [capability_kind_unsupported(context.component, "native", context.engine)]
     try:
         supported = context.native_tools(context.inference)
     except AgentCompilationError as exc:
@@ -413,6 +412,9 @@ def _compile_native(capability: NativeCapability, context: _Context) -> _Handler
     return CompiledNativeCapability(tool=capability.tool), []
 
 
+# Dispatch map keyed by the declared capability type.  ``Any`` in the handler
+# parameter is the dispatch boundary: each handler is statically typed for its
+# own capability, and the map guarantees the pairing.
 _HANDLERS: Final[Mapping[type[CapabilitySpec], Callable[[Any, _Context], _HandlerResult]]] = {
     UsecaseCapability: _compile_usecase,
     NativeCapability: _compile_native,

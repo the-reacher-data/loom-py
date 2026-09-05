@@ -6,7 +6,7 @@ import pytest
 
 from loom.ai.compiler._plan import CompiledNativeCapability
 from loom.ai.engines.pydantic_ai._native import (
-    NATIVE_TOOL_NAMES,
+    TOOL_CLASSES,
     build_native_capabilities,
     supported_native_tools,
 )
@@ -22,11 +22,16 @@ class _Plan:
         self.capabilities = tuple(CompiledNativeCapability(tool=tool) for tool in tools)
 
 
-def test_el_vocabulario_del_motor_cubre_los_nombres_del_artefacto() -> None:
-    """Every name the artifact may declare has a class behind it."""
+def test_el_mapa_del_motor_cubre_exactamente_los_nombres_del_artefacto() -> None:
+    """Every name the artifact may declare indexes a class, and no other does."""
     from loom.ai.declarative import NATIVE_TOOLS
 
-    assert set(NATIVE_TOOL_NAMES) == set(NATIVE_TOOLS)
+    assert set(TOOL_CLASSES) == set(NATIVE_TOOLS)
+
+
+def test_cada_clase_declara_el_mismo_nombre_que_la_indexa() -> None:
+    """The engine's own identifier for each tool matches the loom name."""
+    assert all(TOOL_CLASSES[name]().kind == name for name in TOOL_CLASSES)
 
 
 def test_bedrock_no_admite_busqueda_web_y_si_ejecucion_de_codigo() -> None:
@@ -86,3 +91,47 @@ def test_el_registro_devuelve_none_cuando_el_motor_no_lo_aporta() -> None:
         pass
 
     assert engine_native_tool_support(_Engine()) is None
+
+
+def test_el_grant_native_no_produce_toolset_y_llega_como_capacidad() -> None:
+    """A native grant is served as an engine capability, never as a toolset."""
+    from loom.ai.declarative import PolicySpec
+    from loom.ai.engines.pydantic_ai._capabilities import build_toolsets
+    from loom.core.di import LoomContainer
+
+    class _NativePlan:
+        name = "searcher"
+        capabilities = (CompiledNativeCapability(tool="web_search"),)
+        policies = PolicySpec()
+
+    plan = _NativePlan()
+
+    assert build_toolsets(plan, LoomContainer()) == ()
+    assert len(build_native_capabilities(plan)) == 1
+
+
+def test_el_registro_retira_native_cuando_el_motor_no_aporta_oraculo(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An engine that cannot check a grant does not get to serve the kind."""
+    import logging
+
+    from loom.ai.registry import engine_supported_kinds
+
+    class _Engine:
+        def supported_capability_kinds(self) -> frozenset[str]:
+            return frozenset({"sql", "native"})
+
+    with caplog.at_level(logging.WARNING, logger="loom.ai.registry"):
+        kinds = engine_supported_kinds(_Engine(), "third-party")
+
+    assert kinds == frozenset({"sql"})
+    assert "third-party" in caplog.text
+
+
+def test_el_registro_conserva_native_cuando_el_motor_lo_aporta() -> None:
+    """The real engine keeps the kind, because it supplies the oracle."""
+    from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
+    from loom.ai.registry import engine_supported_kinds
+
+    assert "native" in engine_supported_kinds(PydanticAIEngineProvider(), "pydantic-ai")
