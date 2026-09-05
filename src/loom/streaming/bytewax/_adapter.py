@@ -191,9 +191,6 @@ def _mark_inline_partition(sink: object) -> None:
 
     Sinks that cannot carry terminal tracing — storage sinks, test doubles —
     have nothing to record and are left untouched.
-
-    Raises:
-        RuntimeError: If the sink already carries terminal tracing.
     """
     if isinstance(sink, _SupportsTerminalTracing):
         sink.mark_inline_partition()
