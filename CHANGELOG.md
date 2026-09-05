@@ -1,3 +1,56 @@
+# 🚀 Release 1.10.0 ([#163](https://github.com/the-reacher-data/loom-py/pull/163)) ([`58e387f`](https://github.com/the-reacher-data/loom-py/commit/58e387f0b20e3517c07ec03868f0dc1cf90bad78))
+
+
+## ✨ Features
+### ai
+- **ai:** declarar servidores MCP por stdio en la configuración<br>
+  > El artefacto ya nombra un servidor sin saber su transporte, pero la
+  > configuración solo admitía HTTP, así que un servidor stdio -como se
+  > distribuye la mayoría- exigía envolverlo en un servidor propio. La
+  > entrada acepta ahora transport: stdio con command, args y env, rechaza
+  > en carga las combinaciones incoherentes y explica que el servidor corre
+  > como subproceso del worker, con su identidad y sus credenciales.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+- **ai:** conectar un servidor MCP declarado por stdio<br>
+  > El motor construye el transporte que lanza el comando declarado, le
+  > entrega solo el entorno que la configuración nombra y lo ata al contexto
+  > que lo abrió, así ningún servidor sobrevive al toolset que lo creó. La
+  > guía dice qué implica: el servidor comparte identidad, credenciales y
+  > sistema de ficheros con el worker, no reconecta y su handshake tiene
+  > cinco segundos.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+
+
+## 🐛 Fixes
+### ai
+- **ai:** señalar la clave de env culpable en el issue del transporte<br>
+  > Un nombre de variable inválido se reportaba con el campo 'transport',
+  > apuntando a una clave que el operador había escrito bien; ahora la
+  > factoría acepta el campo a culpar y el bucle de env pasa el suyo.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+  > --------
+  > Co-authored-by: Claude Opus 5 <noreply@anthropic.com>
+
+
+
+
+
+## ♻️ Refactor
+### ai
+- **ai:** un validador por transporte y los ayudantes del e2e en conftest<br>
+  > La comprobación de coherencia y la de URL y credenciales estaban en dos
+  > funciones que el llamador tenía que encadenar preguntando otra vez por el
+
+
+
+
+
+
 # 🚀 Release 1.9.3 ([#159](https://github.com/the-reacher-data/loom-py/pull/159)) ([`eedd32c`](https://github.com/the-reacher-data/loom-py/commit/eedd32ca67be84302292aab968b5fe6dd7eb3621))
 
 
