@@ -25,8 +25,10 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from loom.prometheus._instruments import cached_instruments, counter_spec, histogram_spec
+
 if TYPE_CHECKING:
-    from prometheus_client import CollectorRegistry, Counter, Histogram
+    from prometheus_client import CollectorRegistry
 
 # ASGI type aliases
 _Scope = dict[str, Any]
@@ -35,26 +37,20 @@ _Send = Callable[[dict[str, Any]], Awaitable[None]]
 _ASGIApp = Callable[[_Scope, _Receive, _Send], Awaitable[None]]
 _UNMATCHED_PATH_TEMPLATE = "__unmatched__"
 
-
-def _make_http_instruments(
-    registry: CollectorRegistry | None,
-) -> tuple[Counter, Histogram]:
-    from prometheus_client import Counter, Histogram
-
-    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
-    requests_total: Counter = Counter(
-        "http_requests",
-        "Total HTTP requests by method, path template, and status code.",
-        ["method", "path_template", "status_code"],
-        **reg,
-    )
-    duration_seconds: Histogram = Histogram(
-        "http_request_duration_seconds",
-        "HTTP request duration in seconds by method and path template.",
-        ["method", "path_template"],
-        **reg,
-    )
-    return requests_total, duration_seconds
+_REQUESTS_TOTAL = counter_spec(
+    "http_requests",
+    "Total HTTP requests by method, path template, and status code.",
+    "method",
+    "path_template",
+    "status_code",
+)
+_DURATION_SECONDS = histogram_spec(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds by method and path template.",
+    "method",
+    "path_template",
+)
+_INSTRUMENTS = (_REQUESTS_TOTAL, _DURATION_SECONDS)
 
 
 class PrometheusMiddleware:
@@ -98,7 +94,9 @@ class PrometheusMiddleware:
         registry: CollectorRegistry | None = None,
     ) -> None:
         self._app = app
-        self._requests_total, self._duration_seconds = _make_http_instruments(registry)
+        instruments = cached_instruments(registry, _INSTRUMENTS)
+        self._requests_total = instruments[_REQUESTS_TOTAL]
+        self._duration_seconds = instruments[_DURATION_SECONDS]
 
     async def __call__(self, scope: _Scope, receive: _Receive, send: _Send) -> None:
         if scope["type"] != "http":

@@ -23,79 +23,32 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.prometheus._instruments import cached_instruments, counter_spec, histogram_spec
 
 if TYPE_CHECKING:
-    from prometheus_client import CollectorRegistry, Counter, Histogram
+    from prometheus_client import CollectorRegistry
 
-# Singleton instruments for the global default registry.  A module-level
-# cache prevents duplicate-collector errors when more than one adapter
-# instance is created in the same process (e.g. multiple apps, dev reload,
-# or tests that omit an explicit registry).  Adapters that pass a custom
-# registry always receive fresh instruments — test isolation is unaffected.
-_GLOBAL_INSTRUMENTS: tuple[Counter, Histogram, Counter] | None = None
-
-
-def _create_instruments(
-    registry: CollectorRegistry | None,
-) -> tuple[Counter, Histogram, Counter]:
-    """Create Prometheus instruments bound to *registry*.
-
-    Args:
-        registry: Target ``CollectorRegistry``.  ``None`` uses the
-            prometheus_client global default registry.
-
-    Returns:
-        Triple of ``(requests_total, duration_seconds, errors_total)``.
-    """
-    from prometheus_client import Counter, Histogram
-
-    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
-    requests_total: Counter = Counter(
-        "loom_usecase_requests",
-        "Total number of use-case executions by outcome.",
-        ["usecase", "status"],
-        **reg,
-    )
-    duration_seconds: Histogram = Histogram(
-        "loom_usecase_duration_seconds",
-        "Use-case execution wall-clock time in seconds.",
-        ["usecase"],
-        **reg,
-    )
-    errors_total: Counter = Counter(
-        "loom_usecase_errors",
-        "Total number of use-case execution errors by error kind.",
-        ["usecase", "error_kind"],
-        **reg,
-    )
-    return requests_total, duration_seconds, errors_total
-
-
-def _get_instruments(
-    registry: CollectorRegistry | None,
-) -> tuple[Counter, Histogram, Counter]:
-    """Return instruments, creating them if needed.
-
-    When *registry* is ``None`` (global default), instruments are created
-    once and reused for the lifetime of the process.  When a custom
-    registry is provided, fresh instruments are always returned so that
-    test suites with isolated registries do not share state.
-
-    Args:
-        registry: Custom registry or ``None`` for the global default.
-
-    Returns:
-        Triple of ``(requests_total, duration_seconds, errors_total)``.
-    """
-    global _GLOBAL_INSTRUMENTS
-    if registry is not None:
-        return _create_instruments(registry)
-    if _GLOBAL_INSTRUMENTS is None:
-        _GLOBAL_INSTRUMENTS = _create_instruments(None)
-    return _GLOBAL_INSTRUMENTS
+_REQUESTS_TOTAL = counter_spec(
+    "loom_usecase_requests",
+    "Total number of use-case executions by outcome.",
+    "usecase",
+    "status",
+)
+_DURATION_SECONDS = histogram_spec(
+    "loom_usecase_duration_seconds",
+    "Use-case execution wall-clock time in seconds.",
+    "usecase",
+)
+_ERRORS_TOTAL = counter_spec(
+    "loom_usecase_errors",
+    "Total number of use-case execution errors by error kind.",
+    "usecase",
+    "error_kind",
+)
+_INSTRUMENTS = (_REQUESTS_TOTAL, _DURATION_SECONDS, _ERRORS_TOTAL)
 
 
 class PrometheusMetricsAdapter:
@@ -135,9 +88,10 @@ class PrometheusMetricsAdapter:
     """
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
-        self._requests_total, self._duration_seconds, self._errors_total = _get_instruments(
-            registry
-        )
+        instruments = cached_instruments(registry, _INSTRUMENTS)
+        self._requests_total = instruments[_REQUESTS_TOTAL]
+        self._duration_seconds = instruments[_DURATION_SECONDS]
+        self._errors_total = instruments[_ERRORS_TOTAL]
 
     def on_event(self, event: RuntimeEvent) -> None:
         """Process a runtime event and update Prometheus instruments.
