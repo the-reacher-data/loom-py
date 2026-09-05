@@ -355,6 +355,158 @@ class TestMcpServerRegistry:
         assert dict(_config_with().mcp_servers) == {}
 
 
+def _stdio_server(**overrides: object) -> McpServerConfig:
+    """Build a valid ``transport: stdio`` server with the field under test substituted in."""
+    fields: dict[str, object] = {
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ("mcp-server-fetch",),
+    }
+    fields.update(overrides)
+    return McpServerConfig(**fields)  # type: ignore[arg-type]
+
+
+def _issues_with(error: AgentCompilationError, code: AgentErrorCode) -> list[str]:
+    """Extract the messages of the issues carrying ``code``."""
+    return [issue.message for issue in error.issues if issue.code is code]
+
+
+class TestMcpStdioTransport:
+    """``transport: stdio`` runs the server as a subprocess of the worker (US1, US2)."""
+
+    def test_acepta_stdio_con_command_y_args_sin_url(self) -> None:
+        """A stdio server is located by its command, never by a URL (FR-001, FR-004)."""
+        server = _stdio_server()
+
+        config = _config_with(mcp_servers={"search": server})
+
+        assert config.mcp_servers["search"].transport == "stdio"
+        assert config.mcp_servers["search"].url is None
+
+    def test_falla_con_transport_invalid_y_nota_de_seguridad_cuando_stdio_lleva_headers_ref(
+        self,
+    ) -> None:
+        """No connection exists to authenticate; the message says what stdio implies (FR-006)."""
+        server = _stdio_server(headers_ref="ai/search/headers")
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        messages = _issues_with(excinfo.value, AgentErrorCode.MCP_TRANSPORT_INVALID)
+        assert len(messages) == 1
+        assert "subprocess of this worker" in messages[0]
+        assert "no connection to authenticate" in messages[0]
+
+    def test_falla_con_transport_invalid_cuando_stdio_lleva_auth(self) -> None:
+        """An ``auth`` strategy authenticates a connection; stdio opens none (FR-005)."""
+        server = _stdio_server(auth={"kind": "bearer", "token_ref": "ai/search/token"})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"command": None},
+            {"command": ""},
+            {"url": "https://search.example.com/mcp"},
+        ],
+        ids=["sin_command", "command_vacio", "con_url"],
+    )
+    def test_falla_con_transport_invalid_cuando_stdio_es_incoherente(
+        self, overrides: dict[str, object]
+    ) -> None:
+        """stdio requires a non-empty ``command`` and refuses ``url`` (FR-004)."""
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": _stdio_server(**overrides)})
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"command": "uvx"},
+            {"args": ("mcp-server-fetch",)},
+            {"env": {"HOME": "/tmp"}},
+            {"url": None},
+        ],
+        ids=["con_command", "con_args", "con_env", "sin_url"],
+    )
+    def test_falla_con_transport_invalid_cuando_http_es_incoherente(
+        self, overrides: dict[str, object]
+    ) -> None:
+        """http requires ``url`` and refuses the subprocess fields (FR-003)."""
+        fields: dict[str, object] = {"url": "https://search.example.com/mcp"}
+        fields.update(overrides)
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": McpServerConfig(**fields)})  # type: ignore[arg-type]
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
+
+    def test_falla_con_transport_invalid_listando_los_aceptados_cuando_el_transporte_es_desconocido(
+        self,
+    ) -> None:
+        """An unknown transport is refused and the message names the accepted ones (FR-002)."""
+        server = McpServerConfig(transport="ws", url="wss://search.example.com/mcp")
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        messages = _issues_with(excinfo.value, AgentErrorCode.MCP_TRANSPORT_INVALID)
+        assert len(messages) == 1
+        assert "http" in messages[0]
+        assert "stdio" in messages[0]
+
+    @pytest.mark.parametrize("literal", ["sk abc", "sk{x}"], ids=["con_espacio", "con_llave"])
+    def test_falla_con_credentials_inline_en_env_sin_repetir_el_valor(self, literal: str) -> None:
+        """A value shaped like a broken interpolation is refused; the message omits it (FR-007)."""
+        server = _stdio_server(env={"API_KEY": literal})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        issues = [
+            issue
+            for issue in excinfo.value.issues
+            if issue.code is AgentErrorCode.MCP_CREDENTIALS_INLINE
+        ]
+        assert [issue.field for issue in issues] == ["env.API_KEY"]
+        assert literal not in str(excinfo.value)
+
+    def test_acepta_un_token_resuelto_en_env(self) -> None:
+        """``env`` carries values already resolved by the secrets resolver (FR-007)."""
+        server = _stdio_server(env={"GITHUB_TOKEN": "ghp_abc"})
+
+        config = _config_with(mcp_servers={"search": server})
+
+        assert config.mcp_servers["search"].env == {"GITHUB_TOKEN": "ghp_abc"}
+
+    def test_falla_con_transport_invalid_cuando_el_nombre_de_env_no_es_valido(self) -> None:
+        """An environment variable name is an identifier; anything else is a typo (FR-007)."""
+        server = _stdio_server(env={"BAD KEY": "value"})
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_TRANSPORT_INVALID]
+
+    def test_falla_con_policy_out_of_range_cuando_el_timeout_es_cero_bajo_stdio(self) -> None:
+        """The per-call deadline is bounded whatever the transport (FR-003, FR-004)."""
+        server = _stdio_server(timeout_ms=0)
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            _config_with(mcp_servers={"search": server})
+
+        assert _codes(excinfo.value) == [AgentErrorCode.POLICY_OUT_OF_RANGE]
+
+    def test_transport_es_http_cuando_no_se_declara(self) -> None:
+        """A server declared today keeps its meaning: an HTTP endpoint (FR-001)."""
+        assert McpServerConfig(url="https://search.example.com/mcp").transport == "http"
+
+
 class TestA2AAgentRegistry:
     """``ai.a2a_agents`` is where an artifact's ``agent:`` name is located."""
 

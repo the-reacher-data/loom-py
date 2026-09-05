@@ -29,7 +29,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from loom.ai.compiler import CompiledMcpCapability
-from loom.ai.errors import AgentCompilationError, provider_not_installed
+from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provider_not_installed
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 
 if TYPE_CHECKING:
@@ -87,6 +87,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
 
     Raises:
         AgentCompilationError: When the MCP client is not installed, the
+            grant's transport is not one this engine serves, the
             ``headers_ref`` payload is not one ``Name=value`` pair, or the
             named strategy cannot be built.
 
@@ -99,6 +100,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     except ImportError as exc:
         raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
     component = f"mcp server '{capability.server}'"
+    client = _mcp_client(component, capability)
     headers = headers_from_ref(component, capability.headers_ref) or None
     auth = shared_mcp_auth(capability.server, capability.auth)
     # ``MCPToolset`` annotates auth as ``httpx.Auth | Literal['oauth'] | str | None``,
@@ -106,8 +108,21 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     # transport: its ``_set_auth`` special-cases only ``"oauth"``, ``OAuth``, the
     # OAuth providers and ``str``, and hands anything else to its ``httpx2`` client
     # untouched — including the callable loom's own strategies return.
-    toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=cast("Any", auth))
+    toolset: MCPToolset[Any] = MCPToolset(client, headers=headers, auth=cast("Any", auth))
     return toolset
+
+
+def _mcp_client(component: str, capability: CompiledMcpCapability) -> str:
+    """Return what ``MCPToolset`` connects to for the grant's transport.
+
+    Under ``http`` that is the validated server URL, which configuration
+    guarantees present.  Any other transport is refused with a coded issue
+    rather than reaching the client library with a missing address.
+    """
+    if capability.transport == "http" and capability.url is not None:
+        return capability.url
+    reason = f"transport {capability.transport!r} is not served by the pydantic-ai engine"
+    raise AgentCompilationError([mcp_transport_invalid(component, reason)])
 
 
 @asynccontextmanager

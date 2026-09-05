@@ -56,7 +56,7 @@ from loom.ai.declarative import (
 )
 from loom.ai.errors import AgentCompilationIssue, AgentErrorCode
 
-from ..conftest import SKILLS_ROOT_DIR
+from ..conftest import SKILLS_ROOT_DIR, STDIO_MCP_SERVER
 
 _SHARED_LIBRARY = "shared"
 """Bare library name the shared fixture root resolves; see ``fixtures/skills_root``."""
@@ -225,11 +225,32 @@ class TestMcp:
         capability = _capability_of_kind(plan_for(spec), "mcp")
         server = compiler_env_config.mcp_servers["knowledge"]
         assert isinstance(capability, CompiledMcpCapability)
-        assert (capability.url, capability.headers_ref, capability.timeout_ms) == (
-            server.url,
-            server.headers_ref,
-            server.timeout_ms,
+        assert (
+            capability.transport,
+            capability.url,
+            capability.headers_ref,
+            capability.timeout_ms,
+        ) == ("http", server.url, server.headers_ref, server.timeout_ms)
+
+    def test_lleva_transporte_comando_args_y_env_cuando_el_servidor_es_stdio(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        plan_for: Callable[..., AgentPlan],
+        compiler_env_config: AiConfig,
+    ) -> None:
+        """A subprocess server travels whole, its ``env`` as key-sorted pairs (FR-009)."""
+        spec = spec_factory(capabilities=(McpCapability(server=STDIO_MCP_SERVER),))
+        capability = _capability_of_kind(plan_for(spec), "mcp")
+        server = compiler_env_config.mcp_servers[STDIO_MCP_SERVER]
+        assert isinstance(capability, CompiledMcpCapability)
+        assert server.env is not None
+        assert (capability.transport, capability.command, capability.args, capability.env) == (
+            "stdio",
+            server.command,
+            server.args,
+            tuple(sorted(server.env.items())),
         )
+        assert capability.url is None
 
     def test_carries_the_filter_verbatim_when_server_is_known(
         self,

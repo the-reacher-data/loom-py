@@ -19,6 +19,7 @@ from loom.ai.errors import (
     AgentErrorCode,
     a2a_agent_unreachable,
     mcp_server_unreachable,
+    mcp_transport_invalid,
     on_output_input_unsatisfied,
     on_output_invoker_missing,
     on_output_usecase_also_granted,
@@ -108,3 +109,14 @@ def test_on_output_invoker_missing_es_un_problema_de_despliegue_que_nombra_los_a
     assert issue.component == "ai"
     assert issue.field == "on_output"
     assert "triage-bot, escalation-bot" in issue.message
+
+
+def test_mcp_transport_invalid_nombra_el_componente_y_lleva_la_razon() -> None:
+    """The reason is the only clue the operator gets about which transport rule fails."""
+    issue = mcp_transport_invalid("ai.mcp_servers.search", "transport 'ws' is not supported")
+
+    assert issue.code is AgentErrorCode.MCP_TRANSPORT_INVALID
+    assert issue.component == "ai.mcp_servers.search"
+    assert issue.field == "transport"
+    assert "ai.mcp_servers.search" in issue.message
+    assert "transport 'ws' is not supported" in issue.message

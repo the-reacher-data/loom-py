@@ -96,6 +96,7 @@ def _sql_settings(capability: CompiledSqlCapability) -> Mapping[str, Any]:
 def _mcp_settings(capability: CompiledMcpCapability) -> Mapping[str, Any]:
     return {
         "server": capability.server,
+        "transport": capability.transport,
         "include": capability.include,
         "exclude": capability.exclude,
         "timeout_ms": capability.timeout_ms,
