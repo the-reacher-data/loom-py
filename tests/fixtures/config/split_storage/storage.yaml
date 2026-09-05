@@ -1,0 +1,17 @@
+# Entry point of the split layout: shared settings live in common.yaml and
+# each domain keeps its own file under tables/.
+includes:
+  - common.yaml
+  - tables/*.yaml
+storage:
+  engine: polars
+  missing_table_policy: create
+  catalogs:
+    main:
+      provider: unity
+      workspace: https://example.cloud.databricks.com
+      token: placeholder-token
+  temp:
+    root: s3://lake/tmp
+    storage_options:
+      AWS_REGION: eu-west-1

@@ -1,0 +1,16 @@
+storage:
+  tables:
+    billing.invoices:
+      path:
+        uri: s3://lake/billing/invoices
+        profile: large
+    billing.payments:
+      path:
+        uri: s3://lake/billing/payments
+        profile: standard
+    billing.accounts:
+      ref: main.billing.accounts
+  files:
+    billing.statements:
+      path:
+        uri: s3://exports/billing/{run_id}/statements.pdf

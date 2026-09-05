@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from loom.etl.storage._config import (
+    STORAGE_KEYED_COLLECTIONS,
     CatalogConnection,
     ClickHouseConfig,
     FilePathConfig,
@@ -14,8 +15,10 @@ from loom.etl.storage._config import (
     StorageConfig,
     StorageDefaults,
     StorageEngine,
+    StorageProfile,
     TablePathConfig,
     TableRoute,
+    normalise_storage_section,
 )
 from loom.etl.storage._file_locator import FileLocation, FileLocator, MappingFileLocator
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
@@ -34,12 +37,15 @@ from loom.etl.storage.routing import (
 )
 
 __all__ = [
+    "STORAGE_KEYED_COLLECTIONS",
+    "normalise_storage_section",
     "FileLocation",
     "FileLocator",
     "MappingFileLocator",
     "StorageEngine",
     "StorageConfig",
     "StorageDefaults",
+    "StorageProfile",
     "CatalogConnection",
     "ClickHouseConfig",
     "MongoConfig",

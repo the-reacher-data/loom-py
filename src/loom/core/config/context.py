@@ -61,6 +61,7 @@ class ConfigContext:
         cls,
         *paths: str,
         resolvers: Sequence[ConfigResolver] = (),
+        keyed: Sequence[str] = (),
         binder: StructBinder | None = None,
     ) -> ConfigContext:
         """Build a :class:`ConfigContext` from one or more YAML files.
@@ -71,15 +72,18 @@ class ConfigContext:
         Args:
             *paths: One or more local paths or cloud URIs.
             resolvers: Optional custom resolvers for ``${name:key}`` placeholders.
+            keyed: Dotted paths of the collections merged by key within an
+                ``includes`` composition.
             binder: Optional :class:`StructBinder` override.
 
         Returns:
             A ready-to-use :class:`ConfigContext`.
 
         Raises:
-            ConfigError: If any file cannot be read or parsed.
+            ConfigError: If any file cannot be read or parsed, or a keyed
+                collection holds a duplicate key or mixes list and mapping forms.
         """
-        return cls(load_config(*paths, resolvers=resolvers), binder=binder)
+        return cls(load_config(*paths, resolvers=resolvers, keyed=keyed), binder=binder)
 
     @classmethod
     def from_dict(

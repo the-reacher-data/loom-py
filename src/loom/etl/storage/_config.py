@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -20,6 +20,9 @@ from deltalake import CommitProperties, WriterProperties
 
 from loom.core.model import LoomFrozenStruct
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
+
+STORAGE_KEYED_COLLECTIONS: Final = ("storage.tables", "storage.files", "storage.profiles")
+"""Dotted paths of the ``storage:`` collections merged by key across ``includes``."""
 
 
 class StorageEngine(StrEnum):
@@ -49,6 +52,27 @@ class CatalogConnection(LoomFrozenStruct, frozen=True):
     provider: Literal["unity"] = "unity"
     workspace: str = ""
     token: str = ""
+
+
+class StorageProfile(LoomFrozenStruct, frozen=True, forbid_unknown_fields=True):
+    """Named partial physical-path settings shared by routes through ``profile:``.
+
+    A profile never carries ``uri``. Table routes and ``defaults.table_path``
+    take every field; file routes take ``storage_options`` only.
+
+    Args:
+        storage_options: Object-store credentials/options.
+        writer: Delta writer properties.
+        target_file_size: Optional target output file size in bytes.
+        delta_config: Delta table properties.
+        commit: Delta commit metadata.
+    """
+
+    storage_options: dict[str, str] = {}
+    writer: dict[str, Any] = {}
+    target_file_size: int | None = None
+    delta_config: dict[str, str | None] = {}
+    commit: dict[str, Any] = {}
 
 
 class TablePathConfig(LoomFrozenStruct, frozen=True):
@@ -105,6 +129,13 @@ class FilePathConfig(LoomFrozenStruct, frozen=True):
         """Validate file path config."""
         if not self.uri.strip():
             raise ValueError(f"storage.{context}.uri must be a non-empty string")
+
+
+_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "tables": frozenset(TablePathConfig.__struct_fields__) - {"uri"},
+    "files": frozenset(FilePathConfig.__struct_fields__) - {"uri"},
+}
+"""Profile fields each route collection takes through ``profile:``."""
 
 
 class StorageDefaults(LoomFrozenStruct, frozen=True):
@@ -326,6 +357,9 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
         temp: Checkpoint / temporary storage settings.
         tables: Per-logical-table routes.
         files: Per-logical-file routes.
+        profiles: Named partial path settings referenced by ``profile:`` in YAML.
+            Applied by :func:`normalise_storage_section`; direct struct
+            construction does not apply them.
         audit: Audit-column injection settings.
     """
 
@@ -336,6 +370,7 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
     temp: TempConfig = TempConfig()
     tables: tuple[TableRoute, ...] = ()
     files: tuple[FileRoute, ...] = ()
+    profiles: dict[str, StorageProfile] = {}
     clickhouse: ClickHouseConfig = ClickHouseConfig()
     mongo: MongoConfig = MongoConfig()
     dynamodb: DynamoDbConfig = DynamoDbConfig()
@@ -457,6 +492,119 @@ class StorageConfig(LoomFrozenStruct, frozen=True):
 def convert_storage_config(raw: dict[str, Any]) -> StorageConfig:
     """Convert a resolved plain dict into :class:`StorageConfig`."""
     return msgspec.convert(raw, StorageConfig)
+
+
+def normalise_storage_section(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalise a raw ``storage:`` section into the shape :class:`StorageConfig` binds to.
+
+    ``tables`` and ``files`` given as a mapping keyed by logical name become a
+    list of routes carrying ``name``; the list form is returned unchanged.
+    A ``path`` block carrying ``profile: <name>`` is completed with the fields
+    of ``profiles[<name>]`` it does not set itself and loses the ``profile``
+    key. Values that are not mappings are left untouched so that conversion
+    reports them.
+
+    Args:
+        raw: Resolved ``storage:`` section.
+
+    Returns:
+        A new dict ready for :func:`convert_storage_config`.
+
+    Raises:
+        ValueError: When a mapping entry carries a ``name`` different from its
+            key, when a ``profile`` is not declared in ``profiles``, or when a
+            profile carries ``uri`` or a field unknown to :class:`StorageProfile`.
+    """
+    normalised = dict(raw)
+    for collection in _PROFILE_FIELDS:
+        if collection in normalised:
+            normalised[collection] = _normalise_routes(normalised[collection], collection)
+    return _apply_profiles(normalised)
+
+
+def _apply_profiles(normalised: dict[str, Any]) -> dict[str, Any]:
+    profiles = normalised.get("profiles")
+    profiles = profiles if isinstance(profiles, Mapping) else {}
+    result = dict(normalised)
+    for collection, fields in _PROFILE_FIELDS.items():
+        if isinstance(result.get(collection), list):
+            result[collection] = [
+                _route_with_profile(
+                    route, f"storage.{collection}[{_route_key(route, idx)}]", profiles, fields
+                )
+                for idx, route in enumerate(result[collection])
+            ]
+    defaults = result.get("defaults")
+    if isinstance(defaults, Mapping) and isinstance(defaults.get("table_path"), Mapping):
+        table_path = _path_with_profile(
+            defaults["table_path"],
+            "storage.defaults.table_path",
+            profiles,
+            _PROFILE_FIELDS["tables"],
+        )
+        result["defaults"] = {**defaults, "table_path": table_path}
+    return result
+
+
+def _route_key(route: Any, idx: int) -> str:
+    if isinstance(route, Mapping) and "name" in route:
+        return repr(route["name"])
+    return str(idx)
+
+
+def _route_with_profile(
+    route: Any,
+    context: str,
+    profiles: Mapping[str, Any],
+    fields: frozenset[str],
+) -> Any:
+    if not isinstance(route, Mapping) or not isinstance(route.get("path"), Mapping):
+        return route
+    return {**route, "path": _path_with_profile(route["path"], f"{context}.path", profiles, fields)}
+
+
+def _path_with_profile(
+    path: Mapping[str, Any],
+    context: str,
+    profiles: Mapping[str, Any],
+    fields: frozenset[str],
+) -> dict[str, Any]:
+    if "profile" not in path:
+        return dict(path)
+    own = {key: value for key, value in path.items() if key != "profile"}
+    profile = _resolve_profile(path["profile"], context, profiles)
+    inherited = {key: value for key, value in profile.items() if key in fields}
+    return {**inherited, **own}
+
+
+def _resolve_profile(name: Any, context: str, profiles: Mapping[str, Any]) -> dict[str, Any]:
+    if name not in profiles:
+        raise ValueError(f"{context}.profile={name!r} is not defined in storage.profiles")
+    declared = profiles[name]
+    if not isinstance(declared, Mapping):
+        return {}
+    unknown = sorted(set(declared) - set(StorageProfile.__struct_fields__))
+    if unknown:
+        raise ValueError(f"storage.profiles[{name!r}] has unknown field(s): {', '.join(unknown)}")
+    return dict(declared)
+
+
+def _normalise_routes(routes: Any, collection: str) -> Any:
+    if not isinstance(routes, Mapping):
+        return routes
+    return [_route_from_entry(key, value, collection) for key, value in routes.items()]
+
+
+def _route_from_entry(key: Any, value: Any, collection: str) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    inner_name = value.get("name", key)
+    if inner_name != key:
+        raise ValueError(
+            f"storage.{collection}[{key!r}] declares name {inner_name!r}; "
+            "the mapping key is the route name"
+        )
+    return {"name": key, **value}
 
 
 def _validate_ref(ref: str, *, context: str) -> None:

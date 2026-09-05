@@ -516,17 +516,244 @@ in addition to local paths. Files are fetched via `fsspec` at startup:
 runner = ETLRunner.from_yaml("s3://my-bucket/config/etl.yaml")
 ```
 
-Multi-file composition:
+`fsspec` is an extra and is only imported for cloud paths; a configuration kept on
+local disk, includes and globs included, loads without it.
 
-```python
-runner = ETLRunner.from_yaml(
-    "s3://my-bucket/config/base.yaml",
-    "s3://my-bucket/config/prod.yaml",
-)
+### Composing files with `includes`
+
+A file may declare a top-level `includes` list. Entries load first, in order, and
+the declaring file's own keys merge on top. Includes work on any scheme:
+
+```yaml
+# s3://my-bucket/config/etl.yaml
+includes:
+  - common.yaml            # relative to the including file, on any scheme
+  - tables/*.yaml          # glob, matches merged in lexicographic order
+  - /etc/loom/site.yaml    # absolute local path; schemes may be mixed
 ```
 
-> The `includes` directive is not supported for cloud URIs. Use explicit multi-file
-> composition instead.
+- Relative entries resolve against the including file; entries with a scheme or an
+  absolute path are used as is, so local and cloud files may include each other.
+- Globs expand through the standard library locally and through `fsspec` on cloud
+  URIs; only regular `.yaml` / `.yml` files match, sorted by resolved path.
+- An entry (plain or glob) that matches no file raises `ConfigError` naming the
+  entry and the declaring file. Circular includes raise `ConfigError` too.
+
+`ETLRunner.from_yaml()` takes one file; explicit layering of several files
+(`load_config("base.yaml", "prod.yaml")`, later overriding earlier) is available on
+`load_config` and `ConfigContext.from_yaml`.
+
+---
+
+## Splitting the storage config across files
+
+`storage.tables` and `storage.files` are lists in the examples above. A list cannot
+be split across files: OmegaConf replaces a list wholesale when it merges, so only
+the last included file's tables would survive. Three YAML additions make a split
+layout safe.
+
+### Tables and files as a mapping keyed by name
+
+Both collections also accept a **mapping keyed by logical name**. The key becomes
+the route's `name`; the value holds the remaining fields (`ref` / `catalog` or
+`path`). Mapping form and list form bind to the same `TableRoute` / `FileRoute`
+values:
+
+```yaml
+storage:
+  tables:
+    orders.header:
+      path:
+        uri: s3://lake/orders/header
+    orders.line:
+      ref: sales.orders_line
+      catalog: main
+  files:
+    orders.export:
+      path:
+        uri: s3://exports/orders/
+        storage_options:
+          AWS_REGION: eu-west-1
+```
+
+Within an `includes` composition mappings merge **by key**, so `tables/orders.yaml`
+and `tables/billing.yaml` contribute to one collection. The loader guards the merge:
+
+- the same name declared in two included files is a `ConfigError` naming the key and
+  both files (`storage.tables['orders.header'] is declared in '.../billing.yaml' and
+  in '.../orders.yaml'`); a duplicate is never resolved by "last wins";
+- list form in one file and mapping form in another is a `ConfigError`; use one form
+  within a composition;
+- files passed explicitly as layers (`load_config("base.yaml", "prod.yaml")`) still
+  override by key, as explicit layering always has;
+- the list form is unchanged, including its duplicate-name validation.
+
+### Storage profiles
+
+YAML anchors do not cross file boundaries. `storage.profiles` declares named,
+partial `path:` settings once, in any file of the composition, and each route
+refers to one with `profile:` inside its `path:` block:
+
+```yaml
+storage:
+  profiles:
+    standard:
+      writer:
+        compression: ZSTD
+      target_file_size: 134217728
+      commit:
+        custom_metadata:
+          team: billing
+    large:
+      writer:
+        compression: ZSTD
+      target_file_size: 536870912
+      delta_config:
+        delta.logRetentionDuration: interval 30 days
+      storage_options:
+        AWS_REGION: eu-west-1
+
+  defaults:
+    table_path:
+      uri: s3://lake
+      profile: standard
+
+  tables:
+    billing.invoice:
+      path:
+        uri: s3://lake/billing/invoice
+        profile: large
+    billing.ledger:
+      path:
+        uri: s3://lake/billing/ledger
+        profile: large
+        target_file_size: 268435456   # own field wins over the profile's
+
+  files:
+    billing.statement:
+      path:
+        uri: s3://exports/billing/statements/
+        profile: large                # file routes take storage_options only
+```
+
+How a profile is applied:
+
+- A profile may set `storage_options`, `writer`, `target_file_size`, `delta_config`
+  and `commit`. It never carries `uri`; a profile with `uri` or any other field is
+  rejected naming the field.
+- `profile:` is accepted in the `path:` block of a table route, a file route and
+  `storage.defaults.table_path`. It is consumed while the YAML is normalised and
+  never reaches `TablePathConfig` / `FilePathConfig`.
+- Resolution is **per field, replace not merge**: a field the route sets itself
+  replaces the profile's field entirely (there is no key-level merge inside
+  `writer`, `commit`, `delta_config` or `storage_options`); every other field
+  comes from the profile.
+- A file route takes only `storage_options` from its profile; the other fields are
+  ignored, never rejected.
+- An unknown profile name is a `ValueError` naming the route
+  (`storage.tables['billing.invoice'].path.profile='huge' is not defined in
+  storage.profiles`).
+
+Profiles resolve when the `StorageConfig` is built through `ETLRunner.from_yaml` or
+`ETLRunner.from_dict`; building the structs directly in Python does not apply them.
+
+### Split layout example
+
+```text
+config/
+├── storage.yaml          # entry point
+├── common.yaml           # engine, defaults, profiles, catalogs
+└── tables/
+    ├── billing.yaml
+    └── orders.yaml
+```
+
+```yaml
+# config/storage.yaml
+includes:
+  - common.yaml
+  - tables/*.yaml
+
+observability:
+  log:
+    enabled: true
+```
+
+```yaml
+# config/common.yaml
+storage:
+  engine: polars
+  profiles:
+    standard:
+      writer:
+        compression: ZSTD
+      target_file_size: 134217728
+  defaults:
+    table_path:
+      uri: s3://lake
+      profile: standard
+      storage_options:
+        AWS_REGION: ${oc.env:AWS_REGION}
+```
+
+```yaml
+# config/tables/orders.yaml
+storage:
+  tables:
+    orders.header:
+      path:
+        uri: s3://lake/orders/header
+        profile: standard
+    orders.line:
+      path:
+        uri: s3://lake/orders/line
+        profile: standard
+```
+
+```yaml
+# config/tables/billing.yaml
+storage:
+  tables:
+    billing.invoice:
+      path:
+        uri: s3://lake/billing/invoice
+        profile: standard
+  files:
+    billing.statement:
+      path:
+        uri: s3://exports/billing/statements/
+```
+
+```python
+from loom.etl import ETLRunner
+
+runner = ETLRunner.from_yaml("config/storage.yaml")
+# or, once uploaded: ETLRunner.from_yaml("s3://my-bucket/config/storage.yaml")
+```
+
+Removing `orders.line` from `orders.yaml` removes exactly that table; declaring it
+again in `billing.yaml` fails at load with both file names in the message.
+
+### Which entry points check duplicates
+
+The by-key merge and its duplicate check are driven by the `keyed=` parameter of
+`load_config` and `ConfigContext.from_yaml`. `ETLRunner.from_yaml()` passes
+`loom.etl.storage.STORAGE_KEYED_COLLECTIONS`
+(`"storage.tables"`, `"storage.files"`, `"storage.profiles"`). Other consumers that
+want the same guarantees must pass it themselves:
+
+```python
+from loom.core.config import ConfigContext
+from loom.etl.storage import STORAGE_KEYED_COLLECTIONS
+
+ctx = ConfigContext.from_yaml("config/storage.yaml", keyed=STORAGE_KEYED_COLLECTIONS)
+```
+
+An entry point that loads the same file **without** `keyed=` (today, a REST or
+Celery app built with `create_app`) merges `storage.tables` and friends with
+OmegaConf's default deep merge: the last included file wins silently and no
+duplicate is reported. Keep this in mind when one YAML tree is shared between an
+ETL and an application.
 
 ---
 

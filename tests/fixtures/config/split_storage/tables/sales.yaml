@@ -1,0 +1,24 @@
+storage:
+  tables:
+    sales.orders:
+      path:
+        uri: s3://lake/sales/orders
+        profile: large
+    sales.customers:
+      path:
+        uri: s3://lake/sales/customers
+        profile: standard
+    sales.order_lines:
+      path:
+        uri: s3://lake/sales/order_lines
+        profile: large
+        writer:
+          compression: LZ4
+    sales.regions:
+      ref: sales.regions
+      catalog: main
+  files:
+    sales.exports:
+      path:
+        uri: s3://exports/sales/{date}.csv
+        profile: standard
