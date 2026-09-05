@@ -5,7 +5,16 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Awaitable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Protocol, TypeAlias, TypeGuard, TypeVar, cast, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    TypeAlias,
+    TypeGuard,
+    TypeVar,
+    cast,
+    runtime_checkable,
+)
 
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
@@ -13,7 +22,6 @@ from loom.core.async_bridge import AsyncBridge
 from loom.core.model import LoomFrozenStruct, LoomStruct
 from loom.core.observability.event import Scope, TerminalReason
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.streaming.bytewax._commit_tracker import CommitCompletionPort
 from loom.streaming.bytewax._operators import ResourceLifecycle
 from loom.streaming.compiler._plan import CompiledPlan
@@ -22,6 +30,9 @@ from loom.streaming.core._message import Message
 from loom.streaming.core._tracing import open_terminal_span
 from loom.streaming.core._typing import StreamPayload
 from loom.streaming.nodes._table.common import SqlAlchemyDatabaseConfig
+
+if TYPE_CHECKING:
+    from loom.core.repository.sqlalchemy.session_manager import SessionManager
 
 Stream: TypeAlias = Any
 AwaitT = TypeVar("AwaitT")

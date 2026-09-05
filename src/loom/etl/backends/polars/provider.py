@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from pymongo import MongoClient
-
 from loom.etl.backends.polars._reader import PolarsSourceReader
 from loom.etl.backends.polars._writer import PolarsTargetWriter
 from loom.etl.io._registry import ReaderRegistry, WriterRegistry
@@ -17,7 +15,7 @@ from loom.etl.lineage._config import LineageConfig
 from loom.etl.lineage.sinks import RecordFrameTargetWriter, TargetLineageWriter
 from loom.etl.runner._providers import BackendProvider
 from loom.etl.runtime.contracts import ClientCommandExecutor, SourceReader, TargetWriter
-from loom.etl.storage._config import CatalogConnection, DynamoDbConfig, StorageConfig
+from loom.etl.storage._config import CatalogConnection, DynamoDbConfig, MongoConfig, StorageConfig
 from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocation, TableLocator
 
 
@@ -33,7 +31,7 @@ class PolarsProvider(BackendProvider):
         locator = _build_polars_locator(config)
         file_locator = config.to_file_locator()
         mongo_reader = (
-            MongoSourceReader(MongoClient(config.mongo.uri), config.mongo.database)
+            MongoSourceReader(_build_mongo_client(config.mongo), config.mongo.database)
             if config.mongo.uri
             else MongoSourceReader()
         )
@@ -103,6 +101,24 @@ class PolarsProvider(BackendProvider):
         if config.clickhouse.url:
             return ClickHouseClientExecutor(url=config.clickhouse.url)
         return None
+
+
+def _build_mongo_client(cfg: MongoConfig) -> Any:
+    """Build a PyMongo client for the configured Mongo source.
+
+    ``pymongo`` ships with the ``mongo`` extra and is imported only when a
+    Mongo URI is configured, so ``loom-kernel[etl-polars]`` loads this provider
+    without it.
+    """
+    try:
+        from pymongo import MongoClient
+    except ImportError as exc:
+        raise ImportError(
+            "MongoDB sources require the 'mongo' extra (pymongo). "
+            "Install loom-kernel[mongo] to read from storage.mongo."
+        ) from exc
+
+    return MongoClient(cfg.uri)
 
 
 def _build_dynamodb_client(cfg: DynamoDbConfig) -> Any:
