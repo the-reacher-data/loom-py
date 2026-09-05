@@ -377,10 +377,14 @@ prerelease = [
     "multifeature/.*",
     "breaking/.*",
     "fix/.*",
+    "refactor/.*",
+    "perf/.*",
 ]
 patch = [
     "hotfix/.*",
     "fix/.*",
+    "refactor/.*",
+    "perf/.*",
 ]
 minor = [
     "feature/.*",
@@ -392,9 +396,16 @@ major = [
 ]
 prerelease_ignore = [
     "docs/.*",
+    "chore/.*",
+    "ci/.*",
+    "test/.*",
+    "build/.*",
 ]
 release_ignore = [
     "wip/.*",
     "docs/.*",
     "chore/.*",
+    "ci/.*",
+    "test/.*",
+    "build/.*",
 ]
