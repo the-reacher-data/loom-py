@@ -73,7 +73,6 @@ reported across them::
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -392,11 +391,11 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
 
 
 def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
-    """Register custom resolvers with OmegaConf before parsing.
+    """Register the given resolvers with OmegaConf before parsing.
 
-    Registration is idempotent: a resolver already registered under the same
-    name is silently skipped, so multiple :func:`load_config` calls with the
-    same resolvers are safe.
+    Each resolver replaces any earlier registration of the same name, so
+    repeated :func:`load_config` calls are safe and the resolver passed at
+    the call site is the one used.
 
     Args:
         resolvers: Sequence of :class:`~loom.core.config.resolver.ConfigResolver`
@@ -404,8 +403,9 @@ def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
         omega_conf: OmegaConf module.
     """
     for resolver in resolvers:
-        with contextlib.suppress(Exception):
-            omega_conf.register_new_resolver(resolver.name, resolver.resolve, use_cache=True)
+        omega_conf.register_new_resolver(
+            resolver.name, resolver.resolve, replace=True, use_cache=True
+        )
 
 
 def load_config(
