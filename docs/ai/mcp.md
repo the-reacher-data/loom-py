@@ -41,25 +41,53 @@ every governed capability into an anonymous one. MCP is an **outbound** edge
 from the agent, always.
 ```
 
-### stdio does not apply on a server
+### stdio: a subprocess in your container
 
-The MCP specification defines a stdio transport, where the client launches the
-server as a **subprocess** and speaks to it over its standard input and output.
-That is a **desktop** transport. It exists so a local assistant can spawn a tool
-on your laptop.
+The MCP specification also defines a stdio transport, where the client launches
+the server as a **subprocess** and speaks to it over its standard input and
+output. Most published servers ship that way, so loom accepts it — in the
+deployment's configuration, never in the artifact:
 
-It does not belong in a server deployment:
+```yaml
+# config/api.yaml
+ai:
+  mcp_servers:
+    runbooks:
+      transport: stdio
+      command: uvx
+      args: [mcp-server-runbooks]
+      env:
+        RUNBOOKS_TOKEN: ${secrets:/loom/runbooks/token}
+```
 
-- it makes the tool server a child process of your web worker, so its lifetime,
-  its crashes and its memory are now your web worker's problem;
-- it scales with your web workers rather than with the tool's own load;
-- it has no network identity, so there is nothing to authenticate, authorise,
-  rate-limit or audit at the boundary;
-- it cannot be deployed, rolled back or monitored separately from the app.
+Know what you are choosing. The server runs **inside this container, as this
+process's child**: it shares the identity, the file system, the network and the
+instance credentials of the worker, and there is no connection to authenticate —
+which is why `headers_ref` and `auth` are refused under `transport: stdio`. Its
+lifetime, its crashes and its memory are the worker's problem, it scales with
+your workers rather than with the tool's own load, and it cannot be deployed,
+rolled back or monitored on its own. A server you operate yourself is better off
+behind an address; stdio is for the servers you only consume.
 
-Loom's `mcp` capability requires an `https://` URL for exactly this reason. A
-server-side MCP server is a service with an address, a certificate and a
-deployment of its own.
+What stdio does not do:
+
+- **it does not reconnect.** A dead subprocess fails the call, exactly as a
+  dead HTTP server does; nothing restarts it;
+- **it does not share one process.** Start-up opens one server to list tools and
+  each run opens its own; every one of them dies with the context that opened
+  it, so none outlives the runtime;
+- **it does not inherit your environment.** The child receives only `HOME`,
+  `LOGNAME`, `PATH`, `SHELL`, `TERM` and `USER` plus what `env` declares, so a
+  secret in the worker's environment cannot leak into the tool by accident;
+- **it does not precompile your command.** The handshake has a five-second
+  budget, so a cold `uvx`/`npx` download will miss it: install the server in the
+  image and let `command` run it.
+
+Values in `env` reach loom already resolved — `${secrets:…}` is an OmegaConf
+resolver that runs before this configuration is validated — so loom cannot tell a
+resolved secret from a literal one. It rejects only what cannot be a value at
+all (spaces, braces, quotes, userinfo), which is what catches a broken
+interpolation; keeping real secrets out of the file is the deployment's job.
 
 ## Configuring a server
 
@@ -87,8 +115,8 @@ ai:
 That separation is what lets the same artifact run against a staging server and
 a production one with no edit.
 
-The URL must be `https://`, carry no credentials in its userinfo and no query
-string — compilation refuses anything else and redacts the URL in the error, so
+Under `transport: http` (the default) the URL must be `https://`, carry no
+credentials in its userinfo and no query string — compilation refuses anything else and redacts the URL in the error, so
 the message cannot leak the credential it just rejected. `headers_ref` is a
 reference the deployment's secret resolver looks up; a literal secret is
 rejected fail-closed.

@@ -78,8 +78,8 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     artifact move between environments unchanged.
 
     Args:
-        capability: Compiled grant carrying the validated server URL and the
-            credential resolved for it.
+        capability: Compiled grant carrying the validated address of its
+            transport and the credential resolved for it.
 
     Returns:
         The unfiltered, not yet connected toolset; the caller applies the
@@ -112,17 +112,45 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     return toolset
 
 
-def _mcp_client(component: str, capability: CompiledMcpCapability) -> str:
+def _mcp_client(component: str, capability: CompiledMcpCapability) -> Any:
     """Return what ``MCPToolset`` connects to for the grant's transport.
 
-    Under ``http`` that is the validated server URL, which configuration
-    guarantees present.  Any other transport is refused with a coded issue
-    rather than reaching the client library with a missing address.
+    Under ``http`` that is the validated server URL.  Under ``stdio`` it is a
+    transport that spawns the declared command, receives only the declared
+    environment and dies with the context that opened it, so no server outlives
+    the toolset that owns it.
+
+    Raises:
+        AgentCompilationError: When the transport is not one this engine serves,
+            or the stdio client library is missing.
     """
     if capability.transport == "http" and capability.url is not None:
         return capability.url
+    if capability.transport == "stdio" and capability.command is not None:
+        return _stdio_transport(capability)
     reason = f"transport {capability.transport!r} is not served by the pydantic-ai engine"
     raise AgentCompilationError([mcp_transport_invalid(component, reason)])
+
+
+def _stdio_transport(capability: CompiledMcpCapability) -> Any:
+    """Build the stdio transport of one grant, tied to its owner's lifetime.
+
+    Raises:
+        AgentCompilationError: When the stdio client library is not installed.
+    """
+    try:
+        from fastmcp.client.transports import StdioTransport
+    except ImportError as exc:
+        raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
+    command = capability.command
+    if command is None:  # pragma: no cover - configuration guarantees it
+        raise AgentCompilationError([provider_not_installed("mcp", "mcp")])
+    return StdioTransport(
+        command=command,
+        args=list(capability.args),
+        env=dict(capability.env) or None,
+        keep_alive=False,
+    )
 
 
 @asynccontextmanager

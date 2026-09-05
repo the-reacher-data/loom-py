@@ -412,6 +412,7 @@ class TestDescripcionCompleta:
 
         assert _normalise(capability["settings"]) == {
             "server": _MCP_SERVER,
+            "transport": "http",
             "include": ("search_*",),
             "exclude": ("delete_*",),
             "timeout_ms": 20000,
