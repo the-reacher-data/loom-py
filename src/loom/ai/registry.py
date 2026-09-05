@@ -11,6 +11,7 @@ name and the handshake is a ``getattr`` on the loaded object, never an
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:  # import cycle at runtime: runtime.py imports the compiler,
@@ -20,7 +21,7 @@ if TYPE_CHECKING:  # import cycle at runtime: runtime.py imports the compiler,
 from importlib import import_module
 from types import ModuleType
 
-from loom.ai.abc import AgentEngineProvider
+from loom.ai.abc import AgentEngineProvider, NativeToolSupport
 from loom.ai.errors import (
     AgentCompilationError,
     engine_api_mismatch,
@@ -34,6 +35,8 @@ from loom.core.plugins.entrypoints import (
     list_entry_points,
     select_entry_point,
 )
+
+_logger = logging.getLogger(__name__)
 
 ENGINE_ENTRY_POINT_GROUP = "loom.ai.engines"
 """Entry-point group every engine distribution registers under."""
@@ -144,6 +147,51 @@ def _distributions_for(name: str) -> list[str]:
         for ep in list_entry_points(ENGINE_ENTRY_POINT_GROUP)
         if ep.name == name
     ]
+
+
+def engine_supported_kinds(provider: object, engine: str) -> frozenset[str]:
+    """Return the capability kinds an engine can actually be trusted to serve.
+
+    An engine advertising ``native`` without the oracle the compiler needs to
+    check a grant against its model would let the grant through unchecked, so
+    the kind is dropped and the artifact is refused for the right reason.
+
+    Args:
+        provider: Engine provider resolved from the entry point group.
+        engine: Engine name, for the warning that names the offender.
+
+    Returns:
+        The kinds the compiler may accept.
+    """
+    kinds = cast("AgentEngineProvider", provider).supported_capability_kinds()
+    if "native" in kinds and engine_native_tool_support(provider) is None:
+        _logger.warning(
+            "engine %r serves 'native' grants but supplies no native_tool_support: "
+            "the kind is refused until it does.",
+            engine,
+        )
+        return kinds - {"native"}
+    return kinds
+
+
+def engine_native_tool_support(provider: object) -> NativeToolSupport | None:
+    """Return the oracle a provider supplies for provider-run tools.
+
+    Read off the resolved provider with ``getattr``, the same handshake shape as
+    the client factories: the compiler learns what a model binding admits
+    without importing an engine.
+
+    Args:
+        provider: Engine provider resolved from the entry point group.
+
+    Returns:
+        The oracle, or ``None`` when the engine serves no ``native`` grant.
+
+    Example::
+
+        support = engine_native_tool_support(resolve_engine_provider("pydantic-ai"))
+    """
+    return cast("NativeToolSupport | None", getattr(provider, "native_tool_support", None))
 
 
 def engine_client_factories(

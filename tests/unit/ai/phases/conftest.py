@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from loom.ai.config import AiConfig
-from loom.ai.declarative import AgentSpecV1, JsonSchemaOutput
+from loom.ai.declarative import NATIVE_TOOLS, AgentSpecV1, JsonSchemaOutput
 from loom.ai.errors import AgentCompilationIssue
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
@@ -26,7 +26,17 @@ SOURCE_PATH = "ai/agents/subject-agent/agent.yaml"
 SKILL_MANIFEST = "SKILL.md"
 """Manifest turning a directory into one skill package, as in ``pydantic-ai-harness``."""
 
-ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+ALL_KINDS: frozenset[str] = frozenset(
+    {"usecase", "sql", "mcp", "skills", "python", "a2a", "native"}
+)
+"""Every kind a compiler under test accepts; the single source for the suite."""
+
+
+def admits_every_native_tool(target: object) -> frozenset[str]:
+    """Oracle standing in for an engine that admits every provider tool."""
+    del target
+    return frozenset(NATIVE_TOOLS)
+
 
 ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",

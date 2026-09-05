@@ -676,17 +676,24 @@ def _resolve_ai(
     from loom.ai.compiler import AgentCompiler
     from loom.ai.config import AiConfig
     from loom.ai.declarative import load_specs
-    from loom.ai.registry import engine_client_factories, resolve_engine_provider
+    from loom.ai.registry import (
+        engine_client_factories,
+        engine_native_tool_support,
+        engine_supported_kinds,
+        resolve_engine_provider,
+    )
     from loom.ai.runtime import AgentRuntime
 
     ai_cfg = ctx.section(ConfigKey.AI, AiConfig)
     provider = resolve_engine_provider(ai_cfg.engine)
     mcp_factory, a2a_factory = engine_client_factories(provider)
+    native_tools = engine_native_tool_support(provider)
     compiler = AgentCompiler(
         config=ai_cfg,
         registry=kernel.registry,
-        supported_kinds=provider.supported_capability_kinds(),
+        supported_kinds=engine_supported_kinds(provider, ai_cfg.engine),
         sql=sql_cfg,
+        native_tools=native_tools,
     )
     specs = _effective_agent_specs(ai_cfg.specs, manifest_agent_specs)
     decoded = load_specs(specs, root=code_path)

@@ -22,8 +22,10 @@ in :mod:`~loom.ai.engines.pydantic_ai._guards` and
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from enum import Enum
+from types import MappingProxyType
+from typing import Any, Final, NamedTuple, cast
 
 from pydantic_ai import ToolReturn
 from pydantic_ai.capabilities import AbstractCapability
@@ -37,6 +39,7 @@ from loom.ai.compiler import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledSkillsCapability,
     CompiledSqlCapability,
@@ -54,6 +57,7 @@ from loom.ai.engines.pydantic_ai._guards import (
     require_authenticated,
 )
 from loom.ai.engines.pydantic_ai._mcp import build_mcp_toolset
+from loom.ai.engines.pydantic_ai._native import native_capability as _native_capability
 from loom.ai.engines.pydantic_ai._returns import (
     bounded_return,
     ok_return,
@@ -104,94 +108,6 @@ class _UsecaseGrant:
             execution.input_binding.name if execution.input_binding is not None else None
         )
         self.schema = usecase_schema(execution)
-
-
-def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractToolset[Any], ...]:
-    """Build one engine toolset per compiled capability of ``plan``.
-
-    Args:
-        plan: Compiled plan whose capabilities carry resolved handles.
-        container: Application container; a ``python`` factory receives it here,
-            at build time, and every other toolset resolves through the
-            per-invocation bundle instead.
-
-    ``skills`` is deliberately absent: it publishes no tool, so it is built by
-    :func:`build_capabilities` instead.
-
-    Returns:
-        The toolsets, in the plan's capability order.
-
-    Raises:
-        AgentCompilationError: When a grant cannot be turned into a toolset —
-            two grants of *any* capability collide on one tool name, a derived
-            name is longer than a provider accepts, an optional dependency is
-            missing, or a factory does not produce a toolset.
-    """
-    context = BuildContext.of(plan, container)
-    reject_unusable_names(plan.capabilities, context.agent)
-    return tuple(
-        _toolset(capability, context)
-        for capability in plan.capabilities
-        if not isinstance(capability, CompiledSkillsCapability)
-    )
-
-
-def build_capabilities(plan: AgentPlan) -> tuple[AbstractCapability[Any], ...]:
-    """Build one harness capability per compiled ``skills`` grant of ``plan``.
-
-    A skill library is prompt material, not a tool: the harness loads the
-    selected ``SKILL.md`` files and injects them, so there is nothing to put
-    behind the call boundary :class:`_GuardedToolset` applies. That is also why
-    there is no identity guard here — a skill reaches neither caller-owned data
-    nor a remote server, exactly the reasoning that exempted ``skills`` from the
-    compiler's data-or-remote kinds.
-
-    The compiler already resolved the artifact's globs to exact skill names, so
-    only ``include`` is passed: the harness matches names exactly, refuses
-    ``include`` and ``exclude`` together, and rejects an unknown name at
-    construction.
-
-    Args:
-        plan: Compiled plan whose ``skills`` grants carry a resolved directory
-            and the exact names selected from it.
-
-    Returns:
-        The capabilities, in the plan's capability order; empty when the plan
-        grants no skill library.
-
-    Raises:
-        AgentCompilationError: When the ``ai-harness`` extra is not installed.
-    """
-    grants = [c for c in plan.capabilities if isinstance(c, CompiledSkillsCapability)]
-    if not grants:
-        return ()
-    # Local import: the skills harness ships behind the optional ``ai-harness``
-    # extra, and importing it at module load would break every deployment that
-    # declares no ``skills`` grant.
-    try:
-        from pydantic_ai_harness import Skills
-    except ImportError as exc:
-        raise AgentCompilationError([provider_not_installed("skills", "ai-harness")]) from exc
-    return tuple(Skills(grant.directory, include=list(grant.names)) for grant in grants)
-
-
-def _toolset(capability: CompiledCapability, context: BuildContext) -> AbstractToolset[Any]:
-    """Dispatch one compiled capability onto its builder."""
-    match capability:
-        case CompiledUsecaseCapability():
-            return _usecase_toolset(capability, context)
-        case CompiledSqlCapability():
-            return _sql_toolset(capability, context)
-        case CompiledMcpCapability():
-            return _mcp_toolset(capability, context)
-        case CompiledPythonCapability():
-            return _python_toolset(capability, context)
-        case CompiledA2ACapability():
-            return _a2a_toolset(capability, context)
-        case _:
-            raise AgentCompilationError(
-                [f"{context.agent}: capability kind '{capability.kind}' has no toolset builder"]
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -497,3 +413,146 @@ async def _delegate(capability: CompiledA2ACapability, prompt: str, tool: str) -
             AgentRunErrorCode.TOOL_UNAVAILABLE,
             f"tool '{tool}': the remote agent is unavailable",
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# The kinds this engine serves
+# ---------------------------------------------------------------------------
+
+
+class _Destination(Enum):
+    """Where the engine puts what a grant builds."""
+
+    TOOLSET = "toolset"
+    """A toolset the engine calls in this process."""
+
+    CAPABILITY = "capability"
+    """An engine capability: nothing in this process calls it."""
+
+
+class _KindBinding(NamedTuple):
+    """How this engine serves one capability kind.
+
+    Attributes:
+        destination: Whether the built object is a toolset or a capability.
+        builder: Builds one object from one grant, with the agent's build context.
+    """
+
+    destination: _Destination
+    builder: Callable[[Any, BuildContext], Any]
+
+
+def _skills_capability(
+    capability: CompiledSkillsCapability, context: BuildContext
+) -> AbstractCapability[Any]:
+    """Build the harness capability of one ``skills`` grant.
+
+    A skill library is prompt material, not a tool: the harness loads the
+    selected ``SKILL.md`` files and injects them, so there is nothing to put
+    behind the call boundary :class:`_GuardedToolset` applies. That is also why
+    there is no identity guard — a skill reaches neither caller-owned data nor a
+    remote server, the reasoning that exempted ``skills`` from the compiler's
+    data-or-remote kinds. The compiler already resolved the artifact's globs, so
+    only ``include`` is passed.
+
+    Args:
+        capability: Compiled grant carrying the resolved directory and names.
+        context: Unused; a skill library needs no per-agent wiring.
+
+    Raises:
+        AgentCompilationError: When the ``ai-harness`` extra is not installed.
+    """
+    del context
+    # Local import: the skills harness ships behind the optional ``ai-harness``
+    # extra, and importing it at module load would break every deployment that
+    # declares no ``skills`` grant.
+    try:
+        from pydantic_ai_harness import Skills
+    except ImportError as exc:
+        raise AgentCompilationError([provider_not_installed("skills", "ai-harness")]) from exc
+    return cast(
+        "AbstractCapability[Any]", Skills(capability.directory, include=list(capability.names))
+    )
+
+
+_KINDS: Final[Mapping[type[CompiledCapability], _KindBinding]] = MappingProxyType(
+    {
+        CompiledUsecaseCapability: _KindBinding(_Destination.TOOLSET, _usecase_toolset),
+        CompiledSqlCapability: _KindBinding(_Destination.TOOLSET, _sql_toolset),
+        CompiledMcpCapability: _KindBinding(_Destination.TOOLSET, _mcp_toolset),
+        CompiledPythonCapability: _KindBinding(_Destination.TOOLSET, _python_toolset),
+        CompiledA2ACapability: _KindBinding(_Destination.TOOLSET, _a2a_toolset),
+        CompiledSkillsCapability: _KindBinding(_Destination.CAPABILITY, _skills_capability),
+        CompiledNativeCapability: _KindBinding(_Destination.CAPABILITY, _native_capability),
+    }
+)
+"""The one place that says which kinds this engine serves, and how.
+
+Every consumer derives from it: the toolsets, the engine capabilities and the
+kinds the adapter announces to the compiler. Serving a new kind is one entry.
+"""
+
+SUPPORTED_KINDS: Final[frozenset[str]] = frozenset(compiled.kind for compiled in _KINDS)
+"""Capability kinds this engine serves, derived from :data:`_KINDS`."""
+
+
+def build_toolsets(plan: AgentPlan, container: LoomContainer) -> tuple[AbstractToolset[Any], ...]:
+    """Build one engine toolset per grant of ``plan`` whose kind produces one.
+
+    Args:
+        plan: Compiled plan whose capabilities carry resolved handles.
+        container: Application container; a ``python`` factory receives it here,
+            at build time, and every other toolset resolves through the
+            per-invocation bundle instead.
+
+    Returns:
+        The toolsets, in the plan's capability order; a kind bound to
+        :attr:`_Destination.CAPABILITY` contributes none.
+
+    Raises:
+        AgentCompilationError: When a grant cannot be turned into a toolset —
+            two grants of *any* capability collide on one tool name, a derived
+            name is longer than a provider accepts, an optional dependency is
+            missing, or a factory does not produce a toolset.
+    """
+    context = BuildContext.of(plan, container)
+    reject_unusable_names(plan.capabilities, context.agent)
+    return tuple(_build(plan, _Destination.TOOLSET, context))
+
+
+def build_capabilities(
+    plan: AgentPlan, container: LoomContainer
+) -> tuple[AbstractCapability[Any], ...]:
+    """Build one engine capability per grant of ``plan`` whose kind produces one.
+
+    Args:
+        plan: Compiled plan whose capabilities carry resolved handles.
+        container: Application container, for symmetry with the toolsets: no
+            capability kind consumes it today.
+
+    Returns:
+        The capabilities, in the plan's capability order; empty when no grant is
+        bound to :attr:`_Destination.CAPABILITY`.
+
+    Raises:
+        AgentCompilationError: When an optional dependency the kind needs is not
+            installed.
+    """
+    return tuple(_build(plan, _Destination.CAPABILITY, BuildContext.of(plan, container)))
+
+
+def _build(plan: AgentPlan, destination: _Destination, context: BuildContext) -> Iterator[Any]:
+    """Yield what every grant of ``plan`` bound to ``destination`` builds.
+
+    Raises:
+        AgentCompilationError: When a grant's kind has no entry in :data:`_KINDS`,
+            which means the adapter announced a kind it cannot serve.
+    """
+    for capability in plan.capabilities:
+        binding = _KINDS.get(type(capability))
+        if binding is None:
+            raise AgentCompilationError(
+                [f"{context.agent}: capability kind '{capability.kind}' has no builder"]
+            )
+        if binding.destination is destination:
+            yield binding.builder(capability, context)

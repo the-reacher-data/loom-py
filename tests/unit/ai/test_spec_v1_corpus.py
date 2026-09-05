@@ -38,7 +38,9 @@ from loom.ai.declarative import AgentSpecV1, DecodedSpec, agent_spec_json_schema
 _CORPUS_DIR: Path = Path(__file__).parent / "fixtures" / "corpus_v1"
 _CORPUS_PATTERN: str = "*/agent.yaml"
 
-_CAPABILITY_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+_CAPABILITY_KINDS: frozenset[str] = frozenset(
+    {"usecase", "sql", "mcp", "skills", "python", "a2a", "native"}
+)
 _OUTPUT_KINDS: frozenset[str] = frozenset({"json_schema", "type_ref"})
 
 _SKILLS_ROOT_DIR: Path = Path(__file__).parent / "fixtures" / "skills_root"

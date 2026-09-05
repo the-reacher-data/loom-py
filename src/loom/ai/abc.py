@@ -10,11 +10,12 @@ artifact format they serve is not.  See :mod:`loom.ai` for the distinction.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from loom.ai.errors import AgentRunErrorCode
+from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
 from loom.core.identity import Identity
 from loom.core.model import LoomFrozenStruct
@@ -244,12 +245,24 @@ class DepsFactory(Protocol):
         ...
 
 
+NativeToolSupport = Callable[[InferenceTarget], frozenset[str]]
+"""Answers which provider tools a model binding admits, by loom tool name.
+
+Supplied by an engine as an optional ``native_tool_support`` attribute and read
+with ``getattr``, so the compiler learns what a binding admits without importing
+an engine. May raise :class:`~loom.ai.errors.AgentCompilationError` when the
+provider SDK is missing.
+"""
+
+
 class AgentEngineProvider(Protocol):
     """Entry-point target in group ``loom.ai.engines``.
 
     Attributes:
         LOOM_AI_ENGINE_API: Handshake version, checked with ``getattr`` on
             load — never with ``isinstance``.
+        native_tool_support: Optional :data:`NativeToolSupport`, read with
+            ``getattr``; an engine that serves no ``native`` grant omits it.
     """
 
     LOOM_AI_ENGINE_API: ClassVar[int]

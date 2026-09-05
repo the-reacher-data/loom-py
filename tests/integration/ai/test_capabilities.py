@@ -45,6 +45,7 @@ from pydantic_ai_harness import Skills
 from loom.ai.abc import AgentEngine, ToolResultEvent
 from loom.ai.compiler._plan import (
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledSkillsCapability,
     CompiledSqlCapability,
@@ -726,12 +727,57 @@ class TestSupportedCapabilityKinds:
         """Every kind the adapter can serve is announced, ``a2a`` included."""
         kinds = PydanticAIEngineProvider().supported_capability_kinds()
 
-        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
+        assert kinds == frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a", "native"})
 
 
 # ---------------------------------------------------------------------------
 # skills — a harness capability, not a toolset
 # ---------------------------------------------------------------------------
+
+
+def _granted_native_tools(engine: AgentEngine) -> list[Any]:
+    """Return the provider tools the built agent carries, in the agent's order."""
+    from pydantic_ai.capabilities import NativeTool
+
+    agent = engine._agent  # noqa: SLF001 — the built agent is what this asserts about
+    granted = getattr(agent.root_capability, "capabilities", ())
+    return [capability for capability in granted if isinstance(capability, NativeTool)]
+
+
+class TestNativeCapabilityWiring:
+    """``native`` reaches the agent as an engine capability, never as a toolset."""
+
+    def test_el_agente_recibe_la_herramienta_del_proveedor_cuando_el_plan_la_concede(
+        self, container: LoomContainer, deps: object
+    ) -> None:
+        """The built agent carries one ``NativeTool`` of the granted class."""
+        from pydantic_ai.native_tools import WebSearchTool
+
+        engine = build_engine(
+            capabilities=(CompiledNativeCapability(tool="web_search"),),
+            model=ScriptedToolModel(),
+            container=container,
+            deps=deps,
+        )
+
+        native = _granted_native_tools(engine)
+        assert [type(capability.tool) for capability in native] == [WebSearchTool]
+
+    def test_el_agente_no_recibe_ninguna_cuando_el_plan_no_las_concede(
+        self, container: LoomContainer, deps: object
+    ) -> None:
+        """A plan without native grants leaves the agent's capabilities untouched."""
+        from pydantic_ai.capabilities import NativeTool
+
+        engine = build_engine(
+            capabilities=(),
+            model=ScriptedToolModel(),
+            container=container,
+            deps=deps,
+        )
+
+        del NativeTool
+        assert _granted_native_tools(engine) == []
 
 
 SKILL_LIBRARY = {
@@ -777,7 +823,7 @@ class TestSkillsCapability:
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "forecast"),))
 
-        capabilities = _capabilities.build_capabilities(plan)
+        capabilities = _capabilities.build_capabilities(plan, LoomContainer())
 
         assert len(capabilities) == 1
         skills = capabilities[0]
@@ -791,7 +837,7 @@ class TestSkillsCapability:
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
 
-        skills = _capabilities.build_capabilities(plan)[0]
+        skills = _capabilities.build_capabilities(plan, LoomContainer())[0]
 
         assert isinstance(skills, Skills)
         assert skills.include == frozenset({"pricing"})
@@ -804,7 +850,7 @@ class TestSkillsCapability:
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "invented"),))
 
         with pytest.raises(ValueError, match="invented"):
-            _capabilities.build_capabilities(plan)
+            _capabilities.build_capabilities(plan, LoomContainer())
 
     def test_no_construye_ningun_toolset_cuando_la_capacidad_es_skills(
         self, tmp_path: Path, app_container: LoomContainer
@@ -821,7 +867,7 @@ class TestSkillsCapability:
         """A plan without a library asks nothing of the optional harness."""
         plan = make_plan(capabilities=(sql_capability(),))
 
-        assert _capabilities.build_capabilities(plan) == ()
+        assert _capabilities.build_capabilities(plan, LoomContainer()) == ()
 
     async def test_el_agente_responde_cuando_el_plan_concede_una_libreria(
         self, tmp_path: Path, app_container: LoomContainer

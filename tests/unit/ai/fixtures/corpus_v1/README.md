@@ -34,7 +34,7 @@ bare `library:` name resolves against via `ai.skills_root`.
 ## Coverage
 
 Coverage is part of the contract. The corpus must always cover every capability kind
-(`usecase`, `sql`, `mcp`, `skills`, `python`, `a2a`) and both output kinds (`json_schema`,
+(`usecase`, `sql`, `mcp`, `skills`, `python`, `a2a`, `native`) and both output kinds (`json_schema`,
 `type_ref`), plus both skill-library forms — `./name` beside the artifact and a bare name
 resolved against `ai.skills_root`. A new capability kind or output kind is not complete
 until a fixture here exercises it.

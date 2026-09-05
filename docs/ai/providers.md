@@ -26,6 +26,10 @@ with `MODEL_ROLE_UNBOUND`. It is never deferred to the first request.
 | `anthropic` | `ai-anthropic` | — | the **name of the environment variable** holding the API key; omit it and the SDK reads its own default | Anthropic's own API |
 | `gateway` | `ai-openai` | `endpoint` | the **name of the environment variable** holding the API key the endpoint expects | **any OpenAI-compatible endpoint** — see below |
 
+Which **provider-run tools** each binding admits — web search, web fetch, code
+execution — is decided by the model class of the installed engine, not by this
+table; see [`native` capabilities](artifacts.md#native--tools-the-model-provider-runs).
+
 An unknown `provider` fails start-up with `PROVIDER_UNKNOWN`, naming the ones
 this release binds. A provider whose SDK is not installed fails with
 `PROVIDER_NOT_INSTALLED`, **naming the extra to install**. A missing required

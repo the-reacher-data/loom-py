@@ -362,15 +362,17 @@ Had `RecordTriage` raised, the app would instead get
 `500 {"code":"HOOK_FAILED","message":"the output hook failed; the detail is recorded server-side","interaction_id":"7f3c..."}`
 — or an `error` frame with the same three fields — and no answer.
 
-## `capabilities` — the six kinds
+## `capabilities` — the seven kinds
 
 A capability is a **grant**, never a discovery. Nothing is expanded
 automatically, and an agent with no capabilities can do nothing but answer from
 the prompt.
 
-Every capability runs under the **caller's** identity, not a service identity.
-That is the property that makes a grant safe to give: the agent cannot reach
-anything the human who invoked it could not reach directly.
+Every **local** capability runs under the **caller's** identity, not a service
+identity. That is the property that makes a grant safe to give: the agent cannot
+reach anything the human who invoked it could not reach directly. Remote kinds
+(`mcp`, `a2a`) reach their endpoint with the deployment's credential, and
+`native` runs inside the model provider — neither is bounded by who called.
 
 ### `usecase` — this application's own operations
 
@@ -446,6 +448,48 @@ invoked with the container at start-up.
 The remote agent's skills become callable capabilities under exactly the same
 rules as every other kind. Its output is **untrusted input** — see
 [A2A](a2a.md#untrusted-input).
+
+### `native` — tools the model provider runs
+
+```yaml
+- kind: native
+  tool: web_search           # web_search | web_fetch | code_execution
+```
+
+The tool runs in the **model provider's** infrastructure, not in this process:
+loom neither implements it nor sees its calls. A grant is checked at compile
+time against the model bound to the agent's `model_role`, so a tool the binding
+cannot run fails with `NATIVE_TOOL_UNSUPPORTED` naming the provider, the model,
+the role and what that binding does admit — never on the first request. The same
+tool granted twice is `NATIVE_TOOL_DUPLICATE` — loom refuses it even though the
+engine would collapse identical grants, the same rule `skills` follows.
+
+What each binding admits comes from the model class of the installed engine, not
+from a table in loom. As of pydantic-ai 2.36 (`Model.supported_native_tools()`;
+re-check after upgrading):
+
+| `tool` | `bedrock` | `openai` / `gateway` | `anthropic` |
+|---|---|---|---|
+| `web_search` | no | yes¹ | yes |
+| `web_fetch` | no | no | yes |
+| `code_execution` | yes | no | yes |
+
+¹ The class admits it, but the provider narrows it again per model name when the
+request is made — OpenAI chat models only run web search on `*-search-preview`
+models. A binding that passes compilation can still be refused by the provider
+on its first call, and that refusal reaches you as the engine's own error, not
+as a loom error code.
+
+What a `native` grant does not get:
+
+- **no `tool_timeout_ms`**: there is no call in this process to bound;
+- **no stream events**: the provider's tool calls do not appear in `/stream`;
+- **no options**: `allowed_domains`, `max_uses` and the rest are not expressible
+  yet; the grant is the tool name and nothing else;
+- **no retries**: an agent holding any capability, `native` included, does not
+  retry a failed run.
+
+For tools loom itself should call, use `mcp` or `python` instead.
 
 ## `policies` — execution limits
 

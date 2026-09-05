@@ -30,11 +30,14 @@ from ._envelope import (
 )
 from ._schema import SCHEMA_FILENAMES, agent_spec_json_schema, agent_spec_schema_path
 from ._v1 import (
+    NATIVE_TOOLS,
     A2ACapability,
     AgentSpecV1,
     CapabilitySpec,
     JsonSchemaOutput,
     McpCapability,
+    NativeCapability,
+    NativeToolName,
     OutputHookSpec,
     OutputSpec,
     PolicySpec,
@@ -46,6 +49,7 @@ from ._v1 import (
 )
 
 __all__ = [
+    "NATIVE_TOOLS",
     "SCHEMA_FILENAMES",
     "SUPPORTED_SPEC_VERSIONS",
     "LATEST_SPEC_VERSION",
@@ -56,6 +60,8 @@ __all__ = [
     "DecodedSpec",
     "JsonSchemaOutput",
     "McpCapability",
+    "NativeCapability",
+    "NativeToolName",
     "OutputHookSpec",
     "OutputSpec",
     "PolicySpec",

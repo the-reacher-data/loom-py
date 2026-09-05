@@ -1,0 +1,24 @@
+spec_version: 1
+name: capability-native-agent
+description: Answers questions about current events using the provider's own web search.
+instructions: >-
+  Search the web for the most recent coverage of the topic and summarise what the
+  sources agree on. Cite every source you relied on by its title.
+output:
+  kind: json_schema
+  schema:
+    type: object
+    additionalProperties: false
+    required:
+      - summary
+      - sources
+    properties:
+      summary:
+        type: string
+      sources:
+        type: array
+        items:
+          type: string
+capabilities:
+  - kind: native
+    tool: web_search

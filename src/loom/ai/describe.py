@@ -30,6 +30,7 @@ from loom.ai.compiler._plan import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledSkillsCapability,
     CompiledSqlCapability,
@@ -119,6 +120,11 @@ def _a2a_settings(capability: CompiledA2ACapability) -> Mapping[str, Any]:
     }
 
 
+def _native_settings(capability: CompiledNativeCapability) -> Mapping[str, Any]:
+    """Publish the provider tool granted, which is the whole of the grant."""
+    return {"tool": capability.tool}
+
+
 _CapabilityProjector = Callable[[Any], Mapping[str, Any]]
 
 _SETTINGS_PROJECTORS: Mapping[str, _CapabilityProjector] = {
@@ -128,6 +134,7 @@ _SETTINGS_PROJECTORS: Mapping[str, _CapabilityProjector] = {
     CompiledSkillsCapability.kind: _skills_settings,
     CompiledPythonCapability.kind: _python_settings,
     CompiledA2ACapability.kind: _a2a_settings,
+    CompiledNativeCapability.kind: _native_settings,
 }
 
 

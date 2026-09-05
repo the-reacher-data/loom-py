@@ -59,6 +59,8 @@ class AgentErrorCode(StrEnum):
 
     # Capabilities
     CAPABILITY_KIND_UNSUPPORTED = "CAPABILITY_KIND_UNSUPPORTED"
+    NATIVE_TOOL_UNSUPPORTED = "NATIVE_TOOL_UNSUPPORTED"
+    NATIVE_TOOL_DUPLICATE = "NATIVE_TOOL_DUPLICATE"
     CAPABILITY_EMPTY = "CAPABILITY_EMPTY"
     USECASE_KEY_UNKNOWN = "USECASE_KEY_UNKNOWN"
     SQL_CONNECTION_UNKNOWN = "SQL_CONNECTION_UNKNOWN"
@@ -342,6 +344,39 @@ def capability_kind_unsupported(component: str, kind: str, engine: str) -> Agent
         message=f"{component}: engine '{engine}' does not support capability kind '{kind}'",
         component=component,
         field="capabilities",
+    )
+
+
+def native_tool_unsupported(
+    component: str,
+    *,
+    tool: str,
+    role: str,
+    provider: str,
+    model: str,
+    supported: Sequence[str],
+) -> AgentCompilationIssue:
+    """The model bound to this role cannot run the requested provider tool."""
+    admitted = ", ".join(supported) or "none"
+    return AgentCompilationIssue(
+        code=AgentErrorCode.NATIVE_TOOL_UNSUPPORTED,
+        message=(
+            f"{component}: native tool '{tool}' is not supported by the model bound to role "
+            f"'{role}' (provider '{provider}', model '{model}'); that binding supports: "
+            f"{admitted}"
+        ),
+        component=component,
+        field="capabilities.tool",
+    )
+
+
+def native_tool_duplicate(component: str, tool: str) -> AgentCompilationIssue:
+    """The same provider tool is granted twice to one agent."""
+    return AgentCompilationIssue(
+        code=AgentErrorCode.NATIVE_TOOL_DUPLICATE,
+        message=f"{component}: native tool '{tool}' is granted more than once",
+        component=component,
+        field="capabilities.tool",
     )
 
 

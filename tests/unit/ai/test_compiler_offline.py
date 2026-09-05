@@ -18,12 +18,12 @@ from loom.ai.config import AiConfig
 from loom.ai.declarative import load_specs
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
+from tests.unit.ai.phases.conftest import ALL_KINDS, admits_every_native_tool
 
 from .conftest import CORPUS_PATTERN
 
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
 
-ALL_KINDS: frozenset[str] = frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a"})
 
 _PROVIDER_ENV_VARS: tuple[str, ...] = (
     "AWS_ACCESS_KEY_ID",
@@ -62,7 +62,8 @@ def test_corpus_compiles_clean_when_offline_and_credentialless(
         registry=compiler_env_registry,
         supported_kinds=ALL_KINDS,
         sql=compiler_env_sql,
+        native_tools=admits_every_native_tool,
     )
     decoded = load_specs([CORPUS_PATTERN], root=CORPUS_DIR)
     plans = compiler.compile_all(decoded)
-    assert len(plans) == len(decoded) == 9
+    assert len(plans) == len(decoded) == 10
