@@ -12,8 +12,7 @@ from loom.core.config import (
     ConfigError,
     ConfigKey,
     ConfigResolver,
-    default_resolvers,
-    merge_resolvers,
+    with_default_resolvers,
 )
 from loom.etl.lineage._config import ETLObservabilityConfig
 from loom.etl.storage._config import (
@@ -58,7 +57,7 @@ def _load_yaml(
     """
     ctx = ConfigContext.from_yaml(
         path,
-        resolvers=merge_resolvers(resolvers, default_resolvers()),
+        resolvers=with_default_resolvers(resolvers),
         keyed=STORAGE_KEYED_COLLECTIONS,
     )
     raw = ctx.section(ConfigKey.STORAGE, dict)

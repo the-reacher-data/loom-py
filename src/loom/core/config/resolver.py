@@ -31,13 +31,11 @@ for AWS SSM Parameter Store.  Install ``loom-kernel[config-ssm]`` to use it::
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from omegaconf import OmegaConf
-
-from loom.core.config.secrets import SecretsManagerResolver
-from loom.core.config.ssm import SsmResolver
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -98,6 +96,10 @@ def default_resolvers() -> tuple[ConfigResolver, ...]:
     Both use the AWS SDK's default region and credential chain and create
     their client lazily on the first resolution.
     """
+    # Local imports keep this protocol module free of the AWS implementations.
+    from loom.core.config.secrets import SecretsManagerResolver
+    from loom.core.config.ssm import SsmResolver
+
     return (SecretsManagerResolver(), SsmResolver())
 
 
@@ -107,15 +109,33 @@ def merge_resolvers(
     """Return *explicit* followed by the *defaults* whose names are still free.
 
     A default is dropped when an explicit resolver takes its name or when a
-    resolver with that name is already registered in OmegaConf.
+    resolver with that name is already registered in OmegaConf; the latter
+    is logged at INFO level.
     """
+    # Local import keeps omegaconf out of the import of ``loom.core.config``.
+    from omegaconf import OmegaConf
+
     taken = {resolver.name for resolver in explicit}
-    kept = tuple(
-        resolver
-        for resolver in defaults
-        if resolver.name not in taken and not OmegaConf.has_resolver(resolver.name)
-    )
+    kept: list[ConfigResolver] = []
+    for resolver in defaults:
+        if resolver.name in taken:
+            continue
+        if OmegaConf.has_resolver(resolver.name):
+            logger.info(
+                "config resolver %r already registered; loom default skipped", resolver.name
+            )
+            continue
+        kept.append(resolver)
     return (*explicit, *kept)
 
 
-__all__ = ["ConfigResolver", "default_resolvers", "merge_resolvers"]
+def with_default_resolvers(explicit: Sequence[ConfigResolver] = ()) -> tuple[ConfigResolver, ...]:
+    """Return *explicit* followed by loom's built-in resolvers whose names are free.
+
+    Equivalent to ``merge_resolvers(explicit, default_resolvers())``; the
+    factories use it to register ``secrets`` and ``ssm`` behind user resolvers.
+    """
+    return merge_resolvers(explicit, default_resolvers())
+
+
+__all__ = ["ConfigResolver", "default_resolvers", "merge_resolvers", "with_default_resolvers"]

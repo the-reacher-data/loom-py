@@ -18,8 +18,7 @@ from loom.core.config import (
     ConfigContext,
     ConfigKey,
     ConfigResolver,
-    default_resolvers,
-    merge_resolvers,
+    with_default_resolvers,
 )
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
@@ -366,7 +365,7 @@ class StreamingRunner:
 
 def _load_yaml(path: str, resolvers: Sequence[ConfigResolver]) -> ConfigContext:
     """Load *path* with *resolvers* ahead of the built-in ``secrets``/``ssm`` defaults."""
-    return ConfigContext.from_yaml(path, resolvers=merge_resolvers(resolvers, default_resolvers()))
+    return ConfigContext.from_yaml(path, resolvers=with_default_resolvers(resolvers))
 
 
 def _runtime_kwargs(runtime: BytewaxRuntimeConfig) -> dict[str, Any]:
