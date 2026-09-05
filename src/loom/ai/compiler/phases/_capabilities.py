@@ -219,10 +219,14 @@ def _compile_mcp(capability: McpCapability, context: _Context) -> _HandlerResult
     return (
         CompiledMcpCapability(
             server=capability.server,
+            transport=server.transport,
             url=server.url,
             headers_ref=server.headers_ref,
             auth=_compile_auth(server.auth),
             timeout_ms=server.timeout_ms,
+            command=server.command,
+            args=server.args,
+            env=tuple(sorted((server.env or {}).items())),
             include=capability.include,
             exclude=capability.exclude,
         ),

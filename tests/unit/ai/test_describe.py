@@ -280,9 +280,10 @@ class TestAjustesPorKind:
         }
 
     def test_publica_servidor_y_filtro_cuando_la_capacidad_es_mcp(self) -> None:
-        """The server name, filter and deadline are public; URL and headers are not."""
+        """Server name, transport, filter and deadline are public; URL and headers are not."""
         assert _settings_of(_mcp_capability()) == {
             "server": _MCP_SERVER,
+            "transport": "http",
             "include": ("search_*",),
             "exclude": ("delete_*",),
             "timeout_ms": 15000,

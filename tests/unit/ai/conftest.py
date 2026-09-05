@@ -66,6 +66,9 @@ def fake_myapp_path() -> Iterator[Path]:
 _CORPUS_MCP_SERVERS: tuple[str, ...] = ("knowledge", "runbooks")
 _CORPUS_A2A_AGENTS: tuple[str, ...] = ("translations", "oncall")
 
+STDIO_MCP_SERVER = "filesystem"
+"""The one ``transport: stdio`` server of the compiler environment."""
+
 
 def _inference_target() -> InferenceTarget:
     """Offline-safe model binding: nothing in the provider requires settings."""
@@ -97,14 +100,25 @@ def ai_config_factory() -> Callable[..., AiConfig]:
 
 
 def _corpus_mcp_servers() -> dict[str, McpServerConfig]:
-    """Locate every MCP server the corpus names; artifacts carry no URL."""
-    return {
+    """Locate every MCP server the corpus names, plus one subprocess server.
+
+    Artifacts carry no URL or command.  ``env`` is declared out of key order
+    on purpose: the plan must carry it sorted, whatever the operator wrote.
+    """
+    servers = {
         name: McpServerConfig(
             url=f"https://{name}.example.com/mcp",
             headers_ref=f"{name}_server_headers",
         )
         for name in _CORPUS_MCP_SERVERS
     }
+    servers[STDIO_MCP_SERVER] = McpServerConfig(
+        transport="stdio",
+        command="npx",
+        args=("-y", "@modelcontextprotocol/server-filesystem", "/srv/data"),
+        env={"ROOT_DIR": "/srv/data", "LOG_LEVEL": "warn"},
+    )
+    return servers
 
 
 def _corpus_a2a_agents() -> dict[str, A2AAgentConfig]:

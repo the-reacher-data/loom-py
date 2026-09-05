@@ -29,10 +29,11 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from loom.ai.compiler import CompiledMcpCapability
-from loom.ai.errors import AgentCompilationError, provider_not_installed
+from loom.ai.errors import AgentCompilationError, mcp_transport_invalid, provider_not_installed
 from loom.ai.remote_auth import headers_from_ref, shared_mcp_auth
 
 if TYPE_CHECKING:
+    from fastmcp.client.transports import ClientTransport
     from pydantic_ai.mcp import MCPToolset
 
 
@@ -78,8 +79,8 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     artifact move between environments unchanged.
 
     Args:
-        capability: Compiled grant carrying the validated server URL and the
-            credential resolved for it.
+        capability: Compiled grant carrying the validated address of its
+            transport and the credential resolved for it.
 
     Returns:
         The unfiltered, not yet connected toolset; the caller applies the
@@ -87,6 +88,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
 
     Raises:
         AgentCompilationError: When the MCP client is not installed, the
+            grant's transport is not one this engine serves, the
             ``headers_ref`` payload is not one ``Name=value`` pair, or the
             named strategy cannot be built.
 
@@ -99,6 +101,7 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     except ImportError as exc:
         raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
     component = f"mcp server '{capability.server}'"
+    client = _mcp_client(component, capability)
     headers = headers_from_ref(component, capability.headers_ref) or None
     auth = shared_mcp_auth(capability.server, capability.auth)
     # ``MCPToolset`` annotates auth as ``httpx.Auth | Literal['oauth'] | str | None``,
@@ -106,8 +109,46 @@ def build_mcp_toolset(capability: CompiledMcpCapability) -> MCPToolset[Any]:
     # transport: its ``_set_auth`` special-cases only ``"oauth"``, ``OAuth``, the
     # OAuth providers and ``str``, and hands anything else to its ``httpx2`` client
     # untouched — including the callable loom's own strategies return.
-    toolset: MCPToolset[Any] = MCPToolset(capability.url, headers=headers, auth=cast("Any", auth))
+    toolset: MCPToolset[Any] = MCPToolset(client, headers=headers, auth=cast("Any", auth))
     return toolset
+
+
+def _mcp_client(component: str, capability: CompiledMcpCapability) -> str | ClientTransport:
+    """Return what ``MCPToolset`` connects to for the grant's transport.
+
+    Under ``http`` that is the validated server URL.  Under ``stdio`` it is a
+    transport that spawns the declared command, receives only the declared
+    environment and dies with the context that opened it, so no server outlives
+    the toolset that owns it.
+
+    Raises:
+        AgentCompilationError: When the transport is not one this engine serves,
+            or the stdio client library is missing.
+    """
+    if capability.transport == "http" and capability.url is not None:
+        return capability.url
+    if capability.transport == "stdio" and capability.command is not None:
+        return _stdio_transport(capability.command, capability)
+    reason = f"transport {capability.transport!r} is not served by the pydantic-ai engine"
+    raise AgentCompilationError([mcp_transport_invalid(component, reason)])
+
+
+def _stdio_transport(command: str, capability: CompiledMcpCapability) -> ClientTransport:
+    """Build the stdio transport of one grant, tied to its owner's lifetime.
+
+    Raises:
+        AgentCompilationError: When the stdio client library is not installed.
+    """
+    try:
+        from fastmcp.client.transports import StdioTransport
+    except ImportError as exc:
+        raise AgentCompilationError([provider_not_installed("mcp", "mcp")]) from exc
+    return StdioTransport(
+        command=command,
+        args=list(capability.args),
+        env=dict(capability.env) or None,
+        keep_alive=False,
+    )
 
 
 @asynccontextmanager
@@ -120,7 +161,7 @@ async def create_mcp_client(capability: CompiledMcpCapability) -> AsyncIterator[
     exception escaping ``create_app``.
 
     Args:
-        capability: Compiled grant carrying the validated server URL.
+        capability: Compiled grant carrying the validated address of its transport.
 
     Yields:
         The connected session, closed with its transport on exit.

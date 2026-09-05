@@ -30,6 +30,7 @@ from loom.ai.errors import (
     mcp_auth_conflict,
     mcp_auth_strategy_unknown,
     mcp_credentials_inline,
+    mcp_transport_invalid,
     mcp_url_invalid,
     output_mode_unknown,
     policy_out_of_range,
@@ -51,6 +52,21 @@ _SECRET_MATERIAL_PREFIXES = ("AKIA", "sk-", "ghp_")
 
 # A URL carrying userinfo (``scheme://user:pass@host``) embeds a credential.
 _URL_USERINFO_RE = re.compile(r"://[^/]*@")
+
+# Accepted values of ``ai.mcp_servers.<name>.transport``: a remote endpoint
+# reached over HTTPS, or a subprocess of this worker spoken to over stdio.
+_MCP_TRANSPORTS: tuple[str, ...] = ("http", "stdio")
+
+# A valid environment variable name, as every POSIX shell and libc define it.
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Why ``headers_ref`` and ``auth`` are refused under ``transport: stdio``.
+_STDIO_CREDENTIALS_REASON = (
+    "'headers_ref' and 'auth' do not apply to transport 'stdio': the server runs "
+    "as a subprocess of this worker, in the same container, with the identity, "
+    "filesystem, network and instance credentials of the process itself; there "
+    "is no connection to authenticate"
+)
 
 # The one reserved key of an ``auth`` block: it names the strategy, every other
 # key is that strategy's own setting.
@@ -78,19 +94,26 @@ _REQUIRED_SETTINGS_BY_PROVIDER: Mapping[str, tuple[str, ...]] = MappingProxyType
 )
 
 
-def _is_credentials_reference(value: str) -> bool:
-    """Report whether ``value`` looks like a secret reference, not a secret.
+def _has_reference_shape(value: str) -> bool:
+    """Report whether ``value`` has the structure of a single opaque token.
 
-    Fail-closed heuristic (FR-018): the value must match the conservative
-    reference allowlist (which already excludes spaces, newlines, ``{`` and
-    therefore JSON blobs and ``BEGIN PRIVATE KEY`` blocks) and must not match
-    known literal-secret shapes or a URL with userinfo.
+    Fail-closed: the value must match the conservative reference allowlist
+    (which excludes spaces, newlines, quotes and ``{``, and therefore JSON
+    blobs, ``BEGIN PRIVATE KEY`` blocks and unresolved interpolations) and must
+    not be a URL carrying userinfo.
     """
     if _REFERENCE_PATTERN.fullmatch(value) is None:
         return False
-    if value.startswith(_SECRET_MATERIAL_PREFIXES):
-        return False
     return _URL_USERINFO_RE.search(value) is None
+
+
+def _is_credentials_reference(value: str) -> bool:
+    """Report whether ``value`` looks like a secret reference, not a secret.
+
+    Fail-closed heuristic (FR-018): the value must have the shape of a
+    reference and must not match known literal-secret prefixes.
+    """
+    return _has_reference_shape(value) and not value.startswith(_SECRET_MATERIAL_PREFIXES)
 
 
 _logger = logging.getLogger(__name__)
@@ -186,14 +209,19 @@ def _validate_model_binding(role: str, target: InferenceTarget) -> list[AgentCom
 
 
 class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
-    """One named remote MCP server (``ai.mcp_servers.<name>``).
+    """One named MCP server (``ai.mcp_servers.<name>``).
 
     Artifacts name a server; this is where the server lives.  Keeping the
-    address, the credential reference and the deadline here is what lets the
-    same artifact move between environments unchanged.
+    transport, the address or command, the credential reference and the
+    deadline here is what lets the same artifact move between environments
+    unchanged.
 
     Attributes:
+        transport: ``http`` for a remote endpoint, ``stdio`` for a subprocess
+            of this worker.  Each transport accepts its own fields and refuses
+            the other's.
         url: ``https://`` server URL, free of userinfo and query string.
+            Required under ``http``; refused under ``stdio``.
         headers_ref: Reference to headers resolved by the secrets resolver.
             Never a literal secret.  The resolved payload must be a single
             ``Name=value`` header pair, a shape checked at start-up rather than
@@ -204,12 +232,23 @@ class McpServerConfig(LoomFrozenStruct, frozen=True, kw_only=True):
             and every other key is passed to it as a keyword argument.
             Mutually exclusive with ``headers_ref``.
         timeout_ms: Deadline of a single call to this server.
+        command: Executable that speaks MCP over its stdin/stdout.  Required
+            under ``stdio``; refused under ``http``.
+        args: Arguments passed to ``command``.
+        env: Environment variables handed to the subprocess, on top of the
+            SDK's safe default subset; the worker's own environment is not
+            inherited.  Values arrive already resolved by the secrets
+            resolver, so they must have the shape of a single token.
     """
 
-    url: str
+    transport: str = "http"
+    url: str | None = None
     headers_ref: str | None = None
     auth: dict[str, str] | None = None
     timeout_ms: int = 20000
+    command: str | None = None
+    args: tuple[str, ...] = ()
+    env: dict[str, str] | None = None
 
 
 class A2AAgentConfig(LoomFrozenStruct, frozen=True, kw_only=True):
@@ -405,6 +444,78 @@ def _validate_auth(
     return issues
 
 
+def _validate_mcp_transport(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the fields of one server that its ``transport`` does not accept."""
+    if server.transport not in _MCP_TRANSPORTS:
+        accepted = ", ".join(_MCP_TRANSPORTS)
+        return [
+            mcp_transport_invalid(
+                component, f"transport '{server.transport}' is not supported; accepted: {accepted}"
+            )
+        ]
+    if server.transport == "stdio":
+        return _validate_stdio_server(component, server)
+    return _validate_http_server(component, server)
+
+
+def _validate_http_server(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the coherence, URL and credential issues of a ``transport: http`` server."""
+    issues: list[AgentCompilationIssue] = []
+    if server.url is None:
+        issues.append(mcp_transport_invalid(component, "transport 'http' requires 'url'"))
+    declared = (
+        ("command", server.command is not None),
+        ("args", bool(server.args)),
+        ("env", server.env is not None),
+    )
+    stdio_only = ", ".join(f"'{name}'" for name, present in declared if present)
+    if stdio_only:
+        issues.append(
+            mcp_transport_invalid(component, f"{stdio_only} do not apply to transport 'http'")
+        )
+    if server.url is not None:
+        issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
+    issues.extend(_validate_headers_ref(component, server.headers_ref))
+    issues.extend(_validate_auth(component, server.headers_ref, server.auth))
+    return issues
+
+
+def _validate_stdio_server(component: str, server: McpServerConfig) -> list[AgentCompilationIssue]:
+    """Collect the coherence and environment issues of a ``transport: stdio`` server."""
+    issues: list[AgentCompilationIssue] = []
+    if not server.command:
+        issues.append(
+            mcp_transport_invalid(component, "transport 'stdio' requires a non-empty 'command'")
+        )
+    if server.url is not None:
+        issues.append(mcp_transport_invalid(component, "'url' only applies to transport 'http'"))
+    if server.headers_ref is not None or server.auth is not None:
+        issues.append(mcp_transport_invalid(component, _STDIO_CREDENTIALS_REASON))
+    issues.extend(_validate_mcp_env(component, server.env))
+    return issues
+
+
+def _validate_mcp_env(component: str, env: Mapping[str, str] | None) -> list[AgentCompilationIssue]:
+    """Collect the issues of a subprocess ``env`` block: valid names, single-token values."""
+    if env is None:
+        return []
+    issues: list[AgentCompilationIssue] = []
+    for name, value in env.items():
+        if _ENV_NAME_PATTERN.fullmatch(name) is None:
+            issues.append(
+                mcp_transport_invalid(
+                    component,
+                    f"'{name}' is not a valid environment variable name",
+                    field=f"env.{name}",
+                )
+            )
+        if not _has_reference_shape(value):
+            # The rejected value is deliberately absent: a broken interpolation
+            # may still contain part of the secret it failed to resolve.
+            issues.append(mcp_credentials_inline(component, f"env.{name}"))
+    return issues
+
+
 def _validate_mcp_servers(
     servers: Mapping[str, McpServerConfig],
 ) -> list[AgentCompilationIssue]:
@@ -412,9 +523,7 @@ def _validate_mcp_servers(
     issues: list[AgentCompilationIssue] = []
     for name, server in servers.items():
         component = f"ai.mcp_servers.{name}"
-        issues.extend(_validate_remote_url(component, server.url, mcp_url_invalid))
-        issues.extend(_validate_headers_ref(component, server.headers_ref))
-        issues.extend(_validate_auth(component, server.headers_ref, server.auth))
+        issues.extend(_validate_mcp_transport(component, server))
         if not _TIMEOUT_MS_MIN <= server.timeout_ms <= _TIMEOUT_MS_MAX:
             issues.append(
                 policy_out_of_range(

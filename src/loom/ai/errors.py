@@ -73,6 +73,7 @@ class AgentErrorCode(StrEnum):
     MCP_AUTH_CONFLICT = "MCP_AUTH_CONFLICT"
     MCP_AUTH_STRATEGY_UNKNOWN = "MCP_AUTH_STRATEGY_UNKNOWN"
     MCP_AUTH_STRATEGY_INVALID = "MCP_AUTH_STRATEGY_INVALID"
+    MCP_TRANSPORT_INVALID = "MCP_TRANSPORT_INVALID"
     SKILLS_LIBRARY_INVALID = "SKILLS_LIBRARY_INVALID"
     SKILLS_LIBRARY_ESCAPES = "SKILLS_LIBRARY_ESCAPES"
     SKILLS_NAME_COLLISION = "SKILLS_NAME_COLLISION"
@@ -476,6 +477,25 @@ def mcp_auth_conflict(component: str) -> AgentCompilationIssue:
         ),
         component=component,
         field="auth",
+    )
+
+
+def mcp_transport_invalid(
+    component: str, reason: str, *, field: str = "transport"
+) -> AgentCompilationIssue:
+    """An MCP server declares fields that its ``transport`` does not accept, or an unknown one.
+
+    Args:
+        component: Configuration entry the issue points at.
+        reason: What about the transport is invalid.
+        field: Configuration key to blame; the transport itself unless a nested
+            key, such as one ``env`` name, is the culprit.
+    """
+    return AgentCompilationIssue(
+        code=AgentErrorCode.MCP_TRANSPORT_INVALID,
+        message=f"{component}: invalid mcp transport: {reason}",
+        component=component,
+        field=field,
     )
 
 

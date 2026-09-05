@@ -106,20 +106,33 @@ class CompiledRemoteAuth(LoomFrozenStruct, frozen=True, kw_only=True):
 class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     """MCP server grant, resolved against ``ai.mcp_servers``.
 
-    The artifact names a server; the plan carries the resolved handle — URL,
-    credential reference and deadline — so nothing downstream re-reads
-    configuration.  The URL itself resolves over the network in ``__aenter__``:
-    it is one of the declared exceptions to "strings die at compile"
-    (invariant 3), and so is the filter, which is applied against the server's
-    real tool list.
+    The artifact names a server; the plan carries the resolved handle — the
+    transport with its address or command, the credential reference and the
+    deadline — so nothing downstream re-reads configuration.  The URL or the
+    command resolves in ``__aenter__``, over the network or by spawning a
+    subprocess: it is one of the declared exceptions to "strings die at
+    compile" (invariant 3), and so is the filter, which is applied against the
+    server's real tool list.
+
+    Configuration already proved the fields coherent with the transport, so
+    ``url`` is set exactly under ``http`` and ``command`` exactly under
+    ``stdio``; the engine narrows by transport, never by field.
 
     Attributes:
         server: Configured server name, carried for the self-description.
-        url: Validated ``https://`` server URL, free of inline credentials.
+        transport: ``http`` for a remote endpoint, ``stdio`` for a subprocess
+            of this worker.
+        url: Validated ``https://`` server URL, free of inline credentials;
+            ``None`` under ``stdio``.
         headers_ref: Reference to deployment-resolved headers; never a secret.
         auth: Named authentication strategy, mutually exclusive with
             ``headers_ref``; ``None`` when the server needs no credential.
         timeout_ms: Deadline of a single call to this server.
+        command: Executable that speaks MCP over its stdin/stdout; ``None``
+            under ``http``.
+        args: Arguments passed to ``command``.
+        env: Environment handed to the subprocess as key-sorted pairs, so the
+            plan stays a hashable value whatever order the operator wrote.
         include: Tool names or glob patterns to expose; empty means all.
         exclude: Tool names or glob patterns to omit, applied after ``include``.
     """
@@ -127,10 +140,14 @@ class CompiledMcpCapability(LoomFrozenStruct, frozen=True, kw_only=True):
     kind: ClassVar[str] = "mcp"
 
     server: str
-    url: str
+    transport: str = "http"
+    url: str | None = None
     headers_ref: str | None = None
     auth: CompiledRemoteAuth | None = None
     timeout_ms: int = 20000
+    command: str | None = None
+    args: tuple[str, ...] = ()
+    env: tuple[tuple[str, str], ...] = ()
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
 
