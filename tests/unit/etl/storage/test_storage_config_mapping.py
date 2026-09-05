@@ -11,7 +11,6 @@ import pytest
 
 from loom.etl.runner.core import ETLRunner
 from loom.etl.storage import (
-    STORAGE_KEYED_COLLECTIONS,
     FileRoute,
     StorageConfig,
     TableRoute,
@@ -209,7 +208,3 @@ def test_non_mapping_shapes_pass_through_to_conversion(raw: dict[str, Any]) -> N
 def test_from_dict_invalid_shape_raises_validation_error() -> None:
     with pytest.raises(msgspec.ValidationError):
         ETLRunner.from_dict({"tables": {"t": {"path": {"uri": 123}}}})
-
-
-def test_storage_keyed_collections_lists_the_storage_paths() -> None:
-    assert STORAGE_KEYED_COLLECTIONS == ("storage.tables", "storage.files", "storage.profiles")

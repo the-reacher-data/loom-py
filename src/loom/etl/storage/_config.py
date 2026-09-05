@@ -24,17 +24,6 @@ from loom.etl.storage._locator import MappingLocator, PrefixLocator, TableLocati
 STORAGE_KEYED_COLLECTIONS: Final = ("storage.tables", "storage.files", "storage.profiles")
 """Dotted paths of the ``storage:`` collections merged by key across ``includes``."""
 
-_ROUTE_COLLECTIONS: Final = ("tables", "files")
-_TABLE_PROFILE_FIELDS: Final = frozenset(
-    {"storage_options", "writer", "target_file_size", "delta_config", "commit"}
-)
-_FILE_PROFILE_FIELDS: Final = frozenset({"storage_options"})
-_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
-    "tables": _TABLE_PROFILE_FIELDS,
-    "files": _FILE_PROFILE_FIELDS,
-}
-"""Profile fields each route collection takes through ``profile:``."""
-
 
 class StorageEngine(StrEnum):
     """Execution engine guardrail declared in the storage config."""
@@ -140,6 +129,13 @@ class FilePathConfig(LoomFrozenStruct, frozen=True):
         """Validate file path config."""
         if not self.uri.strip():
             raise ValueError(f"storage.{context}.uri must be a non-empty string")
+
+
+_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "tables": frozenset(TablePathConfig.__struct_fields__) - {"uri"},
+    "files": frozenset(FilePathConfig.__struct_fields__) - {"uri"},
+}
+"""Profile fields each route collection takes through ``profile:``."""
 
 
 class StorageDefaults(LoomFrozenStruct, frozen=True):
@@ -520,7 +516,7 @@ def normalise_storage_section(raw: Mapping[str, Any]) -> dict[str, Any]:
             profile carries ``uri`` or a field unknown to :class:`StorageProfile`.
     """
     normalised = dict(raw)
-    for collection in _ROUTE_COLLECTIONS:
+    for collection in _PROFILE_FIELDS:
         if collection in normalised:
             normalised[collection] = _normalise_routes(normalised[collection], collection)
     return _apply_profiles(normalised)
@@ -541,7 +537,10 @@ def _apply_profiles(normalised: dict[str, Any]) -> dict[str, Any]:
     defaults = result.get("defaults")
     if isinstance(defaults, Mapping) and isinstance(defaults.get("table_path"), Mapping):
         table_path = _path_with_profile(
-            defaults["table_path"], "storage.defaults.table_path", profiles, _TABLE_PROFILE_FIELDS
+            defaults["table_path"],
+            "storage.defaults.table_path",
+            profiles,
+            _PROFILE_FIELDS["tables"],
         )
         result["defaults"] = {**defaults, "table_path": table_path}
     return result
@@ -584,8 +583,6 @@ def _resolve_profile(name: Any, context: str, profiles: Mapping[str, Any]) -> di
     declared = profiles[name]
     if not isinstance(declared, Mapping):
         return {}
-    if "uri" in declared:
-        raise ValueError(f"storage.profiles[{name!r}] must not define 'uri'")
     unknown = sorted(set(declared) - set(StorageProfile.__struct_fields__))
     if unknown:
         raise ValueError(f"storage.profiles[{name!r}] has unknown field(s): {', '.join(unknown)}")

@@ -233,3 +233,73 @@ def test_keyed_path_with_unresolvable_interpolation_is_a_config_error(
     message = str(exc_info.value)
     assert "things.items" in message
     assert "root.yaml" in message
+
+
+# ---------------------------------------------------------------------------
+# Diamond includes — one file reached through two branches is one declaration
+# ---------------------------------------------------------------------------
+
+_DIAMOND = {
+    "common.yaml": _MAPPING_A,
+    "tables/orders.yaml": _includes("../common.yaml") + _MAPPING_B,
+    "tables/customers.yaml": _includes("../common.yaml")
+    + "things:\n  items:\n    gamma: {size: 3}\n",
+    "root.yaml": _includes("tables/*.yaml"),
+}
+
+
+def test_diamond_include_with_keyed_collections_is_one_declaration(tmp_path: Path) -> None:
+    _write_tree(tmp_path, _DIAMOND)
+
+    cfg = load_config(str(tmp_path / "root.yaml"), keyed=KEYED)
+
+    assert _as_dict(cfg) == {
+        "things": {"items": {"alpha": {"size": 1}, "beta": {"size": 2}, "gamma": {"size": 3}}}
+    }
+
+
+def test_diamond_include_parses_the_shared_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from loom.core.config import loader
+
+    _write_tree(tmp_path, _DIAMOND)
+    parsed: list[str] = []
+    original = loader._parse_local_file
+
+    def counting(path: str, omega_conf: Any) -> Any:
+        parsed.append(Path(path).name)
+        return original(path, omega_conf)
+
+    monkeypatch.setattr(loader, "_parse_local_file", counting)
+
+    load_config(str(tmp_path / "root.yaml"), keyed=KEYED)
+
+    assert parsed.count("common.yaml") == 1
+
+
+def test_diamond_include_without_keyed_is_unchanged(tmp_path: Path) -> None:
+    _write_tree(tmp_path, _DIAMOND)
+
+    cfg = load_config(str(tmp_path / "root.yaml"))
+
+    assert _as_dict(cfg) == {
+        "things": {"items": {"alpha": {"size": 1}, "beta": {"size": 2}, "gamma": {"size": 3}}}
+    }
+
+
+def test_diamond_include_still_reports_a_duplicate_from_another_file(tmp_path: Path) -> None:
+    _write_tree(tmp_path, {**_DIAMOND, "tables/extra.yaml": _MAPPING_A_DUP})
+
+    with pytest.raises(ConfigError, match=r"things\.items\['alpha'\]"):
+        load_config(str(tmp_path / "root.yaml"), keyed=KEYED)
+
+
+def test_circular_include_with_keyed_collections_still_raises(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        {"a.yaml": _includes("b.yaml") + _MAPPING_A, "b.yaml": _includes("a.yaml") + _MAPPING_B},
+    )
+
+    with pytest.raises(ConfigError, match="[Cc]ircular"):
+        load_config(str(tmp_path / "a.yaml"), keyed=KEYED)

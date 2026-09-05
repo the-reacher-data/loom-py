@@ -79,7 +79,12 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import msgspec
 
-from loom.core.config._includes import canonical_key, expand_include, is_cloud_uri, resolve_include
+from loom.core.config._includes import (
+    canonical_key,
+    expand_config_glob,
+    is_cloud_uri,
+    resolve_include,
+)
 from loom.core.config.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -170,7 +175,9 @@ def _parse_local_file(path: str, omega_conf: Any) -> Any:
         raise ConfigError(f"Failed to parse configuration file {path!r}: {exc}") from exc
 
 
-def _load_file(uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str]) -> _Layer:
+def _load_file(
+    uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str], cache: dict[str, _Layer]
+) -> _Layer:
     """Load a YAML file from any scheme, resolving its ``includes`` recursively.
 
     Args:
@@ -179,6 +186,8 @@ def _load_file(uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str]) 
         seen: Canonical keys of the files already in the call stack, used to
             detect circular references.
         keyed: Dotted paths of the collections merged by key.
+        cache: Layers already loaded in this call, by canonical key, so a
+            file reached through several include branches is parsed once.
 
     Returns:
         The file URI, its merged :class:`omegaconf.DictConfig` (includes
@@ -193,6 +202,8 @@ def _load_file(uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str]) 
     key = canonical_key(uri)
     if key in seen:
         raise ConfigError(f"Circular include detected: {uri!r} is already being loaded.")
+    if key in cache:
+        return cache[key]
 
     cfg = (
         _parse_cloud_file(uri, omega_conf)
@@ -200,19 +211,24 @@ def _load_file(uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str]) 
         else _parse_local_file(uri, omega_conf)
     )
     raw_includes = omega_conf.select(cfg, "includes", default=None)
-    if raw_includes is None:
-        return uri, cfg, _own_provenance(uri, cfg, keyed, omega_conf)
-
-    entries = list(omega_conf.to_container(raw_includes, resolve=True))
+    entries = (
+        [] if raw_includes is None else list(omega_conf.to_container(raw_includes, resolve=True))
+    )
     own = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
-    layers = _load_includes(key, entries, omega_conf, seen | {key}, keyed)
+    layers = _load_includes(key, entries, omega_conf, seen | {key}, keyed, cache)
     layers.append((uri, own, _own_provenance(uri, own, keyed, omega_conf)))
     provenance = _check_keyed(layers, keyed, omega_conf)
-    return uri, _merge_layers(layers, omega_conf), provenance
+    cache[key] = (uri, _merge_layers(layers, omega_conf), provenance)
+    return cache[key]
 
 
 def _load_includes(
-    declaring: str, entries: list[Any], omega_conf: Any, seen: set[str], keyed: Sequence[str]
+    declaring: str,
+    entries: list[Any],
+    omega_conf: Any,
+    seen: set[str],
+    keyed: Sequence[str],
+    cache: dict[str, _Layer],
 ) -> list[_Layer]:
     """Load every file designated by the ``includes`` entries of one file.
 
@@ -223,6 +239,7 @@ def _load_includes(
         seen: Canonical keys of the files in the call stack, including
             ``declaring``.
         keyed: Dotted paths of the collections merged by key.
+        cache: Layers already loaded in this call, by canonical key.
 
     Returns:
         One loaded layer per matched file, in include order and, within a
@@ -234,8 +251,8 @@ def _load_includes(
     layers: list[_Layer] = []
     for entry in entries:
         try:
-            for match in expand_include(resolve_include(declaring, str(entry))):
-                layers.append(_load_file(match, omega_conf, seen, keyed))
+            for match in expand_config_glob(resolve_include(declaring, str(entry))):
+                layers.append(_load_file(match, omega_conf, seen, keyed, cache))
         except ConfigError as exc:
             raise ConfigError(f"{exc} (included from {declaring!r})") from exc
     return layers
@@ -251,8 +268,7 @@ def _merge_layers(layers: Sequence[_Layer], omega_conf: Any) -> Any:
     Returns:
         The merged :class:`omegaconf.DictConfig`.
     """
-    configs = [cfg for _, cfg, _ in layers]
-    return omega_conf.merge(*configs) if len(configs) > 1 else configs[0]
+    return omega_conf.merge(*(cfg for _, cfg, _ in layers))
 
 
 def _own_provenance(uri: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -> Provenance:
@@ -351,6 +367,9 @@ def _select_keyed(uri: str, cfg: Any, path: str, omega_conf: Any) -> Any:
 def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
     """Reject a key of ``path`` declared by two files across ``layers``.
 
+    The same file reached through several include branches counts as one
+    declaration.
+
     Args:
         path: Dotted path of the keyed collection.
         layers: Layers whose provenance is merged.
@@ -364,7 +383,7 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
     declared: dict[str, str] = {}
     for _, _, provenance in layers:
         for key, declaring in provenance.get(path, {}).items():
-            if key in declared:
+            if declared.get(key, declaring) != declaring:
                 raise ConfigError(
                     f"{path}[{key!r}] is declared in {declared[key]!r} and in {declaring!r}"
                 )
@@ -465,7 +484,8 @@ def load_config(
     omega_conf = _ensure_omegaconf()
     _register_resolvers(resolvers, omega_conf)
 
-    layers = [_load_file(path, omega_conf, set(), keyed) for path in config_files]
+    cache: dict[str, _Layer] = {}
+    layers = [_load_file(path, omega_conf, set(), keyed, cache) for path in config_files]
     for path in keyed:
         _check_form(path, layers, omega_conf)
     return _merge_layers(layers, omega_conf)  # type: ignore[no-any-return]

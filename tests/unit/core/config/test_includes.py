@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from loom.core.config import ConfigError, expand_config_glob, load_config
-from loom.core.config._includes import canonical_key, expand_include, resolve_include
+from loom.core.config._includes import canonical_key, resolve_include
 
 _PARTS = {"parts/b.yaml": "b: 1\n", "parts/a.yaml": "a: 1\n", "parts/c.yaml": "c: 1\nb: 0\n"}
 
@@ -279,6 +279,25 @@ def test_canonical_key_normalises_cloud_path() -> None:
     assert canonical_key("s3://b/x/../a.yaml") == canonical_key("s3://b/a.yaml") == "s3://b/a.yaml"
 
 
+def test_canonical_key_equates_empty_netloc_and_netloc_forms() -> None:
+    assert (
+        canonical_key("memory:///cfg/x.yaml")
+        == canonical_key("memory://cfg/x.yaml")
+        == "memory://cfg/x.yaml"
+    )
+
+
+def test_cloud_cycle_through_glob_matched_file_is_detected_at_first_repeat(memfs: Any) -> None:
+    _pipe_tree(
+        memfs,
+        "cfg",
+        {"a.yaml": "includes:\n  - parts/*.yaml\n", "parts/b.yaml": "includes:\n  - ../a.yaml\n"},
+    )
+
+    with pytest.raises(ConfigError, match=r"Circular include detected: 'memory:/+cfg/a\.yaml'"):
+        load_config("memory://cfg/a.yaml")
+
+
 def test_canonical_key_resolves_local_path(tmp_path: Path) -> None:
     assert canonical_key(str(tmp_path / "x" / ".." / "a.yaml")) == str(
         (tmp_path / "a.yaml").resolve()
@@ -323,7 +342,7 @@ def test_include_entry_interpolation_resolves_before_glob(
 
 
 # ---------------------------------------------------------------------------
-# resolve_include / expand_include / expand_config_glob
+# resolve_include / expand_config_glob
 # ---------------------------------------------------------------------------
 
 
@@ -340,9 +359,9 @@ def test_resolve_include_joins_relative_entries(tmp_path: Path) -> None:
     )
 
 
-def test_expand_include_returns_plain_entry_untouched(tmp_path: Path) -> None:
-    assert expand_include("s3://b/a.yaml") == ["s3://b/a.yaml"]
-    assert expand_include(str(tmp_path / "missing.yaml")) == [str(tmp_path / "missing.yaml")]
+def test_expand_config_glob_returns_plain_entry_untouched(tmp_path: Path) -> None:
+    assert expand_config_glob("s3://b/a.yaml") == ["s3://b/a.yaml"]
+    assert expand_config_glob(str(tmp_path / "missing.yaml")) == [str(tmp_path / "missing.yaml")]
 
 
 def test_expand_config_glob_local_sorted(tmp_path: Path) -> None:
@@ -382,7 +401,7 @@ def test_cloud_glob_sorts_and_restores_protocol_on_bare_paths(
     fake = FakeFileSystem()
     monkeypatch.setattr("fsspec.core.url_to_fs", lambda uri, **kw: (fake, "cfg/parts/*"))
 
-    assert expand_include("s3://cfg/parts/*") == [
+    assert expand_config_glob("s3://cfg/parts/*") == [
         "fake://cfg/parts/a.yml",
         "fake://cfg/parts/b.yaml",
     ]
@@ -397,4 +416,4 @@ def test_cloud_glob_wraps_backend_errors_naming_uri(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("fsspec.core.url_to_fs", boom)
 
     with pytest.raises(ConfigError, match=r"s3://locked/\*\.yaml.*access denied"):
-        expand_include("s3://locked/*.yaml")
+        expand_config_glob("s3://locked/*.yaml")

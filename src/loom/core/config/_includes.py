@@ -51,45 +51,27 @@ def resolve_include(base: str, entry: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, joined, "", ""))
 
 
-def expand_include(uri: str) -> list[str]:
-    """Expand a resolved include entry into the files it designates.
+def expand_config_glob(pattern: str) -> list[str]:
+    """Expand a configuration file pattern on the local or a cloud filesystem.
 
     Args:
-        uri: Resolved local path or cloud URI, optionally containing glob
+        pattern: Resolved local path or cloud URI, optionally containing glob
             characters (``*``, ``?``, ``[``).
 
     Returns:
-        ``[uri]`` for a plain entry; for a glob, the matching regular
+        ``[pattern]`` for a plain entry; for a glob, the matching regular
         ``.yaml``/``.yml`` files sorted lexicographically by resolved path.
 
     Raises:
         ConfigError: When a glob matches no configuration file or the cloud
             backend fails to list it.
     """
-    if not glob.has_magic(uri):
-        return [uri]
-    matches = _expand_cloud_glob(uri) if is_cloud_uri(uri) else _expand_local_glob(uri)
+    if not glob.has_magic(pattern):
+        return [pattern]
+    matches = _expand_cloud_glob(pattern) if is_cloud_uri(pattern) else _expand_local_glob(pattern)
     if not matches:
-        raise ConfigError(f"Include {uri!r} matches no configuration file")
+        raise ConfigError(f"Include {pattern!r} matches no configuration file")
     return sorted(matches)
-
-
-def expand_config_glob(pattern: str) -> list[str]:
-    """Expand a configuration file pattern on the local or a cloud filesystem.
-
-    Args:
-        pattern: Local path or cloud URI, optionally containing glob
-            characters.
-
-    Returns:
-        Matching regular ``.yaml``/``.yml`` files sorted lexicographically;
-        a pattern without glob characters is returned as a single-item list.
-
-    Raises:
-        ConfigError: When a glob matches no configuration file or the cloud
-            backend fails to list it.
-    """
-    return expand_include(pattern)
 
 
 def canonical_key(uri: str) -> str:
@@ -99,13 +81,19 @@ def canonical_key(uri: str) -> str:
         uri: Local path or cloud URI.
 
     Returns:
-        ``scheme://netloc/normalised-path`` for cloud URIs; the resolved
-        absolute path for local files.
+        ``scheme://netloc/normalised-path`` for cloud URIs, with an empty
+        netloc taken from the first path segment so that ``scheme:///a/b``
+        and ``scheme://a/b`` agree; the resolved absolute path for local
+        files.
     """
     if not is_cloud_uri(uri):
         return str(Path(uri).resolve())
     parts = urlsplit(uri)
-    return urlunsplit((parts.scheme, parts.netloc, posixpath.normpath(parts.path), "", ""))
+    netloc, path = parts.netloc, parts.path
+    if not netloc and path.startswith("/"):
+        netloc, _, rest = path.lstrip("/").partition("/")
+        path = f"/{rest}"
+    return urlunsplit((parts.scheme, netloc, posixpath.normpath(path), "", ""))
 
 
 def _is_config_file(path: str) -> bool:
