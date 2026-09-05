@@ -449,6 +449,54 @@ result = bootstrap_worker(
 `interfaces=` and `use_cases=` can be combined. Both are additive on top of any
 discovered compilables — they never disable discovery.
 
+### Secrets in YAML (`resolvers=`)
+
+`create_app` and `bootstrap_worker` register loom's built-in AWS resolvers,
+`secrets` (Secrets Manager) and `ssm` (SSM Parameter Store), by default. A
+worker booted through the factory reads a secret with no code beyond the
+factory call:
+
+```yaml
+# config/worker.yaml
+celery:
+  broker_url: ${secrets:/prod/worker/broker-url}
+  result_backend: ${ssm:/prod/worker/result-backend}
+```
+
+```python
+# src/app/worker_main.py
+from loom.celery.auto import create_app
+
+celery_app = create_app("config/worker.yaml")
+```
+
+The built-in resolvers use boto3's default region and credential chain, and
+create their client only when a placeholder resolves: a YAML with no
+`${secrets:...}` or `${ssm:...}` never touches AWS and boots without boto3.
+When a placeholder does resolve and boto3 is missing, the error names the extra
+to install, `loom-kernel[config-ssm]`.
+
+`resolvers=` adds your own prefixes or overrides a built-in by name. Any object
+with a `name` and a `resolve(key) -> object` works:
+
+```python
+from loom.celery.auto import create_app
+
+class VaultResolver:
+    name = "vault"
+
+    def resolve(self, key: str) -> str:
+        return read_vault_secret(key)
+
+celery_app = create_app("config/worker.yaml", resolvers=[VaultResolver()])
+```
+
+A resolver you pass with the same name as a built-in wins; a built-in default
+never replaces a resolver already registered earlier in the process, so
+calling the factory more than once is safe. `load_config` registers no
+defaults, and resolvers passed to it explicitly replace an earlier registration
+of the same name.
+
 ---
 
 ## Callbacks and ApplicationInvoker — how it works
