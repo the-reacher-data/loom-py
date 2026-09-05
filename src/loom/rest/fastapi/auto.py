@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +19,13 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from loom.core.bootstrap import KernelRuntime, create_kernel
-from loom.core.config import ConfigContext, ConfigKey
+from loom.core.config import (
+    ConfigContext,
+    ConfigKey,
+    ConfigResolver,
+    default_resolvers,
+    merge_resolvers,
+)
 from loom.core.config.errors import ConfigError
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -1230,6 +1236,7 @@ def create_app(
     code_path: str | None = None,
     metrics_registry: CollectorRegistry | None = None,
     authenticator: Authenticator | None = None,
+    resolvers: Sequence[ConfigResolver] = (),
 ) -> FastAPI:
     """Create a FastAPI application from one or more YAML config files.
 
@@ -1237,6 +1244,9 @@ def create_app(
     Each file may also declare a top-level ``includes`` list to pull in
     additional base files before its own values (resolved by
     :meth:`loom.core.config.ConfigContext.from_yaml`).
+
+    ``${secrets:...}`` and ``${ssm:...}`` placeholders resolve through loom's
+    built-in AWS resolvers unless *resolvers* supplies one with the same name.
 
     ``TraceIdMiddleware`` is mounted automatically. Structured logging and
     OTEL come from the top-level ``observability:`` section. Prometheus
@@ -1269,6 +1279,9 @@ def create_app(
             process.
         authenticator: Custom authentication mechanism.  Mutually exclusive
             with the ``app.rest.auth.jwt`` config section.
+        resolvers: Resolvers for ``${name:key}`` placeholders, registered
+            before the built-in ``secrets`` and ``ssm`` defaults.  A resolver
+            named like a default replaces it.
 
     Returns:
         Configured :class:`fastapi.FastAPI` application, ready to serve.
@@ -1300,7 +1313,9 @@ def create_app(
     if not config_paths:
         raise ConfigError("create_app requires at least one config file path.")
 
-    ctx = ConfigContext.from_yaml(*config_paths)
+    ctx = ConfigContext.from_yaml(
+        *config_paths, resolvers=merge_resolvers(resolvers, default_resolvers())
+    )
     app_cfg = ctx.section(ConfigKey.APP, _AppConfig)
     observability_cfg = _load_observability_config(ctx)
     observability_runtime = ObservabilityRuntime.from_config(observability_cfg)

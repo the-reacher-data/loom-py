@@ -393,9 +393,7 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
 def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
     """Register the given resolvers with OmegaConf before parsing.
 
-    Each resolver replaces any earlier registration of the same name, so
-    repeated :func:`load_config` calls are safe and the resolver passed at
-    the call site is the one used.
+    Each resolver replaces any earlier registration of the same name.
 
     Args:
         resolvers: Sequence of :class:`~loom.core.config.resolver.ConfigResolver`

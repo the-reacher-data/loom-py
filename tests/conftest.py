@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import pytest
+from omegaconf import OmegaConf
 
 from loom.core.engine.plan import ExecutionPlan
 from loom.testing.golden import GoldenHarness, _serialize_result, serialize_plan
@@ -15,6 +17,21 @@ from loom.testing.golden import GoldenHarness, _serialize_result, serialize_plan
 _GOLDEN_DIR = Path(__file__).parent / "golden"
 _PLANS_DIR = _GOLDEN_DIR / "plans"
 _OUTPUTS_DIR = _GOLDEN_DIR / "outputs"
+_BUILTIN_RESOLVER_NAMES = ("secrets", "ssm")
+
+
+def _clear_builtin_resolvers() -> None:
+    for name in _BUILTIN_RESOLVER_NAMES:
+        if OmegaConf.has_resolver(name):
+            OmegaConf.clear_resolver(name)
+
+
+@pytest.fixture
+def clear_builtin_resolvers() -> Iterator[None]:
+    """Unregister ``secrets`` and ``ssm`` before and after the test."""
+    _clear_builtin_resolvers()
+    yield
+    _clear_builtin_resolvers()
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

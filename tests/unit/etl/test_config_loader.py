@@ -8,10 +8,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from loom.core.config import ConfigContext
 from loom.core.config.errors import ConfigError
 from loom.etl.lineage._config import ETLObservabilityConfig
 from loom.etl.runner.config_loader import _load_yaml
-from loom.etl.storage._config import StorageConfig
+from loom.etl.storage._config import STORAGE_KEYED_COLLECTIONS, StorageConfig
 
 
 def test_load_yaml_reads_storage_and_observability_sections(tmp_path: Path) -> None:
@@ -247,3 +248,20 @@ def test_load_yaml_invalid_shape_raises_config_error(tmp_path: Path, storage_yam
 
     with pytest.raises(ConfigError, match="StorageConfig"):
         _load_yaml(str(tmp_path / "loom.yaml"))
+
+
+def test_load_yaml_forwards_resolvers_and_keeps_keyed_collections(tmp_path: Path) -> None:
+    path = tmp_path / "loom.yaml"
+    path.write_text("storage:\n  defaults:\n    table_path:\n      uri: /lake\n", encoding="utf-8")
+    resolver = MagicMock()
+    resolver.name = "stub"
+
+    with patch(
+        "loom.etl.runner.config_loader.ConfigContext.from_yaml",
+        wraps=ConfigContext.from_yaml,
+    ) as from_yaml:
+        _load_yaml(str(path), resolvers=[resolver])
+
+    kwargs = from_yaml.call_args.kwargs
+    assert kwargs["keyed"] == STORAGE_KEYED_COLLECTIONS
+    assert kwargs["resolvers"][0] is resolver
