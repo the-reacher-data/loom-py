@@ -11,6 +11,7 @@ from loom.celery.bootstrap import bootstrap_worker
 from loom.core.di.container import LoomContainer
 
 if TYPE_CHECKING:
+    from loom.core.config import ConfigResolver
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
 
@@ -21,6 +22,7 @@ def create_app(
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
+    resolvers: Sequence[ConfigResolver] = (),
 ) -> Celery:
     """Create a Celery app with all Loom job tasks registered.
 
@@ -31,6 +33,9 @@ def create_app(
         callbacks: Optional callback classes for success/failure hooks.
         modules: Optional DI registration modules.
         metrics: Optional metrics adapter.
+        resolvers: Resolvers for ``${name:key}`` placeholders, registered
+            before the built-in ``secrets`` and ``ssm`` defaults.  A resolver
+            named like a default replaces it.
 
     Returns:
         Configured Celery application.
@@ -41,5 +46,6 @@ def create_app(
         callbacks=callbacks,
         modules=modules,
         metrics=metrics,
+        resolvers=resolvers,
     )
     return result.celery_app

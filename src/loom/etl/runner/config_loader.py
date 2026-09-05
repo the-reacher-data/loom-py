@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import msgspec
 
-from loom.core.config import ConfigContext, ConfigError, ConfigKey
+from loom.core.config import (
+    ConfigContext,
+    ConfigError,
+    ConfigKey,
+    ConfigResolver,
+    with_default_resolvers,
+)
 from loom.etl.lineage._config import ETLObservabilityConfig
 from loom.etl.storage._config import (
     STORAGE_KEYED_COLLECTIONS,
@@ -15,7 +22,9 @@ from loom.etl.storage._config import (
 )
 
 
-def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
+def _load_yaml(
+    path: str, *, resolvers: Sequence[ConfigResolver] = ()
+) -> tuple[StorageConfig, ETLObservabilityConfig]:
     """Load and parse an ETL config YAML.
 
     Accepts local filesystem paths and cloud storage URIs
@@ -29,6 +38,9 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
     Args:
         path: Local path or cloud URI pointing to a YAML file with a
             top-level ``storage:`` key and an optional ``observability:`` key.
+        resolvers: Resolvers for ``${name:key}`` placeholders, registered
+            before the built-in ``secrets`` and ``ssm`` defaults.  A resolver
+            named like a default replaces it.
 
     Returns:
         Tuple of validated :data:`~loom.etl.StorageConfig` and
@@ -38,12 +50,16 @@ def _load_yaml(path: str) -> tuple[StorageConfig, ETLObservabilityConfig]:
         loom.core.config.ConfigError: When the file cannot be read or parsed,
             the ``storage:`` key is absent, a keyed collection holds a
             duplicate key or mixes list and mapping forms, or the config
-            shape is invalid.
+            shape is invalid, including a profile with an unknown field.
         ValueError: When a mapping entry carries a ``name`` different from
             its key, a ``path.profile`` is not declared in ``storage.profiles``,
-            or a profile carries ``uri`` or an unknown field.
+            or a profile carries ``uri``.
     """
-    ctx = ConfigContext.from_yaml(path, keyed=STORAGE_KEYED_COLLECTIONS)
+    ctx = ConfigContext.from_yaml(
+        path,
+        resolvers=with_default_resolvers(resolvers),
+        keyed=STORAGE_KEYED_COLLECTIONS,
+    )
     raw = ctx.section(ConfigKey.STORAGE, dict)
     storage_config = _convert_storage(normalise_storage_section(raw))
     obs_config = ctx.section_or_default(

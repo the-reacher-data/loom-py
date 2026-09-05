@@ -393,6 +393,57 @@ It is never inferred: with the default backend and no discovered models the
 application starts with a WARNING that names `persistence.backend: none`, and
 still opens a connection — so the driver and the database have to be there.
 
+### Secrets in YAML (`resolvers=`)
+
+`create_app` registers loom's built-in AWS resolvers, `secrets` (Secrets
+Manager) and `ssm` (SSM Parameter Store), by default. An app booted through the
+factory reads a secret with no code beyond the factory call:
+
+```yaml
+# config/api.yaml
+database:
+  url: ${secrets:/prod/store/database-url}
+
+sql:
+  connections:
+    analytics:
+      backend: clickhouse
+      url: ${ssm:/prod/store/analytics-url}
+```
+
+```python
+from loom.rest.fastapi.auto import create_app
+
+app = create_app("config/api.yaml")
+```
+
+The built-in resolvers use boto3's default region and credential chain, and
+create their client only when a placeholder resolves: a YAML with no
+`${secrets:...}` or `${ssm:...}` never touches AWS and boots without boto3.
+When a placeholder does resolve and boto3 is missing, the error names the extra
+to install, `loom-kernel[config-ssm]`.
+
+`resolvers=` adds your own prefixes or overrides a built-in by name. Any object
+with a `name` and a `resolve(key) -> object` works:
+
+```python
+from loom.rest.fastapi.auto import create_app
+
+class VaultResolver:
+    name = "vault"
+
+    def resolve(self, key: str) -> str:
+        return read_vault_secret(key)
+
+app = create_app("config/api.yaml", resolvers=[VaultResolver()])
+```
+
+A resolver you pass with the same name as a built-in wins; a built-in default
+never replaces a resolver already registered earlier in the process, so
+calling the factory more than once is safe. `load_config` registers no
+defaults, and resolvers passed to it explicitly replace an earlier registration
+of the same name.
+
 ---
 
 ## Rules + Computes (advanced)

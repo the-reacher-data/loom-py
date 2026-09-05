@@ -20,7 +20,12 @@ from loom.core.config.errors import ConfigError
 from loom.core.config.keys import ConfigKey
 from loom.core.config.loader import load_config, section
 from loom.core.config.observability import OtelConfig
-from loom.core.config.resolver import ConfigResolver
+from loom.core.config.resolver import (
+    ConfigResolver,
+    default_resolvers,
+    merge_resolvers,
+    with_default_resolvers,
+)
 from loom.core.config.secrets import SecretsManagerResolver
 from loom.core.config.ssm import SsmResolver
 
@@ -35,7 +40,10 @@ __all__ = [
     "SecretsManagerResolver",
     "SsmResolver",
     "StructBinder",
+    "default_resolvers",
     "expand_config_glob",
     "load_config",
+    "merge_resolvers",
     "section",
+    "with_default_resolvers",
 ]

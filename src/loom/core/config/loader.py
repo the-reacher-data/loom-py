@@ -53,6 +53,16 @@ Function-level composition is still available::
 
     cfg = load_config("config/base.yaml", "config/production.yaml")
 
+Typed sections
+--------------
+:func:`section` binds a subtree to a user-defined type::
+
+    class DatabaseConfig(msgspec.Struct, kw_only=True):
+        url: str
+        pool_size: int = 5
+
+    db = section(cfg, "database", DatabaseConfig)
+
 Keyed collections
 -----------------
 ``keyed=`` names dotted paths whose mapping form merges by key across the
@@ -63,25 +73,20 @@ same composition, or a list form mixed with a mapping form, raises
 reported across them::
 
     cfg = load_config("config/app.yaml", keyed=("storage.tables",))
-
-    class DatabaseConfig(msgspec.Struct, kw_only=True):
-        url: str
-        pool_size: int = 5
-
-    db = section(cfg, "database", DatabaseConfig)
 """
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 import msgspec
 
 from loom.core.config._includes import (
     canonical_key,
-    expand_config_glob,
+    expand_include,
+    failure_detail,
     is_cloud_uri,
     resolve_include,
 )
@@ -97,7 +102,29 @@ T = TypeVar("T")
 Provenance = dict[str, dict[str, str]]
 """Keyed path -> key -> file declaring that key."""
 
-_Layer = tuple[str, Any, Provenance]
+
+class _Layer(NamedTuple):
+    """One loaded file: its label, config and the provenance of its keyed entries."""
+
+    label: str
+    cfg: Any
+    provenance: Provenance
+
+
+@dataclass(frozen=True)
+class _LoadState:
+    """Invariants shared by every file loaded in one :func:`load_config` call.
+
+    Attributes:
+        omega_conf: OmegaConf module.
+        keyed: Dotted paths of the collections merged by key.
+        cache: Layers already loaded, by canonical key, so a file reached
+            through several include branches is parsed once.
+    """
+
+    omega_conf: Any
+    keyed: Sequence[str]
+    cache: dict[str, _Layer]
 
 
 def _ensure_omegaconf() -> Any:
@@ -113,11 +140,12 @@ def _ensure_omegaconf() -> Any:
         ) from exc
 
 
-def _fetch_cloud_content(uri: str) -> str:
+def _fetch_cloud_content(uri: str, label: str) -> str:
     """Fetch raw YAML text from a cloud URI via fsspec.
 
     Args:
         uri: Cloud storage URI (``s3://``, ``gs://``, ``abfss://``, …).
+        label: Text naming the file in error messages.
 
     Returns:
         Raw YAML string.
@@ -131,14 +159,17 @@ def _fetch_cloud_content(uri: str) -> str:
         with fsspec.open(uri, mode="r", encoding="utf-8") as fh:
             return str(fh.read())  # pyright: ignore[reportAttributeAccessIssue]
     except Exception as exc:
-        raise ConfigError(f"Failed to fetch config from {uri!r}: {exc}") from exc
+        raise ConfigError(
+            f"Failed to fetch config from {label!r}: {failure_detail(exc, label)}"
+        ) from exc
 
 
-def _parse_cloud_file(uri: str, omega_conf: Any) -> Any:
+def _parse_cloud_file(uri: str, label: str, omega_conf: Any) -> Any:
     """Fetch and parse a YAML file from a cloud URI.
 
     Args:
         uri: Cloud storage URI.
+        label: Text naming the file in error messages.
         omega_conf: OmegaConf module.
 
     Returns:
@@ -147,18 +178,19 @@ def _parse_cloud_file(uri: str, omega_conf: Any) -> Any:
     Raises:
         ConfigError: On fetch failure or parse error.
     """
-    content = _fetch_cloud_content(uri)
+    content = _fetch_cloud_content(uri, label)
     try:
         return omega_conf.create(content)
     except Exception as exc:
-        raise ConfigError(f"Failed to parse config from {uri!r}: {exc}") from exc
+        raise ConfigError(f"Failed to parse config from {label!r}: {exc}") from exc
 
 
-def _parse_local_file(path: str, omega_conf: Any) -> Any:
+def _parse_local_file(path: str, label: str, omega_conf: Any) -> Any:
     """Parse a YAML file from the local filesystem.
 
     Args:
         path: Absolute or relative local path to the YAML file.
+        label: Text naming the file in error messages.
         omega_conf: OmegaConf module.
 
     Returns:
@@ -170,27 +202,26 @@ def _parse_local_file(path: str, omega_conf: Any) -> Any:
     try:
         return omega_conf.load(path)
     except FileNotFoundError as exc:
-        raise ConfigError(f"Configuration file not found: {path!r}") from exc
+        raise ConfigError(f"Configuration file not found: {label!r}") from exc
     except Exception as exc:
-        raise ConfigError(f"Failed to parse configuration file {path!r}: {exc}") from exc
+        raise ConfigError(
+            f"Failed to parse configuration file {label!r}: {failure_detail(exc, label)}"
+        ) from exc
 
 
-def _load_file(
-    uri: str, omega_conf: Any, seen: set[str], keyed: Sequence[str], cache: dict[str, _Layer]
-) -> _Layer:
+def _load_file(uri: str, label: str, seen: set[str], state: _LoadState) -> _Layer:
     """Load a YAML file from any scheme, resolving its ``includes`` recursively.
 
     Args:
         uri: Local path or cloud URI of the YAML file.
-        omega_conf: OmegaConf module.
+        label: Text naming the file in error messages: the path as passed to
+            :func:`load_config`, or the include entry as written in YAML.
         seen: Canonical keys of the files already in the call stack, used to
             detect circular references.
-        keyed: Dotted paths of the collections merged by key.
-        cache: Layers already loaded in this call, by canonical key, so a
-            file reached through several include branches is parsed once.
+        state: Invariants of the enclosing :func:`load_config` call.
 
     Returns:
-        The file URI, its merged :class:`omegaconf.DictConfig` (includes
+        The file label, its merged :class:`omegaconf.DictConfig` (includes
         merged in, ``includes`` key stripped) and the provenance of every
         keyed entry reachable from it.
 
@@ -201,61 +232,100 @@ def _load_file(
     """
     key = canonical_key(uri)
     if key in seen:
-        raise ConfigError(f"Circular include detected: {uri!r} is already being loaded.")
-    if key in cache:
-        return cache[key]
+        raise ConfigError(f"Circular include detected: {label!r} is already being loaded.")
+    if key in state.cache:
+        return state.cache[key]
 
+    omega_conf = state.omega_conf
     cfg = (
-        _parse_cloud_file(uri, omega_conf)
+        _parse_cloud_file(uri, label, omega_conf)
         if is_cloud_uri(uri)
-        else _parse_local_file(uri, omega_conf)
+        else _parse_local_file(uri, label, omega_conf)
     )
-    raw_includes = omega_conf.select(cfg, "includes", default=None)
-    entries = (
-        [] if raw_includes is None else list(omega_conf.to_container(raw_includes, resolve=True))
-    )
+    entries = _include_entries(omega_conf.select(cfg, "includes", default=None), omega_conf)
     own = omega_conf.masked_copy(cfg, [k for k in cfg if k != "includes"])
-    layers = _load_includes(key, entries, omega_conf, seen | {key}, keyed, cache)
-    layers.append((uri, own, _own_provenance(uri, own, keyed, omega_conf)))
-    provenance = _check_keyed(layers, keyed, omega_conf)
-    cache[key] = (uri, _merge_layers(layers, omega_conf), provenance)
-    return cache[key]
+    layers = _load_includes(key, label, entries, seen | {key}, state)
+    layers.append(_Layer(label, own, _own_provenance(label, own, state.keyed, omega_conf)))
+    provenance = _check_keyed(layers, state.keyed, omega_conf)
+    state.cache[key] = _Layer(label, _merge_layers(layers, omega_conf), provenance)
+    return state.cache[key]
+
+
+def _include_entries(raw_includes: Any, omega_conf: Any) -> list[tuple[str, str]]:
+    """Pair every ``includes`` entry as written with its resolved text.
+
+    Args:
+        raw_includes: The ``includes`` node of a parsed file, or ``None``.
+        omega_conf: OmegaConf module.
+
+    Returns:
+        ``(literal, resolved)`` per entry, in declaration order.  The literal
+        keeps interpolations such as ``${secrets:/x}`` unexpanded so error
+        messages can name the entry without echoing resolved values.
+    """
+    if raw_includes is None:
+        return []
+    literals = omega_conf.to_container(raw_includes, resolve=False)
+    return [(str(literal), str(raw_includes[index])) for index, literal in enumerate(literals)]
 
 
 def _load_includes(
-    declaring: str,
-    entries: list[Any],
-    omega_conf: Any,
+    base: str,
+    label: str,
+    entries: Sequence[tuple[str, str]],
     seen: set[str],
-    keyed: Sequence[str],
-    cache: dict[str, _Layer],
+    state: _LoadState,
 ) -> list[_Layer]:
     """Load every file designated by the ``includes`` entries of one file.
 
     Args:
-        declaring: Canonical key of the file declaring the entries.
-        entries: Include entries with interpolations already resolved.
-        omega_conf: OmegaConf module.
-        seen: Canonical keys of the files in the call stack, including
-            ``declaring``.
-        keyed: Dotted paths of the collections merged by key.
-        cache: Layers already loaded in this call, by canonical key.
+        base: Canonical key of the file declaring the entries.
+        label: Label of the file declaring the entries.
+        entries: ``(literal, resolved)`` include entries.
+        seen: Canonical keys of the files in the call stack, including the
+            declaring file.
+        state: Invariants of the enclosing :func:`load_config` call.
 
     Returns:
         One loaded layer per matched file, in include order and, within a
         glob, in lexicographic order of resolved path.
 
     Raises:
-        ConfigError: Any loading error, suffixed with the declaring file.
+        ConfigError: Any loading error, naming the entry per :func:`_labels`
+            and suffixed with the declaring file's label.
     """
     layers: list[_Layer] = []
-    for entry in entries:
+    for literal, resolved in entries:
+        pattern = resolve_include(base, resolved)
         try:
-            for match in expand_config_glob(resolve_include(declaring, str(entry))):
-                layers.append(_load_file(match, omega_conf, seen, keyed, cache))
+            for match, match_label in _labels(literal, pattern):
+                layers.append(_load_file(match, match_label, seen, state))
         except ConfigError as exc:
-            raise ConfigError(f"{exc} (included from {declaring!r})") from exc
+            raise ConfigError(f"{exc} (included from {label!r})") from exc
     return layers
+
+
+def _labels(literal: str, pattern: str) -> list[tuple[str, str]]:
+    """Expand one include entry and pick the label of each matched file.
+
+    An entry holding an interpolation (``${``) is named by its literal text
+    everywhere, so a resolved secret never reaches an error message.  A
+    plain entry is named by its resolved path, and each glob match by its
+    own path.
+
+    Args:
+        literal: Include entry as written in YAML.
+        pattern: The entry resolved and joined to the declaring file.
+
+    Returns:
+        ``(matched path, label)`` per matched file.
+
+    Raises:
+        ConfigError: When the entry matches no file or cannot be listed.
+    """
+    if "${" in literal:
+        return [(match, literal) for match in expand_include(pattern, literal)]
+    return [(match, match) for match in expand_include(pattern, pattern)]
 
 
 def _merge_layers(layers: Sequence[_Layer], omega_conf: Any) -> Any:
@@ -268,14 +338,14 @@ def _merge_layers(layers: Sequence[_Layer], omega_conf: Any) -> Any:
     Returns:
         The merged :class:`omegaconf.DictConfig`.
     """
-    return omega_conf.merge(*(cfg for _, cfg, _ in layers))
+    return omega_conf.merge(*(layer.cfg for layer in layers))
 
 
-def _own_provenance(uri: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -> Provenance:
-    """Record ``uri`` as the declaring file of every keyed entry ``cfg`` holds.
+def _own_provenance(label: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -> Provenance:
+    """Record ``label`` as the declaring file of every keyed entry ``cfg`` holds.
 
     Args:
-        uri: File whose own keys are recorded.
+        label: Label of the file whose own keys are recorded.
         cfg: Config of that file without its includes.
         keyed: Dotted paths of the collections merged by key.
         omega_conf: OmegaConf module.
@@ -285,9 +355,9 @@ def _own_provenance(uri: str, cfg: Any, keyed: Sequence[str], omega_conf: Any) -
     """
     provenance: Provenance = {}
     for path in keyed:
-        node = _select_keyed(uri, cfg, path, omega_conf)
+        node = _select_keyed(label, cfg, path, omega_conf)
         if omega_conf.is_dict(node):
-            provenance[path] = dict.fromkeys((str(k) for k in node), uri)
+            provenance[path] = dict.fromkeys((str(k) for k in node), label)
     return provenance
 
 
@@ -326,12 +396,12 @@ def _check_form(path: str, layers: Sequence[_Layer], omega_conf: Any) -> None:
     """
     list_file: str | None = None
     mapping_file: str | None = None
-    for uri, cfg, _ in layers:
-        node = _select_keyed(uri, cfg, path, omega_conf)
+    for layer in layers:
+        node = _select_keyed(layer.label, layer.cfg, path, omega_conf)
         if list_file is None and omega_conf.is_list(node):
-            list_file = uri
+            list_file = layer.label
         if mapping_file is None and omega_conf.is_dict(node):
-            mapping_file = uri
+            mapping_file = layer.label
     if list_file is None or mapping_file is None:
         return
     raise ConfigError(
@@ -340,11 +410,11 @@ def _check_form(path: str, layers: Sequence[_Layer], omega_conf: Any) -> None:
     )
 
 
-def _select_keyed(uri: str, cfg: Any, path: str, omega_conf: Any) -> Any:
+def _select_keyed(label: str, cfg: Any, path: str, omega_conf: Any) -> Any:
     """Select the node at keyed ``path`` in ``cfg``, or ``None`` when absent.
 
     Args:
-        uri: File ``cfg`` was loaded from.
+        label: Label of the file ``cfg`` was loaded from.
         cfg: Config to inspect.
         path: Dotted path of the keyed collection.
         omega_conf: OmegaConf module.
@@ -361,7 +431,7 @@ def _select_keyed(uri: str, cfg: Any, path: str, omega_conf: Any) -> Any:
     try:
         return omega_conf.select(cfg, path, default=None)
     except OmegaConfBaseException as exc:
-        raise ConfigError(f"Cannot read keyed collection {path!r} in {uri!r}: {exc}") from exc
+        raise ConfigError(f"Cannot read keyed collection {path!r} in {label!r}: {exc}") from exc
 
 
 def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
@@ -381,8 +451,8 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
         ConfigError: Naming the key and both declaring files.
     """
     declared: dict[str, str] = {}
-    for _, _, provenance in layers:
-        for key, declaring in provenance.get(path, {}).items():
+    for layer in layers:
+        for key, declaring in layer.provenance.get(path, {}).items():
             if declared.get(key, declaring) != declaring:
                 raise ConfigError(
                     f"{path}[{key!r}] is declared in {declared[key]!r} and in {declaring!r}"
@@ -392,11 +462,9 @@ def _check_duplicates(path: str, layers: Sequence[_Layer]) -> dict[str, str]:
 
 
 def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
-    """Register custom resolvers with OmegaConf before parsing.
+    """Register the given resolvers with OmegaConf before parsing.
 
-    Registration is idempotent: a resolver already registered under the same
-    name is silently skipped, so multiple :func:`load_config` calls with the
-    same resolvers are safe.
+    Each resolver replaces any earlier registration of the same name.
 
     Args:
         resolvers: Sequence of :class:`~loom.core.config.resolver.ConfigResolver`
@@ -404,8 +472,9 @@ def _register_resolvers(resolvers: Sequence[Any], omega_conf: Any) -> None:
         omega_conf: OmegaConf module.
     """
     for resolver in resolvers:
-        with contextlib.suppress(Exception):
-            omega_conf.register_new_resolver(resolver.name, resolver.resolve, use_cache=True)
+        omega_conf.register_new_resolver(
+            resolver.name, resolver.resolve, replace=True, use_cache=True
+        )
 
 
 def load_config(
@@ -484,8 +553,8 @@ def load_config(
     omega_conf = _ensure_omegaconf()
     _register_resolvers(resolvers, omega_conf)
 
-    cache: dict[str, _Layer] = {}
-    layers = [_load_file(path, omega_conf, set(), keyed, cache) for path in config_files]
+    state = _LoadState(omega_conf=omega_conf, keyed=keyed, cache={})
+    layers = [_load_file(path, path, set(), state) for path in config_files]
     for path in keyed:
         _check_form(path, layers, omega_conf)
     return _merge_layers(layers, omega_conf)  # type: ignore[no-any-return]

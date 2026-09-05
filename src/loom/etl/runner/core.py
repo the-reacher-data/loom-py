@@ -12,6 +12,7 @@ import msgspec
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
+from loom.core.config import ConfigResolver
 from loom.core.observability.protocol import LifecycleObserver
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.runner import flush_runner
@@ -110,6 +111,7 @@ class ETLRunner:
         cls,
         path: str,
         *,
+        resolvers: Sequence[ConfigResolver] = (),
         spark: SparkSession | None = None,
         dispatcher: ParallelDispatcher | None = None,
         extra_observers: Sequence[LifecycleObserver] | None = None,
@@ -122,11 +124,14 @@ class ETLRunner:
         duplicate keys reported as an error.
 
         Args:
+            resolvers: Resolvers for ``${name:key}`` placeholders, registered
+                before the built-in ``secrets`` and ``ssm`` defaults.  A
+                resolver named like a default replaces it.
             extra_observers: Optional additional :class:`LifecycleObserver`
                 instances forwarded to :meth:`from_config`.
         """
         _log.debug("load yaml path=%s", path)
-        storage_config, obs_config = _load_yaml(path)
+        storage_config, obs_config = _load_yaml(path, resolvers=resolvers)
         storage_config.validate()
         return cls.from_config(
             storage_config,
@@ -171,9 +176,9 @@ class ETLRunner:
         Raises:
             ValueError: When a mapping entry carries a ``name`` different from
                 its key, a ``path.profile`` is not declared in
-                ``storage.profiles``, or a profile carries ``uri`` or an
-                unknown field.
-            msgspec.ValidationError: When the storage shape is invalid.
+                ``storage.profiles``, or a profile carries ``uri``.
+            msgspec.ValidationError: When the storage shape is invalid,
+                including a profile with an unknown field.
         """
         storage_config = convert_storage_config(normalise_storage_section(storage))
         storage_config.validate()
