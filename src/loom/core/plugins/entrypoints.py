@@ -28,15 +28,62 @@ class EntryPointError(Exception):
 
 
 class EntryPointNotFoundError(EntryPointError):
-    """Raised when no entry point matches the requested group and name."""
+    """Raised when no entry point matches the requested group and name.
+
+    Attributes:
+        group: Group that was scanned.
+        name: Name that was requested.
+        available: Names registered in ``group``, sorted and deduplicated, so a
+            host can report the options without scanning the group again.
+    """
+
+    def __init__(self, group: str, name: str, available: tuple[str, ...]) -> None:
+        self.group = group
+        self.name = name
+        self.available = available
+        known = ", ".join(available) if available else "none"
+        super().__init__(
+            f"No entry point named {name!r} registered in group {group!r}. Available: {known}."
+        )
 
 
 class DuplicateEntryPointError(EntryPointError):
-    """Raised when several distributions register the same group and name."""
+    """Raised when several distributions register the same group and name.
+
+    Attributes:
+        group: Group that was scanned.
+        name: Name claimed more than once.
+        distributions: Distributions claiming ``name``, in registration order,
+            so a host can report every claimant without scanning again.
+    """
+
+    def __init__(self, group: str, name: str, distributions: tuple[str, ...]) -> None:
+        self.group = group
+        self.name = name
+        self.distributions = distributions
+        super().__init__(
+            f"Entry point {name!r} in group {group!r} is registered by several "
+            f"distributions: {', '.join(distributions)}."
+        )
 
 
 class ApiVersionMismatchError(EntryPointError):
-    """Raised when a loaded plugin declares an unsupported API version."""
+    """Raised when a plugin object declares an unsupported API version.
+
+    Attributes:
+        declared: Value read from the handshake attribute, ``None`` when the
+            attribute is absent, so a host can report what it saw.
+        requirement: Contract the value was checked against.
+    """
+
+    def __init__(self, obj: object, declared: object, requirement: ApiVersionRequirement) -> None:
+        self.declared = declared
+        self.requirement = requirement
+        supported = ", ".join(str(version) for version in sorted(requirement.supported))
+        super().__init__(
+            f"Plugin {obj!r} declares {requirement.attribute}={declared!r}, "
+            f"which is not supported. Supported versions: {supported}."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +97,29 @@ class ApiVersionRequirement:
 
     attribute: str
     supported: frozenset[int]
+
+
+def check_api_version(obj: object, requirement: ApiVersionRequirement) -> None:
+    """Check the handshake attribute of an already-obtained plugin object.
+
+    Callers that must construct the plugin before the handshake can be read —
+    an entry point targeting a class that declares its version on the instance
+    — apply the contract here instead of at load time.
+
+    Args:
+        obj: Plugin object to inspect.
+        requirement: Handshake contract to apply.
+
+    Raises:
+        ApiVersionMismatchError: When the attribute is absent, is not an
+            integer, or names an unsupported version.
+    """
+    declared = getattr(obj, requirement.attribute, None)
+    # ``type is int`` rather than isinstance: a bool would be a mistake, not a
+    # version.
+    if type(declared) is int and declared in requirement.supported:
+        return
+    raise ApiVersionMismatchError(obj, declared, requirement)
 
 
 def list_entry_points(group: str) -> tuple[EntryPoint, ...]:
@@ -124,12 +194,10 @@ def load_entry_point(
     """
     ep = select_entry_point(group, name, on_duplicate=on_duplicate)
     if ep is None:
-        raise EntryPointNotFoundError(
-            f"No entry point named {name!r} registered in group {group!r}."
-        )
+        raise EntryPointNotFoundError(group, name, _registered_names(group))
     obj: object = ep.load()
     if api_version is not None:
-        _check_api_version(obj, api_version)
+        check_api_version(obj, api_version)
     return obj
 
 
@@ -147,12 +215,9 @@ def _resolve_conflict(
     matches: tuple[EntryPoint, ...],
     on_duplicate: DuplicatePolicy,
 ) -> EntryPoint:
-    distributions = ", ".join(_distribution_name(ep) for ep in matches)
+    distributions = tuple(_distribution_name(ep) for ep in matches)
     if on_duplicate == "error":
-        raise DuplicateEntryPointError(
-            f"Entry point {name!r} in group {group!r} is registered by several "
-            f"distributions: {distributions}."
-        )
+        raise DuplicateEntryPointError(group, name, distributions)
     first = matches[0]
     _log.warning(
         "Entry point %r in group %r is registered by several distributions: %s. "
@@ -165,22 +230,15 @@ def _resolve_conflict(
     return first
 
 
+def _registered_names(group: str) -> tuple[str, ...]:
+    return tuple(sorted({ep.name for ep in _iter_group(group)}))
+
+
 def _distribution_name(ep: EntryPoint) -> str:
     dist: Distribution | None = getattr(ep, "dist", None)
     if dist is None:
         return _UNKNOWN_DISTRIBUTION
     return dist.name
-
-
-def _check_api_version(obj: object, requirement: ApiVersionRequirement) -> None:
-    declared = getattr(obj, requirement.attribute, None)
-    if type(declared) is int and declared in requirement.supported:
-        return
-    supported = ", ".join(str(version) for version in sorted(requirement.supported))
-    raise ApiVersionMismatchError(
-        f"Plugin {obj!r} declares {requirement.attribute}={declared!r}, "
-        f"which is not supported. Supported versions: {supported}."
-    )
 
 
 __all__ = [
@@ -190,6 +248,7 @@ __all__ = [
     "DuplicatePolicy",
     "EntryPointError",
     "EntryPointNotFoundError",
+    "check_api_version",
     "list_entry_points",
     "load_entry_point",
     "select_entry_point",

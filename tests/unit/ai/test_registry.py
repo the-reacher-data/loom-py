@@ -66,6 +66,16 @@ class _ProviderWithUnsupportedHandshake:
     LOOM_AI_ENGINE_API = 99
 
 
+class _ProviderDeclaringOnTheInstance:
+    """Engine class declaring the handshake only once it is constructed."""
+
+    def __init__(self) -> None:
+        self.LOOM_AI_ENGINE_API = 1
+
+    def supported_capability_kinds(self) -> frozenset[str]:
+        return frozenset({"mcp"})
+
+
 def _install(
     monkeypatch: pytest.MonkeyPatch,
     entries: tuple[_FakeEntryPoint, ...],
@@ -94,6 +104,40 @@ class TestEngineNotFound:
             resolve_engine_provider(_ENGINE_NAME)
 
         assert AgentErrorCode.ENGINE_NOT_FOUND in _codes(excinfo.value)
+
+    def test_el_mensaje_nombra_los_engines_instalados_cuando_el_pedido_no_existe(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The failure must tell the operator which engines are installed."""
+        _install(monkeypatch, (_FakeEntryPoint("other-engine", "loom-engine-beta", object()),))
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            resolve_engine_provider(_ENGINE_NAME)
+
+        assert "other-engine" in str(excinfo.value)
+
+
+class TestHandshakeOnTheInstance:
+    def test_resuelve_el_engine_cuando_declara_el_handshake_solo_en_la_instancia(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The handshake is read from the constructed provider, not from its class."""
+        _install(
+            monkeypatch,
+            (
+                _FakeEntryPoint(
+                    _ENGINE_NAME,
+                    "loom-engine-alpha",
+                    _ProviderDeclaringOnTheInstance,
+                ),
+            ),
+        )
+
+        provider = resolve_engine_provider(_ENGINE_NAME)
+
+        assert isinstance(provider, _ProviderDeclaringOnTheInstance)
 
 
 class TestEngineDuplicate:
