@@ -12,7 +12,7 @@ first-class terminal node without registration or inheritance.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 from loom.core.async_bridge import AsyncBridge
 from loom.streaming.core._message import StreamPayload
@@ -62,7 +62,9 @@ class IntoSink(Protocol[EventT]):
     Implementing a custom Into* node requires no framework imports, no
     registration, and no base class — any frozen dataclass with the four
     declared members satisfies this protocol and is treated identically to
-    built-in nodes such as IntoTable.
+    built-in nodes such as IntoTable. The three attributes are read-only on
+    purpose: a frozen dataclass, a msgspec struct or a class variable all
+    satisfy them, so a sink never has to be mutable to be a sink.
 
     Example::
 
@@ -87,17 +89,28 @@ class IntoSink(Protocol[EventT]):
         EventT_contra: Contravariant event type this sink accepts.
     """
 
-    payload: type[EventT]
-    name: str
-    router_branch_safe: bool  # ClassVar[bool] = True on all implementations
+    @property
+    def payload(self) -> type[EventT]:
+        """Event type this sink accepts."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Key this sink's configuration lives under in ``streaming.sinks``."""
+        ...
+
+    @property
+    def router_branch_safe(self) -> bool:
+        """Whether the same sink may terminate more than one router branch."""
+        ...
 
     def build_partition(
         self,
-        config: object,
+        config: Any,
         worker_index: int,
         worker_count: int,
         bridge: AsyncBridge | None = None,
-        session_manager: object | None = None,
+        session_manager: Any = None,
     ) -> SinkPartition[EventT]:
         """Build the per-worker partition for this sink.
 
@@ -105,11 +118,13 @@ class IntoSink(Protocol[EventT]):
         is owned by that worker for the lifetime of the run.
 
         Args:
-            config:       Resolved streaming.sinks.<name> config section.
+            config:       Resolved ``streaming.sinks.<name>`` config section, of
+                whatever shape this sink's backend resolves it to.
             worker_index: Zero-based index of the worker calling this method.
             worker_count: Total number of workers in this run.
             bridge:       Optional async bridge provided by the Bytewax runtime.
-            session_manager: Optional adapter-owned backend resource for async SQLAlchemy sinks.
+            session_manager: Optional adapter-owned backend resource, of whatever
+                shape the sink's backend needs; ``None`` for sinks that need none.
 
         Returns:
             A SinkPartition that will handle write_batch() and close() calls.

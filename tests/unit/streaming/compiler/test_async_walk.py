@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -58,7 +58,7 @@ def _flow_with_sqlalchemy_into_table() -> StreamFlow[Order, Result]:
     return StreamFlow(
         name="test_async_in_into_table",
         source=FromTopic("in", payload=Order),
-        process=Process(cast(Any, into_table)),
+        process=Process(into_table),
     )
 
 
