@@ -1,3 +1,77 @@
+# 🚀 Release 1.9.4 ([#162](https://github.com/the-reacher-data/loom-py/pull/162)) ([`c1c1e88`](https://github.com/the-reacher-data/loom-py/commit/c1c1e881c2cd5d2ff21d4c3938e963bcf2722a01))
+
+
+
+## 🐛 Fixes
+### streaming,testing,celery
+- **streaming,testing,celery:** importar SQLAlchemy solo donde se usa<br>
+  > El extra streaming importaba el gestor de sesiones al cargar el paquete,
+  > loom.testing arrastraba el harness relacional y el bootstrap del worker
+  > el backend completo: instalar loom-kernel[streaming] o [rest] y usar sus
+  > módulos fallaba con ModuleNotFoundError. Ahora cada import vive en la
+  > rama que lo necesita y el error nombra el extra que falta.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+
+### rest,celery,ai,streaming
+- **rest,celery,ai,streaming:** arrancar vacío, credenciales por entorno y avisos veraces<br>
+  > Un proyecto recién creado con backend relacional y sin modelos, o un
+  > worker sin su primer job, ya no se niegan a arrancar: avisan. En cambio
+  > una interfaz con auto-CRUD sobre un modelo que el descubrimiento no
+  > encontró se rechaza por nombre, porque sus rutas fallarían en la primera
+  > petición.
+  > credentials_ref pasa a nombrar la variable de entorno que guarda la clave
+  > para openai, anthropic y gateway: la ausencia falla al arrancar en vez de
+  > devolver un 401 en la primera llamada. El aviso de montaje deja de
+  > prometer la identidad del llamante para mcp y a2a, que alcanzan su
+  > extremo remoto con la credencial del despliegue. Un sink ClickHouse se
+  > valida al compilar el flujo, como los demás backends, y ProcessNode
+  > admite IntoSink sin cast.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+
+### rest,ai,etl
+- **rest,ai,etl:** rechazar solo el auto-CRUD generado y decir la verdad en doc y errores<br>
+  > La guarda nueva miraba `auto = True`, pero una interfaz que declara sus
+  > rutas a mano no genera CRUD y no necesita el repositorio del modelo: la
+  > habría tumbado al arrancar. Ahora la interfaz marca el modelo cuando
+  > realmente generó las rutas, y un test cubre el caso que antes rompía.
+  > El error de `credentials_ref` nombra el proveedor que el despliegue
+  > configuró, no el que delega por debajo, y su campo vuelve a ser una clave
+  > de configuración. La guía de REST y la de agentes dejan de decir que una
+  > app sin modelos falla al arrancar, y el paquete de streaming explica por
+  > qué falta bytewax en Python 3.13 en vez de dejar un ModuleNotFoundError
+  > pelado.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+
+
+### rest,streaming
+- **rest,streaming:** comprobar la coherencia interfaz-modelo en cualquier backend y retirar el alias de sinks<br>
+  > La guarda colgaba del predicado que decide si el backend mapea modelos a
+  > tablas, así que con dynamodb o sin persistencia una interfaz con rutas
+  > CRUD generadas sobre un modelo no descubierto seguía montándose para
+  > fallar en la primera petición. Ahora la coherencia se comprueba siempre y
+  > el aviso de esquema vacío se queda donde le toca.
+  > La ampliación de ProcessNode con IntoSink se retira: el alias no basta
+  > porque el protocolo y el sink no encajan estructuralmente, y arreglarlo es
+  > un cambio del contrato público de sinks que merece su propia PR. La
+  > historia queda declarada como descartada con su motivo.
+  > Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+  > Claude-Session: https://claude.ai/code/session_016xY1skW5S2PU9Fc3M7tfAW
+  > --------
+  > Co-authored-by: Claude Opus 5 <noreply@anthropic.com>
+
+
+
+
+
+
+
+
+
 # 🚀 Release 1.9.3 ([#159](https://github.com/the-reacher-data/loom-py/pull/159)) ([`eedd32c`](https://github.com/the-reacher-data/loom-py/commit/eedd32ca67be84302292aab968b5fe6dd7eb3621))
 
 
