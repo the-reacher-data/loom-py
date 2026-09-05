@@ -74,13 +74,16 @@ def projection_descriptor(cls: type[_DescriptorT]) -> type[_DescriptorT]:
     descriptor?", which every layer answers through
     :func:`is_projection_descriptor`.
 
+    Registering the same class twice is a no-op.
+
     Args:
         cls: The descriptor class to register.
 
     Returns:
         *cls* unchanged, so the call reads as a class decorator.
     """
-    _DESCRIPTOR_TYPES.append(cls)
+    if cls not in _DESCRIPTOR_TYPES:
+        _DESCRIPTOR_TYPES.append(cls)
     return cls
 
 

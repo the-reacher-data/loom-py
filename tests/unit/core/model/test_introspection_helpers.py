@@ -8,11 +8,11 @@ from typing import Annotated, Any, Generic, TypeVar
 import msgspec
 
 from loom.core.model.introspection import (
+    _union_inner_args,
     extract_model_from_hint,
     generic_type_arg,
     list_element_type,
     resolve_type_hints,
-    union_inner_args,
 )
 
 
@@ -69,19 +69,19 @@ class TestResolveTypeHints:
 
 class TestUnionInnerArgs:
     def test_drops_none_from_a_pep604_union(self) -> None:
-        assert union_inner_args(int | None) == (int,)
+        assert _union_inner_args(int | None) == (int,)
 
     def test_drops_unset_type_from_a_pep604_union(self) -> None:
-        assert union_inner_args(_Note | msgspec.UnsetType) == (_Note,)
+        assert _union_inner_args(_Note | msgspec.UnsetType) == (_Note,)
 
     def test_normalises_the_typing_union_form(self) -> None:
         # The legacy spelling is the point of this test, so it stays verbatim.
         hint = typing.Union[int, str]  # noqa: UP007
 
-        assert union_inner_args(hint) == (int, str)
+        assert _union_inner_args(hint) == (int, str)
 
     def test_returns_none_for_a_non_union_annotation(self) -> None:
-        assert union_inner_args(list[int]) is None
+        assert _union_inner_args(list[int]) is None
 
 
 class TestExtractModelFromHint:
