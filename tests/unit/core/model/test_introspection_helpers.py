@@ -11,9 +11,11 @@ from loom.core.model.introspection import (
     _union_inner_args,
     extract_model_from_hint,
     generic_type_arg,
+    get_column_fields,
     list_element_type,
     resolve_type_hints,
 )
+from loom.core.model.types import Integer, String
 
 
 class _Note:
@@ -126,3 +128,16 @@ class TestGenericTypeArg:
 
     def test_returns_none_when_the_argument_is_not_a_class(self) -> None:
         assert generic_type_arg(_Box[list[int]], _Box) is None
+
+
+class _Optionals(msgspec.Struct):
+    count: int | None = None
+    label: str | None = None
+
+
+class TestOptionalColumnTypes:
+    def test_maps_a_pep604_optional_to_its_inner_column_type(self) -> None:
+        assert get_column_fields(_Optionals)["count"].column_type == Integer
+
+    def test_maps_a_typing_optional_to_its_inner_column_type(self) -> None:
+        assert get_column_fields(_Optionals)["label"].column_type == String()

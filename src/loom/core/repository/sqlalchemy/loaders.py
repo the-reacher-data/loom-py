@@ -1,8 +1,8 @@
 """SQL-path projection loaders.
 
-The descriptor registry and its factory table are internal to Loom: an
-application extends projections with its own loader object, which both paths
-pass through untouched, not by registering a new descriptor.
+The descriptor registry and its factory table are internal to Loom. An
+application supplies its own loader object instead, which both paths pass
+through untouched.
 """
 
 from __future__ import annotations
