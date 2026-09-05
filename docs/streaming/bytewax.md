@@ -54,6 +54,53 @@ process = Process(
 input shape. If you want to wait for a batch outside the async step, keep that
 logic in the parent flow, not inside the task itself.
 
+## Writing your own destination
+
+`IntoTopic` and `IntoTable` are the destinations loom ships. A destination it
+does not ship is a **frozen dataclass** satisfying `IntoSink`: no base class, no
+registration, no loom import beyond the payload type. The compiler recognises it
+by structure and resolves its configuration from `streaming.sinks.<name>`.
+
+```python
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Any, ClassVar
+
+@dataclass(frozen=True)
+class IntoJsonl:
+    payload: type[IncidentEvent]
+    name: str = "incidents"          # the key under streaming.sinks
+    router_branch_safe: ClassVar[bool] = True
+
+    def build_partition(
+        self,
+        config: Any,                 # your own resolved section
+        worker_index: int,
+        worker_count: int,
+        bridge: Any = None,
+        session_manager: Any = None,
+    ) -> "JsonlPartition":
+        return JsonlPartition(config["path"])
+
+
+class JsonlPartition:
+    def __init__(self, path: str) -> None:
+        self._path, self._buffer = path, []
+
+    def write_batch(self, items: Sequence[IncidentEvent]) -> None:
+        self._buffer.extend(items)   # once per Bytewax epoch
+
+    def close(self) -> None:
+        flush(self._path, self._buffer)   # must be idempotent
+```
+
+`Process(IntoJsonl(payload=IncidentEvent))` type-checks under `mypy --strict`:
+the three attributes are read-only in the protocol, so a frozen dataclass, a
+msgspec struct or a class variable all satisfy them, and `config` and
+`session_manager` are opaque, so your sink narrows them to whatever its backend
+resolves. `write_batch` runs per epoch, per worker; `close` may be called even
+when `write_batch` never was.
+
 ## Runtime notes
 
 - `WithAsync` executes one message per task, concurrently.
