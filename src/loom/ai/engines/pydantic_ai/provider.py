@@ -20,14 +20,15 @@ from pydantic_ai import Agent
 from loom.ai.abc import AgentEngine, DepsFactory
 from loom.ai.compiler import AgentPlan
 from loom.ai.engines.pydantic_ai._a2a import create_a2a_client
-from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_toolsets
+from loom.ai.engines.pydantic_ai._capabilities import (
+    SUPPORTED_KINDS,
+    build_capabilities,
+    build_toolsets,
+)
 from loom.ai.engines.pydantic_ai._engine import PydanticAIEngine
 from loom.ai.engines.pydantic_ai._mcp import create_mcp_client
 from loom.ai.engines.pydantic_ai._models import ModelResolver, resolve_model
-from loom.ai.engines.pydantic_ai._native import (
-    build_native_capabilities,
-    supported_native_tools,
-)
+from loom.ai.engines.pydantic_ai._native import supported_native_tools
 from loom.ai.engines.pydantic_ai._spec import build_agent_spec, build_output_type
 from loom.ai.inference import InferenceTarget
 from loom.core.di import LoomContainer
@@ -87,7 +88,7 @@ class PydanticAIEngineProvider:
             raise TypeError(f"expected an AgentPlan, got {type(plan).__name__}")
         model = self._resolve_model(plan.inference)
         toolsets = build_toolsets(plan, container)
-        capabilities = (*build_capabilities(plan), *build_native_capabilities(plan))
+        capabilities = build_capabilities(plan, container)
         output_type = build_output_type(plan)
         # The keyword is absent, not ``None``, when no mode is pinned: the
         # engine's default for ``output_type`` is ``str``, and passing ``None``
@@ -125,19 +126,10 @@ class PydanticAIEngineProvider:
     def supported_capability_kinds(self) -> frozenset[str]:
         """Capability kinds this adapter can serve.
 
-        One entry per grant :mod:`~loom.ai.engines.pydantic_ai._capabilities`
-        can actually serve. ``skills`` produces no toolset: it becomes a
-        deferred harness capability instead, built by
-        :func:`~loom.ai.engines.pydantic_ai._capabilities.build_capabilities`.
-        ``native`` produces no toolset either: the provider runs the tool, so
-        the grant becomes an engine capability built by
-        :func:`~loom.ai.engines.pydantic_ai._native.build_native_capabilities`.
-        ``a2a`` produces the single delegation tool of
-        :func:`~loom.ai.engines.pydantic_ai._a2a.send_to_remote_agent`, and the
-        runtime opens its start-up client through
-        :func:`~loom.ai.engines.pydantic_ai._a2a.create_a2a_client`.
+        Derived from the one table that says how each kind is built, so a kind
+        this adapter announces always has a builder behind it.
 
         Returns:
             The supported ``kind`` identifiers.
         """
-        return frozenset({"usecase", "sql", "mcp", "skills", "python", "a2a", "native"})
+        return SUPPORTED_KINDS

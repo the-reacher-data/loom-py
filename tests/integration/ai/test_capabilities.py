@@ -823,7 +823,7 @@ class TestSkillsCapability:
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "forecast"),))
 
-        capabilities = _capabilities.build_capabilities(plan)
+        capabilities = _capabilities.build_capabilities(plan, LoomContainer())
 
         assert len(capabilities) == 1
         skills = capabilities[0]
@@ -837,7 +837,7 @@ class TestSkillsCapability:
         directory = write_skill_library(tmp_path)
         plan = make_plan(capabilities=(skills_capability(directory, "pricing"),))
 
-        skills = _capabilities.build_capabilities(plan)[0]
+        skills = _capabilities.build_capabilities(plan, LoomContainer())[0]
 
         assert isinstance(skills, Skills)
         assert skills.include == frozenset({"pricing"})
@@ -850,7 +850,7 @@ class TestSkillsCapability:
         plan = make_plan(capabilities=(skills_capability(directory, "pricing", "invented"),))
 
         with pytest.raises(ValueError, match="invented"):
-            _capabilities.build_capabilities(plan)
+            _capabilities.build_capabilities(plan, LoomContainer())
 
     def test_no_construye_ningun_toolset_cuando_la_capacidad_es_skills(
         self, tmp_path: Path, app_container: LoomContainer
@@ -867,7 +867,7 @@ class TestSkillsCapability:
         """A plan without a library asks nothing of the optional harness."""
         plan = make_plan(capabilities=(sql_capability(),))
 
-        assert _capabilities.build_capabilities(plan) == ()
+        assert _capabilities.build_capabilities(plan, LoomContainer()) == ()
 
     async def test_el_agente_responde_cuando_el_plan_concede_una_libreria(
         self, tmp_path: Path, app_container: LoomContainer

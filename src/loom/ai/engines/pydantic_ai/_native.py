@@ -24,7 +24,6 @@ from loom.ai.engines.pydantic_ai._models import model_class_for
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from loom.ai.compiler import AgentPlan
     from loom.ai.inference import InferenceTarget
 
 TOOL_CLASSES: Final[Mapping[str, type[AbstractNativeTool]]] = MappingProxyType(
@@ -51,10 +50,15 @@ def supported_native_tools(target: InferenceTarget) -> frozenset[str]:
     return frozenset(name for name, cls in TOOL_CLASSES.items() if cls in admitted)
 
 
-def build_native_capabilities(plan: AgentPlan) -> tuple[NativeTool[object], ...]:
-    """Build one engine capability per granted provider tool, in plan order."""
-    return tuple(
-        NativeTool(TOOL_CLASSES[capability.tool]())
-        for capability in plan.capabilities
-        if isinstance(capability, CompiledNativeCapability)
-    )
+def native_capability(capability: CompiledNativeCapability, context: object) -> NativeTool[object]:
+    """Build the engine capability of one granted provider tool.
+
+    Args:
+        capability: Compiled grant naming a tool already checked against the model.
+        context: Unused; the provider runs the tool, so there is nothing to wire.
+
+    Returns:
+        The capability the engine hands to the model provider.
+    """
+    del context
+    return NativeTool(TOOL_CLASSES[capability.tool]())

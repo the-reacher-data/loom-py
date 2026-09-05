@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from loom.ai.compiler._plan import CompiledNativeCapability
-from loom.ai.engines.pydantic_ai._native import (
-    TOOL_CLASSES,
-    build_native_capabilities,
-    supported_native_tools,
-)
+from loom.ai.declarative import PolicySpec
+from loom.ai.engines.pydantic_ai._capabilities import build_capabilities, build_toolsets
+from loom.ai.engines.pydantic_ai._native import TOOL_CLASSES, supported_native_tools
 from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.ai.inference import InferenceTarget
 from loom.ai.registry import engine_native_tool_support
+from loom.core.di import LoomContainer
 
 
 class _Plan:
     """Stand-in carrying only what the builder reads."""
 
     def __init__(self, *tools: str) -> None:
+        self.name = "searcher"
+        self.policies = PolicySpec()
         self.capabilities = tuple(CompiledNativeCapability(tool=tool) for tool in tools)
 
 
@@ -79,14 +82,14 @@ def test_construye_una_capacidad_por_concesion_en_el_orden_del_plan() -> None:
     """Order is the artifact's, and each grant becomes exactly one capability."""
     from pydantic_ai.native_tools import CodeExecutionTool, WebSearchTool
 
-    built = build_native_capabilities(_Plan("web_search", "code_execution"))
+    built = build_capabilities(_Plan("web_search", "code_execution"), LoomContainer())
 
     assert [type(capability.tool) for capability in built] == [WebSearchTool, CodeExecutionTool]
 
 
 def test_no_construye_nada_cuando_el_plan_no_concede_ninguna() -> None:
     """A plan without native grants leaves the engine call untouched."""
-    assert build_native_capabilities(_Plan()) == ()
+    assert build_capabilities(_Plan(), LoomContainer()) == ()
 
 
 def test_el_provider_expone_el_oraculo_que_el_registro_lee() -> None:
@@ -110,19 +113,16 @@ def test_el_registro_devuelve_none_cuando_el_motor_no_lo_aporta() -> None:
 
 def test_el_grant_native_no_produce_toolset_y_llega_como_capacidad() -> None:
     """A native grant is served as an engine capability, never as a toolset."""
-    from loom.ai.declarative import PolicySpec
-    from loom.ai.engines.pydantic_ai._capabilities import build_toolsets
-    from loom.core.di import LoomContainer
 
     class _NativePlan:
         name = "searcher"
-        capabilities = (CompiledNativeCapability(tool="web_search"),)
         policies = PolicySpec()
+        capabilities = (CompiledNativeCapability(tool="web_search"),)
 
     plan = _NativePlan()
 
     assert build_toolsets(plan, LoomContainer()) == ()
-    assert len(build_native_capabilities(plan)) == 1
+    assert len(build_capabilities(plan, LoomContainer())) == 1
 
 
 def test_el_registro_retira_native_cuando_el_motor_no_aporta_oraculo(
@@ -150,3 +150,31 @@ def test_el_registro_conserva_native_cuando_el_motor_lo_aporta() -> None:
     from loom.ai.registry import engine_supported_kinds
 
     assert "native" in engine_supported_kinds(PydanticAIEngineProvider(), "pydantic-ai")
+
+
+def test_los_kinds_anunciados_son_exactamente_los_de_la_tabla() -> None:
+    """The adapter cannot announce a kind it has no builder for, or hide one it has."""
+    from loom.ai.engines.pydantic_ai import PydanticAIEngineProvider
+    from loom.ai.engines.pydantic_ai._capabilities import _KINDS
+
+    announced = PydanticAIEngineProvider().supported_capability_kinds()
+
+    assert announced == frozenset(compiled.kind for compiled in _KINDS)
+
+
+def test_falla_nombrando_el_kind_cuando_un_grant_no_tiene_builder() -> None:
+    """A compiled grant of an unserved kind is refused, not silently dropped."""
+    from loom.ai.compiler._plan import CompiledCapability
+    from loom.ai.engines.pydantic_ai._capabilities import build_capabilities
+    from loom.ai.errors import AgentCompilationError
+
+    class _Unserved:
+        kind = "telepathy"
+
+    class _PlanWithUnserved:
+        name = "searcher"
+        policies = PolicySpec()
+        capabilities = (cast("CompiledCapability", _Unserved()),)
+
+    with pytest.raises(AgentCompilationError, match="telepathy"):
+        build_capabilities(_PlanWithUnserved(), LoomContainer())  # type: ignore[arg-type]
