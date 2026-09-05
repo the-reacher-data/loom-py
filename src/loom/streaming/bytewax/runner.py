@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -14,7 +14,13 @@ from bytewax.recovery import RecoveryConfig
 from bytewax.run import cli_main
 
 from loom.core.async_bridge import AsyncBridge, build_backend_options
-from loom.core.config import ConfigContext, ConfigKey
+from loom.core.config import (
+    ConfigContext,
+    ConfigKey,
+    ConfigResolver,
+    default_resolvers,
+    merge_resolvers,
+)
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.config import ObservabilityConfig
 from loom.core.observability.event import Scope
@@ -175,12 +181,22 @@ class StreamingRunner:
         flow: StreamFlow[Any, Any],
         path: str,
         *,
+        resolvers: Sequence[ConfigResolver] = (),
         observability_runtime: ObservabilityRuntime | None = None,
     ) -> StreamingRunner:
-        """Load config from YAML and build a runner."""
+        """Load config from YAML and build a runner.
+
+        Args:
+            flow: Flow to compile.
+            path: Local path or cloud URI of the YAML config file.
+            resolvers: Resolvers for ``${name:key}`` placeholders, registered
+                before the built-in ``secrets`` and ``ssm`` defaults.  A
+                resolver named like a default replaces it.
+            observability_runtime: Optional runtime override.
+        """
         return cls.from_context(
             flow,
-            config=ConfigContext.from_yaml(path),
+            config=_load_yaml(path, resolvers),
             observability_runtime=observability_runtime,
         )
 
@@ -271,6 +287,7 @@ class StreamingRunner:
         config_path: str | Path | None = None,
         error_sinks: Mapping[ErrorKind, Any] | None = None,
         runtime: BytewaxRuntimeConfig | None = None,
+        resolvers: Sequence[ConfigResolver] = (),
     ) -> None:
         """Execute the compiled dataflow with the real Bytewax runtime.
 
@@ -289,9 +306,13 @@ class StreamingRunner:
                 take precedence over registry-resolved sinks.
             runtime: Optional runtime override. When omitted, uses the runner's
                 config-loaded runtime settings.
+            resolvers: Resolvers for ``${name:key}`` placeholders in
+                ``config_path``, registered before the built-in ``secrets``
+                and ``ssm`` defaults.  A resolver named like a default
+                replaces it.
         """
         if config_path is not None:
-            config = ConfigContext.from_yaml(str(config_path))
+            config = _load_yaml(str(config_path), resolvers)
         if flow is not None and config is not None:
             plan = compile_flow(flow, config=config)
             runtime_cfg = config.section_or_default(
@@ -341,6 +362,11 @@ class StreamingRunner:
             self._log.debug("shutting_down")
             self._shutdown()
             self._shutdown = None
+
+
+def _load_yaml(path: str, resolvers: Sequence[ConfigResolver]) -> ConfigContext:
+    """Load *path* with *resolvers* ahead of the built-in ``secrets``/``ssm`` defaults."""
+    return ConfigContext.from_yaml(path, resolvers=merge_resolvers(resolvers, default_resolvers()))
 
 
 def _runtime_kwargs(runtime: BytewaxRuntimeConfig) -> dict[str, Any]:

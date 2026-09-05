@@ -82,7 +82,13 @@ from loom.celery.runner import (
 )
 from loom.core.async_bridge import build_backend_options
 from loom.core.bootstrap import create_kernel
-from loom.core.config import ConfigContext, ConfigKey
+from loom.core.config import (
+    ConfigContext,
+    ConfigKey,
+    ConfigResolver,
+    default_resolvers,
+    merge_resolvers,
+)
 from loom.core.config.errors import ConfigError
 from loom.core.di.container import LoomContainer
 from loom.core.discovery._utils import collect_from_modules, import_modules
@@ -728,6 +734,7 @@ def bootstrap_worker(
     callbacks: Sequence[type[Any]] = (),
     modules: Sequence[Callable[[LoomContainer], None]] = (),
     metrics: MetricsAdapter | None = None,
+    resolvers: Sequence[ConfigResolver] = (),
 ) -> WorkerBootstrapResult:
     """Bootstrap a Celery worker process and register all Job tasks.
 
@@ -776,6 +783,9 @@ def bootstrap_worker(
             Executed in declaration order before compilation.
         metrics: Optional metrics adapter forwarded to the compiler and
             executor.
+        resolvers: Resolvers for ``${name:key}`` placeholders, registered
+            before the built-in ``secrets`` and ``ssm`` defaults.  A resolver
+            named like a default replaces it.
 
     Returns:
         :class:`WorkerBootstrapResult` with the container, factory, and
@@ -798,7 +808,9 @@ def bootstrap_worker(
         )
         result.celery_app.start()
     """
-    ctx = ConfigContext.from_yaml(*config_paths)
+    ctx = ConfigContext.from_yaml(
+        *config_paths, resolvers=merge_resolvers(resolvers, default_resolvers())
+    )
     app_cfg = ctx.section_optional(ConfigKey.APP, _WorkerAppConfig) or _WorkerAppConfig()
     celery_cfg = ctx.section(ConfigKey.CELERY, CeleryConfig)
     observability_runtime = _build_observability_runtime(ctx)

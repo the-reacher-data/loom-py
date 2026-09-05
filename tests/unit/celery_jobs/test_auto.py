@@ -27,6 +27,7 @@ def test_create_app_delegates_to_bootstrap_worker() -> None:
         callbacks=(),
         modules=(),
         metrics=None,
+        resolvers=(),
     )
 
 
@@ -42,6 +43,7 @@ def test_create_app_allows_discovery_without_explicit_jobs() -> None:
         callbacks=(),
         modules=(),
         metrics=None,
+        resolvers=(),
     )
 
 
@@ -70,4 +72,15 @@ def test_create_app_passes_optional_arguments() -> None:
         callbacks=[callback],
         modules=[module],
         metrics=metrics,
+        resolvers=(),
     )
+
+
+def test_create_app_forwards_resolvers() -> None:
+    result = SimpleNamespace(celery_app=MagicMock())
+    resolver = MagicMock()
+
+    with patch("loom.celery.auto.bootstrap_worker", return_value=result) as mock_bootstrap:
+        create_app("config/worker.yaml", jobs=[_DummyJob], resolvers=[resolver])
+
+    assert mock_bootstrap.call_args.kwargs["resolvers"] == [resolver]

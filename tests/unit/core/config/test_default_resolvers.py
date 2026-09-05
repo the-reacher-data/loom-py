@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from omegaconf import OmegaConf
+from omegaconf.errors import InterpolationResolutionError
 
 from loom.core.config import (
     ConfigError,
@@ -118,3 +119,13 @@ def test_no_client_created_without_placeholders(
 
     assert cfg.app.name == "demo"
     boto3.client.assert_not_called()
+
+
+def test_default_secrets_resolver_reports_the_extra_on_access(
+    secrets_yaml: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("loom.core.config.secrets._boto3_module", None)
+    cfg = load_config(secrets_yaml, resolvers=default_resolvers())
+
+    with pytest.raises(InterpolationResolutionError, match=r"loom-kernel\[config-ssm\]"):
+        _ = cfg.token
