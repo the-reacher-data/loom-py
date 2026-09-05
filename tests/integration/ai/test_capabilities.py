@@ -45,6 +45,7 @@ from pydantic_ai_harness import Skills
 from loom.ai.abc import AgentEngine, ToolResultEvent
 from loom.ai.compiler._plan import (
     CompiledMcpCapability,
+    CompiledNativeCapability,
     CompiledPythonCapability,
     CompiledSkillsCapability,
     CompiledSqlCapability,
@@ -732,6 +733,51 @@ class TestSupportedCapabilityKinds:
 # ---------------------------------------------------------------------------
 # skills — a harness capability, not a toolset
 # ---------------------------------------------------------------------------
+
+
+def _granted_native_tools(engine: AgentEngine) -> list[Any]:
+    """Return the provider tools the built agent carries, in the agent's order."""
+    from pydantic_ai.capabilities import NativeTool
+
+    agent = engine._agent  # noqa: SLF001 — the built agent is what this asserts about
+    granted = getattr(agent.root_capability, "capabilities", ())
+    return [capability for capability in granted if isinstance(capability, NativeTool)]
+
+
+class TestNativeCapabilityWiring:
+    """``native`` reaches the agent as an engine capability, never as a toolset."""
+
+    def test_el_agente_recibe_la_herramienta_del_proveedor_cuando_el_plan_la_concede(
+        self, container: LoomContainer, deps: object
+    ) -> None:
+        """The built agent carries one ``NativeTool`` of the granted class."""
+        from pydantic_ai.native_tools import WebSearchTool
+
+        engine = build_engine(
+            capabilities=(CompiledNativeCapability(tool="web_search"),),
+            model=ScriptedToolModel(),
+            container=container,
+            deps=deps,
+        )
+
+        native = _granted_native_tools(engine)
+        assert [type(capability.tool) for capability in native] == [WebSearchTool]
+
+    def test_el_agente_no_recibe_ninguna_cuando_el_plan_no_las_concede(
+        self, container: LoomContainer, deps: object
+    ) -> None:
+        """A plan without native grants leaves the agent's capabilities untouched."""
+        from pydantic_ai.capabilities import NativeTool
+
+        engine = build_engine(
+            capabilities=(),
+            model=ScriptedToolModel(),
+            container=container,
+            deps=deps,
+        )
+
+        del NativeTool
+        assert _granted_native_tools(engine) == []
 
 
 SKILL_LIBRARY = {

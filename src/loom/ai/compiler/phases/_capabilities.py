@@ -74,8 +74,10 @@ from loom.core.sql.config import SqlConfig, roles_need_identity_binding
 from loom.core.use_case.registry import UseCaseRegistry
 
 # Kinds that read application data or call application/remote code.  An agent
-# that opts out of authentication may hold none of them (FR-045a); ``skills``
-# only injects packaged prompt material, so it is exempt.
+# that opts out of authentication may hold none of them (FR-045a).  ``skills``
+# only injects packaged prompt material and ``native`` runs inside the model
+# provider, reading no application data and acting under no caller identity, so
+# both are exempt.
 _DATA_OR_REMOTE_KINDS: Final[frozenset[str]] = frozenset({"usecase", "sql", "python", "mcp", "a2a"})
 
 # A directory is one skill when it holds this manifest; a library is a

@@ -26,7 +26,6 @@ from loom.ai.compiler import (
 )
 from loom.ai.config import AiConfig
 from loom.ai.declarative import (
-    NATIVE_TOOLS,
     AgentSpecV1,
     DecodedSpec,
     JsonSchemaOutput,
@@ -39,20 +38,11 @@ from loom.ai.declarative import (
 from loom.ai.errors import AgentErrorCode
 from loom.core.sql.config import SqlConfig
 from loom.core.use_case.registry import UseCaseRegistry
+from tests.unit.ai.phases.conftest import ALL_KINDS, admits_every_native_tool
 
 from .conftest import CORPUS_PATTERN
 
 CORPUS_DIR = Path(__file__).parent / "fixtures" / "corpus_v1"
-
-ALL_KINDS: frozenset[str] = frozenset(
-    {"usecase", "sql", "mcp", "skills", "python", "a2a", "native"}
-)
-
-
-def _admits_every_native_tool(target: object) -> frozenset[str]:
-    """Oracle standing in for an engine that admits every provider tool."""
-    del target
-    return frozenset(NATIVE_TOOLS)
 
 
 BROKEN_SOURCE = "agents/broken.agent.yaml"
@@ -98,7 +88,7 @@ def compiler(
         registry=compiler_env_registry,
         supported_kinds=ALL_KINDS,
         sql=compiler_env_sql,
-        native_tools=_admits_every_native_tool,
+        native_tools=admits_every_native_tool,
     )
 
 

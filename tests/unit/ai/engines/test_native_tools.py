@@ -22,6 +22,17 @@ class _Plan:
         self.capabilities = tuple(CompiledNativeCapability(tool=tool) for tool in tools)
 
 
+def _bedrock_admits_web_search() -> bool:
+    """Whether the installed Bedrock class has gained provider-run web search."""
+    from pydantic_ai.models.bedrock import BedrockConverseModel
+    from pydantic_ai.native_tools import WebSearchTool
+
+    return WebSearchTool in BedrockConverseModel.supported_native_tools()
+
+
+_BEDROCK_ADMITS_WEB_SEARCH = _bedrock_admits_web_search()
+
+
 def test_el_mapa_del_motor_cubre_exactamente_los_nombres_del_artefacto() -> None:
     """Every name the artifact may declare indexes a class, and no other does."""
     from loom.ai.declarative import NATIVE_TOOLS
@@ -34,6 +45,10 @@ def test_cada_clase_declara_el_mismo_nombre_que_la_indexa() -> None:
     assert all(TOOL_CLASSES[name]().kind == name for name in TOOL_CLASSES)
 
 
+@pytest.mark.skipif(
+    _BEDROCK_ADMITS_WEB_SEARCH,
+    reason="bedrock ya admite web_search: revisar la tabla de docs/ai/artifacts.md",
+)
 def test_bedrock_no_admite_busqueda_web_y_si_ejecucion_de_codigo() -> None:
     """The truth comes from the model class, not from a table in loom."""
     target = InferenceTarget(provider="bedrock", model="anthropic.claude-x", region="eu-west-1")

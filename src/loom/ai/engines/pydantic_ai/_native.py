@@ -19,6 +19,7 @@ from pydantic_ai.native_tools import (
 )
 
 from loom.ai.compiler._plan import CompiledNativeCapability
+from loom.ai.engines.pydantic_ai._models import model_class_for
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -46,8 +47,6 @@ def supported_native_tools(target: InferenceTarget) -> frozenset[str]:
     Raises:
         AgentCompilationError: When the provider is unknown or its SDK missing.
     """
-    from loom.ai.engines.pydantic_ai._models import model_class_for
-
     admitted = model_class_for(target).supported_native_tools()
     return frozenset(name for name, cls in TOOL_CLASSES.items() if cls in admitted)
 

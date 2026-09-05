@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 
 from loom.ai.abc import NativeToolSupport
 from loom.ai.compiler import CompiledCapability, CompiledNativeCapability
 from loom.ai.compiler.phases._capabilities import compile_capabilities
-from loom.ai.config import AiConfig
+from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.declarative import AgentSpecV1, JsonSchemaOutput, NativeCapability
 from loom.ai.errors import (
     AgentCompilationError,
@@ -39,12 +41,13 @@ def _compile(
     *,
     inference: InferenceTarget | None = None,
     native_tools: NativeToolSupport | None = None,
+    endpoints: Mapping[str, AgentEndpointConfig] | None = None,
 ) -> tuple[tuple[CompiledCapability, ...], list[AgentCompilationIssue]]:
     """Compile the capabilities of *spec* with the given deployment inputs."""
     return compile_capabilities(
         spec,
         component="agents/searcher/agent.yaml",
-        config=AiConfig(engine="pydantic-ai", specs=(), models={}),
+        config=AiConfig(engine="pydantic-ai", specs=(), models={}, endpoints=endpoints or {}),
         registry=UseCaseRegistry.build([]),
         sql=None,
         supported_kinds=_KINDS,
@@ -130,3 +133,16 @@ def test_acepta_cada_herramienta_del_vocabulario(tool: str) -> None:
 
     assert issues == []
     assert compiled == (CompiledNativeCapability(tool=tool),)
+
+
+def test_un_agente_anonimo_puede_conceder_una_herramienta_del_proveedor() -> None:
+    """``native`` is exempt from the anonymous gate: it reads no application data."""
+    compiled, issues = _compile(
+        _spec("web_search"),
+        inference=_BEDROCK,
+        native_tools=lambda _t: frozenset({"web_search"}),
+        endpoints={"searcher": AgentEndpointConfig(enabled=True, auth="jwt", allow_anonymous=True)},
+    )
+
+    assert issues == []
+    assert compiled == (CompiledNativeCapability(tool="web_search"),)

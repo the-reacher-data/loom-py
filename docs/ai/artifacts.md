@@ -461,7 +461,8 @@ loom neither implements it nor sees its calls. A grant is checked at compile
 time against the model bound to the agent's `model_role`, so a tool the binding
 cannot run fails with `NATIVE_TOOL_UNSUPPORTED` naming the provider, the model,
 the role and what that binding does admit — never on the first request. The same
-tool granted twice is `NATIVE_TOOL_DUPLICATE`.
+tool granted twice is `NATIVE_TOOL_DUPLICATE` — loom refuses it even though the
+engine would collapse identical grants, the same rule `skills` follows.
 
 What each binding admits comes from the model class of the installed engine, not
 from a table in loom. As of pydantic-ai 2.36 (`Model.supported_native_tools()`;

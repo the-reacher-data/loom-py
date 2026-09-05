@@ -53,10 +53,10 @@ class AgentCompiler:
         supported_kinds: Capability kinds the configured engine serves,
             resolved by the bootstrap and passed as a plain value — the
             compiler never imports an engine.
-        native_tools: Oracle answering which provider tools a model binding
-            admits; resolved from the engine by the bootstrap, never imported here.
         sql: Data-layer configuration; ``None`` fails every ``sql`` grant
             with ``SQL_CONFIG_MISSING`` instead of skipping silently.
+        native_tools: Oracle answering which provider tools a model binding
+            admits; resolved from the engine by the bootstrap, never imported here.
     """
 
     def __init__(

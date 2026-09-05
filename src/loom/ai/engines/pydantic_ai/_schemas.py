@@ -49,7 +49,7 @@ def published_names(capability: CompiledCapability) -> tuple[tuple[str, str], ..
     """Return the ``(tool name, granted handle)`` pairs loom itself publishes.
 
     ``mcp`` and ``python`` name their own tools, so their names are not derived
-    here and cannot be validated at build; ``skills`` publishes no tool at all.
+    here and cannot be validated at build; ``skills`` and ``native`` publish no tool at all.
     """
     match capability:
         case CompiledUsecaseCapability():
