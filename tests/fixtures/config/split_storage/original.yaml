@@ -1,0 +1,67 @@
+# Single-file, list-form storage section. Shared settings are YAML anchors,
+# which only work inside this one file.
+storage:
+  engine: polars
+  missing_table_policy: create
+  catalogs:
+    main:
+      provider: unity
+      workspace: https://example.cloud.databricks.com
+      token: placeholder-token
+  temp:
+    root: s3://lake/tmp
+    storage_options: &region
+      AWS_REGION: eu-west-1
+  defaults:
+    table_path: &standard
+      uri: s3://lake/default
+      storage_options: *region
+      writer:
+        compression: SNAPPY
+      target_file_size: 134217728
+      commit: &commit
+        custom_metadata:
+          owner: data-platform
+  tables:
+    - name: billing.invoices
+      path: &large
+        uri: s3://lake/billing/invoices
+        storage_options: *region
+        writer:
+          compression: ZSTD
+          compression_level: 3
+        target_file_size: 536870912
+        delta_config:
+          delta.autoOptimize.optimizeWrite: "true"
+        commit: *commit
+    - name: billing.payments
+      path:
+        <<: *standard
+        uri: s3://lake/billing/payments
+    - name: billing.accounts
+      ref: main.billing.accounts
+    - name: sales.orders
+      path:
+        <<: *large
+        uri: s3://lake/sales/orders
+    - name: sales.customers
+      path:
+        <<: *standard
+        uri: s3://lake/sales/customers
+    - name: sales.order_lines
+      path:
+        <<: *large
+        uri: s3://lake/sales/order_lines
+        writer:
+          compression: LZ4
+    - name: sales.regions
+      ref: sales.regions
+      catalog: main
+  files:
+    - name: billing.statements
+      path:
+        uri: s3://exports/billing/{run_id}/statements.pdf
+    - name: sales.exports
+      path:
+        uri: s3://exports/sales/{date}.csv
+        storage_options: *region

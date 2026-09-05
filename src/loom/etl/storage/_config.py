@@ -29,6 +29,11 @@ _TABLE_PROFILE_FIELDS: Final = frozenset(
     {"storage_options", "writer", "target_file_size", "delta_config", "commit"}
 )
 _FILE_PROFILE_FIELDS: Final = frozenset({"storage_options"})
+_PROFILE_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "tables": _TABLE_PROFILE_FIELDS,
+    "files": _FILE_PROFILE_FIELDS,
+}
+"""Profile fields each route collection takes through ``profile:``."""
 
 
 class StorageEngine(StrEnum):
@@ -525,11 +530,11 @@ def _apply_profiles(normalised: dict[str, Any]) -> dict[str, Any]:
     profiles = normalised.get("profiles")
     profiles = profiles if isinstance(profiles, Mapping) else {}
     result = dict(normalised)
-    for collection in _ROUTE_COLLECTIONS:
+    for collection, fields in _PROFILE_FIELDS.items():
         if isinstance(result.get(collection), list):
             result[collection] = [
                 _route_with_profile(
-                    route, f"storage.{collection}[{_route_key(route, idx)}]", profiles
+                    route, f"storage.{collection}[{_route_key(route, idx)}]", profiles, fields
                 )
                 for idx, route in enumerate(result[collection])
             ]
@@ -548,10 +553,14 @@ def _route_key(route: Any, idx: int) -> str:
     return str(idx)
 
 
-def _route_with_profile(route: Any, context: str, profiles: Mapping[str, Any]) -> Any:
+def _route_with_profile(
+    route: Any,
+    context: str,
+    profiles: Mapping[str, Any],
+    fields: frozenset[str],
+) -> Any:
     if not isinstance(route, Mapping) or not isinstance(route.get("path"), Mapping):
         return route
-    fields = _FILE_PROFILE_FIELDS if context.startswith("storage.files") else _TABLE_PROFILE_FIELDS
     return {**route, "path": _path_with_profile(route["path"], f"{context}.path", profiles, fields)}
 
 

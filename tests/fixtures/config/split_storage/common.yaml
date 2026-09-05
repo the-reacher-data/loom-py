@@ -1,0 +1,27 @@
+storage:
+  profiles:
+    standard:
+      storage_options:
+        AWS_REGION: eu-west-1
+      writer:
+        compression: SNAPPY
+      target_file_size: 134217728
+      commit:
+        custom_metadata:
+          owner: data-platform
+    large:
+      storage_options:
+        AWS_REGION: eu-west-1
+      writer:
+        compression: ZSTD
+        compression_level: 3
+      target_file_size: 536870912
+      delta_config:
+        delta.autoOptimize.optimizeWrite: "true"
+      commit:
+        custom_metadata:
+          owner: data-platform
+  defaults:
+    table_path:
+      uri: s3://lake/default
+      profile: standard
