@@ -13,7 +13,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import types as T
 from pyspark.sql.column import Column
 
-from loom.etl.backends._format_registry import resolve_format_handler
+from loom.etl.backends._format_registry import resolve_format_handler, write_options_or_default
 from loom.etl.backends._historify._transform import scd2_transform
 from loom.etl.backends._merge import (
     SOURCE_ALIAS,
@@ -396,59 +396,8 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
         """Write to file (CSV, JSON, Parquet), resolving alias and template."""
         _ = streaming
         resolved = self._resolve_file_spec(spec, params_instance)
-        writers: dict[Format, Callable[[DataFrame, FileSpec], None]] = {
-            Format.DELTA: self._write_delta_file,
-            Format.CSV: self._write_csv_file,
-            Format.JSON: self._write_json_file,
-            Format.PARQUET: self._write_parquet_file,
-            Format.XLSX: self._write_xlsx_file,
-        }
-        writer = resolve_format_handler(resolved.format, writers)
-        writer(frame, resolved)
-
-    def _write_delta_file(self, frame: DataFrame, spec: FileSpec) -> None:
-        frame.write.format("delta").mode("overwrite").save(spec.path)
-
-    def _write_csv_file(self, frame: DataFrame, spec: FileSpec) -> None:
-        csv_opts = (
-            spec.write_options
-            if isinstance(spec.write_options, CsvWriteOptions)
-            else CsvWriteOptions()
-        )
-        writer = (
-            frame.write.mode("overwrite")
-            .option("sep", csv_opts.separator)
-            .option("header", str(csv_opts.has_header).lower())
-        )
-        for key, value in csv_opts.kwargs:
-            writer = writer.option(key, str(value))
-        writer.csv(spec.path)
-
-    def _write_json_file(self, frame: DataFrame, spec: FileSpec) -> None:
-        json_opts = (
-            spec.write_options
-            if isinstance(spec.write_options, JsonWriteOptions)
-            else JsonWriteOptions()
-        )
-        writer = frame.write.mode("overwrite")
-        for key, value in json_opts.kwargs:
-            writer = writer.option(key, str(value))
-        writer.json(spec.path)
-
-    def _write_parquet_file(self, frame: DataFrame, spec: FileSpec) -> None:
-        parquet_opts = (
-            spec.write_options
-            if isinstance(spec.write_options, ParquetWriteOptions)
-            else ParquetWriteOptions()
-        )
-        writer = frame.write.mode("overwrite").option("compression", parquet_opts.compression)
-        for key, value in parquet_opts.kwargs:
-            writer = writer.option(key, str(value))
-        writer.parquet(spec.path)
-
-    @staticmethod
-    def _write_xlsx_file(_frame: DataFrame, _spec: FileSpec) -> None:
-        raise TypeError("Spark backend does not support XLSX format.")
+        write = resolve_format_handler(resolved.format, _FILE_WRITERS)
+        write(frame, resolved)
 
     def _resolve_file_spec(self, spec: FileSpec, params_instance: Any) -> FileSpec:
         """Return a FileSpec with a physical URI, resolving alias and template."""
@@ -478,6 +427,57 @@ class SparkTargetWriter(_WritePolicy[DataFrame, DataFrame, SparkPhysicalSchema])
 
 
 __all__ = ["SparkTargetWriter", "_collect_partition_combos"]
+
+
+# ========================================================================
+# File writers — one per format Spark can write
+# ========================================================================
+
+
+def _write_delta_file(frame: DataFrame, spec: FileSpec) -> None:
+    frame.write.format("delta").mode("overwrite").save(spec.path)
+
+
+def _write_csv_file(frame: DataFrame, spec: FileSpec) -> None:
+    csv_opts = write_options_or_default(spec.write_options, CsvWriteOptions)
+    writer = (
+        frame.write.mode("overwrite")
+        .option("sep", csv_opts.separator)
+        .option("header", str(csv_opts.has_header).lower())
+    )
+    for key, value in csv_opts.kwargs:
+        writer = writer.option(key, str(value))
+    writer.csv(spec.path)
+
+
+def _write_json_file(frame: DataFrame, spec: FileSpec) -> None:
+    json_opts = write_options_or_default(spec.write_options, JsonWriteOptions)
+    writer = frame.write.mode("overwrite")
+    for key, value in json_opts.kwargs:
+        writer = writer.option(key, str(value))
+    writer.json(spec.path)
+
+
+def _write_parquet_file(frame: DataFrame, spec: FileSpec) -> None:
+    parquet_opts = write_options_or_default(spec.write_options, ParquetWriteOptions)
+    writer = frame.write.mode("overwrite").option("compression", parquet_opts.compression)
+    for key, value in parquet_opts.kwargs:
+        writer = writer.option(key, str(value))
+    writer.parquet(spec.path)
+
+
+def _write_xlsx_file(_frame: DataFrame, _spec: FileSpec) -> None:
+    """Refuse XLSX: Spark has no writer for it, with or without a plugin."""
+    raise TypeError("Spark backend does not support XLSX format.")
+
+
+_FILE_WRITERS: dict[Format, Callable[[DataFrame, FileSpec], None]] = {
+    Format.DELTA: _write_delta_file,
+    Format.CSV: _write_csv_file,
+    Format.JSON: _write_json_file,
+    Format.PARQUET: _write_parquet_file,
+    Format.XLSX: _write_xlsx_file,
+}
 
 
 def _filter_to_partitions(
