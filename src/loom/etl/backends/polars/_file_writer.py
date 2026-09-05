@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 import polars as pl
 
+from loom.etl.backends._format_registry import resolve_format_handler, write_options_or_default
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import (
     CsvWriteOptions,
@@ -26,16 +27,18 @@ class PolarsFileWriter:
         """Write *frame* to the path declared in *spec*."""
         if streaming:
             _log.debug("streaming write: sink_%s path=%s", spec.format, spec.path)
-            _STREAMING_WRITERS[spec.format](frame, spec.path, spec.write_options)
+            sink = resolve_format_handler(spec.format, _STREAMING_WRITERS)
+            sink(frame, spec.path, spec.write_options)
         else:
-            _FILE_WRITERS[spec.format](frame.collect(), spec.path, spec.write_options)
+            write = resolve_format_handler(spec.format, _FILE_WRITERS)
+            write(frame.collect(), spec.path, spec.write_options)
 
 
 _Options = WriteOptions | None
 
 
 def _write_csv_file(df: pl.DataFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, CsvWriteOptions) else CsvWriteOptions()
+    opts = write_options_or_default(options, CsvWriteOptions)
     df.write_csv(
         path,
         separator=opts.separator,
@@ -45,12 +48,12 @@ def _write_csv_file(df: pl.DataFrame, path: str, options: _Options) -> None:
 
 
 def _write_parquet_file(df: pl.DataFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, ParquetWriteOptions) else ParquetWriteOptions()
+    opts = write_options_or_default(options, ParquetWriteOptions)
     df.write_parquet(path, compression=opts.compression, **dict(opts.kwargs))
 
 
 def _write_json_file(df: pl.DataFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, JsonWriteOptions) else JsonWriteOptions()
+    opts = write_options_or_default(options, JsonWriteOptions)
     df.write_ndjson(path, **dict(opts.kwargs))
 
 
@@ -64,7 +67,7 @@ _FILE_WRITERS: dict[Format, _DataFrameWriter] = {
 
 
 def _sink_csv_file(frame: pl.LazyFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, CsvWriteOptions) else CsvWriteOptions()
+    opts = write_options_or_default(options, CsvWriteOptions)
     frame.sink_csv(
         path,
         separator=opts.separator,
@@ -74,12 +77,12 @@ def _sink_csv_file(frame: pl.LazyFrame, path: str, options: _Options) -> None:
 
 
 def _sink_parquet_file(frame: pl.LazyFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, ParquetWriteOptions) else ParquetWriteOptions()
+    opts = write_options_or_default(options, ParquetWriteOptions)
     frame.sink_parquet(path, compression=opts.compression, **dict(opts.kwargs))
 
 
 def _sink_ndjson_file(frame: pl.LazyFrame, path: str, options: _Options) -> None:
-    opts = options if isinstance(options, JsonWriteOptions) else JsonWriteOptions()
+    opts = write_options_or_default(options, JsonWriteOptions)
     frame.sink_ndjson(path, **dict(opts.kwargs))
 
 
