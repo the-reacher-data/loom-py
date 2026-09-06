@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from loom.core.backend.sqlalchemy import compile_all, get_compiled
@@ -27,7 +29,11 @@ def _compiler(allowed: frozenset[str] = frozenset()) -> QuerySpecCompiler:
 
 
 def test_sqlalchemy_compiler_satisfies_query_compiler() -> None:
-    assert isinstance(_compiler(), QueryCompiler)
+    compiler: QueryCompiler[Any, Any] = _compiler()
+
+    clause = compiler.compile_filter(FilterGroup(filters=(FilterSpec("rank", FilterOp.EQ, 1),)))
+
+    assert "rank" in str(clause)
 
 
 def test_compile_filter_honours_allowed_fields() -> None:

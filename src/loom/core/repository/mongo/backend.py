@@ -36,7 +36,7 @@ _logger = logging.getLogger(__name__)
 _ID_POLICIES: dict[str, type[IdPolicy]] = {"uuid4": Uuid4IdPolicy, "objectid": ObjectIdPolicy}
 
 
-class _MongoConfig(msgspec.Struct, kw_only=True):
+class _MongoConfig(msgspec.Struct, kw_only=True, forbid_unknown_fields=True):
     uri: str
     database: str
     transactions: bool = False
@@ -93,8 +93,12 @@ class MongoBackend:
 
 
 def _build_mongo_client(mongo_cfg: _MongoConfig) -> AsyncMongoClient[Any]:
-    """Construct the async client; only the options set in config are forwarded."""
-    options: dict[str, Any] = {}
+    """Construct the async client; only the options set in config are forwarded.
+
+    The client is ``tz_aware`` so datetimes read back as aware UTC, the form
+    the repository writes them in.
+    """
+    options: dict[str, Any] = {"tz_aware": True}
     if mongo_cfg.max_pool_size is not None:
         options["maxPoolSize"] = mongo_cfg.max_pool_size
     if mongo_cfg.server_selection_timeout_ms is not None:
@@ -105,6 +109,7 @@ def _build_mongo_client(mongo_cfg: _MongoConfig) -> AsyncMongoClient[Any]:
 def _unit_of_work_factory(
     client: AsyncMongoClient[Any], mongo_cfg: _MongoConfig
 ) -> MongoUnitOfWorkFactory:
+    _logger.info("mongo unit of work: transactions=%s", mongo_cfg.transactions)
     if mongo_cfg.transactions:
         return MongoUnitOfWorkFactory.transactional(client)
     return MongoUnitOfWorkFactory.without_transactions()

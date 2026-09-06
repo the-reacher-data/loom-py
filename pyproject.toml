@@ -37,7 +37,7 @@ dynamodb = [
     "boto3>=1.35",
 ]
 mongo = [
-    "pymongo>=4.6,<5.0",
+    "pymongo>=4.9,<5.0",
 ]
 jwt = [
     "pyjwt[crypto]>=2.8,<3",
@@ -216,7 +216,7 @@ dev = [
     "confluent-kafka>=2.6,<3.0",
     "bytewax>=0.21; python_version < '3.13'",
     "boto3>=1.35",
-    "pymongo>=4.6,<5.0",
+    "pymongo>=4.9,<5.0",
     "opentelemetry-api>=1.27,<2.0",
     "opentelemetry-sdk>=1.27,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",

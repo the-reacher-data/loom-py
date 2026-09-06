@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable, Mapping
-from types import TracebackType
 from typing import Any
 
-from bson import ObjectId
 from pymongo.errors import BulkWriteError, DuplicateKeyError
-from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
+from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult
 
 _DUPLICATE_KEY = 11000
 _Document = dict[str, Any]
@@ -29,6 +27,7 @@ def _ordered(value: Any, other: Any, verdict: Callable[[Any, Any], bool]) -> boo
 
 
 _FIELD_OPS: dict[str, Callable[[Any, Any], bool]] = {
+    "$eq": lambda value, other: value == other,
     "$ne": lambda value, other: value != other,
     "$gt": lambda value, other: _ordered(value, other, lambda a, b: a > b),
     "$gte": lambda value, other: _ordered(value, other, lambda a, b: a >= b),
@@ -93,13 +92,17 @@ class FakeCursor:
         self._skip = 0
         self._limit = 0
 
-    def sort(
-        self, key_or_list: str | list[tuple[str, int]], direction: int | None = None
-    ) -> FakeCursor:
-        if isinstance(key_or_list, str):
-            self._sort = [(key_or_list, 1 if direction is None else direction)]
-        else:
-            self._sort = list(key_or_list)
+    def sort(self, key_or_list: list[tuple[str, int]]) -> FakeCursor:
+        """Record the sort; a repeated key is refused.
+
+        pymongo folds the pairs into one document, where the last direction
+        for a key silently wins; the fake makes that a hard error.
+        """
+        fields = [field for field, _ in key_or_list]
+        duplicates = {field for field in fields if fields.count(field) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate sort key: {', '.join(sorted(duplicates))}")
+        self._sort = list(key_or_list)
         return self
 
     def skip(self, skip: int) -> FakeCursor:
@@ -110,15 +113,13 @@ class FakeCursor:
         self._limit = limit
         return self
 
-    async def to_list(self, length: int | None = None) -> list[_Document]:
+    async def to_list(self) -> list[_Document]:
         documents = list(self._documents)
         for field, direction in reversed(self._sort):
             documents.sort(key=lambda doc: _sort_key(field, doc), reverse=direction == -1)
         documents = documents[self._skip :]
         if self._limit:
             documents = documents[: self._limit]
-        if length is not None:
-            documents = documents[:length]
         return [dict(doc) for doc in documents]
 
 
@@ -175,19 +176,28 @@ class FakeCollection:
         self.last_session = session
         return len(self._select(filter))
 
-    async def update_one(
-        self, filter: Mapping[str, Any], update: Mapping[str, Any], session: object | None = None
-    ) -> UpdateResult:
+    async def find_one_and_update(
+        self,
+        filter: Mapping[str, Any],
+        update: Mapping[str, Any],
+        *,
+        return_document: bool = False,
+        session: object | None = None,
+    ) -> _Document | None:
+        """Apply ``$set`` to the first match and return it as it is afterwards."""
         self.last_session = session
         unknown = [operator for operator in update if operator != "$set"]
         if unknown:
             raise NotImplementedError(
                 f"Fake collection does not apply update operator {unknown[0]!r}"
             )
+        if not return_document:
+            raise NotImplementedError("Fake collection returns the document after the update")
         matched = self._select(filter)[:1]
-        for document in matched:
-            document.update(update.get("$set", {}))
-        return UpdateResult({"n": len(matched), "nModified": len(matched)}, acknowledged=True)
+        if not matched:
+            return None
+        matched[0].update(update.get("$set", {}))
+        return dict(matched[0])
 
     async def delete_one(
         self, filter: Mapping[str, Any], session: object | None = None
@@ -209,7 +219,6 @@ class FakeCollection:
         return [doc for doc in self.documents.values() if _matches(doc, query)]
 
     def _store(self, document: _Document) -> Any:
-        document.setdefault("_id", ObjectId())
         key = document["_id"]
         if key in self.documents:
             raise DuplicateKeyError(f"E11000 duplicate key error: _id {key!r}", code=_DUPLICATE_KEY)
@@ -222,37 +231,11 @@ class FakeCollection:
         return BulkWriteError({"nInserted": len(inserted), "writeErrors": [write_error]})
 
 
-class FakeTransaction:
-    """Block entered via ``async with await session.start_transaction()``.
-
-    Delegates to the session: commits on clean exit, aborts when an
-    exception propagates.
-    """
-
-    def __init__(self, session: FakeSession) -> None:
-        self._session = session
-
-    async def __aenter__(self) -> FakeTransaction:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        if exc_type is None:
-            await self._session.commit_transaction()
-        else:
-            await self._session.abort_transaction()
-
-
 class FakeSession:
     """Stand-in for :class:`pymongo.asynchronous.client_session.AsyncClientSession`.
 
-    Supports both driver shapes: the ``async with await start_transaction()``
-    block, and the explicit ``commit_transaction`` / ``abort_transaction`` /
-    ``end_session`` calls the unit of work issues.
+    Supports the explicit ``start_transaction`` / ``commit_transaction`` /
+    ``abort_transaction`` / ``end_session`` calls the unit of work issues.
     """
 
     def __init__(self, client: FakeMongoClient) -> None:
@@ -261,18 +244,7 @@ class FakeSession:
         self.ended = False
         self._snapshot: dict[str, dict[Any, _Document]] = {}
 
-    async def __aenter__(self) -> FakeSession:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        return None
-
-    async def start_transaction(self) -> FakeTransaction:
+    async def start_transaction(self) -> None:
         if self._client.start_transaction_error is not None:
             raise self._client.start_transaction_error
         self.in_transaction = True
@@ -280,7 +252,6 @@ class FakeSession:
             name: dict(collection.documents)
             for name, collection in self._client.collections.items()
         }
-        return FakeTransaction(self)
 
     async def commit_transaction(self) -> None:
         self._client.committed += 1
@@ -327,12 +298,11 @@ class FakeDatabase:
 class FakeMongoClient:
     """Stand-in for :class:`pymongo.asynchronous.mongo_client.AsyncMongoClient`.
 
-    Mirrors the driver's shapes: ``start_session()`` is synchronous and
-    returns an async context manager; ``start_transaction()`` is awaited and
-    returns one; ``client[database][collection]`` addresses a collection;
-    ``admin.command("ping")`` answers the readiness probe. Commits and aborts
-    are counted; an explicit ``abort_transaction`` restores the documents
-    present when the transaction started.
+    Mirrors the driver's shapes: ``start_session()`` is synchronous,
+    ``start_transaction()`` is awaited, ``client[database][collection]``
+    addresses a collection and ``admin.command("ping")`` answers the
+    readiness probe. Commits and aborts are counted; an abort restores the
+    documents present when the transaction started.
     """
 
     def __init__(self) -> None:

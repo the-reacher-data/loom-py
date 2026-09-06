@@ -102,9 +102,27 @@ def test_client_seam_forwards_only_the_options_set(monkeypatch: pytest.MonkeyPat
     )
 
     assert seen == [
-        ("mongodb://localhost:27017", {}),
-        ("mongodb://localhost:27017", {"maxPoolSize": 8, "serverSelectionTimeoutMS": 500}),
+        ("mongodb://localhost:27017", {"tz_aware": True}),
+        (
+            "mongodb://localhost:27017",
+            {"tz_aware": True, "maxPoolSize": 8, "serverSelectionTimeoutMS": 500},
+        ),
     ]
+
+
+def test_unknown_section_key_is_a_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ConfigError, match="transactoins"):
+        _wiring(monkeypatch, FakeMongoClient(), {**_SECTION, "transactoins": True})
+
+
+@pytest.mark.parametrize("transactions", [False, True])
+def test_build_logs_the_unit_of_work_mode(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, transactions: bool
+) -> None:
+    with caplog.at_level(logging.INFO, logger=backend_module.__name__):
+        _wiring(monkeypatch, FakeMongoClient(), {**_SECTION, "transactions": transactions})
+
+    assert f"mongo unit of work: transactions={transactions}" in caplog.text
 
 
 def test_prepare_models_rejects_autoincrement_naming_the_model(

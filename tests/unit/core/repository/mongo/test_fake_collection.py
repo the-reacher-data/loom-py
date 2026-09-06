@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pymongo import ReturnDocument
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from loom.core.repository.abc import Cursor, FilterGroup, FilterOp, FilterSpec, SortSpec
 from loom.core.repository.mongo.query_compiler import MongoQueryCompiler
 
-from ._fake import FakeCollection, FakeMongoClient
+from ._fake import FakeCollection
 
-_DAY = datetime(2026, 1, 1)
+# Stored form: the repository writes aware UTC datetimes.
+_DAY = datetime(2026, 1, 1, tzinfo=UTC)
 _DOCS: tuple[dict[str, Any], ...] = (
     {"_id": "a", "title": "Loom intro", "views": 10, "published_at": _DAY},
     {"_id": "b", "title": "loom deep dive", "views": 20, "published_at": None},
@@ -41,6 +43,7 @@ class TestFilterEvaluation:
         ("group", "expected"),
         [
             (_single("slug", FilterOp.EQ, "c"), ["c"]),
+            (_single("title", FilterOp.EQ, {"$gt": ""}), []),
             (_single("views", FilterOp.NE, 20), ["a", "d", "e"]),
             (_single("published_at", FilterOp.NE, "x"), ["a", "c", "e"]),
             (_single("views", FilterOp.GT, 20), ["e"]),
@@ -102,12 +105,17 @@ class TestCursorAndPaging:
 
         assert [doc["_id"] for doc in docs] == ["b", "d", "a", "c", "e"]
 
-    async def test_to_list_length_caps_and_copies(self, collection: FakeCollection) -> None:
-        docs = await collection.find({}).sort("views", -1).to_list(length=1)
+    async def test_to_list_copies_the_documents(self, collection: FakeCollection) -> None:
+        docs = await collection.find({}).sort([("views", -1)]).limit(1).to_list()
         docs[0]["views"] = -1
 
         assert [doc["_id"] for doc in docs] == ["e"]
         assert collection.documents["e"]["views"] == 30
+
+    async def test_duplicate_sort_key_is_rejected(self, collection: FakeCollection) -> None:
+        """pymongo folds the pairs into one document, where the last direction wins."""
+        with pytest.raises(ValueError, match="_id"):
+            collection.find({}).sort([("_id", -1), ("_id", 1)])
 
     async def test_keyset_walk_visits_every_document_once(
         self, collection: FakeCollection, compiler: MongoQueryCompiler
@@ -138,18 +146,28 @@ class TestWrites:
         assert await collection.count_documents(query) == 2
         assert await collection.find_one({"_id": "zz"}) is None
 
-    async def test_update_one_sets_fields_on_the_first_match(
+    async def test_find_one_and_update_returns_the_document_after(
         self, collection: FakeCollection
     ) -> None:
-        result = await collection.update_one({"views": 20}, {"$set": {"views": 21}})
+        after = await collection.find_one_and_update(
+            {"views": 20}, {"$set": {"views": 21}}, return_document=ReturnDocument.AFTER
+        )
+        missing = await collection.find_one_and_update(
+            {"_id": "zz"}, {"$set": {"views": 21}}, return_document=ReturnDocument.AFTER
+        )
 
-        assert result.matched_count == 1
+        assert after is not None and (after["_id"], after["views"]) == ("b", 21)
+        assert missing is None
         assert collection.documents["b"]["views"] == 21
         assert collection.documents["c"]["views"] == 20
 
-    async def test_update_one_rejects_other_operators(self, collection: FakeCollection) -> None:
+    async def test_find_one_and_update_rejects_other_operators(
+        self, collection: FakeCollection
+    ) -> None:
         with pytest.raises(NotImplementedError, match=r"\$inc"):
-            await collection.update_one({"_id": "a"}, {"$inc": {"views": 1}})
+            await collection.find_one_and_update(
+                {"_id": "a"}, {"$inc": {"views": 1}}, return_document=ReturnDocument.AFTER
+            )
 
     async def test_delete_one(self, collection: FakeCollection) -> None:
         result = await collection.delete_one({"_id": "a"})
@@ -158,12 +176,11 @@ class TestWrites:
         assert (result.deleted_count, missing.deleted_count) == (1, 0)
         assert "a" not in collection.documents
 
-    async def test_insert_one_generates_an_id_and_rejects_duplicates(self) -> None:
+    async def test_insert_one_rejects_duplicates(self) -> None:
         collection = FakeCollection()
-        generated = await collection.insert_one({"title": "x"})
-        await collection.insert_one({"_id": "a"})
+        inserted = await collection.insert_one({"_id": "a"})
 
-        assert generated.inserted_id in collection.documents
+        assert inserted.inserted_id == "a"
         with pytest.raises(DuplicateKeyError):
             await collection.insert_one({"_id": "a"})
 
@@ -178,22 +195,3 @@ class TestWrites:
         assert sorted(collection.documents) == [1, 2]
         assert info.value.details["writeErrors"][0]["index"] == 2
         assert info.value.details["writeErrors"][0]["code"] == 11000
-
-
-class TestSessions:
-    async def test_transaction_commits_on_clean_exit(self) -> None:
-        client = FakeMongoClient()
-
-        async with client.start_session() as session, await session.start_transaction():
-            await client.collection("articles").insert_one({"_id": 1})
-
-        assert (client.committed, client.aborted) == (1, 0)
-
-    async def test_transaction_aborts_on_error(self) -> None:
-        client = FakeMongoClient()
-
-        with pytest.raises(RuntimeError):
-            async with client.start_session() as session, await session.start_transaction():
-                raise RuntimeError("boom")
-
-        assert (client.committed, client.aborted) == (0, 1)

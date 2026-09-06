@@ -28,6 +28,7 @@ _CURSOR_SORTS: dict[str, tuple[SortSpec, ...]] = {
     "single-desc": (SortSpec("amount", "DESC"),),
     "asc-then-desc": (SortSpec("amount"), SortSpec("status", "DESC")),
     "desc-then-asc": (SortSpec("status", "DESC"), SortSpec("created_at")),
+    "pk-desc": (SortSpec("id", "DESC"),),
 }
 
 

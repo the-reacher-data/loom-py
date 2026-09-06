@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any, cast
 from uuid import UUID
 
@@ -12,7 +13,7 @@ from pymongo.errors import AutoReconnect, BulkWriteError
 from pymongo.results import DeleteResult, InsertManyResult
 
 from loom.core.errors import Conflict
-from loom.core.model import BaseModel, ColumnField, TimestampedModel
+from loom.core.model import BaseModel, ColumnField, DateTime, TimestampedModel
 from loom.core.model.enums import ServerDefault
 from loom.core.repository.abc import (
     CursorResult,
@@ -48,6 +49,50 @@ class ArticleUpdate(BaseModel):
     title: str | None = None
     views: int | None = None
     slug: str | None = None
+
+
+class ArticlePublish(BaseModel):
+    slug: str
+    title: str
+    published_at: datetime
+
+
+class ArticleWithExtra(BaseModel):
+    """Input carrying a field the model has no column for."""
+
+    slug: str
+    title: str
+    extra: str
+
+
+class Event(BaseModel):
+    """Aware datetime column (the ``DateTime`` default) plus a NOW column."""
+
+    __tablename__ = "events"
+
+    id: str = ColumnField(primary_key=True, server_default=ServerDefault.UUID4)
+    at: datetime = ColumnField(DateTime(tz=True))
+    created_at: datetime | None = ColumnField(
+        server_default=ServerDefault.NOW, nullable=True, default=None
+    )
+
+
+class EventCreate(BaseModel):
+    at: datetime
+
+
+class Invoice(BaseModel):
+    __tablename__ = "invoices"
+
+    id: UUID = ColumnField(primary_key=True)
+    amount: Decimal = ColumnField()
+    issued_on: date = ColumnField()
+
+
+class InvoiceCreate(BaseModel):
+    id: UUID
+    amount: Decimal
+    issued_on: date
 
 
 class Note(BaseModel):
@@ -168,6 +213,86 @@ class TestPrimaryKeyMapping:
         assert await repo.update("a", ArticleUpdate()) == Article(slug="a", title="A", views=1)
 
 
+class TestStorageForm:
+    async def test_only_model_columns_are_persisted(self, collection: FakeCollection) -> None:
+        await _articles(collection).create(ArticleWithExtra(slug="a", title="A", extra="x"))
+
+        assert set(collection.documents["a"]) == {"_id", "title"}
+
+    async def test_update_persists_only_model_columns(self, collection: FakeCollection) -> None:
+        repo = _articles(collection)
+        await repo.create(ArticleCreate(slug="a", title="A"))
+
+        await repo.update("a", ArticleWithExtra(slug="a", title="B", extra="x"))
+
+        assert set(collection.documents["a"]) == {"_id", "title"}
+
+    async def test_create_output_equals_a_later_read(
+        self, collection: FakeCollection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BSON keeps milliseconds and the client is tz-aware: the output takes that form."""
+        monkeypatch.setattr(
+            repository_module,
+            "_utc_now",
+            lambda: datetime(2026, 1, 1, 0, 0, 0, 999_999, tzinfo=UTC),
+        )
+        repo: RepositoryMongo[Event, str] = RepositoryMongo(Event, collection)
+
+        created = await repo.create(
+            EventCreate(at=datetime(2026, 1, 3, 12, 0, 0, 123_456, tzinfo=UTC))
+        )
+
+        assert created.at == datetime(2026, 1, 3, 12, 0, 0, 123_000, tzinfo=UTC)
+        assert created.created_at == datetime(2026, 1, 1, 0, 0, 0, 999_000, tzinfo=UTC)
+        assert await repo.get_by_id(created.id) == created
+
+    async def test_naive_datetime_column_reads_back_naive_utc(
+        self, collection: FakeCollection
+    ) -> None:
+        """``DateTime(tz=False)`` is stored as UTC and restored without an offset."""
+        repo = _articles(collection)
+
+        created = await repo.create(
+            ArticlePublish(
+                slug="a", title="A", published_at=datetime(2026, 1, 3, 12, 0, 0, 123_456)
+            )
+        )
+
+        assert collection.documents["a"]["published_at"] == datetime(
+            2026, 1, 3, 12, 0, 0, 123_000, tzinfo=UTC
+        )
+        assert created.published_at == datetime(2026, 1, 3, 12, 0, 0, 123_000)
+        assert await repo.get_by_id("a") == created
+
+    async def test_string_stored_types_round_trip_and_filter(
+        self, collection: FakeCollection
+    ) -> None:
+        repo: RepositoryMongo[Invoice, UUID] = RepositoryMongo(Invoice, collection)
+        ident = UUID("b7cdfa6d-0805-4c13-8071-af9317c08254")
+        created = await repo.create(
+            InvoiceCreate(id=ident, amount=Decimal("19.90"), issued_on=date(2026, 1, 3))
+        )
+
+        assert collection.documents[str(ident)] == {
+            "_id": str(ident),
+            "amount": "19.90",
+            "issued_on": "2026-01-03",
+        }
+        assert created == Invoice(id=ident, amount=Decimal("19.90"), issued_on=date(2026, 1, 3))
+        assert await repo.get_by("issued_on", date(2026, 1, 3)) == created
+        assert await repo.get_by("amount", Decimal("19.90")) == created
+        assert await repo.exists_by("issued_on", date(2026, 1, 4)) is False
+
+    async def test_a_mapping_value_never_becomes_an_operator(
+        self, collection: FakeCollection
+    ) -> None:
+        repo = _articles(collection)
+        await repo.create(ArticleCreate(slug="a", title="A"))
+
+        assert await repo.get_by_id(cast(Any, {"$gt": ""})) is None
+        assert await repo.exists_by("title", {"$gt": ""}) is False
+
+
 class TestIdGeneration:
     async def test_generates_uuid4_when_id_absent(self, collection: FakeCollection) -> None:
         repo = _notes(collection)
@@ -189,7 +314,8 @@ class TestIdGeneration:
     async def test_server_default_now_is_applied_on_create(
         self, collection: FakeCollection
     ) -> None:
-        before = datetime.now(UTC)
+        # Stamps are stored at BSON millisecond precision, so compare at that grain.
+        before = datetime.now(UTC).replace(microsecond=0)
 
         created = await _notes(collection).create(NoteCreate(body="first"))
 
@@ -464,6 +590,29 @@ class TestCursorPagination:
         assert isinstance(second, CursorResult)
         walked = [item.id for item in (*first.items, *second.items)]
         assert walked == sorted(note.id for note in created)
+        assert second.has_next is False
+
+    async def test_sort_naming_the_key_descending_walks_in_that_order(
+        self, collection: FakeCollection
+    ) -> None:
+        """No second ``_id`` pair is appended: pymongo would let the last one win."""
+        repo = _articles(collection)
+        await _seed(repo, [("a", 1), ("b", 1), ("c", 1)])
+        sort = (SortSpec("slug", "DESC"),)
+        first = await repo.list_with_query(
+            QuerySpec(sort=sort, pagination=PaginationMode.CURSOR, limit=2)
+        )
+        assert isinstance(first, CursorResult)
+        assert first.next_cursor is not None
+
+        second = await repo.list_with_query(
+            QuerySpec(
+                sort=sort, pagination=PaginationMode.CURSOR, limit=2, cursor=first.next_cursor
+            )
+        )
+
+        assert isinstance(second, CursorResult)
+        assert [item.slug for item in (*first.items, *second.items)] == ["c", "b", "a"]
         assert second.has_next is False
 
     async def test_foreign_token_is_unsupported(self, collection: FakeCollection) -> None:

@@ -7,8 +7,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.core.repository.abc.cursor import Cursor, decode_cursor
-from loom.core.repository.abc.errors import UnsupportedQuery
+from loom.core.repository.abc.cursor import decode_cursor
 from loom.core.repository.abc.query import (
     FilterGroup,
     PaginationMode,
@@ -135,7 +134,9 @@ class QuerySpecCompiler:
             stmt = stmt.where(clause)
 
         if query.cursor:
-            cursor = self._decode(query.cursor, query)
+            cursor = decode_cursor(
+                query.cursor, self._backend, self._model_name, key_count=len(query.sort)
+            )
             predicate = compile_cursor_predicate(sa_model, cursor, query.sort, self._id_column)
             stmt = stmt.where(predicate)
 
@@ -150,14 +151,6 @@ class QuerySpecCompiler:
         return extract_next_cursor(
             items, query.sort, self._id_column.key, query.limit, self._backend
         )
-
-    def _decode(self, token: str, query: QuerySpec) -> Cursor:
-        cursor = decode_cursor(token, self._backend, self._model_name)
-        if len(cursor.keys) != len(query.sort):
-            raise UnsupportedQuery(
-                self._backend, self._model_name, "cursor token does not match the sort"
-            )
-        return cursor
 
     async def execute(
         self,

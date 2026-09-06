@@ -101,20 +101,22 @@ def encode_cursor(backend: str, keys: Sequence[object], tie_breaker: object) -> 
     return base64.urlsafe_b64encode(msgspec.json.encode(token)).decode()
 
 
-def decode_cursor(token: str, backend: str, model: str) -> Cursor:
+def decode_cursor(token: str, backend: str, model: str, *, key_count: int | None = None) -> Cursor:
     """Decode a token issued by :func:`encode_cursor` for ``backend``.
 
     Args:
         token: Opaque token supplied by the client.
         backend: Name of the backend decoding the token.
         model: Qualified model name, used in the error.
+        key_count: Number of sort keys the query orders by; when given, a
+            token carrying a different number is rejected.
 
     Returns:
         The decoded :class:`Cursor`.
 
     Raises:
-        UnsupportedQuery: If the token is undecodable, in a legacy format, or
-            was issued by another backend.
+        UnsupportedQuery: If the token is undecodable, in a legacy format,
+            was issued by another backend or does not match the sort.
     """
     try:
         record = msgspec.json.decode(base64.urlsafe_b64decode(token.encode()), type=_Token)
@@ -122,6 +124,8 @@ def decode_cursor(token: str, backend: str, model: str) -> Cursor:
         raise UnsupportedQuery(backend, model, "cursor token is not valid") from exc
     if record.b != backend:
         raise UnsupportedQuery(backend, model, "cursor token was issued by another backend")
+    if key_count is not None and len(record.k) != key_count:
+        raise UnsupportedQuery(backend, model, "cursor token does not match the sort")
     return Cursor(
         backend=record.b,
         keys=tuple(_unwrap(key) for key in record.k),

@@ -7,9 +7,13 @@ key is stored as ``_id`` and mapped back on read, so a model declaring
 :class:`~loom.core.repository.mongo.ids.IdPolicy` when the input carries
 none.
 
-Values cross the wire as msgspec builtins with ``datetime`` kept native
-(BSON has a datetime type); ``date``, ``time``, ``Decimal`` and ``UUID`` are
-stored as strings and restored by the output struct's annotation on read.
+Values cross the wire in their storage form
+(:mod:`loom.core.repository.mongo.values`): ``datetime`` native as aware UTC
+at millisecond precision, ``date``, ``time``, ``Decimal`` and ``UUID`` as
+strings restored by the output struct's annotation on read. A
+``DateTime(tz=False)`` column reads back naive (UTC), so the output of
+``create`` equals a later read whatever the column declares. Only the model's
+column fields are written.
 
 ``pymongo`` is an optional extra (``loom-kernel[mongo]``) imported at module
 level: this module is only reached through the Mongo backend, and the
@@ -24,9 +28,10 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Generic, Protocol, cast
 
 import msgspec
+from pymongo import ReturnDocument
 from pymongo.asynchronous.client_session import AsyncClientSession
 from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
-from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
+from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult
 
 from loom.core.errors import Conflict
 from loom.core.logger import get_logger
@@ -53,7 +58,6 @@ from loom.core.repository.abc import (
     QuerySpec,
     Readable,
     SortSpec,
-    UnsupportedQuery,
     Updatable,
     build_page_result,
     decode_cursor,
@@ -61,6 +65,7 @@ from loom.core.repository.abc import (
 )
 from loom.core.repository.mongo.ids import IdPolicy, Uuid4IdPolicy
 from loom.core.repository.mongo.query_compiler import MongoFilter, MongoQueryCompiler, MongoSort
+from loom.core.repository.mongo.values import to_storage_datetime, to_storage_value
 
 Document = dict[str, Any]
 SessionProvider = Callable[[], AsyncClientSession | None]
@@ -72,6 +77,11 @@ _ID_ASCENDING: tuple[str, int] = (_ID, 1)
 _DUPLICATE_KEY = 11000
 # BSON encodes datetime natively; every other rich type is stored as a string.
 _NATIVE_TYPES = (datetime,)
+
+
+def _no_session() -> AsyncClientSession | None:
+    """Default ``session_provider``: every driver call runs outside a session."""
+    return None
 
 
 class MongoFindCursor(Protocol):
@@ -117,13 +127,14 @@ class MongoCollection(Protocol):
         self, filter: Mapping[str, Any], *, session: AsyncClientSession | None = None
     ) -> int: ...
 
-    async def update_one(
+    async def find_one_and_update(
         self,
         filter: Mapping[str, Any],
         update: Mapping[str, Any],
         *,
+        return_document: bool = False,
         session: AsyncClientSession | None = None,
-    ) -> UpdateResult: ...
+    ) -> Document | None: ...
 
     async def delete_one(
         self, filter: Mapping[str, Any], *, session: AsyncClientSession | None = None
@@ -166,7 +177,8 @@ class RepositoryMongo(
         id_policy: Strategy minting and converting ids; defaults to
             :class:`~loom.core.repository.mongo.ids.Uuid4IdPolicy`.
         session_provider: Returns the active client session, or ``None``;
-            every driver call runs in the session it returns.
+            every driver call runs in the session it returns. Defaults to
+            no session.
 
     Raises:
         ValueError: If the model declares no primary key.
@@ -184,15 +196,21 @@ class RepositoryMongo(
         model: type,
         collection: MongoCollection,
         id_policy: IdPolicy | None = None,
-        session_provider: SessionProvider | None = None,
+        session_provider: SessionProvider = _no_session,
     ) -> None:
         self._model = model
         self._collection = collection
         self._ids: IdPolicy = id_policy if id_policy is not None else Uuid4IdPolicy()
-        self._session_provider = session_provider
+        self._session = session_provider
         self._id_attr = get_id_attribute(model)
         column_fields = get_column_fields(model)
         self._column_fields = frozenset(column_fields)
+        self._naive_datetime_fields = frozenset(
+            name
+            for name, info in column_fields.items()
+            if info.column_type.type_name == "DateTime"
+            and info.column_type.kwargs.get("timezone") is False
+        )
         self._now_fields = frozenset(
             name
             for name, info in column_fields.items()
@@ -313,10 +331,11 @@ class RepositoryMongo(
         }
         changes.update(_stamp(self._onupdate_fields))
         if changes:
-            result = await self._collection.update_one(key, {"$set": changes}, session=session)
-            if result.matched_count == 0:
-                return None
-        document = await self._collection.find_one(key, session=session)
+            document = await self._collection.find_one_and_update(
+                key, {"$set": changes}, return_document=ReturnDocument.AFTER, session=session
+            )
+        else:
+            document = await self._collection.find_one(key, session=session)
         return None if document is None else self._to_output(document)
 
     async def delete(self, obj_id: IdT) -> bool:
@@ -331,18 +350,8 @@ class RepositoryMongo(
         profile: str = "default",
     ) -> PageResult[OutputT]:
         """Fetch one offset page ordered by primary key, with the total count."""
-        session = self._session()
         mongo_filter = self._compiler.compile_filter(_equality_group(filter_params))
-        documents = await (
-            self._collection.find(mongo_filter, session=session)
-            .sort([_ID_ASCENDING])
-            .skip(page_params.offset)
-            .limit(page_params.limit)
-            .to_list()
-        )
-        total = await self._collection.count_documents(mongo_filter, session=session)
-        items = [self._to_output(document) for document in documents]
-        return build_page_result(items, total, page_params)
+        return await self._offset_page(mongo_filter, [_ID_ASCENDING], page_params)
 
     async def list_with_query(
         self, query: QuerySpec, profile: str = "default"
@@ -350,7 +359,7 @@ class RepositoryMongo(
         """Fetch entities matching a :class:`QuerySpec` in offset or cursor mode.
 
         Both modes append ``_id`` ascending to the requested sort so pages
-        are deterministic.
+        are deterministic, unless the sort already names the primary key.
 
         Raises:
             UnsupportedQuery: On an unknown field, an unsupported operator or
@@ -362,12 +371,19 @@ class RepositoryMongo(
         return await self._list_offset(query)
 
     async def _list_offset(self, query: QuerySpec) -> PageResult[OutputT]:
+        return await self._offset_page(
+            self._query_filter(query),
+            self._sort(query.sort),
+            PageParams(page=query.page, limit=query.limit),
+        )
+
+    async def _offset_page(
+        self, mongo_filter: MongoFilter, sort: MongoSort, page_params: PageParams
+    ) -> PageResult[OutputT]:
         session = self._session()
-        mongo_filter = self._query_filter(query)
-        page_params = PageParams(page=query.page, limit=query.limit)
         documents = await (
             self._collection.find(mongo_filter, session=session)
-            .sort(self._sort(query.sort))
+            .sort(sort)
             .skip(page_params.offset)
             .limit(page_params.limit)
             .to_list()
@@ -403,23 +419,34 @@ class RepositoryMongo(
         return self._compiler.compile_filter(query.filters)
 
     def _sort(self, sort: tuple[SortSpec, ...]) -> MongoSort:
-        return [*self._compiler.compile_sort(sort), _ID_ASCENDING]
+        """Compiled sort plus ``_id`` ascending, unless the sort already names the key.
+
+        pymongo folds the pairs into one document, so a second ``_id`` pair
+        would silently override the requested direction.
+        """
+        pairs = self._compiler.compile_sort(sort)
+        if any(column == _ID for column, _ in pairs):
+            return pairs
+        return [*pairs, _ID_ASCENDING]
 
     def _decode(self, token: str, sort: tuple[SortSpec, ...]) -> Cursor:
-        cursor = decode_cursor(token, self.backend_name, self._model.__qualname__)
-        if len(cursor.keys) != len(sort):
-            raise UnsupportedQuery(
-                self.backend_name, self._model.__qualname__, "cursor token does not match the sort"
-            )
+        """Decode the token and put its keys in storage form."""
+        cursor = decode_cursor(
+            token, self.backend_name, self._model.__qualname__, key_count=len(sort)
+        )
         keys = tuple(
-            self._ids.to_storage(key) if spec.field == self._id_attr else key
-            for spec, key in zip(sort, cursor.keys, strict=True)
+            self._storage_key(spec.field, key) for spec, key in zip(sort, cursor.keys, strict=True)
         )
         return Cursor(
             backend=cursor.backend,
             keys=keys,
             tie_breaker=self._ids.to_storage(cursor.tie_breaker),
         )
+
+    def _storage_key(self, field: str, key: object) -> object:
+        if field == self._id_attr:
+            return self._ids.to_storage(key)
+        return to_storage_value(key)
 
     def _encode(self, document: Document, sort: tuple[SortSpec, ...]) -> str:
         """Issue the token for the page after ``document``; ``_id`` keys use the model form."""
@@ -431,14 +458,8 @@ class RepositoryMongo(
             return self._ids.from_storage(document[_ID])
         return document.get(field)
 
-    def _session(self) -> AsyncClientSession | None:
-        return None if self._session_provider is None else self._session_provider()
-
-    def _column(self, field: str) -> str:
-        return _ID if field == self._id_attr else field
-
     def _key(self, obj_id: object) -> MongoFilter:
-        return {_ID: self._ids.to_storage(obj_id)}
+        return {_ID: {"$eq": self._ids.to_storage(obj_id)}}
 
     def _equals(self, field: str, value: Any) -> MongoFilter:
         if field == self._id_attr:
@@ -462,7 +483,7 @@ class RepositoryMongo(
         return {_ID: key, **values, **_stamp(missing)}
 
     def _to_internal(self, data: msgspec.Struct) -> Document:
-        """Serialize a struct to a dict keyed by internal (snake_case) field names."""
+        """Serialize a struct to its column fields, keyed by internal name, in storage form."""
         builtins = msgspec.to_builtins(data, builtin_types=_NATIVE_TYPES)
         if not isinstance(builtins, dict):
             raise TypeError("Struct payload must serialize to a dict")
@@ -470,12 +491,21 @@ class RepositoryMongo(
             field.encode_name: field.name for field in msgspec.structs.fields(type(data))
         }
         payload = cast(dict[str, Any], builtins)
-        return {encoded_to_internal.get(key, key): value for key, value in payload.items()}
+        internal = {encoded_to_internal.get(key, key): value for key, value in payload.items()}
+        return {
+            name: to_storage_value(value)
+            for name, value in internal.items()
+            if name in self._column_fields
+        }
 
     def _to_output(self, document: Document) -> OutputT:
         """Build the output struct: ``_id`` back to the key field, unknown keys dropped."""
         kwargs = {name: value for name, value in document.items() if name in self._column_fields}
         kwargs[self._id_attr] = self._ids.from_storage(document[_ID])
+        for name in self._naive_datetime_fields:
+            value = kwargs.get(name)
+            if isinstance(value, datetime):
+                kwargs[name] = value.replace(tzinfo=None)
         return cast(OutputT, to_struct(self._model, kwargs))
 
 
@@ -498,7 +528,7 @@ def _stamp(fields: frozenset[str]) -> Document:
     """Return ``fields`` mapped to one shared current UTC timestamp."""
     if not fields:
         return {}
-    now = _utc_now()
+    now = to_storage_datetime(_utc_now())
     return dict.fromkeys(fields, now)
 
 

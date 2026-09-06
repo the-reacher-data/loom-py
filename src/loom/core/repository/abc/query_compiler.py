@@ -8,7 +8,7 @@ so repositories can be written against a compiler instead of a backend.
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Protocol, TypeVar
 
 from loom.core.repository.abc.query import FilterGroup, SortSpec
 
@@ -16,7 +16,6 @@ FilterT_co = TypeVar("FilterT_co", covariant=True)
 SortT_co = TypeVar("SortT_co", covariant=True)
 
 
-@runtime_checkable
 class QueryCompiler(Protocol[FilterT_co, SortT_co]):
     """Compiles query parts into a backend's native expressions.
 

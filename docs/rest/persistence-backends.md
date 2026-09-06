@@ -183,14 +183,15 @@ Keyset pagination has one token contract for every backend
 carrying the issuing backend's name, the sort key values of the last row on the
 page and the primary key as tie-breaker. Backends issue and consume it through
 `encode_cursor(backend, keys, tie_breaker)` and
-`decode_cursor(token, backend, model)`; each repository class names itself with
-a `backend_name` class variable.
+`decode_cursor(token, backend, model, key_count=len(sort))`, which rejects a
+token whose key count differs from the sort; each repository class names
+itself with a `backend_name` class variable.
 
 ```python
 from loom.core.repository.abc.cursor import decode_cursor, encode_cursor
 
 token = encode_cursor("sqlalchemy", keys=[created_at, 1042], tie_breaker=1042)
-cursor = decode_cursor(token, "sqlalchemy", "billing.Invoice")
+cursor = decode_cursor(token, "sqlalchemy", "billing.Invoice", key_count=2)
 cursor.keys, cursor.tie_breaker   # (created_at, 1042), 1042
 ```
 
@@ -222,8 +223,8 @@ repositories use. Without it the probe logs the refusal and `/health` answers
 
 `persistence.backend: mongo` binds every discovered model to a collection of
 one database through pymongo's async client. Needs the `mongo` extra
-(`loom-kernel[mongo]`); selecting the backend without it fails at startup
-naming the extra.
+(`loom-kernel[mongo]`, pymongo ≥ 4.9 for the async API); selecting the
+backend without it fails at startup naming the extra.
 
 ```yaml
 persistence:
@@ -248,6 +249,10 @@ persistence:
 | `collections` | `{}` | Collection name per model **class name**; absent models use `__tablename__`. |
 | `max_pool_size`, `server_selection_timeout_ms` | unset | Forwarded to the driver only when set. |
 
+The section rejects unknown keys, so a misspelt option is a `ConfigError`
+at startup rather than a silently ignored setting, and startup logs
+`mongo unit of work: transactions=<bool>` once.
+
 **`_id` mapping.** The model's primary key, whatever its name, is stored as
 `_id` and mapped back on read: a model keyed by `slug` never sees `_id`, and
 the output struct carries `slug`. A client-supplied key always wins; the id
@@ -260,6 +265,20 @@ BSON `ObjectId`: the model declares `str`, the store holds `ObjectId`, and a
 lookup with a string that is not a valid `ObjectId` matches nothing. A model
 declaring `autoincrement=True` is refused at startup naming the model:
 MongoDB has no sequences.
+
+**Values.** The client is built `tz_aware`, and datetimes are stored as
+BSON keeps them: UTC at millisecond precision (a naive value is taken as
+UTC). A `DateTime(tz=False)` column reads back naive UTC; the default
+`DateTime(tz=True)` reads back aware UTC. `date`, `time`, `Decimal` and
+non-key `UUID` values are stored as strings and restored by the model's
+annotation on read, and filter values receive the same conversion, so the
+output of `create` equals a later read and a filter compares against what
+the document holds. Two limits follow from string storage: range operators
+(`GT`, `GTE`, `LT`, `LTE`) and sorts on a `Decimal` column are
+`UnsupportedQuery` (string order is not numeric order), while `date`
+ranges compare ISO strings, which order correctly. `LIKE` / `ILIKE`
+patterns collapse runs of `%` and accept at most eight wildcards; a longer
+pattern is `UnsupportedQuery`.
 
 **Duplicates.** A duplicate key on `create` or `create_many` is `Conflict`
 (`409`). `create_many` is one ordered `insert_many`; on a duplicate the
@@ -281,7 +300,9 @@ logged and reported as not ready.
 `_id` ascending as the tie-breaker, so a list sorted by `created_at` walks a
 compound index `(created_at, _id)`; without one MongoDB sorts in memory and
 refuses once the sort exceeds its memory limit. Create the index yourself: loom
-does not manage collection indexes.
+does not manage collection indexes. A sort that already names the primary key
+gets no tie-breaker: it is walked in the requested direction (`id DESC` stays
+descending).
 
 ## Portable models
 

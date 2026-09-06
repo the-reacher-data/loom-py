@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import pytest
@@ -29,7 +30,7 @@ from pymongo import AsyncMongoClient, MongoClient
 from pymongo.errors import PyMongoError
 
 from loom.core.repository.mongo.repository import RepositoryMongo
-from loom.core.repository.mongo.uow import MongoUnitOfWork, TransactionScope, active_session
+from loom.core.repository.mongo.uow import MongoUnitOfWork, active_session
 from loom.core.repository.registration import capabilities_of
 from tests.unit.core.repository.contract import conftest as contract
 from tests.unit.core.repository.contract.conftest import BackendCase, Order
@@ -62,13 +63,21 @@ def mongo_database() -> Iterator[_SessionDatabase]:
             client.drop_database(name)
 
 
+def redact_uri(uri: str) -> str:
+    """Return ``uri`` without its userinfo, for messages that may be logged."""
+    parts = urlsplit(uri)
+    if "@" not in parts.netloc:
+        return uri
+    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]))
+
+
 def _probe(client: MongoClient[Any], uri: str) -> str | None:
     try:
         client.admin.command("ping")
     except PyMongoError as exc:
         return (
-            f"MongoDB not reachable at {uri} ({type(exc).__name__}) — start it with "
-            "'docker compose -f docker-compose.local.yaml up -d mongo' or point "
+            f"MongoDB not reachable at {redact_uri(uri)} ({type(exc).__name__}) — start it "
+            "with 'docker compose -f docker-compose.local.yaml up -d mongo' or point "
             f"{URI_ENV_VAR} at a replica set"
         )
     return None
@@ -80,7 +89,7 @@ async def mongo_client(mongo_database: _SessionDatabase) -> AsyncIterator[AsyncM
     if mongo_database.skip_reason is not None:
         pytest.skip(mongo_database.skip_reason)
     client: AsyncMongoClient[Any] = AsyncMongoClient(
-        mongo_database.uri, serverSelectionTimeoutMS=_SERVER_SELECTION_TIMEOUT_MS
+        mongo_database.uri, tz_aware=True, serverSelectionTimeoutMS=_SERVER_SELECTION_TIMEOUT_MS
     )
     try:
         yield client
@@ -102,5 +111,5 @@ def case(mongo_client: AsyncMongoClient[Any], mongo_database: _SessionDatabase) 
         model=Order,
         capabilities=frozenset(capabilities_of(RepositoryMongo)),
         transactions=True,
-        unit_of_work=lambda _repository: MongoUnitOfWork(TransactionScope(mongo_client)),
+        unit_of_work=lambda _repository: MongoUnitOfWork(mongo_client),
     )

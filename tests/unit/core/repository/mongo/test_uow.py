@@ -6,14 +6,11 @@ import logging
 from typing import Any, cast
 
 import pytest
+from pymongo import AsyncMongoClient
 
 import loom.core.repository.mongo.uow as uow_module
 from loom.core.repository.mongo.repository import RepositoryMongo
-from loom.core.repository.mongo.uow import (
-    MongoUnitOfWorkFactory,
-    SessionClient,
-    active_session,
-)
+from loom.core.repository.mongo.uow import MongoUnitOfWorkFactory, active_session
 
 from ._fake import FakeMongoClient
 from .conftest import Article
@@ -27,7 +24,8 @@ class _WriteFailed(RuntimeError):
 
 
 def _transactional(client: FakeMongoClient) -> MongoUnitOfWorkFactory:
-    return MongoUnitOfWorkFactory.transactional(cast(SessionClient, client))
+    # The fake stands in for the nominal driver client.
+    return MongoUnitOfWorkFactory.transactional(cast(AsyncMongoClient[Any], client))
 
 
 def _repository(client: FakeMongoClient) -> RepositoryMongo[Article, str]:
@@ -65,6 +63,16 @@ class TestWithoutTransactions:
                 raise _WriteFailed()
 
         assert client.aborted == 0
+
+    async def test_leaves_the_active_session_untouched(self) -> None:
+        """A no-op unit of work inside a transactional one does not hide its session."""
+        client = FakeMongoClient()
+
+        async with _transactional(client).create():
+            outer = active_session()
+            async with MongoUnitOfWorkFactory.without_transactions().create():
+                assert active_session() is outer
+            assert active_session() is outer
 
 
 class TestTransactional:

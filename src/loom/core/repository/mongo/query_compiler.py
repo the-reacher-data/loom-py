@@ -7,18 +7,26 @@ Null semantics follow SQL three-valued logic so every backend selects the
 same rows for one ``QuerySpec``: ``NE`` never matches a ``null`` field, hence
 it is emitted with a ``{field: {"$ne": None}}`` guard (MongoDB's bare ``$ne``
 would match ``null`` and missing fields).
+
+Values are compared in their storage form (:mod:`loom.core.repository.mongo.values`).
+``Decimal`` columns are stored as strings, whose order is lexicographic, so
+range operators and sorts on them are refused; ISO dates order correctly as
+strings and are allowed. Every value is emitted under an explicit operator
+(``$eq`` for equality) so a mapping supplied as a value can never act as one.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any, ClassVar
 
 from loom.core.model.introspection import get_column_fields
 from loom.core.repository.abc.cursor import Cursor
 from loom.core.repository.abc.errors import UnsupportedQuery
 from loom.core.repository.abc.query import FilterGroup, FilterOp, FilterSpec, SortSpec
+from loom.core.repository.mongo.values import to_storage_value
 
 MongoFilter = dict[str, Any]
 MongoSort = list[tuple[str, int]]
@@ -34,11 +42,27 @@ _COMPARISON_OPS: dict[FilterOp, str] = {
 }
 _STEP_OPS: dict[str, str] = {"ASC": "$gt", "DESC": "$lt"}
 _WILDCARDS: dict[str, str] = {"%": ".*", "_": "."}
+_PERCENT_RUN = re.compile(r"%+")
+_MAX_WILDCARDS = 8
+
+
+class _TooManyWildcards(ValueError):
+    """Raised by the LIKE builders; ``_compile_spec`` turns it into ``UnsupportedQuery``."""
 
 
 def _like_to_regex(pattern: str) -> str:
-    """Translate a SQL ``LIKE`` pattern into an anchored regular expression."""
-    body = "".join(_WILDCARDS.get(char) or re.escape(char) for char in pattern)
+    """Translate a SQL ``LIKE`` pattern into an anchored regular expression.
+
+    Runs of ``%`` collapse to one ``.*`` and the wildcard count is capped, so
+    a pattern cannot compile into a regex whose backtracking grows unbounded.
+    """
+    collapsed = _PERCENT_RUN.sub("%", pattern)
+    wildcards = sum(char in _WILDCARDS for char in collapsed)
+    if wildcards > _MAX_WILDCARDS:
+        raise _TooManyWildcards(
+            f"LIKE pattern has {wildcards} wildcards; at most {_MAX_WILDCARDS} are supported"
+        )
+    body = "".join(_WILDCARDS.get(char) or re.escape(char) for char in collapsed)
     return f"^{body}$"
 
 
@@ -51,13 +75,13 @@ def _ilike(value: Any) -> MongoFilter:
 
 
 def _compare(operator: str) -> Callable[[Any], MongoFilter]:
-    return lambda value: {operator: value}
+    return lambda value: {operator: to_storage_value(value)}
 
 
 # IS_NULL ignores the spec value, exactly like the SQLAlchemy compiler.
 _VALUE_OPS: dict[FilterOp, Callable[[Any], Any]] = {
-    FilterOp.EQ: lambda value: value,
-    FilterOp.IN: lambda value: {"$in": list(value)},
+    FilterOp.EQ: lambda value: {"$eq": to_storage_value(value)},
+    FilterOp.IN: lambda value: {"$in": [to_storage_value(item) for item in value]},
     FilterOp.LIKE: _like,
     FilterOp.ILIKE: _ilike,
     FilterOp.IS_NULL: lambda _value: None,
@@ -81,7 +105,7 @@ class MongoQueryCompiler:
 
         compiler = MongoQueryCompiler(Article, "slug")
         compiler.compile_filter(FilterGroup(filters=(FilterSpec("slug", FilterOp.EQ, "a"),)))
-        # {"$and": [{"_id": "a"}]}
+        # {"$and": [{"_id": {"$eq": "a"}}]}
     """
 
     backend: ClassVar[str] = "mongo"
@@ -89,7 +113,11 @@ class MongoQueryCompiler:
     def __init__(self, model: type, id_field: str) -> None:
         self._model_name = model.__qualname__
         self._id_field = id_field
-        self._fields = frozenset(get_column_fields(model))
+        columns = get_column_fields(model)
+        self._fields = frozenset(columns)
+        self._unordered = frozenset(
+            name for name, info in columns.items() if info.python_type is Decimal
+        )
 
     def compile_filter(self, group: FilterGroup) -> MongoFilter:
         """Compile a filter group into a Mongo filter document.
@@ -102,7 +130,9 @@ class MongoQueryCompiler:
             group.
 
         Raises:
-            UnsupportedQuery: On an unknown field or a relation operator.
+            UnsupportedQuery: On an unknown field, a relation operator, a
+                range operator on a ``Decimal`` column or a ``LIKE`` pattern
+                with too many wildcards.
         """
         if not group.filters:
             return {}
@@ -119,8 +149,10 @@ class MongoQueryCompiler:
             List of ``(field, 1 | -1)`` pairs; empty when ``sort`` is empty.
 
         Raises:
-            UnsupportedQuery: On an unknown sort field.
+            UnsupportedQuery: On an unknown sort field or a ``Decimal`` one.
         """
+        for spec in sort:
+            self._require_ordered(spec.field)
         return [
             (self._column(spec.field), _DESCENDING if spec.direction == "DESC" else _ASCENDING)
             for spec in sort
@@ -130,8 +162,10 @@ class MongoQueryCompiler:
         """Build the keyset predicate positioning a page after ``cursor``.
 
         The row-value comparison is expanded as an ``$or`` of ``$and``
-        branches with ``_id`` as the ascending tie-breaker:
-        ``k1 > v1 OR (k1 = v1 AND k2 < v2) OR (... AND _id > vid)``.
+        branches: ``k1 > v1 OR (k1 = v1 AND k2 < v2) OR (... AND _id > vid)``.
+        ``_id`` ascending is the final tie-breaker unless the sort already
+        names the primary key, in which case that directive's direction is
+        the last step.
 
         Args:
             sort: Sort directives the page is ordered by.
@@ -141,30 +175,35 @@ class MongoQueryCompiler:
             Mongo filter document.
 
         Raises:
-            UnsupportedQuery: If the cursor keys do not match ``sort`` or a
-                sort field is unknown.
+            UnsupportedQuery: If a sort field is unknown.
         """
-        if len(cursor.keys) != len(sort):
-            raise self._unsupported("cursor token does not match the sort")
-        columns = [self._column(spec.field) for spec in sort] + [_ID]
-        steps = [_STEP_OPS[spec.direction] for spec in sort] + [_STEP_OPS["ASC"]]
-        values = [*cursor.keys, cursor.tie_breaker]
+        steps = [(self._column(spec.field), _STEP_OPS[spec.direction]) for spec in sort]
+        values = list(cursor.keys)
+        if all(column != _ID for column, _ in steps):
+            steps.append((_ID, _STEP_OPS["ASC"]))
+            values.append(cursor.tie_breaker)
         branches: list[MongoFilter] = []
-        for index, (column, step, value) in enumerate(zip(columns, steps, values, strict=True)):
-            equal_prefix = [{columns[j]: values[j]} for j in range(index)]
+        for index, ((column, step), value) in enumerate(zip(steps, values, strict=True)):
+            equal_prefix = [{steps[j][0]: values[j]} for j in range(index)]
             branches.append({"$and": [*equal_prefix, {column: {step: value}}]})
         return {"$or": branches}
 
     def _compile_spec(self, spec: FilterSpec) -> MongoFilter:
         column = self._column(spec.field)
+        if spec.op in _COMPARISON_OPS:
+            self._require_ordered(spec.field)
         if spec.op is FilterOp.NE:
-            return {"$and": [{column: {"$ne": None}}, {column: {"$ne": spec.value}}]}
+            value = to_storage_value(spec.value)
+            return {"$and": [{column: {"$ne": None}}, {column: {"$ne": value}}]}
         build = _VALUE_OPS.get(spec.op)
         if build is None:
             raise self._unsupported(
                 f"operator '{spec.op.value}' is not supported by the {self.backend} backend"
             )
-        return {column: build(spec.value)}
+        try:
+            return {column: build(spec.value)}
+        except _TooManyWildcards as exc:
+            raise self._unsupported(str(exc)) from exc
 
     def _column(self, field: str) -> str:
         if field == self._id_field:
@@ -172,6 +211,14 @@ class MongoQueryCompiler:
         if field not in self._fields:
             raise self._unsupported(f"unknown field '{field}'")
         return field
+
+    def _require_ordered(self, field: str) -> None:
+        """Refuse ordering on a column stored as a string with no natural order."""
+        if field in self._unordered:
+            raise self._unsupported(
+                f"field '{field}' is a Decimal, stored as a string; the {self.backend} "
+                "backend cannot order or range-compare it"
+            )
 
     def _unsupported(self, reason: str) -> UnsupportedQuery:
         return UnsupportedQuery(self.backend, self._model_name, reason)

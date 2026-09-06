@@ -26,7 +26,7 @@ from loom.core.repository.abc import FilterGroup, FilterOp, FilterSpec, SortSpec
 from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWork
 from loom.core.repository.mongo.repository import RepositoryMongo
-from loom.core.repository.mongo.uow import MongoUnitOfWork, NoSessionScope
+from loom.core.repository.mongo.uow import NoOpMongoUnitOfWork
 from loom.core.repository.registration import capabilities_of
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -257,7 +257,7 @@ def _mongo_case() -> BackendCase:
         model=Order,
         capabilities=frozenset(capabilities_of(RepositoryMongo)),
         transactions=False,
-        unit_of_work=lambda _repository: MongoUnitOfWork(NoSessionScope()),
+        unit_of_work=lambda _repository: NoOpMongoUnitOfWork(),
     )
 
 
