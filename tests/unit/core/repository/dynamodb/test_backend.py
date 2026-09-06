@@ -31,36 +31,18 @@ def _wiring(
 
 
 @pytest.mark.asyncio
-async def test_readiness_is_true_when_the_table_is_described(
-    monkeypatch: pytest.MonkeyPatch, fake_client: FakeClient
-) -> None:
-    wiring = _wiring(monkeypatch, fake_client, "products")
-
-    assert wiring.readiness is not None
-    assert await wiring.readiness() is True
-
-
-@pytest.mark.asyncio
-async def test_readiness_is_true_while_an_index_backfills(
-    monkeypatch: pytest.MonkeyPatch, fake_client: FakeClient
-) -> None:
-    fake_client.table_status["products"] = "UPDATING"
-    wiring = _wiring(monkeypatch, fake_client, "products")
-
-    assert wiring.readiness is not None
-    assert await wiring.readiness() is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["CREATING", "DELETING"])
-async def test_readiness_is_false_while_the_table_is_not_serving(
-    monkeypatch: pytest.MonkeyPatch, fake_client: FakeClient, status: str
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [("ACTIVE", True), ("UPDATING", True), ("CREATING", False), ("DELETING", False)],
+)
+async def test_readiness_reflects_the_table_status(
+    monkeypatch: pytest.MonkeyPatch, fake_client: FakeClient, status: str, expected: bool
 ) -> None:
     fake_client.table_status["products"] = status
     wiring = _wiring(monkeypatch, fake_client, "products")
 
     assert wiring.readiness is not None
-    assert await wiring.readiness() is False
+    assert await wiring.readiness() is expected
 
 
 @pytest.mark.asyncio

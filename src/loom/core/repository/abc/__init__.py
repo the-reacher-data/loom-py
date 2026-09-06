@@ -13,6 +13,7 @@ from loom.core.repository.abc.query import (
     SortSpec,
     build_page_result,
 )
+from loom.core.repository.abc.query_compiler import QueryCompiler
 from loom.core.repository.abc.repo_for import (
     BulkCreatable,
     Countable,
@@ -46,6 +47,7 @@ __all__ = [
     "PageParams",
     "PageResult",
     "PaginationMode",
+    "QueryCompiler",
     "QuerySpec",
     "BulkCreatable",
     "Countable",

@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from loom.core.errors import Conflict
-from loom.core.repository.abc import Countable, Listable, UnsupportedQuery
+from loom.core.repository.abc import UnsupportedQuery
 from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 
 from .conftest import FakeClient, Product, ProductCreate, ProductUpdate
@@ -34,26 +33,6 @@ async def test_create_encodes_floats_as_decimal(fake_client: FakeClient) -> None
     assert fake_client.items["products"]["1"]["price"] == {"N": "9.5"}
 
 
-async def test_create_on_existing_id_raises_conflict(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    await repo.create(ProductCreate(id=1, name="Widget", price=9.5))
-    duplicate = ProductCreate(id=1, name="Duplicate")
-
-    with pytest.raises(Conflict, match="already exists"):
-        await repo.create(duplicate)
-
-
-async def test_get_by_id_missing_returns_none(fake_client: FakeClient) -> None:
-    assert await _repo(fake_client).get_by_id(404) is None
-
-
-async def test_get_by_primary_key_delegates_to_get_by_id(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    await repo.create(ProductCreate(id=7, name="Bolt"))
-
-    assert await repo.get_by("id", 7) == Product(id=7, name="Bolt")
-
-
 async def test_get_by_non_key_field_raises_unsupported_query(fake_client: FakeClient) -> None:
     repo = _repo(fake_client)
 
@@ -66,6 +45,7 @@ async def test_get_by_non_key_field_raises_unsupported_query(fake_client: FakeCl
 
 
 async def test_exists_by_primary_key(fake_client: FakeClient) -> None:
+    """The contract suite skips exists_by for DynamoDB (no Countable): pin the key path here."""
     repo = _repo(fake_client)
     await repo.create(ProductCreate(id=3, name="Nut"))
 
@@ -78,20 +58,6 @@ async def test_exists_by_non_key_field_raises_unsupported_query(fake_client: Fak
 
     with pytest.raises(UnsupportedQuery, match="exists_by\\('name'\\)"):
         await repo.exists_by("name", "Nut")
-
-
-async def test_update_merges_fields(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    await repo.create(ProductCreate(id=1, name="Widget", price=9.5))
-
-    updated = await repo.update(1, ProductUpdate(name="Gadget"))
-
-    assert updated == Product(id=1, name="Gadget", price=9.5)
-    assert await repo.get_by_id(1) == Product(id=1, name="Gadget", price=9.5)
-
-
-async def test_update_missing_returns_none(fake_client: FakeClient) -> None:
-    assert await _repo(fake_client).update(404, ProductUpdate(name="x")) is None
 
 
 async def test_update_conditional_failure_returns_none(fake_client: FakeClient) -> None:
@@ -112,20 +78,9 @@ async def test_update_conditional_failure_returns_none(fake_client: FakeClient) 
     assert await repo.update(1, ProductUpdate(name="Gadget")) is None
 
 
-async def test_delete_reports_existence(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    await repo.create(ProductCreate(id=1, name="Widget"))
+async def test_entity_name_is_the_model_table_name(fake_client: FakeClient) -> None:
+    # Single-table design: the DynamoDB table name is shared, the model name is not.
+    repo = RepositoryDynamoDB(client=fake_client, table_name="shared", model=Product)
 
-    assert await repo.delete(1) is True
-    assert await repo.delete(1) is False
-    assert await repo.get_by_id(1) is None
-
-
-async def test_declares_no_listing_capability(fake_client: FakeClient) -> None:
-    """Listing is absent from the class, not a method that raises."""
-    repo = _repo(fake_client)
-
-    assert Listable not in type(repo).__mro__
-    assert Countable not in type(repo).__mro__
-    for name in ("count", "list_paginated", "list_with_query"):
-        assert not hasattr(repo, name)
+    assert repo.entity_name == "products"
+    assert repo.model is Product

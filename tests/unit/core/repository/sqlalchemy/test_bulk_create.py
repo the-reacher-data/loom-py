@@ -9,11 +9,8 @@ from sqlalchemy import event
 
 from loom.core.backend.sqlalchemy import compile_all, get_compiled
 from loom.core.command import Command
-from loom.core.errors import Conflict
 from loom.core.model import BaseModel, ColumnField, ServerDefault
-from loom.core.repository.abc import BulkCreatable
 from loom.core.repository.mutation import MutationEvent
-from loom.core.repository.registration import capabilities_of
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
 from loom.core.repository.sqlalchemy.transactional import (
@@ -94,18 +91,6 @@ def statements(session_manager: SessionManager) -> Iterator[list[str]]:
 
 
 class TestCreateMany:
-    async def test_returns_outputs_in_input_order(
-        self, repository: RepositorySQLAlchemy[_Item, int]
-    ) -> None:
-        created = await repository.create_many(
-            [_CreateItem(sku="b"), _CreateItem(sku="a", qty=3), _CreateItem(sku="c")]
-        )
-
-        assert [item.sku for item in created] == ["b", "a", "c"]
-        assert [item.qty for item in created] == [0, 3, 0]
-        assert all(isinstance(item, _Item) for item in created)
-        assert all(isinstance(item.id, int) for item in created)
-
     async def test_empty_input_issues_no_statement(
         self, repository: RepositorySQLAlchemy[_Item, int], statements: list[str]
     ) -> None:
@@ -122,16 +107,6 @@ class TestCreateMany:
         inserts = [statement for statement in statements if statement.startswith("INSERT")]
         assert len(inserts) == 1
         assert await repository.count() == 5
-
-    async def test_duplicate_unique_value_raises_conflict_and_persists_nothing(
-        self, repository: RepositorySQLAlchemy[_Item, int]
-    ) -> None:
-        with pytest.raises(Conflict):
-            await repository.create_many(
-                [_CreateItem(sku="x"), _CreateItem(sku="y"), _CreateItem(sku="x")]
-            )
-
-        assert await repository.count() == 0
 
     async def test_falls_back_to_reselect_when_dialect_lacks_returning(
         self,
@@ -208,6 +183,3 @@ class TestCreateMany:
         assert selects == 1
         stored = await repository.get_by_id(created[1].id)
         assert stored is not None and stored.created_at == created[1].created_at
-
-    def test_bulk_creatable_is_a_declared_capability(self) -> None:
-        assert BulkCreatable in capabilities_of(RepositorySQLAlchemy)

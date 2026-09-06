@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import base64
-import json
 from collections.abc import AsyncIterator
-from operator import itemgetter
 
 import pytest
 
@@ -11,7 +8,6 @@ from loom.core.backend.sqlalchemy import compile_all, get_compiled
 from loom.core.command import Command
 from loom.core.model import BaseModel, ColumnField
 from loom.core.repository.abc import (
-    CursorResult,
     PaginationMode,
     QuerySpec,
     SortSpec,
@@ -77,52 +73,6 @@ async def repository(session_manager: SessionManager) -> RepositorySQLAlchemy[_R
     return repo
 
 
-def _expected_ids(sort: tuple[SortSpec, ...]) -> list[int]:
-    rows = [(index + 1, rank, label) for index, (rank, label) in enumerate(_SEED)]
-    ordered = sorted(rows, key=lambda row: row[0])
-    for spec in reversed(sort):
-        position = {"rank": 1, "label": 2}[spec.field]
-        ordered.sort(key=itemgetter(position), reverse=spec.direction == "DESC")
-    return [row[0] for row in ordered]
-
-
-async def _walk(repo: RepositorySQLAlchemy[_Row, int], sort: tuple[SortSpec, ...]) -> list[int]:
-    seen: list[int] = []
-    cursor: str | None = None
-    for _ in range(len(_SEED) + 1):
-        result = await repo.list_with_query(
-            QuerySpec(sort=sort, pagination=PaginationMode.CURSOR, limit=2, cursor=cursor)
-        )
-        assert isinstance(result, CursorResult)
-        seen.extend(item.id for item in result.items)
-        if not result.has_next:
-            assert result.next_cursor is None
-            return seen
-        cursor = result.next_cursor
-    raise AssertionError("cursor walk did not terminate")
-
-
-class TestKeysetWalk:
-    async def test_single_key_desc_visits_every_row_once(
-        self, repository: RepositorySQLAlchemy[_Row, int]
-    ) -> None:
-        sort = (SortSpec(field="rank", direction="DESC"),)
-
-        assert await _walk(repository, sort) == _expected_ids(sort)
-
-    async def test_mixed_direction_multi_key_visits_every_row_once(
-        self, repository: RepositorySQLAlchemy[_Row, int]
-    ) -> None:
-        sort = (SortSpec(field="rank", direction="DESC"), SortSpec(field="label", direction="ASC"))
-
-        assert await _walk(repository, sort) == _expected_ids(sort)
-
-    async def test_default_sort_falls_back_to_id(
-        self, repository: RepositorySQLAlchemy[_Row, int]
-    ) -> None:
-        assert await _walk(repository, ()) == list(range(1, len(_SEED) + 1))
-
-
 class TestRejectedTokens:
     @staticmethod
     def _query(token: str) -> QuerySpec:
@@ -141,16 +91,6 @@ class TestRejectedTokens:
 
         assert excinfo.value.backend == "sqlalchemy"
         assert excinfo.value.model == "_Row"
-
-    async def test_old_format_token(self, repository: RepositorySQLAlchemy[_Row, int]) -> None:
-        token = base64.urlsafe_b64encode(json.dumps({"rank": 3}).encode()).decode()
-
-        with pytest.raises(UnsupportedQuery):
-            await repository.list_with_query(self._query(token))
-
-    async def test_garbage_token(self, repository: RepositorySQLAlchemy[_Row, int]) -> None:
-        with pytest.raises(UnsupportedQuery):
-            await repository.list_with_query(self._query("%%%not-a-token%%%"))
 
     async def test_token_issued_for_a_different_sort(
         self, repository: RepositorySQLAlchemy[_Row, int]

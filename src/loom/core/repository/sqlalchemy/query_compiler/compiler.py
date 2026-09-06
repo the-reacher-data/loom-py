@@ -7,11 +7,12 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from loom.core.repository.abc.cursor import Cursor, decode_cursor
-from loom.core.repository.abc.errors import UnsupportedQuery
+from loom.core.repository.abc.cursor import decode_cursor
 from loom.core.repository.abc.query import (
+    FilterGroup,
     PaginationMode,
     QuerySpec,
+    SortSpec,
 )
 from loom.core.repository.sqlalchemy.query_compiler.cursor import (
     compile_cursor_predicate,
@@ -59,6 +60,36 @@ class QuerySpecCompiler:
         self._backend = backend
         self._model_name = model_name
 
+    def compile_filter(self, group: FilterGroup) -> Any:
+        """Compile a filter group into a SQLAlchemy boolean clause.
+
+        Args:
+            group: Flat AND/OR group of field conditions.
+
+        Returns:
+            SQLAlchemy clause element honouring ``allowed_fields``.
+
+        Raises:
+            UnsafeFilterError: If a field is not in ``allowed_fields``.
+            FilterPathError: If a field path cannot be resolved.
+        """
+        return compile_filter_group(self._sa_model, group, self._allowed_fields)
+
+    def compile_sort(self, sort: tuple[SortSpec, ...]) -> list[Any]:
+        """Compile sort directives into SQLAlchemy ORDER BY clauses.
+
+        Args:
+            sort: Ordered sort directives.
+
+        Returns:
+            Column expressions with direction applied; the tie-breaker is
+            not appended here.
+
+        Raises:
+            FilterPathError: If a sort field cannot be resolved.
+        """
+        return compile_order_by(self._sa_model, sort)
+
     def compile_offset(self, query: QuerySpec, *, base_stmt: Any | None = None) -> Any:
         """Compile offset pagination statement."""
         sa_model = self._sa_model
@@ -103,7 +134,9 @@ class QuerySpecCompiler:
             stmt = stmt.where(clause)
 
         if query.cursor:
-            cursor = self._decode(query.cursor, query)
+            cursor = decode_cursor(
+                query.cursor, self._backend, self._model_name, key_count=len(query.sort)
+            )
             predicate = compile_cursor_predicate(sa_model, cursor, query.sort, self._id_column)
             stmt = stmt.where(predicate)
 
@@ -118,14 +151,6 @@ class QuerySpecCompiler:
         return extract_next_cursor(
             items, query.sort, self._id_column.key, query.limit, self._backend
         )
-
-    def _decode(self, token: str, query: QuerySpec) -> Cursor:
-        cursor = decode_cursor(token, self._backend, self._model_name)
-        if len(cursor.keys) != len(query.sort):
-            raise UnsupportedQuery(
-                self._backend, self._model_name, "cursor token does not match the sort"
-            )
-        return cursor
 
     async def execute(
         self,

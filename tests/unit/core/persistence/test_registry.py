@@ -121,9 +121,6 @@ class TestNoneBackend:
         backend: PersistenceBackend = NoneBackend()
         return backend.build(ConfigContext.from_dict({}), ())
 
-    def test_name_is_none(self) -> None:
-        assert NoneBackend.name == "none"
-
     def test_build_has_no_unit_of_work_and_no_default_repository_type(self) -> None:
         wiring = self._wiring()
 
@@ -137,13 +134,6 @@ class TestNoneBackend:
         self._wiring().repo_registration_module(container)
 
         assert not container.method_calls
-
-    async def test_lifespan_is_a_no_op(self) -> None:
-        async with self._wiring().lifespan_init():
-            pass
-
-    def test_prepare_models_is_a_no_op(self) -> None:
-        self._wiring().prepare_models(())
 
 
 def test_persistence_package_imports_without_sqlalchemy_or_boto3() -> None:

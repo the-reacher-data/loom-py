@@ -25,6 +25,8 @@ from loom.core.model import BaseModel, ColumnField, DateTime, String
 from loom.core.repository.abc import FilterGroup, FilterOp, FilterSpec, SortSpec
 from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWork
+from loom.core.repository.mongo.repository import RepositoryMongo
+from loom.core.repository.mongo.uow import NoOpMongoUnitOfWork
 from loom.core.repository.registration import capabilities_of
 from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
 from loom.core.repository.sqlalchemy.session_manager import SessionManager
@@ -32,6 +34,7 @@ from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWork
 from loom.core.uow.abc import UnitOfWork
 
 from ..dynamodb._fake import FakeClient
+from ..mongo._fake import FakeMongoClient
 
 _TABLE = "contract_orders"
 
@@ -217,6 +220,14 @@ async def _dynamodb_repository() -> AsyncIterator[RepositoryDynamoDB[Order, int]
     yield RepositoryDynamoDB(client=client, table_name=_TABLE, model=Order)
 
 
+@asynccontextmanager
+async def _mongo_repository() -> AsyncIterator[RepositoryMongo[Order, int]]:
+    # ``Order.id`` is autoincrement, which the mongo backend refuses at boot;
+    # the repository itself only maps the key, and the seed ids are explicit.
+    collection = FakeMongoClient().collection(_TABLE)
+    yield RepositoryMongo(Order, collection)
+
+
 def _sqlalchemy_case() -> BackendCase:
     return BackendCase(
         name="sqlalchemy",
@@ -239,7 +250,18 @@ def _dynamodb_case() -> BackendCase:
     )
 
 
-CASES: tuple[BackendCase, ...] = (_sqlalchemy_case(), _dynamodb_case())
+def _mongo_case() -> BackendCase:
+    return BackendCase(
+        name="mongo",
+        repository_factory=_mongo_repository,
+        model=Order,
+        capabilities=frozenset(capabilities_of(RepositoryMongo)),
+        transactions=False,
+        unit_of_work=lambda _repository: NoOpMongoUnitOfWork(),
+    )
+
+
+CASES: tuple[BackendCase, ...] = (_sqlalchemy_case(), _dynamodb_case(), _mongo_case())
 
 
 def require(case: BackendCase, *capabilities: type) -> None:

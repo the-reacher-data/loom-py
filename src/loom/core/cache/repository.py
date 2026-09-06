@@ -14,6 +14,7 @@ from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
+from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
 from loom.core.model.introspection import (
     get_projections,
@@ -26,6 +27,7 @@ from loom.core.model.relation import Relation
 from loom.core.projection.loaders import resolve_model_reference
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import CursorResult, FilterGroup, PaginationMode, QuerySpec
+from loom.core.repository.abc.repo_for import BulkCreatable
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
 
 
@@ -92,7 +94,12 @@ class CachedRepository(
     Repository[OutputT, CreateT, UpdateT, IdT],
     Generic[OutputT, CreateT, UpdateT, IdT],
 ):
-    """Cache-aside wrapper with generational invalidation."""
+    """Cache-aside wrapper with generational invalidation.
+
+    Attributes the wrapper does not define pass through to the wrapped
+    repository, so its capability set (``create_many``, ``count``, custom
+    queries) is exactly the wrapped one.
+    """
 
     def __init__(
         self,
@@ -158,6 +165,14 @@ class CachedRepository(
         avoid stale negative/positive cache entries on mutable fields.
         """
         return await self._repository.exists_by(field, value)
+
+    async def count(self) -> int:
+        """Count every entity, forwarded uncached to the wrapped repository.
+
+        Counts are not cached: a total changes on every write and a stale
+        value is worse than the single round trip.
+        """
+        return await self._repository.count()
 
     async def list_paginated(
         self,
@@ -342,7 +357,18 @@ class CachedRepository(
             await handler(events)
 
     def __getattr__(self, name: str) -> Any:
+        """Resolve *name* on the wrapped repository, then adapt it.
+
+        The lookup happens on the wrapped repository first, so a missing
+        attribute raises there and ``hasattr(wrapper, "create_many") is
+        hasattr(inner, "create_many")`` holds. ``create_many`` is intercepted
+        to emit a mutation event after the bulk write; coroutines marked
+        with ``@cache_query`` are wrapped with cache-aside behaviour; anything
+        else is returned as-is.
+        """
         attr = getattr(self._repository, name)
+        if name == "create_many":
+            return self._create_many
         if not callable(attr):
             return attr
 
@@ -364,6 +390,30 @@ class CachedRepository(
     def _extract_entity_id(self, item: Any) -> object | None:
         value = getattr(item, "id", None)
         return value
+
+    async def _create_many(self, data: Sequence[msgspec.Struct]) -> tuple[OutputT, ...]:
+        if not data:
+            return ()
+        bulk = cast(BulkCreatable[OutputT], self._repository)
+        created = await bulk.create_many(data)
+        ids = tuple(
+            entity_id
+            for item in created
+            for entity_id in [self._extract_entity_id(item)]
+            if entity_id is not None
+        )
+        changed_fields = frozenset(key for item in data for key in self._struct_keys(item))
+        await self._resolver.bump_from_events(
+            (
+                MutationEvent(
+                    entity=self.entity_name,
+                    op="create",
+                    ids=ids,
+                    changed_fields=changed_fields,
+                ),
+            )
+        )
+        return created
 
     def _wrap_custom_cached_method(
         self,
@@ -479,6 +529,9 @@ class CachedRepository(
             builder = getattr(self._repository, "to_output_from_payload", None)
             if callable(builder):
                 return cast(OutputT, builder(payload))
+            model = getattr(self._repository, "model", None)
+            if isinstance(model, type) and issubclass(model, msgspec.Struct):
+                return cast(OutputT, to_struct(model, payload))
         return cast(OutputT, payload)
 
     def _list_dependency_tags(self) -> list[str]:

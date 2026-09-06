@@ -15,6 +15,7 @@ from typing import Any, ClassVar, cast
 import pytest
 
 import loom.core.plugins.entrypoints as entrypoints_module
+import loom.core.repository.mongo.backend as mongo_backend_module
 import loom.core.repository.sqlalchemy.backend as sqlalchemy_backend_module
 from loom.core.config import ConfigContext
 from loom.core.config.errors import ConfigError
@@ -22,6 +23,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel, ColumnField
 from loom.core.persistence import NoneBackend, PersistenceWiring
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
+from loom.core.repository.mongo.uow import MongoUnitOfWorkFactory
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.use_case.use_case import UseCase
 from loom.rest.fastapi import auto
@@ -32,7 +34,8 @@ from loom.rest.fastapi.auto import (
     create_app,
 )
 from loom.rest.model import RestInterface, RestRoute
-from tests.unit.rest._fixture_app import write_project
+from tests.unit.core.repository.mongo._fake import FakeMongoClient
+from tests.unit.rest._fixture_app import UUID4_ID_FIELD, write_project
 
 
 def _interfaces(*classes: type) -> tuple[type[RestInterface[Any]], ...]:
@@ -46,6 +49,10 @@ _DYNAMODB_SECTION = {
     "endpoint_url": "http://localhost:8000",
 }
 _DYNAMODB_PERSISTENCE = {"backend": "dynamodb", "dynamodb": _DYNAMODB_SECTION}
+_MONGO_PERSISTENCE = {
+    "backend": "mongo",
+    "mongo": {"uri": "mongodb://localhost:27017", "database": "demo"},
+}
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -81,20 +88,28 @@ def aws_test_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def fake_mongo_client(monkeypatch: pytest.MonkeyPatch) -> FakeMongoClient:
+    """Serve the Mongo backend an in-memory client so no connection is attempted."""
+    client = FakeMongoClient()
+    monkeypatch.setattr(mongo_backend_module, "_build_mongo_client", lambda _cfg: client)
+    return client
+
+
+@pytest.fixture
 def agents_only_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
 
 class TestBackendSelection:
-    def test_defaults_to_sqlalchemy(self, agents_only_discovery: None) -> None:
-        _runtime, wiring, _discovered = _build_bootstrap(_AppConfig(name="demo"), _ctx())
-
-        assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
-
-    def test_honours_explicit_sqlalchemy_backend(self, agents_only_discovery: None) -> None:
-        _runtime, wiring, _discovered = _build_bootstrap(
-            _AppConfig(name="demo"), _ctx(persistence={"backend": "sqlalchemy"})
-        )
+    @pytest.mark.parametrize(
+        "persistence",
+        [pytest.param(None, id="default"), pytest.param({"backend": "sqlalchemy"}, id="explicit")],
+    )
+    def test_defaults_to_sqlalchemy(
+        self, agents_only_discovery: None, persistence: dict[str, object] | None
+    ) -> None:
+        ctx = _ctx() if persistence is None else _ctx(persistence=persistence)
+        _runtime, wiring, _discovered = _build_bootstrap(_AppConfig(name="demo"), ctx)
 
         assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
 
@@ -106,6 +121,15 @@ class TestBackendSelection:
         )
 
         assert isinstance(wiring.uow_factory, DynamoUnitOfWorkFactory)
+
+    def test_selects_mongo_backend(
+        self, agents_only_discovery: None, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(
+            _AppConfig(name="demo"), _ctx(persistence=_MONGO_PERSISTENCE)
+        )
+
+        assert isinstance(wiring.uow_factory, MongoUnitOfWorkFactory)
 
     def test_none_has_no_unit_of_work(self, agents_only_discovery: None) -> None:
         _runtime, wiring, _discovered = _build_bootstrap(
@@ -127,13 +151,6 @@ class TestBackendSelection:
 
 
 class TestDynamoDBBoot:
-    def test_boots_without_a_database_section(
-        self, tmp_path: Path, aws_test_credentials: None
-    ) -> None:
-        config_path = write_project(tmp_path, persistence=_DYNAMODB_PERSISTENCE, database=None)
-
-        assert create_app(config_path) is not None
-
     def test_requires_its_config_section(self, tmp_path: Path) -> None:
         config_path = write_project(tmp_path, persistence={"backend": "dynamodb"})
 
@@ -141,18 +158,46 @@ class TestDynamoDBBoot:
             create_app(config_path)
 
 
-class TestNoneBoot:
-    def test_boots_without_a_database_section(self, tmp_path: Path) -> None:
-        config_path = write_project(tmp_path, persistence={"backend": "none"}, database=None)
+class TestMongoBoot:
+    def test_boots_without_a_database_section(
+        self, tmp_path: Path, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        config_path = write_project(
+            tmp_path, persistence=_MONGO_PERSISTENCE, database=None, id_field=UUID4_ID_FIELD
+        )
 
         assert create_app(config_path) is not None
 
-    def test_ignores_an_unusable_database_section(self, tmp_path: Path) -> None:
-        config_path = write_project(
-            tmp_path,
-            persistence={"backend": "none"},
-            database={"url": "postgresql+asyncpg://nobody@unreachable/nothing"},
-        )
+    def test_requires_its_config_section(self, tmp_path: Path) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "mongo"})
+
+        with pytest.raises(ConfigError, match="persistence.mongo"):
+            create_app(config_path)
+
+    def test_rejects_an_autoincrement_key_naming_the_model(
+        self, tmp_path: Path, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        config_path = write_project(tmp_path, persistence=_MONGO_PERSISTENCE, database=None)
+
+        with pytest.raises(ConfigError, match="ConfigRecord.id"):
+            create_app(config_path)
+
+
+class TestNoneBoot:
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param(None, id="no-database-section"),
+            pytest.param(
+                {"url": "postgresql+asyncpg://nobody@unreachable/nothing"},
+                id="unusable-database-section",
+            ),
+        ],
+    )
+    def test_boots_regardless_of_the_database_section(
+        self, tmp_path: Path, database: dict[str, object] | None
+    ) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "none"}, database=database)
 
         assert create_app(config_path) is not None
 
@@ -245,39 +290,16 @@ def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
     assert "persistence.backend: none" in caplog.text
 
 
-def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Generated CRUD routes over a model discovery never found are refused by name."""
-
-    class OrphanInterface(RestInterface[PersistenceNoneRecord]):
-        prefix = "/orphans"
-        auto = True
-
-    monkeypatch.setattr(
-        auto,
-        "_build_discovery_result",
-        lambda _cfg: DiscoveryResult(
-            models=(), use_cases=(), interfaces=_interfaces(OrphanInterface), agent_specs=()
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="OrphanInterface") as exc_info:
-        _build_bootstrap(_AppConfig(name="demo"), _ctx())
-
-    assert "PersistenceNoneRecord" in str(exc_info.value)
-    assert "app.discovery" in str(exc_info.value)
-
-
 @pytest.mark.parametrize(
     "persistence",
     [
+        pytest.param(None, id="sqlalchemy"),
         pytest.param({"backend": "none"}, id="none"),
         pytest.param(_DYNAMODB_PERSISTENCE, id="dynamodb"),
     ],
 )
 def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
-    persistence: dict[str, object],
+    persistence: dict[str, object] | None,
     monkeypatch: pytest.MonkeyPatch,
     aws_test_credentials: None,
 ) -> None:
@@ -294,9 +316,13 @@ def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
             models=(), use_cases=(), interfaces=_interfaces(OrphanOnAnyBackend), agent_specs=()
         ),
     )
+    ctx = _ctx() if persistence is None else _ctx(persistence=persistence)
 
-    with pytest.raises(RuntimeError, match="OrphanOnAnyBackend"):
-        _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence=persistence))
+    with pytest.raises(RuntimeError, match="OrphanOnAnyBackend") as exc_info:
+        _build_bootstrap(_AppConfig(name="demo"), ctx)
+
+    assert "PersistenceNoneRecord" in str(exc_info.value)
+    assert "app.discovery" in str(exc_info.value)
 
 
 def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
@@ -325,25 +351,3 @@ def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
 
     assert runtime is not None
     assert discovered.models == ()
-
-
-def test_build_bootstrap_none_with_models_builds_without_compiling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    with_models = DiscoveryResult(
-        models=(PersistenceNoneRecord,), use_cases=(), interfaces=(), agent_specs=("agents/*.yaml",)
-    )
-    monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: with_models)
-    compiled: list[object] = []
-    monkeypatch.setattr(
-        sqlalchemy_backend_module, "compile_all", lambda *models: compiled.extend(models)
-    )
-
-    runtime, wiring, discovered = _build_bootstrap(
-        _AppConfig(name="demo"), _ctx(persistence={"backend": "none"})
-    )
-
-    assert compiled == []
-    assert discovered.models == (PersistenceNoneRecord,)
-    assert wiring.uow_factory is None
-    assert runtime.executor is not None

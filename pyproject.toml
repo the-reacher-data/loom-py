@@ -37,7 +37,7 @@ dynamodb = [
     "boto3>=1.35",
 ]
 mongo = [
-    "pymongo>=4.6,<5.0",
+    "pymongo>=4.9,<5.0",
 ]
 jwt = [
     "pyjwt[crypto]>=2.8,<3",
@@ -161,6 +161,7 @@ spark = "loom.etl.backends.spark.provider:SparkProvider"
 [project.entry-points."loom.persistence.backends"]
 sqlalchemy = "loom.core.repository.sqlalchemy.backend:SQLAlchemyBackend"
 dynamodb = "loom.core.repository.dynamodb.backend:DynamoDBBackend"
+mongo = "loom.core.repository.mongo.backend:MongoBackend"
 none = "loom.core.persistence.none:NoneBackend"
 
 [build-system]
@@ -215,7 +216,7 @@ dev = [
     "confluent-kafka>=2.6,<3.0",
     "bytewax>=0.21; python_version < '3.13'",
     "boto3>=1.35",
-    "pymongo>=4.6,<5.0",
+    "pymongo>=4.9,<5.0",
     "opentelemetry-api>=1.27,<2.0",
     "opentelemetry-sdk>=1.27,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
@@ -366,6 +367,7 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 markers = [
     "bytewax: tests that exercise the Bytewax adapter and runtime wiring",
     "kafka: tests that exercise Kafka transport and codecs",
+    "mongo: tests that need a real MongoDB replica set (tests/integration/persistence/mongo)",
     "integration: end-to-end streaming flow tests",
     "slow: long-running tests that should be opt-in in CI",
     "live: tests that call a real model provider; skipped without credentials",

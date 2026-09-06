@@ -16,6 +16,9 @@ import yaml
 _MODULE_PREFIX = "loom_config_fixture_app"
 _DEFAULT_DATABASE: dict[str, Any] = {"url": "sqlite+aiosqlite:///"}
 _NON_IDENTIFIER = re.compile(r"\W", re.ASCII)
+_AUTOINCREMENT_ID_FIELD = "id: int = ColumnField(primary_key=True, autoincrement=True)"
+UUID4_ID_FIELD = "id: str = ColumnField(primary_key=True, server_default=ServerDefault.UUID4)"
+"""Primary key a backend without sequences (Mongo) accepts."""
 
 _APP_SOURCE = '''\
 """Minimal discoverable app used by the create_app configuration tests."""
@@ -25,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from loom.core.model import BaseModel, ColumnField
+from loom.core.model.enums import ServerDefault
 from loom.core.use_case.use_case import UseCase
 from loom.rest.model import RestInterface, RestRoute
 
@@ -32,7 +36,7 @@ from loom.rest.model import RestInterface, RestRoute
 class ConfigRecord(BaseModel):
     __tablename__ = "config_records_fixture"
 
-    id: int = ColumnField(primary_key=True, autoincrement=True)
+    {id_field}
     name: str = ColumnField(length=50)
 
 
@@ -62,6 +66,7 @@ def write_project(
     database: dict[str, Any] | None = _DEFAULT_DATABASE,
     prefix: str = "/ping",
     route_path: str = "/",
+    id_field: str = _AUTOINCREMENT_ID_FIELD,
 ) -> str:
     """Write the fixture module plus a YAML config and return the config path.
 
@@ -74,6 +79,7 @@ def write_project(
         database: Contents of the ``database`` section; ``None`` omits it.
         prefix: Prefix of the generated REST interface.
         route_path: Path of its single route, relative to *prefix*.
+        id_field: Source line declaring the fixture model's primary key.
 
     Returns:
         Path of the written YAML config file.
@@ -81,7 +87,7 @@ def write_project(
     # One module per test: the interpreter caches imports by name, so a shared
     # name would serve the first test's routes to every later one.
     module = f"{_MODULE_PREFIX}_{_NON_IDENTIFIER.sub('_', tmp_path.name)}"
-    source = _APP_SOURCE.format(prefix=prefix, route_path=route_path)
+    source = _APP_SOURCE.format(prefix=prefix, route_path=route_path, id_field=id_field)
     (tmp_path / f"{module}.py").write_text(source, encoding="utf-8")
     config: dict[str, Any] = {
         "app": {

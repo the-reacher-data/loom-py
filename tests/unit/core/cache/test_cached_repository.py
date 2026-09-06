@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, TypeVar
 
 import msgspec
@@ -203,6 +204,9 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
 
     async def exists_by(self, field: str, value: Any) -> bool:
         return await self.get_by(field, value) is not None
+
+    async def count(self) -> int:
+        return len(self.storage)
 
     async def list_paginated(
         self,
@@ -594,3 +598,74 @@ class TestDependencySpecs:
         assert ("product_reviews", "product_id") in specs
         assert ("product_notes", "product_id") in specs
         assert ("products", "id") in specs
+
+
+class _CreateWithNote(msgspec.Struct):
+    name: str
+    note: str
+
+
+class _BulkFakeRepository(_FakeRepository):
+    async def create_many(self, data: Sequence[msgspec.Struct]) -> tuple[_EntityOut, ...]:
+        names = [str(msgspec.to_builtins(item)["name"]) for item in data]
+        return tuple([await self.create(_Create(name=name)) for name in names])
+
+
+class _RecordingResolver(GenerationalDependencyResolver):
+    def __init__(self, cache: _MemoryCacheBackend) -> None:
+        super().__init__(cache)
+        self.events: list[MutationEvent] = []
+
+    async def bump_from_events(self, events: tuple[MutationEvent, ...]) -> None:
+        self.events.extend(events)
+        await super().bump_from_events(events)
+
+
+def _wrap(
+    repository: _FakeRepository, cache_config: CacheConfig
+) -> tuple[CachedRepository[_EntityOut, _Create, _Update, int], _RecordingResolver]:
+    cache = _MemoryCacheBackend()
+    resolver = _RecordingResolver(cache)
+    wrapped = CachedRepository(
+        repository, config=cache_config, cache=cache, dependency_resolver=resolver
+    )
+    return wrapped, resolver
+
+
+class TestCreateMany:
+    @pytest.mark.asyncio
+    async def test_emits_one_create_event_with_ids_and_union_of_fields(
+        self, cache_config: CacheConfig
+    ) -> None:
+        wrapped, resolver = _wrap(_BulkFakeRepository(), cache_config)
+
+        created = await wrapped.create_many(
+            [_Create(name="a"), _CreateWithNote(name="b", note="n")]
+        )
+
+        assert [row.name for row in created] == ["a", "b"]
+        assert resolver.events == [
+            MutationEvent(
+                entity=wrapped.entity_name,
+                op="create",
+                ids=(1, 2),
+                changed_fields=frozenset({"name", "note"}),
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_empty_batch_bumps_no_generation(self, cache_config: CacheConfig) -> None:
+        wrapped, resolver = _wrap(_BulkFakeRepository(), cache_config)
+
+        assert await wrapped.create_many([]) == ()
+        assert resolver.events == []
+
+    def test_access_fails_when_the_wrapped_repository_has_no_create_many(
+        self, cache_config: CacheConfig
+    ) -> None:
+        inner = _FakeRepository()
+        wrapped, _ = _wrap(inner, cache_config)
+
+        with pytest.raises(AttributeError):
+            _ = wrapped.create_many
+        assert hasattr(wrapped, "create_many") is hasattr(inner, "create_many")
