@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, cast, get_origin
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
@@ -35,6 +35,20 @@ _STANDARD_PROTOCOLS: tuple[Any, ...] = (
 )
 
 
+def is_standard_capability(annotation: object) -> bool:
+    """Return whether *annotation* is a parametrised standard capability.
+
+    Args:
+        annotation: A type annotation such as ``Listable[Order]``.
+
+    Returns:
+        ``True`` for ``Protocol[Model]`` whose origin is one of the standard
+        ``-able`` capability protocols; ``False`` for anything else, including
+        the bare protocol and ``RepoFor[Model]``.
+    """
+    return get_origin(annotation) in _STANDARD_PROTOCOLS
+
+
 def capabilities_of(repository_type: type) -> tuple[type, ...]:
     """Return the standard capability protocols *repository_type* implements.
 
@@ -57,7 +71,7 @@ def _capability_keys(repository_type: type, model: type[LoomStruct]) -> tuple[An
     return tuple(cast(Any, proto)[model] for proto in capabilities_of(repository_type))
 
 
-def _is_direct_protocol(cls: type) -> bool:
+def is_direct_protocol(cls: type) -> bool:
     """True when *cls* explicitly declares ``Protocol`` as a base.
 
     Uses the Python internal ``_is_protocol`` marker written on the class's
@@ -95,7 +109,7 @@ def _detect_capability_keys(
         origin: Any = getattr(base, "__origin__", base)
         if (
             isinstance(origin, type)
-            and _is_direct_protocol(origin)
+            and is_direct_protocol(origin)
             and origin not in _STANDARD_PROTOCOLS
         ):
             keys.append(origin)

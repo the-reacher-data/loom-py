@@ -417,6 +417,11 @@ of every interface router and outside the OpenAPI schema:
   `ACTIVE` or `UPDATING` table for `dynamodb`).
 - `none`, or a backend without a readiness probe, answers
   `{"status": "ok", "backends": {}}`.
+- The probe result is cached for a short TTL, concurrent requests share one
+  probe, and a probe that exceeds its timeout reports the backend as not ready.
+  `dynamodb` needs `dynamodb:DescribeTable` on the table ARN for it, in
+  addition to the item permissions. Do not expose `/health` on the public
+  ingress; it is anonymous and meant for the orchestrator.
 - `/health` is in the default authentication exclusions, so an orchestrator
   needs no credentials. An explicit `exclude_paths` list is honoured verbatim:
   **include `/health` in it**, or the probe answers `401`.

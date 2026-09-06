@@ -9,8 +9,8 @@ capability gate inspects, and a model preparation step.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol
 
@@ -18,6 +18,20 @@ from loom.core.config import ConfigContext
 from loom.core.di.container import LoomContainer
 from loom.core.model import BaseModel
 from loom.core.uow.abc import UnitOfWorkFactory
+
+
+def no_model_preparation(models: Sequence[type[BaseModel]]) -> None:
+    """Prepare nothing: the default for a backend whose models need no compilation.
+
+    Args:
+        models: Discovered models; ignored.
+    """
+
+
+@asynccontextmanager
+async def no_lifespan() -> AsyncIterator[None]:
+    """Hold no startup resource: the default lifespan of a backend without one."""
+    yield
 
 
 @dataclass(frozen=True)
@@ -29,21 +43,23 @@ class PersistenceWiring:
             the backend has no persistence, which the kernel executor accepts
             by running use cases without a unit of work.
         repo_registration_module: DI module registering model repositories.
-        lifespan_init: Async context manager driving backend startup and
-            shutdown (schema creation, resource disposal, ...).
         default_repository_type: Repository class whose capabilities decide
             which auto-CRUD operations a model supports; ``None`` when the
             backend serves no repositories.
+        lifespan_init: Async context manager driving backend startup and
+            shutdown (schema creation, resource disposal, ...); defaults to
+            :func:`no_lifespan`.
         prepare_models: Step run on the discovered models after ``build``
-            (schema compilation, identifier validation, ...).
+            (schema compilation, identifier validation, ...); defaults to
+            :func:`no_model_preparation`.
         readiness: Optional asynchronous readiness probe.
     """
 
     uow_factory: UnitOfWorkFactory | None
     repo_registration_module: Callable[[LoomContainer], None]
-    lifespan_init: Callable[[], AbstractAsyncContextManager[None]]
     default_repository_type: type[Any] | None
-    prepare_models: Callable[[Sequence[type[BaseModel]]], None]
+    lifespan_init: Callable[[], AbstractAsyncContextManager[None]] = no_lifespan
+    prepare_models: Callable[[Sequence[type[BaseModel]]], None] = no_model_preparation
     readiness: Callable[[], Awaitable[bool]] | None = None
 
 
@@ -70,4 +86,4 @@ class PersistenceBackend(Protocol):
         ...
 
 
-__all__ = ["PersistenceBackend", "PersistenceWiring"]
+__all__ = ["PersistenceBackend", "PersistenceWiring", "no_lifespan", "no_model_preparation"]

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 import msgspec
@@ -67,9 +66,7 @@ class DynamoDBBackend:
             repo_registration_module=build_dynamodb_repository_registration_module(
                 client, dynamo_cfg.table, models
             ),
-            lifespan_init=_noop_lifespan,
             default_repository_type=RepositoryDynamoDB,
-            prepare_models=_prepare_no_models,
             readiness=lambda: _readiness(client, dynamo_cfg.table),
         )
 
@@ -116,16 +113,6 @@ async def _readiness(client: Any, table: str) -> bool:
         _logger.warning("dynamodb readiness probe failed for table %r", table, exc_info=True)
         return False
     return status in _READY_TABLE_STATUSES
-
-
-def _prepare_no_models(models: Sequence[type[BaseModel]]) -> None:
-    """No-op preparation: DynamoDB models need no compilation."""
-
-
-@asynccontextmanager
-async def _noop_lifespan() -> AsyncIterator[None]:
-    """No-op lifespan: no shared startup resource."""
-    yield
 
 
 __all__ = ["DynamoDBBackend"]

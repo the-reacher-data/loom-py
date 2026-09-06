@@ -27,6 +27,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc import (
     BulkCreatable,
     Countable,
+    Creatable,
     Listable,
     Readable,
     UnsupportedQuery,
@@ -83,6 +84,38 @@ class _BulkOnlyRepository(BulkCreatable[BulkOnlyRecord]):
         self, data: Sequence[msgspec.Struct]
     ) -> tuple[BulkOnlyRecord, ...]:  # pragma: no cover - never invoked
         raise AssertionError("not exercised")
+
+
+class ReadCreateRecord(BaseModel):
+    __tablename__ = "read_create_records_fixture"
+
+    id: int = ColumnField(primary_key=True)
+    name: str = ColumnField(length=50)
+
+
+@repository_for(ReadCreateRecord)
+class _ReadCreateRepository(Creatable[ReadCreateRecord], Readable[ReadCreateRecord]):
+    async def get_by_id(
+        self, obj_id: Any, profile: str = "default"
+    ) -> ReadCreateRecord | None:  # pragma: no cover - never invoked
+        raise AssertionError("not exercised")
+
+    async def get_by(
+        self, field: str, value: Any, profile: str = "default"
+    ) -> ReadCreateRecord | None:  # pragma: no cover - never invoked
+        raise AssertionError("not exercised")
+
+    async def create(self, data: msgspec.Struct) -> ReadCreateRecord:  # pragma: no cover
+        raise AssertionError("not exercised")
+
+
+class TestSupportedOpsFollowTheRegisteredRepository:
+    def test_a_bulk_only_repository_yields_no_route(self) -> None:
+        assert build_auto_routes(BulkOnlyRecord, ()) == ()
+
+    def test_ops_come_from_the_capabilities_in_declaration_order(self) -> None:
+        routes = build_auto_routes(ReadCreateRecord, ())
+        assert tuple(crud_op_of(route.use_case) for route in routes) == (CrudOp.CREATE, CrudOp.GET)
 
 
 def _ctx(**sections: object) -> ConfigContext:

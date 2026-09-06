@@ -100,10 +100,10 @@ the host, in this order:
 | Field | What the host does with it |
 |---|---|
 | `uow_factory` | Bound to the kernel executor. `None` means "no unit of work": use cases run without one, and deferred job dispatch never fires. |
-| `prepare_models` | Called right after `build` with the discovered models — the slot where SQLAlchemy compiles its tables and where a document store validates identifiers. Raise `ConfigError` for a model the backend cannot serve. |
+| `prepare_models` | Called right after `build` with the discovered models — the slot where SQLAlchemy compiles its tables and where a document store validates identifiers. Raise `ConfigError` for a model the backend cannot serve. Defaults to `no_model_preparation`. |
 | `default_repository_type` | The class whose declared capabilities decide which auto-CRUD operations a model gets (see below). `None` means the backend serves no repositories, and an interface with `auto_crud_model` refuses to boot. |
 | `repo_registration_module` | A DI module run against the container; registers one repository per model. |
-| `lifespan_init` | An async context manager entered at application startup and exited at shutdown, after the SQL registry and the AI runtime so their clients close even when it fails. |
+| `lifespan_init` | An async context manager entered at application startup and exited at shutdown, after the SQL registry and the AI runtime so their clients close even when it fails. Defaults to `no_lifespan`. |
 | `readiness` | Optional `async () -> bool`. Aggregated by `GET /health`; absent, the route reports no backends. |
 
 A readiness probe never raises: log the failure and answer `False`, so the
@@ -203,4 +203,28 @@ them as opaque and restart from the first page.
 
 `GET /health` aggregates the readiness of the configured backend; its shape, the
 default authentication exclusion and the reserved-path rule are described in
-[Bootstrap with YAML](../getting-started/rest.md#get-health).
+[Bootstrap with YAML](../getting-started/rest.md#get-health). The route caches
+the probe result for a short TTL and shares one in-flight probe between
+concurrent requests, so a burst of anonymous calls costs the backend at most
+one probe per TTL; a probe that exceeds its timeout reports the backend as not
+ready. Keep `/health` off the public ingress: it is anonymous by design and
+meant for the orchestrator.
+
+### `dynamodb` permissions
+
+The `dynamodb` readiness probe calls `DescribeTable`, so the application's
+role needs `dynamodb:DescribeTable` on the table ARN in addition to the item
+permissions (`GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`) the
+repositories use. Without it the probe logs the refusal and `/health` answers
+`503 degraded` while the repositories keep working.
+
+## Upgrade notes
+
+- Repository outputs are now built through `to_struct`. A struct value held
+  in a loosely annotated field (`Any`, `list[dict[str, Any]]`) arrives as a
+  dict with encoded (camelCase) keys; a related value is re-typed to the
+  annotated struct.
+- Cursor tokens issued before this version are rejected with
+  `400 unsupported_query`: clients restart from the first page.
+- An explicit `exclude_paths` list must include `/health`, or the probe
+  answers `401`.

@@ -49,7 +49,8 @@ class TestRoundTrip:
 
 class TestRejectedTokens:
     def test_token_from_another_backend_is_unsupported(self) -> None:
-        token = encode_cursor("dynamodb", [1], 1)
+        """The reason is fixed: the client-controlled backend name is never echoed."""
+        token = encode_cursor("<script>alert(1)</script>", [1], 1)
 
         with pytest.raises(UnsupportedQuery) as excinfo:
             decode_cursor(token, _BACKEND, _MODEL)
@@ -57,7 +58,7 @@ class TestRejectedTokens:
         assert excinfo.value.backend == _BACKEND
         assert excinfo.value.model == _MODEL
         assert excinfo.value.code == ErrorCode.UNSUPPORTED_QUERY
-        assert "dynamodb" in excinfo.value.reason
+        assert excinfo.value.reason == "cursor token was issued by another backend"
 
     def test_old_format_token_is_unsupported(self) -> None:
         token = base64.urlsafe_b64encode(json.dumps({"id": 42}).encode()).decode()

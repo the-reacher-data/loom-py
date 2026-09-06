@@ -121,7 +121,7 @@ def decode_cursor(token: str, backend: str, model: str) -> Cursor:
     except (ValueError, msgspec.DecodeError) as exc:
         raise UnsupportedQuery(backend, model, "cursor token is not valid") from exc
     if record.b != backend:
-        raise UnsupportedQuery(backend, model, f"cursor token was issued by '{record.b}'")
+        raise UnsupportedQuery(backend, model, "cursor token was issued by another backend")
     return Cursor(
         backend=record.b,
         keys=tuple(_unwrap(key) for key in record.k),

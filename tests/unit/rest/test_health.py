@@ -8,6 +8,7 @@ catch-all route that would capture it, or an interface that would replace it.
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -26,6 +27,7 @@ from loom.core.persistence import NoneBackend, PersistenceWiring
 from loom.rest.auth import RequestCredentials
 from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
 from loom.rest.compiler import InterfaceCompilationError
+from loom.rest.fastapi import health as health_module
 from loom.rest.fastapi._exclusions import verify_exclusion_paths
 from loom.rest.fastapi.auto import create_app
 from tests.unit.rest._fixture_app import write_project
@@ -228,3 +230,112 @@ class TestHealthMounting:
         app = create_app(write_project(tmp_path))
 
         verify_exclusion_paths(app, (_HEALTH,))
+
+
+class _GatedProbe:
+    """Readiness probe that blocks on an event and counts its invocations."""
+
+    def __init__(self, *, ready: bool = True) -> None:
+        self.calls = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self._ready = ready
+
+    async def __call__(self) -> bool:
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        return self._ready
+
+
+class _CountingProbe:
+    """Readiness probe answering at once and counting its invocations."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> bool:
+        self.calls += 1
+        return True
+
+
+async def _sleeping_probe() -> bool:
+    await asyncio.sleep(1)
+    return True
+
+
+def _frozen_clock(monkeypatch: pytest.MonkeyPatch, start: float = 100.0) -> list[float]:
+    """Pin the module clock to a mutable cell and return it."""
+    now = [start]
+    monkeypatch.setattr(health_module, "monotonic", lambda: now[0])
+    return now
+
+
+class TestCachedProbe:
+    async def test_concurrent_calls_share_one_probe(self) -> None:
+        probe = _GatedProbe()
+        cached = health_module._CachedProbe(probe)
+
+        tasks = [asyncio.create_task(cached()) for _ in range(3)]
+        await probe.entered.wait()
+        probe.release.set()
+        results = await asyncio.gather(*tasks)
+
+        assert results == [True, True, True]
+        assert probe.calls == 1
+
+    async def test_a_call_within_the_ttl_does_not_probe_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        now = _frozen_clock(monkeypatch)
+        probe = _CountingProbe()
+        cached = health_module._CachedProbe(probe)
+
+        await cached()
+        now[0] += health_module.PROBE_TTL_SECONDS / 2
+        await cached()
+
+        assert probe.calls == 1
+
+    async def test_a_call_after_the_ttl_probes_again(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        now = _frozen_clock(monkeypatch)
+        probe = _CountingProbe()
+        cached = health_module._CachedProbe(probe)
+
+        await cached()
+        now[0] += health_module.PROBE_TTL_SECONDS
+        await cached()
+
+        assert probe.calls == 2
+
+    async def test_a_probe_exceeding_the_timeout_is_not_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(health_module, "PROBE_TIMEOUT_SECONDS", 0.01)
+
+        assert await health_module._CachedProbe(_sleeping_probe)() is False
+
+
+class TestHealthProbeBudget:
+    def test_a_probe_exceeding_the_timeout_degrades_the_application(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(health_module, "PROBE_TIMEOUT_SECONDS", 0.01)
+        app = FastAPI()
+        health_module.mount_health(app, "slow", _sleeping_probe)
+
+        status, body = _get(app, _HEALTH)
+
+        assert status == 503
+        assert body == {"status": "degraded", "backends": {"slow": False}}
+
+    def test_requests_within_the_ttl_share_one_probe(self) -> None:
+        probe = _CountingProbe()
+        app = FastAPI()
+        health_module.mount_health(app, "counted", probe)
+
+        with TestClient(app) as client:
+            assert client.get(_HEALTH).status_code == 200
+            assert client.get(_HEALTH).status_code == 200
+
+        assert probe.calls == 1

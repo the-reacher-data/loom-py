@@ -389,3 +389,142 @@ def test_verify_accepts_a_binding_registered_after_the_use_case() -> None:
     container.register(IOrderRepo, FakeOrderRepo, scope=Scope.REQUEST)
 
     factory.verify()
+
+
+# ---------------------------------------------------------------------------
+# Main repository capability contract (third UseCase generic)
+# ---------------------------------------------------------------------------
+
+
+class ListProductsUseCase(UseCase[Product, str, Listable[Product]]):
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
+
+
+def _container_mapping_product_to(repo_type: type) -> LoomContainer:
+    container = LoomContainer()
+    container.register(repo_type, repo_type, scope=Scope.APPLICATION)
+    container.register_repo(Product, repo_type)
+    return container
+
+
+def test_verify_rejects_a_mapped_repository_lacking_the_declared_capability() -> None:
+    factory = UseCaseFactory(_container_mapping_product_to(FakeProductRepo))
+    factory.register(ListProductsUseCase)
+
+    with pytest.raises(ResolutionError, match="ListProductsUseCase") as exc_info:
+        factory.verify()
+
+    message = str(exc_info.value)
+    assert "main_repo" in message
+    assert "Listable[Product]" in message
+
+
+def test_verify_accepts_a_mapped_repository_registered_under_the_declared_capability() -> None:
+    container = _container_mapping_product_to(FakeProductRepo)
+    container.register(Listable[Product], FakeProductRepo, scope=Scope.APPLICATION)
+    factory = UseCaseFactory(container)
+    factory.register(ListProductsUseCase)
+
+    factory.verify()
+
+
+def test_build_with_a_capability_contract_still_resolves_through_the_repo_mapping() -> None:
+    repo = FakeProductRepo()
+    container = LoomContainer()
+    container.register(FakeProductRepo, lambda: repo, scope=Scope.APPLICATION)
+    container.register_repo(Product, FakeProductRepo)
+    container.register(Listable[Product], lambda: FakeProductRepo(), scope=Scope.APPLICATION)
+
+    uc = UseCaseFactory(container).build(ListProductsUseCase)
+
+    assert cast(object, uc.main_repo) is repo
+
+
+def test_verify_treats_the_default_repo_for_contract_as_mapping_only() -> None:
+    factory = UseCaseFactory(_container_mapping_product_to(FakeProductRepo))
+    factory.register(AutoMainRepoUseCase)
+
+    factory.verify()
+
+
+def test_verify_treats_an_explicit_repo_for_parameter_as_mapping_only() -> None:
+    factory = UseCaseFactory(_container_mapping_product_to(FakeProductRepo))
+    factory.register(MainRepoUseCase)
+
+    factory.verify()
+
+
+def test_verify_treats_a_custom_protocol_contract_as_mapping_only() -> None:
+    container = LoomContainer()
+    container.register(FakeTaskViewRepo, FakeTaskViewRepo, scope=Scope.APPLICATION)
+    container.register_repo(TaskView, FakeTaskViewRepo)
+    factory = UseCaseFactory(container)
+    factory.register(AutoMainRepoCustomContractUseCase)
+
+    factory.verify()
+
+
+# ---------------------------------------------------------------------------
+# Constructor parameters that are values, not dependencies
+# ---------------------------------------------------------------------------
+
+
+class TaggedUseCase(UseCase[Product, str]):
+    def __init__(self, main_repo: RepoFor[Product], tags: tuple[str, ...] = ()) -> None:
+        self._repo = main_repo
+        self._tags = tags
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
+
+
+_NO_EMAIL = FakeEmailService()
+
+
+class OptionalListingUseCase(UseCase[Any, str]):
+    def __init__(
+        self,
+        products: Listable[Product] | None = None,
+        email: IEmailService = _NO_EMAIL,
+    ) -> None:
+        self._products = products
+        self._email = email
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
+
+
+class ContainerAnnotatedUseCase(UseCase[Any, str]):
+    def __init__(self, repo: IOrderRepo, names: list[str]) -> None:
+        self._repo = repo
+        self._names = names
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
+
+
+def test_defaulted_parameter_is_not_a_dependency_regardless_of_annotation() -> None:
+    container = _container_mapping_product_to(FakeProductRepo)
+    factory = UseCaseFactory(container)
+    factory.register(TaggedUseCase)
+    factory.register(OptionalListingUseCase)
+
+    factory.verify()
+
+    assert [name for name, _ in factory._get_deps(TaggedUseCase)] == ["main_repo"]
+    assert factory._get_deps(OptionalListingUseCase) == []
+    assert cast(Any, factory.build(TaggedUseCase))._tags == ()
+
+
+def test_plain_generic_container_annotation_is_not_a_dependency() -> None:
+    factory = UseCaseFactory(_container_with((IOrderRepo, FakeOrderRepo())))
+
+    assert factory._get_deps(ContainerAnnotatedUseCase) == [("repo", IOrderRepo)]
+    factory.verify()
+
+
+def test_explicit_capability_parameter_is_still_a_dependency() -> None:
+    factory = UseCaseFactory(LoomContainer())
+
+    assert factory._get_deps(ListingUseCase) == [("products", Listable[Product])]

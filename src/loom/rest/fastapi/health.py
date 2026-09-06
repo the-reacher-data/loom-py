@@ -9,8 +9,10 @@ Internal module: consumed by :func:`loom.rest.fastapi.auto.create_app`.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
+from time import monotonic
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -24,13 +26,51 @@ HEALTH_PATH = "/health"
 ReadinessProbe = Callable[[], Awaitable[bool]]
 """Asynchronous probe answering whether a backend can serve."""
 
+PROBE_TTL_SECONDS = 2.0
+"""Seconds a probe result is served from memory before the backend is asked again."""
+
+PROBE_TIMEOUT_SECONDS = 5.0
+"""Seconds a probe may run before it is abandoned and reported as not ready."""
+
+
+class _CachedProbe:
+    """Readiness probe memoised for a short TTL, single-flight and time-bounded.
+
+    Concurrent callers share one in-flight probe; a result is reused until
+    :data:`PROBE_TTL_SECONDS` elapse; a probe exceeding
+    :data:`PROBE_TIMEOUT_SECONDS` counts as not ready.
+    """
+
+    def __init__(self, probe: ReadinessProbe) -> None:
+        self._probe = probe
+        self._lock = asyncio.Lock()
+        self._result: bool | None = None
+        self._expires_at = 0.0
+
+    async def __call__(self) -> bool:
+        async with self._lock:
+            if self._result is not None and monotonic() < self._expires_at:
+                return self._result
+            self._result = await self._bounded_probe()
+            self._expires_at = monotonic() + PROBE_TTL_SECONDS
+            return self._result
+
+    async def _bounded_probe(self) -> bool:
+        try:
+            return await asyncio.wait_for(self._probe(), PROBE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return False
+
 
 def mount_health(app: FastAPI, backend: str, readiness: ReadinessProbe | None) -> None:
     """Register ``GET /health`` ahead of every route already on *app*.
 
     The response is ``{"status": "ok" | "degraded", "backends": {name: bool}}``
     with ``503`` when any backend is not ready. A backend without a probe
-    reports no backends and is always ``ok``.
+    reports no backends and is always ``ok``. The probe is wrapped in
+    :class:`_CachedProbe`: its result is cached for :data:`PROBE_TTL_SECONDS`,
+    concurrent requests share one probe, and one running longer than
+    :data:`PROBE_TIMEOUT_SECONDS` reports the backend as not ready.
 
     Args:
         app: Application to mutate.
@@ -38,9 +78,10 @@ def mount_health(app: FastAPI, backend: str, readiness: ReadinessProbe | None) -
             in the response.
         readiness: The backend's probe; ``None`` when it has nothing to probe.
     """
+    probe = None if readiness is None else _CachedProbe(readiness)
 
     async def _health() -> JSONResponse:
-        backends = {} if readiness is None else {backend: await readiness()}
+        backends = {} if probe is None else {backend: await probe()}
         return _health_response(backends)
 
     route = APIRoute(HEALTH_PATH, _health, methods=["GET"], include_in_schema=False)
@@ -77,4 +118,11 @@ def _health_response(backends: dict[str, bool]) -> JSONResponse:
     )
 
 
-__all__ = ["HEALTH_PATH", "ReadinessProbe", "mount_health", "reject_health_collision"]
+__all__ = [
+    "HEALTH_PATH",
+    "PROBE_TIMEOUT_SECONDS",
+    "PROBE_TTL_SECONDS",
+    "ReadinessProbe",
+    "mount_health",
+    "reject_health_collision",
+]

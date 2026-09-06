@@ -437,29 +437,6 @@ def _get_or_create(model: type[Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _supported_ops(model: type[Any]) -> tuple[str, ...]:
-    """Return the CRUD ops the registered repository actually supports.
-
-    Derives the supported operations from the repository class's MRO using
-    the standard ``-able`` capability protocols.  Falls back to all ops when
-    no explicit registration exists (the default builder always produces a
-    :class:`~loom.core.repository.sqlalchemy.repository.RepositorySQLAlchemy`
-    which implements every capability).
-
-    Args:
-        model: Domain model type.
-
-    Returns:
-        Tuple of :class:`~loom.core.use_case.constants.CrudOp` string values
-        for the operations the repository supports.
-    """
-    registration = get_repository_registration(model)
-    if registration is None:
-        return _ALL_OPS
-    mro = set(registration.repository_type.__mro__)
-    return tuple(op for op, proto in CRUD_OP_CAPABILITY.items() if proto in mro)
-
-
 def supported_crud_ops(repository_type: type[Any]) -> frozenset[CrudOp]:
     """Return the CRUD operations *repository_type* declares a capability for.
 
@@ -480,6 +457,27 @@ def registered_repository_type(model: type[Any]) -> type[Any] | None:
     if registration is None or not isinstance(registration.repository_type, type):
         return None
     return registration.repository_type
+
+
+def _supported_ops(model: type[Any]) -> tuple[CrudOp, ...]:
+    """Return the CRUD ops to mount for *model* when ``include`` is empty.
+
+    Delegates to :func:`supported_crud_ops` for the class an explicit
+    ``repository_for`` registration names.  Without a registration the model
+    is served by the default repository the persistence backend builds later,
+    so every operation is mounted.
+
+    Args:
+        model: Domain model type.
+
+    Returns:
+        The supported operations in :data:`CRUD_OP_CAPABILITY` order.
+    """
+    repository_type = registered_repository_type(model)
+    if repository_type is None:
+        return _ALL_OPS
+    supported = supported_crud_ops(repository_type)
+    return tuple(op for op in CRUD_OP_CAPABILITY if op in supported)
 
 
 def crud_op_of(use_case_type: type[Any]) -> CrudOp:

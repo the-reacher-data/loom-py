@@ -161,3 +161,22 @@ def test_persistence_package_imports_without_sqlalchemy_or_boto3() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+class _BrokenEntryPoint(_FakeEntryPoint):
+    def load(self) -> object:
+        raise ModuleNotFoundError("No module named 'sqlalchemy'", name="sqlalchemy")
+
+
+def test_backend_whose_module_import_fails_reports_the_extra_to_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install(monkeypatch, (_BrokenEntryPoint("sqlalchemy", "loom-kernel", _FakeBackend),))
+
+    with pytest.raises(ConfigError) as excinfo:
+        resolve_backend("sqlalchemy")
+
+    message = str(excinfo.value)
+    assert "'sqlalchemy'" in message
+    assert "loom-kernel[sqlalchemy]" in message
+    assert isinstance(excinfo.value.__cause__, ModuleNotFoundError)
