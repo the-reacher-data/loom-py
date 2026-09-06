@@ -9,9 +9,10 @@ zero per-request reflection.
 from __future__ import annotations
 
 import inspect
-from typing import Any, TypeVar
+import types
+from typing import Any, TypeVar, get_origin
 
-from loom.core.di.container import LoomContainer
+from loom.core.di.container import LoomContainer, ResolutionError
 from loom.core.model.introspection import generic_type_arg, resolve_type_hints
 from loom.core.repository.abc import RepoFor
 from loom.core.use_case.use_case import UseCase
@@ -30,7 +31,9 @@ class UseCaseFactory:
     The factory inspects ``UseCase.__init__`` type hints once (at startup or
     on first use for each class) and stores the resolved dependency list.
     Every subsequent :meth:`build` call resolves instances from the container
-    without further reflection.
+    without further reflection. :meth:`verify`, called once the host has
+    finished wiring, surfaces every dependency the container cannot provide
+    before the first request.
 
     Args:
         container: The :class:`~loom.core.di.container.LoomContainer` to
@@ -85,15 +88,39 @@ class UseCaseFactory:
     def register(self, use_case_type: type[Any]) -> None:
         """Pre-warm the dependency cache for ``use_case_type`` at startup.
 
-        Calling this during bootstrap ensures any missing bindings surface
-        as :class:`~loom.core.di.container.ResolutionError` before the first
-        request rather than at runtime.
+        Only inspects and caches: a dependency the host registers later (a job
+        service, the application invoker) is legitimate here. :meth:`verify`
+        checks the cached dependencies once wiring is complete.
 
         Args:
             use_case_type: Class to inspect and cache. Supports both
                 ``UseCase`` and ``Job`` subclasses.
         """
         self._get_deps(use_case_type)
+
+    def verify(self) -> None:
+        """Check every registered class against the container's bindings.
+
+        Call once the host has finished wiring, so that a missing binding
+        fails the bootstrap instead of the first request.
+
+        Raises:
+            ~loom.core.di.container.ResolutionError: Naming the class, the
+                constructor parameter and the key the container lacks.
+        """
+        for use_case_type, deps in self._dep_cache.items():
+            for name, dep in deps:
+                if not self._is_provided(dep):
+                    raise ResolutionError(
+                        f"{use_case_type.__qualname__} injects {name}: {_describe_dep(dep)}, "
+                        "which is not registered in the container."
+                    )
+
+    def _is_provided(self, dep: DepToken) -> bool:
+        if isinstance(dep, tuple):
+            _, model = dep
+            return self._container.has_repo_mapping(model)
+        return self._container.is_registered(dep)
 
     def _get_deps(self, use_case_type: type[Any]) -> list[tuple[str, DepToken]]:
         """Return the cached (or freshly computed) dependency list for a UseCase.
@@ -139,15 +166,30 @@ class UseCaseFactory:
         for name, typ in hints.items():
             if name in _SKIP_PARAMS:
                 continue
-            if isinstance(typ, type):
-                deps.append((name, typ))
-                continue
             repo_model = self._extract_repo_model(typ)
             if repo_model is not None:
                 deps.append((name, ("repo_for", repo_model)))
+                continue
+            if isinstance(typ, type) or _is_parametrised_class(typ):
+                deps.append((name, typ))
         self._dep_cache[use_case_type] = deps
         return deps
 
     def _extract_repo_model(self, annotation: object) -> type[Any] | None:
         """Return the model behind a ``RepoFor[Model]`` annotation, if that is what it is."""
         return generic_type_arg(annotation, RepoFor)
+
+
+def _is_parametrised_class(annotation: object) -> bool:
+    """True for ``Origin[Arg]`` with a class origin, such as the capability key ``Listable[M]``."""
+    origin = get_origin(annotation)
+    return isinstance(origin, type) and origin is not types.UnionType
+
+
+def _describe_dep(dep: DepToken) -> str:
+    if isinstance(dep, tuple):
+        _, model = dep
+        return f"repository for {model.__qualname__}"
+    if isinstance(dep, type):
+        return dep.__qualname__
+    return repr(dep)

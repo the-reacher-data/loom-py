@@ -1,0 +1,118 @@
+"""Capability detection and default DI keys of the repository registration module."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+import msgspec
+
+from loom.core.di.container import LoomContainer
+from loom.core.model import BaseModel, ColumnField
+from loom.core.repository.abc import (
+    BulkCreatable,
+    Countable,
+    Creatable,
+    Deletable,
+    Listable,
+    Readable,
+    Updatable,
+)
+from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
+from loom.core.repository.registration import (
+    build_repository_registration_module,
+    capabilities_of,
+)
+from loom.core.repository.registry import (
+    RepositoryBuildContext,
+    RepositoryRegistration,
+    RepositoryToken,
+)
+from loom.core.repository.sqlalchemy.repository import RepositorySQLAlchemy
+
+
+class Widget(BaseModel):
+    __tablename__ = "registration_widgets_fixture"
+
+    id: int = ColumnField(primary_key=True)
+    name: str = ColumnField(length=50)
+
+
+class _BulkWidgetRepository(Creatable[Widget], BulkCreatable[Widget]):
+    async def create(self, data: msgspec.Struct) -> Widget:  # pragma: no cover - never invoked
+        raise AssertionError("not exercised")
+
+    async def create_many(
+        self, data: Sequence[msgspec.Struct]
+    ) -> tuple[Widget, ...]:  # pragma: no cover - never invoked
+        raise AssertionError("not exercised")
+
+
+def _unused_builder(
+    context: RepositoryBuildContext, registration: RepositoryRegistration
+) -> Any:  # pragma: no cover - never invoked
+    raise AssertionError("not exercised")
+
+
+def _container(default_repository_type: type | None) -> LoomContainer:
+    container = LoomContainer()
+    build_repository_registration_module(
+        models=(Widget,),
+        build_registered_repository=_unused_builder,
+        default_repository_type=default_repository_type,
+    )(container)
+    return container
+
+
+class TestCapabilitiesOf:
+    def test_sqlalchemy_declares_every_standard_capability(self) -> None:
+        capabilities = set(capabilities_of(RepositorySQLAlchemy))
+
+        assert capabilities == {
+            Readable,
+            Creatable,
+            BulkCreatable,
+            Updatable,
+            Deletable,
+            Listable,
+            Countable,
+        }
+
+    def test_dynamodb_declares_only_the_key_operations(self) -> None:
+        assert set(capabilities_of(RepositoryDynamoDB)) == {
+            Readable,
+            Creatable,
+            Updatable,
+            Deletable,
+        }
+
+    def test_detects_bulk_creatable(self) -> None:
+        assert set(capabilities_of(_BulkWidgetRepository)) == {Creatable, BulkCreatable}
+
+    def test_keeps_the_declaration_order(self) -> None:
+        assert capabilities_of(RepositorySQLAlchemy) == (
+            Readable,
+            Creatable,
+            BulkCreatable,
+            Updatable,
+            Deletable,
+            Listable,
+            Countable,
+        )
+
+
+class TestDefaultKeys:
+    def test_derived_from_the_default_repository_type(self) -> None:
+        container = _container(_BulkWidgetRepository)
+
+        assert container.is_registered(Creatable[Widget])
+        assert container.is_registered(BulkCreatable[Widget])
+        assert not container.is_registered(Listable[Widget])
+        assert not container.is_registered(Readable[Widget])
+
+    def test_no_default_type_binds_no_capability(self) -> None:
+        container = _container(None)
+
+        assert container.is_registered(RepositoryToken(Widget))
+        assert not container.is_registered(Readable[Widget])
+        assert not container.is_registered(Creatable[Widget])

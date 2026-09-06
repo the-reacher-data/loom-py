@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import msgspec
 import pytest
@@ -62,6 +62,23 @@ class TestRepositorySQLAlchemyIntegration:
 
         missing = await integration_context.product.repository.get_by_id(1)
         assert missing is None
+
+    @pytest.mark.asyncio
+    async def test_create_many_persists_rows_in_input_order(
+        self,
+        integration_context: RepositoryIntegrationHarness,
+    ) -> None:
+        created = await integration_context.product.repository.create_many(
+            [
+                CreateProduct(name="mouse", price=25.0),
+                CreateProduct(name="monitor", price=300.0),
+                CreateProduct(name="cable", price=5.0),
+            ]
+        )
+
+        assert [item.name for item in created] == ["mouse", "monitor", "cable"]
+        assert [item.id for item in created] == [1, 2, 3]
+        assert await integration_context.product.repository.count() == 3
 
     @pytest.mark.asyncio
     async def test_paginated_list_with_filters(
@@ -182,7 +199,7 @@ class TestRepositorySQLAlchemyIntegration:
 
         categories = loaded.categories
         assert isinstance(categories, list)
-        assert {category_item.name for category_item in categories} == {"electronics"}
+        assert {cast(Any, category_item).name for category_item in categories} == {"electronics"}
 
         assert loaded.has_reviews is True
         assert loaded.count_reviews == 2

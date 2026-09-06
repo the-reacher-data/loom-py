@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sys
 import warnings
@@ -48,6 +49,7 @@ from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.persistence import PersistenceWiring, resolve_backend
 from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
 from loom.core.sql.config import roles_need_identity_binding
+from loom.core.use_case.constants import CrudOp
 from loom.core.use_case.invoker import AppInvoker
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
@@ -59,6 +61,13 @@ from loom.rest.auth import (
     JwtAuthenticator,
 )
 from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
+from loom.rest.autocrud import (
+    CRUD_OP_CAPABILITY,
+    build_auto_routes,
+    crud_op_of,
+    registered_repository_type,
+    supported_crud_ops,
+)
 from loom.rest.cors import CorsConfig
 from loom.rest.fastapi._exclusions import verify_exclusion_paths
 from loom.rest.fastapi.app import create_fastapi_app
@@ -69,6 +78,7 @@ from loom.rest.fastapi.sql import (
     bind_sql_endpoints,
 )
 from loom.rest.middleware import TraceIdMiddleware
+from loom.rest.model import RestInterface
 
 _logger = logging.getLogger(__name__)
 
@@ -266,6 +276,7 @@ def _build_bootstrap(
     # persistence is what creates them.
     _reject_autocrud_without_model(discovered)
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
+    discovered = _gate_autocrud_capabilities(discovered, wiring, persistence_cfg.backend)
     wiring.prepare_models(discovered.models)
     result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
     return result, wiring, discovered
@@ -293,6 +304,87 @@ def _reject_autocrud_without_model(discovered: DiscoveryResult) -> None:
                 "your manifest module, or include its module in app.discovery, so its "
                 "repository is registered."
             )
+
+
+def _gate_autocrud_capabilities(
+    discovered: DiscoveryResult, wiring: PersistenceWiring, backend: str
+) -> DiscoveryResult:
+    """Mount only the CRUD operations the serving repository class declares.
+
+    The repository is the explicit ``repository_for`` class when there is one,
+    else the backend's default repository type. An empty ``include`` is
+    recomputed from scratch and narrowed to the declared capabilities, so a
+    later boot on another backend in the same process sees its own routes;
+    an explicit ``include`` is honoured verbatim or refused.
+
+    Returns:
+        The discovery result without the use cases of the routes that were
+        pruned, so the kernel neither compiles nor registers them.
+
+    Raises:
+        RuntimeError: When the backend serves no repositories, when an
+            explicit ``include`` names an operation the repository lacks, or
+            when narrowing leaves no route; each names model and backend.
+    """
+    pruned: set[type[Any]] = set()
+    for interface in discovered.interfaces:
+        if interface.auto_crud_model is not None:
+            pruned.update(_gate_interface(interface, interface.auto_crud_model, wiring, backend))
+    mounted = {route.use_case for iface in discovered.interfaces for route in iface.routes}
+    dropped = pruned - mounted
+    return dataclasses.replace(
+        discovered,
+        use_cases=tuple(uc for uc in discovered.use_cases if uc not in dropped),
+    )
+
+
+def _gate_interface(
+    interface: type[RestInterface[Any]],
+    model: type[Any],
+    wiring: PersistenceWiring,
+    backend: str,
+) -> frozenset[type[Any]]:
+    """Narrow one interface's generated routes; return the use cases pruned from it."""
+    repository_type = _serving_repository_type(model, wiring)
+    if repository_type is None:
+        raise RuntimeError(
+            f"{interface.__name__} generates CRUD routes over {model.__name__}, but "
+            f"persistence.backend {backend!r} serves no repositories."
+        )
+    supported = supported_crud_ops(repository_type)
+    if interface.include:
+        _reject_unsupported_include(interface, model, backend, supported)
+        return frozenset()
+    generated = build_auto_routes(model, ())
+    interface.routes = tuple(r for r in generated if crud_op_of(r.use_case) in supported)
+    if not interface.routes:
+        raise RuntimeError(
+            f"{interface.__name__} generates CRUD routes over {model.__name__}, but "
+            f"backend {backend!r} ({repository_type.__name__}) supports none of "
+            f"{sorted(op.value for op in CRUD_OP_CAPABILITY)}."
+        )
+    kept = {route.use_case for route in interface.routes}
+    return frozenset(route.use_case for route in generated if route.use_case not in kept)
+
+
+def _serving_repository_type(model: type[Any], wiring: PersistenceWiring) -> type[Any] | None:
+    """Return the repository class that will serve *model* under *wiring*."""
+    registered = registered_repository_type(model)
+    return registered if registered is not None else wiring.default_repository_type
+
+
+def _reject_unsupported_include(
+    interface: type[RestInterface[Any]],
+    model: type[Any],
+    backend: str,
+    supported: frozenset[CrudOp],
+) -> None:
+    missing = [op for op in interface.include if op in CRUD_OP_CAPABILITY and op not in supported]
+    if missing:
+        raise RuntimeError(
+            f"{interface.__name__} includes {missing[0]!r} over {model.__name__}, which "
+            f"backend {backend!r} does not support (missing: {missing})."
+        )
 
 
 def _discover_components(app_cfg: _AppConfig) -> DiscoveryResult:
@@ -1134,6 +1226,8 @@ def create_app(
         code_path=effective_code_path,
         manifest_agent_specs=discovered.agent_specs,
     )
+    # Last: every service a use case may inject is registered by now.
+    result.factory.verify()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

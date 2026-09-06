@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from abc import abstractmethod
+from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, cast
 
 import msgspec
-from sqlalchemy import exists, func, inspect, select
+from sqlalchemy import exists, func, insert, inspect, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -210,10 +212,11 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
                 tags.add(f"{table_name}:{key}:{value}")
         return frozenset(tags)
 
+    @abstractmethod
     def _session_scope(
         self, session: AsyncSession | None = None
     ) -> AbstractAsyncContextManager[AsyncSession]:
-        raise NotImplementedError
+        """Open the session the operation runs in, reusing *session* when given."""
 
 
 class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
@@ -242,6 +245,108 @@ class SQLAlchemyCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Output
                 )
             )
             return cast(OutputT, self._to_output(obj))
+
+
+class SQLAlchemyBulkCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):
+    """Mixin providing the ``create_many`` operation for SQLAlchemy repositories."""
+
+    @handle_integrity_errors
+    async def create_many(self, data: Sequence[msgspec.Struct]) -> tuple[OutputT, ...]:
+        """Persist every entity in *data* and return them in input order.
+
+        The batch is written with one multi-row INSERT. A row that omits a
+        column supplied by another row gets that column's Python-side default
+        when it has one and ``NULL`` otherwise; when such a column has only a
+        server default, the batch is inserted row by row instead so the server
+        default applies, then re-selected in one query. Dialects with
+        ``INSERT ... RETURNING`` read the rows back from the same statement,
+        relying on the database returning them in ``VALUES`` order (SQLite and
+        PostgreSQL do); the others flush the rows and re-select them by
+        primary key. SQLite caps the bound parameters of one statement, so
+        very large batches must be split by the caller. An empty *data*
+        returns ``()`` without touching the database.
+
+        Args:
+            data: Command structs to persist.
+
+        Returns:
+            The output structs, one per input and in the same order.
+        """
+        rows = [self._insert_values(item) for item in data]
+        if not rows:
+            return ()
+        async with self._session_scope() as scoped_session:
+            if self._single_statement_applies(scoped_session, rows):
+                objs = await self._insert_returning(scoped_session, self._normalize_rows(rows))
+            else:
+                objs = await self._insert_and_reselect(scoped_session, rows)
+            self._record_bulk_create(objs, rows)
+            return tuple(cast(OutputT, self._to_output(obj)) for obj in objs)
+
+    def _insert_values(self, item: msgspec.Struct) -> dict[str, Any]:
+        """Return the non-``None`` column values of *item* keyed by internal field name."""
+        return {
+            key: value for key, value in self._serialize_input(item).items() if value is not None
+        }
+
+    def _partial_keys(self, rows: list[dict[str, Any]]) -> set[str]:
+        """Return the keys that some rows supply and others omit."""
+        key_sets = [set(row) for row in rows]
+        union: set[str] = set().union(*key_sets)
+        common = key_sets[0].intersection(*key_sets[1:])
+        return union - common
+
+    def _single_statement_applies(self, session: AsyncSession, rows: list[dict[str, Any]]) -> bool:
+        """True when RETURNING is available and no partial column relies on a server default."""
+        columns = self._effective_sa_model.__table__.c
+        server_only = any(
+            columns[key].default is None and columns[key].server_default is not None
+            for key in self._partial_keys(rows)
+        )
+        return bool(session.get_bind().dialect.insert_returning) and not server_only
+
+    def _normalize_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Add ``None`` for omitted columns that have neither a Python-side nor a server default."""
+        columns = self._effective_sa_model.__table__.c
+        gaps = {
+            key: None
+            for key in self._partial_keys(rows)
+            if columns[key].default is None and columns[key].server_default is None
+        }
+        return [{**gaps, **row} for row in rows]
+
+    async def _insert_returning(
+        self, session: AsyncSession, rows: list[dict[str, Any]]
+    ) -> list[Any]:
+        sa_model = self._effective_sa_model
+        stmt = insert(sa_model).values(rows).returning(sa_model)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def _insert_and_reselect(
+        self, session: AsyncSession, rows: list[dict[str, Any]]
+    ) -> list[Any]:
+        sa_model = self._effective_sa_model
+        id_attr = self._effective_id_attribute
+        objs = [sa_model(**row) for row in rows]
+        session.add_all(objs)
+        await session.flush()
+        ids = [getattr(obj, id_attr) for obj in objs]
+        result = await session.execute(select(sa_model).where(self._id_column().in_(ids)))
+        by_id = {getattr(obj, id_attr): obj for obj in result.scalars()}
+        return [by_id[obj_id] for obj_id in ids]
+
+    def _record_bulk_create(self, objs: list[Any], rows: list[dict[str, Any]]) -> None:
+        id_attr = self._effective_id_attribute
+        record_mutation(
+            MutationEvent(
+                entity=self.entity_name,
+                op="create",
+                ids=tuple(getattr(obj, id_attr, None) for obj in objs),
+                changed_fields=frozenset(key for row in rows for key in row),
+                tags=frozenset().union(*(self._mutation_tags(obj) for obj in objs)),
+            )
+        )
 
 
 class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT, IdT]):

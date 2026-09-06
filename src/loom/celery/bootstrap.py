@@ -840,6 +840,7 @@ def bootstrap_worker(
         metrics=metrics,
         uow_factory=uow_factory,
     )
+    kernel.factory.verify()
     celery_app = create_celery_app(celery_cfg)
 
     for job_type in resolved.jobs:

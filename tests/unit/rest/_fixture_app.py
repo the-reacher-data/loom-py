@@ -37,6 +37,11 @@ class ConfigRecord(BaseModel):
 
 
 class ConfigPingUseCase(UseCase[ConfigRecord, str]):
+    """About ``ConfigRecord`` (so discovery finds the model) but needs no repository."""
+
+    def __init__(self) -> None:
+        super().__init__()
+
     async def execute(self, **kwargs: Any) -> str:
         return "pong"
 

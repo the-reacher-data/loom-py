@@ -351,6 +351,12 @@ class TestBootstrapWorkerTaskRegistration:
         }
         assert expected_keys.issubset(set(registry.keys()))
 
+    def test_autocrud_use_cases_cover_the_five_operations_without_persistence(self) -> None:
+        """Workers derive every operation from the model alone; no backend gates them."""
+        use_cases = boot._autocrud_use_cases_from_models((_DiscoveredModel,))
+
+        assert len(use_cases) == 5
+
     def test_registers_repo_mapping_for_discovered_models(self, tmp_path: Any) -> None:
         cfg = {
             "app": {
@@ -389,13 +395,15 @@ def isolated_celery_signals() -> Any:
         worker_process_shutdown,
     )
 
-    saved_init = list(worker_process_init.receivers)
-    saved_shutdown = list(worker_process_shutdown.receivers)
-    worker_process_init.receivers[:] = []
-    worker_process_shutdown.receivers[:] = []
+    init_receivers = cast(list[Any], worker_process_init.receivers)
+    shutdown_receivers = cast(list[Any], worker_process_shutdown.receivers)
+    saved_init = list(init_receivers)
+    saved_shutdown = list(shutdown_receivers)
+    init_receivers[:] = []
+    shutdown_receivers[:] = []
     yield
-    worker_process_init.receivers[:] = saved_init
-    worker_process_shutdown.receivers[:] = saved_shutdown
+    init_receivers[:] = saved_init
+    shutdown_receivers[:] = saved_shutdown
 
 
 class TestWorkerSignals:

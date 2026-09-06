@@ -69,6 +69,7 @@ class HttpErrorMapper:
         ErrorCode.RULE_VIOLATIONS: 422,
         ErrorCode.RULE_VIOLATION: 422,
         ErrorCode.UNSUPPORTED_FORMAT: 400,
+        ErrorCode.UNSUPPORTED_QUERY: 400,
         ErrorCode.SYSTEM_ERROR: 500,
     }
 

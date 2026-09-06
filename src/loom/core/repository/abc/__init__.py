@@ -1,3 +1,4 @@
+from loom.core.repository.abc.errors import UnsupportedQuery
 from loom.core.repository.abc.query import (
     CursorResult,
     FilterGroup,
@@ -12,6 +13,7 @@ from loom.core.repository.abc.query import (
     build_page_result,
 )
 from loom.core.repository.abc.repo_for import (
+    BulkCreatable,
     Countable,
     Creatable,
     Deletable,
@@ -43,6 +45,7 @@ __all__ = [
     "PageResult",
     "PaginationMode",
     "QuerySpec",
+    "BulkCreatable",
     "Countable",
     "Creatable",
     "Deletable",
@@ -54,6 +57,7 @@ __all__ = [
     "RepositoryRead",
     "RepositoryWrite",
     "SortSpec",
+    "UnsupportedQuery",
     "UpdateT",
     "build_page_result",
 ]

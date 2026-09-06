@@ -10,7 +10,7 @@ import pytest
 from loom.core.di.container import LoomContainer, ResolutionError
 from loom.core.di.scope import Scope
 from loom.core.model import LoomStruct
-from loom.core.repository.abc import RepoFor
+from loom.core.repository.abc import Listable, RepoFor
 from loom.core.use_case.factory import UseCaseFactory
 from loom.core.use_case.use_case import UseCase
 
@@ -325,3 +325,67 @@ def test_unresolvable_annotations_fall_back_to_the_inspect_signature() -> None:
 
     assert factory._get_deps(use_case_type) == [("repo", IOrderRepo)]
     assert cast(Any, factory.build(use_case_type))._repo is repo
+
+
+class ListingUseCase(UseCase[Any, str]):
+    def __init__(self, products: Listable[Product]) -> None:
+        self._products = products
+
+    async def execute(self, **kwargs: Any) -> str:
+        return "ok"
+
+
+class FakeProductListing:
+    pass
+
+
+def test_parametrised_capability_key_is_a_dependency() -> None:
+    listing = FakeProductListing()
+    container = LoomContainer()
+    container.register(Listable[Product], lambda: listing, scope=Scope.APPLICATION)
+    factory = UseCaseFactory(container)
+
+    uc = factory.build(ListingUseCase)
+
+    assert cast(object, uc._products) is listing
+
+
+def test_verify_names_use_case_parameter_and_key() -> None:
+    factory = UseCaseFactory(LoomContainer())
+    factory.register(SingleDepUseCase)
+
+    with pytest.raises(ResolutionError, match="SingleDepUseCase") as exc_info:
+        factory.verify()
+
+    message = str(exc_info.value)
+    assert "repo" in message
+    assert "IOrderRepo" in message
+
+
+def test_verify_names_a_missing_capability_key() -> None:
+    factory = UseCaseFactory(LoomContainer())
+    factory.register(ListingUseCase)
+
+    with pytest.raises(ResolutionError, match="ListingUseCase") as exc_info:
+        factory.verify()
+
+    assert "Listable" in str(exc_info.value)
+    assert "Product" in str(exc_info.value)
+
+
+def test_verify_checks_the_model_repository_mapping() -> None:
+    factory = UseCaseFactory(LoomContainer())
+    factory.register(MainRepoUseCase)
+
+    with pytest.raises(ResolutionError, match="repository for Product"):
+        factory.verify()
+
+
+def test_verify_accepts_a_binding_registered_after_the_use_case() -> None:
+    """Hosts register some services after the use cases; only verify() judges."""
+    container = LoomContainer()
+    factory = UseCaseFactory(container)
+    factory.register(SingleDepUseCase)
+    container.register(IOrderRepo, FakeOrderRepo, scope=Scope.REQUEST)
+
+    factory.verify()
