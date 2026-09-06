@@ -24,12 +24,14 @@ from fastapi.testclient import TestClient
 
 from loom.ai.a2a.card import card_path
 from loom.rest.fastapi.auto import create_app
+from tests.integration.ai._entrypoints import fake_entry_points
 from tests.integration.ai.conftest import DEFAULT_OUTPUT
 from tests.integration.ai.test_auto_gate import (
     _APP_MODULE,
     _APP_SOURCE,
     _ENGINE_NAME,
-    _FakeEntryPoints,
+    _GROUP,
+    _FakeEntryPoint,
 )
 
 _AGENT = "published-agent"
@@ -55,7 +57,10 @@ _AGENT_SPEC: dict[str, Any] = {
 @pytest.fixture
 def fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     """Register the in-process engine ``ai.engine`` resolves to."""
-    monkeypatch.setattr("loom.core.plugins.entrypoints.entry_points", _FakeEntryPoints)
+    monkeypatch.setattr(
+        "loom.core.plugins.entrypoints.entry_points",
+        fake_entry_points(_GROUP, (_FakeEntryPoint(),)),
+    )
 
 
 def _write_project(tmp_path: Path, *, ai_extra: dict[str, Any]) -> str:

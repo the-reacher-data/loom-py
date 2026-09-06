@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import msgspec
 import pytest
@@ -199,7 +199,7 @@ class TestRepositorySQLAlchemyIntegration:
 
         categories = loaded.categories
         assert isinstance(categories, list)
-        assert {cast(Any, category_item).name for category_item in categories} == {"electronics"}
+        assert {category_item["name"] for category_item in categories} == {"electronics"}
 
         assert loaded.has_reviews is True
         assert loaded.count_reviews == 2

@@ -80,12 +80,12 @@ class TestResolveBackend:
         assert "'missing'" in message
         assert "alpha, zeta" in message
 
-    def test_unknown_name_with_empty_group_reports_none_registered(
+    def test_unknown_name_with_empty_group_reports_no_backends_registered(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _install(monkeypatch, ())
 
-        with pytest.raises(ConfigError, match="none"):
+        with pytest.raises(ConfigError, match="No persistence backends are registered"):
             resolve_backend("missing")
 
     def test_injected_entry_point_resolves_to_an_instance_of_its_class(

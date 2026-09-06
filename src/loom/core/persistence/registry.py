@@ -29,7 +29,11 @@ def resolve_backend(name: str) -> PersistenceBackend:
     try:
         target = load_entry_point(BACKEND_ENTRY_POINT_GROUP, name, on_duplicate="error")
     except EntryPointNotFoundError as exc:
-        registered = ", ".join(exc.available) if exc.available else "none"
+        if not exc.available:
+            raise ConfigError(
+                f"Unknown persistence backend {name!r}. No persistence backends are registered."
+            ) from exc
+        registered = ", ".join(exc.available)
         raise ConfigError(
             f"Unknown persistence backend {name!r}. Registered backends: {registered}."
         ) from exc

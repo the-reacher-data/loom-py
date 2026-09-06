@@ -25,6 +25,7 @@ from loom.ai.errors import AgentCompilationError, AgentErrorCode
 from loom.core.config.errors import ConfigError
 from loom.core.plugins import entrypoints as entrypoints_module
 from loom.rest.fastapi.auto import create_app, describe_fastapi_app
+from tests.integration.ai._entrypoints import fake_entry_points
 from tests.integration.ai.conftest import CountingEngineProvider
 
 _APP_MODULE = "loom_aispecs_fixture_app"
@@ -114,14 +115,6 @@ class _FakeEntryPoint:
         return CountingEngineProvider
 
 
-class _FakeEntryPoints:
-    """Stand-in for the collection returned by ``entry_points()``."""
-
-    def select(self, *, group: str) -> tuple[_FakeEntryPoint, ...]:
-        """Return the fake engine entry point for its own group only."""
-        return (_FakeEntryPoint(),) if group == _GROUP else ()
-
-
 @pytest.fixture(autouse=True)
 def fresh_manifest() -> Iterator[None]:
     """Re-import the manifest per test: each writes a different ``AGENTS``."""
@@ -133,7 +126,9 @@ def fresh_manifest() -> Iterator[None]:
 @pytest.fixture
 def fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     """Register the in-process engine ``ai.engine`` resolves to."""
-    monkeypatch.setattr(entrypoints_module, "entry_points", _FakeEntryPoints)
+    monkeypatch.setattr(
+        entrypoints_module, "entry_points", fake_entry_points(_GROUP, (_FakeEntryPoint(),))
+    )
 
 
 def _write_project(

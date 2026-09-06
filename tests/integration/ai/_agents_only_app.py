@@ -41,6 +41,7 @@ import shutil
 import tempfile
 import traceback
 from collections.abc import Sequence
+from importlib.metadata import entry_points as _real_entry_points
 from pathlib import Path
 from typing import Any
 
@@ -112,8 +113,17 @@ class _FakeEntryPoint:
 
 
 class _FakeEntryPoints:
-    def select(self, *, group: str) -> Sequence[_FakeEntryPoint]:
-        return (_FakeEntryPoint(),) if group == _GROUP else ()
+    """Fakes ``_GROUP`` only; every other group hits the real registrations.
+
+    ``create_app`` also resolves the persistence backend (``persistence:
+    none``) through the same loader, so a fake that blinds every group would
+    make that lookup fail too.
+    """
+
+    def select(self, *, group: str) -> Sequence[object]:
+        if group == _GROUP:
+            return (_FakeEntryPoint(),)
+        return tuple(_real_entry_points().select(group=group))
 
 
 def _write_project(root: Path) -> str:

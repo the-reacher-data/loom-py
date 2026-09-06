@@ -3,7 +3,10 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any, ClassVar, Generic, cast
+from uuid import UUID
 
 import msgspec
 from sqlalchemy import exists, func, insert, inspect, select
@@ -11,6 +14,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.backend.sqlalchemy import get_compiled_core
+from loom.core.model.convert import to_struct
 from loom.core.model.introspection import (
     get_column_fields,
     get_id_attribute,
@@ -34,6 +38,9 @@ from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCom
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
+# Values SQLAlchemy binds natively; encoding them to strings breaks typed columns.
+_NATIVE_COLUMN_TYPES = (datetime, date, time, Decimal, UUID)
+_JSON_TYPE_NAMES = frozenset({"JSON", "Postgres.JSONB"})
 _TOTAL_COUNT_ALIAS = "__loom_total_count"
 
 
@@ -45,6 +52,7 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     _sa_model: type[Any] | None = None
     _id_attr: str | None = None
     _column_field_names: frozenset[str] | None = None
+    _json_column_names: frozenset[str] = frozenset()
     # Pre-computed at init to avoid per-request/per-object reflection.
     _output_column_keys: tuple[str, ...] | None = None
     _all_sa_column_keys: tuple[str, ...] | None = None
@@ -68,6 +76,11 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         column_fields = get_column_fields(self.model)
         column_field_names = frozenset(column_fields.keys())
         self._column_field_names = column_field_names
+        self._json_column_names = frozenset(
+            name
+            for name, info in column_fields.items()
+            if info.column_type.type_name in _JSON_TYPE_NAMES
+        )
         self._relations_cache = get_relations(self.model)
         self._core_model = get_compiled_core(self.model)
         if self._core_model is None:
@@ -121,11 +134,17 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
 
     def _serialize_input(self, data: msgspec.Struct | dict[str, Any]) -> dict[str, Any]:
         if isinstance(data, msgspec.Struct):
-            builtins = msgspec.to_builtins(data)
+            builtins = msgspec.to_builtins(data, builtin_types=_NATIVE_COLUMN_TYPES)
             if not isinstance(builtins, dict):
                 raise TypeError("Struct payload must serialize to dict")
-            return _to_internal_field_names(type(data), builtins)
+            return self._encode_json_columns(_to_internal_field_names(type(data), builtins))
         return data
+
+    def _encode_json_columns(self, values: dict[str, Any]) -> dict[str, Any]:
+        """Reduce JSON-column payloads to JSON-serialisable builtins."""
+        for key in self._json_column_names.intersection(values):
+            values[key] = msgspec.to_builtins(values[key])
+        return values
 
     def _column_for_field(self, field: str) -> Any:
         """Resolve a model column attribute by field name.
@@ -179,17 +198,23 @@ class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
         if projection_values:
             kwargs.update(projection_values)
 
-        return self.model(**kwargs)
+        return to_struct(self.model, kwargs)
 
     def _serialize_related(self, value: Any) -> Any:
-        """Recursively serialize ORM relationship values to dicts/lists."""
+        """Build the related model structs for loaded ORM relationship values.
+
+        The same shape the read path assembles, so the output field's
+        annotation decides the final form on both paths.
+        """
         if value is None:
             return None
         if isinstance(value, list):
             return [self._serialize_related(item) for item in value]
         if hasattr(value, "__mapper__"):
             rel_mapper = inspect(value).mapper
-            return {col.key: getattr(value, col.key) for col in rel_mapper.column_attrs}
+            columns = {col.key: getattr(value, col.key) for col in rel_mapper.column_attrs}
+            struct_cls = getattr(type(value), "__struct_cls__", None)
+            return columns if struct_cls is None else to_struct(struct_cls, columns)
         return value
 
     def to_output_from_payload(self, payload: dict[str, Any]) -> Any:
@@ -405,6 +430,10 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
                 total_alias=_TOTAL_COUNT_ALIAS,
             )
             items = cast(list[OutputT], loaded_items)
+            if not items and page_params.page > 1:
+                count_stmt = select(func.count()).select_from(self._effective_sa_model)
+                count_stmt = self._apply_offset_page_filters(count_stmt, filter_params)
+                total_count = await self._count_matching(scoped_session, count_stmt)
             return build_page_result(items, total_count, page_params)
 
     async def list_with_query(
@@ -495,8 +524,15 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
             total_alias=_TOTAL_COUNT_ALIAS,
         )
         items = cast(list[OutputT], loaded_items)
+        if not items and query.page > 1:
+            total_count = await self._count_matching(scoped_session, compiler.compile_count(query))
         page_params = PageParams(page=query.page, limit=query.limit)
         return build_page_result(items, total_count or 0, page_params)
+
+    async def _count_matching(self, scoped_session: AsyncSession, count_stmt: Any) -> int:
+        """Count the filtered rows when a page past the end yields no windowed total."""
+        result = await scoped_session.execute(count_stmt)
+        return int(result.scalar() or 0)
 
     async def exists(self, obj_id: IdT) -> bool:
         """Check whether an entity exists by id."""

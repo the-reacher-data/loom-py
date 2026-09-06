@@ -69,11 +69,20 @@ class QuerySpecCompiler:
             stmt = stmt.where(clause)
 
         order_clauses = compile_order_by(sa_model, query.sort)
-        stmt = stmt.order_by(*(order_clauses or [self._id_column]))
+        stmt = stmt.order_by(*order_clauses, self._id_column)
 
         offset = (query.page - 1) * query.limit
         stmt = stmt.offset(offset).limit(query.limit)
 
+        return stmt
+
+    def compile_count(self, query: QuerySpec) -> Any:
+        """Compile a ``SELECT count(*)`` over the rows ``query.filters`` selects."""
+        sa_model = self._sa_model
+        stmt = select(func.count()).select_from(sa_model)
+        if query.filters:
+            clause = compile_filter_group(sa_model, query.filters, self._allowed_fields)
+            stmt = stmt.where(clause)
         return stmt
 
     def compile_cursor(self, query: QuerySpec, *, base_stmt: Any | None = None) -> Any:

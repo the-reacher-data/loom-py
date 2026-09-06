@@ -25,6 +25,7 @@ import msgspec
 
 from loom.core.errors import Conflict
 from loom.core.logger import get_logger
+from loom.core.model.convert import to_struct
 from loom.core.model.introspection import get_column_fields, get_id_attribute
 from loom.core.repository.abc import (
     Creatable,
@@ -214,7 +215,7 @@ class RepositoryDynamoDB(
     def _to_output(self, item: dict[str, Any]) -> OutputT:
         """Build the model output struct from a stored item, ignoring unknown attrs."""
         kwargs = {key: value for key, value in item.items() if key in self._column_fields}
-        return cast(OutputT, self._model(**kwargs))
+        return cast(OutputT, to_struct(self._model, kwargs))
 
     def _encode_value(self, value: Any) -> dict[str, Any]:
         """Serialize a plain Python value to a low-level ``AttributeValue`` dict.

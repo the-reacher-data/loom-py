@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+import pytest
+
+from loom.core.errors import Conflict
+from loom.core.repository.abc import Creatable, Deletable, Readable, Updatable
+
+from .conftest import SEED, BackendCase, OrderStatus, UpdateOrder, require
+
+_FIRST = SEED[0]
+
+
+async def test_create_returns_output_with_an_id(case: BackendCase, repository: Any) -> None:
+    require(case, Creatable, Readable)
+
+    created = await repository.create(_FIRST)
+
+    assert isinstance(created, case.model)
+    assert created.id is not None
+    assert created.customer == _FIRST.customer
+    assert type(created.status) is OrderStatus
+    assert isinstance(created.created_at, datetime)
+    assert await repository.get_by_id(created.id) == created
+
+
+async def test_create_duplicate_key_raises_conflict(case: BackendCase, repository: Any) -> None:
+    require(case, Creatable)
+    await repository.create(_FIRST)
+
+    with pytest.raises(Conflict):
+        await repository.create(_FIRST)
+
+
+async def test_update_changes_only_the_given_fields(case: BackendCase, seeded: Any) -> None:
+    require(case, Updatable, Readable)
+
+    updated = await seeded.update(_FIRST.id, UpdateOrder(status=OrderStatus.CANCELLED))
+
+    assert updated is not None
+    assert updated.status == OrderStatus.CANCELLED
+    assert type(updated.status) is OrderStatus
+    assert isinstance(updated.created_at, datetime)
+    assert (updated.customer, updated.amount, updated.note) == (
+        _FIRST.customer,
+        _FIRST.amount,
+        _FIRST.note,
+    )
+    assert await seeded.get_by_id(_FIRST.id) == updated
+
+
+async def test_update_missing_returns_none(case: BackendCase, seeded: Any) -> None:
+    require(case, Updatable)
+
+    assert await seeded.update(404, UpdateOrder(amount=1)) is None
+
+
+async def test_delete_reports_whether_the_row_existed(case: BackendCase, seeded: Any) -> None:
+    require(case, Deletable, Readable)
+
+    assert await seeded.delete(_FIRST.id) is True
+    assert await seeded.get_by_id(_FIRST.id) is None
+    assert await seeded.delete(_FIRST.id) is False

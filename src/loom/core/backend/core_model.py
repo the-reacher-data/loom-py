@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Column, Select, Table, select
 
+from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
 from loom.core.projection.runtime import ProjectionPlan, execute_projection_plan
 
@@ -312,10 +313,8 @@ def _build_struct(
         )
         for step in plan.relation_steps
     }
-    return struct_cls(
-        **dict(row),
-        **relation_kwargs,
-        **projection_values.get(index, {}),
+    return to_struct(
+        struct_cls, {**dict(row), **relation_kwargs, **projection_values.get(index, {})}
     )
 
 
