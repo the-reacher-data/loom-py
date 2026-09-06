@@ -1,3 +1,24 @@
+# 🚀 Release 1.10.0
+
+Changes since v1.9.3:
+
+- fix(release): stop a closed release PR from hiding the live one (#182)
+- ci: release on an explicit dispatch instead of on every merge (#180)
+- refactor(prefect): validate job variables at read time and export FlowSettings (#179)
+- refactor(etl): one skeleton for the table write modes (#173)
+- fix(streaming): derive every branch index from one place (#174)
+- refactor(core): one place that knows the projection descriptors (#172)
+- refactor(plugins): load every entry point through the shared helper (#171)
+- fix(prometheus): cache instruments once for every metric owner (#170)
+- feat(prefect): deploy ETLs to Prefect from YAML declarations (#178)
+- feat(config): resolvers on every factory with AWS defaults (#177)
+- feat(config): compose configuration across local and cloud files (#168)
+- ci: make the pipeline honest about Snyk, release PRs and branch prefixes (#176)
+- fix(tests): call build_capabilities with the container the engine now requires (#169)
+- fix(streaming): que un nodo de destino se pueda usar sin cast (#165)
+- feat(ai): capacidad native para las herramientas que ejecuta el proveedor del modelo (#164)
+- feat(ai): admitir servidores MCP por stdio en la configuración del despliegue (#163)
+- fix(extras): que cada extra instale lo que importa y que un proyecto vacío arranque (#162)
 # 🚀 Release 1.9.3 ([#159](https://github.com/the-reacher-data/loom-py/pull/159)) ([`eedd32c`](https://github.com/the-reacher-data/loom-py/commit/eedd32ca67be84302292aab968b5fe6dd7eb3621))
 
 
