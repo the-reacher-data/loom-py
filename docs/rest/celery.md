@@ -246,6 +246,25 @@ recover entity IDs and other parameters the callback needs.
 
 ---
 
+## Post-commit failures
+
+A job's own unit of work — opened by the executor around its `execute()` —
+can queue post-commit actions of its own: dispatches to further jobs, cache
+generation bumps, `on_transaction_committed` hooks. When one of those fails
+after the job's transaction has already committed, `execute()` raises
+`PostCommitError(committed=True, failures=(...))` instead of the exception
+the failed action raised.
+
+The worker task treats it as a terminal failure: it is **not retried** —
+`JOB_EXHAUSTED` is emitted instead of `JOB_RETRYING`. Retrying would run the
+job's `execute()` a second time even though its write already committed; the
+fix belongs to whatever the post-commit action talks to (the broker, the
+cache), not to re-running the job. See
+[Execution lifecycle](use-case-dsl.md#execution-lifecycle) for how the
+executor drives commit and drains post-commit actions.
+
+---
+
 ## YAML configuration reference
 
 ### `celery` section
