@@ -19,10 +19,9 @@ SortT_co = TypeVar("SortT_co", covariant=True)
 class QueryCompiler(Protocol[FilterT_co, SortT_co]):
     """Compiles query parts into a backend's native expressions.
 
-    Type parameters:
-        FilterT_co: Native filter expression type (a SQLAlchemy clause, a
-            Mongo filter document, ...).
-        SortT_co: Native sort expression type.
+    ``FilterT_co`` is the native filter expression type (a SQLAlchemy clause,
+    a Mongo filter document, ...) and ``SortT_co`` the native sort expression
+    type.
     """
 
     def compile_filter(self, group: FilterGroup) -> FilterT_co:
