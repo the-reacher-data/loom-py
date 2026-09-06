@@ -10,6 +10,12 @@ on:
         description: "Branch used to compute semantic release version"
         required: true
         default: "master"
+      bump:
+        description: "Version part to raise; master carries no branch prefix to classify"
+        required: true
+        type: choice
+        default: patch
+        options: [patch, minor, major]
 
 concurrency:
   group: release-${{ github.workflow }}
@@ -30,6 +36,13 @@ jobs:
       release_sha: ${{ steps.release.outputs.release_sha }}
     env:
       RELEASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.event.pull_request.head.ref }}
+      # The calculator classifies a branch prefix, and master has none. A manual
+      # release states the part to raise and gets the prefix that stands for it,
+      # so both paths read the same patterns from pyproject.toml.
+      VERSION_BRANCH: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && format('{0}/manual-release', inputs.bump == 'major' && 'breaking' || inputs.bump == 'minor' && 'feat' || 'fix')
+            || github.event.pull_request.head.ref }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -51,7 +64,7 @@ jobs:
         id: version
         uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
         with:
-          branch: ${{ env.RELEASE_BRANCH }}
+          branch: ${{ env.VERSION_BRANCH }}
           prerelease: "false"
 
       - name: Validate release version
@@ -146,6 +159,29 @@ jobs:
           BRANCHES=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/${BRANCH}")
           branch_count=$(jq --arg ref "${BRANCH_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${BRANCHES}")
 
+          if [ "${open_pr_count}" -gt 1 ] || [ "${all_pr_count}" -gt 1 ]; then
+            echo "Multiple release PRs exist for ${BRANCH}."
+            exit 1
+          fi
+
+          # A release PR whose parent is no longer master's tip can never be
+          # released: the checkout guard compares the two and refuses. Nothing
+          # ages out of that state, so every later run of this workflow dies on
+          # the same PR. Discard it and regenerate the bump from the tip; its
+          # only content is the version, the changelog and the lockfile.
+          if [ "${open_pr_count}" -eq 1 ]; then
+            head_sha=$(gh pr view "${BRANCH}" --json headRefOid --jq '.headRefOid')
+            parent_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq '.parents[0].sha')
+            master_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')
+            if [ "${parent_sha}" != "${master_sha}" ]; then
+              echo "Release PR for ${BRANCH} sits on ${parent_sha}, master is ${master_sha}: rebuilding it."
+              gh pr close "${BRANCH}" --delete-branch --comment \
+                "Superseded: master advanced past this base, so the bump is regenerated from the current tip."
+              echo "create=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           if [ "${all_pr_count}" -gt 0 ]; then
             echo "create=false" >> "$GITHUB_OUTPUT"
           elif [ "${branch_count}" -gt 0 ]; then
@@ -153,11 +189,6 @@ jobs:
             exit 1
           else
             echo "create=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ "${open_pr_count}" -gt 1 ] || [ "${all_pr_count}" -gt 1 ]; then
-            echo "Multiple release PRs exist for ${BRANCH}."
-            exit 1
           fi
 
       - name: Generate version bump commit
