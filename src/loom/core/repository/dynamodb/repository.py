@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
-from typing import Any, Generic, cast
+from typing import Any, ClassVar, Generic, cast
 
 import msgspec
 
@@ -38,7 +38,6 @@ from loom.core.repository.abc import (
 
 # DynamoDB error code returned when a ``ConditionExpression`` is not satisfied.
 _CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
-_BACKEND_NAME = "dynamodb"
 
 
 class RepositoryDynamoDB(
@@ -71,6 +70,8 @@ class RepositoryDynamoDB(
         model: The Loom struct model this repository is bound to. Its
             ``primary_key`` field becomes the DynamoDB partition key.
     """
+
+    backend_name: ClassVar[str] = "dynamodb"
 
     def __init__(self, client: Any, table_name: str, model: type) -> None:
         # Lazy import: boto3 is an optional dependency (loom[dynamodb]) and must
@@ -190,7 +191,7 @@ class RepositoryDynamoDB(
     def _unsupported_field(self, operation: str, field: str) -> UnsupportedQuery:
         """Build the error for a lookup on a field the partition key does not cover."""
         return UnsupportedQuery(
-            _BACKEND_NAME,
+            self.backend_name,
             self._model.__qualname__,
             f"{operation}('{field}') needs a scan or a secondary index; only the "
             f"primary key '{self._id_attr}' can be queried.",

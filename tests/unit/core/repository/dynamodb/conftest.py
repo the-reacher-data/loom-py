@@ -40,6 +40,7 @@ class FakeClient:
     def __init__(self, key_name: str, table_names: tuple[str, ...] = ("products",)) -> None:
         self._key = key_name
         self.items: dict[str, dict[Any, dict[str, Any]]] = {name: {} for name in table_names}
+        self.table_status: dict[str, str] = dict.fromkeys(table_names, "ACTIVE")
 
     def get_item(  # noqa: N803 - boto3 kwarg names
         self, *, TableName: str, Key: dict[str, Any]
@@ -68,6 +69,19 @@ class FakeClient:
         if removed is not None and ReturnValues == "ALL_OLD":
             return {"Attributes": removed}
         return {}
+
+    def describe_table(self, *, TableName: str) -> dict[str, Any]:  # noqa: N803 - boto3 kwarg names
+        if TableName not in self.items:
+            raise ClientError(
+                {
+                    "Error": {
+                        "Code": "ResourceNotFoundException",
+                        "Message": "Requested resource not found",
+                    }
+                },
+                "DescribeTable",
+            )
+        return {"Table": {"TableName": TableName, "TableStatus": self.table_status[TableName]}}
 
     def _pk(self, item: dict[str, Any]) -> Any:
         """Extract the scalar partition-key value from an AttributeValue dict."""

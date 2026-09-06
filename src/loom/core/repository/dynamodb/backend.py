@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, ClassVar
@@ -18,6 +20,9 @@ from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
 
 _SECTION = "persistence.dynamodb"
+_READY_TABLE_STATUSES = frozenset({"ACTIVE", "UPDATING"})
+
+_logger = logging.getLogger(__name__)
 
 
 class _DynamoDBConfig(msgspec.Struct, kw_only=True):
@@ -65,6 +70,7 @@ class DynamoDBBackend:
             lifespan_init=_noop_lifespan,
             default_repository_type=RepositoryDynamoDB,
             prepare_models=_prepare_no_models,
+            readiness=lambda: _readiness(client, dynamo_cfg.table),
         )
 
 
@@ -93,6 +99,23 @@ def _build_dynamodb_client(dynamo_cfg: _DynamoDBConfig) -> Any:
     if dynamo_cfg.endpoint_url is not None:
         kwargs["endpoint_url"] = dynamo_cfg.endpoint_url
     return boto3.client("dynamodb", **kwargs)
+
+
+async def _readiness(client: Any, table: str) -> bool:
+    """Probe the configured table with ``DescribeTable``.
+
+    Ready when the table is ``ACTIVE`` or ``UPDATING`` (a table serves reads
+    and writes during an index backfill). Any failure is logged with its
+    traceback and reported as not ready: the probe exists to be answered,
+    never to raise.
+    """
+    try:
+        response = await asyncio.to_thread(client.describe_table, TableName=table)
+        status = response["Table"]["TableStatus"]
+    except Exception:
+        _logger.warning("dynamodb readiness probe failed for table %r", table, exc_info=True)
+        return False
+    return status in _READY_TABLE_STATUSES
 
 
 def _prepare_no_models(models: Sequence[type[BaseModel]]) -> None:

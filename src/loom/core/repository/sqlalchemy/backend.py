@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import ClassVar
 
 import msgspec
+from sqlalchemy import text
 
 from loom.core.backend.sqlalchemy import compile_all, get_metadata, reset_registry
 from loom.core.config import ConfigContext, ConfigKey
@@ -62,6 +63,7 @@ class SQLAlchemyBackend:
             lifespan_init=lambda: _lifespan(session_manager),
             default_repository_type=RepositorySQLAlchemy,
             prepare_models=_prepare_models,
+            readiness=lambda: _readiness(session_manager),
         )
 
 
@@ -89,6 +91,21 @@ def _prepare_models(models: Sequence[type[BaseModel]]) -> None:
         )
     reset_registry()
     compile_all(*models)
+
+
+async def _readiness(session_manager: SessionManager) -> bool:
+    """Probe the database with ``SELECT 1``.
+
+    Any failure is logged with its traceback and reported as not ready: the
+    probe exists to be answered, never to raise.
+    """
+    try:
+        async with session_manager.session() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception:
+        _logger.warning("sqlalchemy readiness probe failed", exc_info=True)
+        return False
+    return True
 
 
 @asynccontextmanager

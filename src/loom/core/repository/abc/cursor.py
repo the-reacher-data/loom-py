@@ -1,0 +1,129 @@
+"""Backend-neutral cursor tokens for keyset pagination.
+
+A token is the base64url form of a msgspec-encoded record
+``{"b": backend, "k": [sort key values...], "id": tie-breaker}``.  Every
+backend issues and consumes the same shape, so a token from another backend
+or in a legacy format is rejected at decode time with
+:class:`~loom.core.repository.abc.errors.UnsupportedQuery`.
+"""
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Sequence
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
+from uuid import UUID
+
+import msgspec
+
+from loom.core.model.struct import LoomFrozenStruct
+from loom.core.repository.abc.errors import UnsupportedQuery
+
+
+class Cursor(LoomFrozenStruct, frozen=True):
+    """Decoded cursor position.
+
+    Args:
+        backend: Name of the backend that issued the token.
+        keys: Sort key values of the last row on the previous page, in sort order.
+        tie_breaker: Primary key of that row.
+    """
+
+    backend: str
+    keys: tuple[object, ...]
+    tie_breaker: object
+
+
+class _DateTimeKey(msgspec.Struct, tag="datetime"):
+    v: datetime
+
+
+class _DateKey(msgspec.Struct, tag="date"):
+    v: date
+
+
+class _UuidKey(msgspec.Struct, tag="uuid"):
+    v: UUID
+
+
+class _DecimalKey(msgspec.Struct, tag="decimal"):
+    v: Decimal
+
+
+_Key = int | float | str | bool | None | _DateTimeKey | _DateKey | _UuidKey | _DecimalKey
+
+
+class _Token(msgspec.Struct):
+    b: str
+    k: list[_Key]
+    id: _Key
+
+
+def _wrap(value: object) -> _Key:
+    if isinstance(value, Enum):
+        value = value.value
+    if value is None or isinstance(value, int | float | str):
+        return value
+    if isinstance(value, datetime):
+        return _DateTimeKey(value)
+    if isinstance(value, date):
+        return _DateKey(value)
+    if isinstance(value, UUID):
+        return _UuidKey(value)
+    if isinstance(value, Decimal):
+        return _DecimalKey(value)
+    raise TypeError(f"Unsupported cursor key type: {type(value).__name__}")
+
+
+def _unwrap(key: _Key) -> object:
+    if isinstance(key, _DateTimeKey | _DateKey | _UuidKey | _DecimalKey):
+        return key.v
+    return key
+
+
+def encode_cursor(backend: str, keys: Sequence[object], tie_breaker: object) -> str:
+    """Encode a cursor position into an opaque URL-safe token.
+
+    Args:
+        backend: Name of the issuing backend.
+        keys: Sort key values of the last row on the page, in sort order.
+        tie_breaker: Primary key of that row.
+
+    Returns:
+        base64url token that :func:`decode_cursor` accepts for ``backend``.
+
+    Raises:
+        TypeError: If a key has a type the token format cannot carry.
+    """
+    token = _Token(b=backend, k=[_wrap(key) for key in keys], id=_wrap(tie_breaker))
+    return base64.urlsafe_b64encode(msgspec.json.encode(token)).decode()
+
+
+def decode_cursor(token: str, backend: str, model: str) -> Cursor:
+    """Decode a token issued by :func:`encode_cursor` for ``backend``.
+
+    Args:
+        token: Opaque token supplied by the client.
+        backend: Name of the backend decoding the token.
+        model: Qualified model name, used in the error.
+
+    Returns:
+        The decoded :class:`Cursor`.
+
+    Raises:
+        UnsupportedQuery: If the token is undecodable, in a legacy format, or
+            was issued by another backend.
+    """
+    try:
+        record = msgspec.json.decode(base64.urlsafe_b64decode(token.encode()), type=_Token)
+    except (ValueError, msgspec.DecodeError) as exc:
+        raise UnsupportedQuery(backend, model, "cursor token is not valid") from exc
+    if record.b != backend:
+        raise UnsupportedQuery(backend, model, f"cursor token was issued by '{record.b}'")
+    return Cursor(
+        backend=record.b,
+        keys=tuple(_unwrap(key) for key in record.k),
+        tie_breaker=_unwrap(record.id),
+    )

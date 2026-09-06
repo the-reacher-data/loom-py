@@ -1,0 +1,206 @@
+# Persistence backends
+
+`persistence.backend` names a plugin. loom resolves it from the
+`loom.persistence.backends` entry point group at bootstrap, asks it once for
+everything the host needs, and never imports a backend it was not asked for.
+Three ship with loom — `sqlalchemy`, `dynamodb` and `none` — and a package of
+your own registers a fourth the same way.
+
+```yaml
+persistence:
+  backend: ledger          # resolved by name; unknown → startup error listing the registered ones
+```
+
+## Writing a backend
+
+A backend is a class with a no-argument constructor, a `name` and one method:
+`build(ctx, models) -> PersistenceWiring`. It reads its own configuration
+section from the context it is given; the host knows nothing about that
+section.
+
+```python
+# billing_ledger/backend.py
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import Any, ClassVar
+
+import msgspec
+
+from loom.core.config import ConfigContext, ConfigError
+from loom.core.model import BaseModel
+from loom.core.model.introspection import get_id_attribute
+from loom.core.persistence import PersistenceWiring
+from loom.core.repository import RepositoryBuildContext, build_repository_registration_module
+
+from billing_ledger.client import LedgerClient
+from billing_ledger.repository import RepositoryLedger
+
+
+class _LedgerConfig(msgspec.Struct, kw_only=True):
+    url: str
+    namespace: str = "orders"
+
+
+class LedgerBackend:
+    name: ClassVar[str] = "ledger"
+
+    def build(self, ctx: ConfigContext, models: Sequence[type[BaseModel]]) -> PersistenceWiring:
+        cfg = ctx.section_optional("persistence.ledger", _LedgerConfig)
+        if cfg is None:
+            raise ConfigError("persistence.backend is 'ledger' but 'persistence.ledger' is missing.")
+        client = LedgerClient(cfg.url, cfg.namespace)
+        return PersistenceWiring(
+            uow_factory=None,
+            repo_registration_module=build_repository_registration_module(
+                models=models,
+                build_registered_repository=lambda context, registration: _build(client, context),
+                default_repository_type=RepositoryLedger,
+            ),
+            lifespan_init=lambda: _lifespan(client),
+            default_repository_type=RepositoryLedger,
+            prepare_models=_validate_identifiers,
+            readiness=client.ping,
+        )
+
+
+def _build(client: LedgerClient, context: RepositoryBuildContext) -> Any:
+    return RepositoryLedger(client, context.model)
+
+
+def _validate_identifiers(models: Sequence[type[BaseModel]]) -> None:
+    for model in models:
+        get_id_attribute(model)  # a model without a primary key fails here, at startup
+
+
+@asynccontextmanager
+async def _lifespan(client: LedgerClient) -> AsyncIterator[None]:
+    await client.connect()
+    try:
+        yield
+    finally:
+        await client.close()
+```
+
+```toml
+# pyproject.toml of the billing_ledger package
+[project.entry-points."loom.persistence.backends"]
+ledger = "billing_ledger.backend:LedgerBackend"
+```
+
+Two packages registering the same name is a `DuplicateEntryPointError` at
+startup: the host fails closed instead of picking one.
+
+### The wiring
+
+`PersistenceWiring` is a frozen dataclass; every field is consumed once, by
+the host, in this order:
+
+| Field | What the host does with it |
+|---|---|
+| `uow_factory` | Bound to the kernel executor. `None` means "no unit of work": use cases run without one, and deferred job dispatch never fires. |
+| `prepare_models` | Called right after `build` with the discovered models — the slot where SQLAlchemy compiles its tables and where a document store validates identifiers. Raise `ConfigError` for a model the backend cannot serve. |
+| `default_repository_type` | The class whose declared capabilities decide which auto-CRUD operations a model gets (see below). `None` means the backend serves no repositories, and an interface with `auto_crud_model` refuses to boot. |
+| `repo_registration_module` | A DI module run against the container; registers one repository per model. |
+| `lifespan_init` | An async context manager entered at application startup and exited at shutdown, after the SQL registry and the AI runtime so their clients close even when it fails. |
+| `readiness` | Optional `async () -> bool`. Aggregated by `GET /health`; absent, the route reports no backends. |
+
+A readiness probe never raises: log the failure and answer `False`, so the
+route answers `503 degraded` instead of `500`.
+
+## Capabilities and the gate
+
+Repositories declare what they can do by inheriting capability protocols:
+`Readable`, `Creatable`, `BulkCreatable`, `Updatable`, `Deletable`, `Listable`
+and `Countable` (`loom.core.repository.abc`). `capabilities_of(repository_type)`
+is the single detector — the registration module binds a DI key per declared
+protocol, and the auto-CRUD gate mounts one operation per protocol:
+
+| Auto-CRUD operation | Requires |
+|---|---|
+| `create` | `Creatable` |
+| `get` | `Readable` |
+| `list` | `Listable` |
+| `update` | `Updatable` |
+| `delete` | `Deletable` |
+
+The gate looks at the class that will serve the model — the explicit
+`repository_for` registration when there is one, else the backend's
+`default_repository_type` — and:
+
+- narrows an interface with an empty `include` to the supported operations
+  (an `OrderInterface` over `dynamodb` mounts get, create, update and delete);
+- refuses, at startup, an explicit `include` naming an operation the class
+  lacks, naming model and backend;
+- refuses an interface whose backend supports none of the five.
+
+```python
+from loom.core.repository.registration import capabilities_of
+
+capabilities_of(RepositoryLedger)   # (Readable, Creatable, BulkCreatable)
+```
+
+Swapping the `DefaultRepositoryBuilder` does not move the gate: it keeps
+reading `default_repository_type`, so a custom builder must declare the same
+capabilities or register its repositories explicitly.
+
+### `BulkCreatable`
+
+`create_many(data) -> tuple[Model, ...]` persists a sequence and returns the
+entities in input order. SQLAlchemy writes the batch with one multi-row
+`INSERT`; a backend whose store has no multi-row write declares the protocol
+only if it can honour the order and document its atomicity.
+
+### `UnsupportedQuery`
+
+A capability the class does not declare is absent from DI and from the
+generated routes. What the protocol cannot express — a lookup the backend can
+only serve by scanning, a cursor from another backend — is refused at run time
+with `UnsupportedQuery(backend, model, reason)`, mapped by the REST layer to
+`400` with code `unsupported_query`:
+
+```python
+from loom.core.repository.abc.errors import UnsupportedQuery
+
+raise UnsupportedQuery("dynamodb", "orders.Order", "get_by on 'customer_id' needs an index")
+```
+
+## Dependency verification at boot
+
+Once every service is registered — persistence, job service, SQL, observability,
+AI — `create_app` calls `UseCaseFactory.verify()`. Every registered use case's
+constructor is checked against the container, and a missing binding raises
+`ResolutionError` naming the use case, the parameter and the key. A backend
+that registers `Readable[Order]` but not `Listable[Order]` therefore fails the
+bootstrap of a use case injecting `Listable[Order]`, not its first request.
+Use cases of routes the gate pruned are dropped before that check.
+
+## Cursor tokens
+
+Keyset pagination has one token contract for every backend
+(`loom.core.repository.abc.cursor`): the base64url form of a msgspec record
+carrying the issuing backend's name, the sort key values of the last row on the
+page and the primary key as tie-breaker. Backends issue and consume it through
+`encode_cursor(backend, keys, tie_breaker)` and
+`decode_cursor(token, backend, model)`; each repository class names itself with
+a `backend_name` class variable.
+
+```python
+from loom.core.repository.abc.cursor import decode_cursor, encode_cursor
+
+token = encode_cursor("sqlalchemy", keys=[created_at, 1042], tie_breaker=1042)
+cursor = decode_cursor(token, "sqlalchemy", "billing.Invoice")
+cursor.keys, cursor.tie_breaker   # (created_at, 1042), 1042
+```
+
+A token that does not decode, or that another backend issued, is
+`UnsupportedQuery` — `400 unsupported_query` on the wire. Tokens issued by the
+SQLAlchemy backend before this contract share that fate: clients must treat
+them as opaque and restart from the first page.
+
+## Health
+
+`GET /health` aggregates the readiness of the configured backend; its shape, the
+default authentication exclusion and the reserved-path rule are described in
+[Bootstrap with YAML](../getting-started/rest.md#get-health).

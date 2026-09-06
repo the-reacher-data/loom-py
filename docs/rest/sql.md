@@ -454,7 +454,7 @@ app:
         audience: loom-api                  # REQUIRED by any sql_endpoint with auth: identity
         issuer: null                        # validated only when set
         leeway_seconds: 0
-        exclude_paths: [/docs, /redoc, /openapi.json, /metrics]
+        exclude_paths: [/docs, /redoc, /openapi.json, /metrics, /health]
         roles_claim: loom_sql_roles         # REQUIRED by any mounted sql_endpoint whose
                                             # connection has a non-empty allowed_roles
 ```

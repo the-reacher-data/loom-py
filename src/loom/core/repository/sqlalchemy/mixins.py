@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Generic, cast
+from typing import Any, ClassVar, Generic, cast
 
 import msgspec
 from sqlalchemy import exists, func, insert, inspect, select
@@ -31,7 +31,6 @@ from loom.core.repository.abc import (
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.integrity import handle_integrity_errors
 from loom.core.repository.sqlalchemy.query_compiler.compiler import QuerySpecCompiler
-from loom.core.repository.sqlalchemy.query_compiler.cursor import extract_next_cursor
 from loom.core.repository.sqlalchemy.transactional import record_mutation
 
 _SENTINEL = object()
@@ -41,6 +40,7 @@ _TOTAL_COUNT_ALIAS = "__loom_total_count"
 class SQLAlchemyContextMixin(Generic[OutputT, IdT]):
     """Shared context and helper methods for all SQLAlchemy repository mixins."""
 
+    backend_name: ClassVar[str]
     model: type[Any]
     _sa_model: type[Any] | None = None
     _id_attr: str | None = None
@@ -430,7 +430,13 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
         async with self._session_scope() as scoped_session:
             sa_model = self._effective_sa_model
             id_col = self._id_column()
-            compiler = QuerySpecCompiler(sa_model, id_col, self.allowed_filter_fields)
+            compiler = QuerySpecCompiler(
+                sa_model,
+                id_col,
+                self.allowed_filter_fields,
+                backend=self.backend_name,
+                model_name=self.model.__qualname__,
+            )
             core_model = self._effective_core_model
 
             if query.pagination == PaginationMode.CURSOR:
@@ -459,16 +465,9 @@ class SQLAlchemyReadMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[OutputT,
         compiler: QuerySpecCompiler,
         core_model: Any,
     ) -> CursorResult[OutputT]:
-        cursor_stmt, cursor_field = compiler.compile_cursor(
-            query,
-            base_stmt=core_model.select(profile),
-        )
+        cursor_stmt = compiler.compile_cursor(query, base_stmt=core_model.select(profile))
         loaded = await core_model.fetch_all(scoped_session, cursor_stmt, profile=profile)
-        items, next_cursor, has_next = extract_next_cursor(
-            cast(list[Any], loaded),
-            cursor_field,
-            query.limit,
-        )
+        items, next_cursor, has_next = compiler.paginate_cursor(cast(list[Any], loaded), query)
         return CursorResult(
             items=tuple(cast(list[OutputT], items)),
             next_cursor=next_cursor,

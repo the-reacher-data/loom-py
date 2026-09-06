@@ -65,6 +65,7 @@ Companion demo application:
    rest/identity
    rest/celery
    rest/sql
+   rest/persistence-backends
    rest/examples
    rest/testing
 

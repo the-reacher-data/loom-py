@@ -11,7 +11,13 @@ from loom.core.config.secrets import SecretsManagerResolver
 from loom.core.config.ssm import SsmResolver
 from loom.core.model import LoomFrozenStruct
 
-DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = ("/docs", "/redoc", "/openapi.json", "/metrics")
+DEFAULT_EXCLUDE_PATHS: tuple[str, ...] = (
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/metrics",
+    "/health",
+)
 """Paths served without authentication unless the application says otherwise."""
 
 _FORBIDDEN_ALGORITHM = "none"

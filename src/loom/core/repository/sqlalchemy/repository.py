@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import wraps
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +72,8 @@ class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve 
     repository uses the compiled SA class for queries and returns the
     Struct directly.
     """
+
+    backend_name: ClassVar[str] = "sqlalchemy"
 
     def __init__(
         self,

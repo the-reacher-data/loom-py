@@ -71,6 +71,7 @@ from loom.rest.autocrud import (
 from loom.rest.cors import CorsConfig
 from loom.rest.fastapi._exclusions import verify_exclusion_paths
 from loom.rest.fastapi.app import create_fastapi_app
+from loom.rest.fastapi.health import HEALTH_PATH, mount_health, reject_health_collision
 from loom.rest.fastapi.sql import (
     _connection_mechanism,
     _role_exposure_notice,
@@ -761,8 +762,8 @@ def _resolve_authentication(
     Args:
         app_cfg: Parsed ``app`` section.
         authenticator: Mechanism supplied by the composition root, if any.
-        documentation_paths: Effective docs/schema/metrics paths, used as the
-            default exclusion list.
+        documentation_paths: Effective docs/schema/metrics/health paths, used
+            as the default exclusion list.
 
     Raises:
         ConfigError: When both a custom authenticator and the built-in JWT
@@ -812,10 +813,11 @@ def _documentation_paths(
     rest_cfg: _RestConfig,
     metrics_cfg: PrometheusObservabilityConfig,
 ) -> tuple[str, ...]:
-    """Return the effective docs, schema and metrics paths of the application."""
+    """Return the effective docs, schema, metrics and health paths of the application."""
     candidates = [rest_cfg.docs_url, rest_cfg.redoc_url, rest_cfg.openapi_url]
     if metrics_cfg.enabled:
         candidates.append(_metrics_path(metrics_cfg))
+    candidates.append(HEALTH_PATH)
     return tuple(dict.fromkeys(path for path in candidates if path))
 
 
@@ -1252,6 +1254,7 @@ def create_app(
         openapi_url=app_cfg.rest.openapi_url,
         lifespan=lifespan,
     )
+    mount_health(app, _load_persistence_config(ctx).backend, wiring.readiness)
     _mount_authentication(app, auth)
     _mount_optional_middlewares(app, app_cfg.rest, metrics_cfg, metrics_registry)
     if sql.config is not None:
@@ -1266,7 +1269,8 @@ def create_app(
     _bind_agent_surface(app, ai, auth, observability_runtime)
     setattr(app.state, INTROSPECTION_STATE_ATTR, _build_introspection(app_cfg, ai))
     # Last: every route the application will ever serve is registered by now,
-    # which is what makes the exclusion check meaningful.
+    # which is what makes the exclusion and collision checks meaningful.
+    reject_health_collision(app)
     verify_exclusion_paths(app, auth.exclude_paths)
     _warn_anonymous_schema(app_cfg.rest, auth)
     return app
