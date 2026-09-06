@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from bytewax.dataflow import Dataflow
 
-from loom.core.config import ConfigError
+from loom.core.config import ConfigContext, ConfigError
 from loom.streaming.bytewax.runner import StreamingRunner
 from loom.streaming.graph._flow import StreamFlow
 from tests.unit._resolver_stubs import MappingResolver
@@ -106,6 +106,50 @@ class TestFromYaml:
         runner = StreamingRunner.from_yaml(bytewax_stream_flow, config_path, resolvers=[vault])
 
         assert runner._runtime.workers_per_process == 4
+
+
+class TestRunResolversRequireConfigPath:
+    def test_resolvers_with_config_instead_of_config_path_is_rejected(
+        self, bytewax_stream_flow: StreamFlow[Order, Result]
+    ) -> None:
+        config = ConfigContext.from_dict({})
+        runner = StreamingRunner()
+
+        with pytest.raises(ValueError, match="resolvers apply only with config_path"):
+            runner.run(
+                flow=bytewax_stream_flow,
+                config=config,
+                resolvers=[MappingResolver("stub", {"workers": 3})],
+            )
+
+    def test_config_without_resolvers_still_runs(
+        self,
+        bytewax_stream_flow: StreamFlow[Order, Result],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _stub_execution(monkeypatch)
+        config = ConfigContext.from_dict(
+            {
+                "kafka": {
+                    "consumer": {
+                        "brokers": ["localhost:9092"],
+                        "group_id": "test",
+                        "topics": ["orders.in"],
+                    },
+                    "producer": {
+                        "brokers": ["localhost:9092"],
+                        "client_id": "test-producer",
+                        "topic": "orders.out",
+                    },
+                },
+                "streaming": {"runtime": {"workers_per_process": 2}},
+            }
+        )
+        runner = StreamingRunner()
+
+        runner.run(flow=bytewax_stream_flow, config=config)
+
+        assert runner._runtime.workers_per_process == 2
 
 
 class TestRunWithConfigPath:

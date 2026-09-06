@@ -23,8 +23,7 @@ from loom.core.config import ConfigError, expand_config_glob
 from loom.etl import ETLPipeline
 from loom.prefect._flow_yaml import read_yaml, resolve_config_uri
 from loom.prefect._meta import DEFAULT_STORAGE_CONFIG_PATH, LOOM_ETL_CONFIG
-from loom.prefect.flow import flow_attribute_name, flow_settings_from_mapping
-from loom.prefect.flow._assemble import FlowSettings
+from loom.prefect.flow import FlowSettings, flow_attribute_name, flow_settings_from_mapping
 
 
 @dataclass(frozen=True)
@@ -61,9 +60,10 @@ def read_declarations(config: str) -> tuple[EtlDeclaration, ...]:
 
     Raises:
         ConfigError: When a file declares no ETL, a dotted path does not import
-            or has the wrong type, a name yields no identifier, a declaration
-            sets ``LOOM_ETL_CONFIG`` under ``job_variables.env``, or two
-            declarations share a name or an attribute.
+            or has the wrong type, a name yields no identifier, ``job_variables``
+            or ``job_variables.env`` is not a mapping, a declaration sets
+            ``LOOM_ETL_CONFIG`` under ``job_variables.env``, or two declarations
+            share a name or an attribute.
     """
     declarations: list[EtlDeclaration] = []
     for uri in expand_config_glob(resolve_config_uri(config)):
@@ -136,10 +136,28 @@ def _declaration(name: str, body: Any, uri: str) -> EtlDeclaration:
 
 
 def _reject_reserved_env(name: str, settings: FlowSettings, uri: str) -> None:
-    """Refuse a declaration that sets the variable the deployer records itself."""
+    """Refuse a declaration that sets the variable the deployer records itself.
+
+    Also validates that ``job_variables`` and ``job_variables.env``, when
+    present, are mappings; ``_discovery._with_recorded_env`` assumes this and
+    merges them as one.
+    """
     for environment, pool in settings.pool_config.items():
-        user_env = pool.get("job_variables", {}).get("env") or {}
-        if LOOM_ETL_CONFIG in user_env:
+        job_variables = pool.get("job_variables") or {}
+        if not isinstance(job_variables, Mapping):
+            raise ConfigError(
+                f"{uri}: ETL {name!r}: environments.{environment}.job_variables must be "
+                f"a mapping, not {type(job_variables).__name__}"
+            )
+        env = job_variables.get("env")
+        if env is None:
+            continue
+        if not isinstance(env, Mapping):
+            raise ConfigError(
+                f"{uri}: ETL {name!r}: environments.{environment}.job_variables.env must be "
+                f"a mapping of environment variable name to value, not {type(env).__name__}"
+            )
+        if LOOM_ETL_CONFIG in env:
             raise ConfigError(
                 f"{uri}: ETL {name!r}: environments.{environment}.job_variables.env may not "
                 f"set {LOOM_ETL_CONFIG}; the deployer records it from the validated declaration"
