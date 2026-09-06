@@ -70,6 +70,7 @@ class SparkTestSession:
         app: str = "loom-etl-test",
         parallelism: int = 1,
         memory: str = "1g",
+        snapshot_partitions: int = 1,
         ivy_dir: str | Path | None = None,
     ) -> SparkTestSession:
         """Create and return a configured local SparkSession.
@@ -79,6 +80,10 @@ class SparkTestSession:
             parallelism: ``spark.sql.shuffle.partitions`` — keep low (1–2) for
                          unit tests to reduce overhead.
             memory:      Driver heap size string (e.g. ``"1g"``).
+            snapshot_partitions: ``spark.databricks.delta.snapshotPartitions`` — the
+                         number of tasks Delta uses to reconstruct a table's log
+                         snapshot. Keep at 1 for test-sized tables; the Delta
+                         default of 50 costs a task per partition on every read.
             ivy_dir:     Optional Ivy cache directory for Maven package
                          resolution. When omitted in a constrained sandbox,
                          a writable temp directory is selected automatically.
@@ -98,6 +103,7 @@ class SparkTestSession:
             )
             .config("spark.driver.memory", memory)
             .config("spark.sql.shuffle.partitions", str(parallelism))
+            .config("spark.databricks.delta.snapshotPartitions", str(snapshot_partitions))
         )
         resolved_ivy_dir = _resolve_ivy_dir(ivy_dir)
         if resolved_ivy_dir is not None:
