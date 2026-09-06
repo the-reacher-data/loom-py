@@ -21,12 +21,16 @@ Usage in ``conftest.py``::
     @pytest.fixture
     def step_runner(spark):
         return SparkStepRunner(spark)
+
+Two environment variables tune where Spark finds its packages:
+``LOOM_SPARK_IVY_DIR`` sets the Ivy cache directory, and ``LOOM_SPARK_OFFLINE=1``
+resolves the Delta jars already present under ``~/.ivy2/jars`` instead of
+fetching them from Maven.
 """
 
 from __future__ import annotations
 
 import os
-import tempfile
 from collections.abc import Generator
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -115,7 +119,7 @@ class SparkTestSession:
             resolved_ivy_dir.mkdir(parents=True, exist_ok=True)
             builder = builder.config("spark.jars.ivy", str(resolved_ivy_dir))
         local_delta_jars = _resolve_local_delta_jars()
-        if _sandbox_network_disabled() and local_delta_jars is not None:
+        if _offline_jars_requested() and local_delta_jars is not None:
             builder = builder.config("spark.jars", ",".join(str(jar) for jar in local_delta_jars))
             session = builder.getOrCreate()
         else:
@@ -301,13 +305,11 @@ def _resolve_ivy_dir(ivy_dir: str | Path | None) -> Path | None:
     from_env = os.getenv("LOOM_SPARK_IVY_DIR")
     if from_env:
         return Path(from_env)
-    if os.getenv("CODEX_SANDBOX") == "seatbelt":
-        return Path(tempfile.gettempdir()) / "loom-spark-ivy"
     return None
 
 
-def _sandbox_network_disabled() -> bool:
-    return os.getenv("CODEX_SANDBOX_NETWORK_DISABLED") == "1"
+def _offline_jars_requested() -> bool:
+    return os.getenv("LOOM_SPARK_OFFLINE") == "1"
 
 
 def _resolve_local_delta_jars() -> tuple[Path, ...] | None:
