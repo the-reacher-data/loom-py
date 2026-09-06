@@ -300,9 +300,12 @@ class SQLAlchemyBulkCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Ou
         rows = [self._insert_values(item) for item in data]
         if not rows:
             return ()
+        partial = self._partial_keys(rows)
         async with self._session_scope() as scoped_session:
-            if self._single_statement_applies(scoped_session, rows):
-                objs = await self._insert_returning(scoped_session, self._normalize_rows(rows))
+            if self._single_statement_applies(scoped_session, partial):
+                objs = await self._insert_returning(
+                    scoped_session, self._normalize_rows(rows, partial)
+                )
             else:
                 objs = await self._insert_and_reselect(scoped_session, rows)
             self._record_bulk_create(objs, rows)
@@ -321,21 +324,23 @@ class SQLAlchemyBulkCreateMixin(SQLAlchemyContextMixin[OutputT, IdT], Generic[Ou
         common = key_sets[0].intersection(*key_sets[1:])
         return union - common
 
-    def _single_statement_applies(self, session: AsyncSession, rows: list[dict[str, Any]]) -> bool:
+    def _single_statement_applies(self, session: AsyncSession, partial: set[str]) -> bool:
         """True when RETURNING is available and no partial column relies on a server default."""
         columns = self._effective_sa_model.__table__.c
         server_only = any(
             columns[key].default is None and columns[key].server_default is not None
-            for key in self._partial_keys(rows)
+            for key in partial
         )
         return bool(session.get_bind().dialect.insert_returning) and not server_only
 
-    def _normalize_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _normalize_rows(
+        self, rows: list[dict[str, Any]], partial: set[str]
+    ) -> list[dict[str, Any]]:
         """Add ``None`` for omitted columns that have neither a Python-side nor a server default."""
         columns = self._effective_sa_model.__table__.c
         gaps = {
             key: None
-            for key in self._partial_keys(rows)
+            for key in partial
             if columns[key].default is None and columns[key].server_default is None
         }
         return [{**gaps, **row} for row in rows]

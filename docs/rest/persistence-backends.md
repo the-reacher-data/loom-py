@@ -224,6 +224,10 @@ repositories use. Without it the probe logs the refusal and `/health` answers
   in a loosely annotated field (`Any`, `list[dict[str, Any]]`) arrives as a
   dict with encoded (camelCase) keys; a related value is re-typed to the
   annotated struct.
+- `UseCaseFactory` no longer injects constructor parameters that carry a
+  default value, nor plain generic containers (`tuple[str, ...]`,
+  `dict[str, Any]`); the default applies. Capability keys (`Listable[M]`)
+  and Protocol-typed parameters are still injected and verified at boot.
 - Cursor tokens issued before this version are rejected with
   `400 unsupported_query`: clients restart from the first page.
 - An explicit `exclude_paths` list must include `/health`, or the probe

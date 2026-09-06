@@ -60,7 +60,8 @@ def capabilities_of(repository_type: type) -> tuple[type, ...]:
         repository_type: The concrete repository class to inspect.
 
     Returns:
-        The protocols found in the class MRO, in declaration order.
+        The protocols found in the class MRO, in the stable order of the
+        standard capability list, which the auto-CRUD gate relies on.
     """
     mro = set(repository_type.__mro__)
     return tuple(proto for proto in _STANDARD_PROTOCOLS if proto in mro)

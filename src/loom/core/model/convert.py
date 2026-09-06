@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import cache
-from typing import Any, get_args, get_origin
+from typing import Any, TypeVar, get_args, get_origin
 
 import msgspec
 
-_FieldPlan = dict[str, tuple[str, "type[msgspec.Struct] | None"]]
+StructT = TypeVar("StructT", bound=msgspec.Struct)
+_FieldPlan = dict[str, tuple[str, type[msgspec.Struct] | None]]
 
 
 def _nested_struct(annotation: Any) -> type[msgspec.Struct] | None:
@@ -55,7 +56,7 @@ def _coerce(value: Any, nested: type[msgspec.Struct] | None) -> Any:
     return msgspec.to_builtins(value) if _holds_struct(value) else value
 
 
-def to_struct(struct_type: type[msgspec.Struct], values: Mapping[str, Any]) -> Any:
+def to_struct(struct_type: type[StructT], values: Mapping[str, Any]) -> StructT:
     """Convert *values* into *struct_type*, applying the field annotations.
 
     Keys are internal (snake_case) field names; they are mapped to the

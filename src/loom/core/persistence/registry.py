@@ -33,8 +33,8 @@ def resolve_backend(name: str) -> PersistenceBackend:
         raise ConfigError(_unknown_backend_message(name, exc.available)) from exc
     except ImportError as exc:
         raise ConfigError(
-            f"Persistence backend {name!r} could not be imported ({exc}). "
-            f"Install its extra with `pip install 'loom-kernel[{name}]'`."
+            f"Persistence backend {name!r} could not be imported ({exc}). Install the "
+            f"distribution providing it (built-in backends: `pip install 'loom-kernel[{name}]'`)."
         ) from exc
     backend_cls = cast(type[PersistenceBackend], target)
     return backend_cls()
