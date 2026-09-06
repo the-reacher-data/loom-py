@@ -43,6 +43,7 @@ the public API and may change without notice.
 """
 
 from loom.core.observability.config import OtelConfig
+from loom.etl.backends._format_registry import UnsupportedFormatError
 from loom.etl.checkpoint import (
     CheckpointCleaner,
     CheckpointScope,
@@ -261,6 +262,7 @@ __all__ = [
     "LoomType",
     "SchemaNotFoundError",
     "SchemaError",
+    "UnsupportedFormatError",
     # schema — complex / structural types
     "ListType",
     "ArrayType",

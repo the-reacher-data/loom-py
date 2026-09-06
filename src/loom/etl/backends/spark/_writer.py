@@ -466,17 +466,11 @@ def _write_parquet_file(frame: DataFrame, spec: FileSpec) -> None:
     writer.parquet(spec.path)
 
 
-def _write_xlsx_file(_frame: DataFrame, _spec: FileSpec) -> None:
-    """Refuse XLSX: Spark has no writer for it, with or without a plugin."""
-    raise TypeError("Spark backend does not support XLSX format.")
-
-
 _FILE_WRITERS: dict[Format, Callable[[DataFrame, FileSpec], None]] = {
     Format.DELTA: _write_delta_file,
     Format.CSV: _write_csv_file,
     Format.JSON: _write_json_file,
     Format.PARQUET: _write_parquet_file,
-    Format.XLSX: _write_xlsx_file,
 }
 
 

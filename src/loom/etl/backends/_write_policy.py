@@ -323,7 +323,8 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         params_instance: Any,
         streaming: bool,
     ) -> None:
-        """Replace where policy: check exists → create OR align → write."""
+        """Replace where policy: compile predicate → check exists → create OR align → write."""
+        predicate = self._predicate_to_sql(spec.replace_predicate, params_instance)
         prepared = self._prepare_write(
             frame, target, schema_mode=spec.schema_mode, streaming=streaming
         )
@@ -332,7 +333,7 @@ class _WritePolicy(TargetWriter, Generic[InputFrameT, WriteFrameT, PhysicalSchem
         self._replace_where(
             prepared.frame,
             target,
-            predicate=self._predicate_to_sql(spec.replace_predicate, params_instance),
+            predicate=predicate,
             schema_mode=spec.schema_mode,
         )
 

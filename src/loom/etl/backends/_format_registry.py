@@ -5,24 +5,26 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import TypeVar
 
+from loom.core.errors.codes import ErrorCode
 from loom.core.errors.errors import LoomError
 from loom.etl.declarative._format import Format
 from loom.etl.declarative._write_options import WriteOptions
 
 _HandlerT = TypeVar("_HandlerT")
 _OptionsT = TypeVar("_OptionsT")
-"""Options type of one format; ``WriteOptions`` is a union, so it cannot bound it."""
+"""Options type of one format."""
 
 
 class UnsupportedFormatError(LoomError, ValueError):
     """Raised when no handler of the backend implements a declared file format.
 
-    Also a :class:`ValueError`, so call-sites that only care that the format is
-    invalid keep working without knowing the framework error hierarchy.
-
     Args:
         fmt:       Format the pipeline declared.
         supported: Formats the backend registered for this operation.
+
+    Attributes:
+        format:    Format the pipeline declared.
+        supported: Formats the backend registered, sorted by value.
 
     Example::
 
@@ -30,12 +32,14 @@ class UnsupportedFormatError(LoomError, ValueError):
     """
 
     def __init__(self, fmt: Format, supported: Iterable[Format]) -> None:
-        names = ", ".join(sorted(item.value for item in supported)) or "none"
+        ordered = tuple(sorted(supported, key=lambda item: item.value))
+        names = ", ".join(item.value for item in ordered) or "none"
         super().__init__(
             f"Unsupported format: {fmt.value}. Supported here: {names}.",
-            code="unsupported_format",
+            code=ErrorCode.UNSUPPORTED_FORMAT,
         )
         self.format = fmt
+        self.supported = ordered
 
 
 def resolve_format_handler(
@@ -66,10 +70,6 @@ def resolve_format_handler(
 
 def write_options_or_default(options: WriteOptions | None, expected: type[_OptionsT]) -> _OptionsT:
     """Return *options* when it is of the *expected* type, else its defaults.
-
-    A target declares one options object for one format, so a mismatch means the
-    declaration belongs to another format and carries nothing this writer can
-    honour.
 
     Args:
         options:  Options declared on the target, if any.

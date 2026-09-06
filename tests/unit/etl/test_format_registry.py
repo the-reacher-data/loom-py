@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from loom.core.errors.codes import ErrorCode
+from loom.etl import UnsupportedFormatError as public_unsupported_format
 from loom.etl.backends._format_registry import (
     UnsupportedFormatError,
     resolve_format_handler,
@@ -69,3 +71,22 @@ def test_absent_write_options_fall_back_to_the_format_defaults() -> None:
 
 def test_write_options_of_another_format_fall_back_to_the_defaults() -> None:
     assert write_options_or_default(JsonWriteOptions(), CsvWriteOptions) == CsvWriteOptions()
+
+
+def test_an_unsupported_format_uses_a_canonical_error_code() -> None:
+    handlers = {Format.CSV: "csv-handler"}
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        resolve_format_handler(Format.XLSX, handlers)
+    assert excinfo.value.code == ErrorCode.UNSUPPORTED_FORMAT
+
+
+def test_an_unsupported_format_exposes_the_formats_as_data() -> None:
+    handlers = {Format.PARQUET: "parquet-handler", Format.CSV: "csv-handler"}
+    with pytest.raises(UnsupportedFormatError) as excinfo:
+        resolve_format_handler(Format.XLSX, handlers)
+    assert excinfo.value.format is Format.XLSX
+    assert excinfo.value.supported == (Format.CSV, Format.PARQUET)
+
+
+def test_the_error_is_catchable_from_the_public_surface() -> None:
+    assert public_unsupported_format is UnsupportedFormatError

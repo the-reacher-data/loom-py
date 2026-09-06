@@ -37,7 +37,7 @@ from loom.etl.declarative.target._table import (
     UpsertSpec,
 )
 from loom.etl.declarative.target._temp import TempSpec
-from loom.etl.schema._schema import SchemaNotFoundError
+from loom.etl.schema._schema import SchemaError, SchemaNotFoundError
 from loom.etl.storage._config import MissingTablePolicy
 from loom.etl.storage.routing import ResolvedTarget
 
@@ -376,3 +376,24 @@ class TestWriteModeRouting:
         writer = _StubWritePolicy(schema_exists=True)
         with pytest.raises(TypeError, match="Unsupported target spec"):
             writer.write([1], MagicMock(), None)
+
+
+class TestReplaceWherePredicateOrder:
+    """The predicate is compiled before the frame is materialised."""
+
+    class _FailingWriter(_StubWritePolicy):
+        def _predicate_to_sql(self, predicate: Any, params: Any) -> str:
+            raise ValueError("unresolvable predicate")
+
+        def _materialize_for_write(self, frame: list[int], streaming: bool) -> list[int]:
+            raise SchemaError("null-dtype column")
+
+    def test_an_unresolvable_predicate_fails_before_materialization(self) -> None:
+        writer = self._FailingWriter(schema_exists=True)
+        spec = ReplaceWhereSpec(
+            table_ref=_TABLE_REF,
+            replace_predicate=col("season") == params.run_date.year,
+        )
+
+        with pytest.raises(ValueError, match="unresolvable predicate"):
+            writer.write([1], spec, None)
