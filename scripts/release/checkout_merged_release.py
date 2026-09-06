@@ -211,8 +211,8 @@ def _is_ready_to_merge(merge_state: str, check_outcomes: Sequence[CheckOutcome])
     # is reached. A PR carrying anything more never gets this far.
     #
     # This cannot open the loop the token protection exists to prevent: the release
-    # workflow's own `prepare` job refuses a head ref starting with `docs/`, so
-    # merging a release PR never starts another release.
+    # workflow runs only on `workflow_dispatch`, so merging a release PR starts
+    # nothing at all.
     return all(outcome is CheckOutcome.PASSED for outcome in check_outcomes)
 
 
@@ -400,8 +400,15 @@ def _checkout_and_validate_release_head(
             f"expected head {expected_head_sha}"
         )
 
+    _run_git(
+        repository,
+        "fetch",
+        "--no-tags",
+        "origin",
+        "+refs/heads/master:refs/remotes/origin/master",
+    )
     expected_base_sha = _normalise_sha(
-        _run_git(repository, "rev-parse", f"{fetched_head_sha}^"),
+        _run_git(repository, "merge-base", fetched_head_sha, "refs/remotes/origin/master"),
         label="release PR base SHA",
     )
     _fetch_and_validate_release_base(repository, expected_base_sha)

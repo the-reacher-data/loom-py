@@ -21,6 +21,12 @@ def _steps() -> list[dict[str, Any]]:
     ]
 
 
+def _triggers() -> dict[str, Any]:
+    """Return the workflow trigger mapping, whose YAML key ``on`` loads as a boolean."""
+    workflow = cast(dict[Any, Any], yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    return cast(dict[str, Any], workflow.get("on", workflow.get(True)))
+
+
 def _step_index_containing(command: str) -> int:
     for index, step in enumerate(_steps()):
         if command in cast(str, step.get("run", "")):
@@ -231,10 +237,18 @@ def test_release_tooling_versions_are_pinned() -> None:
 
 
 def test_manual_release_is_restricted_to_master_checkout() -> None:
-    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    workflow = cast(dict[str, Any], yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8")))
+    prepare = cast(dict[str, Any], cast(dict[str, Any], workflow["jobs"])["prepare"])
+    checkout = next(
+        step
+        for step in cast(list[dict[str, Any]], prepare["steps"])
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
 
-    assert 'if [ "${RELEASE_BRANCH}" != "master" ]; then' in workflow_text
-    assert "github.event.pull_request.merge_commit_sha" in workflow_text
+    assert 'if [ "${RELEASE_BRANCH}" != "master" ]; then' in _step_run(
+        "Validate manual release source"
+    )
+    assert cast(dict[str, Any], checkout["with"])["ref"] == "master"
 
 
 def test_restores_only_known_release_action_side_effects_before_pr_handling() -> None:
@@ -263,9 +277,50 @@ def test_lockfile_validation_runs_only_in_unprivileged_build_job() -> None:
     assert "uv lock --check" in build_text
 
 
-def test_automatic_release_checkout_is_bound_to_triggering_merge_sha() -> None:
+def test_release_publishes_only_on_a_manual_dispatch() -> None:
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    triggers = _triggers()
+    bump = cast(dict[str, Any], cast(dict[str, Any], triggers["workflow_dispatch"])["inputs"])[
+        "bump"
+    ]
+
+    assert list(triggers) == ["workflow_dispatch"]
+    assert cast(list[str], bump["options"]) == ["patch", "minor", "major"]
+    assert "github.event.pull_request" not in workflow_text
+
+
+def test_release_checkout_delegates_the_base_comparison_to_the_helper() -> None:
     helper_script = _step_run("Check out validated release commit")
 
-    assert "github.event.pull_request.merge_commit_sha" in workflow_text
     assert "--expected-base-sha" not in helper_script
+
+
+def test_release_notes_cover_every_commit_since_the_last_reachable_tag() -> None:
+    changelog_script = _step_run("Generate release changelog")
+
+    assert "git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD" in changelog_script
+    assert 'range="${last_tag}..HEAD"' in changelog_script
+    assert "git log --no-merges" in changelog_script
+    assert "Nothing to release" in changelog_script
+
+
+def test_stale_release_pr_is_recycled_from_the_merge_base() -> None:
+    pr_state_script = _step_run("Inspect release PR state")
+
+    assert "merge_base_commit.sha" in pr_state_script
+    assert '"${base_sha}" != "${master_sha}"' in pr_state_script
+    assert "gh pr close" in pr_state_script
+    assert "--delete-branch" in pr_state_script
+
+
+def test_only_a_merged_bump_stops_the_release_from_building_a_new_one() -> None:
+    pr_state_script = _step_run("Inspect release PR state")
+    lines = pr_state_script.splitlines()
+    merged_guard_index = _line_index(
+        lines,
+        lambda line: line.strip() == 'if [ "${merged_count}" -gt 0 ]; then',
+        "merged release PR guard",
+    )
+
+    assert "create=false" in lines[merged_guard_index + 1]
+    assert "closed_count" not in pr_state_script
