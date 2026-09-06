@@ -192,8 +192,15 @@ class FakeCollection:
     async def delete_one(
         self, filter: Mapping[str, Any], session: object | None = None
     ) -> DeleteResult:
+        return await self._delete(self._select(filter)[:1], session)
+
+    async def delete_many(
+        self, filter: Mapping[str, Any], session: object | None = None
+    ) -> DeleteResult:
+        return await self._delete(self._select(filter), session)
+
+    async def _delete(self, matched: list[_Document], session: object | None) -> DeleteResult:
         self.last_session = session
-        matched = self._select(filter)[:1]
         for document in matched:
             del self.documents[document["_id"]]
         return DeleteResult({"n": len(matched)}, acknowledged=True)

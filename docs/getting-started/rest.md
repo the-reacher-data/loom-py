@@ -382,13 +382,15 @@ selects it:
 |---|---|---|
 | `sqlalchemy` (default) | `database:` | unit of work, repositories with every capability (`create_many` included) and compiled tables for every discovered model; needs the `sqlalchemy` extra, a driver and a reachable database even with zero models |
 | `dynamodb` | `persistence.dynamodb:` | key-value repositories (`Readable`, `Creatable`, `Updatable`, `Deletable`); auto-CRUD mounts get, create, update and delete — `list` and `count` are not mounted, and `get_by` / `exists_by` on a non-key field raise `UnsupportedQuery`; no relational tables |
+| `mongo` | `persistence.mongo:` | one collection per model in one database, repositories with every capability (`create_many` included), offset and cursor pagination, `QuerySpec` filters and sorts; unit of work is a no-op unless `transactions: true` (needs a replica set); ids minted by loom (`uuid4`, or `objectid` per config), `autoincrement` refused at startup; needs the `mongo` extra |
 | `none` | nothing | no unit of work, no repositories; discovered models are accepted but not compiled, a `database:` section is ignored, deferred job dispatch never fires, and an interface with `auto_crud_model` refuses to boot |
 
 Auto-CRUD is gated by the capabilities the serving repository class declares:
 an interface with an empty `include` mounts only the operations the backend
 supports, an explicit `include` naming an unsupported one fails at startup.
 An unknown backend name fails at startup listing the registered ones. Writing a
-backend, the capability gate and the cursor contract are described in
+backend, the capability gate, the cursor contract, the `mongo` keys and the
+recipe for a model that runs unchanged on every backend are described in
 [Persistence backends](../rest/persistence-backends.md).
 
 ```yaml
@@ -414,7 +416,7 @@ of every interface router and outside the OpenAPI schema:
 - `status` is `ok` when every backend is ready and `degraded` — with HTTP
   `503` — when any is not. Each key of `backends` is the `persistence.backend`
   name and its readiness (`SELECT 1` for `sqlalchemy`, `DescribeTable` with an
-  `ACTIVE` or `UPDATING` table for `dynamodb`).
+  `ACTIVE` or `UPDATING` table for `dynamodb`, `ping` for `mongo`).
 - `none`, or a backend without a readiness probe, answers
   `{"status": "ok", "backends": {}}`.
 - The probe result is cached for a short TTL, concurrent requests share one

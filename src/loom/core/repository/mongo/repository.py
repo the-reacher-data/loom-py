@@ -25,13 +25,14 @@ from typing import Any, ClassVar, Generic, Protocol, cast
 
 import msgspec
 from pymongo.asynchronous.client_session import AsyncClientSession
-from pymongo.errors import BulkWriteError, DuplicateKeyError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
 from pymongo.results import DeleteResult, InsertManyResult, InsertOneResult, UpdateResult
 
 from loom.core.errors import Conflict
+from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import ServerDefault, ServerOnUpdate
-from loom.core.model.introspection import get_column_fields
+from loom.core.model.introspection import get_column_fields, get_id_attribute
 from loom.core.repository.abc import (
     BulkCreatable,
     Countable,
@@ -58,11 +59,13 @@ from loom.core.repository.abc import (
     decode_cursor,
     encode_cursor,
 )
-from loom.core.repository.mongo.ids import IdPolicy, Uuid4IdPolicy, validate_id_field
+from loom.core.repository.mongo.ids import IdPolicy, Uuid4IdPolicy
 from loom.core.repository.mongo.query_compiler import MongoFilter, MongoQueryCompiler, MongoSort
 
 Document = dict[str, Any]
 SessionProvider = Callable[[], AsyncClientSession | None]
+
+_log = get_logger(__name__).bind(component="repository")
 
 _ID = "_id"
 _ID_ASCENDING: tuple[str, int] = (_ID, 1)
@@ -126,6 +129,10 @@ class MongoCollection(Protocol):
         self, filter: Mapping[str, Any], *, session: AsyncClientSession | None = None
     ) -> DeleteResult: ...
 
+    async def delete_many(
+        self, filter: Mapping[str, Any], *, session: AsyncClientSession | None = None
+    ) -> DeleteResult: ...
+
 
 class RepositoryMongo(
     Readable[OutputT],
@@ -146,6 +153,11 @@ class RepositoryMongo(
     the current UTC time. A duplicate key raises
     :class:`~loom.core.errors.Conflict`.
 
+    The repository does not judge the model's key declaration: a model whose
+    key Mongo cannot mint (``autoincrement=True``) is rejected at boot by
+    :func:`~loom.core.repository.mongo.ids.validate_id_field`, which the
+    backend runs over every discovered model.
+
     Args:
         model: Loom model bound to the collection; its ``primary_key`` field
             maps to ``_id``.
@@ -157,7 +169,7 @@ class RepositoryMongo(
             every driver call runs in the session it returns.
 
     Raises:
-        ConfigError: If the model's primary key declares ``autoincrement``.
+        ValueError: If the model declares no primary key.
 
     Example::
 
@@ -178,7 +190,7 @@ class RepositoryMongo(
         self._collection = collection
         self._ids: IdPolicy = id_policy if id_policy is not None else Uuid4IdPolicy()
         self._session_provider = session_provider
-        self._id_attr = validate_id_field(model).name
+        self._id_attr = get_id_attribute(model)
         column_fields = get_column_fields(model)
         self._column_fields = frozenset(column_fields)
         self._now_fields = frozenset(
@@ -232,8 +244,13 @@ class RepositoryMongo(
     async def create_many(self, data: Sequence[msgspec.Struct]) -> tuple[OutputT, ...]:
         """Insert every struct with one ordered ``insert_many``.
 
-        Documents before a failing one stay inserted, as the driver does.
-        An empty ``data`` returns ``()`` without a round trip.
+        A duplicate key persists nothing: the documents the ordered write
+        stored before the failing one are deleted again, unless a
+        transaction is active, in which case its abort discards them. When
+        that compensating delete itself fails, the driver error surfaces
+        instead of ``Conflict`` (with a note naming it) and the store may
+        hold the partial batch. An empty ``data`` returns ``()`` without a
+        round trip.
 
         Raises:
             Conflict: If a document with the same key already exists.
@@ -241,14 +258,34 @@ class RepositoryMongo(
         documents = [self._new_document(item) for item in data]
         if not documents:
             return ()
+        session = self._session()
         try:
-            await self._collection.insert_many(documents, ordered=True, session=self._session())
+            await self._collection.insert_many(documents, ordered=True, session=session)
         except BulkWriteError as exc:
             index = _duplicate_index(exc)
             if index is None:
                 raise
-            raise self._conflict(documents[index][_ID]) from exc
+            conflict = self._conflict(documents[index][_ID])
+            if session is None:
+                await self._undo_inserts(documents[:index], conflict)
+            raise conflict from exc
         return tuple(self._to_output(document) for document in documents)
+
+    async def _undo_inserts(self, documents: list[Document], conflict: Conflict) -> None:
+        """Delete the documents an ordered ``insert_many`` stored before it failed.
+
+        A driver failure here is logged and re-raised with a note naming the
+        conflict it was compensating: the store may hold the partial batch.
+        """
+        if not documents:
+            return
+        keys = [document[_ID] for document in documents]
+        try:
+            await self._collection.delete_many({_ID: {"$in": keys}})
+        except PyMongoError as exc:
+            _log.error("MongoBulkUndoFailed", keys=keys, conflict=str(conflict))
+            exc.add_note(f"while undoing a partial create_many after: {conflict}")
+            raise
 
     async def update(self, obj_id: IdT, data: msgspec.Struct) -> OutputT | None:
         """``$set`` the non-``None`` fields of ``data`` on the document keyed ``obj_id``.

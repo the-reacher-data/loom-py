@@ -467,13 +467,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f docker-compose.local.yaml up -d redpanda kafka clickhouse
+          docker compose -f docker-compose.local.yaml up -d redpanda kafka clickhouse mongo
 
       - name: Wait for services to report healthy
         shell: bash
         run: |
           set -euo pipefail
-          for service in redpanda kafka clickhouse; do
+          for service in redpanda kafka clickhouse mongo; do
             container="$(docker compose -f docker-compose.local.yaml ps -q "$service")"
             for _ in $(seq 1 60); do
               status="$(docker inspect -f '{{.State.Health.Status}}' "$container")"
@@ -491,6 +491,7 @@ jobs:
         shell: bash
         env:
           LOOM_KAFKA_IT_BOOTSTRAP: localhost:19092
+          LOOM_MONGO_IT_URI: mongodb://localhost:27017/?replicaSet=rs0
         run: |
           set -euo pipefail
           uv run --frozen pytest -m integration -ra

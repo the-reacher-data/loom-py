@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -7,10 +8,9 @@ from uuid import UUID
 
 import pytest
 from bson import ObjectId
-from pymongo.errors import BulkWriteError
-from pymongo.results import InsertManyResult
+from pymongo.errors import AutoReconnect, BulkWriteError
+from pymongo.results import DeleteResult, InsertManyResult
 
-from loom.core.config import ConfigError
 from loom.core.errors import Conflict
 from loom.core.model import BaseModel, ColumnField, TimestampedModel
 from loom.core.model.enums import ServerDefault
@@ -93,6 +93,11 @@ class Counter(BaseModel):
 
     id: int = ColumnField(primary_key=True, autoincrement=True)
     value: int = ColumnField()
+
+
+class CounterCreate(BaseModel):
+    value: int
+    id: int | None = None
 
 
 @pytest.fixture
@@ -239,11 +244,17 @@ class TestIdGeneration:
 
         assert await repo.get_by("id", UUID(created.id)) == created
 
-    async def test_autoincrement_model_is_rejected_at_construction(
+    async def test_client_supplied_int_id_wins_on_an_autoincrement_model(
         self, collection: FakeCollection
     ) -> None:
-        with pytest.raises(ConfigError, match="Counter.id declares autoincrement=True"):
-            RepositoryMongo(Counter, collection)
+        """The boot-time gate, not the repository, judges ``autoincrement``."""
+        repo: RepositoryMongo[Counter, int] = RepositoryMongo(Counter, collection)
+
+        created = await repo.create(CounterCreate(id=7, value=1))
+
+        assert created.id == 7
+        assert collection.documents[7]["value"] == 1
+        assert await repo.get_by_id(7) == created
 
 
 class TestConflicts:
@@ -254,7 +265,9 @@ class TestConflicts:
         with pytest.raises(Conflict, match="Article with slug='a' already exists"):
             await repo.create(ArticleCreate(slug="a", title="Again"))
 
-    async def test_duplicate_in_bulk_raises_conflict(self, collection: FakeCollection) -> None:
+    async def test_duplicate_in_bulk_raises_conflict_and_persists_nothing(
+        self, collection: FakeCollection
+    ) -> None:
         repo = _articles(collection)
         await repo.create(ArticleCreate(slug="b", title="B"))
 
@@ -263,7 +276,56 @@ class TestConflicts:
                 [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="b", title="B")]
             )
 
-        assert set(collection.documents) == {"a", "b"}
+        assert set(collection.documents) == {"b"}
+
+    async def test_duplicate_in_bulk_inside_a_transaction_leaves_the_undo_to_the_abort(
+        self,
+    ) -> None:
+        class RecordingCollection(FakeCollection):
+            deletes = 0
+
+            async def delete_many(
+                self, filter: Mapping[str, Any], session: object | None = None
+            ) -> DeleteResult:
+                self.deletes += 1
+                return await super().delete_many(filter, session)
+
+        collection = RecordingCollection()
+        session = FakeMongoClient().start_session()
+        provider = cast(SessionProvider, lambda: session)
+        repo = RepositoryMongo(Article, collection, session_provider=provider)
+
+        with pytest.raises(Conflict):
+            await repo.create_many(
+                [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
+            )
+
+        assert collection.deletes == 0
+        assert set(collection.documents) == {"a"}
+
+    async def test_failed_undo_surfaces_the_driver_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class BrokenUndoCollection(FakeCollection):
+            async def delete_many(
+                self, filter: Mapping[str, Any], session: object | None = None
+            ) -> DeleteResult:
+                raise AutoReconnect("primary stepped down")
+
+        collection = BrokenUndoCollection()
+        repo = _articles(collection)
+
+        with (
+            caplog.at_level(logging.ERROR, logger=repository_module.__name__),
+            pytest.raises(AutoReconnect) as info,
+        ):
+            await repo.create_many(
+                [ArticleCreate(slug="a", title="A"), ArticleCreate(slug="a", title="A")]
+            )
+
+        assert "Article with slug='a' already exists" in "".join(info.value.__notes__)
+        assert "MongoBulkUndoFailed" in caplog.text
+        assert set(collection.documents) == {"a"}
 
     async def test_other_bulk_write_errors_propagate(self) -> None:
         class FailingCollection(FakeCollection):

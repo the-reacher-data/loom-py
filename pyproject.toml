@@ -367,6 +367,7 @@ log_cli_format = "%(asctime)s %(levelname)s %(name)s %(message)s"
 markers = [
     "bytewax: tests that exercise the Bytewax adapter and runtime wiring",
     "kafka: tests that exercise Kafka transport and codecs",
+    "mongo: tests that need a real MongoDB replica set (tests/integration/persistence/mongo)",
     "integration: end-to-end streaming flow tests",
     "slow: long-running tests that should be opt-in in CI",
     "live: tests that call a real model provider; skipped without credentials",

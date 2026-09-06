@@ -120,6 +120,37 @@ services:
       retries: 20
       start_period: 10s
 
+  # MongoDB for tests/integration/persistence/mongo. A single-node replica set:
+  # loom's optional transactions (persistence.mongo.transactions) need one, and
+  # the contract suite exercises them for real. The healthcheck initiates the
+  # set on first contact and passes only once this node is the writable
+  # primary, so the CI health loop gates on a set that can open a transaction.
+  # The member advertises localhost:27017, which is why the host port is the
+  # default one: the driver reconnects to the advertised address.
+  #
+  #   docker compose -f docker-compose.local.yaml up -d mongo
+  mongo:
+    image: mongo:7
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    networks: [loom_net]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval "
+          if (!db.hello().isWritablePrimary) {
+            try { rs.status() } catch (e) {
+              rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})
+            }
+            quit(1)
+          }"
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 5s
+
   prefect-worker:
     image: prefecthq/prefect:3-latest
     command: >
