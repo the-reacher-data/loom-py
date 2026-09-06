@@ -20,7 +20,8 @@ _EXPECTED_BASE_REF = "master"
 _ALLOWED_RELEASE_FILES = frozenset({"CHANGELOG.md", "pyproject.toml", "uv.lock"})
 _ALLOWED_UNTRACKED_FILES = frozenset({"CHANGELOG_RELEASE.md"})
 _PENDING_MERGE_STATES = frozenset({"BLOCKED", "HAS_HOOKS", "UNKNOWN", "UNSTABLE"})
-_CLOSED_STATE_ERRORS = {"CLOSED": "release PR closed without being merged"}
+_CLOSED_UNMERGED_STATE = "CLOSED"
+_CLOSED_STATE_ERRORS = {_CLOSED_UNMERGED_STATE: "release PR closed without being merged"}
 _BLOCKED_MERGE_STATE_ERRORS = {
     "DIRTY": "release PR has conflicts (merge state DIRTY)",
     "BEHIND": "release PR base advanced after the release snapshot",
@@ -163,6 +164,20 @@ def _validate_snapshot(
     return head_sha
 
 
+def _release_candidates(
+    snapshots: Sequence[PullRequestSnapshot],
+) -> tuple[PullRequestSnapshot, ...]:
+    """Return the pull requests that can still carry the release.
+
+    GitHub keeps a closed pull request associated with its head ref name forever,
+    and a release branch reuses the name of every version before it, so a version
+    whose bump was ever closed lists more pull requests than it has candidates.
+    """
+    return tuple(
+        snapshot for snapshot in snapshots if snapshot.state.upper() != _CLOSED_UNMERGED_STATE
+    )
+
+
 def _read_one_validated_snapshot(
     release_branch: str,
     expected_owner: str,
@@ -170,12 +185,15 @@ def _read_one_validated_snapshot(
     get_pull_requests: PullRequestReader,
 ) -> tuple[PullRequestSnapshot, str]:
     snapshots = get_pull_requests(release_branch)
-    if len(snapshots) != 1:
+    candidates = _release_candidates(snapshots)
+    if snapshots and not candidates:
+        raise ReleaseCheckoutError(_CLOSED_STATE_ERRORS[_CLOSED_UNMERGED_STATE])
+    if len(candidates) != 1:
         raise ReleaseCheckoutError(
-            f"expected exactly one release PR candidate, found {len(snapshots)}"
+            f"expected exactly one release PR candidate, found {len(candidates)}"
         )
 
-    snapshot = snapshots[0]
+    snapshot = candidates[0]
     head_sha = _validate_snapshot(
         snapshot,
         release_branch=release_branch,
