@@ -90,11 +90,6 @@ class _DependencySpec:
     fk_field: str
 
 
-# Optional wrapped methods served by a wrapper method of the same shape once
-# the wrapped repository proves it has them.
-_INTERCEPTED: Mapping[str, str] = {"create_many": "_create_many"}
-
-
 class CachedRepository(
     Repository[OutputT, CreateT, UpdateT, IdT],
     Generic[OutputT, CreateT, UpdateT, IdT],
@@ -372,9 +367,8 @@ class CachedRepository(
         else is returned as-is.
         """
         attr = getattr(self._repository, name)
-        interceptor = _INTERCEPTED.get(name)
-        if interceptor is not None:
-            return getattr(self, interceptor)
+        if name == "create_many":
+            return self._create_many
         if not callable(attr):
             return attr
 

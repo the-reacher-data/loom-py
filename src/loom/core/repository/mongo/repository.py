@@ -221,7 +221,7 @@ class RepositoryMongo(
             for name, info in column_fields.items()
             if ServerOnUpdate.is_now(info.field.server_onupdate)
         )
-        self._compiler = MongoQueryCompiler(model, self._id_attr)
+        self._compiler = MongoQueryCompiler(model, self._id_attr, self._ids.to_storage)
 
     @property
     def model(self) -> type:
@@ -435,18 +435,14 @@ class RepositoryMongo(
             token, self.backend_name, self._model.__qualname__, key_count=len(sort)
         )
         keys = tuple(
-            self._storage_key(spec.field, key) for spec, key in zip(sort, cursor.keys, strict=True)
+            self._compiler.storage_value(spec.field, key)
+            for spec, key in zip(sort, cursor.keys, strict=True)
         )
         return Cursor(
             backend=cursor.backend,
             keys=keys,
-            tie_breaker=self._ids.to_storage(cursor.tie_breaker),
+            tie_breaker=self._compiler.storage_value(self._id_attr, cursor.tie_breaker),
         )
-
-    def _storage_key(self, field: str, key: object) -> object:
-        if field == self._id_attr:
-            return self._ids.to_storage(key)
-        return to_storage_value(key)
 
     def _encode(self, document: Document, sort: tuple[SortSpec, ...]) -> str:
         """Issue the token for the page after ``document``; ``_id`` keys use the model form."""
@@ -462,15 +458,13 @@ class RepositoryMongo(
         return {_ID: {"$eq": self._ids.to_storage(obj_id)}}
 
     def _equals(self, field: str, value: Any) -> MongoFilter:
-        if field == self._id_attr:
-            return self._key(value)
         return self._compiler.compile_filter(
             FilterGroup(filters=(FilterSpec(field, FilterOp.EQ, value),))
         )
 
     def _conflict(self, key: object) -> Conflict:
         return Conflict(
-            f"{self._model.__name__} with {self._id_attr}="
+            f"{self._model.__qualname__} with {self._id_attr}="
             f"{self._ids.from_storage(key)!r} already exists."
         )
 
@@ -492,6 +486,7 @@ class RepositoryMongo(
         }
         payload = cast(dict[str, Any], builtins)
         internal = {encoded_to_internal.get(key, key): value for key, value in payload.items()}
+        # ``to_builtins`` already stringified every other rich type; only ``datetime`` converts.
         return {
             name: to_storage_value(value)
             for name, value in internal.items()

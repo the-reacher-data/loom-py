@@ -8,10 +8,12 @@ same rows for one ``QuerySpec``: ``NE`` never matches a ``null`` field, hence
 it is emitted with a ``{field: {"$ne": None}}`` guard (MongoDB's bare ``$ne``
 would match ``null`` and missing fields).
 
-Values are compared in their storage form (:mod:`loom.core.repository.mongo.values`).
-``Decimal`` columns are stored as strings, whose order is lexicographic, so
-range operators and sorts on them are refused; ISO dates order correctly as
-strings and are allowed. Every value is emitted under an explicit operator
+Values are compared in their storage form (:mod:`loom.core.repository.mongo.values`);
+primary-key values take the form the repository's ``IdPolicy`` writes to
+``_id``, supplied as ``id_to_storage``. ``Decimal`` columns are stored as
+strings, whose order is lexicographic, so range operators and sorts on them
+are refused; ISO dates order correctly as strings and are allowed. Every
+value is emitted under an explicit operator
 (``$eq`` for equality) so a mapping supplied as a value can never act as one.
 """
 
@@ -30,6 +32,7 @@ from loom.core.repository.mongo.values import to_storage_value
 
 MongoFilter = dict[str, Any]
 MongoSort = list[tuple[str, int]]
+StorageConverter = Callable[[object], object]
 
 _ID = "_id"
 _ASCENDING = 1
@@ -74,17 +77,22 @@ def _ilike(value: Any) -> MongoFilter:
     return {"$regex": _like_to_regex(str(value)), "$options": "i"}
 
 
-def _compare(operator: str) -> Callable[[Any], MongoFilter]:
-    return lambda value: {operator: to_storage_value(value)}
+def _identity(value: object) -> object:
+    return value
 
 
-# IS_NULL ignores the spec value, exactly like the SQLAlchemy compiler.
-_VALUE_OPS: dict[FilterOp, Callable[[Any], Any]] = {
-    FilterOp.EQ: lambda value: {"$eq": to_storage_value(value)},
-    FilterOp.IN: lambda value: {"$in": [to_storage_value(item) for item in value]},
-    FilterOp.LIKE: _like,
-    FilterOp.ILIKE: _ilike,
-    FilterOp.IS_NULL: lambda _value: None,
+def _compare(operator: str) -> Callable[[Any, StorageConverter], MongoFilter]:
+    return lambda value, convert: {operator: convert(value)}
+
+
+# Each builder receives the column's storage converter; IS_NULL, LIKE and
+# ILIKE ignore it (IS_NULL also ignores the value, like the SQLAlchemy compiler).
+_VALUE_OPS: dict[FilterOp, Callable[[Any, StorageConverter], Any]] = {
+    FilterOp.EQ: lambda value, convert: {"$eq": convert(value)},
+    FilterOp.IN: lambda value, convert: {"$in": [convert(item) for item in value]},
+    FilterOp.LIKE: lambda value, _convert: _like(value),
+    FilterOp.ILIKE: lambda value, _convert: _ilike(value),
+    FilterOp.IS_NULL: lambda _value, _convert: None,
     **{op: _compare(key) for op, key in _COMPARISON_OPS.items()},
 }
 
@@ -100,6 +108,9 @@ class MongoQueryCompiler:
         model: Loom model the collection is bound to; its column fields are
             the only filterable and sortable names.
         id_field: Name of the model's primary-key field, mapped to ``_id``.
+        id_to_storage: Converts a model-level key into the value stored in
+            ``_id`` (the repository's ``IdPolicy.to_storage``); defaults to
+            identity. Every key value in a filter or cursor goes through it.
 
     Example::
 
@@ -110,9 +121,12 @@ class MongoQueryCompiler:
 
     backend: ClassVar[str] = "mongo"
 
-    def __init__(self, model: type, id_field: str) -> None:
+    def __init__(
+        self, model: type, id_field: str, id_to_storage: StorageConverter = _identity
+    ) -> None:
         self._model_name = model.__qualname__
         self._id_field = id_field
+        self._id_to_storage = id_to_storage
         columns = get_column_fields(model)
         self._fields = frozenset(columns)
         self._unordered = frozenset(
@@ -188,12 +202,31 @@ class MongoQueryCompiler:
             branches.append({"$and": [*equal_prefix, {column: {step: value}}]})
         return {"$or": branches}
 
+    def storage_value(self, field: str, value: object) -> object:
+        """Return ``value`` as the document stores it in ``field``.
+
+        The primary key takes the ``id_to_storage`` form; any other column
+        takes :func:`~loom.core.repository.mongo.values.to_storage_value`.
+
+        Args:
+            field: Model field name.
+            value: Model-level value.
+
+        Returns:
+            The value to compare against the stored document.
+        """
+        return self._converter(field)(value)
+
+    def _converter(self, field: str) -> StorageConverter:
+        return self._id_to_storage if field == self._id_field else to_storage_value
+
     def _compile_spec(self, spec: FilterSpec) -> MongoFilter:
         column = self._column(spec.field)
         if spec.op in _COMPARISON_OPS:
             self._require_ordered(spec.field)
+        convert = self._converter(spec.field)
         if spec.op is FilterOp.NE:
-            value = to_storage_value(spec.value)
+            value = convert(spec.value)
             return {"$and": [{column: {"$ne": None}}, {column: {"$ne": value}}]}
         build = _VALUE_OPS.get(spec.op)
         if build is None:
@@ -201,7 +234,7 @@ class MongoQueryCompiler:
                 f"operator '{spec.op.value}' is not supported by the {self.backend} backend"
             )
         try:
-            return {column: build(spec.value)}
+            return {column: build(spec.value, convert)}
         except _TooManyWildcards as exc:
             raise self._unsupported(str(exc)) from exc
 

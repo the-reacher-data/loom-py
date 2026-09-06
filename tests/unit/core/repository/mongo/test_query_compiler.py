@@ -200,6 +200,27 @@ class TestStorageValues:
             "$and": [{"$and": [{"ref": {"$ne": None}}, {"ref": {"$ne": str(_REF)}}]}]
         }
 
+    def test_id_to_storage_converts_key_values_only(self) -> None:
+        """The id policy's storage form applies to ``EQ`` and every ``IN`` member of the key."""
+        compiler = MongoQueryCompiler(Article, "slug", id_to_storage=lambda value: f"key:{value}")
+        group = FilterGroup(
+            filters=(
+                FilterSpec("slug", FilterOp.EQ, "a"),
+                FilterSpec("slug", FilterOp.IN, ("b", "c")),
+                FilterSpec("title", FilterOp.EQ, "d"),
+                FilterSpec("title", FilterOp.IN, ("e",)),
+            )
+        )
+
+        assert compiler.compile_filter(group) == {
+            "$and": [
+                {"_id": {"$eq": "key:a"}},
+                {"_id": {"$in": ["key:b", "key:c"]}},
+                {"title": {"$eq": "d"}},
+                {"title": {"$in": ["e"]}},
+            ]
+        }
+
     def test_date_range_compares_iso_strings(self, ledger: MongoQueryCompiler) -> None:
         group = _single(FilterSpec("day", FilterOp.GTE, date(2026, 1, 3)))
 

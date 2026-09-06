@@ -29,7 +29,7 @@ def test_mongo_extra_installs_pymongo() -> None:
     requirements = _extra_requirements("mongo")
 
     assert "pymongo" in requirements
-    assert requirements["pymongo"].specifier.contains("4.6")
+    assert requirements["pymongo"].specifier.contains("4.9")
     assert not requirements["pymongo"].specifier.contains("5.0")
 
 

@@ -592,6 +592,32 @@ class TestCursorPagination:
         assert walked == sorted(note.id for note in created)
         assert second.has_next is False
 
+    async def test_objectid_policy_filters_by_primary_key(self, collection: FakeCollection) -> None:
+        """Key filter values take the policy's storage form, like ``get_by_id`` does."""
+        repo = _notes(collection, ObjectIdPolicy())
+        first, second, _ = [
+            await repo.create(NoteCreate(body=body)) for body in ("one", "two", "three")
+        ]
+
+        by_eq = await repo.list_with_query(
+            QuerySpec(filters=FilterGroup(filters=(FilterSpec("id", FilterOp.EQ, first.id),)))
+        )
+        by_in = await repo.list_with_query(
+            QuerySpec(
+                filters=FilterGroup(filters=(FilterSpec("id", FilterOp.IN, (first.id, second.id)),))
+            )
+        )
+        page = await repo.list_paginated(
+            PageParams(page=1, limit=10), FilterParams(filters={"id": second.id})
+        )
+
+        assert isinstance(by_eq, PageResult)
+        assert [item.id for item in by_eq.items] == [first.id]
+        assert isinstance(by_in, PageResult)
+        assert sorted(item.id for item in by_in.items) == sorted((first.id, second.id))
+        assert [item.id for item in page.items] == [second.id]
+        assert page.total_count == 1
+
     async def test_sort_naming_the_key_descending_walks_in_that_order(
         self, collection: FakeCollection
     ) -> None:

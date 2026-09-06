@@ -49,6 +49,15 @@ class Counter(BaseModel):
     value: int = ColumnField()
 
 
+class Ticket(BaseModel):
+    """Key loom would have to mint, but whose annotation cannot hold a generated id."""
+
+    __tablename__ = "tickets"
+
+    id: int = ColumnField(primary_key=True)
+    subject: str = ColumnField(length=32)
+
+
 def _ctx(section: dict[str, Any] | None) -> ConfigContext:
     persistence: dict[str, Any] = {"backend": "mongo"}
     if section is not None:
@@ -132,6 +141,15 @@ def test_prepare_models_rejects_autoincrement_naming_the_model(
 
     with pytest.raises(ConfigError, match="Counter.id"):
         wiring.prepare_models((Article, Counter))
+
+
+def test_prepare_models_rejects_a_key_that_cannot_hold_a_generated_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wiring = _wiring(monkeypatch, FakeMongoClient(), _SECTION, (Article, Ticket))
+
+    with pytest.raises(ConfigError, match=r"Ticket\.id .*int"):
+        wiring.prepare_models((Article, Ticket))
 
 
 def test_prepare_models_accepts_models_with_a_client_or_generated_key(
