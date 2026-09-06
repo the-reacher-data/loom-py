@@ -10,6 +10,7 @@ matching nothing.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -254,6 +255,8 @@ class FakeSession:
         }
 
     async def commit_transaction(self) -> None:
+        if self._client.commit_error is not None:
+            raise self._client.commit_error
         self._client.committed += 1
         self.in_transaction = False
 
@@ -261,6 +264,8 @@ class FakeSession:
         """Abort, restoring every collection to its state at ``start_transaction``."""
         if self._client.abort_error is not None:
             raise self._client.abort_error
+        if self._client.abort_gate is not None:
+            await self._client.abort_gate.wait()
         for name, collection in self._client.collections.items():
             collection.documents = dict(self._snapshot.get(name, {}))
         self._client.aborted += 1
@@ -314,6 +319,8 @@ class FakeMongoClient:
         self.ping_error: Exception | None = None
         self.start_transaction_error: Exception | None = None
         self.abort_error: Exception | None = None
+        self.abort_gate: asyncio.Event | None = None
+        self.commit_error: Exception | None = None
         self.end_error: Exception | None = None
 
     @property

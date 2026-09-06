@@ -33,9 +33,10 @@ from celery.result import AsyncResult  # type: ignore[import-untyped]
 from loom.celery.constants import TASK_CALLBACK_ERROR_PREFIX, TASK_CALLBACK_PREFIX, TASK_JOB_PREFIX
 from loom.core.async_bridge import AsyncBridge
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.identity import Identity, reset_identity, set_identity
 from loom.core.identity.wire import decode_identity
-from loom.core.job.context import clear_pending_dispatches, flush_pending_dispatches
+from loom.core.logger import get_logger
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.tracing import reset_trace_id, set_trace_id
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
     from loom.core.engine.metrics import MetricsAdapter
     from loom.core.job.job import Job
     from loom.core.use_case.factory import UseCaseFactory
+
+_log = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -123,6 +126,20 @@ def _job_event(
     return RuntimeEvent(kind=kind, use_case_name=use_case_name, trace_id=trace_id, **kwargs)
 
 
+def _exhausted_event(
+    use_case_name: str, trace_id: str | None, started: float, error: Exception
+) -> RuntimeEvent:
+    """Build the terminal ``JOB_EXHAUSTED`` event for a job that will not run again."""
+    return _job_event(
+        EventKind.JOB_EXHAUSTED,
+        use_case_name,
+        trace_id,
+        duration_ms=(time.monotonic() - started) * 1000,
+        status="exhausted",
+        error=error,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Trace ID context guard
 # ---------------------------------------------------------------------------
@@ -177,13 +194,12 @@ async def _run_job(
     executor: RuntimeExecutor,
     identity: Identity | None = None,
 ) -> Any:
-    """Execute a Job through the executor and flush pending dispatches.
+    """Execute a Job through the executor.
 
-    The executor opens a UoW, runs the compiled execution plan (handling
-    both sync and async ``execute()`` methods), and commits.  Pending
-    dispatches (jobs enqueued during execution) are flushed on success
-    and discarded on failure so downstream tasks are never sent for a
-    rolled-back transaction.
+    The executor owns the lifecycle: it opens the UoW, runs the compiled
+    execution plan (handling both sync and async ``execute()`` methods),
+    commits, and runs the dispatches queued during the execution once the
+    UoW has closed; a failed execution discards them.
 
     Args:
         instance: Constructed Job instance.
@@ -196,14 +212,12 @@ async def _run_job(
 
     Returns:
         The value returned by ``execute()``.
+
+    Raises:
+        loom.core.engine.post_commit.PostCommitError: If a dispatch failed
+            after the job's transaction committed.
     """
-    try:
-        result = await executor.execute(instance, params=params, payload=payload, identity=identity)
-        await flush_pending_dispatches()
-        return result
-    except Exception:
-        clear_pending_dispatches()
-        raise
+    return await executor.execute(instance, params=params, payload=payload, identity=identity)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +317,16 @@ def _make_job_task(
                 ),
             )
             return result
+        except PostCommitError as exc:
+            # The transaction committed: a retry would run the job twice.
+            _log.error(
+                "JobPostCommitFailed",
+                job=name,
+                committed=exc.committed,
+                failures=len(exc.failures),
+            )
+            _emit(metrics, _exhausted_event(name, trace_id, t0, exc))
+            raise
         except Exception as exc:
             if self.request.retries < self.max_retries:
                 countdown = backoff**self.request.retries
@@ -313,17 +337,7 @@ def _make_job_task(
                     ),
                 )
                 raise self.retry(exc=exc, countdown=countdown) from exc
-            _emit(
-                metrics,
-                _job_event(
-                    EventKind.JOB_EXHAUSTED,
-                    name,
-                    trace_id,
-                    duration_ms=(time.monotonic() - t0) * 1000,
-                    status="exhausted",
-                    error=exc,
-                ),
-            )
+            _emit(metrics, _exhausted_event(name, trace_id, t0, exc))
             raise
         finally:
             _uninstall_identity(identity_token)

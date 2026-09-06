@@ -68,8 +68,8 @@ class _PendingDispatch:
     """Encapsulates a single inline dispatch ready to run after UoW commit.
 
     Avoids nested function definitions (closures) by capturing all context
-    as explicit dataclass fields.  The ``run`` method is registered in the
-    pending queue and called by :func:`~loom.core.job.context.flush_pending_dispatches`.
+    as explicit dataclass fields.  The ``run`` method is enqueued on the
+    post-commit channel and called when the executor drains it.
     """
 
     job_type: type[Job[Any]]
@@ -210,8 +210,10 @@ class InlineJobService:
 
     Satisfies the :class:`JobService` protocol structurally.  The
     ``dispatch()`` method respects the post-commit semantics: the job is
-    added to the pending queue and executed when the queue is flushed
-    (after UoW commit, or immediately in contexts without a UoW).
+    enqueued on the execution's post-commit channel and runs when the
+    executor drains it, after the UoW has closed (or at the end of an
+    execution without one).  Outside an execution the fallback channel
+    holds it until :func:`~loom.core.job.context.flush_pending_dispatches`.
 
     Args:
         factory: Used to build Job and callback instances from the container.
@@ -221,7 +223,7 @@ class InlineJobService:
 
         service = InlineJobService(factory, executor)
         handle = service.dispatch(SendEmailJob, payload={"email": "a@b.com"})
-        await flush_pending_dispatches()
+        await flush_pending_dispatches()  # outside an execution only
         result = handle.wait()
     """
 

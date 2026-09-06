@@ -12,6 +12,8 @@ can wrap UseCases uniformly regardless of backend.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from loom.core.uow.abc import UnitOfWork
 
 
@@ -22,6 +24,8 @@ class DynamoUnitOfWork:
     every backend the same way, but performs no work — DynamoDB commits each
     item write on its own.
     """
+
+    transactional: ClassVar[bool] = False
 
     async def begin(self) -> None:
         """No-op: DynamoDB opens no shared transaction."""

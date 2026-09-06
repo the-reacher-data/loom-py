@@ -11,6 +11,8 @@ persistence technology.
 Usage::
 
     class SQLAlchemyUoW:
+        transactional: ClassVar[bool] = True
+
         async def begin(self) -> None: ...
         async def commit(self) -> None: ...
         async def rollback(self) -> None: ...
@@ -23,7 +25,7 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import ClassVar, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -35,14 +37,23 @@ class UnitOfWork(Protocol):
     manager interface delegates to :meth:`begin` / :meth:`commit` /
     :meth:`rollback` automatically.
 
-    :class:`~loom.core.engine.executor.RuntimeExecutor` uses this protocol
-    to wrap each UseCase execution in a single, atomic transaction.
+    :class:`~loom.core.engine.executor.RuntimeExecutor` drives the unit of
+    work through :meth:`__aenter__` / :meth:`__aexit__` only; the explicit
+    methods stay for adapters and hand-driven use.
 
     Example::
 
         async with uow:
             repo.save(entity)
         # commit was called on exit
+    """
+
+    transactional: ClassVar[bool]
+    """Whether ``commit`` and ``rollback`` are real.
+
+    ``True`` when writes made inside the unit of work become visible only
+    at ``commit`` and are discarded by ``rollback``; ``False`` for adapters
+    whose writes autocommit (no-op units of work).
     """
 
     async def begin(self) -> None:
@@ -86,7 +97,10 @@ class UnitOfWork(Protocol):
         """Exit the context manager.
 
         Calls :meth:`commit` when no exception occurred, otherwise calls
-        :meth:`rollback`.  Always closes the underlying session.
+        :meth:`rollback`.  Always closes the underlying session, also when
+        ``commit`` raises and when the exception is a cancellation: the
+        adapter shields its driver I/O so rollback and close complete, and
+        resets its ``ContextVar`` tokens in the caller's context.
         """
         ...
 

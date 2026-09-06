@@ -38,6 +38,13 @@ class RuntimeEvent:
         duration_ms: Wall-clock duration in milliseconds, or ``None``.
         status: Outcome label (e.g. ``"success"``, ``"failure"``), or ``None``.
         error: Exception instance if the event represents a failure, or ``None``.
+        trace_id: Trace the execution ran under, or ``None``.
+        error_kind: Phase that failed on ``EXEC_ERROR`` (``"begin"``,
+            ``"business"``, ``"commit"``, ``"cancelled"``), or ``None``.
+        pipeline_ms: Time spent in the use-case pipeline, or ``None`` when
+            the pipeline did not start.
+        commit_ms: Time spent closing the unit of work, or ``None`` when no
+            commit was attempted.
 
     Example::
 
@@ -56,3 +63,6 @@ class RuntimeEvent:
     status: str | None = None
     error: BaseException | None = None
     trace_id: str | None = None
+    error_kind: str | None = None
+    pipeline_ms: float | None = None
+    commit_ms: float | None = None

@@ -82,25 +82,29 @@ async def test_uow_factory_creates_uow_per_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uow_begin_called_on_execution() -> None:
+async def test_uow_entered_through_the_context_manager_protocol() -> None:
+    """FR-001: the executor never calls ``begin`` itself."""
     factory, uow = _make_uow_factory()
     compiler = _compiler(_SimpleUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     await executor.execute(_SimpleUC())
 
-    uow.begin.assert_awaited_once()
+    uow.__aenter__.assert_awaited_once()
+    uow.begin.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_uow_commit_called_on_success() -> None:
+async def test_uow_exited_cleanly_on_success() -> None:
+    """FR-001: a clean ``__aexit__`` is the commit; the executor calls no method."""
     factory, uow = _make_uow_factory()
     compiler = _compiler(_SimpleUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     await executor.execute(_SimpleUC())
 
-    uow.commit.assert_awaited_once()
+    uow.__aexit__.assert_awaited_once_with(None, None, None)
+    uow.commit.assert_not_awaited()
     uow.rollback.assert_not_awaited()
 
 
@@ -110,17 +114,22 @@ async def test_uow_commit_called_on_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_uow_rollback_called_on_failure() -> None:
+async def test_uow_exited_with_the_error_on_failure() -> None:
+    """FR-001: the failure reaches ``__aexit__``; the adapter decides the rollback."""
     factory, uow = _make_uow_factory()
     compiler = _compiler(_FailingUC)
     executor = RuntimeExecutor(compiler, uow_factory=factory)
 
     failing_uc = _FailingUC()
-    with pytest.raises(RuntimeError, match="intentional"):
+    with pytest.raises(RuntimeError, match="intentional") as info:
         await executor.execute(failing_uc)
 
-    uow.rollback.assert_awaited_once()
+    uow.__aexit__.assert_awaited_once()
+    exc_type, exc_val, _ = uow.__aexit__.await_args.args
+    assert exc_type is RuntimeError
+    assert exc_val is info.value
     uow.commit.assert_not_awaited()
+    uow.rollback.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

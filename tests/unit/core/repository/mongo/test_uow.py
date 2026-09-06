@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, cast
 
@@ -166,6 +167,57 @@ class TestTransactional:
 
         assert active_session() is None
         assert "UoWCloseFailed" in caplog.text
+
+    async def test_commit_failure_ends_the_session_without_a_second_abort(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """US1 s2: pymongo marks the transaction itself; no ``InvalidOperation`` follows."""
+        client = FakeMongoClient()
+        client.commit_error = ConnectionError("commit lost")
+
+        with (
+            caplog.at_level(logging.ERROR, logger=uow_module.__name__),
+            pytest.raises(ConnectionError, match="commit lost"),
+        ):
+            async with _transactional(client).create():
+                pass
+
+        assert client.aborted == 0
+        assert client.sessions[0].ended is True
+        assert active_session() is None
+        assert "UoWRollbackFailed" not in caplog.text
+        assert "InvalidOperation" not in caplog.text
+
+    async def test_second_cancellation_during_abort_still_aborts_and_ends(self) -> None:
+        """The abort and ``end_session`` are shielded; the token is reset at once."""
+        client = FakeMongoClient()
+        client.abort_gate = asyncio.Event()
+        uow = _transactional(client).create()
+
+        observed: list[bool] = []
+
+        async def run() -> None:
+            try:
+                async with uow:
+                    await asyncio.Event().wait()
+            finally:
+                observed.append(active_session() is None)  # the task's own context
+
+        task = asyncio.create_task(run())
+        await asyncio.sleep(0)
+        task.cancel()  # cuts the body: the abort starts and blocks on the gate
+        await asyncio.sleep(0)
+        task.cancel()  # arrives while the abort is in flight
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert observed == [True]
+        assert client.aborted == 0
+
+        client.abort_gate.set()
+        await asyncio.sleep(0.01)
+
+        assert client.aborted == 1
+        assert client.sessions[0].ended is True
 
     async def test_begin_twice_is_refused(self) -> None:
         client = FakeMongoClient()

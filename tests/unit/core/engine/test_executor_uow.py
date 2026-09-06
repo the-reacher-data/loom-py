@@ -1,20 +1,29 @@
 """Tests for RuntimeExecutor UoW lifecycle and pending-dispatch wiring.
 
 Verifies that:
-- flush_pending_dispatches() is called after a successful commit.
-- clear_pending_dispatches() is called after a rollback.
-- Dispatches registered during a failed execution are never flushed.
-- Nested executions (reusing an existing UoW) do NOT trigger flush/clear.
+- dispatches queued during an execution run after the UoW closed (commit).
+- dispatches queued during a failed execution are discarded, never run.
+- nested executions (reusing an existing UoW) enqueue on the outer channel
+  and never drain on their own.
+- without a UoW the dispatches run at the end of the execution.
 - read_only=True (call-site) skips UoW entirely.
 - UseCase.read_only = True (class-level) also skips UoW via plan.
-- CompiledRoute.read_only propagates to the executor handler (GET routes).
+
+FR-015: the pins on ``flush_pending_dispatches`` / ``clear_pending_dispatches``
+being called by the executor were replaced by observed dispatches, since the
+executor now drains its own post-commit channel and no longer imports the
+job context helpers.  The executor-level double-cancellation test was removed:
+the cancellation shield moved into the adapters (lead decision 11), and the
+behaviour is pinned by
+``tests/unit/core/uow/test_sqlalchemy_uow.py::test_second_cancellation_during_rollback_still_rolls_back_and_closes``
+and
+``tests/unit/core/repository/mongo/test_uow.py::TestTransactional::test_second_cancellation_during_abort_still_aborts_and_ends``.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, patch
+from typing import Any, ClassVar
 
 import pytest
 
@@ -32,10 +41,13 @@ from loom.core.use_case.use_case import UseCase
 class _StubUoW:
     """Fake UnitOfWork that records begin/commit/rollback calls."""
 
+    transactional: ClassVar[bool] = True
+
     def __init__(self) -> None:
         self.begun = False
         self.committed = False
         self.rolled_back = False
+        self.closed = 0
 
     async def begin(self) -> None:
         await asyncio.sleep(0)
@@ -53,11 +65,19 @@ class _StubUoW:
         await self.begin()
         return self
 
-    async def __aexit__(self, *args: object) -> None:
-        if args[0] is None:
-            await self.commit()
-        else:
-            await self.rollback()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        try:
+            if exc_type is None:
+                await self.commit()
+            else:
+                await self.rollback()
+        finally:
+            self.closed += 1
 
 
 class _StubUoWFactory:
@@ -65,7 +85,7 @@ class _StubUoWFactory:
         self._uow = uow
 
     def create(self) -> UnitOfWork:
-        return self._uow  # type: ignore[return-value]
+        return self._uow
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +110,18 @@ class _CancellingUseCase(UseCase[Any, str]):
         raise asyncio.CancelledError
 
 
+class _Dispatching(UseCase[Any, str]):
+    """Queues one dispatch that records whether the UoW had closed when it ran."""
+
+    def __init__(self, uow: _StubUoW, ran: list[str]) -> None:
+        self._uow = uow
+        self._ran = ran
+
+    async def execute(self) -> str:
+        add_pending_dispatch(lambda: self._ran.append(f"closed={self._uow.closed}"))
+        return "ok"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -107,21 +139,15 @@ def _make_executor(uow: _StubUoW) -> RuntimeExecutor:
 
 
 @pytest.mark.asyncio
-async def test_flush_called_after_successful_commit() -> None:
+async def test_dispatch_runs_after_the_uow_closed() -> None:
     uow = _StubUoW()
     executor = _make_executor(uow)
-    uc = _OkUseCase()
+    ran: list[str] = []
 
-    with (
-        patch(
-            "loom.core.engine.executor.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush,
-        patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
-    ):
-        await executor.execute(uc)
+    await executor.execute(_Dispatching(uow, ran))
 
-    mock_flush.assert_awaited_once()
-    mock_clear.assert_not_called()
+    assert ran == ["closed=1"]
+    assert uow.committed
 
 
 @pytest.mark.asyncio
@@ -134,30 +160,12 @@ async def test_begin_and_commit_called_on_success() -> None:
     assert uow.begun
     assert uow.committed
     assert not uow.rolled_back
+    assert uow.closed == 1
 
 
 # ---------------------------------------------------------------------------
 # Tests — failure path
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_clear_called_after_rollback() -> None:
-    uow = _StubUoW()
-    executor = _make_executor(uow)
-
-    use_case = _FailingUseCase()
-    with (
-        patch(
-            "loom.core.engine.executor.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush,
-        patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
-        pytest.raises(ValueError, match="boom"),
-    ):
-        await executor.execute(use_case)
-
-    mock_clear.assert_called_once()
-    mock_flush.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -172,6 +180,7 @@ async def test_rollback_called_on_failure() -> None:
     assert uow.begun
     assert uow.rolled_back
     assert not uow.committed
+    assert uow.closed == 1
 
 
 @pytest.mark.asyncio
@@ -181,49 +190,13 @@ async def test_hace_rollback_cuando_la_ejecucion_se_cancela() -> None:
     executor = _make_executor(uow)
     use_case = _CancellingUseCase()
 
-    with (
-        patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
-        pytest.raises(asyncio.CancelledError),
-    ):
+    with pytest.raises(asyncio.CancelledError):
         await executor.execute(use_case)
 
     assert uow.begun
     assert uow.rolled_back
     assert not uow.committed
-    mock_clear.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_completa_el_rollback_cuando_llega_una_segunda_cancelacion() -> None:
-    """A second cancel while rolling back must not cut the rollback short."""
-    release = asyncio.Event()
-    gate = asyncio.Event()
-
-    class _RollbackGatedUoW(_StubUoW):
-        async def rollback(self) -> None:
-            await release.wait()
-            self.rolled_back = True
-
-    class _WaitingUseCase(UseCase[Any, str]):
-        async def execute(self) -> str:
-            await gate.wait()
-            return "unreachable"
-
-    uow = _RollbackGatedUoW()
-    executor = _make_executor(uow)
-    run = asyncio.ensure_future(executor.execute(_WaitingUseCase()))
-    await asyncio.sleep(0)
-    run.cancel()  # cuts the use case: the rollback starts and blocks on ``release``
-    await asyncio.sleep(0)
-    run.cancel()  # arrives while the rollback is in flight
-    with pytest.raises(asyncio.CancelledError):
-        await run
-    assert not uow.rolled_back
-
-    release.set()
-    await asyncio.sleep(0)
-
-    assert uow.rolled_back
+    assert uow.closed == 1
 
 
 @pytest.mark.asyncio
@@ -241,8 +214,27 @@ async def test_dispatches_registered_during_failed_execution_are_cleared() -> No
     use_case = _DispatchAndFail()
     with pytest.raises(RuntimeError):
         await executor.execute(use_case)
+    await executor.execute(_OkUseCase())
 
-    assert flushed == [], "dispatch must not run after rollback"
+    assert flushed == [], "dispatch must not run after rollback, nor in a later execution"
+
+
+@pytest.mark.asyncio
+async def test_dispatches_registered_during_cancelled_execution_are_cleared() -> None:
+    uow = _StubUoW()
+    executor = _make_executor(uow)
+    flushed: list[str] = []
+
+    class _DispatchAndCancel(UseCase[Any, None]):
+        async def execute(self) -> None:  # type: ignore[override]
+            add_pending_dispatch(lambda: flushed.append("ran"))
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await executor.execute(_DispatchAndCancel())
+    await executor.execute(_OkUseCase())
+
+    assert flushed == []
 
 
 # ---------------------------------------------------------------------------
@@ -251,26 +243,21 @@ async def test_dispatches_registered_during_failed_execution_are_cleared() -> No
 
 
 @pytest.mark.asyncio
-async def test_no_flush_or_clear_without_uow_factory() -> None:
-    """When no uow_factory is configured, neither flush nor clear is called."""
+async def test_dispatch_runs_at_the_end_without_uow_factory() -> None:
+    """FR-003: without a UoW the dispatches run at the end of the execution."""
     compiler = UseCaseCompiler()
     executor = RuntimeExecutor(compiler)
+    ran: list[str] = []
 
-    with (
-        patch(
-            "loom.core.engine.executor.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush,
-        patch("loom.core.engine.executor.clear_pending_dispatches") as mock_clear,
-    ):
-        await executor.execute(_OkUseCase())
+    class _DispatchNoUoW(UseCase[Any, str]):
+        async def execute(self) -> str:
+            add_pending_dispatch(lambda: ran.append("ran"))
+            ran.append("executed")
+            return "ok"
 
-    mock_flush.assert_not_awaited()
-    mock_clear.assert_not_called()
+    await executor.execute(_DispatchNoUoW())
 
-
-# ---------------------------------------------------------------------------
-# Tests — nested execution reuses outer UoW
-# ---------------------------------------------------------------------------
+    assert ran == ["executed", "ran"]
 
 
 # ---------------------------------------------------------------------------
@@ -323,22 +310,26 @@ async def test_read_only_false_still_opens_uow() -> None:
     assert uow.committed
 
 
+# ---------------------------------------------------------------------------
+# Tests — nested execution reuses outer UoW
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_nested_execution_does_not_flush_independently() -> None:
-    """Nested executor.execute() calls share the outer UoW and do not flush."""
+    """Nested executor.execute() calls share the outer UoW and its channel."""
     uow = _StubUoW()
     executor = _make_executor(uow)
+    ran: list[str] = []
 
     class _Outer(UseCase[Any, str]):
         async def execute(self) -> str:
-            # Simulate inner call within the same async context
-            inner = _OkUseCase()
-            return await executor.execute(inner)
+            inner = await executor.execute(_Dispatching(uow, ran))
+            ran.append(f"inner-returned closed={uow.closed}")
+            return inner
 
-    with patch(
-        "loom.core.engine.executor.flush_pending_dispatches", new_callable=AsyncMock
-    ) as mock_flush:
-        await executor.execute(_Outer())
+    await executor.execute(_Outer())
 
-    # flush is called exactly once (for the outer UoW owner, not the inner)
-    mock_flush.assert_awaited_once()
+    # The inner dispatch ran once, after the outer UoW closed, not when the inner returned.
+    assert ran == ["inner-returned closed=0", "closed=1"]
+    assert uow.closed == 1

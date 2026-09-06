@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Se
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any
+from typing import Any, ClassVar
 
 import msgspec
 import pytest
@@ -367,6 +367,8 @@ class FakeUow:
     Args:
         log: Shared sequence receiving ``begin``/``commit``/``rollback``.
     """
+
+    transactional: ClassVar[bool] = True
 
     def __init__(self, log: list[str]) -> None:
         self._log = log

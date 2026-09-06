@@ -22,9 +22,10 @@ entry-point load into a ``ConfigError`` naming the extra.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.client_session import AsyncClientSession
@@ -54,6 +55,8 @@ class NoOpMongoUnitOfWork:
     Leaves :func:`active_session` untouched, so one nested inside a
     :class:`MongoUnitOfWork` neither hides nor releases that session.
     """
+
+    transactional: ClassVar[bool] = False
 
     async def begin(self) -> None:
         """No-op: no session is opened."""
@@ -92,6 +95,8 @@ class MongoUnitOfWork:
             await repo.create(entity)
         # committed
     """
+
+    transactional: ClassVar[bool] = True
 
     def __init__(self, client: AsyncMongoClient[Any]) -> None:
         self._client = client
@@ -148,37 +153,54 @@ class MongoUnitOfWork:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        """Commit on clean exit, roll back on exception, always close."""
+        """Commit on clean exit, abort on exception, always end the session.
+
+        A failed ``commit`` ends the session without a second abort: pymongo
+        marks the transaction committed-or-aborted itself.  The driver I/O of
+        abort and ``end_session`` runs under ``asyncio.shield`` so a
+        cancellation arriving meanwhile lets it finish; the ``ContextVar``
+        token is reset here, in the caller's context.
+        """
         try:
             if exc_type is None:
-                await self.commit()
+                await self._commit_then_close()
             else:
-                await self._rollback_logging_failure()
+                await asyncio.shield(self._abort_then_close())
         finally:
-            await self._close()
+            self._reset_context()
 
-    async def _rollback_logging_failure(self) -> None:
+    async def _commit_then_close(self) -> None:
+        try:
+            await self.commit()
+        finally:
+            await asyncio.shield(self._end_session())
+
+    async def _abort_then_close(self) -> None:
         try:
             await self.rollback()
         except Exception:
             _log.exception("UoWRollbackFailed")
+        finally:
+            await self._end_session()
 
-    async def _close(self) -> None:
-        """End the session and unpublish it.
+    async def _end_session(self) -> None:
+        """End the session; the unit of work holds none afterwards.
 
         A failure while ending is logged, not raised: it would otherwise
         replace the exception the use case is already propagating.
         """
         session, self._session = self._session, None
+        if session is None:
+            return
         try:
-            if session is not None:
-                await session.end_session()
+            await session.end_session()
         except Exception:
             _log.exception("UoWCloseFailed")
-        finally:
-            if self._token is not None:
-                _active_session.reset(self._token)
-                self._token = None
+
+    def _reset_context(self) -> None:
+        if self._token is not None:
+            _active_session.reset(self._token)
+            self._token = None
 
     def _require_session(self, operation: str) -> AsyncClientSession:
         if self._session is None:

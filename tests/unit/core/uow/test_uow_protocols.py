@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,6 +16,8 @@ from loom.core.uow.abc import UnitOfWork, UnitOfWorkFactory
 
 class FakeUoW:
     """Minimal UnitOfWork implementation for protocol verification."""
+
+    transactional: ClassVar[bool] = True
 
     async def begin(self) -> None: ...
     async def commit(self) -> None: ...
@@ -54,6 +56,7 @@ def test_mock_uow_satisfies_protocol() -> None:
     mock.rollback = AsyncMock()
     mock.__aenter__ = AsyncMock(return_value=mock)
     mock.__aexit__ = AsyncMock(return_value=None)
+    mock.transactional = True
     assert isinstance(mock, UnitOfWork)
 
 
@@ -86,6 +89,8 @@ async def test_uow_context_manager_commit_on_success() -> None:
     rolled_back = False
 
     class TrackingUoW:
+        transactional: ClassVar[bool] = True
+
         async def begin(self) -> None: ...
 
         async def commit(self) -> None:
@@ -118,6 +123,8 @@ async def test_uow_context_manager_rollback_on_exception() -> None:
     rolled_back = False
 
     class TrackingUoW:
+        transactional: ClassVar[bool] = True
+
         async def begin(self) -> None: ...
         async def commit(self) -> None: ...
 

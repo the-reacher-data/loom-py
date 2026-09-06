@@ -25,6 +25,7 @@ from loom.celery.runner import (
     _uninstall_trace,
 )
 from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.engine.post_commit import PostCommitError
 from loom.core.job.job import Job
 from loom.core.observability.event import Scope
 from tests.helpers.spans import build_recorder, hex_trace
@@ -152,35 +153,25 @@ class TestRunJob:
         result = await _run_job(instance, payload={}, params=None, executor=executor)
         assert result == "done"
 
-    async def test_flushes_pending_dispatches_on_success(self) -> None:
+    async def test_leaves_the_lifecycle_to_the_executor(self) -> None:
+        """FR-003: the executor drains the dispatches; the runner adds no flush."""
         instance = MagicMock()
         executor = MagicMock()
         executor.execute = AsyncMock(return_value=None)
-        with patch(
-            "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush:
-            await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_flush.assert_awaited_once()
 
-    async def test_clears_pending_dispatches_on_failure(self) -> None:
-        instance = MagicMock()
-        executor = MagicMock()
-        executor.execute = AsyncMock(side_effect=ValueError("boom"))
-        with patch("loom.celery.runner.clear_pending_dispatches") as mock_clear:
-            with pytest.raises(ValueError):
-                await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_clear.assert_called_once()
+        await _run_job(instance, payload={"k": 1}, params={"p": 2}, executor=executor)
 
-    async def test_does_not_flush_on_failure(self) -> None:
+        executor.execute.assert_awaited_once_with(
+            instance, params={"p": 2}, payload={"k": 1}, identity=None
+        )
+
+    async def test_propagates_the_executor_failure(self) -> None:
         instance = MagicMock()
         executor = MagicMock()
         executor.execute = AsyncMock(side_effect=RuntimeError("fail"))
-        with patch(
-            "loom.celery.runner.flush_pending_dispatches", new_callable=AsyncMock
-        ) as mock_flush:
-            with pytest.raises(RuntimeError):
-                await _run_job(instance, payload={}, params=None, executor=executor)
-            mock_flush.assert_not_awaited()
+
+        with pytest.raises(RuntimeError, match="fail"):
+            await _run_job(instance, payload={}, params=None, executor=executor)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +343,26 @@ class TestMakeJobTaskRetry:
         with pytest.raises(RetryError):
             raw_fn(mock_self, payload={"value": 1})
         mock_self.retry.assert_called_once()
+
+    def test_post_commit_error_is_not_retried(self) -> None:
+        """US1 s3: the transaction committed, so a retry would run the job twice."""
+        instance = MagicMock()
+        factory = _mock_factory(instance)
+        metrics = MagicMock()
+        mock_self = _mock_self(retries=0, max_retries=2)
+        error = PostCommitError(committed=True, failures=(ConnectionError("broker down"),))
+
+        runtime = _mock_runtime(error=error)
+        task_fn = _make_job_task(
+            _mock_celery_app(), _SyncJob, factory, MagicMock(), runtime, metrics
+        )
+        with pytest.raises(PostCommitError):
+            task_fn(mock_self, payload={"value": 1})
+
+        mock_self.retry.assert_not_called()
+        kinds = [c.args[0].kind for c in metrics.on_event.call_args_list]
+        assert EventKind.JOB_RETRYING not in kinds
+        assert EventKind.JOB_EXHAUSTED in kinds
 
     def test_retry_countdown_uses_exponential_backoff(self) -> None:
         instance = MagicMock()
