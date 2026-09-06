@@ -173,6 +173,12 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+# A prerelease published to TestPyPI cannot carry a local version label, and the
+# default scheme appends the commit as one. Without this, every dev build is
+# rejected by the index as an invalid version.
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+
 [dependency-groups]
 # Isolated on purpose: fastmcp pulls a large transitive tree that only the MCP
 # tests need, so the cost is paid by whoever asks for it — `uv sync --group

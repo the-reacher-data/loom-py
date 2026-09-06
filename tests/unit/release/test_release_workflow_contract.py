@@ -110,3 +110,22 @@ class TestPublish:
         _, step = _step_named("publish", "Validate the released commit on master")
         assert "ci-main.yml" in cast(str, step["run"])
         assert step["continue-on-error"] is True
+
+
+class TestNoLegacyIndexTokens:
+    """Neither index is published to with a long-lived token any more."""
+
+    def test_no_workflow_reads_a_pypi_token(self) -> None:
+        workflows = (WORKFLOW_PATH.parent).glob("*.yml")
+        for workflow in workflows:
+            body = workflow.read_text(encoding="utf-8")
+            assert "PYPI_API_TOKEN" not in body, workflow.name
+
+    def test_the_prerelease_publish_declares_an_oidc_identity(self) -> None:
+        ci_pr = yaml.safe_load((WORKFLOW_PATH.parent / "ci-pr.yml").read_text(encoding="utf-8"))
+        assert ci_pr["permissions"]["id-token"] == "write"
+
+    def test_the_version_is_never_rewritten_before_a_build(self) -> None:
+        for workflow in (WORKFLOW_PATH.parent).glob("*.yml"):
+            body = workflow.read_text(encoding="utf-8")
+            assert 'sed -i "0,/^version = ' not in body, workflow.name
