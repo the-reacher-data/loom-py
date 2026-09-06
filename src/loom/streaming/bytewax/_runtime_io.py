@@ -6,12 +6,12 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from time import time_ns
+from time import monotonic, sleep, time_ns
 from typing import Any, Generic, TypeAlias, TypeVar, cast
 
 from bytewax.inputs import FixedPartitionedSource, StatefulSourcePartition
 from bytewax.outputs import DynamicSink, StatelessSinkPartition
-from confluent_kafka import OFFSET_BEGINNING, OFFSET_END
+from confluent_kafka import OFFSET_BEGINNING, OFFSET_END, KafkaError
 from confluent_kafka.admin import AdminClient
 
 from loom.core.observability.event import Scope, TerminalReason
@@ -154,6 +154,13 @@ def _commit_runtime_items(
 
 _COMMITTED_FETCH_TIMEOUT_MS = 10_000
 _METADATA_FETCH_TIMEOUT_S = 10.0
+# Cluster metadata converges a moment after a topic is created or a leader is
+# elected, so a source that starts in that window retries instead of dying.
+_METADATA_VISIBILITY_TIMEOUT_S = 15.0
+_METADATA_RETRY_INTERVAL_S = 0.25
+_RETRIABLE_METADATA_CODES = frozenset(
+    {KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError.LEADER_NOT_AVAILABLE}
+)
 _DEFAULT_POLL_TIMEOUT_MS = 100
 _ADMIN_KEY_PREFIXES = ("security.", "sasl.", "ssl.", "enable.ssl.")
 
@@ -237,13 +244,46 @@ class KafkaPartitionedSource(FixedPartitionedSource[KafkaRecord[bytes], "int | N
         admin = AdminClient(_admin_config(self._source))
         parts: list[str] = []
         for topic in self._source.topics:
-            metadata = admin.list_topics(topic, timeout=_METADATA_FETCH_TIMEOUT_S)
-            topic_meta = metadata.topics.get(topic)
-            if topic_meta is None or topic_meta.error is not None:
-                reason = topic_meta.error if topic_meta is not None else "topic not found"
-                raise KafkaPollError(f"cannot list partitions for topic '{topic}': {reason}")
+            topic_meta = self._await_topic_metadata(admin, topic)
             parts.extend(f"{topic}:{index}" for index in sorted(topic_meta.partitions))
         return parts
+
+    def _await_topic_metadata(self, admin: AdminClient, topic: str) -> Any:
+        """Return a topic's metadata once the cluster reports it without error.
+
+        A topic that is absent or has no leader yet is fetched again until the
+        visibility timeout expires. Broker metadata converges after a topic is
+        created, after a leader election and after a restart, so one fetch can
+        answer a question the cluster has not settled yet. Any other error is
+        raised immediately, because no amount of waiting resolves it.
+        """
+        deadline = monotonic() + _METADATA_VISIBILITY_TIMEOUT_S
+        warned = False
+        while True:
+            metadata = admin.list_topics(topic, timeout=_METADATA_FETCH_TIMEOUT_S)
+            topic_meta = metadata.topics.get(topic)
+            if topic_meta is not None and topic_meta.error is None:
+                return topic_meta
+
+            error = topic_meta.error if topic_meta is not None else None
+            reason = error if error is not None else "topic not found"
+            if error is not None and error.code() not in _RETRIABLE_METADATA_CODES:
+                raise KafkaPollError(f"cannot list partitions for topic '{topic}': {reason}")
+            if monotonic() >= deadline:
+                raise KafkaPollError(
+                    f"cannot list partitions for topic '{topic}' after "
+                    f"{_METADATA_VISIBILITY_TIMEOUT_S:g}s: {reason}"
+                )
+            if not warned:
+                logger.warning(
+                    "kafka topic '%s' is not visible in cluster metadata yet: %s; "
+                    "retrying until %gs elapse",
+                    topic,
+                    reason,
+                    _METADATA_VISIBILITY_TIMEOUT_S,
+                )
+                warned = True
+            sleep(_METADATA_RETRY_INTERVAL_S)
 
     def build_part(
         self,
