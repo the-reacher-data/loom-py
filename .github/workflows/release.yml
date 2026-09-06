@@ -75,34 +75,6 @@ jobs:
             exit 1
           fi
 
-      # A release ships every commit accumulated since the last tag, so that
-      # range is what the notes describe.
-      - name: Generate release changelog
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          last_tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD --sort=-v:refname | head -1)
-          if [ -n "${last_tag}" ]; then
-            range="${last_tag}..HEAD"
-            since="Changes since ${last_tag}:"
-          else
-            range="HEAD"
-            since="Changes:"
-          fi
-          entries=$(git log --no-merges --pretty='- %s' "${range}")
-          if [ -z "${entries}" ]; then
-            echo "Nothing to release: no commits since ${last_tag:-the start of history}."
-            exit 1
-          fi
-          {
-            printf '# 🚀 Release %s\n\n' "${VERSION}"
-            printf '%s\n\n' "${since}"
-            printf '%s\n' "${entries}"
-          } > CHANGELOG_RELEASE.md
-
       - name: Restore action side effects
         if: ${{ steps.version.outputs.deploy == 'true' }}
         shell: bash
@@ -142,6 +114,17 @@ jobs:
           set -euo pipefail
           echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-release" >> "$GITHUB_ENV"
 
+      - name: Generate release changelog
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/build_release_notes.py \
+            --version "${VERSION}" \
+            --output CHANGELOG_RELEASE.md
+
       - name: Inspect release PR state
         id: pr-state
         if: ${{ steps.version.outputs.deploy == 'true' }}
@@ -152,48 +135,27 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="docs/release-v${VERSION}"
-          PRS=$(gh pr list --head "${BRANCH}" --state all --json number,state)
-          open_count=$(jq '[.[] | select(.state == "OPEN")] | length' <<< "${PRS}")
-          merged_count=$(jq '[.[] | select(.state == "MERGED")] | length' <<< "${PRS}")
-          BRANCH_REF="refs/heads/${BRANCH}"
-          BRANCHES=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/${BRANCH}")
-          branch_count=$(jq --arg ref "${BRANCH_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${BRANCHES}")
-
-          if [ "${open_count}" -gt 1 ] || [ "${merged_count}" -gt 1 ]; then
-            echo "Multiple open or merged release PRs exist for ${BRANCH}."
-            exit 1
-          fi
-
-          # A release PR whose base is no longer master's tip can never be
-          # released: the checkout guard compares the two and refuses. Nothing
-          # ages out of that state, so every later run of this workflow dies on
-          # the same PR. Discard it and regenerate the bump from the tip; its
-          # only content is the version, the changelog and the lockfile, and the
-          # changelog is rebuilt from the same commit range.
-          if [ "${open_count}" -eq 1 ]; then
-            base_sha=$(gh api "repos/${GITHUB_REPOSITORY}/compare/master...${BRANCH}" --jq '.merge_base_commit.sha')
-            master_sha=$(gh api "repos/${GITHUB_REPOSITORY}/commits/master" --jq '.sha')
-            if [ "${base_sha}" != "${master_sha}" ]; then
-              echo "Release PR for ${BRANCH} sits on ${base_sha}, master is ${master_sha}: rebuilding it."
+          decision=$(python scripts/release/decide_release_pr.py \
+            --release-branch "${BRANCH}" \
+            --repository-slug "${GITHUB_REPOSITORY}")
+          echo "Release PR decision for ${BRANCH}: ${decision}"
+          case "${decision}" in
+            recycle)
               gh pr close "${BRANCH}" --delete-branch --comment \
                 "Superseded: master advanced past this base, so the bump is regenerated from the current tip."
               echo "create=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "create=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Only a merged PR means the bump already reached master; a closed one
-          # was discarded above and its version has to be built again.
-          if [ "${merged_count}" -gt 0 ]; then
-            echo "create=false" >> "$GITHUB_OUTPUT"
-          elif [ "${branch_count}" -gt 0 ]; then
-            echo "Release branch ${BRANCH} exists without an open or merged release PR."
-            exit 1
-          else
-            echo "create=true" >> "$GITHUB_OUTPUT"
-          fi
+              ;;
+            create)
+              echo "create=true" >> "$GITHUB_OUTPUT"
+              ;;
+            reuse)
+              echo "create=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown release PR decision: ${decision}"
+              exit 1
+              ;;
+          esac
 
       - name: Generate version bump commit
         if: ${{ steps.version.outputs.deploy == 'true' && steps.pr-state.outputs.create == 'true' }}

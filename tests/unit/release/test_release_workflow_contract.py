@@ -230,7 +230,7 @@ def test_release_tooling_versions_are_pinned() -> None:
     assert 'pip install --only-binary :all: --force-reinstall "uv==0.10.2"' in workflow_text
     assert 'pip install --only-binary :all: "uv==0.10.2"' in workflow_text
     assert workflow_text.index("Generate release changelog") < workflow_text.index(
-        "Install pinned uv after release actions"
+        "Generate version bump commit"
     )
     assert '--with "build==1.3.0"' in workflow_text
     assert "pip install uv\n" not in workflow_text
@@ -295,32 +295,30 @@ def test_release_checkout_delegates_the_base_comparison_to_the_helper() -> None:
     assert "--expected-base-sha" not in helper_script
 
 
-def test_release_notes_cover_every_commit_since_the_last_reachable_tag() -> None:
+def test_release_notes_are_built_by_the_unit_tested_script() -> None:
     changelog_script = _step_run("Generate release changelog")
 
-    assert "git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged HEAD" in changelog_script
-    assert 'range="${last_tag}..HEAD"' in changelog_script
-    assert "git log --no-merges" in changelog_script
-    assert "Nothing to release" in changelog_script
+    assert "python scripts/release/build_release_notes.py" in changelog_script
+    assert "--output CHANGELOG_RELEASE.md" in changelog_script
+    assert "git log" not in changelog_script
 
 
-def test_stale_release_pr_is_recycled_from_the_merge_base() -> None:
+def test_release_pr_decision_is_taken_by_the_unit_tested_script() -> None:
     pr_state_script = _step_run("Inspect release PR state")
 
-    assert "merge_base_commit.sha" in pr_state_script
-    assert '"${base_sha}" != "${master_sha}"' in pr_state_script
+    assert "python scripts/release/decide_release_pr.py" in pr_state_script
+    assert "gh pr list" not in pr_state_script
+    assert "merge_base_commit" not in pr_state_script
+
+
+def test_every_release_pr_decision_has_exactly_one_outcome() -> None:
+    pr_state_script = _step_run("Inspect release PR state")
+    outcomes = {
+        outcome: pr_state_script.count(outcome)
+        for outcome in ('echo "create=true"', 'echo "create=false"')
+    }
+
+    assert outcomes == {'echo "create=true"': 2, 'echo "create=false"': 1}
     assert "gh pr close" in pr_state_script
     assert "--delete-branch" in pr_state_script
-
-
-def test_only_a_merged_bump_stops_the_release_from_building_a_new_one() -> None:
-    pr_state_script = _step_run("Inspect release PR state")
-    lines = pr_state_script.splitlines()
-    merged_guard_index = _line_index(
-        lines,
-        lambda line: line.strip() == 'if [ "${merged_count}" -gt 0 ]; then',
-        "merged release PR guard",
-    )
-
-    assert "create=false" in lines[merged_guard_index + 1]
-    assert "closed_count" not in pr_state_script
+    assert "Unknown release PR decision" in pr_state_script
