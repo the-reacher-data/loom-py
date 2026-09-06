@@ -455,7 +455,7 @@ class RepositoryMongo(
         return document.get(field)
 
     def _key(self, obj_id: object) -> MongoFilter:
-        return {_ID: {"$eq": self._ids.to_storage(obj_id)}}
+        return {_ID: {"$eq": self._compiler.storage_value(self._id_attr, obj_id)}}
 
     def _equals(self, field: str, value: Any) -> MongoFilter:
         return self._compiler.compile_filter(
