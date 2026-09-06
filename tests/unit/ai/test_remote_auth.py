@@ -399,6 +399,76 @@ class TestResolucionCompartidaPorServidor:
         assert is_strategy_registered("") is False
 
 
+class TestFallosDeResolucionDeLaEstrategia:
+    """Every resolution failure reaches the deployment as a coded issue.
+
+    The loader is faked here, unlike the rest of this module: two distributions
+    claiming one strategy name cannot be installed side by side in the test
+    environment, and the strategy that is missing at start-up was, by
+    definition, present at decode.
+    """
+
+    @staticmethod
+    def _install(monkeypatch: pytest.MonkeyPatch, dist_names: tuple[str, ...]) -> None:
+        """Register ``kind='agent-session'`` once per name in ``dist_names``."""
+
+        class _Dist:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        class _EntryPoint:
+            group = "loom.ai.remote_auth"
+
+            def __init__(self, dist_name: str) -> None:
+                self.name = "agent-session"
+                self.dist = _Dist(dist_name)
+
+            def load(self) -> Any:
+                return lambda request: request
+
+        class _EntryPoints:
+            def select(self, *, group: str) -> tuple[_EntryPoint, ...]:
+                if group != "loom.ai.remote_auth":
+                    return ()
+                return tuple(_EntryPoint(name) for name in dist_names)
+
+        from loom.core.plugins import entrypoints as entrypoints_module
+
+        monkeypatch.setattr(entrypoints_module, "entry_points", _EntryPoints)
+
+    def test_falla_con_auth_strategy_invalid_cuando_dos_distribuciones_la_registran(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
+
+    def test_el_mensaje_nombra_ambas_distribuciones_cuando_hay_duplicado(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._install(monkeypatch, ("loom-auth-alpha", "loom-auth-beta"))
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+
+        message = str(excinfo.value)
+        assert "loom-auth-alpha" in message and "loom-auth-beta" in message
+
+    def test_falla_con_auth_strategy_invalid_cuando_ya_no_esta_registrada(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A distribution uninstalled between decode and start-up is named, not crashed on."""
+        self._install(monkeypatch, ())
+
+        with pytest.raises(AgentCompilationError) as excinfo:
+            shared_mcp_auth("orders", CompiledRemoteAuth(kind="agent-session", settings=()))
+
+        assert _codes(excinfo.value) == [AgentErrorCode.MCP_AUTH_STRATEGY_INVALID]
+
+
 class TestConfiguracionDelBloqueAuthDeUnAgenteRemoto:
     """``ai.a2a_agents.<name>.auth`` is held to exactly the MCP rules."""
 

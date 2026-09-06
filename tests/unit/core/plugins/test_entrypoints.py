@@ -18,6 +18,7 @@ from loom.core.plugins.entrypoints import (
     DuplicateEntryPointError,
     EntryPointError,
     EntryPointNotFoundError,
+    check_api_version,
     load_entry_point,
     select_entry_point,
 )
@@ -399,3 +400,144 @@ class TestErrorHierarchy:
 
         with pytest.raises((AttributeError, TypeError)):
             requirement.attribute = "OTHER"  # type: ignore[misc]
+
+
+class TestNotFoundErrorReporting:
+    """A host must be able to name what is installed without re-scanning."""
+
+    def test_not_found_error_carries_group_and_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(monkeypatch, ())
+
+        with pytest.raises(EntryPointNotFoundError) as excinfo:
+            load_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert (excinfo.value.group, excinfo.value.name) == (_GROUP, _NAME)
+
+    def test_not_found_error_carries_the_registered_names_sorted_and_deduplicated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(
+            monkeypatch,
+            (
+                _FakeEntryPoint("zeta-engine", "loom-engine-zeta", _Engine("zeta")),
+                _FakeEntryPoint("alpha-engine", "loom-engine-alpha", _Engine("alpha")),
+                _FakeEntryPoint("alpha-engine", "loom-engine-beta", _Engine("beta")),
+            ),
+        )
+
+        with pytest.raises(EntryPointNotFoundError) as excinfo:
+            load_entry_point(_GROUP, _NAME, on_duplicate="warn_first")
+
+        assert excinfo.value.available == ("alpha-engine", "zeta-engine")
+
+    def test_not_found_error_carries_an_empty_tuple_when_nothing_is_registered(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(monkeypatch, ())
+
+        with pytest.raises(EntryPointNotFoundError) as excinfo:
+            load_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert excinfo.value.available == ()
+
+    def test_not_found_message_names_the_registered_names(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(monkeypatch, (_FakeEntryPoint("other-engine", "loom-engine-beta", _Engine("b")),))
+
+        with pytest.raises(EntryPointNotFoundError) as excinfo:
+            load_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert "other-engine" in str(excinfo.value)
+
+
+class TestDuplicateErrorReporting:
+    """FR-021 messages name every claiming distribution; so must the exception."""
+
+    def test_duplicate_error_carries_group_and_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(monkeypatch, _duplicates())
+
+        with pytest.raises(DuplicateEntryPointError) as excinfo:
+            select_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert (excinfo.value.group, excinfo.value.name) == (_GROUP, _NAME)
+
+    def test_duplicate_error_carries_the_claiming_distributions_in_registration_order(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(monkeypatch, _duplicates())
+
+        with pytest.raises(DuplicateEntryPointError) as excinfo:
+            select_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert excinfo.value.distributions == ("loom-engine-alpha", "loom-engine-beta")
+
+    def test_duplicate_error_names_a_distribution_less_entry_point_as_unknown(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _install(
+            monkeypatch,
+            (
+                _FakeEntryPoint(_NAME, None, _Engine("alpha")),
+                _FakeEntryPoint(_NAME, "loom-engine-beta", _Engine("beta")),
+            ),
+        )
+
+        with pytest.raises(DuplicateEntryPointError) as excinfo:
+            select_entry_point(_GROUP, _NAME, on_duplicate="error")
+
+        assert excinfo.value.distributions == ("<unknown distribution>", "loom-engine-beta")
+
+
+class TestCheckApiVersion:
+    """Hosts that must construct the plugin first reuse the same handshake."""
+
+    REQUIREMENT = ApiVersionRequirement(
+        attribute="LOOM_AI_ENGINE_API",
+        supported=frozenset({1}),
+    )
+
+    def test_accepts_an_object_declaring_a_supported_version(self) -> None:
+        engine = _Engine("alpha")
+        engine.LOOM_AI_ENGINE_API = 1  # type: ignore[attr-defined]
+
+        assert check_api_version(engine, self.REQUIREMENT) is None
+
+    def test_rejects_an_object_declaring_an_unsupported_version(self) -> None:
+        engine = _Engine("alpha")
+        engine.LOOM_AI_ENGINE_API = 99  # type: ignore[attr-defined]
+
+        with pytest.raises(ApiVersionMismatchError):
+            check_api_version(engine, self.REQUIREMENT)
+
+    def test_mismatch_error_carries_the_declared_value(self) -> None:
+        engine = _Engine("alpha")
+        engine.LOOM_AI_ENGINE_API = 99  # type: ignore[attr-defined]
+
+        with pytest.raises(ApiVersionMismatchError) as excinfo:
+            check_api_version(engine, self.REQUIREMENT)
+
+        assert excinfo.value.declared == 99
+
+    def test_mismatch_error_carries_none_when_the_attribute_is_absent(self) -> None:
+        with pytest.raises(ApiVersionMismatchError) as excinfo:
+            check_api_version(_Engine("alpha"), self.REQUIREMENT)
+
+        assert excinfo.value.declared is None
+
+    def test_mismatch_error_carries_the_requirement_it_was_checked_against(self) -> None:
+        with pytest.raises(ApiVersionMismatchError) as excinfo:
+            check_api_version(_Engine("alpha"), self.REQUIREMENT)
+
+        assert excinfo.value.requirement is self.REQUIREMENT

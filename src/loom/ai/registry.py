@@ -31,9 +31,12 @@ from loom.ai.errors import (
     provider_setting_missing,
 )
 from loom.core.plugins.entrypoints import (
+    ApiVersionMismatchError,
+    ApiVersionRequirement,
     DuplicateEntryPointError,
-    list_entry_points,
-    select_entry_point,
+    EntryPointNotFoundError,
+    check_api_version,
+    load_entry_point,
 )
 
 _logger = logging.getLogger(__name__)
@@ -47,15 +50,19 @@ ENGINE_API_ATTRIBUTE = "LOOM_AI_ENGINE_API"
 SUPPORTED_ENGINE_APIS: frozenset[int] = frozenset({1})
 """Handshake versions this release of loom accepts."""
 
-_UNKNOWN_DISTRIBUTION = "<unknown distribution>"
+_ENGINE_API_REQUIREMENT = ApiVersionRequirement(
+    attribute=ENGINE_API_ATTRIBUTE,
+    supported=SUPPORTED_ENGINE_APIS,
+)
 
 
 def resolve_engine_provider(name: str) -> AgentEngineProvider:
     """Resolve the engine provider registered under ``name``.
 
-    Selects the entry point in group ``loom.ai.engines`` with duplicates
-    rejected, loads it, instantiates it when it targets a class, and verifies
-    the :data:`ENGINE_API_ATTRIBUTE` handshake via ``getattr``.
+    Loads the entry point in group ``loom.ai.engines`` with duplicates
+    rejected, instantiates it when it targets a class, and verifies the
+    :data:`ENGINE_API_ATTRIBUTE` handshake via ``getattr`` on the resulting
+    object, so an engine declaring its version in ``__init__`` is accepted.
 
     Args:
         name: Entry-point name from ``ai.engine``.
@@ -70,12 +77,11 @@ def resolve_engine_provider(name: str) -> AgentEngineProvider:
             handshake version).
     """
     try:
-        ep = select_entry_point(ENGINE_ENTRY_POINT_GROUP, name, on_duplicate="error")
+        loaded = load_entry_point(ENGINE_ENTRY_POINT_GROUP, name, on_duplicate="error")
     except DuplicateEntryPointError as exc:
-        raise AgentCompilationError([engine_duplicate(name, _distributions_for(name))]) from exc
-    if ep is None:
-        raise AgentCompilationError([engine_not_found(name, _available_engine_names())])
-    loaded = ep.load()
+        raise AgentCompilationError([engine_duplicate(name, exc.distributions)]) from exc
+    except EntryPointNotFoundError as exc:
+        raise AgentCompilationError([engine_not_found(name, exc.available)]) from exc
     provider = loaded() if isinstance(loaded, type) else loaded
     _verify_engine_api(name, provider)
     # The handshake above is the structural runtime check; the protocol is not
@@ -125,28 +131,16 @@ def require_provider_setting(provider: str, setting: str, value: object | None) 
 
 
 def _verify_engine_api(name: str, provider: object) -> None:
-    """Check the handshake attribute on the loaded provider, fail-closed."""
-    declared = getattr(provider, ENGINE_API_ATTRIBUTE, None)
-    # ``type is int`` rather than isinstance: a bool would be a mistake, not
-    # a version.
-    if type(declared) is int and declared in SUPPORTED_ENGINE_APIS:
-        return
-    found = declared if type(declared) is int else 0
-    raise AgentCompilationError([engine_api_mismatch(name, found, sorted(SUPPORTED_ENGINE_APIS))])
-
-
-def _available_engine_names() -> list[str]:
-    """Names registered in the engine group, for the not-found message."""
-    return sorted({ep.name for ep in list_entry_points(ENGINE_ENTRY_POINT_GROUP)})
-
-
-def _distributions_for(name: str) -> list[str]:
-    """Distributions claiming ``name`` in the engine group, for FR-021."""
-    return [
-        ep.dist.name if ep.dist is not None else _UNKNOWN_DISTRIBUTION
-        for ep in list_entry_points(ENGINE_ENTRY_POINT_GROUP)
-        if ep.name == name
-    ]
+    """Check the handshake attribute on the constructed provider, fail-closed."""
+    try:
+        check_api_version(provider, _ENGINE_API_REQUIREMENT)
+    except ApiVersionMismatchError as exc:
+        # A version that is not an integer is reported as 0: the code says
+        # "cannot speak it", and there is no version to name.
+        found = exc.declared if type(exc.declared) is int else 0
+        raise AgentCompilationError(
+            [engine_api_mismatch(name, found, sorted(SUPPORTED_ENGINE_APIS))]
+        ) from exc
 
 
 def engine_supported_kinds(provider: object, engine: str) -> frozenset[str]:
