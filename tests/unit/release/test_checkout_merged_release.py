@@ -141,6 +141,7 @@ def _create_remote_repository(
     commitizen_version: str | None = None,
     lock_version: str | None = None,
     merge_on_master: bool = True,
+    extra_release_commits: int = 0,
 ) -> RemoteRepository:
     origin = tmp_path / "origin.git"
     author = tmp_path / "author"
@@ -187,6 +188,13 @@ def _create_remote_repository(
     )
     _git(author, "add", "CHANGELOG.md", "pyproject.toml", "uv.lock")
     _git(author, "commit", "-m", f"chore(release): bump version to {expected_version}")
+    for revision in range(extra_release_commits):
+        (author / "CHANGELOG.md").write_text(
+            f"# Release v{expected_version}\n\nrevision {revision}\n\n# Changelog\n",
+            encoding="utf-8",
+        )
+        _git(author, "add", "CHANGELOG.md")
+        _git(author, "commit", "-m", f"chore(release): amend changelog {revision}")
     head_sha = _git(author, "rev-parse", "HEAD")
     _git(author, "push", "--set-upstream", "origin", release_branch)
 
@@ -546,6 +554,30 @@ def test_fails_closed_when_release_pr_base_is_behind(tmp_path: Path) -> None:
     clock = FakeClock()
     with pytest.raises(release.ReleaseCheckoutError, match="base advanced"):
         _checkout(repository, reader, recorder, clock)
+
+
+def test_release_branch_with_several_commits_is_accepted_while_master_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _create_remote_repository(tmp_path, merge_on_master=False, extra_release_commits=2)
+    clean = _snapshot(
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="CLEAN",
+        merge_sha=None,
+    )
+    merged = _snapshot(head_sha=repository.head_sha, merge_sha=repository.merge_sha)
+    reader = _reader(repository, clean, merged)
+    merger = MergeRecorder(repository)
+    _install_fake_uv(tmp_path, monkeypatch)
+
+    resolved_sha = _checkout(repository, reader, merger, FakeClock())
+
+    assert (resolved_sha, merger.calls) == (
+        repository.merge_sha,
+        [(clean.number, repository.head_sha)],
+    )
 
 
 def test_fails_before_merge_when_origin_master_advanced(

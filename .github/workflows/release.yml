@@ -1,15 +1,20 @@
 name: release
 
+# A release publishes only from a manual dispatch. A merge to master runs
+# ci-main and nothing else, so master accumulates until someone releases it.
 on:
-  pull_request:
-    types: [closed]
-    branches: ["master"]
   workflow_dispatch:
     inputs:
       source_branch:
         description: "Branch used to compute semantic release version"
         required: true
         default: "master"
+      bump:
+        description: "Version part to raise; master carries no branch prefix to classify"
+        required: true
+        type: choice
+        default: patch
+        options: [patch, minor, major]
 
 concurrency:
   group: release-${{ github.workflow }}
@@ -17,7 +22,6 @@ concurrency:
 
 jobs:
   prepare:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && !startsWith(github.event.pull_request.head.ref, 'docs/')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,16 +33,21 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       release_sha: ${{ steps.release.outputs.release_sha }}
     env:
-      RELEASE_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.source_branch || github.event.pull_request.head.ref }}
+      RELEASE_BRANCH: ${{ inputs.source_branch }}
+      # The calculator classifies a branch prefix, and master has none. The
+      # dispatch states the part to raise and gets the prefix that stands for it,
+      # so the version still comes from the patterns in pyproject.toml.
+      VERSION_BRANCH: >-
+        ${{ format('{0}/manual-release',
+            inputs.bump == 'major' && 'breaking' || inputs.bump == 'minor' && 'feat' || 'fix') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'master' || github.event.pull_request.merge_commit_sha }}
+          ref: master
           persist-credentials: false
 
       - name: Validate manual release source
-        if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -51,7 +60,7 @@ jobs:
         id: version
         uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
         with:
-          branch: ${{ env.RELEASE_BRANCH }}
+          branch: ${{ env.VERSION_BRANCH }}
           prerelease: "false"
 
       - name: Validate release version
@@ -65,31 +74,6 @@ jobs:
             echo "Release version is not strict SemVer: ${VERSION}"
             exit 1
           fi
-
-      - name: Generate release changelog
-        id: changelog
-        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name != 'workflow_dispatch' }}
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
-        with:
-          mode: "release"
-          branch: ${{ env.RELEASE_BRANCH }}
-          version: ${{ steps.version.outputs.version }}
-          pr-number: ${{ github.event.pull_request.number }}
-          output: CHANGELOG_RELEASE.md
-
-      - name: Generate fallback changelog for manual release
-        if: ${{ steps.version.outputs.deploy == 'true' && github.event_name == 'workflow_dispatch' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SOURCE_BRANCH: ${{ env.RELEASE_BRANCH }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > CHANGELOG_RELEASE.md <<EOF
-          # Release v${VERSION}
-
-          Manual release triggered from branch: ${SOURCE_BRANCH}
-          EOF
 
       - name: Restore action side effects
         if: ${{ steps.version.outputs.deploy == 'true' }}
@@ -130,6 +114,17 @@ jobs:
           set -euo pipefail
           echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-release" >> "$GITHUB_ENV"
 
+      - name: Generate release changelog
+        if: ${{ steps.version.outputs.deploy == 'true' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release/build_release_notes.py \
+            --version "${VERSION}" \
+            --output CHANGELOG_RELEASE.md
+
       - name: Inspect release PR state
         id: pr-state
         if: ${{ steps.version.outputs.deploy == 'true' }}
@@ -140,25 +135,27 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH="docs/release-v${VERSION}"
-          open_pr_count=$(gh pr list --head "${BRANCH}" --state open --json number --jq 'length')
-          all_pr_count=$(gh pr list --head "${BRANCH}" --state all --json number --jq 'length')
-          BRANCH_REF="refs/heads/${BRANCH}"
-          BRANCHES=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/${BRANCH}")
-          branch_count=$(jq --arg ref "${BRANCH_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${BRANCHES}")
-
-          if [ "${all_pr_count}" -gt 0 ]; then
-            echo "create=false" >> "$GITHUB_OUTPUT"
-          elif [ "${branch_count}" -gt 0 ]; then
-            echo "Release branch ${BRANCH} exists without a release PR."
-            exit 1
-          else
-            echo "create=true" >> "$GITHUB_OUTPUT"
-          fi
-
-          if [ "${open_pr_count}" -gt 1 ] || [ "${all_pr_count}" -gt 1 ]; then
-            echo "Multiple release PRs exist for ${BRANCH}."
-            exit 1
-          fi
+          decision=$(python scripts/release/decide_release_pr.py \
+            --release-branch "${BRANCH}" \
+            --repository-slug "${GITHUB_REPOSITORY}")
+          echo "Release PR decision for ${BRANCH}: ${decision}"
+          case "${decision}" in
+            recycle)
+              gh pr close "${BRANCH}" --delete-branch --comment \
+                "Superseded: master advanced past this base, so the bump is regenerated from the current tip."
+              echo "create=true" >> "$GITHUB_OUTPUT"
+              ;;
+            create)
+              echo "create=true" >> "$GITHUB_OUTPUT"
+              ;;
+            reuse)
+              echo "create=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unknown release PR decision: ${decision}"
+              exit 1
+              ;;
+          esac
 
       - name: Generate version bump commit
         if: ${{ steps.version.outputs.deploy == 'true' && steps.pr-state.outputs.create == 'true' }}
