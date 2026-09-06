@@ -2118,7 +2118,6 @@ wheels = [
 
 [[package]]
 name = "loom-kernel"
-version = "1.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiocache" },
@@ -2380,7 +2379,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },
 ]
-provides-extras = ["rest", "sqlalchemy", "clickhouse", "dynamodb", "mongo", "jwt", "config", "config-ssm", "cache", "etl-polars", "etl-spark", "etl-otel", "prefect", "pyspark", "prometheus", "streaming", "ai-pydantic", "ai-bedrock", "ai-openai", "ai-anthropic", "ai-a2a", "ai-harness", "logfire", "celery"]
+provides-extras = ["ai-a2a", "ai-anthropic", "ai-bedrock", "ai-harness", "ai-openai", "ai-pydantic", "cache", "celery", "clickhouse", "config", "config-ssm", "dynamodb", "etl-otel", "etl-polars", "etl-spark", "jwt", "logfire", "mongo", "prefect", "prometheus", "pyspark", "rest", "sqlalchemy", "streaming"]
 
 [package.metadata.requires-dev]
 dev = [

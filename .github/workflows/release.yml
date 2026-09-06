@@ -1,45 +1,41 @@
 name: release
 
-# A release publishes only from a manual dispatch. A merge to master runs
-# ci-main and nothing else, so master accumulates until someone releases it.
+# A release ships everything merged since the last tag, up to the pull request
+# that carries the `release` label. Merging that pull request is the
+# authorisation; every other merge runs ci-main and publishes nothing. The
+# dispatch is the recovery path for a release that stopped halfway.
 on:
+  pull_request:
+    types: [closed]
+    branches: ["master"]
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: "Branch used to compute semantic release version"
+      merge_sha:
+        description: "Commit on master to release, for a run that stopped halfway"
         required: true
-        default: "master"
-      bump:
-        description: "Version part to raise; master carries no branch prefix to classify"
-        required: true
-        type: choice
-        default: patch
-        options: [patch, minor, major]
 
 concurrency:
   group: release-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  # The version is derived, never typed: the part is the highest one any branch
+  # merged since the last tag asks for, so a batch holding a feature cannot ship
+  # as a patch. The tag lands on the merge commit, which fixes the range — a
+  # pull request merging a second later belongs to the next release.
+  plan:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          || (github.event.pull_request.merged == true
+              && contains(github.event.pull_request.labels.*.name, 'release')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-      # Dispatching ci-main for the merged version bump; see that step.
-      actions: write
     outputs:
-      deploy: ${{ steps.version.outputs.deploy }}
-      version: ${{ steps.version.outputs.version }}
-      release_sha: ${{ steps.release.outputs.release_sha }}
+      version: ${{ steps.plan.outputs.version }}
+      release_sha: ${{ steps.plan.outputs.release_sha }}
     env:
-      RELEASE_BRANCH: ${{ inputs.source_branch }}
-      # The calculator classifies a branch prefix, and master has none. The
-      # dispatch states the part to raise and gets the prefix that stands for it,
-      # so the version still comes from the patterns in pyproject.toml.
-      VERSION_BRANCH: >-
-        ${{ format('{0}/manual-release',
-            inputs.bump == 'major' && 'breaking' || inputs.bump == 'minor' && 'feat' || 'fix') }}
+      MERGE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.merge_sha || github.event.pull_request.merge_commit_sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -47,205 +43,62 @@ jobs:
           ref: master
           persist-credentials: false
 
-      - name: Validate manual release source
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${RELEASE_BRANCH}" != "master" ]; then
-            echo "Manual releases are restricted to source_branch=master."
-            exit 1
-          fi
-
-      - name: Compute release version from merged branch
-        id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
-        with:
-          branch: ${{ env.VERSION_BRANCH }}
-          prerelease: "false"
-
-      - name: Validate release version
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version is not strict SemVer: ${VERSION}"
-            exit 1
-          fi
-
-      - name: Restore action side effects
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          while IFS= read -r path; do
-            case "${path}" in
-              pyproject.toml|uv.lock|CHANGELOG.md) ;;
-              *)
-                echo "Release actions modified unexpected tracked file: ${path}"
-                exit 1
-                ;;
-            esac
-          done < <(git diff --name-only HEAD)
-          git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock CHANGELOG.md
-          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-            echo "Tracked checkout remains dirty after restoring known action side effects."
-            git status --short --untracked-files=no
-            exit 1
-          fi
-
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        if: ${{ steps.version.outputs.deploy == 'true' }}
         with:
           python-version: "3.11"
 
-      # Wheels only: no sdist setup script can run while installing uv.
-      - name: Install pinned uv after release actions
-        if: ${{ steps.version.outputs.deploy == 'true' }}
+      - name: Install pinned uv
         run: |
-          pip install --only-binary :all: --force-reinstall "uv==0.10.2"
+          pip install --only-binary :all: "uv==0.10.2"
 
-      - name: Configure uv environment path
-        if: ${{ steps.version.outputs.deploy == 'true' }}
+      # A commit reachable only from a branch would tag something master does
+      # not carry, so the release refuses rather than tagging a side history.
+      - name: Require the release commit on master
         shell: bash
         run: |
           set -euo pipefail
-          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-release" >> "$GITHUB_ENV"
-
-      - name: Generate release changelog
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python scripts/release/build_release_notes.py \
-            --version "${VERSION}" \
-            --output CHANGELOG_RELEASE.md
-
-      - name: Inspect release PR state
-        id: pr-state
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="docs/release-v${VERSION}"
-          decision=$(python scripts/release/decide_release_pr.py \
-            --release-branch "${BRANCH}" \
-            --repository-slug "${GITHUB_REPOSITORY}")
-          echo "Release PR decision for ${BRANCH}: ${decision}"
-          case "${decision}" in
-            recycle)
-              gh pr close "${BRANCH}" --delete-branch --comment \
-                "Superseded: master advanced past this base, so the bump is regenerated from the current tip."
-              echo "create=true" >> "$GITHUB_OUTPUT"
-              ;;
-            create)
-              echo "create=true" >> "$GITHUB_OUTPUT"
-              ;;
-            reuse)
-              echo "create=false" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "Unknown release PR decision: ${decision}"
-              exit 1
-              ;;
-          esac
-
-      - name: Generate version bump commit
-        if: ${{ steps.version.outputs.deploy == 'true' && steps.pr-state.outputs.create == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          BRANCH="docs/release-v${VERSION}"
-          git checkout -b "${BRANCH}"
-
-          sed -i "0,/^version = \".*\"/s//version = \"${VERSION}\"/" pyproject.toml
-          sed -i "/^\[tool.commitizen\]/,/^\[/ s/^version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
-
-          uv lock
-
-          if [ -f CHANGELOG_RELEASE.md ]; then
-            HEADER=$(head -1 CHANGELOG_RELEASE.md)
-            if ! grep -qF "${HEADER}" CHANGELOG.md; then
-              cat CHANGELOG_RELEASE.md CHANGELOG.md > CHANGELOG_MERGED.md
-              mv CHANGELOG_MERGED.md CHANGELOG.md
-            fi
-          fi
-
-          git add pyproject.toml CHANGELOG.md uv.lock
-          if git diff --staged --quiet; then
-            echo "Release version produced no version, changelog, or lockfile changes."
+          if [[ ! "${MERGE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release commit is not a full SHA: ${MERGE_SHA}"
             exit 1
           fi
-          git commit -m "chore(release): bump version to ${VERSION}"
+          if ! git merge-base --is-ancestor "${MERGE_SHA}" origin/master; then
+            echo "Release commit ${MERGE_SHA} is not on master."
+            exit 1
+          fi
 
-      - name: Push version bump and create PR
-        if: ${{ steps.version.outputs.deploy == 'true' && steps.pr-state.outputs.create == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          BRANCH="docs/release-v${VERSION}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "HEAD:refs/heads/${BRANCH}"
-          gh pr create \
-            --title "chore(release): bump version to ${VERSION}" \
-            --body "Automated version bump and changelog update after release v${VERSION}." \
-            --base master \
-            --head "${BRANCH}"
-
-      - name: Check out validated release commit
-        id: release
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          EXPECTED_OWNER: ${{ github.repository_owner }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Safety net only: the helper merges as soon as the release PR checks
-          # pass. Override with the RELEASE_MERGE_TIMEOUT_SECONDS variable.
-          MERGE_TIMEOUT_SECONDS: ${{ vars.RELEASE_MERGE_TIMEOUT_SECONDS || '1800' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          RELEASE_SHA=$(python scripts/release/checkout_merged_release.py \
-            --release-branch "docs/release-v${VERSION}" \
-            --expected-version "${VERSION}" \
-            --expected-owner "${EXPECTED_OWNER}" \
-            --timeout-seconds "${MERGE_TIMEOUT_SECONDS}")
-          echo "release_sha=${RELEASE_SHA}" >> "$GITHUB_OUTPUT"
-
-      # The bump is on master now, and no `push` event announced it: GitHub
-      # emits none for a merge performed with GITHUB_TOKEN. Ask for the run
-      # explicitly, so CHANGELOG.md, pyproject.toml and uv.lock are validated on
-      # master like every other commit. Never fatal: this asks for a check, it is
-      # not one, and a release must not fail because a follow-up run could not be
-      # queued. It dispatches on `master`, so what it validates is master's tip,
-      # which is what ci-main validates on any other day.
-      - name: Validate the merged version bump on master
-        if: ${{ steps.version.outputs.deploy == 'true' }}
-        continue-on-error: true
+      - name: Plan the release
+        id: plan
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          gh workflow run ci-main.yml --repo "${GITHUB_REPOSITORY}" --ref master
+          uv run --frozen python -m scripts.release.plan_release \
+            --merge-sha "${MERGE_SHA}" --slug "${GITHUB_REPOSITORY}" | tee plan.txt
+          PLAN=$(uv run --frozen python -m scripts.release.plan_release \
+            --merge-sha "${MERGE_SHA}" --slug "${GITHUB_REPOSITORY}" --format github)
+          VERSION=$(jq -r .version <<< "${PLAN}")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${MERGE_SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release v${VERSION}"
+            echo
+            echo '```'
+            cat plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the release notes
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "${MERGE_SHA}"
+          uv run --frozen python -m scripts.release.build_release_notes \
+            --version "${VERSION}" --output CHANGELOG_RELEASE.md
 
       - name: Store release notes
-        if: ${{ steps.version.outputs.deploy == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-notes
@@ -253,17 +106,51 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      # The tag is created before the build because the version is derived from
+      # it: hatch-vcs reads the tag, so a build without one produces a dev
+      # version. Creating a tag that already points at this commit is not an
+      # error, which is what makes a halted release re-runnable.
+      - name: Create the immutable version tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_REF="refs/tags/v${VERSION}"
+          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v${VERSION}")
+          TAG_COUNT=$(jq --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
+
+          if [ "${TAG_COUNT}" -gt 1 ]; then
+            echo "GitHub returned duplicate exact refs for ${TAG_REF}."
+            exit 1
+          elif [ "${TAG_COUNT}" -eq 1 ]; then
+            REMOTE_SHA=$(jq -r --arg ref "${TAG_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
+            if [ "${REMOTE_SHA}" != "${MERGE_SHA}" ]; then
+              echo "Tag v${VERSION} points to ${REMOTE_SHA}, expected ${MERGE_SHA}."
+              exit 1
+            fi
+            echo "Tag v${VERSION} already points at the release commit."
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="${TAG_REF}" \
+              -f sha="${MERGE_SHA}"
+          fi
+
   build:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.deploy == 'true' }}
+    needs: plan
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
+      # Checked out at the tag, with its history, because hatch-vcs derives the
+      # version from the tag this commit carries.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 1
-          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+          ref: v${{ needs.plan.outputs.version }}
           persist-credentials: false
 
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -290,6 +177,19 @@ jobs:
             exit 1
           fi
 
+      # The artifact must carry the version the tag names. A dev version here
+      # means the build never saw the tag, and publishing it would burn a
+      # version number on PyPI that nobody asked for.
+      - name: Require the built version to match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "dist/loom_kernel-${VERSION}-py3-none-any.whl" ]; then
+            echo "Built distributions do not carry version ${VERSION}:"
+            ls -1 dist
+            exit 1
+          fi
+
       - name: Store distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -299,15 +199,16 @@ jobs:
           retention-days: 1
 
   publish:
-    needs: [prepare, build]
-    if: ${{ needs.prepare.outputs.deploy == 'true' }}
+    needs: [plan, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
+      # Dispatching ci-main for the released commit; see that step.
+      actions: write
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
-      RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      RELEASE_SHA: ${{ needs.plan.outputs.release_sha }}
     steps:
       - name: Download distributions
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -319,41 +220,6 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-notes
-
-      - name: Create immutable version tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Release version is not strict SemVer: ${VERSION}"
-            exit 1
-          fi
-          if [[ ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Release SHA is invalid."
-            exit 1
-          fi
-
-          TAG_REF="refs/tags/v${VERSION}"
-          TAGS=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v${VERSION}")
-          TAG_COUNT=$(jq --arg ref "${TAG_REF}" '[.[] | select(.ref == $ref)] | length' <<< "${TAGS}")
-
-          if [ "${TAG_COUNT}" -gt 1 ]; then
-            echo "GitHub returned duplicate exact refs for ${TAG_REF}."
-            exit 1
-          elif [ "${TAG_COUNT}" -eq 1 ]; then
-            REMOTE_VERSION_SHA=$(jq -r --arg ref "${TAG_REF}" '.[] | select(.ref == $ref) | .object.sha' <<< "${TAGS}")
-            if [ "${REMOTE_VERSION_SHA}" != "${RELEASE_SHA}" ]; then
-              echo "Immutable tag v${VERSION} points to ${REMOTE_VERSION_SHA}, expected ${RELEASE_SHA}."
-              exit 1
-            fi
-            echo "Immutable tag v${VERSION} already points to the validated release SHA."
-          else
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="${TAG_REF}" \
-              -f sha="${RELEASE_SHA}"
-          fi
 
       - name: Update floating major tag
         env:
@@ -382,8 +248,8 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
-          tag_name: v${{ needs.prepare.outputs.version }}
-          name: v${{ needs.prepare.outputs.version }}
+          tag_name: v${{ needs.plan.outputs.version }}
+          name: v${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
 
       - name: Select PyPI authentication
@@ -408,3 +274,15 @@ jobs:
       - name: Publish package to PyPI (trusted publisher)
         if: ${{ steps.pypi-auth.outputs.has-token == 'false' }}
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
+
+      # No push event announces a released commit, and nothing here changes
+      # master, so ask for the run that validates the tip explicitly. Never
+      # fatal: this asks for a check, it is not one.
+      - name: Validate the released commit on master
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ci-main.yml --repo "${GITHUB_REPOSITORY}" --ref master
