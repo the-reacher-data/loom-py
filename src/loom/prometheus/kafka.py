@@ -21,9 +21,10 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from loom.core.observability.event import EventKind, LifecycleEvent, Scope
+from loom.prometheus._instruments import cached_instruments, counter_spec, histogram_spec
 
 if TYPE_CHECKING:
-    from prometheus_client import CollectorRegistry, Counter, Histogram
+    from prometheus_client import CollectorRegistry
 
 
 class KafkaMetricName(StrEnum):
@@ -33,6 +34,31 @@ class KafkaMetricName(StrEnum):
     CONSUMED_TOTAL = "streaming_kafka_consumed_total"
     ENCODE_DURATION = "streaming_kafka_encode_duration_seconds"
     DECODE_DURATION = "streaming_kafka_decode_duration_seconds"
+
+
+_PRODUCED_TOTAL = counter_spec(
+    KafkaMetricName.PRODUCED_TOTAL,
+    "Total Kafka records produced.",
+    "topic",
+    "status",
+)
+_CONSUMED_TOTAL = counter_spec(
+    KafkaMetricName.CONSUMED_TOTAL,
+    "Total Kafka records consumed.",
+    "topic",
+    "status",
+)
+_ENCODE_DURATION = histogram_spec(
+    KafkaMetricName.ENCODE_DURATION,
+    "Kafka envelope encode duration in seconds.",
+    "content_type",
+)
+_DECODE_DURATION = histogram_spec(
+    KafkaMetricName.DECODE_DURATION,
+    "Kafka envelope decode duration in seconds.",
+    "content_type",
+)
+_INSTRUMENTS = (_PRODUCED_TOTAL, _CONSUMED_TOTAL, _ENCODE_DURATION, _DECODE_DURATION)
 
 
 class KafkaPrometheusMetrics:
@@ -61,10 +87,11 @@ class KafkaPrometheusMetrics:
     """
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
-        self._produced_total = _build_produced_total(registry)
-        self._consumed_total = _build_consumed_total(registry)
-        self._encode_duration = _build_encode_duration(registry)
-        self._decode_duration = _build_decode_duration(registry)
+        instruments = cached_instruments(registry, _INSTRUMENTS)
+        self._produced_total = instruments[_PRODUCED_TOTAL]
+        self._consumed_total = instruments[_CONSUMED_TOTAL]
+        self._encode_duration = instruments[_ENCODE_DURATION]
+        self._decode_duration = instruments[_DECODE_DURATION]
 
     def on_event(self, event: LifecycleEvent) -> None:
         """Record one Kafka transport lifecycle event on Prometheus instruments.
@@ -97,67 +124,3 @@ class KafkaPrometheusMetrics:
                 elif event.duration_ms is not None:
                     ct = str(event.meta.get("content_type", "unknown"))
                     self._decode_duration.labels(content_type=ct).observe(event.duration_ms / 1000)
-
-
-def _build_produced_total(registry: CollectorRegistry | None) -> Counter:
-    from prometheus_client import Counter
-
-    if registry is None:
-        return Counter(
-            KafkaMetricName.PRODUCED_TOTAL, "Total Kafka records produced.", ["topic", "status"]
-        )
-    return Counter(
-        KafkaMetricName.PRODUCED_TOTAL,
-        "Total Kafka records produced.",
-        ["topic", "status"],
-        registry=registry,
-    )
-
-
-def _build_consumed_total(registry: CollectorRegistry | None) -> Counter:
-    from prometheus_client import Counter
-
-    if registry is None:
-        return Counter(
-            KafkaMetricName.CONSUMED_TOTAL, "Total Kafka records consumed.", ["topic", "status"]
-        )
-    return Counter(
-        KafkaMetricName.CONSUMED_TOTAL,
-        "Total Kafka records consumed.",
-        ["topic", "status"],
-        registry=registry,
-    )
-
-
-def _build_encode_duration(registry: CollectorRegistry | None) -> Histogram:
-    from prometheus_client import Histogram
-
-    if registry is None:
-        return Histogram(
-            KafkaMetricName.ENCODE_DURATION,
-            "Kafka envelope encode duration in seconds.",
-            ["content_type"],
-        )
-    return Histogram(
-        KafkaMetricName.ENCODE_DURATION,
-        "Kafka envelope encode duration in seconds.",
-        ["content_type"],
-        registry=registry,
-    )
-
-
-def _build_decode_duration(registry: CollectorRegistry | None) -> Histogram:
-    from prometheus_client import Histogram
-
-    if registry is None:
-        return Histogram(
-            KafkaMetricName.DECODE_DURATION,
-            "Kafka envelope decode duration in seconds.",
-            ["content_type"],
-        )
-    return Histogram(
-        KafkaMetricName.DECODE_DURATION,
-        "Kafka envelope decode duration in seconds.",
-        ["content_type"],
-        registry=registry,
-    )

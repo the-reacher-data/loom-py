@@ -2,46 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from loom.core.observability.event import EventKind, LifecycleEvent
+from loom.prometheus._instruments import cached_instruments, counter_spec, histogram_spec
 
 if TYPE_CHECKING:
-    from prometheus_client import CollectorRegistry, Counter, Histogram
+    from prometheus_client import CollectorRegistry
 
-_GLOBAL_INSTRUMENTS: tuple[Histogram, Counter] | None = None
-
-
-def _create_instruments(
-    registry: CollectorRegistry | None,
-) -> tuple[Histogram, Counter]:
-    from prometheus_client import Counter, Histogram
-
-    reg: dict[str, Any] = {"registry": registry} if registry is not None else {}
-    duration: Histogram = Histogram(
-        "lifecycle_duration_seconds",
-        "Lifecycle span wall-clock duration in seconds.",
-        ["scope", "name"],
-        **reg,
-    )
-    errors: Counter = Counter(
-        "lifecycle_errors_total",
-        "Total lifecycle span errors by scope and name.",
-        ["scope", "name"],
-        **reg,
-    )
-    return duration, errors
-
-
-def _get_instruments(
-    registry: CollectorRegistry | None,
-) -> tuple[Histogram, Counter]:
-    global _GLOBAL_INSTRUMENTS
-    if registry is not None:
-        return _create_instruments(registry)
-    if _GLOBAL_INSTRUMENTS is None:
-        _GLOBAL_INSTRUMENTS = _create_instruments(None)
-    return _GLOBAL_INSTRUMENTS
+_DURATION_SECONDS = histogram_spec(
+    "lifecycle_duration_seconds",
+    "Lifecycle span wall-clock duration in seconds.",
+    "scope",
+    "name",
+)
+_ERRORS_TOTAL = counter_spec(
+    "lifecycle_errors_total",
+    "Total lifecycle span errors by scope and name.",
+    "scope",
+    "name",
+)
+_INSTRUMENTS = (_DURATION_SECONDS, _ERRORS_TOTAL)
 
 
 class PrometheusLifecycleAdapter:
@@ -82,7 +63,9 @@ class PrometheusLifecycleAdapter:
         *,
         pushgateway_url: str | None = None,
     ) -> None:
-        self._duration, self._errors = _get_instruments(registry)
+        instruments = cached_instruments(registry, _INSTRUMENTS)
+        self._duration = instruments[_DURATION_SECONDS]
+        self._errors = instruments[_ERRORS_TOTAL]
         self._pushgateway_url = pushgateway_url
         self._registry = registry
 
