@@ -210,9 +210,7 @@ class RuntimeExecutor:
                 was supplied.
         """
         uc_type = type(compilable)
-        plan = uc_type.__execution_plan__
-        if plan is None:
-            plan = self._compiler.compile(uc_type)
+        plan = self._plan_for(uc_type)
         uc_name = uc_type.__qualname__
 
         start = time.perf_counter()
@@ -252,6 +250,17 @@ class RuntimeExecutor:
             raise
         finally:
             _active_uow.reset(token)
+
+    def _plan_for(self, uc_type: type[Compilable]) -> ExecutionPlan:
+        """Return the plan compiled for exactly ``uc_type``, compiling on demand.
+
+        ``__execution_plan__`` is read from the class's own namespace, not
+        through the MRO: a subclass must never run under its parent's plan.
+        """
+        plan = uc_type.__dict__.get("__execution_plan__")
+        if isinstance(plan, ExecutionPlan):
+            return plan
+        return self._compiler.compile(uc_type)
 
     # ------------------------------------------------------------------
     # Pipeline

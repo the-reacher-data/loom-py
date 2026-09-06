@@ -1,29 +1,33 @@
+"""Pending job dispatches, delegated to the post-commit channel.
+
+The public names are kept for existing callers; the queue itself is the
+:class:`~loom.core.engine.post_commit.PostCommitChannel` bound by the
+executor.  When no channel is bound, a per-context fallback channel holds
+the dispatches so :func:`flush_pending_dispatches` and
+:func:`clear_pending_dispatches` keep working for hand-driven callers.
+"""
+
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable
 from contextvars import ContextVar
 from typing import Any
 
-# IMPORTANT — default=None, not default=[].  Flush and clear must also reset
-# to None, never to [].  The invariant is: None ↔ "no active queue";
-# a list ↔ "active queue for this context".
-# A mutable list as ContextVar default would be shared across all contexts that
-# have not called .set(), causing cross-request contamination.  Resetting to []
-# (instead of None) has the same effect: asyncio tasks copy the context shallowly,
-# so all siblings would share the same list object.  Resetting to None ensures
-# each task creates its own list on first access via _get_or_init().
-_pending: ContextVar[list[Callable[[], Any]] | None] = ContextVar(
+from loom.core.engine.post_commit import PostCommitChannel, active_channel
+
+# default=None, never a channel instance: a shared default would leak
+# dispatches across contexts.  Each context creates its own on first use.
+_fallback: ContextVar[PostCommitChannel | None] = ContextVar(
     "_loom_pending_dispatches", default=None
 )
 
 
-def _get_or_init() -> list[Callable[[], Any]]:
-    lst = _pending.get()
-    if lst is None:
-        lst = []
-        _pending.set(lst)
-    return lst
+def _fallback_channel() -> PostCommitChannel:
+    channel = _fallback.get()
+    if channel is None:
+        channel = PostCommitChannel()
+        _fallback.set(channel)
+    return channel
 
 
 def add_pending_dispatch(fn: Callable[[], Any]) -> None:
@@ -37,33 +41,31 @@ def add_pending_dispatch(fn: Callable[[], Any]) -> None:
         fn: Zero-argument callable.  May return ``None`` (sync) or a
             coroutine (async).
     """
-    _get_or_init().append(fn)
+    channel = active_channel() or _fallback_channel()
+    channel.enqueue(fn)
 
 
 async def flush_pending_dispatches() -> None:
-    """Execute all pending dispatches and clear the queue.
-
-    Called by :class:`~loom.core.engine.executor.RuntimeExecutor` after a
-    successful UoW commit.  Clears the queue before executing so a dispatch
-    that raises does not leave stale entries for the next request.
+    """Execute all pending dispatches of the fallback channel and clear it.
 
     Sync callables (Celery ``send_task``) are called directly.
     Async callables (inline runner) are awaited.
+
+    Raises:
+        loom.core.engine.post_commit.PostCommitError: If any dispatch raised;
+            the remaining dispatches still run.
     """
-    fns = _pending.get()
-    _pending.set(None)
-    if not fns:
+    channel = _fallback.get()
+    if channel is None:
         return
-    for fn in fns:
-        result = fn()
-        if inspect.iscoroutine(result):
-            await result
+    await channel.drain()
 
 
 def clear_pending_dispatches() -> None:
-    """Discard all pending dispatches without executing them.
+    """Discard all pending dispatches of the fallback channel without executing them.
 
-    Called by the executor after a UoW rollback.  Jobs registered during
-    a failed transaction must not be sent to the broker.
+    Jobs registered during a failed transaction must not be sent to the broker.
     """
-    _pending.set(None)
+    channel = _fallback.get()
+    if channel is not None:
+        channel.discard()

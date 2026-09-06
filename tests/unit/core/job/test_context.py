@@ -76,7 +76,7 @@ async def test_contextvar_default_not_shared() -> None:
     calls: list[str] = []
 
     async def fresh_context() -> None:
-        # A new task starts with default=None, not the parent's list.
+        # A task spawned before any dispatch exists starts with no channel of its own.
         await flush_pending_dispatches()
         add_pending_dispatch(lambda: calls.append("fresh"))
         await flush_pending_dispatches()
