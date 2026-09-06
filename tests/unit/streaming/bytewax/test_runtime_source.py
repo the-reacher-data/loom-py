@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from types import SimpleNamespace
 
 import pytest
-from confluent_kafka import OFFSET_BEGINNING, OFFSET_END, TopicPartition
+from confluent_kafka import OFFSET_BEGINNING, OFFSET_END, KafkaError, TopicPartition
 
 from loom.streaming.bytewax import _runtime_io
 from loom.streaming.bytewax._commit_tracker import KafkaCommitTracker
@@ -15,6 +16,30 @@ from loom.streaming.kafka._errors import KafkaCommitError, KafkaPollError
 from loom.streaming.kafka._record import KafkaRecord
 from tests.unit.streaming.bytewax.cases import build_compiled_source
 from tests.unit.streaming.kafka.fakes import PartitionClientInstaller, PartitionClientStub
+
+
+class _MetadataError:
+    """Stand-in for the KafkaError that confluent reports inside topic metadata."""
+
+    def __init__(self, code: int) -> None:
+        self._code = code
+
+    def code(self) -> int:
+        return self._code
+
+    def __str__(self) -> str:
+        return f"metadata error {self._code}"
+
+
+def _kafka_error(code: int) -> _MetadataError:
+    return _MetadataError(code)
+
+
+def _shorten_metadata_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Collapse the metadata visibility window so retries do not slow the suite."""
+    monkeypatch.setattr(_runtime_io, "_METADATA_VISIBILITY_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(_runtime_io, "_METADATA_RETRY_INTERVAL_S", 0.001)
+
 
 pytestmark = pytest.mark.bytewax
 
@@ -262,11 +287,94 @@ class TestListParts:
                 del topic, timeout
                 return _Metadata()
 
+        _shorten_metadata_wait(monkeypatch)
         monkeypatch.setattr(_runtime_io, "AdminClient", _Admin)
         source = _runtime_io.KafkaPartitionedSource(build_compiled_source())
 
         with pytest.raises(KafkaPollError, match="cannot list partitions"):
             source.list_parts()
+
+    def test_a_topic_that_appears_late_is_awaited_instead_of_failing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _TopicMeta:
+            error = None
+            partitions = {0: object(), 1: object()}
+
+        class _Admin:
+            fetches = 0
+
+            def __init__(self, config: dict[str, object]) -> None:
+                del config
+
+            def list_topics(self, topic: str, timeout: float) -> object:
+                del timeout
+                type(self).fetches += 1
+                if type(self).fetches < 3:
+                    return SimpleNamespace(topics={})
+                return SimpleNamespace(topics={topic: _TopicMeta()})
+
+        _shorten_metadata_wait(monkeypatch)
+        monkeypatch.setattr(_runtime_io, "AdminClient", _Admin)
+        source = _runtime_io.KafkaPartitionedSource(build_compiled_source())
+
+        assert source.list_parts() == ["orders.in:0", "orders.in:1"]
+        assert _Admin.fetches == 3
+
+    def test_a_leaderless_partition_is_awaited_until_a_leader_is_elected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _Admin:
+            fetches = 0
+
+            def __init__(self, config: dict[str, object]) -> None:
+                del config
+
+            def list_topics(self, topic: str, timeout: float) -> object:
+                del timeout
+                type(self).fetches += 1
+                if type(self).fetches == 1:
+                    meta = SimpleNamespace(
+                        error=_kafka_error(KafkaError.LEADER_NOT_AVAILABLE), partitions={}
+                    )
+                else:
+                    meta = SimpleNamespace(error=None, partitions={0: object()})
+                return SimpleNamespace(topics={topic: meta})
+
+        _shorten_metadata_wait(monkeypatch)
+        monkeypatch.setattr(_runtime_io, "AdminClient", _Admin)
+        source = _runtime_io.KafkaPartitionedSource(build_compiled_source())
+
+        assert source.list_parts() == ["orders.in:0"]
+
+    def test_an_error_no_wait_can_resolve_fails_on_the_first_fetch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class _Admin:
+            fetches = 0
+
+            def __init__(self, config: dict[str, object]) -> None:
+                del config
+
+            def list_topics(self, topic: str, timeout: float) -> object:
+                del timeout
+                type(self).fetches += 1
+                meta = SimpleNamespace(
+                    error=_kafka_error(KafkaError.TOPIC_AUTHORIZATION_FAILED), partitions={}
+                )
+                return SimpleNamespace(topics={topic: meta})
+
+        _shorten_metadata_wait(monkeypatch)
+        monkeypatch.setattr(_runtime_io, "AdminClient", _Admin)
+        source = _runtime_io.KafkaPartitionedSource(build_compiled_source())
+
+        with pytest.raises(KafkaPollError, match="cannot list partitions"):
+            source.list_parts()
+
+        assert _Admin.fetches == 1
 
 
 class TestConsumerSettings:
