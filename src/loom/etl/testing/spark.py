@@ -33,7 +33,12 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
-import pytest
+try:
+    import pytest
+except ModuleNotFoundError as exc:  # pragma: no cover - packaging guard
+    raise ModuleNotFoundError(
+        "loom.etl.testing.spark defines pytest fixtures: install loom-kernel[testing]"
+    ) from exc
 
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative.source import SourceSpec

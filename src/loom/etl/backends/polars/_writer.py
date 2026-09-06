@@ -239,6 +239,8 @@ class PolarsTargetWriter(_WritePolicy[pl.LazyFrame, pl.DataFrame, PolarsPhysical
             super()._do_replace_partitions(frame, target, spec, streaming)
             return
 
+        if spec.require_physical:
+            self._require_physical_partitions(target, spec.partition_cols)
         aligned = self._align(frame, existing, spec.schema_mode)
         _check_null_dtype_columns_lazy(aligned)
         self._streaming_replace_partitions(aligned, target, spec)

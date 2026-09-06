@@ -2247,6 +2247,9 @@ streaming = [
     { name = "opentelemetry-sdk" },
     { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
+testing = [
+    { name = "pytest" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2371,6 +2374,7 @@ requires-dist = [
     { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.6,<5.0" },
     { name = "pyspark", marker = "extra == 'etl-spark'", specifier = ">=3.5,<4.0" },
     { name = "pyspark", marker = "extra == 'pyspark'", specifier = ">=3.5,<4.0" },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.3.0" },
     { name = "pyyaml", marker = "extra == 'prefect'", specifier = ">=6.0" },
     { name = "redis", marker = "extra == 'celery'", specifier = ">=5.0,<6.0" },
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0,<3.0" },
@@ -2380,7 +2384,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'rest'", specifier = ">=0.21,<1.0" },
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'streaming'", specifier = ">=0.21,<1.0" },
 ]
-provides-extras = ["rest", "sqlalchemy", "clickhouse", "dynamodb", "mongo", "jwt", "config", "config-ssm", "cache", "etl-polars", "etl-spark", "etl-otel", "prefect", "pyspark", "prometheus", "streaming", "ai-pydantic", "ai-bedrock", "ai-openai", "ai-anthropic", "ai-a2a", "ai-harness", "logfire", "celery"]
+provides-extras = ["testing", "rest", "sqlalchemy", "clickhouse", "dynamodb", "mongo", "jwt", "config", "config-ssm", "cache", "etl-polars", "etl-spark", "etl-otel", "prefect", "pyspark", "prometheus", "streaming", "ai-pydantic", "ai-bedrock", "ai-openai", "ai-anthropic", "ai-a2a", "ai-harness", "logfire", "celery"]
 
 [package.metadata.requires-dev]
 dev = [
