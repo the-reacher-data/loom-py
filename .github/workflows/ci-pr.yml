@@ -75,10 +75,26 @@ jobs:
         run: |
           set -euo pipefail
           uv run --frozen --with "pytest-cov==7.1.0" --with "pytest-xdist==3.6.1" \
-            pytest -m "not integration" \
+            pytest -m "not integration and not slow" \
             --ignore=tests/unit/etl/backends/test_spark \
             -n 4 --cov --cov-report= \
             --junitxml=junit-fast.xml -o junit_family=legacy
+
+      # A `slow` test asserts a wall-clock budget, and a budget measured while
+      # four workers compete for the same cores measures the contention instead
+      # of the code. These run serially, in the same job so nothing waits on
+      # them, and their results join the other lanes in the gate.
+      - name: Run the slow lane serially with coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: .coverage.slow
+        run: |
+          set -euo pipefail
+          uv run --frozen --with "pytest-cov==7.1.0" \
+            pytest -m "slow and not integration" \
+            --ignore=tests/unit/etl/backends/test_spark \
+            --cov --cov-report= \
+            --junitxml=junit-slow.xml -o junit_family=legacy
 
       - name: Store fast lane results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -86,7 +102,9 @@ jobs:
           name: test-results-fast
           path: |
             junit-fast.xml
+            junit-slow.xml
             .coverage.fast
+            .coverage.slow
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
@@ -197,9 +215,10 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/ci/merge_test_results.py \
-            --junit junit-fast.xml --junit junit-spark.xml \
+            --junit junit-fast.xml --junit junit-slow.xml --junit junit-spark.xml \
             --junit-output junit.xml
-          uv run --frozen --with "pytest-cov==7.1.0" coverage combine .coverage.fast .coverage.spark
+          uv run --frozen --with "pytest-cov==7.1.0" coverage combine \
+            .coverage.fast .coverage.slow .coverage.spark
           uv run --frozen --with "pytest-cov==7.1.0" coverage json -o coverage.json
           uv run --frozen --with "pytest-cov==7.1.0" coverage xml -o coverage.xml
 
@@ -209,7 +228,7 @@ jobs:
       - name: Quality report (strict gate)
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           src-dir: src
           test-dir: tests
@@ -221,7 +240,7 @@ jobs:
 
       - name: Publish PR quality comment
         if: ${{ always() && steps.quality.outputs.report-file != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- loom-quality-report -->"
@@ -229,7 +248,7 @@ jobs:
 
       - name: Compute candidate prerelease version
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           branch: ${{ github.head_ref }}
           prerelease: "true"
@@ -237,7 +256,7 @@ jobs:
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           mode: "pr"
           branch: ${{ github.event.pull_request.head.sha }}
@@ -248,7 +267,7 @@ jobs:
 
       - name: Publish PR changelog comment
         if: ${{ steps.changelog.outcome == 'success' && steps.changelog.outputs.output_path != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"

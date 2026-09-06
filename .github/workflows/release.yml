@@ -58,7 +58,7 @@ jobs:
 
       - name: Compute release version from merged branch
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@fcd49a9a525ada777d651b1cbae7b3b564d74aae # v1.1.1
         with:
           branch: ${{ env.VERSION_BRANCH }}
           prerelease: "false"
