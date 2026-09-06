@@ -18,17 +18,134 @@ permissions:
   security-events: write
 
 jobs:
-  # A release PR carries a version bump and nothing else, and it is the only way
-  # CHANGELOG.md, pyproject.toml and uv.lock reach master. Validating it is not
-  # possible and not useful: the branch and the PR are pushed with GITHUB_TOKEN,
-  # so any run queued against them sits waiting for manual approval and expires
-  # unapproved — a red check nobody can turn green. Worse, the release helper
-  # merges only when every check that reported has passed, so an expired run that
-  # concludes before the helper polls blocks the release outright. Skipping is
-  # what the helper already documents as the normal state. The code the bump
-  # describes was validated in the pull requests that composed it.
+  # The suite runs once, split across two lanes that report to `validate`.
+  # Nothing is deselected away: every test that ran before runs here, and the
+  # two lanes together are the whole of `-m "not integration"`.
+  #
+  # Fast lane: everything except the Spark backend, in parallel. These tests are
+  # CPU-bound and independent, so xdist buys most of its wall clock here.
+  tests-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # uv is pinned to the same version in every workflow to avoid drift, and
+      # installed from wheels only so no sdist setup script can run.
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-fast" >> "$GITHUB_ENV"
+
+      # Standalone artifact validation (FR-015): the published corpus must stay
+      # valid against the offline validator. The fake packages provide the corpus
+      # module:symbol references, as they would in an application. The glob is
+      # '*/agent.yaml', not '*.yaml': each corpus entry is a DIRECTORY holding its
+      # artifact next to its own skills, which is the layout an application uses.
+      # A top-level '*.yaml' matches nothing, and the validator exits 0 on an
+      # empty match — so the wrong glob is a step that passes without validating.
+      - name: Validate agent artifact corpus
+        shell: bash
+        env:
+          PYTHONPATH: tests/unit/ai/fixtures/fake_pkgs
+        run: |
+          set -euo pipefail
+          uv run --frozen python -m loom.ai.validate 'tests/unit/ai/fixtures/corpus_v1/*/agent.yaml'
+
+      # `-m "not integration"` deselects the suites that need a provisioned
+      # external service; they run in the `integration` job with those services
+      # actually up. Deselecting is deliberate over letting them skip — a skipped
+      # test reads as approved, a deselected one reads as "not this lane".
+      # COVERAGE_FILE names the data file so `coverage combine` finds both lanes.
+      - name: Run the fast lane with coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: .coverage.fast
+        run: |
+          set -euo pipefail
+          uv run --frozen --with "pytest-cov==7.1.0" --with "pytest-xdist==3.6.1" \
+            pytest -m "not integration" \
+            --ignore=tests/unit/etl/backends/test_spark \
+            -n 4 --cov --cov-report= \
+            --junitxml=junit-fast.xml -o junit_family=legacy
+
+      - name: Store fast lane results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results-fast
+          path: |
+            junit-fast.xml
+            .coverage.fast
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Spark lane: serial on purpose. Each xdist worker starts its own JVM, and
+  # under coverage that contention cancels the parallelism out — measured, not
+  # assumed.
+  tests-spark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # uv is pinned to the same version in every workflow to avoid drift, and
+      # installed from wheels only so no sdist setup script can run.
+      - name: Install uv
+        run: |
+          pip install --only-binary :all: "uv==0.10.2"
+
+      - name: Configure uv environment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/uv-ci-spark" >> "$GITHUB_ENV"
+
+      - name: Run the Spark lane with coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: .coverage.spark
+        run: |
+          set -euo pipefail
+          uv run --frozen --with "pytest-cov==7.1.0" \
+            pytest tests/unit/etl/backends/test_spark \
+            --cov --cov-report= \
+            --junitxml=junit-spark.xml -o junit_family=legacy
+
+      - name: Store Spark lane results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-results-spark
+          path: |
+            junit-spark.xml
+            .coverage.spark
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # The gate. It runs the cheap checks (ruff, pyright, bandit), reports the test
+  # results both lanes produced, and holds every signal that needs the whole
+  # picture. `quality-report` reads `tests_failed` and `coverage` from the merged
+  # files, so a failure in either lane still blocks here.
   validate:
-    if: ${{ !startsWith(github.head_ref, 'docs/release-') }}
+    needs: [tests-fast, tests-spark]
     runs-on: ubuntu-latest
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -65,10 +182,34 @@ jobs:
           git fetch --no-tags --prune origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
+      - name: Download fast lane results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: test-results-fast
+
+      - name: Download Spark lane results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: test-results-spark
+
+      - name: Combine the results of both lanes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/ci/merge_test_results.py \
+            --junit junit-fast.xml --junit junit-spark.xml \
+            --junit-output junit.xml
+          uv run --frozen --with "pytest-cov==7.1.0" coverage combine .coverage.fast .coverage.spark
+          uv run --frozen --with "pytest-cov==7.1.0" coverage json -o coverage.json
+          uv run --frozen --with "pytest-cov==7.1.0" coverage xml -o coverage.xml
+
+      # test-results-dir points at the merged files, so the suite is not run a
+      # second time here. ruff, pyright and bandit still run: they cost ~45s and
+      # they are what this job is fast enough to front-load.
       - name: Quality report (strict gate)
         id: quality
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           src-dir: src
           test-dir: tests
@@ -76,10 +217,11 @@ jobs:
           fail-on-quality: "any"
           fail-on-security: "high"
           include-security: "true"
+          test-results-dir: "."
 
       - name: Publish PR quality comment
         if: ${{ always() && steps.quality.outputs.report-file != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- loom-quality-report -->"
@@ -87,7 +229,7 @@ jobs:
 
       - name: Compute candidate prerelease version
         id: version
-        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/release/versioning-branch-semantic@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           branch: ${{ github.head_ref }}
           prerelease: "true"
@@ -95,7 +237,7 @@ jobs:
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
-        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/release/changelog-conventional-commit@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           mode: "pr"
           branch: ${{ github.event.pull_request.head.sha }}
@@ -106,7 +248,7 @@ jobs:
 
       - name: Publish PR changelog comment
         if: ${{ steps.changelog.outcome == 'success' && steps.changelog.outputs.output_path != '' }}
-        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/core/pr-comment-update@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           tags: "<!-- changelog-preview -->,<!-- branch-source:${{ github.head_ref }} -->"
@@ -130,21 +272,6 @@ jobs:
       # layout an application uses. A top-level '*.yaml' matches nothing, and
       # the validator exits 0 on an empty match — so the wrong glob is a step
       # that passes without validating anything.
-      - name: Validate agent artifact corpus
-        shell: bash
-        env:
-          PYTHONPATH: tests/unit/ai/fixtures/fake_pkgs
-        run: |
-          set -euo pipefail
-          uv run --frozen python -m loom.ai.validate 'tests/unit/ai/fixtures/corpus_v1/*/agent.yaml'
-
-      - name: Run pytest with coverage and JUnit output
-        shell: bash
-        run: |
-          set -euo pipefail
-          uv run --frozen --with "pytest-cov==7.1.0" \
-            pytest -m "not integration" --cov --junitxml=junit.xml -o junit_family=legacy
-
       - name: Upload coverage to Codecov
         if: ${{ always() && hashFiles('coverage.xml') != '' }}
         uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5

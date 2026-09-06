@@ -37,7 +37,7 @@ jobs:
           pip install --only-binary :all: "uv==0.10.2"
 
       - name: Quality report (strict)
-        uses: the-reacher-data/loom-actions/actions/python/quality-report@bdb1b5bc76f37f3f33a6598224e864c17b8d756a # v1.0.5
+        uses: the-reacher-data/loom-actions/actions/python/quality-report@b71dbf1c89c91ad93da5e5fac42d3a8acb833938 # v1.1.0
         with:
           src-dir: src
           test-dir: tests
