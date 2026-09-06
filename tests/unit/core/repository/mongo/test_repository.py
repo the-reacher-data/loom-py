@@ -503,3 +503,10 @@ class TestSessions:
         await repo.get_by_id("x")
 
         assert calls == [session]
+
+
+class TestCacheHooks:
+    def test_entity_name_is_the_model_table_name(self, collection: FakeCollection) -> None:
+        assert _articles(collection).entity_name == "articles"
+        assert _notes(collection).entity_name == "notes"
+        assert _articles(collection).model is Article

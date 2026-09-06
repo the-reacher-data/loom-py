@@ -32,7 +32,7 @@ from loom.core.errors import Conflict
 from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import ServerDefault, ServerOnUpdate
-from loom.core.model.introspection import get_column_fields, get_id_attribute
+from loom.core.model.introspection import get_column_fields, get_id_attribute, get_table_name
 from loom.core.repository.abc import (
     BulkCreatable,
     Countable,
@@ -204,6 +204,16 @@ class RepositoryMongo(
             if ServerOnUpdate.is_now(info.field.server_onupdate)
         )
         self._compiler = MongoQueryCompiler(model, self._id_attr)
+
+    @property
+    def model(self) -> type:
+        """Loom model bound to the collection."""
+        return self._model
+
+    @property
+    def entity_name(self) -> str:
+        """Model table name, the cache namespace shared with every backend."""
+        return get_table_name(self._model)
 
     async def get_by_id(self, obj_id: IdT, profile: str = "default") -> OutputT | None:
         """Fetch one entity by primary key."""

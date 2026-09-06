@@ -76,3 +76,11 @@ async def test_update_conditional_failure_returns_none(fake_client: FakeClient) 
     fake_client.get_item = _get_then_delete  # type: ignore[method-assign]
 
     assert await repo.update(1, ProductUpdate(name="Gadget")) is None
+
+
+async def test_entity_name_is_the_model_table_name(fake_client: FakeClient) -> None:
+    # Single-table design: the DynamoDB table name is shared, the model name is not.
+    repo = RepositoryDynamoDB(client=fake_client, table_name="shared", model=Product)
+
+    assert repo.entity_name == "products"
+    assert repo.model is Product

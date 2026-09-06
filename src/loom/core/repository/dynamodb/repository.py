@@ -26,7 +26,7 @@ import msgspec
 from loom.core.errors import Conflict
 from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
-from loom.core.model.introspection import get_column_fields, get_id_attribute
+from loom.core.model.introspection import get_column_fields, get_id_attribute, get_table_name
 from loom.core.repository.abc import (
     Creatable,
     Deletable,
@@ -92,6 +92,20 @@ class RepositoryDynamoDB(
         self._deserializer = TypeDeserializer()
         self._client_error = ClientError
         self.log = get_logger(__name__).bind(repository=self.__class__.__name__)
+
+    @property
+    def model(self) -> type:
+        """Loom model bound to the repository."""
+        return self._model
+
+    @property
+    def entity_name(self) -> str:
+        """Model table name, the cache namespace shared with every backend.
+
+        Distinct from ``table_name``: several models may share one DynamoDB
+        table, but each keeps its own cache namespace.
+        """
+        return get_table_name(self._model)
 
     async def get_by_id(self, obj_id: IdT, profile: str = "default") -> OutputT | None:
         """Fetch one entity by its partition key via ``GetItem``."""
