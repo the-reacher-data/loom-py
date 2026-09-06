@@ -15,13 +15,13 @@ import sys
 from pathlib import Path
 
 import loom.rest.fastapi.auto as auto_module
-from tests.unit.rest._fixture_app import write_project
+from tests.unit.rest._fixture_app import UUID4_ID_FIELD, write_project
 
 _SRC = Path(__file__).resolve().parents[3] / "src"
 _AUTO_SOURCE = Path(auto_module.__file__).read_text(encoding="utf-8")
 _BACKEND_COMPARISON = re.compile(r"\bbackend\s*(==|!=)")
 
-_DYNAMODB_APP_SCRIPT = """
+_NON_RELATIONAL_APP_SCRIPT = """
 import sys
 sys.modules["sqlalchemy"] = None
 
@@ -72,8 +72,27 @@ def test_dynamodb_app_boots_without_sqlalchemy(tmp_path: Path) -> None:
         "AWS_SECRET_ACCESS_KEY": "test",
     }
 
+    _assert_boots_without_sqlalchemy(config_path, env)
+
+
+def test_mongo_app_boots_without_sqlalchemy(tmp_path: Path) -> None:
+    config_path = write_project(
+        tmp_path,
+        persistence={
+            "backend": "mongo",
+            "mongo": {"uri": "mongodb://localhost:27017", "database": "records"},
+        },
+        database=None,
+        id_field=UUID4_ID_FIELD,
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(_SRC), str(_SRC.parent)])}
+
+    _assert_boots_without_sqlalchemy(config_path, env)
+
+
+def _assert_boots_without_sqlalchemy(config_path: str, env: dict[str, str]) -> None:
     result = subprocess.run(
-        [sys.executable, "-c", _DYNAMODB_APP_SCRIPT, config_path],
+        [sys.executable, "-c", _NON_RELATIONAL_APP_SCRIPT, config_path],
         capture_output=True,
         text=True,
         check=False,

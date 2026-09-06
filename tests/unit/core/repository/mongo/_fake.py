@@ -134,15 +134,18 @@ class FakeCollection:
 
     def __init__(self) -> None:
         self.documents: dict[Any, _Document] = {}
+        self.last_session: object | None = None
 
     async def insert_one(
         self, document: _Document, session: object | None = None
     ) -> InsertOneResult:
+        self.last_session = session
         return InsertOneResult(self._store(document), acknowledged=True)
 
     async def insert_many(
         self, documents: Iterable[_Document], ordered: bool = True, session: object | None = None
     ) -> InsertManyResult:
+        self.last_session = session
         if not ordered:
             raise NotImplementedError("fake insert_many supports ordered inserts only")
         inserted: list[Any] = []
@@ -156,22 +159,26 @@ class FakeCollection:
     async def find_one(
         self, filter: Mapping[str, Any] | None = None, session: object | None = None
     ) -> _Document | None:
+        self.last_session = session
         found = await self.find(filter, session).limit(1).to_list()
         return found[0] if found else None
 
     def find(
         self, filter: Mapping[str, Any] | None = None, session: object | None = None
     ) -> FakeCursor:
+        self.last_session = session
         return FakeCursor(self._select(filter or {}))
 
     async def count_documents(
         self, filter: Mapping[str, Any], session: object | None = None
     ) -> int:
+        self.last_session = session
         return len(self._select(filter))
 
     async def update_one(
         self, filter: Mapping[str, Any], update: Mapping[str, Any], session: object | None = None
     ) -> UpdateResult:
+        self.last_session = session
         unknown = [operator for operator in update if operator != "$set"]
         if unknown:
             raise NotImplementedError(
@@ -185,6 +192,7 @@ class FakeCollection:
     async def delete_one(
         self, filter: Mapping[str, Any], session: object | None = None
     ) -> DeleteResult:
+        self.last_session = session
         matched = self._select(filter)[:1]
         for document in matched:
             del self.documents[document["_id"]]
@@ -210,11 +218,12 @@ class FakeCollection:
 class FakeTransaction:
     """Block entered via ``async with await session.start_transaction()``.
 
-    Commits on clean exit, aborts when an exception propagates.
+    Delegates to the session: commits on clean exit, aborts when an
+    exception propagates.
     """
 
-    def __init__(self, client: FakeMongoClient) -> None:
-        self._client = client
+    def __init__(self, session: FakeSession) -> None:
+        self._session = session
 
     async def __aenter__(self) -> FakeTransaction:
         return self
@@ -226,16 +235,24 @@ class FakeTransaction:
         tb: TracebackType | None,
     ) -> None:
         if exc_type is None:
-            self._client.committed += 1
+            await self._session.commit_transaction()
         else:
-            self._client.aborted += 1
+            await self._session.abort_transaction()
 
 
 class FakeSession:
-    """Stand-in for :class:`pymongo.asynchronous.client_session.AsyncClientSession`."""
+    """Stand-in for :class:`pymongo.asynchronous.client_session.AsyncClientSession`.
+
+    Supports both driver shapes: the ``async with await start_transaction()``
+    block, and the explicit ``commit_transaction`` / ``abort_transaction`` /
+    ``end_session`` calls the unit of work issues.
+    """
 
     def __init__(self, client: FakeMongoClient) -> None:
         self._client = client
+        self.in_transaction = False
+        self.ended = False
+        self._snapshot: dict[str, dict[Any, _Document]] = {}
 
     async def __aenter__(self) -> FakeSession:
         return self
@@ -249,7 +266,55 @@ class FakeSession:
         return None
 
     async def start_transaction(self) -> FakeTransaction:
-        return FakeTransaction(self._client)
+        if self._client.start_transaction_error is not None:
+            raise self._client.start_transaction_error
+        self.in_transaction = True
+        self._snapshot = {
+            name: dict(collection.documents)
+            for name, collection in self._client.collections.items()
+        }
+        return FakeTransaction(self)
+
+    async def commit_transaction(self) -> None:
+        self._client.committed += 1
+        self.in_transaction = False
+
+    async def abort_transaction(self) -> None:
+        """Abort, restoring every collection to its state at ``start_transaction``."""
+        if self._client.abort_error is not None:
+            raise self._client.abort_error
+        for name, collection in self._client.collections.items():
+            collection.documents = dict(self._snapshot.get(name, {}))
+        self._client.aborted += 1
+        self.in_transaction = False
+
+    async def end_session(self) -> None:
+        self.ended = True
+        if self._client.end_error is not None:
+            raise self._client.end_error
+
+
+class FakeAdmin:
+    """The ``admin`` database: answers ``ping`` unless the client is told to fail."""
+
+    def __init__(self, client: FakeMongoClient) -> None:
+        self._client = client
+
+    async def command(self, command: str) -> dict[str, Any]:
+        if self._client.ping_error is not None:
+            raise self._client.ping_error
+        return {"ok": 1.0}
+
+
+class FakeDatabase:
+    """Named database of a :class:`FakeMongoClient`; collections are shared per client."""
+
+    def __init__(self, client: FakeMongoClient, name: str) -> None:
+        self._client = client
+        self.name = name
+
+    def __getitem__(self, name: str) -> FakeCollection:
+        return self._client.collection(name)
 
 
 class FakeMongoClient:
@@ -257,16 +322,37 @@ class FakeMongoClient:
 
     Mirrors the driver's shapes: ``start_session()`` is synchronous and
     returns an async context manager; ``start_transaction()`` is awaited and
-    returns one. Commits and aborts are counted, nothing is rolled back.
+    returns one; ``client[database][collection]`` addresses a collection;
+    ``admin.command("ping")`` answers the readiness probe. Commits and aborts
+    are counted; an explicit ``abort_transaction`` restores the documents
+    present when the transaction started.
     """
 
     def __init__(self) -> None:
         self.collections: dict[str, FakeCollection] = {}
+        self.sessions: list[FakeSession] = []
         self.committed = 0
         self.aborted = 0
+        self.closed = False
+        self.ping_error: Exception | None = None
+        self.start_transaction_error: Exception | None = None
+        self.abort_error: Exception | None = None
+        self.end_error: Exception | None = None
+
+    @property
+    def admin(self) -> FakeAdmin:
+        return FakeAdmin(self)
+
+    def __getitem__(self, name: str) -> FakeDatabase:
+        return FakeDatabase(self, name)
 
     def collection(self, name: str) -> FakeCollection:
         return self.collections.setdefault(name, FakeCollection())
 
     def start_session(self) -> FakeSession:
-        return FakeSession(self)
+        session = FakeSession(self)
+        self.sessions.append(session)
+        return session
+
+    async def close(self) -> None:
+        self.closed = True

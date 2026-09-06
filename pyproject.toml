@@ -161,6 +161,7 @@ spark = "loom.etl.backends.spark.provider:SparkProvider"
 [project.entry-points."loom.persistence.backends"]
 sqlalchemy = "loom.core.repository.sqlalchemy.backend:SQLAlchemyBackend"
 dynamodb = "loom.core.repository.dynamodb.backend:DynamoDBBackend"
+mongo = "loom.core.repository.mongo.backend:MongoBackend"
 none = "loom.core.persistence.none:NoneBackend"
 
 [build-system]

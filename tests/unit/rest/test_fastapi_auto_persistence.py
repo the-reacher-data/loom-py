@@ -15,6 +15,7 @@ from typing import Any, ClassVar, cast
 import pytest
 
 import loom.core.plugins.entrypoints as entrypoints_module
+import loom.core.repository.mongo.backend as mongo_backend_module
 import loom.core.repository.sqlalchemy.backend as sqlalchemy_backend_module
 from loom.core.config import ConfigContext
 from loom.core.config.errors import ConfigError
@@ -22,6 +23,7 @@ from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel, ColumnField
 from loom.core.persistence import NoneBackend, PersistenceWiring
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
+from loom.core.repository.mongo.uow import MongoUnitOfWorkFactory
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.use_case.use_case import UseCase
 from loom.rest.fastapi import auto
@@ -32,7 +34,8 @@ from loom.rest.fastapi.auto import (
     create_app,
 )
 from loom.rest.model import RestInterface, RestRoute
-from tests.unit.rest._fixture_app import write_project
+from tests.unit.core.repository.mongo._fake import FakeMongoClient
+from tests.unit.rest._fixture_app import UUID4_ID_FIELD, write_project
 
 
 def _interfaces(*classes: type) -> tuple[type[RestInterface[Any]], ...]:
@@ -46,6 +49,10 @@ _DYNAMODB_SECTION = {
     "endpoint_url": "http://localhost:8000",
 }
 _DYNAMODB_PERSISTENCE = {"backend": "dynamodb", "dynamodb": _DYNAMODB_SECTION}
+_MONGO_PERSISTENCE = {
+    "backend": "mongo",
+    "mongo": {"uri": "mongodb://localhost:27017", "database": "demo"},
+}
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -81,6 +88,14 @@ def aws_test_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def fake_mongo_client(monkeypatch: pytest.MonkeyPatch) -> FakeMongoClient:
+    """Serve the Mongo backend an in-memory client so no connection is attempted."""
+    client = FakeMongoClient()
+    monkeypatch.setattr(mongo_backend_module, "_build_mongo_client", lambda _cfg: client)
+    return client
+
+
+@pytest.fixture
 def agents_only_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
@@ -106,6 +121,15 @@ class TestBackendSelection:
         )
 
         assert isinstance(wiring.uow_factory, DynamoUnitOfWorkFactory)
+
+    def test_selects_mongo_backend(
+        self, agents_only_discovery: None, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(
+            _AppConfig(name="demo"), _ctx(persistence=_MONGO_PERSISTENCE)
+        )
+
+        assert isinstance(wiring.uow_factory, MongoUnitOfWorkFactory)
 
     def test_none_has_no_unit_of_work(self, agents_only_discovery: None) -> None:
         _runtime, wiring, _discovered = _build_bootstrap(
@@ -138,6 +162,31 @@ class TestDynamoDBBoot:
         config_path = write_project(tmp_path, persistence={"backend": "dynamodb"})
 
         with pytest.raises(ConfigError, match="persistence.dynamodb"):
+            create_app(config_path)
+
+
+class TestMongoBoot:
+    def test_boots_without_a_database_section(
+        self, tmp_path: Path, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        config_path = write_project(
+            tmp_path, persistence=_MONGO_PERSISTENCE, database=None, id_field=UUID4_ID_FIELD
+        )
+
+        assert create_app(config_path) is not None
+
+    def test_requires_its_config_section(self, tmp_path: Path) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "mongo"})
+
+        with pytest.raises(ConfigError, match="persistence.mongo"):
+            create_app(config_path)
+
+    def test_rejects_an_autoincrement_key_naming_the_model(
+        self, tmp_path: Path, fake_mongo_client: FakeMongoClient
+    ) -> None:
+        config_path = write_project(tmp_path, persistence=_MONGO_PERSISTENCE, database=None)
+
+        with pytest.raises(ConfigError, match="ConfigRecord.id"):
             create_app(config_path)
 
 
