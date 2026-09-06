@@ -43,11 +43,12 @@ from loom.streaming.graph._flow import StreamFlow
 from loom.streaming.kafka._config import ConsumerSettings, KafkaSettings
 from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
+from loom.streaming.nodes._branches import is_branching_node, iter_branches
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._decompose import Explode
 from loom.streaming.nodes._expand_routes import ExpandRoutes
-from loom.streaming.nodes._fork import Fork, ForkKind
+from loom.streaming.nodes._fork import Fork
 from loom.streaming.nodes._mongo import FromMongoCDC
 from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch, Drain, ForEach, StreamShape, WindowStrategy
@@ -194,29 +195,14 @@ def _delivery_conflict_issues(
     return [delivery_conflict(consumer_ref, settings.delivery, settings.enable_auto_commit)]
 
 
-def _iter_expand_routes_groups(node: ExpandRoutes[Any]) -> Iterable[Iterable[object]]:
-    for process in node.routes.values():
-        yield process.nodes
-    if node.default is not None:
-        yield node.default.nodes
-
-
 def _is_scoped_node_with_process(node: object) -> bool:
     return isinstance(node, WithAsync) or (isinstance(node, With) and node.process is not None)
 
 
 def _iter_child_node_groups(node: object) -> Iterable[Iterable[object]]:
-    if isinstance(node, Router):
-        for _, branch_nodes in _router_branch_nodes(node):
-            yield branch_nodes
-    elif isinstance(node, Fork):
-        for _, branch_nodes in _fork_branch_nodes(node):
-            yield branch_nodes
-    elif isinstance(node, Broadcast):
-        for route in node.routes:
-            yield route.process.nodes
-    elif isinstance(node, ExpandRoutes):
-        yield from _iter_expand_routes_groups(node)
+    if is_branching_node(node):
+        for branch in iter_branches(node):
+            yield branch.nodes
     elif _is_scoped_node_with_process(node):
         yield cast(Any, node).process.nodes
 
@@ -425,7 +411,7 @@ def _validate_fork_shapes(
 ) -> tuple[list[CompilationIssue], StreamShape]:
     errors: list[CompilationIssue] = []
 
-    for label, nodes in _fork_branch_nodes(fork):
+    for label, nodes in _labelled_branch_nodes(fork):
         branch_errors, _ = _validate_shape_sequence(nodes, initial_shape)
         errors.extend(issue.prefixed(f"fork branch {label}") for issue in branch_errors)
         if not _has_terminal_output(nodes):
@@ -439,9 +425,9 @@ def _validate_broadcast_shapes(
     initial_shape: StreamShape,
 ) -> tuple[list[CompilationIssue], StreamShape]:
     errors: list[CompilationIssue] = []
-    for branch_idx, route in enumerate(broadcast.routes):
-        branch_errors, _ = _validate_shape_sequence(route.process.nodes, initial_shape)
-        errors.extend(issue.prefixed(f"broadcast branch {branch_idx}") for issue in branch_errors)
+    for branch in iter_branches(broadcast):
+        branch_errors, _ = _validate_shape_sequence(branch.nodes, initial_shape)
+        errors.extend(issue.prefixed(f"broadcast branch {branch.label}") for issue in branch_errors)
     return errors, StreamShape.NONE
 
 
@@ -475,7 +461,7 @@ def _validate_router_shapes(
     errors: list[CompilationIssue] = []
     outputs: list[StreamShape] = []
 
-    for label, nodes in _router_branch_nodes(router):
+    for label, nodes in _labelled_branch_nodes(router):
         branch_errors, branch_output = _validate_router_branch_shape_sequence(nodes, initial_shape)
         errors.extend(issue.prefixed(f"router branch {label}") for issue in branch_errors)
         for node in nodes:
@@ -493,32 +479,10 @@ def _validate_router_shapes(
     return errors, outputs[0] if outputs else initial_shape
 
 
-def _router_branch_nodes(
-    router: Router[StreamPayload, StreamPayload],
-) -> Iterable[tuple[str, tuple[object, ...]]]:
-    for key, process in router.routes.items():
-        yield repr(key), process.nodes
-    for index, route in enumerate(router.predicate_routes):
-        yield f"predicate[{index}]", route.process.nodes
-    if router.default is not None:
-        yield "default", router.default.nodes
-
-
-def _fork_branch_nodes(
-    fork: Fork[StreamPayload],
-) -> Iterable[tuple[str, tuple[object, ...]]]:
-    if fork.kind is ForkKind.KEYED:
-        for key, process in fork.routes.items():
-            yield repr(key), process.nodes
-        return
-    for index, route in enumerate(fork.predicate_routes):
-        yield f"predicate[{index}]", route.process.nodes
-
-
-def _fork_branch_count(fork: Fork[StreamPayload]) -> int:
-    if fork.kind is ForkKind.KEYED:
-        return len(fork.routes)
-    return len(fork.predicate_routes)
+def _labelled_branch_nodes(node: object) -> Iterable[tuple[str, tuple[object, ...]]]:
+    """Yield the label and nodes of every branch of *node*, fallback branch last."""
+    for branch in iter_branches(node):
+        yield branch.label, branch.nodes
 
 
 def _is_leaf_terminal(node: object) -> bool:
@@ -545,29 +509,26 @@ def _has_terminal_output(nodes: Iterable[object]) -> bool:
 
 
 def _router_has_terminal_output(router: Router[StreamPayload, StreamPayload]) -> bool:
-    return any(_has_terminal_output(nodes) for _, nodes in _router_branch_nodes(router))
+    return any(_has_terminal_output(nodes) for _, nodes in _labelled_branch_nodes(router))
 
 
 def _fork_has_terminal_output(fork: Fork[StreamPayload]) -> bool:
-    return any(_has_terminal_output(nodes) for _, nodes in _fork_branch_nodes(fork))
+    return any(_has_terminal_output(nodes) for _, nodes in _labelled_branch_nodes(fork))
 
 
 def _expand_routes_has_terminal_output(node: ExpandRoutes[Any]) -> bool:
-    all_processes = list(node.routes.values())
-    if node.default is not None:
-        all_processes.append(node.default)
-    return any(_has_terminal_output(p.nodes) for p in all_processes)
+    return any(_has_terminal_output(branch.nodes) for branch in iter_branches(node))
 
 
 def _node_has_kafka_topic_output(node: object) -> bool:
     if isinstance(node, IntoTopic):
         return True
     if isinstance(node, Router):
-        return any(_has_kafka_topic_output(nodes) for _, nodes in _router_branch_nodes(node))
+        return any(_has_kafka_topic_output(nodes) for _, nodes in _labelled_branch_nodes(node))
     if isinstance(node, Fork):
-        return any(_has_kafka_topic_output(nodes) for _, nodes in _fork_branch_nodes(node))
+        return any(_has_kafka_topic_output(nodes) for _, nodes in _labelled_branch_nodes(node))
     if isinstance(node, Broadcast):
-        return any(_has_kafka_topic_output(route.process.nodes) for route in node.routes)
+        return any(_has_kafka_topic_output(branch.nodes) for branch in iter_branches(node))
     if isinstance(node, (WithAsync, With)):
         return _has_kafka_topic_output(node.process.nodes)
     return False

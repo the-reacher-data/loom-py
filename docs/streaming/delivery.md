@@ -40,6 +40,11 @@ Under `at_least_once` two structural rules are enforced at compile/startup:
   cannot reach the source's commit tracker. Scale those flows with
   `workers_per_process` (threads share the tracker) or use Bytewax recovery.
 
+Whatever the delivery mode, the `default` branch of a `Fork` is shape-validated
+like every keyed or predicate branch and must reach a terminal
+(`FORK_BRANCH_NO_TERMINAL`). `default=Process(step)` is a compile error; write
+`default=Process(step, Drain())` to discard the record explicitly.
+
 ### What at-least-once requires of a flow
 
 The guarantee rests on one rule: **every record is completed exactly once,

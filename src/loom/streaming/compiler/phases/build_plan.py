@@ -25,8 +25,6 @@ from loom.streaming.compiler._plan import (
     CompiledStorageSink,
 )
 from loom.streaming.compiler.phases.validate import (
-    _fork_branch_count,
-    _fork_branch_nodes,
     _node_needs_async_bridge,
     _node_output_shape,
     _walk_all_process_nodes,
@@ -37,11 +35,8 @@ from loom.streaming.kafka._config import KafkaSettings
 from loom.streaming.kafka._wire import DecodeError, DispatchTable
 from loom.streaming.mongo import MongoConfig
 from loom.streaming.nodes._boundary import FromMultiTypeTopic, FromTopic, IntoTopic
-from loom.streaming.nodes._broadcast import Broadcast
-from loom.streaming.nodes._expand_routes import ExpandRoutes
-from loom.streaming.nodes._fork import Fork
+from loom.streaming.nodes._branches import is_branching_node, iter_branches
 from loom.streaming.nodes._mongo import FromMongoCDC
-from loom.streaming.nodes._router import Router
 from loom.streaming.nodes._shape import CollectBatch
 from loom.streaming.nodes._sink import IntoSink
 from loom.streaming.nodes._table import Backend, IntoTable
@@ -216,9 +211,8 @@ def _build_terminal_sinks(
         if isinstance(node, IntoSink):
             storage_sinks[path] = _build_storage_sink(node, ctx)
             continue
-        builder = _BRANCH_BUILDERS.get(type(node))
-        if builder is not None:
-            sub_sinks, sub_storage = builder(node, ctx, path_prefix=path)
+        if is_branching_node(node):
+            sub_sinks, sub_storage = _build_branch_terminal_sinks(node, ctx, path_prefix=path)
             sinks.update(sub_sinks)
             storage_sinks.update(sub_storage)
             continue
@@ -231,95 +225,20 @@ def _build_terminal_sinks(
     return sinks, storage_sinks
 
 
-def _build_fork_terminal_sinks(
-    fork: Fork[Any],
+def _build_branch_terminal_sinks(
+    node: object,
     ctx: ConfigContext,
     *,
     path_prefix: tuple[int, ...],
 ) -> _TerminalSinks:
+    """Build the sinks of every branch of one branching node, keyed by branch path."""
     sinks: dict[tuple[int, ...], CompiledSink] = {}
     storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
-    branch_count = _fork_branch_count(fork)
-    for branch_idx, (_, nodes) in enumerate(_fork_branch_nodes(fork)):
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            nodes, ctx, path_prefix=path_prefix + (branch_idx,)
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    if fork.default is not None:
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            fork.default.nodes, ctx, path_prefix=path_prefix + (branch_count,)
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    return sinks, storage_sinks
-
-
-def _build_router_terminal_sinks(
-    router: Router[Any, Any],
-    ctx: ConfigContext,
-    *,
-    path_prefix: tuple[int, ...],
-) -> _TerminalSinks:
-    sinks: dict[tuple[int, ...], CompiledSink] = {}
-    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
-    keyed_count = len(router.routes)
-    for branch_idx, process in enumerate(router.routes.values()):
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            process.nodes, ctx, path_prefix=path_prefix + (branch_idx,)
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    for i, route in enumerate(router.predicate_routes):
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            route.process.nodes, ctx, path_prefix=path_prefix + (keyed_count + i,)
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    if router.default is not None:
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            router.default.nodes, ctx, path_prefix=path_prefix + (len(router.routes),)
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    return sinks, storage_sinks
-
-
-def _build_broadcast_terminal_sinks(
-    broadcast: Broadcast[Any],
-    ctx: ConfigContext,
-    *,
-    path_prefix: tuple[int, ...],
-) -> _TerminalSinks:
-    sinks: dict[tuple[int, ...], CompiledSink] = {}
-    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
-    for branch_idx, route in enumerate(broadcast.routes):
-        branch_path = path_prefix + (branch_idx,)
-        if route.output is not None:
-            sinks[branch_path] = _build_sink(route.output, ctx)
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            route.process.nodes, ctx, path_prefix=branch_path
-        )
-        sinks.update(sub_sinks)
-        storage_sinks.update(sub_storage)
-    return sinks, storage_sinks
-
-
-def _build_expand_routes_terminal_sinks(
-    node: ExpandRoutes[Any],
-    ctx: ConfigContext,
-    *,
-    path_prefix: tuple[int, ...],
-) -> _TerminalSinks:
-    sinks: dict[tuple[int, ...], CompiledSink] = {}
-    storage_sinks: dict[tuple[int, ...], CompiledStorageSink] = {}
-    all_processes = list(node.routes.values())
-    if node.default is not None:
-        all_processes.append(node.default)
-    for branch_idx, process in enumerate(all_processes):
-        sub_sinks, sub_storage = _build_terminal_sinks(
-            process.nodes, ctx, path_prefix=path_prefix + (branch_idx,)
-        )
+    for branch in iter_branches(node):
+        branch_path = path_prefix + (branch.index,)
+        if branch.output is not None:
+            sinks[branch_path] = _build_sink(branch.output, ctx)
+        sub_sinks, sub_storage = _build_terminal_sinks(branch.nodes, ctx, path_prefix=branch_path)
         sinks.update(sub_sinks)
         storage_sinks.update(sub_storage)
     return sinks, storage_sinks
@@ -360,13 +279,3 @@ def _build_storage_sink(node: IntoSink[Any], ctx: ConfigContext) -> CompiledStor
                 database_config=None,
             )
     raise CompilationError([storage_sink_unsupported(node)])
-
-
-_BRANCH_BUILDERS: MappingProxyType[type, Callable[..., _TerminalSinks]] = MappingProxyType(
-    {
-        Fork: _build_fork_terminal_sinks,
-        Router: _build_router_terminal_sinks,
-        Broadcast: _build_broadcast_terminal_sinks,
-        ExpandRoutes: _build_expand_routes_terminal_sinks,
-    }
-)

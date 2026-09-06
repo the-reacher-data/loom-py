@@ -74,6 +74,7 @@ class Fork(Generic[InT]):
         predicate_routes: Sequence[ForkRoute[InT]] = (),
         default: Process[InT, Any] | None = None,
     ) -> None:
+        _reject_foreign_routes(kind, routes, predicate_routes)
         self._kind = kind
         self._selector = selector
         self._routes = dict(routes or {})
@@ -150,6 +151,22 @@ class Fork(Generic[InT]):
     def default(self) -> Process[InT, Any] | None:
         """Fallback process."""
         return self._default
+
+
+def _reject_foreign_routes(
+    kind: ForkKind,
+    routes: Mapping[object, Process[Any, Any]] | None,
+    predicate_routes: Sequence[ForkRoute[Any]],
+) -> None:
+    """Reject routes that belong to a dispatch family other than *kind*.
+
+    Only the declared family is enumerated, so a route of the other family
+    would never be indexed, validated or wired.
+    """
+    if kind is ForkKind.KEYED and predicate_routes:
+        raise ValueError("Fork(kind=keyed) does not dispatch predicate_routes.")
+    if kind is ForkKind.PREDICATE and routes:
+        raise ValueError("Fork(kind=predicate) does not dispatch keyed routes.")
 
 
 __all__ = ["Fork", "ForkKind", "ForkRoute", "evaluate_predicate", "select_value"]

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, cast
+from collections.abc import Callable, Sequence
+from typing import Any, Final, cast
 
-from bytewax.operators import branch
+from bytewax.operators import branch as bw_branch
 from bytewax.operators import flat_map as bw_flat_map
 from bytewax.operators import map as bw_map
 
@@ -24,11 +24,14 @@ from loom.streaming.bytewax.handlers._shared import (
     _register_row_fanout,
     _replace_payload,
     _require_message,
+    _resolve_batch_result,
+    _resolve_record_result,
     _step_id,
 )
 from loom.streaming.core._exceptions import UnsupportedNodeError
 from loom.streaming.core._message import Message
 from loom.streaming.nodes._boundary import IntoTopic
+from loom.streaming.nodes._branches import Branch, iter_branches
 from loom.streaming.nodes._broadcast import Broadcast
 from loom.streaming.nodes._capabilities import RouterBranchSafe
 from loom.streaming.nodes._expand_routes import ExpandRoutes
@@ -40,6 +43,9 @@ from loom.streaming.nodes._step import BatchStep, RecordStep
 
 Stream = Any
 
+_NO_KEY: Final = object()
+"""Sentinel for a router without a selector, which no keyed branch can match."""
+
 
 def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProtocol) -> Stream:
     if not isinstance(raw, Router):
@@ -48,13 +54,14 @@ def _apply_router(stream: Stream, raw: object, idx: int, ctx: _BuildContextProto
     observer = ctx.flow_runtime
     flow_name = ctx.plan.name
     boundary = ErrorBoundary(observer=observer, flow=flow_name)
+    branches = tuple(iter_branches(router))
 
     def step(msg: Any) -> Any:
         message = _require_message(msg)
         return _execute_in_boundary(
             _classify_routing,
             message,
-            lambda: _execute_router_step(observer, flow_name, idx, router, message),
+            lambda: _execute_router_step(observer, flow_name, idx, router, branches, message),
             boundary,
         )
 
@@ -71,6 +78,7 @@ def _execute_router_step(
     flow_name: str,
     idx: int,
     router: Router[Any, Any],
+    branches: Sequence[Branch],
     message: Any,
 ) -> Any:
     with _observe_node(
@@ -81,7 +89,7 @@ def _execute_router_step(
         trace_id=message.meta.trace_id,
         correlation_id=message.meta.correlation_id,
     ):
-        return _execute_router(router, message)
+        return _execute_router(router, branches, message)
 
 
 def _apply_broadcast(
@@ -102,16 +110,13 @@ def _apply_broadcast(
             lambda item: _register_broadcast_fanout(item, tracker, len(node.routes)),
         )
 
-    for branch_idx, route in enumerate(node.routes):
-        branch_stream = ctx.wire_process(
-            stream,
-            route.process.nodes,
-            path_prefix=broadcast_path + (branch_idx,),
-        )
+    for branch in iter_branches(node):
+        branch_path = broadcast_path + (branch.index,)
+        branch_stream = ctx.wire_process(stream, branch.nodes, path_prefix=branch_path)
         ctx.wire_branch_terminal(
-            f"broadcast_{idx}_out_{branch_idx}",
+            f"broadcast_{idx}_out_{branch.index}",
             branch_stream,
-            broadcast_path + (branch_idx,),
+            branch_path,
         )
 
     return stream
@@ -183,9 +188,6 @@ def _apply_expand_routes(
         raise UnsupportedNodeError(f"Unsupported expand_routes node {type(raw).__name__}.")
     node = raw
     expand_path = ctx.current_path
-    all_processes: list[tuple[type | None, Any]] = list(node.routes.items())
-    if node.default is not None:
-        all_processes.append((None, node.default))
 
     # Step 1: expand once — payload becomes dict[type, list[rows]].
     # Use Message() directly: _replace_payload rejects non-LoomStruct payloads.
@@ -203,21 +205,19 @@ def _apply_expand_routes(
     expanded_stream = _wire_row_fanout(expanded_stream, node, idx, ctx)
 
     # Step 3: for each route, flat_map to extract rows of its type, then wire process
-    for branch_idx, (output_type, process) in enumerate(all_processes):
+    for branch in iter_branches(node):
+        branch_path = expand_path + (branch.index,)
+        output_type = None if branch.is_default else cast(type, branch.key)
         route_stream = bw_flat_map(
-            _step_id(f"expand_routes_{idx}_extract_{branch_idx}", ctx),
+            _step_id(f"expand_routes_{idx}_extract_{branch.index}", ctx),
             expanded_stream,
             _row_extractor(node, output_type),
         )
-        ctx.wire_process(
-            route_stream,
-            process.nodes,
-            path_prefix=expand_path + (branch_idx,),
-        )
+        ctx.wire_process(route_stream, branch.nodes, path_prefix=branch_path)
         ctx.wire_branch_terminal(
-            f"expand_routes_{idx}_out_{branch_idx}",
+            f"expand_routes_{idx}_out_{branch.index}",
             route_stream,
-            expand_path + (branch_idx,),
+            branch_path,
         )
 
     return expanded_stream
@@ -244,27 +244,21 @@ def _apply_fork_by(
     remaining = stream
     fork_path = ctx.current_path
 
-    for branch_idx, (key, process) in enumerate(fork.routes.items()):
-        branch_name = _step_id(f"fork_{idx}_by_{branch_idx}", ctx)
+    for branch in iter_branches(fork):
+        branch_path = fork_path + (branch.index,)
+        if branch.is_default:
+            ctx.wire_process(remaining, branch.nodes, path_prefix=branch_path)
+            continue
+        branch_name = _step_id(f"fork_{idx}_by_{branch.index}", ctx)
 
-        def predicate(message: Any, *, expected: object = key) -> bool:
+        def predicate(message: Any, *, expected: object = branch.key) -> bool:
             runtime_message = _require_message(message)
             return select_value(selector, runtime_message) == expected
 
-        split = branch(branch_name, remaining, predicate)
-        ctx.wire_process(
-            split.trues,
-            process.nodes,
-            path_prefix=fork_path + (branch_idx,),
-        )
+        split = bw_branch(branch_name, remaining, predicate)
+        ctx.wire_process(split.trues, branch.nodes, path_prefix=branch_path)
         remaining = split.falses
 
-    if fork.default is not None:
-        ctx.wire_process(
-            remaining,
-            fork.default.nodes,
-            path_prefix=fork_path + (len(fork.routes),),
-        )
     return remaining
 
 
@@ -277,68 +271,57 @@ def _apply_fork_when(
     remaining = stream
     fork_path = ctx.current_path
 
-    for branch_idx, route in enumerate(fork.predicate_routes):
-        branch_name = _step_id(f"fork_{idx}_when_{branch_idx}", ctx)
-        route_when = route.when
+    for branch in iter_branches(fork):
+        branch_path = fork_path + (branch.index,)
+        if branch.is_default:
+            ctx.wire_process(remaining, branch.nodes, path_prefix=branch_path)
+            continue
+        branch_name = _step_id(f"fork_{idx}_when_{branch.index}", ctx)
 
-        def predicate(message: Any, *, when: Any = route_when) -> bool:
+        def predicate(message: Any, *, when: Any = branch.when) -> bool:
             runtime_message = _require_message(message)
             return evaluate_predicate(when, runtime_message)
 
-        split = branch(branch_name, remaining, predicate)
-        ctx.wire_process(
-            split.trues,
-            route.process.nodes,
-            path_prefix=fork_path + (branch_idx,),
-        )
+        split = bw_branch(branch_name, remaining, predicate)
+        ctx.wire_process(split.trues, branch.nodes, path_prefix=branch_path)
         remaining = split.falses
 
-    if fork.default is not None:
-        ctx.wire_process(
-            remaining,
-            fork.default.nodes,
-            path_prefix=fork_path + (len(fork.predicate_routes),),
-        )
     return remaining
 
 
-def _execute_router(
-    router: Router[Any, Any],
-    message: Any,
-) -> Any:
-    branch_nodes = _select_router_branch(router, message)
+def _execute_router(router: Router[Any, Any], branches: Sequence[Branch], message: Any) -> Any:
+    branch = _select_router_branch(router, branches, message)
+    if branch is None:
+        return message
     result = message
-    for node in branch_nodes:
+    for node in branch.nodes:
         result = _execute_router_node(node, result)
     return result
 
 
-def _select_router_branch(router: Router[Any, Any], message: Any) -> tuple[object, ...]:
-    if router.selector is not None:
-        key = select_value(router.selector, message)
-        selected = router.routes.get(key)
-        if selected is not None:
-            return selected.nodes
-
-    for route in router.predicate_routes:
-        if evaluate_predicate(route.when, message):
-            return route.process.nodes
-
-    if router.default is not None:
-        return router.default.nodes
-    return ()
+def _select_router_branch(
+    router: Router[Any, Any], branches: Sequence[Branch], message: Any
+) -> Branch | None:
+    """Return the branch of *branches* that claims *message*, the fallback, or ``None``."""
+    key = select_value(router.selector, message) if router.selector is not None else _NO_KEY
+    fallback: Branch | None = None
+    for branch in branches:
+        if branch.is_default:
+            fallback = branch
+        elif branch.when is not None:
+            if evaluate_predicate(branch.when, message):
+                return branch
+        elif key is not _NO_KEY and branch.key == key:
+            return branch
+    return fallback
 
 
 def _execute_router_node(node: object, message: Any) -> Any:
     if isinstance(node, RouterBranchSafe) and isinstance(node, BatchStep):
-        from loom.streaming.bytewax.handlers._shared import _replace_payload, _resolve_batch_result
-
         batch_node = cast(_ExecutableBatchStep, node)
         results = _resolve_batch_result(batch_node.execute([message]), "Router")
         return _replace_payload(message, results[0])
     if isinstance(node, RouterBranchSafe) and isinstance(node, RecordStep):
-        from loom.streaming.bytewax.handlers._shared import _replace_payload, _resolve_record_result
-
         record_node = cast(_ExecutableRecordStep, node)
         return _replace_payload(
             message,
