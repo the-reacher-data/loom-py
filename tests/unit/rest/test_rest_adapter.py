@@ -20,6 +20,7 @@ from loom.core.errors.codes import ErrorCode
 from loom.core.repository.abc.query import CursorResult, PageResult
 from loom.core.transport.adapter import AdapterRequest, LoomAdapter
 from loom.core.use_case.use_case import UseCase
+from loom.etl import Format, UnsupportedFormatError
 from loom.rest.errors import HttpErrorMapper
 from loom.rest.rest_adapter import LoomRestAdapter
 
@@ -127,6 +128,11 @@ class TestHttpErrorMapper:
     def test_conflict_maps_to_409(self) -> None:
         exc = self._mapper().to_http(Conflict("duplicate"))
         assert exc.status_code == 409
+
+    def test_an_unsupported_format_maps_to_400(self) -> None:
+        """A declaration mistake in an ETL exposed over REST is a caller error."""
+        exc = self._mapper().to_http(UnsupportedFormatError(Format.XLSX, (Format.CSV,)))
+        assert exc.status_code == 400
 
     def test_rule_violations_maps_to_422(self) -> None:
         violations = RuleViolations([RuleViolation("email", "invalid")])

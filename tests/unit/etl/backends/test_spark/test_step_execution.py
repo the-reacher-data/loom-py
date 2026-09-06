@@ -11,7 +11,16 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.etl import ETLParams, ETLStep, Format, FromFile, FromTable, IntoFile, IntoTable
+from loom.etl import (
+    ETLParams,
+    ETLStep,
+    Format,
+    FromFile,
+    FromTable,
+    IntoFile,
+    IntoTable,
+    UnsupportedFormatError,
+)
 from loom.etl.backends.spark._dtype import spark_to_loom
 from loom.etl.compiler import ETLCompiler
 from loom.etl.declarative._read_options import CsvReadOptions
@@ -413,5 +422,5 @@ class TestSparkReaderWriterTypeGuards:
 
         write_spec = FileSpec(path=str(output_path), format=Format.XLSX)
         frame = spark.createDataFrame([(1,)], ["id"])
-        with pytest.raises(TypeError, match="XLSX"):
+        with pytest.raises(UnsupportedFormatError, match="Unsupported format: xlsx"):
             spark_writer.write(frame, write_spec, None)

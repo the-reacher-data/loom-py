@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -476,6 +477,15 @@ def test_writer_replace_where_overwrites_matching_rows(tmp_path: Path) -> None:
     result = _read_table(tmp_path, "staging.yearly")
     assert result.filter(pl.col("year") == 2024)["v"].to_list() == [99]
     assert result.filter(pl.col("year") == 2023)["v"].to_list() == [10]
+
+
+def test_writer_replace_where_creates_the_table_when_it_is_absent(tmp_path: Path) -> None:
+    writer = PolarsTargetWriter(tmp_path)
+    new_data = pl.DataFrame({"year": [2024], "v": [99]})
+    declared = IntoTable("staging.fresh").replace_where(col("year") == p.run_date.year)
+    spec = replace(declared._to_spec(), schema_mode=SchemaMode.OVERWRITE)
+    writer.write(new_data.lazy(), spec, _DateParams(run_date=date(2024, 1, 1)))
+    assert _read_table(tmp_path, "staging.fresh")["v"].to_list() == [99]
 
 
 def test_writer_persists_schema_after_write(tmp_path: Path) -> None:

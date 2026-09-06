@@ -30,4 +30,5 @@ class ErrorCode(StrEnum):
     CONFLICT = "conflict"
     RULE_VIOLATION = "rule_violation"
     RULE_VIOLATIONS = "rule_violations"
+    UNSUPPORTED_FORMAT = "unsupported_format"
     SYSTEM_ERROR = "system_error"
