@@ -165,6 +165,27 @@ def test_declaration_setting_the_variable_itself_is_rejected_naming_the_etl(
     recorder.deploy.assert_not_called()
 
 
+def test_job_variables_env_as_a_list_is_rejected_before_any_deployment(
+    tmp_path: Path, recorder: _Recorder
+) -> None:
+    path = _write(
+        tmp_path,
+        "orders.yaml",
+        f"""\
+        etl: orders
+        pipeline: {PIPELINES}.OrdersPipeline
+        environments:
+          prod:
+            job_variables:
+              env: [FOO=bar]
+        """,
+    )
+    with pytest.raises(ConfigError, match="'orders'.*prod.*job_variables.env"):
+        discover_and_deploy_etls(config=str(path))
+    assert recorder.calls == []
+    recorder.deploy.assert_not_called()
+
+
 def test_offending_declaration_after_a_valid_one_deploys_nothing(
     tmp_path: Path, recorder: _Recorder
 ) -> None:

@@ -14,6 +14,8 @@ Public surface
 - :func:`build_etl_flow`, :func:`flow_settings_from_mapping` and
   :func:`flow_attribute_name` — the seams the deployer uses to rebuild an
   ETL flow from an already-loaded YAML body.
+- :class:`FlowSettings` — the settings object those seams produce and
+  consume.
 
 The sub-modules here split the factory's concerns:
 
@@ -36,13 +38,18 @@ The sub-modules here split the factory's concerns:
   schedules when the flow finally fails).
 """
 
-from loom.prefect.flow._assemble import flow_attribute_name, flow_settings_from_mapping
+from loom.prefect.flow._assemble import (
+    FlowSettings,
+    flow_attribute_name,
+    flow_settings_from_mapping,
+)
 from loom.prefect.flow._backfill import BackfillChunk, backfill_flow
 from loom.prefect.flow._factory import build_etl_flow, etl_flow
 from loom.prefect.flow._maintenance import maintenance_flow
 
 __all__ = [
     "BackfillChunk",
+    "FlowSettings",
     "backfill_flow",
     "build_etl_flow",
     "etl_flow",

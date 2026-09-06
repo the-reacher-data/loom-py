@@ -239,6 +239,46 @@ def test_read_declarations_still_rejects_the_broken_sibling(tmp_path: Path) -> N
         read_declarations(str(path))
 
 
+# --- job_variables.env must be a mapping --------------------------------------
+
+
+def test_job_variables_env_as_a_list_is_rejected_naming_etl_and_environment(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        "orders.yaml",
+        f"""\
+        etl: orders
+        pipeline: {PIPELINES}.OrdersPipeline
+        environments:
+          prod:
+            job_variables:
+              env: [FOO=bar]
+        """,
+    )
+    with pytest.raises(ConfigError, match="'orders'.*prod.*job_variables.env"):
+        read_declarations(str(path))
+
+
+def test_job_variables_as_a_list_is_rejected_naming_etl_and_environment(
+    tmp_path: Path,
+) -> None:
+    path = _write(
+        tmp_path,
+        "orders.yaml",
+        f"""\
+        etl: orders
+        pipeline: {PIPELINES}.OrdersPipeline
+        environments:
+          prod:
+            job_variables: [cpu, 512]
+        """,
+    )
+    with pytest.raises(ConfigError, match="'orders'.*prod.*job_variables must be a mapping"):
+        read_declarations(str(path))
+
+
 # --- read_yaml keyed etls -----------------------------------------------------
 
 

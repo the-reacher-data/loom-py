@@ -308,8 +308,18 @@ class StreamingRunner:
             resolvers: Resolvers for ``${name:key}`` placeholders in
                 ``config_path``, registered before the built-in ``secrets``
                 and ``ssm`` defaults.  A resolver named like a default
-                replaces it.
+                replaces it.  Only meaningful together with ``config_path``.
+
+        Raises:
+            ValueError: If ``resolvers`` is given together with ``config``
+                instead of ``config_path``; ``config`` is already resolved
+                and ``resolvers`` would never be applied.
         """
+        if config is not None and resolvers:
+            raise ValueError(
+                "resolvers apply only with config_path, not config: "
+                "config is already resolved, so resolvers would never be applied"
+            )
         if config_path is not None:
             config = _load_yaml(str(config_path), resolvers)
         if flow is not None and config is not None:
