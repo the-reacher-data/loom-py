@@ -29,10 +29,8 @@ import msgspec
 
 from loom.core.model.introspection import get_projections
 from loom.core.projection.loaders import (
-    CountLoader,
-    ExistsLoader,
-    JoinFieldsLoader,
     find_relation_name_for_loader,
+    is_projection_descriptor,
     make_memory_loader,
 )
 from loom.core.projection.runtime import (
@@ -255,7 +253,7 @@ class InMemoryRepository(Generic[T]):
         result: dict[str, Any] = {}
         for name, proj in projections.items():
             loader = proj.loader
-            if isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+            if is_projection_descriptor(loader):
                 rel_name = find_relation_name_for_loader(loader, self._entity_type)
                 if rel_name is None:
                     raise ValueError(

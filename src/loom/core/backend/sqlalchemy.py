@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import types as _types_mod
-import typing
-from typing import Any, get_type_hints
+from typing import Any
 
 import msgspec
 from sqlalchemy import (
@@ -30,11 +28,13 @@ from loom.core.backend.core_model import CoreModel, CoreProfilePlan, CoreRelatio
 from loom.core.model.enums import Cardinality, ServerDefault, ServerOnUpdate
 from loom.core.model.field import ColumnType, Field
 from loom.core.model.introspection import (
+    extract_model_from_hint,
     get_column_fields,
     get_id_attribute,
     get_projections,
     get_relations,
     get_table_name,
+    resolve_type_hints,
 )
 from loom.core.model.relation import Relation
 from loom.core.projection.runtime import ProjectionStep, build_projection_plan_from_steps
@@ -185,20 +185,10 @@ def _configure_relationships() -> None:
     _pending_relations.clear()
 
 
-def _relation_hints(struct_cls: type) -> dict[str, Any]:
-    """Return resolved annotations, or none when a forward reference is unresolvable.
-
-    An unresolved annotation is not fatal: the caller then falls back to the
-    column-name and table-name scans in :func:`_resolve_relation_target`.
-    """
-    try:
-        return get_type_hints(struct_cls)
-    except Exception:
-        return {}
-
-
 def _attach_relations(sa_cls: Any, struct_cls: type, relations: dict[str, Relation]) -> None:
-    hints = _relation_hints(struct_cls)
+    # An unresolved annotation is not fatal: _resolve_relation_target then falls
+    # back to the column-name and table-name scans.
+    hints = resolve_type_hints(struct_cls)
     for rel_name, rel in relations.items():
         target_sa = _resolve_relation_target(rel, hints.get(rel_name))
         if target_sa is not None:
@@ -234,7 +224,7 @@ def _resolve_relation_target(rel: Relation, hint: Any) -> Any:
     if rel.cardinality == Cardinality.MANY_TO_MANY:
         return _find_target_sa_by_secondary(rel.secondary, rel.foreign_key)
 
-    target_model = _extract_model_from_annotation(hint)
+    target_model = extract_model_from_hint(hint)
     if target_model is not None:
         sa = _registry.get(target_model)
         if sa is not None:
@@ -244,40 +234,6 @@ def _resolve_relation_target(rel: Relation, hint: Any) -> Any:
         return _find_target_sa_by_fk_column(rel.foreign_key)
 
     return _find_target_sa_class(_resolve_fk_target_table(rel.foreign_key))
-
-
-def _union_inner_args(hint: Any) -> tuple[Any, ...] | None:
-    """Return the non-None, non-UnsetType args of a Union annotation.
-
-    Normalises both ``X | Y`` (Python 3.10+) and ``Union[X, Y]`` forms.
-    Returns ``None`` when *hint* is not a Union annotation.
-    """
-    if isinstance(hint, _types_mod.UnionType):
-        raw = hint.__args__
-    elif getattr(hint, "__origin__", None) is typing.Union:
-        raw = getattr(hint, "__args__", ())
-    else:
-        return None
-    return tuple(a for a in raw if a is not type(None) and a is not msgspec.UnsetType)
-
-
-def _extract_model_from_annotation(hint: Any) -> type | None:
-    """Unwrap list/Union annotations to extract the concrete model type."""
-    union_args = _union_inner_args(hint)
-    if union_args is not None:
-        for arg in union_args:
-            result = _extract_model_from_annotation(arg)
-            if result is not None:
-                return result
-        return None
-
-    origin = getattr(hint, "__origin__", None)
-    args: tuple[Any, ...] = getattr(hint, "__args__", ())
-
-    if origin is list and len(args) == 1:
-        return _extract_model_from_annotation(args[0])
-
-    return hint if isinstance(hint, type) else None
 
 
 def _fk_col_name(foreign_key: str) -> str:
@@ -342,24 +298,16 @@ def _resolve_secondary_table(name: str | None) -> Table | None:
 def _resolve_loader_model(loader: Any) -> type | None:
     """Extract the concrete model type from a public loader descriptor.
 
-    Handles both direct references (``CountLoader(model=Note)``) and
-    lambda-wrapped forward references (``CountLoader(model=lambda: Note)``).
-    Returns ``None`` for custom loaders or when the lambda cannot be called.
+    Returns ``None`` for custom loaders: only a registered descriptor declares a
+    ``model`` the compiler may follow.  Both direct references
+    (``CountLoader(model=Note)``) and lambda-wrapped forward references
+    (``CountLoader(model=lambda: Note)``) are accepted.
     """
-    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
+    from loom.core.projection.loaders import is_projection_descriptor, resolve_model_reference
 
-    if not isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+    if not is_projection_descriptor(loader):
         return None
-    raw = loader.model
-    if isinstance(raw, type):
-        return raw
-    if callable(raw):
-        try:
-            resolved = raw()
-            return resolved if isinstance(resolved, type) else None
-        except Exception:
-            return None
-    return None
+    return resolve_model_reference(loader.model)
 
 
 def _collect_direct_deps(struct_cls: type) -> frozenset[type]:
@@ -369,7 +317,7 @@ def _collect_direct_deps(struct_cls: type) -> frozenset[type]:
 
     * **Relation annotations** — ``reviews: list[ProductReview]`` yields
       ``ProductReview``.  The annotation is unwrapped through
-      :func:`~loom.core.projection.loaders._extract_model_from_hint` so
+      :func:`~loom.core.model.introspection.extract_model_from_hint` so
       ``list[X]``, ``X | UnsetType``, etc. all resolve to ``X``.
 
     * **Projection loaders** — ``CountLoader(model=ProductReview)`` yields
@@ -380,23 +328,17 @@ def _collect_direct_deps(struct_cls: type) -> frozenset[type]:
     many-to-many relations typed as ``list[dict[str, Any]]`` produce no
     dependency.
     """
-    import typing
-
     from loom.core.model.base import BaseModel
-    from loom.core.projection.loaders import _extract_model_from_hint
 
     deps: set[type] = set()
 
-    try:
-        hints = typing.get_type_hints(struct_cls)
-    except Exception:
-        hints = {}
+    hints = resolve_type_hints(struct_cls)
 
     for rel_name in get_relations(struct_cls):
         hint = hints.get(rel_name)
         if hint is None:
             continue
-        model = _extract_model_from_hint(hint)
+        model = extract_model_from_hint(hint)
         if model is not None and isinstance(model, type) and issubclass(model, BaseModel):
             deps.add(model)
 
@@ -653,7 +595,7 @@ def _resolve_descriptor_loader(
     all_relation_steps: dict[str, CoreRelationStep],
     struct_cls: type,
 ) -> tuple[Any, bool]:
-    """Resolve a descriptor loader (Count/Exists/JoinFields) to ``(loader, prefer_memory)``.
+    """Resolve a public loader descriptor to ``(loader, prefer_memory)``.
 
     Picks memory-path when the target relation is loaded in the active profile,
     SQL-path when it is not.  Falls back to memory-path via type-hint scanning
@@ -661,7 +603,7 @@ def _resolve_descriptor_loader(
 
     Args:
         name: Projection field name (used in error messages).
-        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader``.
+        loader: A registered projection loader descriptor.
         profile_relation_names: Relation attributes loaded in the current profile.
         all_relation_steps: All compiled relation steps for the parent model.
         struct_cls: Parent model class (used for type-hint fallback).
@@ -701,10 +643,10 @@ def _resolve_projection_steps(
 ) -> dict[str, ProjectionStep]:
     """Resolve each projection to a ``ProjectionStep`` with the right loader strategy.
 
-    For ``CountLoader``, ``ExistsLoader``, and ``JoinFieldsLoader`` descriptors the
-    compiler picks between memory-path (when the target relation is loaded in this
-    profile) and SQL-path (when it is not).  Custom loaders are auto-detected via
-    capability inspection (``load_from_object`` vs ``load_many``).
+    For a registered loader descriptor the compiler picks between memory-path
+    (when the target relation is loaded in this profile) and SQL-path (when it is
+    not).  Custom loaders are auto-detected via capability inspection
+    (``load_from_object`` vs ``load_many``).
 
     Args:
         projections: Profile-filtered projection metadata.
@@ -718,12 +660,12 @@ def _resolve_projection_steps(
     Raises:
         ValueError: If a descriptor loader cannot be matched to a relation step.
     """
-    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
+    from loom.core.projection.loaders import is_projection_descriptor
 
     steps: dict[str, ProjectionStep] = {}
     for name, proj in projections.items():
         loader = proj.loader
-        if isinstance(loader, (CountLoader, ExistsLoader, JoinFieldsLoader)):
+        if is_projection_descriptor(loader):
             resolved_loader, prefer_memory = _resolve_descriptor_loader(
                 name, loader, profile_relation_names, all_relation_steps, struct_cls
             )
@@ -748,7 +690,7 @@ def _find_relation_for_loader(
     Uses ``loader.via`` if provided, otherwise matches by ``related_struct``.
 
     Args:
-        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader``.
+        loader: A registered projection loader descriptor.
         all_relation_steps: All compiled relation steps for the parent model.
 
     Returns:
@@ -796,10 +738,7 @@ def _compile_one_to_x_step(
     rel_name: str,
     rel: Relation,
 ) -> CoreRelationStep | None:
-    try:
-        hint = get_type_hints(struct_cls).get(rel_name)
-    except Exception:
-        hint = None
+    hint = resolve_type_hints(struct_cls).get(rel_name)
     target_sa = _resolve_relation_target(rel, hint)
     if target_sa is None:
         return None

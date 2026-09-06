@@ -1,12 +1,26 @@
+"""SQL-path projection loaders.
+
+The descriptor registry and its factory table are internal to Loom. An
+application supplies its own loader object instead, which both paths pass
+through untouched.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.selectable import FromClause
+
+from loom.core.projection.loaders import (
+    CountLoader,
+    ExistsLoader,
+    JoinFieldsLoader,
+    is_projection_descriptor,
+)
 
 
 class ProjectionLoader(Protocol):
@@ -37,7 +51,7 @@ class _SqlCountLoader:
 
     __slots__ = ("_table", "_fk_col")
 
-    def __init__(self, *, table: FromClause, fk_col: str) -> None:
+    def __init__(self, descriptor: CountLoader, table: FromClause, fk_col: str) -> None:
         self._table = table
         self._fk_col = fk_col
 
@@ -61,7 +75,7 @@ class _SqlExistsLoader:
 
     __slots__ = ("_table", "_fk_col")
 
-    def __init__(self, *, table: FromClause, fk_col: str) -> None:
+    def __init__(self, descriptor: ExistsLoader, table: FromClause, fk_col: str) -> None:
         self._table = table
         self._fk_col = fk_col
 
@@ -81,16 +95,10 @@ class _SqlJoinFieldsLoader:
 
     __slots__ = ("_table", "_fk_col", "_value_columns")
 
-    def __init__(
-        self,
-        *,
-        table: FromClause,
-        fk_col: str,
-        value_columns: tuple[str, ...],
-    ) -> None:
+    def __init__(self, descriptor: JoinFieldsLoader, table: FromClause, fk_col: str) -> None:
         self._table = table
         self._fk_col = fk_col
-        self._value_columns = value_columns
+        self._value_columns = descriptor.value_columns
 
     async def load_many(
         self, session: AsyncSession, parent_ids: Sequence[object]
@@ -109,26 +117,46 @@ class _SqlJoinFieldsLoader:
         return dict(grouped)
 
 
+_SqlLoaderFactory = Callable[[Any, FromClause, str], Any]
+
+_SQL_LOADER_FACTORIES: dict[type, _SqlLoaderFactory] = {
+    CountLoader: _SqlCountLoader,
+    ExistsLoader: _SqlExistsLoader,
+    JoinFieldsLoader: _SqlJoinFieldsLoader,
+}
+"""SQL-path counterpart of every projection descriptor."""
+
+
+def _find_sql_loader_factory(loader_type: type) -> _SqlLoaderFactory | None:
+    """Look up the factory for *loader_type*, honouring descriptor subclasses."""
+    for klass in loader_type.__mro__:
+        factory = _SQL_LOADER_FACTORIES.get(klass)
+        if factory is not None:
+            return factory
+    return None
+
+
 def make_sql_loader(loader: Any, rel_step: Any) -> Any:
     """Create an SQL-path loader from a public descriptor and a compiled relation step.
 
     Args:
-        loader: A ``CountLoader``, ``ExistsLoader``, or ``JoinFieldsLoader`` descriptor.
+        loader: A projection loader descriptor, or any custom loader.
         rel_step: A ``CoreRelationStep`` providing ``target_table`` and ``fk_col``.
 
     Returns:
-        The corresponding ``_Sql*`` loader instance, or ``loader`` unchanged
-        if it is not a recognised descriptor type.
+        The SQL loader built by the matching factory, or ``loader`` unchanged
+        when it is a custom loader.
+
+    Raises:
+        ValueError: When *loader* is a registered descriptor with no SQL-path factory.
     """
-    from loom.core.projection.loaders import CountLoader, ExistsLoader, JoinFieldsLoader
-
-    table: FromClause = rel_step.target_table
-    fk_col: str = rel_step.fk_col
-
-    if isinstance(loader, CountLoader):
-        return _SqlCountLoader(table=table, fk_col=fk_col)
-    if isinstance(loader, ExistsLoader):
-        return _SqlExistsLoader(table=table, fk_col=fk_col)
-    if isinstance(loader, JoinFieldsLoader):
-        return _SqlJoinFieldsLoader(table=table, fk_col=fk_col, value_columns=loader.value_columns)
+    factory = _find_sql_loader_factory(type(loader))
+    if factory is not None:
+        return factory(loader, rel_step.target_table, rel_step.fk_col)
+    if is_projection_descriptor(loader):
+        raise ValueError(
+            f"Projection descriptor {type(loader).__name__} has no SQL-path loader "
+            "factory registered; add one to _SQL_LOADER_FACTORIES in "
+            "loom.core.repository.sqlalchemy.loaders."
+        )
     return loader

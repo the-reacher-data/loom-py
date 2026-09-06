@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import types
-import typing
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Generic, cast, get_args, get_origin, get_type_hints
+from typing import Any, Generic, cast
 
 import msgspec
 
@@ -17,51 +15,18 @@ from loom.core.cache.abc.dependency import DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
 from loom.core.logger import get_logger
 from loom.core.model.enums import Cardinality
-from loom.core.model.introspection import get_projections, get_relations
+from loom.core.model.introspection import (
+    get_projections,
+    get_relations,
+    list_element_type,
+    resolve_type_hints,
+)
 from loom.core.model.projection import Projection
 from loom.core.model.relation import Relation
+from loom.core.projection.loaders import resolve_model_reference
 from loom.core.repository import FilterParams, MutationEvent, PageParams, PageResult, Repository
 from loom.core.repository.abc.query import CursorResult, FilterGroup, PaginationMode, QuerySpec
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
-
-
-def _resolve_loader_model(loader: Any) -> type | None:
-    """Return the domain model class from a projection loader, handling callables."""
-    raw = getattr(loader, "model", None)
-    if raw is None:
-        return None
-    if isinstance(raw, type):
-        return raw
-    if callable(raw):
-        try:
-            resolved = raw()
-            return resolved if isinstance(resolved, type) else None
-        except Exception:
-            return None
-    return None
-
-
-def _list_element_type(annotation: Any) -> type | None:
-    """Return T for ``list[T]`` annotations, or ``None`` if not a typed list.
-
-    Handles ``list[T] | UnsetType`` produced by ``LoomStructMeta`` when it
-    widens relation field annotations at class-definition time.
-    """
-    origin = get_origin(annotation)
-
-    # Unwrap Union / UnionType (e.g. list[T] | UnsetType) to find the list arm.
-    if origin in {typing.Union, types.UnionType}:
-        for arg in get_args(annotation):
-            result = _list_element_type(arg)
-            if result is not None:
-                return result
-        return None
-
-    if origin is list:
-        args = get_args(annotation)
-        if args and isinstance(args[0], type):
-            return args[0]
-    return None
 
 
 def _infer_otm_cache_dep(model: type, attr_name: str, rel: Relation) -> str | None:
@@ -75,11 +40,8 @@ def _infer_otm_cache_dep(model: type, attr_name: str, rel: Relation) -> str | No
     """
     if rel.cardinality is not Cardinality.ONE_TO_MANY:
         return None
-    try:
-        hints = get_type_hints(model)
-    except Exception:
-        return None
-    child_type = _list_element_type(hints.get(attr_name))
+    hints = resolve_type_hints(model)
+    child_type = list_element_type(hints.get(attr_name))
     if child_type is None or not hasattr(child_type, "__tablename__"):
         return None
     fk_col = rel.foreign_key.rsplit(".", 1)[-1]
@@ -95,17 +57,14 @@ def _infer_projection_cache_dep(model: type, proj: Projection) -> str | None:
     Returns ``None`` when the loader has no ``model``, when no matching
     ONE_TO_MANY relation is found, or when types are unresolvable.
     """
-    loader_model = _resolve_loader_model(proj.loader)
+    loader_model = resolve_model_reference(getattr(proj.loader, "model", None))
     if loader_model is None or not hasattr(loader_model, "__tablename__"):
         return None
-    try:
-        hints = get_type_hints(model)
-    except Exception:
-        return None
+    hints = resolve_type_hints(model)
     for attr_name, rel in get_relations(model).items():
         if rel.cardinality is not Cardinality.ONE_TO_MANY:
             continue
-        if _list_element_type(hints.get(attr_name)) is loader_model:
+        if list_element_type(hints.get(attr_name)) is loader_model:
             fk_col = rel.foreign_key.rsplit(".", 1)[-1]
             return f"{loader_model.__tablename__}:{fk_col}"
     return None
