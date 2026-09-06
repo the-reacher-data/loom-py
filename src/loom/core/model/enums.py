@@ -31,3 +31,16 @@ class ServerDefault(StrEnum):
 
 class ServerOnUpdate(StrEnum):
     NOW = "now"
+
+    @classmethod
+    def is_now(cls, value: ServerOnUpdate | str | None) -> bool:
+        """Return whether ``value`` requests the server clock, as enum or string.
+
+        Args:
+            value: A ``server_onupdate`` declaration; the string form is
+                matched case-insensitively.
+
+        Returns:
+            ``True`` for ``ServerOnUpdate.NOW`` or ``"now"`` in any case.
+        """
+        return isinstance(value, str) and value.strip().lower() == cls.NOW.value

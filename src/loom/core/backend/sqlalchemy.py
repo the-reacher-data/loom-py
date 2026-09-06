@@ -75,14 +75,6 @@ _table_registry: dict[str, Any] = {}
 _core_registry: dict[type, CoreModel] = {}
 
 
-def _uses_now_onupdate(value: ServerOnUpdate | str | None) -> bool:
-    if value is ServerOnUpdate.NOW:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() == ServerOnUpdate.NOW.value
-    return False
-
-
 def _build_sa_column_type(col_type: ColumnType) -> Any:
     if col_type.type_name == "Postgres.ARRAY":
         if len(col_type.args) != 1:
@@ -114,7 +106,7 @@ def _build_field_kwargs(field: Field) -> dict[str, Any]:
         factory = _SERVER_DEFAULT_MAP.get(field.server_default)
         if factory is not None:
             kwargs["server_default"] = factory()
-    if _uses_now_onupdate(field.server_onupdate):
+    if ServerOnUpdate.is_now(field.server_onupdate):
         now_expr = func.now()
         kwargs["onupdate"] = now_expr
         kwargs["server_onupdate"] = now_expr
