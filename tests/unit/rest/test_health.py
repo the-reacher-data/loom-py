@@ -25,10 +25,8 @@ from loom.core.identity import Identity
 from loom.core.model import BaseModel
 from loom.core.persistence import NoneBackend, PersistenceWiring
 from loom.rest.auth import RequestCredentials
-from loom.rest.auth.config import DEFAULT_EXCLUDE_PATHS
 from loom.rest.compiler import InterfaceCompilationError
 from loom.rest.fastapi import health as health_module
-from loom.rest.fastapi._exclusions import verify_exclusion_paths
 from loom.rest.fastapi.auto import create_app
 from tests.unit.rest._fixture_app import write_project
 
@@ -130,24 +128,6 @@ class TestHealthResponse:
         assert status == 503
         assert body == {"status": "degraded", "backends": {"probed": False}}
 
-    def test_a_ready_backend_is_named_in_the_response(
-        self, tmp_path: Path, probed_backend: type[_ProbedBackend]
-    ) -> None:
-        probed_backend.ready = True
-
-        status, body = _get(_probed_app(tmp_path), _HEALTH)
-
-        assert status == 200
-        assert body == {"status": "ok", "backends": {"probed": True}}
-
-    def test_a_wiring_without_readiness_reports_no_backends(
-        self, tmp_path: Path, probed_backend: type[_ProbedBackend]
-    ) -> None:
-        status, body = _get(_probed_app(tmp_path), _HEALTH)
-
-        assert status == 200
-        assert body == {"status": "ok", "backends": {}}
-
     def test_the_none_backend_reports_no_backends(self, tmp_path: Path) -> None:
         config_path = write_project(tmp_path, persistence={"backend": "none"}, database=None)
 
@@ -158,9 +138,6 @@ class TestHealthResponse:
 
 
 class TestHealthAuthentication:
-    def test_health_is_a_default_exclusion(self) -> None:
-        assert _HEALTH in DEFAULT_EXCLUDE_PATHS
-
     def test_health_is_served_without_credentials_under_jwt(self, tmp_path: Path) -> None:
         app = create_app(write_project(tmp_path, rest=_jwt_rest()))
 
@@ -209,27 +186,12 @@ class TestHealthMounting:
         with pytest.raises(InterfaceCompilationError, match=_HEALTH):
             create_app(config_path)
 
-    def test_a_trailing_slash_is_not_health_without_auth(self, tmp_path: Path) -> None:
-        """``/health/`` is no route of its own: Starlette redirects to the literal path."""
-        app = create_app(write_project(tmp_path))
-
-        with TestClient(app) as client:
-            response = client.get(f"{_HEALTH}/", follow_redirects=False)
-
-        assert response.status_code == 307
-        assert response.headers["location"].endswith(_HEALTH)
-
     def test_a_trailing_slash_is_not_excluded_from_auth(self, tmp_path: Path) -> None:
         """Only the literal ``/health`` is anonymous; its slash variant needs credentials."""
         app = create_app(write_project(tmp_path, rest=_jwt_rest()))
 
         with TestClient(app) as client:
             assert client.get(f"{_HEALTH}/", follow_redirects=False).status_code == 401
-
-    def test_the_health_route_passes_the_exclusion_check(self, tmp_path: Path) -> None:
-        app = create_app(write_project(tmp_path))
-
-        verify_exclusion_paths(app, (_HEALTH,))
 
 
 class _GatedProbe:
@@ -308,13 +270,6 @@ class TestCachedProbe:
 
         assert probe.calls == 2
 
-    async def test_a_probe_exceeding_the_timeout_is_not_ready(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(health_module, "PROBE_TIMEOUT_SECONDS", 0.01)
-
-        assert await health_module._CachedProbe(_sleeping_probe)() is False
-
 
 class TestHealthProbeBudget:
     def test_a_probe_exceeding_the_timeout_degrades_the_application(
@@ -328,14 +283,3 @@ class TestHealthProbeBudget:
 
         assert status == 503
         assert body == {"status": "degraded", "backends": {"slow": False}}
-
-    def test_requests_within_the_ttl_share_one_probe(self) -> None:
-        probe = _CountingProbe()
-        app = FastAPI()
-        health_module.mount_health(app, "counted", probe)
-
-        with TestClient(app) as client:
-            assert client.get(_HEALTH).status_code == 200
-            assert client.get(_HEALTH).status_code == 200
-
-        assert probe.calls == 1

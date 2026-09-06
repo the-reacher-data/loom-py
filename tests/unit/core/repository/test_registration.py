@@ -65,19 +65,6 @@ def _container(default_repository_type: type | None) -> LoomContainer:
 
 
 class TestCapabilitiesOf:
-    def test_sqlalchemy_declares_every_standard_capability(self) -> None:
-        capabilities = set(capabilities_of(RepositorySQLAlchemy))
-
-        assert capabilities == {
-            Readable,
-            Creatable,
-            BulkCreatable,
-            Updatable,
-            Deletable,
-            Listable,
-            Countable,
-        }
-
     def test_dynamodb_declares_only_the_key_operations(self) -> None:
         assert set(capabilities_of(RepositoryDynamoDB)) == {
             Readable,

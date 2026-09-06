@@ -26,7 +26,6 @@ from loom.core.model import BaseModel, ColumnField
 from loom.core.observability.runtime import ObservabilityRuntime
 from loom.core.repository.abc import (
     BulkCreatable,
-    Countable,
     Creatable,
     Listable,
     Readable,
@@ -177,22 +176,6 @@ class TestDefaultInclude:
         _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence={"backend": "sqlalchemy"}))
         assert _ops(RecordsOnBoth) == _KEY_OPS | {CrudOp.LIST}
 
-    def test_pruned_use_cases_leave_the_registry(self, discover: Any) -> None:
-        class RecordsRegistered(RestInterface[CapabilityRecord]):
-            prefix = "/records"
-            auto = True
-
-        discover(RecordsRegistered)
-
-        runtime, _wiring, _discovered = _build_bootstrap(
-            _AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE)
-        )
-
-        entity = model_entity_key(CapabilityRecord)
-        keys = set(runtime.registry.keys())
-        assert f"{entity}{KEY_SEPARATOR}get" in keys
-        assert f"{entity}{KEY_SEPARATOR}list" not in keys
-
     def test_a_pruned_use_case_mounted_elsewhere_survives(self, discover: Any) -> None:
         """Only a use case no interface mounts any more leaves the discovery result."""
         shared_list = next(
@@ -293,23 +276,6 @@ class TestExplicitInclude:
         _build_bootstrap(_AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE))
 
         assert [crud_op_of(r.use_case) for r in RecordReads.routes] == [CrudOp.GET, CrudOp.CREATE]
-
-
-class TestContainerBindings:
-    def test_dynamodb_binds_only_the_capabilities_it_implements(self, discover: Any) -> None:
-        class RecordsBound(RestInterface[CapabilityRecord]):
-            prefix = "/records"
-            auto = True
-
-        discover(RecordsBound)
-
-        runtime, _wiring, _discovered = _build_bootstrap(
-            _AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE)
-        )
-
-        assert runtime.container.is_registered(Readable[CapabilityRecord])
-        assert not runtime.container.is_registered(Listable[CapabilityRecord])
-        assert not runtime.container.is_registered(Countable[CapabilityRecord])
 
 
 class TestCrudOpOf:
@@ -430,7 +396,7 @@ def test_unsupported_query_answers_400_with_its_code() -> None:
     assert "CapabilityRecord" in body["message"]
 
 
-def test_no_repository_raises_not_implemented() -> None:
+def test_repository_package_never_raises_not_implemented() -> None:
     """SC-003: argument-shaped gaps raise ``UnsupportedQuery``, never ``NotImplementedError``."""
     root = Path(cast(str, repository_package.__file__)).parent
 

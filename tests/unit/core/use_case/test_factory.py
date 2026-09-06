@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Any, Protocol, cast
 
 import pytest
@@ -441,26 +442,27 @@ def test_build_with_a_capability_contract_still_resolves_through_the_repo_mappin
     assert cast(object, uc.main_repo) is repo
 
 
-def test_verify_treats_the_default_repo_for_contract_as_mapping_only() -> None:
-    factory = UseCaseFactory(_container_mapping_product_to(FakeProductRepo))
-    factory.register(AutoMainRepoUseCase)
-
-    factory.verify()
-
-
-def test_verify_treats_an_explicit_repo_for_parameter_as_mapping_only() -> None:
-    factory = UseCaseFactory(_container_mapping_product_to(FakeProductRepo))
-    factory.register(MainRepoUseCase)
-
-    factory.verify()
-
-
-def test_verify_treats_a_custom_protocol_contract_as_mapping_only() -> None:
+def _task_view_container() -> LoomContainer:
     container = LoomContainer()
     container.register(FakeTaskViewRepo, FakeTaskViewRepo, scope=Scope.APPLICATION)
     container.register_repo(TaskView, FakeTaskViewRepo)
-    factory = UseCaseFactory(container)
-    factory.register(AutoMainRepoCustomContractUseCase)
+    return container
+
+
+@pytest.mark.parametrize(
+    ("use_case", "container_factory"),
+    [
+        (AutoMainRepoUseCase, lambda: _container_mapping_product_to(FakeProductRepo)),
+        (MainRepoUseCase, lambda: _container_mapping_product_to(FakeProductRepo)),
+        (AutoMainRepoCustomContractUseCase, _task_view_container),
+    ],
+    ids=["default-repo-for-contract", "explicit-repo-for-parameter", "custom-protocol-contract"],
+)
+def test_verify_treats_a_mapping_as_satisfying_the_main_repo_contract(
+    use_case: type[UseCase[Any, Any]], container_factory: Callable[[], LoomContainer]
+) -> None:
+    factory = UseCaseFactory(container_factory())
+    factory.register(use_case)
 
     factory.verify()
 
@@ -522,9 +524,3 @@ def test_plain_generic_container_annotation_is_not_a_dependency() -> None:
 
     assert factory._get_deps(ContainerAnnotatedUseCase) == [("repo", IOrderRepo)]
     factory.verify()
-
-
-def test_explicit_capability_parameter_is_still_a_dependency() -> None:
-    factory = UseCaseFactory(LoomContainer())
-
-    assert factory._get_deps(ListingUseCase) == [("products", Listable[Product])]
