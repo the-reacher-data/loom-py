@@ -493,6 +493,85 @@ def test_unstable_pr_is_never_merged_unless_all_checks_passed(
     assert merger.calls == []
 
 
+def test_a_closed_release_pr_is_not_a_candidate_beside_the_open_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _create_remote_repository(tmp_path, merge_on_master=False)
+    superseded = _snapshot(
+        number=167,
+        state="CLOSED",
+        head_sha="c" * 40,
+        merge_state_status="UNKNOWN",
+        merge_sha=None,
+    )
+    clean = _snapshot(
+        number=181,
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="CLEAN",
+        merge_sha=None,
+    )
+    merged = _snapshot(number=181, head_sha=repository.head_sha, merge_sha=repository.merge_sha)
+    reader = PullRequestReader([(superseded, clean), (superseded, merged)])
+    merger = MergeRecorder(repository)
+    _install_fake_uv(tmp_path, monkeypatch)
+
+    resolved_sha = _checkout(repository, reader, merger, FakeClock())
+
+    assert (resolved_sha, merger.calls) == (repository.merge_sha, [(181, repository.head_sha)])
+
+
+def test_a_closed_release_pr_does_not_hide_the_merged_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _create_remote_repository(tmp_path)
+    superseded = _snapshot(
+        number=167,
+        state="CLOSED",
+        head_sha="c" * 40,
+        merge_state_status="UNKNOWN",
+        merge_sha=None,
+    )
+    merged = _snapshot(number=181, head_sha=repository.head_sha, merge_sha=repository.merge_sha)
+    reader = PullRequestReader([(superseded, merged)])
+    merger = MergeRecorder()
+    _install_fake_uv(tmp_path, monkeypatch)
+
+    resolved_sha = _checkout(repository, reader, merger, FakeClock())
+
+    assert (resolved_sha, merger.calls) == (repository.merge_sha, [])
+
+
+@pytest.mark.parametrize(
+    "second_state",
+    [pytest.param("OPEN", id="two-open"), pytest.param("MERGED", id="open-and-merged")],
+)
+def test_two_live_release_prs_are_refused(tmp_path: Path, second_state: str) -> None:
+    repository = _create_remote_repository(tmp_path, merge_on_master=False)
+    first = _snapshot(
+        number=181,
+        state="OPEN",
+        head_sha=repository.head_sha,
+        merge_state_status="CLEAN",
+        merge_sha=None,
+    )
+    second = _snapshot(
+        number=182,
+        state=second_state,
+        head_sha=repository.head_sha,
+        merge_sha=repository.merge_sha,
+    )
+    reader = PullRequestReader([(first, second)])
+    merger = MergeRecorder()
+
+    with pytest.raises(release.ReleaseCheckoutError, match="exactly one"):
+        _checkout(repository, reader, merger, FakeClock())
+
+    assert merger.calls == []
+
+
 @pytest.mark.parametrize("candidate_count", [0, 2])
 def test_fails_closed_unless_exactly_one_release_pr_candidate_exists(
     tmp_path: Path,
