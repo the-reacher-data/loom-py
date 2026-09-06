@@ -4,6 +4,14 @@ on:
   pull_request:
     branches: ["master"]
 
+# One live run per pull request. A superseded push keeps no job alive, so an
+# obsolete run cannot spend a runner a current one is waiting for. Deliberately
+# not applied to ci-main: every commit on master has to be validated, so a push
+# there must never cancel the run validating the commit before it.
+concurrency:
+  group: ci-pr-${{ github.head_ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
