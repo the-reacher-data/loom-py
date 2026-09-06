@@ -22,6 +22,15 @@ assumptions are deliberate and live in known places:
   scripts as `--release-branch`.
 - The tag is cut from the bump's merge commit on the base branch.
 
+## Branch lifecycle
+
+The repository has `delete_branch_on_merge` enabled, so GitHub removes a head branch when
+its pull request merges — including the merge `checkout_merged_release.py` performs through
+the API. The release path does not depend on it: a version whose pull request is merged is
+reused whether or not `docs/release-v<version>` still exists, and a recycled one is closed
+with `--delete-branch`. The single state that needs a human is a release branch with no
+pull request at all, which `decide_release_pr.py` refuses.
+
 ## Seam for a second lifecycle
 
 A gitflow-style lifecycle is a known future consumer and is **not** built. It would need,
