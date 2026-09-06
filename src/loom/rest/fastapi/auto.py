@@ -6,7 +6,7 @@ import logging
 import sys
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -43,16 +43,11 @@ from loom.core.introspection import (
     describe_app,
 )
 from loom.core.job.service import InlineJobService, JobService
-from loom.core.model import BaseModel
 from loom.core.observability.config import ObservabilityConfig, PrometheusObservabilityConfig
 from loom.core.observability.runtime import ObservabilityRuntime
-from loom.core.repository.dynamodb import (
-    DynamoUnitOfWorkFactory,
-    build_dynamodb_repository_registration_module,
-)
+from loom.core.persistence import PersistenceWiring, resolve_backend
 from loom.core.sql import NullSqlQueryService, SqlConfig, SqlExecutor, SqlQueryService
 from loom.core.sql.config import roles_need_identity_binding
-from loom.core.uow.abc import UnitOfWorkFactory
 from loom.core.use_case.invoker import AppInvoker
 from loom.prometheus import PrometheusMetricsAdapter
 from loom.prometheus.middleware import PrometheusMiddleware
@@ -78,12 +73,11 @@ from loom.rest.middleware import TraceIdMiddleware
 _logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    # Annotations only: the AI pillar, the ClickHouse extra and the SQLAlchemy
-    # backend are imported at run time solely by the branch that needs them.
+    # Annotations only: the AI pillar and the ClickHouse extra are imported at
+    # run time solely by the branch that needs them.
     from loom.ai.compiler import AgentPlan
     from loom.ai.config import AiConfig
     from loom.ai.runtime import AgentRuntime
-    from loom.core.repository.sqlalchemy.session_manager import SessionManager
     from loom.core.sql.clickhouse import ClickHouseConnectionRegistry
 
 
@@ -142,43 +136,8 @@ class _AppConfig(msgspec.Struct, kw_only=True):
     rest: _RestConfig = msgspec.field(default_factory=_RestConfig)
 
 
-class _DatabaseConfig(msgspec.Struct, kw_only=True):
-    url: str
-    echo: bool | None = None
-    pool_pre_ping: bool = True
-
-
-class _DynamoDBConfig(msgspec.Struct, kw_only=True):
-    region: str
-    table: str
-    endpoint_url: str | None = None
-    max_pool_connections: int = 32
-
-
 class _PersistenceConfig(msgspec.Struct, kw_only=True):
     backend: str = "sqlalchemy"
-    dynamodb: _DynamoDBConfig | None = None
-
-
-@dataclass(frozen=True)
-class _PersistenceWiring:
-    """Resolved persistence choice for the auto-bootstrap REST app.
-
-    Groups everything ``create_app`` needs from a persistence backend so the
-    orchestration stays backend-agnostic:
-
-    Args:
-        uow_factory: Unit-of-work factory bound to the kernel; ``None`` for
-            backend ``none`` (no persistence), which the kernel executor
-            accepts by running use cases without a unit of work.
-        repo_registration_module: DI module registering model repositories.
-        lifespan_init: Async context manager driving backend startup/shutdown
-            (schema creation, resource disposal, ...).
-    """
-
-    uow_factory: UnitOfWorkFactory | None
-    repo_registration_module: Callable[[LoomContainer], None]
-    lifespan_init: Callable[[], AbstractAsyncContextManager[None]]
 
 
 _DISCOVERY_ENGINES: dict[str, Callable[[_DiscoveryConfig], DiscoveryResult]] = {
@@ -195,17 +154,6 @@ def _ensure_code_path(code_path: Path) -> None:
     path_str = str(code_path.resolve())
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
-
-
-def _register_repositories(
-    session_manager: SessionManager,
-    models: tuple[type[BaseModel], ...],
-) -> Callable[[LoomContainer], None]:
-    # Local import: SQLAlchemy is an optional dependency (loom-kernel[sqlalchemy])
-    # and must not be required by an application with 'persistence.backend: none'.
-    from loom.core.repository.sqlalchemy import build_sqlalchemy_repository_registration_module
-
-    return build_sqlalchemy_repository_registration_module(session_manager, models)
 
 
 def _build_discovery_result(discovery_cfg: _DiscoveryConfig) -> DiscoveryResult:
@@ -311,21 +259,14 @@ def _build_bootstrap(
     app_cfg: _AppConfig,
     ctx: ConfigContext,
     metrics: Any | None = None,
-) -> tuple[KernelRuntime, _PersistenceWiring, DiscoveryResult]:
+) -> tuple[KernelRuntime, PersistenceWiring, DiscoveryResult]:
     discovered = _discover_components(app_cfg)
     persistence_cfg = _load_persistence_config(ctx)
-    # Both checks run before any backend allocates resources (e.g. a SQLAlchemy
-    # engine): resolving persistence is what creates them.
+    # Runs before the backend allocates resources (e.g. an engine): resolving
+    # persistence is what creates them.
     _reject_autocrud_without_model(discovered)
-    if _is_relational_backend(persistence_cfg) and not discovered.models:
-        _logger.warning(
-            "no BaseModel classes discovered: the application starts with an empty "
-            "relational schema. Declare your first model, or set "
-            "persistence.backend: none if it never persists."
-        )
     wiring = _resolve_persistence(ctx, persistence_cfg, discovered)
-    if _compiles_discovered_models(persistence_cfg):
-        _compile_discovered_models(discovered)
+    wiring.prepare_models(discovered.models)
     result = _build_kernel_runtime(app_cfg, discovered, wiring, metrics=metrics)
     return result, wiring, discovered
 
@@ -373,149 +314,17 @@ def _load_persistence_config(ctx: ConfigContext) -> _PersistenceConfig:
     return ctx.section_or_default(ConfigKey.PERSISTENCE, _PersistenceConfig, _PersistenceConfig())
 
 
-def _is_relational_backend(persistence_cfg: _PersistenceConfig) -> bool:
-    """Whether the configured backend maps discovered ``BaseModel`` classes to tables.
-
-    Read from config alone so the caller can enforce the requirement *before*
-    :func:`_resolve_persistence` allocates any backend resource (e.g. an engine).
-    """
-    return persistence_cfg.backend == "sqlalchemy"
-
-
-def _compiles_discovered_models(persistence_cfg: _PersistenceConfig) -> bool:
-    """Whether the configured backend compiles discovered ``BaseModel`` classes.
-
-    Backend ``none`` accepts discovered models but neither compiles them nor
-    registers repositories for them.
-    """
-    return persistence_cfg.backend != "none"
-
-
-_PERSISTENCE_WIRINGS: dict[
-    str, Callable[[ConfigContext, _PersistenceConfig, DiscoveryResult], _PersistenceWiring]
-] = {
-    "sqlalchemy": lambda ctx, _cfg, discovered: _sqlalchemy_wiring(ctx, discovered),
-    "dynamodb": lambda _ctx, cfg, discovered: _dynamodb_wiring(cfg, discovered),
-    "none": lambda _ctx, _cfg, _discovered: _none_wiring(),
-}
-
-
 def _resolve_persistence(
     ctx: ConfigContext,
     persistence_cfg: _PersistenceConfig,
     discovered: DiscoveryResult,
-) -> _PersistenceWiring:
-    """Select the persistence wiring for the configured backend.
+) -> PersistenceWiring:
+    """Build the wiring of the backend registered under ``persistence.backend``.
 
-    Dispatches through :data:`_PERSISTENCE_WIRINGS`; an unknown backend name
-    raises ``ValueError``.
+    Raises:
+        ConfigError: When no backend is registered under that name.
     """
-    backend = persistence_cfg.backend
-    wiring_fn = _PERSISTENCE_WIRINGS.get(backend)
-    if wiring_fn is None:
-        raise ValueError(f"Unsupported persistence backend: {backend!r}")
-    return wiring_fn(ctx, persistence_cfg, discovered)
-
-
-def _sqlalchemy_wiring(
-    ctx: ConfigContext,
-    discovered: DiscoveryResult,
-) -> _PersistenceWiring:
-    # Local imports: SQLAlchemy is an optional dependency (loom-kernel[sqlalchemy])
-    # and must not be required by an application with 'persistence.backend: none'.
-    from loom.core.backend.sqlalchemy import get_metadata, reset_registry
-    from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
-
-    db_cfg = ctx.section(ConfigKey.DATABASE, _DatabaseConfig)
-    echo = db_cfg.echo if db_cfg.echo is not None else False
-    session_manager = _build_sqlalchemy_session_manager(db_cfg, echo)
-
-    @asynccontextmanager
-    async def _lifespan() -> AsyncIterator[None]:
-        async with session_manager.engine.begin() as connection:
-            await connection.run_sync(get_metadata().create_all)
-        try:
-            yield
-        finally:
-            await session_manager.dispose()
-            reset_registry()
-
-    return _PersistenceWiring(
-        uow_factory=SQLAlchemyUnitOfWorkFactory(session_manager),
-        repo_registration_module=_register_repositories(session_manager, discovered.models),
-        lifespan_init=_lifespan,
-    )
-
-
-def _dynamodb_wiring(
-    persistence_cfg: _PersistenceConfig,
-    discovered: DiscoveryResult,
-) -> _PersistenceWiring:
-    if persistence_cfg.dynamodb is None:
-        raise ConfigError(
-            "persistence.backend is 'dynamodb' but the 'persistence.dynamodb' "
-            "section (region, table) is missing."
-        )
-    dynamo_cfg = persistence_cfg.dynamodb
-    client = _build_dynamodb_client(dynamo_cfg)
-
-    return _PersistenceWiring(
-        uow_factory=DynamoUnitOfWorkFactory(),
-        repo_registration_module=build_dynamodb_repository_registration_module(
-            client, dynamo_cfg.table, discovered.models
-        ),
-        lifespan_init=_noop_lifespan,
-    )
-
-
-def _none_wiring() -> _PersistenceWiring:
-    """Wiring for ``persistence.backend: none``: no persistence at all.
-
-    No unit-of-work factory, no repositories, no startup resource; a
-    ``database`` section, if present, is ignored.
-    """
-    return _PersistenceWiring(
-        uow_factory=None,
-        repo_registration_module=_register_no_repositories,
-        lifespan_init=_noop_lifespan,
-    )
-
-
-def _register_no_repositories(container: LoomContainer) -> None:
-    """No-op DI module for backend ``none``: nothing to register."""
-
-
-def _build_dynamodb_client(dynamo_cfg: _DynamoDBConfig) -> Any:
-    """Construct a boto3 low-level ``dynamodb`` client from config.
-
-    The low-level client (not the resource) is used because it is thread-safe:
-    repository operations run under ``asyncio.to_thread`` and share one client
-    across worker threads. ``max_pool_connections`` sizes the underlying
-    connection pool to that concurrency.
-
-    Credentials are never taken from config: the client is created without
-    explicit keys so boto3's default credential chain applies — the task role
-    on ECS, or ``endpoint_url`` plus environment credentials against a local /
-    fake DynamoDB in tests.
-    """
-    # Local import: boto3/botocore are optional dependencies (loom[dynamodb])
-    # and must not be required by apps using the default SQLAlchemy backend.
-    import boto3  # type: ignore[import-untyped]
-    from botocore.config import Config  # type: ignore[import-untyped]
-
-    kwargs: dict[str, Any] = {
-        "region_name": dynamo_cfg.region,
-        "config": Config(max_pool_connections=dynamo_cfg.max_pool_connections),
-    }
-    if dynamo_cfg.endpoint_url is not None:
-        kwargs["endpoint_url"] = dynamo_cfg.endpoint_url
-    return boto3.client("dynamodb", **kwargs)
-
-
-@asynccontextmanager
-async def _noop_lifespan() -> AsyncIterator[None]:
-    """No-op lifespan for backends that manage no shared startup resource."""
-    yield
+    return resolve_backend(persistence_cfg.backend).build(ctx, discovered.models)
 
 
 @dataclass(frozen=True)
@@ -1083,39 +892,10 @@ def _mount_authentication(app: FastAPI, auth: _AuthWiring) -> None:
     )
 
 
-def _compile_discovered_models(discovered: DiscoveryResult) -> None:
-    # Local import: SQLAlchemy is an optional dependency (loom-kernel[sqlalchemy])
-    # and must not be required by an application with 'persistence.backend: none'.
-    from loom.core.backend.sqlalchemy import compile_all, reset_registry
-
-    reset_registry()
-    compile_all(*discovered.models)
-
-
-def _build_sqlalchemy_session_manager(
-    db_cfg: _DatabaseConfig,
-    echo: bool,
-) -> SessionManager:
-    # Local import: SQLAlchemy is an optional dependency (loom-kernel[sqlalchemy])
-    # and must not be required by an application with 'persistence.backend: none'.
-    from loom.core.repository.sqlalchemy.session_manager import SessionManager
-
-    return SessionManager(
-        db_cfg.url,
-        echo=echo,
-        pool_pre_ping=db_cfg.pool_pre_ping,
-        pool_size=None,
-        max_overflow=None,
-        pool_timeout=None,
-        pool_recycle=None,
-        connect_args={},
-    )
-
-
 def _build_kernel_runtime(
     app_cfg: _AppConfig,
     discovered: DiscoveryResult,
-    wiring: _PersistenceWiring,
+    wiring: PersistenceWiring,
     metrics: Any | None = None,
 ) -> KernelRuntime:
     return create_kernel(

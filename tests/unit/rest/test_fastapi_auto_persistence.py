@@ -1,15 +1,26 @@
+"""Persistence resolution in the auto-bootstrap REST app.
+
+Backends are reached by name through the ``loom.persistence.backends`` entry
+point group; these tests exercise the three loom registers, an injected one,
+and the bootstrap steps around them.
+"""
+
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, ClassVar, cast
 
 import pytest
 
-from loom.core.backend import sqlalchemy as sqlalchemy_backend
+import loom.core.plugins.entrypoints as entrypoints_module
+import loom.core.repository.sqlalchemy.backend as sqlalchemy_backend_module
 from loom.core.config import ConfigContext
 from loom.core.config.errors import ConfigError
-from loom.core.di.container import LoomContainer
 from loom.core.discovery.base import DiscoveryResult
 from loom.core.model import BaseModel, ColumnField
+from loom.core.persistence import NoneBackend, PersistenceWiring
 from loom.core.repository.dynamodb.uow import DynamoUnitOfWorkFactory
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.use_case.use_case import UseCase
@@ -18,11 +29,23 @@ from loom.rest.fastapi.auto import (
     _AppConfig,
     _build_bootstrap,
     _discover_components,
-    _load_persistence_config,
-    _noop_lifespan,
-    _resolve_persistence,
+    create_app,
 )
 from loom.rest.model import RestInterface, RestRoute
+from tests.unit.rest._fixture_app import write_project
+
+
+def _interfaces(*classes: type) -> tuple[type[RestInterface[Any]], ...]:
+    """Return interface classes typed for ``DiscoveryResult`` (``RestInterface`` is invariant)."""
+    return tuple(cast(type[RestInterface[Any]], klass) for klass in classes)
+
+
+_DYNAMODB_SECTION = {
+    "region": "eu-west-1",
+    "table": "products",
+    "endpoint_url": "http://localhost:8000",
+}
+_DYNAMODB_PERSISTENCE = {"backend": "dynamodb", "dynamodb": _DYNAMODB_SECTION}
 
 
 class PersistenceNoneRecord(BaseModel):
@@ -46,121 +69,146 @@ def _no_models() -> DiscoveryResult:
     return DiscoveryResult(models=(), use_cases=(), interfaces=())
 
 
-def _resolve(ctx: ConfigContext, discovered: DiscoveryResult) -> auto._PersistenceWiring:
-    """Resolve persistence the way ``_build_bootstrap`` does: load config once."""
-    return _resolve_persistence(ctx, _load_persistence_config(ctx), discovered)
-
-
-def test_resolve_persistence_defaults_to_sqlalchemy() -> None:
-    wiring = _resolve(_ctx(), _no_models())
-
-    assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
-    assert callable(wiring.repo_registration_module)
-    assert callable(wiring.lifespan_init)
-
-
-def test_resolve_persistence_honours_explicit_sqlalchemy_backend() -> None:
-    wiring = _resolve(
-        _ctx(persistence={"backend": "sqlalchemy"}),
-        _no_models(),
-    )
-
-    assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
-
-
-def test_resolve_persistence_rejects_unknown_backend() -> None:
-    ctx = _ctx(persistence={"backend": "mongodb"})
-    models = _no_models()
-    with pytest.raises(ValueError, match="Unsupported persistence backend: 'mongodb'"):
-        _resolve(ctx, models)
-
-
-def test_resolve_persistence_selects_dynamodb_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Dummy credentials satisfy boto3's default chain against a local endpoint;
-    # real credentials come from the task role on ECS.
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-    wiring = _resolve(
-        _ctx(
-            persistence={
-                "backend": "dynamodb",
-                "dynamodb": {
-                    "region": "eu-west-1",
-                    "table": "products",
-                    "endpoint_url": "http://localhost:8000",
-                },
-            }
-        ),
-        _no_models(),
-    )
-
-    assert isinstance(wiring.uow_factory, DynamoUnitOfWorkFactory)
-    assert callable(wiring.repo_registration_module)
-    assert callable(wiring.lifespan_init)
-
-
-def test_resolve_persistence_dynamodb_needs_no_database_section(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-    ctx = ConfigContext.from_dict(
-        {
-            "app": {"name": "demo"},
-            "persistence": {
-                "backend": "dynamodb",
-                "dynamodb": {"region": "eu-west-1", "table": "products"},
-            },
-        }
-    )
-
-    wiring = _resolve(ctx, _no_models())
-
-    assert isinstance(wiring.uow_factory, DynamoUnitOfWorkFactory)
-
-
-def test_resolve_persistence_dynamodb_requires_config_section() -> None:
-    ctx = _ctx(persistence={"backend": "dynamodb"})
-    models = _no_models()
-    with pytest.raises(ConfigError, match="persistence.dynamodb"):
-        _resolve(ctx, models)
-
-
 def _agents_only() -> DiscoveryResult:
     return DiscoveryResult(models=(), use_cases=(), interfaces=(), agent_specs=("agents/*.yaml",))
 
 
-def test_resolve_persistence_none_has_no_persistence_at_all() -> None:
-    wiring = _resolve(_ctx(persistence={"backend": "none"}), _no_models())
-
-    assert wiring.uow_factory is None
-    assert wiring.lifespan_init is _noop_lifespan
-
-
-def test_resolve_persistence_none_repo_module_registers_nothing() -> None:
-    wiring = _resolve(_ctx(persistence={"backend": "none"}), _no_models())
-    container = LoomContainer()
-    before = dict(vars(container))
-
-    assert wiring.repo_registration_module(container) is None
-    assert vars(container) == before
+@pytest.fixture
+def aws_test_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dummy credentials satisfy boto3's default chain against a local endpoint."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 
-def test_resolve_persistence_none_ignores_database_section() -> None:
-    ctx = ConfigContext.from_dict({"app": {"name": "demo"}, "persistence": {"backend": "none"}})
-
-    wiring = _resolve(ctx, _no_models())
-
-    assert wiring.uow_factory is None
-
-
-def test_discover_components_accepts_agents_only_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.fixture
+def agents_only_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
 
+
+class TestBackendSelection:
+    def test_defaults_to_sqlalchemy(self, agents_only_discovery: None) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(_AppConfig(name="demo"), _ctx())
+
+        assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
+
+    def test_honours_explicit_sqlalchemy_backend(self, agents_only_discovery: None) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(
+            _AppConfig(name="demo"), _ctx(persistence={"backend": "sqlalchemy"})
+        )
+
+        assert isinstance(wiring.uow_factory, SQLAlchemyUnitOfWorkFactory)
+
+    def test_selects_dynamodb_backend(
+        self, agents_only_discovery: None, aws_test_credentials: None
+    ) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(
+            _AppConfig(name="demo"), _ctx(persistence=_DYNAMODB_PERSISTENCE)
+        )
+
+        assert isinstance(wiring.uow_factory, DynamoUnitOfWorkFactory)
+
+    def test_none_has_no_unit_of_work(self, agents_only_discovery: None) -> None:
+        _runtime, wiring, _discovered = _build_bootstrap(
+            _AppConfig(name="demo"), _ctx(persistence={"backend": "none"})
+        )
+
+        assert wiring.uow_factory is None
+
+    def test_unknown_backend_lists_registered_names(self, tmp_path: Path) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "mongodb"})
+
+        with pytest.raises(ConfigError, match="Unknown persistence backend 'mongodb'") as exc_info:
+            create_app(config_path)
+
+        message = str(exc_info.value)
+        assert "sqlalchemy" in message
+        assert "dynamodb" in message
+        assert "none" in message
+
+
+class TestDynamoDBBoot:
+    def test_boots_without_a_database_section(
+        self, tmp_path: Path, aws_test_credentials: None
+    ) -> None:
+        config_path = write_project(tmp_path, persistence=_DYNAMODB_PERSISTENCE, database=None)
+
+        assert create_app(config_path) is not None
+
+    def test_requires_its_config_section(self, tmp_path: Path) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "dynamodb"})
+
+        with pytest.raises(ConfigError, match="persistence.dynamodb"):
+            create_app(config_path)
+
+
+class TestNoneBoot:
+    def test_boots_without_a_database_section(self, tmp_path: Path) -> None:
+        config_path = write_project(tmp_path, persistence={"backend": "none"}, database=None)
+
+        assert create_app(config_path) is not None
+
+    def test_ignores_an_unusable_database_section(self, tmp_path: Path) -> None:
+        config_path = write_project(
+            tmp_path,
+            persistence={"backend": "none"},
+            database={"url": "postgresql+asyncpg://nobody@unreachable/nothing"},
+        )
+
+        assert create_app(config_path) is not None
+
+
+class _RecordingBackend:
+    """Backend that records what the host hands it, delegating to ``none``."""
+
+    name: ClassVar[str] = "recording"
+    events: ClassVar[list[tuple[str, tuple[type[BaseModel], ...]]]] = []
+
+    def build(self, ctx: ConfigContext, models: Sequence[type[BaseModel]]) -> PersistenceWiring:
+        self.events.append(("build", tuple(models)))
+        wiring = NoneBackend().build(ctx, models)
+        return PersistenceWiring(
+            uow_factory=wiring.uow_factory,
+            repo_registration_module=wiring.repo_registration_module,
+            lifespan_init=wiring.lifespan_init,
+            default_repository_type=wiring.default_repository_type,
+            prepare_models=self._prepare_models,
+        )
+
+    def _prepare_models(self, models: Sequence[type[BaseModel]]) -> None:
+        self.events.append(("prepare_models", tuple(models)))
+
+
+class _RecordingEntryPoint:
+    name = _RecordingBackend.name
+    group = "loom.persistence.backends"
+
+    def load(self) -> type[_RecordingBackend]:
+        return _RecordingBackend
+
+
+class _RecordingEntryPoints:
+    def select(self, *, group: str) -> tuple[_RecordingEntryPoint, ...]:
+        return (_RecordingEntryPoint(),) if group == _RecordingEntryPoint.group else ()
+
+
+def test_injected_backend_boots_and_prepares_models_after_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backend registered by another package boots through ``create_app`` unchanged."""
+    monkeypatch.setattr(entrypoints_module, "entry_points", lambda: _RecordingEntryPoints())
+    monkeypatch.setattr(_RecordingBackend, "events", [])
+    config_path = write_project(tmp_path, persistence={"backend": "recording"}, database=None)
+
+    assert create_app(config_path) is not None
+
+    steps = [step for step, _models in _RecordingBackend.events]
+    assert steps == ["build", "prepare_models"]
+    built, prepared = (models for _step, models in _RecordingBackend.events)
+    assert built == prepared
+    assert [model.__name__ for model in built] == ["ConfigRecord"]
+
+
+def test_discover_components_accepts_agents_only_result(agents_only_discovery: None) -> None:
     discovered = _discover_components(_AppConfig(name="demo"))
 
     assert discovered.agent_specs == ("agents/*.yaml",)
@@ -180,16 +228,14 @@ def test_discover_components_rejects_empty_result(monkeypatch: pytest.MonkeyPatc
 
 
 def test_build_bootstrap_sqlalchemy_without_models_warns_and_starts(
-    monkeypatch: pytest.MonkeyPatch,
+    agents_only_discovery: None,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A project whose relational schema is still empty boots, with a warning."""
-    monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: _agents_only())
-
     app_cfg = _AppConfig(name="demo")
     ctx = _ctx()
 
-    with caplog.at_level(logging.WARNING, logger=auto.__name__):
+    with caplog.at_level(logging.WARNING, logger=sqlalchemy_backend_module.__name__):
         runtime, wiring, discovered = _build_bootstrap(app_cfg, ctx)
 
     assert discovered.models == ()
@@ -212,7 +258,7 @@ def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
         auto,
         "_build_discovery_result",
         lambda _cfg: DiscoveryResult(
-            models=(), use_cases=(), interfaces=(OrphanInterface,), agent_specs=()
+            models=(), use_cases=(), interfaces=_interfaces(OrphanInterface), agent_specs=()
         ),
     )
 
@@ -227,26 +273,15 @@ def test_build_bootstrap_rejects_autocrud_over_an_undiscovered_model(
     "persistence",
     [
         pytest.param({"backend": "none"}, id="none"),
-        pytest.param(
-            {
-                "backend": "dynamodb",
-                "dynamodb": {
-                    "region": "eu-west-1",
-                    "table": "orphans",
-                    "endpoint_url": "http://localhost:8000",
-                },
-            },
-            id="dynamodb",
-        ),
+        pytest.param(_DYNAMODB_PERSISTENCE, id="dynamodb"),
     ],
 )
 def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
     persistence: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
+    aws_test_credentials: None,
 ) -> None:
     """The coherence of an interface with its model does not depend on the backend."""
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
 
     class OrphanOnAnyBackend(RestInterface[PersistenceNoneRecord]):
         prefix = "/orphans"
@@ -256,7 +291,7 @@ def test_build_bootstrap_rejects_autocrud_without_model_on_any_backend(
         auto,
         "_build_discovery_result",
         lambda _cfg: DiscoveryResult(
-            models=(), use_cases=(), interfaces=(OrphanOnAnyBackend,), agent_specs=()
+            models=(), use_cases=(), interfaces=_interfaces(OrphanOnAnyBackend), agent_specs=()
         ),
     )
 
@@ -282,7 +317,7 @@ def test_build_bootstrap_accepts_auto_true_with_hand_declared_routes(
         auto,
         "_build_discovery_result",
         lambda _cfg: DiscoveryResult(
-            models=(), use_cases=(), interfaces=(HandWrittenInterface,), agent_specs=()
+            models=(), use_cases=(), interfaces=_interfaces(HandWrittenInterface), agent_specs=()
         ),
     )
 
@@ -300,7 +335,9 @@ def test_build_bootstrap_none_with_models_builds_without_compiling(
     )
     monkeypatch.setattr(auto, "_build_discovery_result", lambda _cfg: with_models)
     compiled: list[object] = []
-    monkeypatch.setattr(sqlalchemy_backend, "compile_all", lambda *models: compiled.extend(models))
+    monkeypatch.setattr(
+        sqlalchemy_backend_module, "compile_all", lambda *models: compiled.extend(models)
+    )
 
     runtime, wiring, discovered = _build_bootstrap(
         _AppConfig(name="demo"), _ctx(persistence={"backend": "none"})

@@ -156,6 +156,13 @@ static = "loom.ai.remote_auth:static_headers"
 polars = "loom.etl.backends.polars.provider:PolarsProvider"
 spark = "loom.etl.backends.spark.provider:SparkProvider"
 
+# Persistence backends `create_app` resolves from `persistence.backend`. A
+# deployment registers its own under the same group from its own package.
+[project.entry-points."loom.persistence.backends"]
+sqlalchemy = "loom.core.repository.sqlalchemy.backend:SQLAlchemyBackend"
+dynamodb = "loom.core.repository.dynamodb.backend:DynamoDBBackend"
+none = "loom.core.persistence.none:NoneBackend"
+
 [build-system]
 requires = [
     "hatchling>=1.24.0",

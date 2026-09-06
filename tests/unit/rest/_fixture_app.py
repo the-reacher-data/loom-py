@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 _MODULE_PREFIX = "loom_config_fixture_app"
+_DEFAULT_DATABASE: dict[str, Any] = {"url": "sqlite+aiosqlite:///"}
 _NON_IDENTIFIER = re.compile(r"\W", re.ASCII)
 
 _APP_SOURCE = '''\
@@ -52,6 +53,8 @@ def write_project(
     rest: dict[str, Any] | None = None,
     sql: dict[str, Any] | None = None,
     observability: dict[str, Any] | None = None,
+    persistence: dict[str, Any] | None = None,
+    database: dict[str, Any] | None = _DEFAULT_DATABASE,
     prefix: str = "/ping",
     route_path: str = "/",
 ) -> str:
@@ -62,6 +65,8 @@ def write_project(
         rest: Contents of the ``app.rest`` section.
         sql: Contents of the ``sql`` section.
         observability: Contents of the ``observability`` section.
+        persistence: Contents of the ``persistence`` section.
+        database: Contents of the ``database`` section; ``None`` omits it.
         prefix: Prefix of the generated REST interface.
         route_path: Path of its single route, relative to *prefix*.
 
@@ -82,14 +87,17 @@ def write_project(
                 "interfaces": {"modules": [module], "warn_recommended": False},
             },
         },
-        "database": {"url": "sqlite+aiosqlite:///"},
     }
+    if database is not None:
+        config["database"] = dict(database)
     if rest is not None:
         config["app"]["rest"] = rest
     if sql is not None:
         config["sql"] = sql
     if observability is not None:
         config["observability"] = observability
+    if persistence is not None:
+        config["persistence"] = persistence
     config_path = tmp_path / "app.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     return str(config_path)
