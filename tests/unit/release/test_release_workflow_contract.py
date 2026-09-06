@@ -93,6 +93,15 @@ class TestPublish:
     def test_publishing_waits_for_the_plan_and_the_build(self) -> None:
         assert cast(list[str], _job("publish")["needs"]) == ["plan", "build"]
 
+    def test_publishes_through_trusted_publishing_only(self) -> None:
+        publish = [step for step in _steps("publish") if "pypi-publish" in str(step.get("uses"))]
+        assert len(publish) == 1
+        assert "password" not in str(publish[0].get("with", {}))
+        assert _job("publish")["permissions"]["id-token"] == "write"
+
+    def test_no_pypi_token_is_read_anywhere(self) -> None:
+        assert "PYPI_API_TOKEN" not in WORKFLOW_PATH.read_text(encoding="utf-8")
+
     def test_no_skip_existing_hides_a_partial_upload(self) -> None:
         for step in _steps("publish"):
             assert "skip-existing" not in str(step.get("with", {}))

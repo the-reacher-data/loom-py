@@ -252,27 +252,12 @@ jobs:
           name: v${{ needs.plan.outputs.version }}
           body_path: CHANGELOG_RELEASE.md
 
-      - name: Select PyPI authentication
-        id: pypi-auth
-        env:
-          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -n "${PYPI_API_TOKEN}" ]; then
-            echo "has-token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has-token=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish package to PyPI (token mode)
-        if: ${{ steps.pypi-auth.outputs.has-token == 'true' }}
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-
-      - name: Publish package to PyPI (trusted publisher)
-        if: ${{ steps.pypi-auth.outputs.has-token == 'false' }}
+      # Trusted publishing, with no fallback: PyPI mints a token for this
+      # repository and this workflow, for this run. A long-lived API token in a
+      # repository secret publishes as us until someone revokes it, and anything
+      # that reaches this job reaches it — which is what the branch name
+      # interpolated into a shell script would have done.
+      - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1 2026-07-28 (handles Metadata-Version 2.5)
 
       # No push event announces a released commit, and nothing here changes
