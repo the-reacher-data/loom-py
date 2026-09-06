@@ -31,4 +31,5 @@ class ErrorCode(StrEnum):
     RULE_VIOLATION = "rule_violation"
     RULE_VIOLATIONS = "rule_violations"
     UNSUPPORTED_FORMAT = "unsupported_format"
+    UNSUPPORTED_QUERY = "unsupported_query"
     SYSTEM_ERROR = "system_error"

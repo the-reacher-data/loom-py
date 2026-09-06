@@ -12,6 +12,7 @@ the complete standard CRUD interface.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol, TypeVar
 
 import msgspec
@@ -64,6 +65,14 @@ class Creatable(Protocol[ModelT]):
 
     async def create(self, data: msgspec.Struct) -> ModelT:
         """Persist one entity and return the persisted result."""
+        ...
+
+
+class BulkCreatable(Protocol[ModelT]):
+    """Repository capability: persist several new entities in one round trip."""
+
+    async def create_many(self, data: Sequence[msgspec.Struct]) -> tuple[ModelT, ...]:
+        """Persist every entity in *data* and return them in input order."""
         ...
 
 

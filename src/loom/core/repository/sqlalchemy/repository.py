@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import wraps
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from loom.core.logger import get_logger
 from loom.core.repository.abc import (
+    BulkCreatable,
     Countable,
     Creatable,
     Deletable,
@@ -20,6 +21,7 @@ from loom.core.repository.abc import (
 )
 from loom.core.repository.mutation import MutationEvent
 from loom.core.repository.sqlalchemy.mixins import (
+    SQLAlchemyBulkCreateMixin,
     SQLAlchemyCreateMixin,
     SQLAlchemyDeleteMixin,
     SQLAlchemyReadMixin,
@@ -51,11 +53,13 @@ def with_session_scope(
 
 class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve same-named methods across Mixin+Protocol bases; runtime behaviour is correct
     SQLAlchemyCreateMixin[OutputT, IdT],
+    SQLAlchemyBulkCreateMixin[OutputT, IdT],
     SQLAlchemyReadMixin[OutputT, IdT],
     SQLAlchemyUpdateMixin[OutputT, IdT],
     SQLAlchemyDeleteMixin[OutputT, IdT],
     Readable[OutputT],
     Creatable[OutputT],
+    BulkCreatable[OutputT],
     Updatable[OutputT],
     Deletable[OutputT],
     Listable[OutputT],
@@ -68,6 +72,8 @@ class RepositorySQLAlchemy(  # type: ignore[misc]  # mypy/pyright can't resolve 
     repository uses the compiled SA class for queries and returns the
     Struct directly.
     """
+
+    backend_name: ClassVar[str] = "sqlalchemy"
 
     def __init__(
         self,

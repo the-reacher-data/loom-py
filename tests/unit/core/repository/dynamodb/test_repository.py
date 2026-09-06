@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from loom.core.errors import Conflict
-from loom.core.repository.abc import PageParams, QuerySpec
-from loom.core.repository.dynamodb.repository import DynamoCapabilityError, RepositoryDynamoDB
+from loom.core.repository.abc import Countable, Listable, UnsupportedQuery
+from loom.core.repository.dynamodb.repository import RepositoryDynamoDB
 
 from .conftest import FakeClient, Product, ProductCreate, ProductUpdate
 
@@ -54,11 +54,15 @@ async def test_get_by_primary_key_delegates_to_get_by_id(fake_client: FakeClient
     assert await repo.get_by("id", 7) == Product(id=7, name="Bolt")
 
 
-async def test_get_by_non_key_field_raises_capability_error(fake_client: FakeClient) -> None:
+async def test_get_by_non_key_field_raises_unsupported_query(fake_client: FakeClient) -> None:
     repo = _repo(fake_client)
 
-    with pytest.raises(DynamoCapabilityError, match="get_by\\('name'\\)"):
+    with pytest.raises(UnsupportedQuery, match="get_by\\('name'\\)") as exc_info:
         await repo.get_by("name", "Bolt")
+
+    assert exc_info.value.code == "unsupported_query"
+    assert exc_info.value.backend == "dynamodb"
+    assert exc_info.value.model == "Product"
 
 
 async def test_exists_by_primary_key(fake_client: FakeClient) -> None:
@@ -69,10 +73,10 @@ async def test_exists_by_primary_key(fake_client: FakeClient) -> None:
     assert await repo.exists_by("id", 999) is False
 
 
-async def test_exists_by_non_key_field_raises_capability_error(fake_client: FakeClient) -> None:
+async def test_exists_by_non_key_field_raises_unsupported_query(fake_client: FakeClient) -> None:
     repo = _repo(fake_client)
 
-    with pytest.raises(DynamoCapabilityError, match="exists_by\\('name'\\)"):
+    with pytest.raises(UnsupportedQuery, match="exists_by\\('name'\\)"):
         await repo.exists_by("name", "Nut")
 
 
@@ -117,24 +121,11 @@ async def test_delete_reports_existence(fake_client: FakeClient) -> None:
     assert await repo.get_by_id(1) is None
 
 
-async def test_count_raises_capability_error(fake_client: FakeClient) -> None:
+async def test_declares_no_listing_capability(fake_client: FakeClient) -> None:
+    """Listing is absent from the class, not a method that raises."""
     repo = _repo(fake_client)
 
-    with pytest.raises(DynamoCapabilityError, match="count"):
-        await repo.count()
-
-
-async def test_list_paginated_raises_capability_error(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    params = PageParams(page=1, limit=10)
-
-    with pytest.raises(DynamoCapabilityError, match="list_paginated"):
-        await repo.list_paginated(params)
-
-
-async def test_list_with_query_raises_capability_error(fake_client: FakeClient) -> None:
-    repo = _repo(fake_client)
-    query = QuerySpec()
-
-    with pytest.raises(DynamoCapabilityError, match="list_with_query"):
-        await repo.list_with_query(query)
+    assert Listable not in type(repo).__mro__
+    assert Countable not in type(repo).__mro__
+    for name in ("count", "list_paginated", "list_with_query"):
+        assert not hasattr(repo, name)

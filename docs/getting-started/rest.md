@@ -374,13 +374,22 @@ discovery:
 
 ### Choose the persistence backend
 
-`database:` is read by the default backend. `persistence.backend` selects it:
+Backends are plugins resolved by name from the `loom.persistence.backends`
+entry point group; `database:` is read by the default one. `persistence.backend`
+selects it:
 
 | `persistence.backend` | Reads | What the app gets |
 |---|---|---|
-| `sqlalchemy` (default) | `database:` | unit of work, repositories and compiled tables for every discovered model; needs the `sqlalchemy` extra, a driver and a reachable database even with zero models |
-| `dynamodb` | `persistence.dynamodb:` | the DynamoDB repositories, no relational tables |
-| `none` | nothing | no unit of work, no repositories; discovered models are accepted but not compiled, a `database:` section is ignored, and deferred job dispatch never fires |
+| `sqlalchemy` (default) | `database:` | unit of work, repositories with every capability (`create_many` included) and compiled tables for every discovered model; needs the `sqlalchemy` extra, a driver and a reachable database even with zero models |
+| `dynamodb` | `persistence.dynamodb:` | key-value repositories (`Readable`, `Creatable`, `Updatable`, `Deletable`); auto-CRUD mounts get, create, update and delete — `list` and `count` are not mounted, and `get_by` / `exists_by` on a non-key field raise `UnsupportedQuery`; no relational tables |
+| `none` | nothing | no unit of work, no repositories; discovered models are accepted but not compiled, a `database:` section is ignored, deferred job dispatch never fires, and an interface with `auto_crud_model` refuses to boot |
+
+Auto-CRUD is gated by the capabilities the serving repository class declares:
+an interface with an empty `include` mounts only the operations the backend
+supports, an explicit `include` naming an unsupported one fails at startup.
+An unknown backend name fails at startup listing the registered ones. Writing a
+backend, the capability gate and the cursor contract are described in
+[Persistence backends](../rest/persistence-backends.md).
 
 ```yaml
 persistence:
@@ -392,6 +401,33 @@ persistence:
 It is never inferred: with the default backend and no discovered models the
 application starts with a WARNING that names `persistence.backend: none`, and
 still opens a connection — so the driver and the database have to be there.
+
+### `GET /health`
+
+Every application built by `create_app` serves `GET /health`, registered ahead
+of every interface router and outside the OpenAPI schema:
+
+```json
+{"status": "ok", "backends": {"sqlalchemy": true}}
+```
+
+- `status` is `ok` when every backend is ready and `degraded` — with HTTP
+  `503` — when any is not. Each key of `backends` is the `persistence.backend`
+  name and its readiness (`SELECT 1` for `sqlalchemy`, `DescribeTable` with an
+  `ACTIVE` or `UPDATING` table for `dynamodb`).
+- `none`, or a backend without a readiness probe, answers
+  `{"status": "ok", "backends": {}}`.
+- The probe result is cached for a short TTL, concurrent requests share one
+  probe, and a probe that exceeds its timeout reports the backend as not ready.
+  `dynamodb` needs `dynamodb:DescribeTable` on the table ARN for it, in
+  addition to the item permissions. Do not expose `/health` on the public
+  ingress; it is anonymous and meant for the orchestrator.
+- `/health` is in the default authentication exclusions, so an orchestrator
+  needs no credentials. An explicit `exclude_paths` list is honoured verbatim:
+  **include `/health` in it**, or the probe answers `401`.
+- The path is reserved: a `RestInterface` compiling to a literal `/health` is a
+  compilation error, and — as for `/metrics` — a catch-all route such as
+  `/{tenant}` that would capture it aborts an authenticated startup.
 
 ### Secrets in YAML (`resolvers=`)
 

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast, get_origin
 
 from loom.core.di.container import LoomContainer
 from loom.core.di.scope import Scope
 from loom.core.model import BaseModel, LoomStruct
 from loom.core.repository.abc.repo_for import (
+    BulkCreatable,
     Countable,
     Creatable,
     Deletable,
@@ -23,12 +24,55 @@ from loom.core.repository.registry import (
     get_repository_registration,
 )
 
-_STANDARD_PROTOCOLS: frozenset[Any] = frozenset(
-    {Readable, Creatable, Updatable, Deletable, Listable, Countable}
+_STANDARD_PROTOCOLS: tuple[Any, ...] = (
+    Readable,
+    Creatable,
+    BulkCreatable,
+    Updatable,
+    Deletable,
+    Listable,
+    Countable,
 )
 
 
-def _is_direct_protocol(cls: type) -> bool:
+def is_standard_capability(annotation: object) -> bool:
+    """Return whether *annotation* is a parametrised standard capability.
+
+    Args:
+        annotation: A type annotation such as ``Listable[Order]``.
+
+    Returns:
+        ``True`` for ``Protocol[Model]`` whose origin is one of the standard
+        ``-able`` capability protocols; ``False`` for anything else, including
+        the bare protocol and ``RepoFor[Model]``.
+    """
+    return get_origin(annotation) in _STANDARD_PROTOCOLS
+
+
+def capabilities_of(repository_type: type) -> tuple[type, ...]:
+    """Return the standard capability protocols *repository_type* implements.
+
+    The single capability source: the auto-CRUD gate mounts the operations
+    these protocols cover, and the registration module binds the matching DI
+    keys.
+
+    Args:
+        repository_type: The concrete repository class to inspect.
+
+    Returns:
+        The protocols found in the class MRO, in the stable order of the
+        standard capability list, which the auto-CRUD gate relies on.
+    """
+    mro = set(repository_type.__mro__)
+    return tuple(proto for proto in _STANDARD_PROTOCOLS if proto in mro)
+
+
+def _capability_keys(repository_type: type, model: type[LoomStruct]) -> tuple[Any, ...]:
+    """Return the ``Protocol[model]`` DI keys for the capabilities of *repository_type*."""
+    return tuple(cast(Any, proto)[model] for proto in capabilities_of(repository_type))
+
+
+def is_direct_protocol(cls: type) -> bool:
     """True when *cls* explicitly declares ``Protocol`` as a base.
 
     Uses the Python internal ``_is_protocol`` marker written on the class's
@@ -51,7 +95,7 @@ def _detect_capability_keys(
       MRO.
     * **Custom Protocol bases** — any class in ``repository_type.__orig_bases__``
       that is itself a Protocol (i.e. it carries ``_is_protocol = True`` in its
-      own ``__dict__``) and is not one of the six standard capabilities.
+      own ``__dict__``) and is not one of the standard capabilities.
 
     Args:
         repository_type: The concrete repository class to inspect.
@@ -60,18 +104,13 @@ def _detect_capability_keys(
     Returns:
         Tuple of DI keys in stable order, with no duplicates.
     """
-    keys: list[Any] = []
-    mro_set = set(repository_type.__mro__)
-
-    for proto in _STANDARD_PROTOCOLS:
-        if proto in mro_set:
-            keys.append(proto[model])
+    keys: list[Any] = list(_capability_keys(repository_type, model))
 
     for base in getattr(repository_type, "__orig_bases__", ()):
         origin: Any = getattr(base, "__origin__", base)
         if (
             isinstance(origin, type)
-            and _is_direct_protocol(origin)
+            and is_direct_protocol(origin)
             and origin not in _STANDARD_PROTOCOLS
         ):
             keys.append(origin)
@@ -79,14 +118,19 @@ def _detect_capability_keys(
     return tuple(dict.fromkeys(keys))
 
 
-def _default_capability_keys(model: type[LoomStruct]) -> tuple[Any, ...]:
-    """Return standard capability keys for a default-built (RepositorySQLAlchemy) repo.
+def _default_capability_keys(
+    model: type[LoomStruct],
+    default_repository_type: type | None,
+) -> tuple[Any, ...]:
+    """Return the capability keys of a default-built repository for *model*.
 
     Called only for ``BaseModel`` types that have no explicit registration.
-    The default builder always produces a ``RepositorySQLAlchemy`` instance,
-    which implements all six standard capabilities.
+    Without a default repository type (a backend serving no repositories)
+    no capability is bound.
     """
-    return tuple(proto[model] for proto in _STANDARD_PROTOCOLS)
+    if default_repository_type is None:
+        return ()
+    return _capability_keys(default_repository_type, model)
 
 
 @dataclass(frozen=True)
@@ -100,6 +144,7 @@ def _build_repository_specs(
     *,
     models: Sequence[type[BaseModel]],
     explicit_models: Sequence[type[LoomStruct]],
+    default_repository_type: type | None,
 ) -> dict[type[LoomStruct], _RepositoryBindingSpec]:
     repository_specs: dict[type[LoomStruct], _RepositoryBindingSpec] = {}
 
@@ -110,7 +155,7 @@ def _build_repository_specs(
 
     for model in models:
         if model not in repository_specs:
-            repository_specs[model] = _default_repository_spec(model)
+            repository_specs[model] = _default_repository_spec(model, default_repository_type)
 
     return repository_specs
 
@@ -127,10 +172,13 @@ def _registered_repository_spec(
     )
 
 
-def _default_repository_spec(model: type[LoomStruct]) -> _RepositoryBindingSpec:
+def _default_repository_spec(
+    model: type[LoomStruct],
+    default_repository_type: type | None,
+) -> _RepositoryBindingSpec:
     return _RepositoryBindingSpec(
         registration=None,
-        capability_keys=_default_capability_keys(model),
+        capability_keys=_default_capability_keys(model, default_repository_type),
         binding_key=RepositoryToken(model),
     )
 
@@ -178,6 +226,7 @@ def build_repository_registration_module(
     models: Sequence[type[BaseModel]],
     explicit_models: Sequence[type[LoomStruct]] = (),
     build_registered_repository: Callable[[RepositoryBuildContext, RepositoryRegistration], Any],
+    default_repository_type: type | None = None,
 ) -> Callable[[LoomContainer], None]:
     """Build a container module that registers main repositories.
 
@@ -188,10 +237,13 @@ def build_repository_registration_module(
     Capability DI keys (standard ``-able`` generics and custom Protocol bases)
     are auto-detected and registered alongside the primary binding key so that
     use cases can declare fine-grained capability dependencies without casts.
+    Default-built repositories bind the capabilities of
+    ``default_repository_type``; ``None`` binds none.
     """
     repository_specs = _build_repository_specs(
         models=models,
         explicit_models=explicit_models,
+        default_repository_type=default_repository_type,
     )
 
     def register(container: LoomContainer) -> None:

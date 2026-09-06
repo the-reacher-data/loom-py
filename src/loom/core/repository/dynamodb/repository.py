@@ -3,17 +3,11 @@
 DynamoDB is a key-value / document store, not a relational engine. This
 repository implements faithfully only what DynamoDB supports natively through
 the item primary key: ``get_by_id``, ``create``, ``update``, ``delete`` and the
-key-scoped ``get_by`` / ``exists_by``. Operations that DynamoDB cannot serve
-efficiently without a full table scan or a secondary index — arbitrary-field
-filters, ``count``, offset pagination with a total count — raise
-:class:`DynamoCapabilityError` instead of silently degrading.
-
-Because :class:`RepositoryDynamoDB` still declares the ``Listable`` and
-``Countable`` capabilities (to keep a single repository contract across
-backends), ``count`` / ``list_paginated`` / ``list_with_query`` are wired into
-DI but raise :class:`DynamoCapabilityError` at call time. Any REST listing
-endpoint served by this backend therefore returns an error rather than a page.
-Selectively dropping those capability bindings is a possible follow-up.
+key-scoped ``get_by`` / ``exists_by``. Listing and counting need a full table
+scan or a secondary index, so the class declares neither ``Listable`` nor
+``Countable``: the auto-CRUD gate mounts no list route over it and the DI
+container binds no such capability. A lookup on a field other than the key
+raises :class:`~loom.core.repository.abc.UnsupportedQuery`.
 
 Model-to-table mapping is intentionally simple: every model is stored in the
 single table configured under ``persistence.dynamodb.table``. The item primary
@@ -25,26 +19,21 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
-from typing import Any, Generic, cast
+from typing import Any, ClassVar, Generic, cast
 
 import msgspec
 
 from loom.core.errors import Conflict
 from loom.core.logger import get_logger
+from loom.core.model.convert import to_struct
 from loom.core.model.introspection import get_column_fields, get_id_attribute
 from loom.core.repository.abc import (
-    Countable,
     Creatable,
-    CursorResult,
     Deletable,
-    FilterParams,
     IdT,
-    Listable,
     OutputT,
-    PageParams,
-    PageResult,
-    QuerySpec,
     Readable,
+    UnsupportedQuery,
     Updatable,
 )
 
@@ -52,23 +41,11 @@ from loom.core.repository.abc import (
 _CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
 
 
-class DynamoCapabilityError(NotImplementedError):
-    """Raised when an operation is not supported by the DynamoDB key-value backend.
-
-    DynamoDB serves data efficiently only through the item primary key. Any
-    operation requiring a full-table scan or a secondary index — arbitrary
-    field filters, counting, or offset pagination with a total count — raises
-    this error rather than performing an expensive or misleading scan.
-    """
-
-
 class RepositoryDynamoDB(
     Readable[OutputT],
     Creatable[OutputT],
     Updatable[OutputT],
     Deletable[OutputT],
-    Listable[OutputT],
-    Countable[OutputT],
     Generic[OutputT, IdT],
 ):
     """Key-value repository backed by a single boto3 low-level ``dynamodb`` client.
@@ -82,9 +59,9 @@ class RepositoryDynamoDB(
     plain Python values, preserving the ``float``↔``Decimal`` round-trip
     DynamoDB requires.
 
-    ``count`` / ``list_paginated`` / ``list_with_query`` are declared for a
-    uniform contract but always raise :class:`DynamoCapabilityError`; REST
-    listing endpoints served by this backend therefore return an error.
+    ``exists_by`` is served for the partition key although the class does
+    not declare ``Countable``: counting needs a scan, an existence check
+    does not.
 
     Args:
         client: A boto3 low-level ``dynamodb`` client (or a compatible object
@@ -94,6 +71,8 @@ class RepositoryDynamoDB(
         model: The Loom struct model this repository is bound to. Its
             ``primary_key`` field becomes the DynamoDB partition key.
     """
+
+    backend_name: ClassVar[str] = "dynamodb"
 
     def __init__(self, client: Any, table_name: str, model: type) -> None:
         # Lazy import: boto3 is an optional dependency (loom[dynamodb]) and must
@@ -129,22 +108,16 @@ class RepositoryDynamoDB(
 
         Supported only when ``field`` is the partition key; any other field
         would require a scan or secondary index and raises
-        :class:`DynamoCapabilityError`.
+        :class:`~loom.core.repository.abc.UnsupportedQuery`.
         """
         if field == self._id_attr:
             return await self.get_by_id(cast(IdT, value), profile)
-        raise DynamoCapabilityError(
-            f"get_by('{field}') is not supported by the DynamoDB backend: only the "
-            f"primary key '{self._id_attr}' can be queried without a scan or secondary index."
-        )
+        raise self._unsupported_field("get_by", field)
 
     async def exists_by(self, field: str, value: Any) -> bool:
         """Return whether an item exists for ``field == value`` (primary key only)."""
         if field != self._id_attr:
-            raise DynamoCapabilityError(
-                f"exists_by('{field}') is not supported by the DynamoDB backend: only the "
-                f"primary key '{self._id_attr}' can be queried without a scan or secondary index."
-            )
+            raise self._unsupported_field("exists_by", field)
         response = await asyncio.to_thread(
             self._client.get_item, TableName=self._table_name, Key=self._encode_key(value)
         )
@@ -216,34 +189,13 @@ class RepositoryDynamoDB(
         )
         return "Attributes" in response
 
-    async def count(self) -> int:
-        """Not supported: counting requires a full table scan."""
-        raise DynamoCapabilityError(
-            "count() is not supported by the DynamoDB backend: it would require a full "
-            "table scan. Track counts out-of-band (e.g. an atomic counter item) instead."
-        )
-
-    async def list_paginated(
-        self,
-        page_params: PageParams,
-        filter_params: FilterParams | None = None,
-        profile: str = "default",
-    ) -> PageResult[OutputT]:
-        """Not supported: offset pagination with a total count needs a scan."""
-        raise DynamoCapabilityError(
-            "list_paginated() is not supported by the DynamoDB backend: offset pagination "
-            "with a total count requires a full table scan."
-        )
-
-    async def list_with_query(
-        self,
-        query: QuerySpec,
-        profile: str = "default",
-    ) -> PageResult[OutputT] | CursorResult[OutputT]:
-        """Not supported: arbitrary structured queries need a scan or index."""
-        raise DynamoCapabilityError(
-            "list_with_query() is not supported by the DynamoDB backend: arbitrary field "
-            "filters and sorting require a full table scan or a secondary index."
+    def _unsupported_field(self, operation: str, field: str) -> UnsupportedQuery:
+        """Build the error for a lookup on a field the partition key does not cover."""
+        return UnsupportedQuery(
+            self.backend_name,
+            self._model.__qualname__,
+            f"{operation}('{field}') needs a scan or a secondary index; only the "
+            f"primary key '{self._id_attr}' can be queried.",
         )
 
     def _to_internal(self, data: msgspec.Struct) -> dict[str, Any]:
@@ -263,7 +215,7 @@ class RepositoryDynamoDB(
     def _to_output(self, item: dict[str, Any]) -> OutputT:
         """Build the model output struct from a stored item, ignoring unknown attrs."""
         kwargs = {key: value for key, value in item.items() if key in self._column_fields}
-        return cast(OutputT, self._model(**kwargs))
+        return cast(OutputT, to_struct(self._model, kwargs))
 
     def _encode_value(self, value: Any) -> dict[str, Any]:
         """Serialize a plain Python value to a low-level ``AttributeValue`` dict.

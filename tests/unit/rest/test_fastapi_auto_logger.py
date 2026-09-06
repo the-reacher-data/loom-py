@@ -82,7 +82,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         del app_cfg, ctx, metrics
         result = SimpleNamespace(
             compiler=object(),
-            factory=object(),
+            factory=SimpleNamespace(verify=lambda: None),
             # create_app always registers SqlQueryService (M5), so the stub
             # container must accept register() calls.
             container=SimpleNamespace(register=lambda *args, **kwargs: None),
@@ -92,7 +92,7 @@ def test_create_app_uses_observability_section(monkeypatch: pytest.MonkeyPatch) 
         async def _lifespan() -> AsyncIterator[None]:
             yield
 
-        wiring = SimpleNamespace(lifespan_init=_lifespan)
+        wiring = SimpleNamespace(lifespan_init=_lifespan, readiness=None)
         discovered = SimpleNamespace(
             use_cases=(object(),),
             interfaces=(type("DummyRestInterface", (), {}),),

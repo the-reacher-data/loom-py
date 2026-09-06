@@ -25,11 +25,13 @@ from fastapi.testclient import TestClient
 from loom.ai.errors import AgentCompilationError
 from loom.core.plugins import entrypoints as entrypoints_module
 from loom.rest.fastapi.auto import create_app
+from tests.integration.ai._entrypoints import fake_entry_points
 from tests.integration.ai.test_auto_gate import (
     _APP_MODULE,
     _APP_SOURCE,
     _ENGINE_NAME,
-    _FakeEntryPoints,
+    _GROUP,
+    _FakeEntryPoint,
 )
 
 _MCP_AGENT = "tool-user"
@@ -71,7 +73,9 @@ def fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     The engine is faked so that no provider SDK, credential or model call is
     involved: what is under test is the composition root, not the adapter.
     """
-    monkeypatch.setattr(entrypoints_module, "entry_points", _FakeEntryPoints)
+    monkeypatch.setattr(
+        entrypoints_module, "entry_points", fake_entry_points(_GROUP, (_FakeEntryPoint(),))
+    )
 
 
 def _write_project(tmp_path: Path, *, specs: dict[str, dict[str, Any]]) -> str:

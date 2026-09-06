@@ -43,6 +43,7 @@ from loom.core.plugins import entrypoints as entrypoints_module
 from loom.core.use_case.keys import use_case_key
 from loom.core.use_case.use_case import UseCase
 from loom.rest.fastapi.auto import create_app
+from tests.integration.ai._entrypoints import fake_entry_points
 
 _MANIFEST_MODULE = "tests.integration.ai._agents_only_manifest"
 _ENGINE_NAME = "agentsonly-inprocess-fake"
@@ -159,15 +160,12 @@ class _FakeEntryPoint:
         return _EngineProvider
 
 
-class _FakeEntryPoints:
-    def select(self, *, group: str) -> tuple[_FakeEntryPoint, ...]:
-        return (_FakeEntryPoint(),) if group == _GROUP else ()
-
-
 @pytest.fixture
 def fake_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     """Register the in-process engine ``ai.engine`` resolves to, with a clean log."""
-    monkeypatch.setattr(entrypoints_module, "entry_points", _FakeEntryPoints)
+    monkeypatch.setattr(
+        entrypoints_module, "entry_points", fake_entry_points(_GROUP, (_FakeEntryPoint(),))
+    )
     monkeypatch.setattr(_EngineProvider, "engines", [])
     PINGS.clear()
 

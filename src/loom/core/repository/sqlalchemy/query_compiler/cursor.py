@@ -1,95 +1,67 @@
-"""Cursor encode / decode and predicate compilation.
+"""Keyset predicate compilation and next-cursor extraction for SQLAlchemy.
 
-Cursors are opaque base64-encoded JSON tokens of the form
-``{"field": value, ...}``.  The encoded value is safe to include in URLs.
+Tokens follow :mod:`loom.core.repository.abc.cursor`: every sort key plus
+the primary key as the final tie-breaker.
 
 The N+1 trick:  fetch ``limit + 1`` rows.  If the result set has exactly
 ``limit + 1`` items, a next page exists — truncate to ``limit`` and encode
-the last item's cursor value.
+the last item's keys.
 """
 
 from __future__ import annotations
 
-import base64
-import json
-from typing import Any, cast
+from typing import Any
 
-import msgspec
+from sqlalchemy import and_, or_
 
+from loom.core.repository.abc.cursor import Cursor, encode_cursor
+from loom.core.repository.abc.query import SortSpec
 from loom.core.repository.sqlalchemy.query_compiler.paths import resolve_column
-
-
-def encode_cursor(field: str, value: Any) -> str:
-    """Encode a cursor token for the given field and value.
-
-    Args:
-        field: Name of the sort/cursor field.
-        value: Value of that field for the last returned item.
-
-    Returns:
-        URL-safe base64-encoded JSON string.
-
-    Example::
-
-        token = encode_cursor("id", 42)
-        # "eyJpZCI6IDQyfQ=="
-    """
-    raw = json.dumps({field: value}, default=str)
-    return base64.urlsafe_b64encode(raw.encode()).decode()
-
-
-def decode_cursor(token: str) -> dict[str, Any]:
-    """Decode an opaque cursor token back to its field-value mapping.
-
-    Args:
-        token: URL-safe base64-encoded JSON string produced by
-            :func:`encode_cursor`.
-
-    Returns:
-        Dict with a single ``{field: value}`` entry.
-
-    Raises:
-        ValueError: If the token is malformed or not valid base64/JSON.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(token.encode())
-        decoded = json.loads(raw)
-        if not isinstance(decoded, dict):
-            raise ValueError("Decoded cursor payload must be an object.")
-        return cast(dict[str, Any], decoded)
-    except Exception as exc:
-        raise ValueError(f"Invalid cursor token: {exc}") from exc
 
 
 def compile_cursor_predicate(
     sa_model: type[Any],
-    cursor_token: str,
+    cursor: Cursor,
+    sort: tuple[SortSpec, ...],
+    id_column: Any,
 ) -> Any:
-    """Build a WHERE predicate that positions the query after the cursor.
+    """Build a WHERE predicate that positions the query after ``cursor``.
 
-    Assumes ascending order on the cursor field (``field > cursor_value``).
+    The predicate is the row-value comparison expanded as an OR of ANDs,
+    which every dialect (including sqlite) accepts:
+    ``k1 > v1 OR (k1 = v1 AND k2 < v2) OR (... AND id > vid)``.
 
     Args:
         sa_model: Root SQLAlchemy mapped model class.
-        cursor_token: Opaque cursor from :func:`encode_cursor`.
+        cursor: Decoded cursor whose keys match ``sort`` one to one.
+        sort: Sort directives the page is ordered by.
+        id_column: Primary-key column used as the ascending tie-breaker.
 
     Returns:
-        SQLAlchemy binary expression (``column > value``).
+        SQLAlchemy boolean expression.
 
     Raises:
-        ValueError: If the cursor token is malformed.
-        FilterPathError: If the cursor field cannot be resolved.
+        FilterPathError: If a sort field cannot be resolved.
     """
-    decoded = decode_cursor(cursor_token)
-    field, value = next(iter(decoded.items()))
-    col = resolve_column(sa_model, field)
-    return col > value
+    columns = [resolve_column(sa_model, spec.field) for spec in sort] + [id_column]
+    directions = [spec.direction for spec in sort] + ["ASC"]
+    values = [*cursor.keys, cursor.tie_breaker]
+    branches: list[Any] = []
+    for index, (column, direction, value) in enumerate(
+        zip(columns, directions, values, strict=True)
+    ):
+        step = column > value if direction == "ASC" else column < value
+        equal_prefix = [columns[j] == values[j] for j in range(index)]
+        branches.append(and_(*equal_prefix, step))
+    return or_(*branches)
 
 
 def extract_next_cursor(
     items: list[Any],
-    cursor_field: str,
+    sort: tuple[SortSpec, ...],
+    id_attribute: str,
     limit: int,
+    backend: str,
 ) -> tuple[list[Any], str | None, bool]:
     """Apply the N+1 trick to detect the next page and build its cursor.
 
@@ -97,8 +69,10 @@ def extract_next_cursor(
 
     Args:
         items: Raw ORM objects fetched (may contain up to ``limit + 1``).
-        cursor_field: Attribute name on the ORM object used as cursor key.
+        sort: Sort directives whose fields are read from the last row.
+        id_attribute: Primary-key attribute name on the ORM object.
         limit: Requested page size.
+        backend: Backend name stamped on the token.
 
     Returns:
         Tuple of ``(page_items, next_cursor_token, has_next)``.
@@ -107,10 +81,15 @@ def extract_next_cursor(
     """
     has_next = len(items) > limit
     page_items = items[:limit]
-    next_cursor: str | None = None
-    if has_next:
-        last = page_items[-1]
-        value = getattr(last, cursor_field)
-        encoded_value = msgspec.to_builtins(value) if hasattr(value, "__struct_fields__") else value
-        next_cursor = encode_cursor(cursor_field, encoded_value)
-    return page_items, next_cursor, has_next
+    if not has_next:
+        return page_items, None, has_next
+    last = page_items[-1]
+    keys = [_read_path(last, spec.field) for spec in sort]
+    return page_items, encode_cursor(backend, keys, getattr(last, id_attribute)), has_next
+
+
+def _read_path(obj: Any, path: str) -> Any:
+    value = obj
+    for segment in path.split("."):
+        value = getattr(value, segment)
+    return value

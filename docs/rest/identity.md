@@ -250,8 +250,10 @@ because none of it knows what a token is.
 ### Paths served without authentication
 
 Left unset, `exclude_paths` follows the paths the application actually publishes —
-`docs_url`, `redoc_url`, `openapi_url` and the metrics endpoint when enabled — instead
-of a hardcoded list that goes stale the moment an operator moves Swagger.
+`docs_url`, `redoc_url`, `openapi_url`, the metrics endpoint when enabled and
+`/health` — instead of a hardcoded list that goes stale the moment an operator moves
+Swagger. An explicit list replaces that detection entirely, so it must name `/health`
+itself for the readiness probe to stay anonymous.
 
 ```{warning}
 Exclusions are matched by the **router**, not by string comparison. A route declared

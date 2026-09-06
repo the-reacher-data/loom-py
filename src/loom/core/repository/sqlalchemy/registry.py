@@ -104,6 +104,7 @@ def build_sqlalchemy_repository_registration_module(
         models=models,
         explicit_models=logical_models,
         build_registered_repository=_registered_builder,
+        default_repository_type=RepositorySQLAlchemy,
     )
 
     def _register_with_session(container: LoomContainer) -> None:
