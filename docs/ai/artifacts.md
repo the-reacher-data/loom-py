@@ -345,11 +345,23 @@ verbatim into the hook's command and nowhere else; an out-of-range value is a
 ```json
 {
   "output": {"incident_ref": "INC-1", "severity": "high", "confidence": 0.71, "alerts": ["A-7", "A-9"]},
-  "usage": {"input_tokens": 1840, "output_tokens": 412, "requests": 3, "duration_ms": 5210},
+  "usage": {
+    "input_tokens": 1840, "output_tokens": 412, "requests": 3, "duration_ms": 5210,
+    "cache_read_tokens": 1200, "cache_write_tokens": 64, "tool_calls": 2,
+    "cost": "0.0413", "details": {"reasoning_tokens": 96}
+  },
   "interaction_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c",
   "hook_result": {"triage_id": "7f3c9a0e4b2d4c1e9a7b5d6e8f0a1b2c"}
 }
 ```
+
+`usage` is the whole accounting the engine reported, not a selection of it:
+the counters any engine would report are named fields, and everything else it
+returned — the audio counters, a provider's extras, a counter a newer engine
+release adds — rides under its own name in `details`. `cost` is `null`, never
+`0`, when the engine could not price the model: an unknown cost must not win a
+cost comparison. `cache_read_tokens` is already included in `input_tokens`, so
+a model with a warm prompt cache is compared on the split, not on the total.
 
 Over `/stream`, the last frame is:
 

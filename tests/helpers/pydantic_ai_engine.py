@@ -10,12 +10,23 @@ exactly this purpose.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import msgspec
-from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
-from pydantic_ai.models import Model
+from pydantic_ai import RunContext
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    ModelResponseStreamEvent,
+    ToolCallPart,
+)
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import RequestUsage
 
 from loom.ai.abc import AgentEngine
 from loom.ai.compiler._plan import AgentPlan, CompiledOutput
@@ -28,6 +39,9 @@ from loom.core.identity import Identity
 
 OPEN_OBJECT_SCHEMA: Mapping[str, Any] = {"type": "object"}
 """Schema of an object with no declared properties: decodes to a ``dict``."""
+
+_SCRIPTED_NAME = "scripted"
+"""Model, provider and system name of :class:`ScriptedUsageModel`."""
 
 STRICT_SCHEMA: Mapping[str, Any] = {
     "type": "object",
@@ -104,6 +118,106 @@ def failing_model(failure: Callable[[], Exception]) -> Model:
         yield {}  # pragma: no cover - unreachable, makes the function a generator
 
     return FunctionModel(respond, stream_function=stream)
+
+
+@dataclass
+class _ScriptedUsageStream(StreamedResponse):
+    """Streamed output-tool call whose usage is scripted, not estimated.
+
+    ``FunctionModel`` estimates the usage of a streamed run from the deltas it
+    saw, so it cannot express a run that reports a cost, a cache split or a
+    counter the engine never declared. This response reports exactly what the
+    test scripted, which is what makes the streaming and non-streaming usage
+    of one run comparable.
+    """
+
+    _payload: str = ""
+    _scripted: RequestUsage = field(default_factory=RequestUsage)
+    _timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def __post_init__(self) -> None:
+        self._usage = self._scripted
+
+    async def _get_event_iterator(self) -> AsyncIterator[ModelResponseStreamEvent]:
+        tool = self.model_request_parameters.output_tools[0].name
+        event = self._parts_manager.handle_tool_call_delta(
+            vendor_part_id=0, tool_name=tool, args=self._payload, tool_call_id="scripted-call"
+        )
+        if event is not None:
+            yield event
+
+    @property
+    def model_name(self) -> str:
+        """Return the scripted model name."""
+        return _SCRIPTED_NAME
+
+    @property
+    def provider_name(self) -> str:
+        """Return the scripted provider name."""
+        return _SCRIPTED_NAME
+
+    @property
+    def provider_url(self) -> str:
+        """Return a URL no test ever reaches."""
+        return "https://scripted.invalid"
+
+    @property
+    def timestamp(self) -> datetime:
+        """Return when this response was built."""
+        return self._timestamp
+
+
+class ScriptedUsageModel(Model):
+    """A model answering the same payload and the same usage in both run modes.
+
+    Args:
+        payload: JSON arguments of the output-tool call, as bytes on the wire.
+        usage: Accounting reported for the single request of the run.
+    """
+
+    def __init__(self, payload: bytes, usage: RequestUsage) -> None:
+        super().__init__()
+        self._payload = payload.decode()
+        self._scripted = usage
+
+    @property
+    def model_name(self) -> str:
+        """Return the scripted model name."""
+        return _SCRIPTED_NAME
+
+    @property
+    def system(self) -> str:
+        """Return the scripted provider system."""
+        return _SCRIPTED_NAME
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        """Answer the payload as an output-tool call carrying the scripted usage."""
+        del messages, model_settings
+        tool = model_request_parameters.output_tools[0].name
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool, args=self._payload)], usage=self._scripted
+        )
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        """Stream the same answer and the same usage the request mode reports."""
+        del messages, model_settings, run_context
+        yield _ScriptedUsageStream(
+            model_request_parameters=model_request_parameters,
+            _payload=self._payload,
+            _scripted=self._scripted,
+        )
 
 
 def build_engine(plan: AgentPlan, model: Model) -> AgentEngine:

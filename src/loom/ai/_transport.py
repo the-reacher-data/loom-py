@@ -26,7 +26,7 @@ from typing import Final
 
 from starlette.requests import Request
 
-from loom.ai.abc import ErrorEvent
+from loom.ai.abc import AgentUsage, ErrorEvent
 from loom.ai.config import AgentEndpointConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.core.identity import Identity, current_identity
@@ -157,6 +157,45 @@ def require_caller(name: str, endpoint: AgentEndpointConfig | None) -> Identity:
     if identity.is_authenticated or (endpoint is not None and endpoint.allow_anonymous):
         return identity
     raise TransportError(401, "UNAUTHORIZED", f"agent {name!r} requires a verified caller")
+
+
+_USAGE_PREFIX: Final[str] = "gen_ai.usage."
+"""Prefix of the OpenTelemetry GenAI usage attributes both surfaces publish."""
+
+
+def usage_attributes(usage: AgentUsage) -> dict[str, object]:
+    """Return the closing span attributes carrying one run's usage.
+
+    Mapped from loom's own :class:`~loom.ai.abc.AgentUsage`, not from the
+    engine's usage type, so a second engine publishes the same attributes and
+    no engine type reaches a transport. The names follow the OpenTelemetry
+    GenAI semantic conventions where those define one, and stay under the same
+    prefix where they do not — cost, requests and tool calls, which the
+    conventions leave out and an operator comparing models needs most.
+
+    An unpriced model contributes no cost key at all: a zero would read as a
+    free run and win a cost comparison it never entered.
+
+    Args:
+        usage: Accounting of the run that is about to close its span.
+
+    Returns:
+        The attributes, ready for
+        :meth:`~loom.core.observability.span.LoomSpan.annotate`.
+    """
+    attributes: dict[str, object] = {
+        f"{_USAGE_PREFIX}input_tokens": usage.input_tokens,
+        f"{_USAGE_PREFIX}output_tokens": usage.output_tokens,
+        f"{_USAGE_PREFIX}cache_read.input_tokens": usage.cache_read_tokens,
+        f"{_USAGE_PREFIX}cache_creation.input_tokens": usage.cache_write_tokens,
+        f"{_USAGE_PREFIX}requests": usage.requests,
+        f"{_USAGE_PREFIX}tool_calls": usage.tool_calls,
+    }
+    if usage.cost is not None:
+        attributes[f"{_USAGE_PREFIX}cost"] = float(usage.cost)
+    for name, value in usage.details.items():
+        attributes[f"{_USAGE_PREFIX}details.{name}"] = value
+    return attributes
 
 
 @contextmanager

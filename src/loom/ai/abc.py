@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from decimal import Decimal
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from loom.ai.errors import AgentRunErrorCode
@@ -27,17 +28,57 @@ CONVERSATION_ID_MAX_LENGTH: Final[int] = 128
 class AgentUsage(LoomFrozenStruct, frozen=True, kw_only=True):
     """Resource accounting of one agent run.
 
+    Nothing the engine reported is dropped. The counters any engine would
+    plausibly report are named fields; everything else it returned — the audio
+    counters, a provider's own extras, a counter a future engine release adds
+    — rides verbatim in ``details``, so a new counter reaches the caller
+    without a change here. The engine's own usage type never crosses this
+    boundary: a second engine fills this struct.
+
     Attributes:
-        input_tokens: Tokens sent to the model across the run.
+        input_tokens: Tokens sent to the model across the run, cached ones
+            included.
         output_tokens: Tokens produced by the model across the run.
         requests: Model requests issued during the run.
         duration_ms: Wall-clock duration of the run in milliseconds.
+        cache_read_tokens: Input tokens served from the provider's prompt
+            cache, already counted in ``input_tokens``. A cached token costs a
+            fraction of a fresh one, so comparing models on ``input_tokens``
+            alone can invert the ranking.
+        cache_write_tokens: Input tokens written to the prompt cache, already
+            counted in ``input_tokens``.
+        tool_calls: Tool invocations the model completed during the run.
+        cost: Run cost in the engine's currency, or ``None`` when the engine
+            could not price the model. Absent rather than zero: a zero would
+            silently win a cost comparison.
+        details: Every other counter the engine reported, under the engine's
+            own names.
     """
 
     input_tokens: int
     output_tokens: int
     requests: int
     duration_ms: int
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    tool_calls: int = 0
+    cost: Decimal | None = None
+    details: Mapping[str, object] = {}
+
+    @property
+    def total_tokens(self) -> int:
+        """Return the input plus output tokens of the run."""
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Return the fraction of input tokens served from the prompt cache.
+
+        Zero when the run reported no input tokens.
+        """
+        if self.input_tokens == 0:
+            return 0.0
+        return self.cache_read_tokens / self.input_tokens
 
 
 class AgentResult(LoomFrozenStruct, frozen=True, kw_only=True):

@@ -37,8 +37,9 @@ from loom.ai._transport import (
     always_closed,
     read_body_capped,
     require_caller,
+    usage_attributes,
 )
-from loom.ai.abc import CONVERSATION_ID_MAX_LENGTH, ErrorEvent
+from loom.ai.abc import CONVERSATION_ID_MAX_LENGTH, AgentEvent, ErrorEvent, FinalEvent
 from loom.ai.config import AgentEndpointConfig, AiConfig
 from loom.ai.errors import AgentRunError, AgentRunErrorCode
 from loom.ai.fastapi.response import AgentJSONResponse, error_response
@@ -49,6 +50,7 @@ from loom.core.identity import Identity, current_identity
 from loom.core.model import LoomFrozenStruct
 from loom.core.observability.event import Scope
 from loom.core.observability.runtime import ObservabilityRuntime
+from loom.core.observability.span import LoomSpan
 from loom.core.tracing import get_trace_id
 from loom.rest.auth.abc import Authenticator
 
@@ -149,7 +151,7 @@ def _make_run_handler(
             identity = require_caller(name, exposed.get(name))
             _require_agent(name, exposed, runtime)
             body = await _read_request(request, max_prompt_bytes=config.max_prompt_bytes)
-            with observability_runtime.span(
+            span = observability_runtime.open_span(
                 Scope.AGENT,
                 "agent_run",
                 trace_id=get_trace_id(),
@@ -159,10 +161,15 @@ def _make_run_handler(
                 agent=name,
                 subject=identity.subject,
                 mechanism=identity.mechanism,
-            ):
+            )
+            # The handle is opened rather than a lexical span entered because
+            # the run's usage is only known once the run is over, and the
+            # closing attributes are where an operator reads what it spent.
+            with always_closed(span), span.as_current():
                 result = await runtime.run(
                     name, body.prompt, identity=identity, conversation_id=body.conversation_id
                 )
+                span.annotate(usage_attributes(result.usage))
             return AgentJSONResponse(content=result)
         except TransportError as exc:
             return error_response(exc.status_code, exc.code, exc.message)
@@ -173,6 +180,30 @@ def _make_run_handler(
             return error_response(500, "INTERNAL_ERROR", "An unexpected error occurred")
 
     return run_agent
+
+
+async def _annotating_usage(
+    events: AsyncIterator[AgentEvent], span: LoomSpan
+) -> AsyncIterator[AgentEvent]:
+    """Relay *events*, annotating *span* with the usage the final one carries.
+
+    A stream reports its usage in the terminal ``final`` event, which is
+    already encoded by the time a frame exists, so the annotation is taken
+    here — where the event is still typed — and lands on the same closing
+    attributes the non-streaming run publishes. A stream that never reaches a
+    terminal event annotates nothing.
+
+    Args:
+        events: Run events, terminal event last.
+        span: Open span of the run, closed by its owner.
+
+    Yields:
+        Every event, unchanged and in order.
+    """
+    async for event in events:
+        if isinstance(event, FinalEvent):
+            span.annotate(usage_attributes(event.usage))
+        yield event
 
 
 def _stream_frames(
@@ -200,23 +231,24 @@ def _stream_frames(
     """
 
     async def _frames() -> AsyncIterator[bytes]:
-        with always_closed(
-            observability_runtime.open_span(
-                Scope.AGENT,
-                "agent_run",
-                trace_id=get_trace_id(),
-                route=path,
-                method="POST",
-                agent=name,
-                subject=identity.subject,
-                mechanism=identity.mechanism,
-            )
-        ):
+        span = observability_runtime.open_span(
+            Scope.AGENT,
+            "agent_run",
+            trace_id=get_trace_id(),
+            route=path,
+            method="POST",
+            agent=name,
+            subject=identity.subject,
+            mechanism=identity.mechanism,
+        )
+        with always_closed(span):
             try:
                 async with runtime.run_stream(
                     name, body.prompt, identity=identity, conversation_id=body.conversation_id
                 ) as events:
-                    async for frame in stream_sse(events, heartbeat_ms=HEARTBEAT_MS):
+                    async for frame in stream_sse(
+                        _annotating_usage(events, span), heartbeat_ms=HEARTBEAT_MS
+                    ):
                         yield frame
             except AgentRunError as exc:
                 # Admission failures surface once the response exists, so they

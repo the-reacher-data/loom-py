@@ -27,11 +27,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import fields
 from time import perf_counter
 from types import MappingProxyType
 from typing import Any
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
+from pydantic_ai.usage import RunUsage
 
 from loom.ai.abc import (
     AgentEvent,
@@ -58,6 +60,22 @@ is allowed to spend, and no requirement asks the artifact to tune the wait.
 """
 
 _HEALTHY = HealthStatus(status="ok")
+
+# Counters :class:`~loom.ai.abc.AgentUsage` names itself, plus the engine's own
+# ``details`` bag. Everything else the engine reports is copied into
+# ``AgentUsage.details`` unchanged, so this set is the whole curation loom does.
+_NAMED_COUNTERS: frozenset[str] = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "requests",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "tool_calls",
+        "cost",
+        "details",
+    }
+)
 
 # Built once, at import: an engine reports health on every probe tick, and the
 # answer is one of three fixed values.
@@ -188,6 +206,11 @@ class PydanticAIEngine:
             output_tokens=usage.output_tokens,
             requests=usage.requests,
             duration_ms=int((perf_counter() - started) * 1000),
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            tool_calls=usage.tool_calls,
+            cost=usage.cost,
+            details=_extra_counters(usage),
         )
 
     @asynccontextmanager
@@ -235,6 +258,26 @@ class PydanticAIEngine:
     def _final(self, result: AgentRunResult[Any], started: float) -> FinalEvent:
         output = decode_output(self._plan.output, result)
         return FinalEvent(output=output, usage=self._usage(result, started))
+
+
+def _extra_counters(usage: RunUsage) -> dict[str, object]:
+    """Return every counter of *usage* that :class:`AgentUsage` does not name.
+
+    Read from the instance as well as from the declared fields: pydantic-ai
+    lets a provider set counters its dataclass never declared, and a counter a
+    future release adds must reach the caller without a change here.
+
+    Args:
+        usage: Accounting the engine reported for one run.
+
+    Returns:
+        The engine's own ``details`` merged with every unnamed counter, under
+        the engine's names and with the engine's values.
+    """
+    declared = {field.name for field in fields(usage)}
+    unnamed = sorted((declared | set(vars(usage))) - _NAMED_COUNTERS)
+    extras: dict[str, object] = {name: getattr(usage, name) for name in unnamed}
+    return {**usage.details, **extras}
 
 
 async def _backoff(attempt: int) -> None:

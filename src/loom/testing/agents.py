@@ -216,8 +216,19 @@ def _error_scenario(code: AgentRunErrorCode) -> ContractScenario:
 
 def _assert_valid_usage(usage: object) -> None:
     assert isinstance(usage, AgentUsage), "usage must be an AgentUsage"
-    counters = (usage.input_tokens, usage.output_tokens, usage.requests, usage.duration_ms)
-    assert all(value >= 0 for value in counters), "every usage field must be >= 0"
+    counters = (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.requests,
+        usage.duration_ms,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+        usage.tool_calls,
+    )
+    assert all(value >= 0 for value in counters), "every usage counter must be >= 0"
+    # An engine that cannot price a run reports no cost: a zero would be read
+    # as a free run by anything comparing two models on what they spent.
+    assert usage.cost is None or usage.cost >= 0, "cost must be absent or >= 0"
 
 
 async def _collect_events(engine: AgentEngine) -> list[AgentEvent]:

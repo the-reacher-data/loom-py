@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Self
 
@@ -76,6 +76,12 @@ class SpanIdentity:
             event_id=str(raw_id) if raw_id is not None else None,
             meta=fields,
         )
+
+    def with_meta(self, extra: Mapping[str, object]) -> Self:
+        """Return a copy carrying *extra* on top of this identity's meta."""
+        if not extra:
+            return self
+        return replace(self, meta={**self.meta, **extra})
 
     def start_event(self) -> LifecycleEvent:
         """Return the ``START`` event of this span."""
@@ -171,6 +177,7 @@ class LoomSpan:
         self._on_closed = on_closed
         self._started = perf_counter()
         self._closed = False
+        self._closing: dict[str, object] = {}
 
     @classmethod
     def open(
@@ -250,6 +257,27 @@ class LoomSpan:
         """
         return self._span.get_span_context()
 
+    def annotate(self, attributes: Mapping[str, object]) -> None:
+        """Record attributes the closing event of this span carries.
+
+        For values only known once the work is done — a run's token usage, a
+        batch's row count. They reach the closing lifecycle event and the OTEL
+        span; the ``START`` event is long gone by then. A key given twice keeps
+        the last value, and annotating a closed span does nothing.
+
+        Args:
+            attributes: Fields merged into the closing event's ``meta``. Keys
+                need not be valid Python identifiers, so a semantic-convention
+                name such as ``gen_ai.usage.input_tokens`` is expressible.
+
+        Example::
+
+            handle.annotate({"gen_ai.usage.input_tokens": 1840})
+        """
+        if self._closed:
+            return
+        self._closing.update(attributes)
+
     def is_recording(self) -> bool:
         """Return whether this span will be exported.
 
@@ -273,7 +301,7 @@ class LoomSpan:
                 exactly when *end_time_ns* is needed.
         """
         self._close(
-            self._identity.end_event(self._duration(duration_ms)),
+            self._closing_identity().end_event(self._duration(duration_ms)),
             end_time_ns=end_time_ns,
         )
 
@@ -297,20 +325,31 @@ class LoomSpan:
             return
         self._span.record_exception(exc)
         self._close(
-            self._identity.error_event(exc, self._duration(duration_ms)),
+            self._closing_identity().error_event(exc, self._duration(duration_ms)),
             end_time_ns=end_time_ns,
         )
+
+    def _closing_identity(self) -> SpanIdentity:
+        return self._identity.with_meta(self._closing)
 
     def _duration(self, duration_ms: float | None) -> float:
         if duration_ms is not None:
             return duration_ms
         return elapsed_ms(self._started)
 
+    def _apply_annotations(self, event: LifecycleEvent) -> None:
+        """Copy the annotated keys onto the span, converted as the event does."""
+        if not self._closing:
+            return
+        attributes = event.otel_attributes()
+        self._span.set_attributes({key: attributes[key] for key in self._closing})
+
     def _close(self, event: LifecycleEvent, *, end_time_ns: int | None = None) -> None:
         if self._closed:
             return
         self._closed = True
         apply_terminal_state(self._span, event)
+        self._apply_annotations(event)
         with use_span(
             self._span, end_on_exit=False, record_exception=False, set_status_on_exception=False
         ):

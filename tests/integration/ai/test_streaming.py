@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,17 @@ from loom.ai.fastapi.streaming import HEARTBEAT_FRAME, encode_sse_event, stream_
 from loom.core.identity import Identity
 from tests.integration.ai.conftest import DEFAULT_USAGE, ScriptedEngine
 
-_USAGE = AgentUsage(input_tokens=1840, output_tokens=412, requests=3, duration_ms=5210)
+_USAGE = AgentUsage(
+    input_tokens=1840,
+    output_tokens=412,
+    requests=3,
+    duration_ms=5210,
+    cache_read_tokens=1200,
+    cache_write_tokens=64,
+    tool_calls=2,
+    cost=Decimal("0.0413"),
+    details={"reasoning_tokens": 96},
+)
 
 _EVENTS: dict[str, tuple[AgentEvent, dict[str, Any]]] = {
     "text_delta": (TextDeltaEvent(text="Demand rose "), {"text": "Demand rose "}),
@@ -56,6 +67,11 @@ _EVENTS: dict[str, tuple[AgentEvent, dict[str, Any]]] = {
                 "output_tokens": 412,
                 "requests": 3,
                 "duration_ms": 5210,
+                "cache_read_tokens": 1200,
+                "cache_write_tokens": 64,
+                "tool_calls": 2,
+                "cost": "0.0413",
+                "details": {"reasoning_tokens": 96},
             },
             "interaction_id": None,
             "hook_result": None,
