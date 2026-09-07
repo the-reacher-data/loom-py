@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import date, datetime
 from typing import Any, TypeVar, cast
+from uuid import uuid4
 
 import msgspec
 import pytest
@@ -35,12 +37,17 @@ from loom.core.repository.mutation import MutationEvent
 from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
 
 from ._doubles import (
+    CachedEnv,
     CodeWidget,
     CountingCacheBackend,
     CountingRepository,
+    DateWidget,
+    UuidWidget,
     Widget,
     WidgetCreate,
+    WidgetUpdate,
     WritableRepository,
+    wrap_with_cache,
 )
 
 T = TypeVar("T")
@@ -284,8 +291,9 @@ class _FakeRepository(Repository[_EntityOut, _Create, _Update, int]):
 
     @cache_query(scope="entity")
     async def count_related_notes(self, entity_id: int) -> int:
+        _ = entity_id
         self.custom_calls += 1
-        return len(self.storage) + entity_id
+        return len(self.storage)
 
 
 class _RepoWithModelDependsOn(_FakeRepository):
@@ -958,3 +966,124 @@ class TestPrimaryKeyByName:
 
         assert created.id == 2
         assert [event.ids for event in resolver.events] == [(2,)]
+
+
+class TestEntityScopeValidation:
+    """A ``scope="entity"`` read is keyed by the primary key, of its exact type."""
+
+    @staticmethod
+    def _assert_backend_untouched(env: CachedEnv[Any]) -> None:
+        assert env.backend.multi_get_batches == []
+        assert env.backend.multi_set_batches == []
+        assert env.backend.data == {}
+        assert env.repository.note_count_calls == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("env", "wrong_id", "received", "expected"),
+        [
+            (
+                wrap_with_cache(
+                    CountingRepository([Widget(id=1, name="a")], Widget), CacheConfig()
+                ),
+                "1",
+                "str",
+                "int",
+            ),
+            (
+                wrap_with_cache(
+                    CountingRepository([Widget(id=1, name="a")], Widget), CacheConfig()
+                ),
+                True,
+                "bool",
+                "int",
+            ),
+            (
+                wrap_with_cache(
+                    CountingRepository([DateWidget(id=date(2026, 1, 1), name="a")], DateWidget),
+                    CacheConfig(),
+                ),
+                datetime(2026, 1, 1),
+                "datetime",
+                "date",
+            ),
+            (
+                wrap_with_cache(
+                    CountingRepository([UuidWidget(id=uuid4(), name="a")], UuidWidget),
+                    CacheConfig(),
+                ),
+                str(uuid4()),
+                "str",
+                "UUID",
+            ),
+        ],
+        ids=["str-for-int", "bool-for-int", "datetime-for-date", "str-for-uuid"],
+    )
+    async def test_wrong_exact_type_raises_before_touching_the_backend(
+        self,
+        env: CachedEnv[Any],
+        wrong_id: object,
+        received: str,
+        expected: str,
+    ) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            await env.wrapper.note_count(wrong_id)
+
+        message = str(excinfo.value)
+        assert "note_count" in message
+        assert received in message
+        assert expected in message
+        self._assert_backend_untouched(env)
+
+    @pytest.mark.asyncio
+    async def test_key_passed_by_keyword_raises(self) -> None:
+        env = wrap_with_cache(CountingRepository([Widget(id=1, name="a")], Widget), CacheConfig())
+
+        with pytest.raises(TypeError, match="note_count.*first positional argument"):
+            await env.wrapper.note_count(obj_id=1)
+
+        self._assert_backend_untouched(env)
+
+    @pytest.mark.asyncio
+    async def test_none_raises_even_when_the_key_type_is_unresolvable(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        with pytest.raises(TypeError, match="count_related_notes.*first positional argument"):
+            await wrapped_repository.count_related_notes(cast(int, None))
+
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+        assert repo.custom_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_key_type_accepts_any_id(
+        self,
+        wrapped_repository: CachedRepository[_EntityOut, _Create, _Update, int],
+    ) -> None:
+        repo = wrapped_repository._repository
+        assert isinstance(repo, _FakeRepository)
+
+        first = await wrapped_repository.count_related_notes(cast(int, "x"))
+        second = await wrapped_repository.count_related_notes(cast(int, "x"))
+
+        assert first == second
+        assert repo.custom_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_exact_type_caches_until_its_row_is_updated(
+        self, cache_config: CacheConfig
+    ) -> None:
+        rows = [Widget(id=1, name="a"), Widget(id=2, name="bb")]
+        env = wrap_with_cache(WritableRepository(rows, Widget), cache_config)
+
+        assert await env.wrapper.note_count(1) == 1
+        assert await env.wrapper.note_count(1) == 1
+        assert env.repository.note_count_calls == 1
+
+        await env.wrapper.update(1, WidgetUpdate(name="abc"))
+
+        assert await env.wrapper.note_count(1) == 3
+        assert env.repository.note_count_calls == 2
+        # Granularity (update(2) keeps note_count(1) warm) is asserted in
+        # test_invalidation_granularity.py (T3), once the bare bump is gone.

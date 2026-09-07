@@ -789,13 +789,13 @@ class CachedRepository(
         kwargs: dict[str, Any],
     ) -> tuple[str, int]:
         """Resolve the cache key and the TTL of one call to a cached read."""
-        raw = {"args": to_payload(args), "kwargs": to_payload(kwargs)}
-        raw_hash = stable_hash(repr(raw))
         scope = cast(str, metadata.get("scope") or "list")
         ttl_key = cast(str | None, metadata.get("ttl_key"))
+        entity_id = self._entity_scope_id(method_name, args) if scope == "entity" else None
+        raw = {"args": to_payload(args), "kwargs": to_payload(kwargs)}
+        raw_hash = stable_hash(repr(raw))
 
         if scope == "entity":
-            entity_id: object = args[0] if args else raw_hash
             tags = self._resolver.entity_tags(self.entity_name, entity_id)
             tags.extend(self._entity_dependency_tags(entity_id))
             ttl = self._config.ttl_for_single(ttl_key or self.entity_name)
@@ -806,6 +806,35 @@ class CachedRepository(
 
         fingerprint = await self._resolver.fingerprint(tags)
         return f"{self.entity_name}:custom:{method_name}:{raw_hash}:deps={fingerprint}", ttl
+
+    def _entity_scope_id(self, method_name: str, args: tuple[Any, ...]) -> object:
+        """Return the primary key a ``scope="entity"`` read is keyed by, or raise.
+
+        The key must be the first positional argument (a keyword does not
+        count) and must not be ``None``.  When the model's primary-key type
+        resolved to a plain class, the argument must be of that exact type:
+        a ``datetime`` for a ``date`` key or a ``bool`` for an ``int`` key
+        would render a tag no mutation event ever bumps, so both are
+        rejected even though ``isinstance`` would accept them.  A key
+        declared ``int | None`` resolves no class and gets no type check.
+        Only this entry point is guarded: ``get_by_id``, ``update`` and
+        ``delete`` are typed ``IdT`` and stay unchecked.
+
+        Raises:
+            TypeError: When the key is missing, ``None``, or of another type.
+        """
+        if not args or args[0] is None:
+            raise TypeError(
+                f"{method_name}: @cache_query(scope='entity') needs the primary key"
+                " as first positional argument"
+            )
+        expected = self._primary_key.python_type
+        if expected is not None and type(args[0]) is not expected:
+            raise TypeError(
+                f"{method_name}: @cache_query(scope='entity') received a"
+                f" {type(args[0]).__name__} as primary key, expected {expected.__name__}"
+            )
+        return args[0]
 
     async def _load_items_from_index(self, ids: list[IdT], profile: str) -> list[OutputT]:
         tags_by_id = [

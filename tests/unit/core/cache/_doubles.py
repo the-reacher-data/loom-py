@@ -330,9 +330,10 @@ class WritableRepository(CountingRepository[RowT], Generic[RowT]):
         row = self.storage.get(obj_id)
         if row is None:
             return None
-        if data.name is not msgspec.UNSET:
-            row.name = data.name
-        return row
+        fields = {**msgspec.to_builtins(row), **msgspec.to_builtins(data)}
+        updated = msgspec.convert(fields, self._row_type)
+        self.storage[obj_id] = updated
+        return updated
 
     async def delete(self, obj_id: Any) -> bool:
         return self.storage.pop(obj_id, None) is not None
