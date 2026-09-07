@@ -98,7 +98,8 @@ class CountingCacheBackend:
         multi_set_batches: Keys written by each ``multi_set_values`` call.
         set_ttls: TTL received by each ``set_value`` call, in order.
         multi_set_ttls: TTL received by each ``multi_set_values`` call, in order.
-        incr_keys: Key received by each ``incr`` call, in order.
+        incr_keys: Keys received by every ``incr`` call, in the order the
+            underlying coroutines started executing.
     """
 
     def __init__(self) -> None:
