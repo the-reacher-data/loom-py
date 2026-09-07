@@ -73,7 +73,12 @@ class _ExecutionState:
     """Identity, timings and current phase of one execution.
 
     ``phase`` names the lifecycle step in flight so a failure can be
-    reported with the ``error_kind`` of the step that raised.
+    reported with the ``error_kind`` of the step that raised. ``committed``
+    is set once the unit of work's own commit has returned without raising;
+    :meth:`RuntimeExecutor._run_lifecycle` reads it to decide whether a
+    later failure (e.g. resetting the ``_active_uow`` token) may still
+    discard the channel — a write already committed must never lose its
+    queued invalidations to an unrelated teardown failure.
     """
 
     use_case_name: str
@@ -83,6 +88,7 @@ class _ExecutionState:
     phase: str = _ERROR_KIND_BEGIN
     pipeline_ms: float | None = None
     commit_ms: float | None = None
+    committed: bool = False
 
     def elapsed_ms(self) -> float:
         return (time.perf_counter() - self.start) * 1000
@@ -355,8 +361,26 @@ class RuntimeExecutor:
                 )
         except BaseException as exc:
             # ``BaseException``: a cancellation is a terminal outcome too,
-            # accounted for and re-raised.
-            self._discard(channel)
+            # accounted for and re-raised.  ``state.committed`` tells apart
+            # a genuine transaction failure (discard is correct: nothing
+            # durable happened) from an exception raised *after* the commit
+            # succeeded, e.g. resetting the ``_active_uow`` token — that
+            # channel's invalidations describe a durable write and must
+            # still run, not be thrown away with an unrelated teardown error.
+            #
+            # Unbound here, before either branch, not left to the trailing
+            # ``finally``: a drain must never run with its own channel still
+            # bound (module docstring) — a nested execution started from an
+            # action would otherwise see this channel as ``active_channel()``,
+            # get no channel of its own, and enqueue onto one already
+            # mid-drain, silently lost.  ``channel_token`` is nulled so the
+            # ``finally`` below does not unbind a second time.
+            self._unbind(channel_token)
+            channel_token = None
+            if channel is not None and state.committed:
+                await self._drain_committed_channel_logging_failure(channel)
+            else:
+                self._discard(channel)
             self._handle_failure(state, exc)
             raise
         finally:
@@ -381,6 +405,10 @@ class RuntimeExecutor:
         try:
             result = await self._run_pipeline_guarded(uow, state, plan, compilable, inputs)
             await self._exit_committing(uow, state)
+            # The commit itself is done; only ``finally`` remains, which does
+            # not touch the write.  A failure past this point (resetting the
+            # contextvar token) must not read as "the transaction failed".
+            state.committed = True
         finally:
             _active_uow.reset(token)
         return result
@@ -414,6 +442,24 @@ class RuntimeExecutor:
     def _discard(channel: PostCommitChannel | None) -> None:
         if channel is not None:
             channel.discard()
+
+    async def _drain_committed_channel_logging_failure(self, channel: PostCommitChannel) -> None:
+        """Drain a channel whose transaction committed, despite the exception about to propagate.
+
+        Called from an exception handler that is already about to re-raise
+        the failure that brought it here (a teardown error, not the
+        transaction's own).  Letting some other exception from the drain
+        replace that exception would hide the reason this path was reached
+        at all, so any ordinary failure — a ``PostCommitError`` from a
+        failed action, or any other ``Exception`` a misbehaving action
+        raises directly — is logged instead.  A cancellation is not caught
+        here: it is a terminal outcome in its own right, not a failure to
+        log past.
+        """
+        try:
+            await channel.drain(committed=True)
+        except Exception:
+            self._logger.exception("PostCommitDrainFailedDuringTeardown")
 
     @staticmethod
     def _unbind(token: Token[PostCommitChannel | None] | None) -> None:

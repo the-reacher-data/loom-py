@@ -31,6 +31,7 @@ from pymongo import AsyncMongoClient
 from pymongo.asynchronous.client_session import AsyncClientSession
 
 from loom.core.logger import get_logger
+from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
 from loom.core.uow.abc import UnitOfWork
 
 _log = get_logger(__name__).bind(component="uow")
@@ -102,6 +103,7 @@ class MongoUnitOfWork:
         self._client = client
         self._session: AsyncClientSession | None = None
         self._token: contextvars.Token[AsyncClientSession | None] | None = None
+        self._transaction_token: contextvars.Token[bool] | None = None
 
     async def begin(self) -> None:
         """Start a session and a transaction, publishing the session to :func:`active_session`.
@@ -122,6 +124,7 @@ class MongoUnitOfWork:
             raise
         self._session = session
         self._token = _active_session.set(session)
+        self._transaction_token = open_atomic_transaction()
         _log.debug("UoWBegin")
 
     async def commit(self) -> None:
@@ -198,6 +201,11 @@ class MongoUnitOfWork:
             _log.exception("UoWCloseFailed")
 
     def _reset_context(self) -> None:
+        # Closed first: see loom.core.transaction for why this is the token
+        # that must be the one to leak if a reset here raises.
+        if self._transaction_token is not None:
+            close_atomic_transaction(self._transaction_token)
+            self._transaction_token = None
         if self._token is not None:
             _active_session.reset(self._token)
             self._token = None

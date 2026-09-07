@@ -6,7 +6,7 @@ import random
 import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Generic, TypeVar, cast
 
 import msgspec
@@ -23,6 +23,7 @@ from loom.core.cache.result_codec import (
     build_result_codec,
     to_payload,
 )
+from loom.core.engine.post_commit import active_channel
 from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
@@ -48,6 +49,7 @@ from loom.core.repository.abc.query import (
 from loom.core.repository.abc.repo_for import BulkCreatable
 from loom.core.repository.abc.repository import CreateT, IdT, OutputT, UpdateT
 from loom.core.repository.abc.session_scope import SupportsCallerScopedSession
+from loom.core.transaction import in_atomic_transaction
 
 LoadT = TypeVar("LoadT")
 
@@ -382,14 +384,12 @@ class CachedRepository(
     async def create(self, data: CreateT) -> OutputT:
         created = await self._repository.create(data)
         entity_id = getattr(created, "id", None)
-        await self._resolver.bump_from_events(
-            (
-                MutationEvent(
-                    entity=self.entity_name,
-                    op="create",
-                    ids=() if entity_id is None else (entity_id,),
-                    changed_fields=frozenset(self._struct_keys(data)),
-                ),
+        await self._publish_invalidation(
+            MutationEvent(
+                entity=self.entity_name,
+                op="create",
+                ids=() if entity_id is None else (entity_id,),
+                changed_fields=frozenset(self._struct_keys(data)),
             )
         )
         return created
@@ -398,14 +398,12 @@ class CachedRepository(
         updated = await self._repository.update(obj_id, data)
         if updated is None:
             return None
-        await self._resolver.bump_from_events(
-            (
-                MutationEvent(
-                    entity=self.entity_name,
-                    op="update",
-                    ids=(obj_id,),
-                    changed_fields=frozenset(self._struct_keys(data)),
-                ),
+        await self._publish_invalidation(
+            MutationEvent(
+                entity=self.entity_name,
+                op="update",
+                ids=(obj_id,),
+                changed_fields=frozenset(self._struct_keys(data)),
             )
         )
         return updated
@@ -413,18 +411,21 @@ class CachedRepository(
     async def delete(self, obj_id: IdT) -> bool:
         deleted = await self._repository.delete(obj_id)
         if deleted:
-            await self._resolver.bump_from_events(
-                (
-                    MutationEvent(
-                        entity=self.entity_name,
-                        op="delete",
-                        ids=(obj_id,),
-                    ),
+            await self._publish_invalidation(
+                MutationEvent(
+                    entity=self.entity_name,
+                    op="delete",
+                    ids=(obj_id,),
                 )
             )
         return deleted
 
     async def on_transaction_committed(self, events: tuple[MutationEvent, ...]) -> None:
+        # Under @transactional this bumps alongside the queued action from
+        # create/update/delete/_create_many: that one carries this wrapper's
+        # own event, this one the mixins' events with the relation/projection
+        # tags this wrapper cannot compute. Both are wanted — bumps are
+        # idempotent — so do not dedupe this away.
         await self._resolver.bump_from_events(events)
         post_commit = getattr(self._repository, "on_transaction_committed", None)
         if inspect.iscoroutinefunction(post_commit):
@@ -541,6 +542,13 @@ class CachedRepository(
         The capability is optional: a repository that does not declare
         :class:`~loom.core.repository.abc.session_scope.SupportsCallerScopedSession`
         is taken to own the scope of its own reads.
+
+        This wrapper asks "am I in a transaction?" two ways for two different
+        reasons: this one guards coalescing (may a read safely detach into
+        its own task?), while :func:`loom.core.transaction.in_atomic_transaction`
+        in :meth:`_publish_invalidation` guards the bump (must it wait for a
+        commit?). They read different signals and answer different questions;
+        neither substitutes for the other.
         """
         repository = self._repository
         if not isinstance(repository, SupportsCallerScopedSession):
@@ -549,6 +557,53 @@ class CachedRepository(
 
     def _log_abandoned_load(self, key: str, error: BaseException) -> None:
         self._log.warning("CacheLoadAbandoned", key=key, error=repr(error))
+
+    async def _publish_invalidation(self, event: MutationEvent) -> None:
+        """Defer the bump past the commit, or bump inline right away.
+
+        Bumps inline for either of two distinct reasons:
+
+        * No transaction is open: every write without one commits on its
+          own — SQLAlchemy's own session on exit, Mongo's no-op unit of work
+          and DynamoDB on every call — so there is nothing left to wait for.
+        * A transaction *is* open but no post-commit channel is bound: a
+          unit of work entered directly — ``async with
+          SQLAlchemyUnitOfWork(session_manager): await repo.create(...)``,
+          the style both units of work document — opens the transaction
+          signal without binding a channel, since only the executor and
+          ``@transactional`` do that. Deferring here would queue an action
+          nothing ever drains, losing the invalidation permanently; bumping
+          early and risking the F03 race this method otherwise closes is the
+          lesser fault of the two.
+
+        Otherwise deferred through
+        :meth:`~loom.core.engine.post_commit.PostCommitChannel.enqueue_priority`
+        so the bump always precedes any job dispatch queued during the same
+        pipeline (:mod:`loom.core.job.context`), which might otherwise read
+        the cache before this invalidation reaches it. That lane runs
+        shielded inside :meth:`~loom.core.engine.post_commit.PostCommitChannel.drain`,
+        so a cancellation reaching the drain cannot interrupt this bump —
+        only a process death between the commit and the drain can still lose
+        it, nothing else; the affected entries' TTL is the backstop for
+        that one remaining gap.
+        """
+        channel = active_channel() if in_atomic_transaction() else None
+        if channel is None:
+            await self._resolver.bump_from_events((event,))
+            return
+        channel.enqueue_priority(partial(self._bump_logging_failure, (event,)))
+
+    async def _bump_logging_failure(self, events: tuple[MutationEvent, ...]) -> None:
+        """Bump ``events``, logging entity and ids first: the write already committed."""
+        try:
+            await self._resolver.bump_from_events(events)
+        except Exception:
+            self._log.exception(
+                "CachePostCommitBumpFailed",
+                entity=self.entity_name,
+                ids=tuple(event.ids for event in events),
+            )
+            raise
 
     async def _load_and_store_entity(self, key: str, obj_id: IdT, profile: str) -> OutputT | None:
         """Read one entity from the wrapped repository and cache it."""
@@ -596,14 +651,12 @@ class CachedRepository(
             if entity_id is not None
         )
         changed_fields = frozenset(key for item in data for key in self._struct_keys(item))
-        await self._resolver.bump_from_events(
-            (
-                MutationEvent(
-                    entity=self.entity_name,
-                    op="create",
-                    ids=ids,
-                    changed_fields=changed_fields,
-                ),
+        await self._publish_invalidation(
+            MutationEvent(
+                entity=self.entity_name,
+                op="create",
+                ids=ids,
+                changed_fields=changed_fields,
             )
         )
         return created

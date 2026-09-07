@@ -9,6 +9,7 @@ draining, so an execution started from an action opens its own lifecycle.
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import inspect
 from collections.abc import Awaitable, Callable
@@ -48,6 +49,17 @@ class PostCommitError(LoomError):
 class PostCommitChannel:
     """Ordered queue of actions to run after the owning transaction commits.
 
+    Two priorities, each FIFO among itself: :meth:`enqueue_priority` runs an
+    action ahead of every plain :meth:`enqueue` action, regardless of the
+    order the two calls were made in. Two actions of the same priority keep
+    the order they were queued in. This only orders actions queued on *this*
+    channel: a caller with more than one path to the same kind of action —
+    :class:`~loom.core.cache.repository.CachedRepository` queues its own
+    write's bump through :meth:`enqueue_priority` but the ``@transactional``
+    hook walk queues the mixins' tagged bump through plain :meth:`enqueue` —
+    decides per call site which lane it belongs in; the channel does not
+    infer that from what the action does.
+
     Example::
 
         channel = PostCommitChannel()
@@ -55,13 +67,14 @@ class PostCommitChannel:
         await channel.drain(committed=True)
     """
 
-    __slots__ = ("_actions",)
+    __slots__ = ("_actions", "_priority_actions")
 
     def __init__(self) -> None:
+        self._priority_actions: list[PostCommitAction] = []
         self._actions: list[PostCommitAction] = []
 
     def enqueue(self, action: PostCommitAction) -> None:
-        """Append an action; it runs in enqueue order on :meth:`drain`.
+        """Append an action; it runs after every :meth:`enqueue_priority` action.
 
         Args:
             action: Sync callable returning ``None`` or an awaitable, or an
@@ -69,17 +82,55 @@ class PostCommitChannel:
         """
         self._actions.append(action)
 
+    def enqueue_priority(self, action: PostCommitAction) -> None:
+        """Queue an action ahead of every plain :meth:`enqueue` action.
+
+        Use this for an action other queued actions may depend on having
+        already run — a cache invalidation ahead of the job dispatches that
+        might read the cache it invalidates. Two actions queued this way
+        still run in the order they were queued.
+
+        Args:
+            action: Sync callable returning ``None`` or an awaitable, or an
+                async callable.
+        """
+        self._priority_actions.append(action)
+
     def discard(self) -> None:
         """Drop every queued action without running it."""
+        self._priority_actions.clear()
         self._actions.clear()
 
     async def drain(self, *, committed: bool) -> None:
-        """Run every queued action in enqueue order.
+        """Run every queued action: the priority lane shielded, then the plain lane.
 
         The owner unbinds the channel before draining, so an execution
-        started from an action opens its own lifecycle.  A failing action
-        does not stop the others.  A cancellation stops the drain at once;
-        the actions not yet run stay queued so a later drain can run them.
+        started from an action opens its own lifecycle. A failing action
+        does not stop the others, in either lane; their failures collect
+        into one :class:`PostCommitError`.
+
+        The two lanes carry different durability stories, so they are run
+        differently:
+
+        * A priority action (:meth:`enqueue_priority`) describes a write
+          that has *already committed* — that is the whole point of
+          deferring it here rather than running it inline. It runs under
+          ``asyncio.shield``: a cancellation reaching this call cannot
+          interrupt it, so it always completes even if the caller gives up
+          on waiting. It is expected to be cheap (a handful of cache
+          ``incr`` calls), which is what makes the shield safe to take
+          unconditionally.
+        * A plain action (:meth:`enqueue`) — a job dispatch — has its own
+          durability story and no such requirement, so it stays exactly as
+          interruptible as before the priority lane existed: a cancellation
+          arriving while the plain lane runs stops the drain at once, and
+          the plain actions not yet run stay queued so a later drain can run
+          them. In inline job mode a dispatched job's body is awaited here
+          as a full nested use-case execution
+          (:class:`~loom.core.job.service._PendingDispatch.run`), with no
+          framework-imposed timeout — shielding it, as the priority lane
+          is shielded, would make it uncancellable for as long as it ran;
+          this is why the two lanes are not shielded alike.
 
         Args:
             committed: Whether a transaction of this owner's had committed
@@ -89,12 +140,19 @@ class PostCommitChannel:
         Raises:
             PostCommitError: If any action raised; carries every failure.
         """
+        priority_pending = collections.deque(self._priority_actions)
+        self._priority_actions = []
+        failures: list[Exception] = []
+        await asyncio.shield(_run_all(priority_pending, failures))
+
         pending = collections.deque(self._actions)
         self._actions = []
-        failures: list[Exception] = []
         try:
             await _run_all(pending, failures)
         except BaseException:
+            # The priority lane cannot appear here: it already ran to
+            # completion, shielded, above. Only the plain lane's remainder
+            # needs to survive a cancellation for a later drain to run it.
             self._actions = [*pending, *self._actions]
             raise
         if failures:

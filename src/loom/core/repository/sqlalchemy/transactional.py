@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loom.core.engine.post_commit import PostCommitChannel, bind_channel, reset_channel
 from loom.core.logger import get_logger
 from loom.core.repository.mutation import MutationEvent
+from loom.core.transaction import close_atomic_transaction, open_atomic_transaction
 
 
 @runtime_checkable
@@ -215,6 +216,7 @@ async def _run_in_owned_session(
     async with session_manager.session() as session:
         session_token = _active_session.set(session)
         mutations_token = _mutations.set([])
+        transaction_token = open_atomic_transaction()
         try:
             result = await method(owner, *args, **kwargs)
             await session.commit()
@@ -236,6 +238,9 @@ async def _run_in_owned_session(
             )
             raise
         finally:
+            # Closed first: see loom.core.transaction for why this is the
+            # token that must be the one to leak if a reset here raises.
+            close_atomic_transaction(transaction_token)
             _active_session.reset(session_token)
             _mutations.reset(mutations_token)
 
