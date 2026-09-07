@@ -20,6 +20,26 @@ def cache_query(
 ) -> Callable[[F], F]:
     """Declarative marker for custom repository read methods.
 
+    Annotate the return type.  The wrapper derives a codec from it and applies
+    it to the cached read and to the fresh one alike, so a hit and a miss
+    return the same type; the supported grammar is a :class:`msgspec.Struct`,
+    a scalar, or a ``list``, ``tuple`` or optional of those.  A return type
+    outside it — a mapping, a generic container, ``Any``, a forward reference
+    the defining module cannot resolve — emits a ``DeprecationWarning`` when
+    the repository is wrapped, and keeps the old behaviour, where the cached
+    call returns the decoded payload rather than the declared type.
+
+    The declared type is what the caller gets, on the fresh call as on the
+    cached one: a method annotated ``-> Stats`` that returns a subclass of
+    ``Stats`` hands back a narrowed ``Stats``, and the fields the subclass
+    added are dropped.  Declare the type you mean to return.
+
+    A method that returns ``None`` is not cached: the backend cannot tell a
+    stored ``None`` from a miss, so the read runs again next time.  A cached
+    payload that no longer fits the declared type — an older deployment wrote
+    it, and the type has since gained a field — is treated as a miss and
+    overwritten, not raised to the caller.
+
     Treat the returned value as immutable.  Concurrent callers that miss
     together are served the *same object* by the coalesced load, while a
     caller served from the cache gets a freshly decoded one, so mutating a

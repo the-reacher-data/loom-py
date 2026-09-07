@@ -10,9 +10,10 @@ serializer: a cached index round-trips its ids through it, which turns a
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Sequence
 from datetime import date
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, TypeVar, cast
 from uuid import UUID
 
 import msgspec
@@ -370,3 +371,215 @@ def wrap_with_cache(
         dependency_resolver=resolver,
     )
     return CachedEnv(repository, backend, resolver, wrapper)
+
+
+class Stats(msgspec.Struct):
+    """Aggregate returned by the cached custom reads under test."""
+
+    total: int
+    label: str
+
+
+class CustomCallCountingRepository(CountingRepository[RowT], Generic[RowT]):
+    """Repository double that counts its custom reads by method name.
+
+    Attributes:
+        custom_calls: Number of calls received per method name.
+    """
+
+    def __init__(self, rows: Sequence[RowT], row_type: type[RowT]) -> None:
+        super().__init__(rows, row_type)
+        self.custom_calls: Counter[str] = Counter()
+
+    def reset_counters(self) -> None:
+        """Zero the inherited counters and the custom read counters."""
+        super().reset_counters()
+        self.custom_calls.clear()
+
+
+class CodecRepository(CustomCallCountingRepository[RowT], Generic[RowT]):
+    """Repository double whose cached custom reads cover the codec grammar.
+
+    Each read counts itself so a test can tell a cache hit from a second
+    repository call, and returns a value derived from the stored rows so the
+    assertions do not depend on a constant.
+    """
+
+    @cache_query(scope="list")
+    async def stats(self) -> Stats:
+        """Return one struct."""
+        self.custom_calls["stats"] += 1
+        return Stats(total=len(self.storage), label="all")
+
+    @cache_query(scope="list")
+    async def stats_list(self) -> list[Stats]:
+        """Return a list of structs."""
+        self.custom_calls["stats_list"] += 1
+        return [
+            Stats(total=index, label=str(row.id)) for index, row in enumerate(self.storage.values())
+        ]
+
+    @cache_query(scope="list")
+    async def stats_tuple(self) -> tuple[Stats, ...]:
+        """Return a tuple of structs, which builtins conversion flattens."""
+        self.custom_calls["stats_tuple"] += 1
+        return tuple(
+            Stats(total=index, label=str(row.id)) for index, row in enumerate(self.storage.values())
+        )
+
+    @cache_query(scope="list")
+    async def stats_for(self, label: str) -> Stats | None:
+        """Return a struct for a known label, ``None`` otherwise."""
+        self.custom_calls["stats_for"] += 1
+        if label != "known":
+            return None
+        return Stats(total=len(self.storage), label=label)
+
+    @cache_query(scope="list")
+    async def total(self) -> int:
+        """Return a scalar."""
+        self.custom_calls["total"] += 1
+        return len(self.storage)
+
+    @cache_query(scope="list")
+    async def newest(self) -> RowT:
+        """Return the model itself, declared through the class type variable."""
+        self.custom_calls["newest"] += 1
+        return list(self.storage.values())[-1]
+
+    @cache_query(scope="list")
+    async def late_stats(self) -> LateStats:
+        """Return a struct declared after this class, a real forward reference."""
+        self.custom_calls["late_stats"] += 1
+        return LateStats(count=len(self.storage))
+
+    @cache_query(scope="list")
+    async def unresolvable(
+        self,
+    ) -> UnknownStats:  # noqa: F821  # pyright: ignore[reportUndefinedVariable]
+        """Return a value whose annotation names nothing importable here."""
+        self.custom_calls["unresolvable"] += 1
+        return Stats(total=len(self.storage), label="unresolvable")
+
+    @cache_query(scope="list")
+    async def out_of_grammar(self) -> dict[str, int]:
+        """Return a mapping, which is outside the supported grammar."""
+        self.custom_calls["out_of_grammar"] += 1
+        return {"total": len(self.storage)}
+
+    @cache_query(scope="list")
+    async def unannotated(self):  # type: ignore[no-untyped-def]
+        """Return a struct without declaring it."""
+        self.custom_calls["unannotated"] += 1
+        return Stats(total=len(self.storage), label="unannotated")
+
+
+class LateStats(msgspec.Struct):
+    """Struct declared after the repository that returns it."""
+
+    count: int
+
+
+class DetailedStats(Stats):
+    """Subclass of the declared return type, narrowed away by the codec."""
+
+    source: str = "detail"
+
+
+class EvolvedStats(msgspec.Struct):
+    """Return type of a later deployment: one more required field.
+
+    A payload written against :class:`Stats` cannot be decoded into it, which
+    is what a cached entry looks like after a struct gains a field.
+    """
+
+    total: int
+    label: str
+    source: str
+
+
+class LyingRepository(CodecRepository[RowT], Generic[RowT]):
+    """Repository double whose cached reads contradict their annotations.
+
+    One returns a value the declared struct cannot validate, the other a value
+    that cannot be rendered as builtins at all.  Both lie on purpose, so the
+    casts are the point rather than an oversight.
+    """
+
+    @cache_query(scope="list")
+    async def wrong_shape(self) -> Stats:
+        """Return a mapping that is missing a field of the declared struct."""
+        self.custom_calls["wrong_shape"] += 1
+        return cast(Stats, {"total": len(self.storage)})
+
+    @cache_query(scope="list")
+    async def unrenderable(self) -> Stats:
+        """Return a value no builtins rendering can describe."""
+        self.custom_calls["unrenderable"] += 1
+        return cast(Stats, object())
+
+    @cache_query(scope="list")
+    async def narrowing(self) -> Stats:
+        """Return a subclass of the declared struct."""
+        self.custom_calls["narrowing"] += 1
+        return DetailedStats(total=len(self.storage), label="detail")
+
+
+class EvolvedRepository(CustomCallCountingRepository[RowT], Generic[RowT]):
+    """Later deployment of :class:`CodecRepository`: ``stats`` gained a field.
+
+    It keeps the entity name, the method name and the arguments of the older
+    class, so it computes the same cache key and reads the payload the older
+    one wrote.
+    """
+
+    @cache_query(scope="list")
+    async def stats(self) -> EvolvedStats:
+        """Return the struct of the later deployment."""
+        self.custom_calls["stats"] += 1
+        return EvolvedStats(total=len(self.storage), label="all", source="v2")
+
+
+class UnmarkedOverrideRepository(CodecRepository[RowT], Generic[RowT]):
+    """Subclass that overrides cached reads and drops the ``@cache_query`` marker.
+
+    The overridden reads are no longer cached, so the base class's codecs — and
+    the deprecation its annotations would earn — must not be registered for
+    them.
+    """
+
+    async def stats(self) -> Stats:
+        """Return the struct, uncached."""
+        self.custom_calls["stats"] += 1
+        return Stats(total=len(self.storage), label="override")
+
+    async def out_of_grammar(self) -> dict[str, int]:
+        """Return a mapping, uncached, so its annotation deprecates nothing."""
+        self.custom_calls["out_of_grammar"] += 1
+        return {"total": len(self.storage)}
+
+
+def rewrap_with_cache(
+    env: CachedEnv[RowT],
+    repository: CountingRepository[RowT],
+    config: CacheConfig,
+) -> CachedRepository[RowT, WidgetCreate, WidgetUpdate, Any]:
+    """Wrap *repository* over the backend and resolver of an existing env.
+
+    Sharing the collaborators is what puts two deployments in front of one
+    cache: the entries the first wrapper wrote are the ones the second reads.
+
+    Args:
+        env: Environment whose backend and resolver are reused.
+        repository: Inner repository of the second wrapper.
+        config: Cache configuration under test.
+
+    Returns:
+        The second cached repository.
+    """
+    return CachedRepository(
+        repository,
+        config=config,
+        cache=env.backend,
+        dependency_resolver=env.resolver,
+    )

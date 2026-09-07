@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import random
+import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import wraps
@@ -16,6 +17,12 @@ from loom.core.cache.abc.backend import CacheBackend
 from loom.core.cache.abc.config import CacheConfig
 from loom.core.cache.abc.dependency import BatchFingerprintResolver, DependencyResolver
 from loom.core.cache.keys import entity_key, list_index_key, stable_hash
+from loom.core.cache.result_codec import (
+    PassthroughResultCodec,
+    ResultCodec,
+    build_result_codec,
+    to_payload,
+)
 from loom.core.logger import get_logger
 from loom.core.model.convert import to_struct
 from loom.core.model.enums import Cardinality
@@ -84,6 +91,15 @@ def _infer_projection_cache_dep(model: type, proj: Projection) -> str | None:
             fk_col = rel.foreign_key.rsplit(".", 1)[-1]
             return f"{loader_model.__tablename__}:{fk_col}"
     return None
+
+
+_UNDECODABLE = object()
+"""Sentinel for a cached payload that no longer fits its declared type."""
+
+
+def _is_cached_read(attr: object) -> bool:
+    """Whether *attr* is a coroutine function marked with ``@cache_query``."""
+    return getattr(attr, "__cache_query__", None) is not None and inspect.iscoroutinefunction(attr)
 
 
 class _ListIndexPayload(msgspec.Struct):
@@ -175,6 +191,9 @@ class CachedRepository(
         self._single_flight = SingleFlight(self._log_abandoned_load)
         self._rng = random.Random()
         self._log = get_logger(__name__).bind(repository=repository.__class__.__name__)
+        self._passthrough_codec = PassthroughResultCodec()
+        self._cached_method_wrappers: dict[str, Callable[..., Awaitable[Any]]] = {}
+        self._result_codecs = self._build_result_codecs(repository)
 
     @property
     def entity_name(self) -> str:
@@ -432,7 +451,7 @@ class CachedRepository(
         if metadata is None:
             return attr
         if inspect.iscoroutinefunction(attr):
-            return self._wrap_custom_cached_method(
+            return self._cached_method(
                 name,
                 cast(Callable[..., Awaitable[Any]], attr),
                 metadata,
@@ -442,6 +461,65 @@ class CachedRepository(
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _build_result_codecs(
+        self,
+        repository: Repository[OutputT, CreateT, UpdateT, IdT],
+    ) -> dict[str, ResultCodec]:
+        """Build one result codec per cached read, at construction time.
+
+        The *methods* are collected from the class dictionaries of the wrapped
+        repository's MRO, never by ``getattr`` on the instance: a repository is
+        free to expose a property that opens a connection, and walking the
+        instance would evaluate it while the application boots. Only the model
+        is read off the instance, as the rest of the wrapper already does.
+
+        Shadowing is tracked apart from selection: a subclass that overrides a
+        cached read *without* the marker takes the name out of the cache, so
+        the base class's decorated version must not be registered — the
+        wrapper re-reads the marker on the resolved attribute and would never
+        use that codec, but it would still deprecate the base annotation.
+        """
+        owner = type(repository)
+        model = getattr(repository, "model", None)
+        codecs: dict[str, ResultCodec] = {}
+        declared: set[str] = set()
+        for klass in owner.__mro__:
+            for name, attr in vars(klass).items():
+                if name in declared:
+                    continue
+                declared.add(name)
+                if _is_cached_read(attr):
+                    codecs[name] = self._codec_for(owner.__name__, name, attr, model)
+        return codecs
+
+    def _codec_for(
+        self,
+        owner_name: str,
+        method_name: str,
+        method: Callable[..., Any],
+        model: object | None,
+    ) -> ResultCodec:
+        """Codec declared by *method*, or the deprecated pass-through."""
+        codec = build_result_codec(method, model=model)
+        if codec is not None:
+            return codec
+        warnings.warn(
+            f"{owner_name}.{method_name} is decorated with @cache_query but its return "
+            "annotation is missing, unresolvable, or outside the supported grammar "
+            "(a struct, a scalar, or a list, tuple or optional of those). The cached "
+            "call keeps returning the decoded payload, which may not be the type the "
+            "first call returns; annotate the method to get one type on both paths. "
+            "The pass-through will be removed in a future release.",
+            DeprecationWarning,
+            stacklevel=4,
+        )
+        self._log.warning(
+            "CacheQueryReturnTypeUnusable",
+            repository=owner_name,
+            method=method_name,
+        )
+        return self._passthrough_codec
 
     async def _coalesced(self, key: str, loader: Callable[[], Awaitable[LoadT]]) -> LoadT:
         """Run *loader* once per key, unless the caller owns the session it uses.
@@ -478,7 +556,7 @@ class CachedRepository(
         if loaded is None:
             return None
         ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
-        await self._cache.set_value(key, self._to_builtins(loaded), ttl=ttl)
+        await self._cache.set_value(key, to_payload(loaded), ttl=ttl)
         return loaded
 
     def _write_ttl(self, ttl: int) -> int:
@@ -530,50 +608,115 @@ class CachedRepository(
         )
         return created
 
+    def _cached_method(
+        self,
+        method_name: str,
+        method: Callable[..., Awaitable[Any]],
+        metadata: dict[str, object],
+    ) -> Callable[..., Awaitable[Any]]:
+        """Return the delegator of a cached read, built once per method name.
+
+        ``__getattr__`` runs on every access to a method the wrapper does not
+        define, so rebuilding the delegator there would allocate a closure per
+        call and make ``wrapper.method is wrapper.method`` false.
+        """
+        wrapper = self._cached_method_wrappers.get(method_name)
+        if wrapper is None:
+            wrapper = self._wrap_custom_cached_method(method_name, method, metadata)
+            self._cached_method_wrappers[method_name] = wrapper
+        return wrapper
+
     def _wrap_custom_cached_method(
         self,
         method_name: str,
         method: Callable[..., Awaitable[Any]],
         metadata: dict[str, object],
     ) -> Callable[..., Awaitable[Any]]:
+        codec = self._result_codecs.get(method_name, self._passthrough_codec)
+
         @wraps(method)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            raw = {"args": self._to_builtins(args), "kwargs": self._to_builtins(kwargs)}
-            raw_hash = stable_hash(repr(raw))
-            scope = cast(str, metadata.get("scope") or "list")
-            ttl_key = cast(str | None, metadata.get("ttl_key"))
-
-            if scope == "entity":
-                entity_id: object = args[0] if args else raw_hash
-                tags = self._resolver.entity_tags(self.entity_name, entity_id)
-                tags.extend(self._entity_dependency_tags(entity_id))
-                ttl = self._config.ttl_for_single(ttl_key or self.entity_name)
-            else:
-                tags = self._resolver.list_tags(self.entity_name, raw_hash)
-                tags.extend(self._list_dependency_tags())
-                ttl = self._config.ttl_for_list(ttl_key or self.entity_name)
-
-            fingerprint = await self._resolver.fingerprint(tags)
-            key = f"{self.entity_name}:custom:{method_name}:{raw_hash}:deps={fingerprint}"
+            key, ttl = await self._custom_cache_entry(method_name, metadata, args, kwargs)
             cached_payload = await self._cache.get_value(key)
             if cached_payload is not None:
-                self._log.debug("CacheHitCustomMethod", key=key, method=method_name)
-                return cached_payload
+                decoded = self._decode_cached_result(codec, method_name, key, cached_payload)
+                if decoded is not _UNDECODABLE:
+                    self._log.debug("CacheHitCustomMethod", key=key, method=method_name)
+                    return decoded
 
             self._log.debug("CacheMissCustomMethod", key=key, method=method_name)
 
             async def load() -> Any:
                 result = await method(*args, **kwargs)
-                await self._cache.set_value(
-                    key,
-                    self._to_builtins(result),
-                    ttl=self._write_ttl(ttl),
-                )
-                return result
+                if result is None:
+                    return None
+                encoded = codec.encode(result)
+                await self._cache.set_value(key, encoded.payload, ttl=self._write_ttl(ttl))
+                return encoded.value
 
             return await self._coalesced(key, load)
 
         return wrapped
+
+    def _decode_cached_result(
+        self,
+        codec: ResultCodec,
+        method_name: str,
+        key: str,
+        payload: Any,
+    ) -> Any:
+        """Decode a cached payload, or report it unusable.
+
+        A payload written by an earlier version of the code no longer fits a
+        return type that has since gained a field or narrowed one, and the
+        cache key hashes the call arguments only, so nothing about the entry
+        changes when the type does. Raising here would fail every caller of a
+        warm key until its TTL ran out — a timed outage on a rolling deploy,
+        where both versions are live. The entry is treated as a miss instead:
+        the load that follows overwrites it, so the two paths still agree on
+        the type.
+
+        Returns:
+            The decoded value, or the ``_UNDECODABLE`` sentinel, which is not
+            ``None`` because ``None`` is a value the pass-through codec can
+            legitimately return.
+        """
+        try:
+            return codec.decode(payload)
+        except msgspec.ValidationError as error:
+            self._log.warning(
+                "CacheCustomPayloadMismatch",
+                key=key,
+                method=method_name,
+                error=repr(error),
+            )
+            return _UNDECODABLE
+
+    async def _custom_cache_entry(
+        self,
+        method_name: str,
+        metadata: dict[str, object],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> tuple[str, int]:
+        """Resolve the cache key and the TTL of one call to a cached read."""
+        raw = {"args": to_payload(args), "kwargs": to_payload(kwargs)}
+        raw_hash = stable_hash(repr(raw))
+        scope = cast(str, metadata.get("scope") or "list")
+        ttl_key = cast(str | None, metadata.get("ttl_key"))
+
+        if scope == "entity":
+            entity_id: object = args[0] if args else raw_hash
+            tags = self._resolver.entity_tags(self.entity_name, entity_id)
+            tags.extend(self._entity_dependency_tags(entity_id))
+            ttl = self._config.ttl_for_single(ttl_key or self.entity_name)
+        else:
+            tags = self._resolver.list_tags(self.entity_name, raw_hash)
+            tags.extend(self._list_dependency_tags())
+            ttl = self._config.ttl_for_list(ttl_key or self.entity_name)
+
+        fingerprint = await self._resolver.fingerprint(tags)
+        return f"{self.entity_name}:custom:{method_name}:{raw_hash}:deps={fingerprint}", ttl
 
     async def _load_items_from_index(self, ids: list[IdT], profile: str) -> list[OutputT]:
         tags_by_id = [
@@ -619,7 +762,7 @@ class CachedRepository(
     async def _refill_cache(self, entries: list[tuple[str, OutputT]]) -> None:
         """Write back only the entities that were missing, leaving warm TTLs alone."""
         ttl = self._write_ttl(self._config.ttl_for_single(self.entity_name))
-        pairs = [(key, self._to_builtins(item)) for key, item in entries]
+        pairs = [(key, to_payload(item)) for key, item in entries]
         await self._cache.multi_set_values(pairs, ttl=ttl)
 
     async def _fetch_missing_by_ids(
@@ -699,7 +842,7 @@ class CachedRepository(
         pairs: list[tuple[str, Any]] = []
         for item, entity_id, fingerprint in zip(items, entity_ids, fingerprints, strict=True):
             key = entity_key(self.entity_name, entity_id, profile, fingerprint)
-            pairs.append((key, self._to_builtins(item)))
+            pairs.append((key, to_payload(item)))
         await self._cache.multi_set_values(pairs, ttl=ttl)
 
     def _to_output_from_cache(self, payload: Any) -> OutputT | None:
@@ -813,19 +956,10 @@ class CachedRepository(
 
         return tuple(dict.fromkeys(specs))
 
-    def _to_builtins(self, value: Any) -> Any:
-        if isinstance(value, msgspec.Struct):
-            return msgspec.to_builtins(value)
-        if isinstance(value, list | tuple):
-            return [self._to_builtins(item) for item in value]
-        if isinstance(value, dict):
-            return {str(key): self._to_builtins(item) for key, item in value.items()}
-        return value
-
     def _serialize_filters(self, filter_params: FilterParams | None) -> str:
         if filter_params is None:
             return "{}"
-        return repr(self._to_builtins(filter_params.filters))
+        return repr(to_payload(filter_params.filters))
 
     def _serialize_query(self, query: QuerySpec) -> dict[str, Any]:
         return {
@@ -846,7 +980,7 @@ class CachedRepository(
                 {
                     "field": item.field,
                     "op": item.op.value,
-                    "value": self._to_builtins(item.value),
+                    "value": to_payload(item.value),
                 }
                 for item in group.filters
             ],
