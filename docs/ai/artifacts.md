@@ -558,14 +558,18 @@ hook never runs. The caller gets a coded error carrying the run's
 `interaction_id` and no `usage`: nothing was spent. The loader is **never
 retried** — the engine's retry loop never sees it — and
 `CONVERSATION_LOAD_FAILED` is an `APPLICATION` error, not a retriable one
-(FR-058).
+(FR-058); only a loader that times out — cut at `tool_timeout_ms`, or raising
+`TimeoutError` from its own I/O — is reported as `CONVERSATION_LOAD_TIMEOUT`
+(`INFRASTRUCTURE`, retriable, `504`; FR-063). The hook keeps `HOOK_FAILED` on
+the same timeout: it runs after the model spent tokens, so a retry is not free.
 
 | The loader… | The caller gets |
 |---|---|
-| raises | `500` `CONVERSATION_LOAD_FAILED` with a fixed message — `the conversation could not be loaded; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
+| raises anything but `TimeoutError` | `500` `CONVERSATION_LOAD_FAILED` with a fixed message — `the conversation could not be loaded; the detail is recorded server-side`. The exception never reaches the caller; the server log carries it under the `interaction_id`. |
 | raises `Forbidden`, `Unauthenticated`, `RoleNotAllowedError` or `RolesNotBoundError` | `403` `UNAUTHORIZED`, exactly as the hook and a `kind: usecase` tool. |
-| exceeds `tool_timeout_ms` | Cut at the bound and reported as `CONVERSATION_LOAD_FAILED`. |
+| times out — cut at `tool_timeout_ms`, or a `TimeoutError` of its own | `504` `CONVERSATION_LOAD_TIMEOUT` with a fixed message — `the conversation loader exceeded its time limit`. Retriable; the origin is in the server log. |
 | returns anything but `bytes` or `None` — a `str`, a list, a dict | `CONVERSATION_LOAD_FAILED`; the value is never coerced and never logged. |
+| returns more than `policies.max_history_bytes` bytes | `CONVERSATION_LOAD_FAILED`; the length and the bound are logged under the `interaction_id`, never returned. loom never trims. |
 | returns bytes the engine cannot decode — not JSON, or not one array of messages | `CONVERSATION_LOAD_FAILED`, raised by the engine before any model call. The data is the application's; the engine's `health()` probe is unaffected. |
 
 On `/run` the body is the usual three fields —
@@ -783,9 +787,12 @@ For tools loom itself should call, use `mcp` or `python` instead.
 | `tool_timeout_ms` | `20000` | `100` | `600000` |
 | `max_iterations` | `12` | `1` | `100` |
 | `run_timeout_ms` | `120000` | `1000` | `1800000` |
+| `max_history_bytes` | `1048576` | `1024` | `67108864` |
 
 `run_timeout_ms` bounds the **whole run**, not one capability call.
-`tool_timeout_ms` bounds a single call. An out-of-range value is reported as a
+`tool_timeout_ms` bounds a single call. `max_history_bytes` caps the serialised
+history a `conversation` loader may return; it is a limit, not trimming — loom
+never edits the history. An out-of-range value is reported as a
 coded issue (`POLICY_OUT_OF_RANGE`) rather than a decoding failure, so it
 accumulates with the other problems in the file instead of hiding them.
 

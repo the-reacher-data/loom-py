@@ -243,6 +243,7 @@ class TestProyeccionDelAgente:
             "tool_timeout_ms": 30000,
             "max_iterations": 20,
             "run_timeout_ms": 300000,
+            "max_history_bytes": 1048576,
         }
 
     def test_publica_la_procedencia_cuando_el_plan_la_conoce(self, full_plan: AgentPlan) -> None:

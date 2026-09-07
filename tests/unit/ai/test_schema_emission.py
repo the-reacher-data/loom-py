@@ -106,6 +106,16 @@ def test_las_politicas_emitidas_declaran_run_timeout_ms_cuando_se_construye_el_e
     }
 
 
+def test_las_politicas_emitidas_declaran_max_history_bytes_cuando_se_construye_el_esquema() -> None:
+    """The history ceiling is part of the published policy vocabulary (FR-061)."""
+    assert _policy_properties(_emitted())["max_history_bytes"] == {
+        "type": "integer",
+        "minimum": 1024,
+        "maximum": 67108864,
+        "default": 1048576,
+    }
+
+
 def test_la_capacidad_sql_emitida_exige_las_cotas_de_resultado_cuando_se_construye() -> None:
     """An unbounded query is not representable: both bounds are required (FR-046b)."""
     assert _sql_variant(_emitted())["required"] == [

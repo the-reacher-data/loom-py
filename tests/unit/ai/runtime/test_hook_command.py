@@ -16,7 +16,8 @@ from loom.ai.compiler._plan import (
 )
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
-from loom.ai.runtime._hooks import HookRun, hook_command
+from loom.ai.runtime._bounded import RunContext
+from loom.ai.runtime._hooks import hook_command
 from loom.core.command import Command
 from loom.core.identity import Identity
 
@@ -48,9 +49,9 @@ def _plan() -> AgentPlan:
 
 
 @pytest.fixture
-def run() -> HookRun:
+def run() -> RunContext:
     """One admitted run of a verified caller."""
-    return HookRun(
+    return RunContext(
         plan=_plan(),
         identity=Identity(subject="user-1", roles=("analyst",), mechanism="test"),
         interaction_id="int-1",
@@ -58,21 +59,21 @@ def run() -> HookRun:
     )
 
 
-def test_anida_el_output_cuando_es_un_dict(run: HookRun) -> None:
+def test_anida_el_output_cuando_es_un_dict(run: RunContext) -> None:
     """A dict output is nested verbatim under ``output``."""
     command = hook_command({"answer": "42"}, run, _ALL_NAMES)
 
     assert command["output"] == {"answer": "42"}
 
 
-def test_convierte_el_output_a_builtins_cuando_es_un_struct(run: HookRun) -> None:
+def test_convierte_el_output_a_builtins_cuando_es_un_struct(run: RunContext) -> None:
     """A struct output is offered as builtins so any Input type can convert it back."""
     command = hook_command(_Report(severity="high", confidence=0.7), run, _ALL_NAMES)
 
     assert command["output"] == {"severity": "high", "confidence": 0.7}
 
 
-def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: HookRun) -> None:
+def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: RunContext) -> None:
     """Every context name carries the run's, the identity's or the plan's value."""
     command = hook_command({}, run, _ALL_NAMES)
 
@@ -89,7 +90,7 @@ def test_ofrece_el_contexto_del_run_cuando_el_input_lo_acepta(run: HookRun) -> N
     }
 
 
-def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(run: HookRun) -> None:
+def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(run: RunContext) -> None:
     """Names the Input does not declare never reach it."""
     command = hook_command({"answer": "42"}, run, frozenset({"output", "agent"}))
 
@@ -97,7 +98,7 @@ def test_filtra_a_los_nombres_aceptados_cuando_el_input_declara_menos(run: HookR
 
 
 def test_no_deja_que_el_output_suplante_al_contexto_cuando_comparte_nombres(
-    run: HookRun,
+    run: RunContext,
 ) -> None:
     """An output field named ``subject`` stays nested; the context wins."""
     command = hook_command({"subject": "spoofed"}, run, _ALL_NAMES)
@@ -106,7 +107,7 @@ def test_no_deja_que_el_output_suplante_al_contexto_cuando_comparte_nombres(
     assert command["output"] == {"subject": "spoofed"}
 
 
-def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(run: HookRun) -> None:
+def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(run: RunContext) -> None:
     """A ``forbid_unknown_fields`` Command accepts the filtered dict."""
     accepted = frozenset(info.name for info in msgspec.structs.fields(_StrictCommand))
 
@@ -116,28 +117,28 @@ def test_decodifica_un_command_estricto_cuando_se_filtra_a_sus_nombres(run: Hook
     assert seen == frozenset({"output", "interaction_id"})
 
 
-def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(run: HookRun) -> None:
+def test_ofrece_exactamente_los_nombres_que_el_compilador_promete(run: RunContext) -> None:
     """The run-time command and the compile-time offer are one contract, not two lists."""
     command = hook_command({}, run, _ALL_NAMES)
 
     assert set(command) == {HOOK_OUTPUT_FIELD, HOOK_MESSAGES_FIELD, *HOOK_CONTEXT_FIELDS}
 
 
-def test_ofrece_los_messages_cuando_el_run_los_lleva(run: HookRun) -> None:
+def test_ofrece_los_messages_cuando_el_run_los_lleva(run: RunContext) -> None:
     """The run's serialised new messages are offered verbatim under ``messages``."""
     command = hook_command({}, run, _ALL_NAMES, messages=b"[]")
 
     assert command[HOOK_MESSAGES_FIELD] == b"[]"
 
 
-def test_filtra_los_messages_cuando_el_input_no_los_declara(run: HookRun) -> None:
+def test_filtra_los_messages_cuando_el_input_no_los_declara(run: RunContext) -> None:
     """A Command not declaring ``messages`` never receives them."""
     command = hook_command({}, run, frozenset({"output"}), messages=b"[]")
 
     assert command == {"output": {}}
 
 
-def test_ofrece_messages_none_cuando_no_se_indican(run: HookRun) -> None:
+def test_ofrece_messages_none_cuando_no_se_indican(run: RunContext) -> None:
     """A single-shot run offers ``None``, so an optional field keeps its default."""
     command = hook_command({}, run, _ALL_NAMES)
 

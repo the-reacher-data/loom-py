@@ -57,6 +57,10 @@ RUN_TIMEOUT_MS_DEFAULT: Final[int] = 120000
 RUN_TIMEOUT_MS_MIN: Final[int] = 1000
 RUN_TIMEOUT_MS_MAX: Final[int] = 1800000
 
+MAX_HISTORY_BYTES_DEFAULT: Final[int] = 1_048_576
+MAX_HISTORY_BYTES_MIN: Final[int] = 1_024
+MAX_HISTORY_BYTES_MAX: Final[int] = 67_108_864
+
 NativeToolName = Literal["web_search", "web_fetch", "code_execution"]
 """Tool the model provider runs in its own infrastructure, by its stable v1 name.
 
@@ -340,12 +344,15 @@ class PolicySpec(
         tool_timeout_ms: Deadline of a single tool call.
         max_iterations:  Maximum reason/act iterations in one run.
         run_timeout_ms:  Deadline of a whole run.
+        max_history_bytes: Ceiling, in bytes, of the history a ``conversation``
+            loader may return; a longer one fails the run.
     """
 
     retries: int = RETRIES_DEFAULT
     tool_timeout_ms: int = TOOL_TIMEOUT_MS_DEFAULT
     max_iterations: int = MAX_ITERATIONS_DEFAULT
     run_timeout_ms: int = RUN_TIMEOUT_MS_DEFAULT
+    max_history_bytes: int = MAX_HISTORY_BYTES_DEFAULT
 
 
 class AgentSpecV1(

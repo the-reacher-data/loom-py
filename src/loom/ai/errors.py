@@ -1090,6 +1090,7 @@ class AgentRunErrorCode(StrEnum):
     CANCELLED = "CANCELLED"
     HOOK_FAILED = "HOOK_FAILED"
     CONVERSATION_LOAD_FAILED = "CONVERSATION_LOAD_FAILED"
+    CONVERSATION_LOAD_TIMEOUT = "CONVERSATION_LOAD_TIMEOUT"
 
 
 class AgentRunError(Exception):
@@ -1147,6 +1148,7 @@ _RUN_ERROR_CLASSES: Mapping[AgentRunErrorCode, AgentRunErrorClass] = MappingProx
         AgentRunErrorCode.CANCELLED: AgentRunErrorClass.CLIENT,
         AgentRunErrorCode.HOOK_FAILED: AgentRunErrorClass.APPLICATION,
         AgentRunErrorCode.CONVERSATION_LOAD_FAILED: AgentRunErrorClass.APPLICATION,
+        AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT: AgentRunErrorClass.INFRASTRUCTURE,
     }
 )
 
@@ -1158,6 +1160,9 @@ CONVERSATION_LOAD_FAILED_MESSAGE: Final[str] = (
 Defined once here because both the runtime loader and an engine's history
 decoder raise the code; the loader's own detail is logged, never returned.
 """
+
+CONVERSATION_LOAD_TIMEOUT_MESSAGE: Final[str] = "the conversation loader exceeded its time limit"
+"""Client text of every ``CONVERSATION_LOAD_TIMEOUT`` error (FR-063)."""
 
 
 def run_error_class(code: AgentRunErrorCode) -> AgentRunErrorClass:

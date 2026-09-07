@@ -30,6 +30,9 @@ from ._envelope import LATEST_SPEC_VERSION
 from ._v1 import (
     AGENT_NAME_PATTERN,
     DEFAULT_MODEL_ROLE,
+    MAX_HISTORY_BYTES_DEFAULT,
+    MAX_HISTORY_BYTES_MAX,
+    MAX_HISTORY_BYTES_MIN,
     MAX_ITERATIONS_DEFAULT,
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
@@ -387,6 +390,12 @@ def _v1_defs() -> dict[str, Any]:
                     "minimum": RUN_TIMEOUT_MS_MIN,
                     "maximum": RUN_TIMEOUT_MS_MAX,
                     "default": RUN_TIMEOUT_MS_DEFAULT,
+                },
+                "max_history_bytes": {
+                    "type": "integer",
+                    "minimum": MAX_HISTORY_BYTES_MIN,
+                    "maximum": MAX_HISTORY_BYTES_MAX,
+                    "default": MAX_HISTORY_BYTES_DEFAULT,
                 },
             },
         },

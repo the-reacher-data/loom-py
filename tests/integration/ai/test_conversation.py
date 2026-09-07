@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,6 +20,7 @@ from loom.ai.abc import AgentEvent, Conversation, FinalEvent, TextDeltaEvent
 from loom.ai.compiler._plan import AgentPlan, CompiledConversation, CompiledOutputHook
 from loom.ai.errors import (
     CONVERSATION_LOAD_FAILED_MESSAGE,
+    CONVERSATION_LOAD_TIMEOUT_MESSAGE,
     AgentCompilationError,
     AgentErrorCode,
     AgentRunErrorClass,
@@ -358,6 +360,42 @@ class TestEjecucionDelLoader:
 
         assert engine.conversations == [Conversation(conversation_id="c-42", history=None)]
 
+    async def test_entrega_history_none_cuando_el_loader_devuelve_none_bajo_un_tope(
+        self,
+        identity: Identity,
+        loader: LoaderRecorder,
+        conversation_deps: RecordingDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """A ``None`` history is never measured against ``max_history_bytes``."""
+        loader.results = [None]
+        engine = ScriptedEngine()
+        plan = _plan(policies=make_policies(max_history_bytes=1024))
+        runtime = _runtime(engine, plan, deps=conversation_deps, container=container)
+
+        async with runtime:
+            await runtime.run(_AGENT, "prompt", identity=identity, conversation_id="c-42")
+
+        assert engine.conversations == [Conversation(conversation_id="c-42", history=None)]
+
+    async def test_entrega_la_history_cuando_mide_exactamente_max_history_bytes(
+        self,
+        identity: Identity,
+        loader: LoaderRecorder,
+        conversation_deps: RecordingDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """The ceiling is inclusive: a history of exactly the bound reaches the engine intact."""
+        loader.results = [b"x" * 2048]
+        engine = ScriptedEngine()
+        plan = _plan(policies=make_policies(max_history_bytes=2048))
+        runtime = _runtime(engine, plan, deps=conversation_deps, container=container)
+
+        async with runtime:
+            await runtime.run(_AGENT, "prompt", identity=identity, conversation_id="c-42")
+
+        assert engine.conversations == [Conversation(conversation_id="c-42", history=b"x" * 2048)]
+
     async def test_alimenta_un_command_estricto_cuando_solo_declara_conversation_id(
         self,
         identity: Identity,
@@ -471,14 +509,14 @@ class TestFallosDelLoader:
         assert failure.value.interaction_id is not None
         assert engine.stream_count == 0
 
-    async def test_falla_con_conversation_load_failed_cuando_el_loader_excede_tool_timeout_ms(
+    async def test_falla_con_conversation_load_timeout_cuando_el_loader_excede_tool_timeout_ms(
         self,
         identity: Identity,
         loader: LoaderRecorder,
         conversation_deps: RecordingDepsFactory,
         container: LoomContainer,
     ) -> None:
-        """A loader sleeping past the bound is cut and reported with the fixed code."""
+        """A loader sleeping past the bound is cut and reported as a retriable timeout."""
         loader.sleep_s = 5.0
         engine = ScriptedEngine()
         plan = _plan(policies=make_policies(tool_timeout_ms=50))
@@ -491,10 +529,35 @@ class TestFallosDelLoader:
                 await runtime.run(_AGENT, "prompt", identity=identity, conversation_id="c-42")
             elapsed = loop.time() - started
 
-        assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
-        assert str(failure.value) == CONVERSATION_LOAD_FAILED_MESSAGE
+        assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT
+        assert str(failure.value) == CONVERSATION_LOAD_TIMEOUT_MESSAGE
+        assert failure.value.usage is None
         assert elapsed < 2.0, f"the loader was not bounded: {elapsed:.3f}s"
         assert loader.cancelled is True
+        assert engine.stream_count == 0
+        assert conversation_deps.uow.log == ["begin", "rollback"]
+        assert is_retriable(failure.value.code) is True
+        assert run_error_class(failure.value.code) is AgentRunErrorClass.INFRASTRUCTURE
+
+    async def test_falla_con_conversation_load_timeout_cuando_el_loader_lanza_timeout_error(
+        self,
+        identity: Identity,
+        loader: LoaderRecorder,
+        conversation_deps: RecordingDepsFactory,
+        container: LoomContainer,
+    ) -> None:
+        """A ``TimeoutError`` from the loader's own I/O gets the same code as a bound cut."""
+        loader.failure = TimeoutError()
+        engine = ScriptedEngine()
+        runtime = _runtime(engine, _plan(), deps=conversation_deps, container=container)
+
+        async with runtime:
+            with pytest.raises(AgentRunError) as failure:
+                await runtime.run(_AGENT, "prompt", identity=identity, conversation_id="c-42")
+
+        assert failure.value.code is AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT
+        assert str(failure.value) == CONVERSATION_LOAD_TIMEOUT_MESSAGE
+        assert failure.value.usage is None
         assert engine.stream_count == 0
         assert conversation_deps.uow.log == ["begin", "rollback"]
 
@@ -519,6 +582,43 @@ class TestFallosDelLoader:
         assert failure.value.usage is None
         assert engine.stream_count == 0
         assert engine.conversations == []
+
+    async def test_falla_con_conversation_load_failed_cuando_la_history_supera_max_history_bytes(
+        self,
+        identity: Identity,
+        loader: LoaderRecorder,
+        conversation_deps: RecordingDepsFactory,
+        container: LoomContainer,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A history over the ceiling fails closed; the size and the bound stay server-side."""
+        loader.results = [b"x" * 2049]
+        engine = ScriptedEngine()
+        plan = _plan(policies=make_policies(max_history_bytes=2048))
+        runtime = _runtime(engine, plan, deps=conversation_deps, container=container)
+
+        async with runtime:
+            with caplog.at_level(logging.ERROR, logger="loom.ai.runtime._bounded"):
+                with pytest.raises(AgentRunError) as failure:
+                    await runtime.run(_AGENT, "prompt", identity=identity, conversation_id="c-42")
+
+        error = failure.value
+        assert error.code is AgentRunErrorCode.CONVERSATION_LOAD_FAILED
+        assert str(error) == CONVERSATION_LOAD_FAILED_MESSAGE
+        assert error.usage is None
+        assert error.interaction_id is not None
+        assert engine.stream_count == 0
+        records = [
+            record
+            for record in caplog.records
+            if record.name == "loom.ai.runtime._bounded" and record.levelno == logging.ERROR
+        ]
+        assert len(records) == 1
+        assert records[0].exc_text is not None
+        assert "2049" in records[0].exc_text
+        assert "2048" in records[0].exc_text
+        assert "2049" not in str(error)
+        assert "2048" not in str(error)
 
     async def test_lanza_en_la_entrada_cuando_el_loader_falla_en_stream(
         self,

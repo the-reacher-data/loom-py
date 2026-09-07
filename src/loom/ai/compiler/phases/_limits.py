@@ -8,6 +8,8 @@ from typing import Final
 
 from loom.ai.declarative import PolicySpec
 from loom.ai.declarative._v1 import (
+    MAX_HISTORY_BYTES_MAX,
+    MAX_HISTORY_BYTES_MIN,
     MAX_ITERATIONS_MAX,
     MAX_ITERATIONS_MIN,
     RETRIES_MAX,
@@ -25,6 +27,7 @@ _POLICY_RANGES: Final[Mapping[str, tuple[int, int]]] = MappingProxyType(
         "tool_timeout_ms": (TOOL_TIMEOUT_MS_MIN, TOOL_TIMEOUT_MS_MAX),
         "max_iterations": (MAX_ITERATIONS_MIN, MAX_ITERATIONS_MAX),
         "run_timeout_ms": (RUN_TIMEOUT_MS_MIN, RUN_TIMEOUT_MS_MAX),
+        "max_history_bytes": (MAX_HISTORY_BYTES_MIN, MAX_HISTORY_BYTES_MAX),
     }
 )
 

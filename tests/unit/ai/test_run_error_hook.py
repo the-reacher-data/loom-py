@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from loom.ai.errors import (
     CONVERSATION_LOAD_FAILED_MESSAGE,
+    CONVERSATION_LOAD_TIMEOUT_MESSAGE,
     AgentRunError,
     AgentRunErrorClass,
     AgentRunErrorCode,
@@ -70,3 +71,22 @@ def test_el_mensaje_de_conversation_load_failed_es_el_texto_fijo() -> None:
         CONVERSATION_LOAD_FAILED_MESSAGE
         == "the conversation could not be loaded; the detail is recorded server-side"
     )
+
+
+def test_conversation_load_timeout_es_de_infraestructura_y_reintentable() -> None:
+    """A loader cut at its bound is a slow store, not a broken use case (FR-063)."""
+    code = AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT
+
+    assert run_error_class(code) is AgentRunErrorClass.INFRASTRUCTURE
+    assert is_retriable(code) is True
+
+
+def test_el_status_http_de_conversation_load_timeout_esta_mapeado_explicitamente() -> None:
+    from loom.ai.fastapi.endpoints import _STATUS_BY_CODE
+
+    assert _STATUS_BY_CODE[AgentRunErrorCode.CONVERSATION_LOAD_TIMEOUT] == 504
+
+
+def test_el_mensaje_de_conversation_load_timeout_es_el_texto_fijo() -> None:
+    """The client text is fixed: it never names the loader or its store."""
+    assert CONVERSATION_LOAD_TIMEOUT_MESSAGE == "the conversation loader exceeded its time limit"
