@@ -159,3 +159,25 @@ class TestTheCalculatorLeavesNoStaticVersionBehind:
         script = cast(str, restore["run"])
         assert "pyproject.toml|uv.lock|CHANGELOG.md" in script
         assert "exit 1" in script
+
+
+class TestThePrereleaseVersionComesFromTheTag:
+    """The calculator reads project.version, which no longer exists: it answered
+    0.1.1.dev194 on a repository whose last tag was v1.11.0."""
+
+    def _validate_steps(self) -> list[dict[str, Any]]:
+        ci_pr = cast(
+            dict[str, Any],
+            yaml.safe_load((WORKFLOW_PATH.parent / "ci-pr.yml").read_text(encoding="utf-8")),
+        )
+        jobs = cast(dict[str, Any], ci_pr["jobs"])
+        return cast(list[dict[str, Any]], cast(dict[str, Any], jobs["validate"])["steps"])
+
+    def test_the_version_is_read_from_the_installed_metadata(self) -> None:
+        resolver = next(step for step in self._validate_steps() if step.get("id") == "prerelease")
+        assert "importlib.metadata" in cast(str, resolver["run"])
+
+    def test_no_step_reports_the_calculator_version(self) -> None:
+        for step in self._validate_steps():
+            rendered = str(step.get("with", {})) + cast(str, step.get("run", ""))
+            assert "steps.version.outputs.version" not in rendered, step.get("name")

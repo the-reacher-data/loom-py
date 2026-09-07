@@ -227,8 +227,8 @@ jobs:
           branch: ${{ github.head_ref }}
           prerelease: "true"
 
-      # The calculator writes project.version, which hatchling refuses next to a
-      # dynamic version, so every later `uv run` would fail to build the project.
+      # The version itself comes from the tag, so what this lane reads from the
+      # calculator is `deploy`: whether this branch class ships a prerelease.
       - name: Restore the files the calculator rewrote
         shell: bash
         run: |
@@ -244,6 +244,18 @@ jobs:
           done < <(git diff --name-only HEAD)
           git restore --source=HEAD --staged --worktree -- pyproject.toml uv.lock CHANGELOG.md
 
+      # hatch-vcs derives this from the tag and the distance from it, which is
+      # the version the prerelease will actually carry. The calculator cannot
+      # answer it any more: it reads project.version, which no longer exists.
+      - name: Resolve the prerelease version
+        id: prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(uv run --frozen python -c \
+            "import importlib.metadata as m; print(m.version('loom-kernel'))")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Generate changelog preview
         id: changelog
         continue-on-error: true
@@ -251,7 +263,7 @@ jobs:
         with:
           mode: "pr"
           branch: ${{ github.event.pull_request.head.sha }}
-          version: ${{ steps.version.outputs.deploy == 'true' && steps.version.outputs.version || 'UNRELEASED' }}
+          version: ${{ steps.version.outputs.deploy == 'true' && steps.prerelease.outputs.version || 'UNRELEASED' }}
           pr-number: ${{ github.event.pull_request.number }}
           base-ref: origin/${{ github.base_ref }}
           output: changelog_preview.md
