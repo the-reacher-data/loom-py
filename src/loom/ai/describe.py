@@ -109,7 +109,7 @@ def _skills_settings(capability: CompiledSkillsCapability) -> Mapping[str, Any]:
 
 
 def _python_settings(capability: CompiledPythonCapability) -> Mapping[str, Any]:
-    return {"factory_ref": capability.factory_ref}
+    return {"factory_ref": capability.factory_ref, "params": sorted(capability.params)}
 
 
 def _a2a_settings(capability: CompiledA2ACapability) -> Mapping[str, Any]:

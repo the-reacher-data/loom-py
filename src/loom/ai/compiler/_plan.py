@@ -17,12 +17,11 @@ from JSON, which is why fields may hold arbitrary runtime handles.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Final
 
 import msgspec
 
-from loom.ai.abc import ToolsetFactory
 from loom.ai.declarative import PolicySpec
 from loom.ai.inference import InferenceTarget
 from loom.core.engine.compilable import Compilable
@@ -204,13 +203,18 @@ class CompiledPythonCapability(LoomFrozenStruct, frozen=True, kw_only=True):
 
     Attributes:
         factory_ref: ``module:factory`` reference, for the self-description.
-        factory: Imported factory satisfying :class:`~loom.ai.abc.ToolsetFactory`.
+        factory: Imported factory, called once at build as
+            ``factory(<first positional>, **params)``.
+        params: Keyword arguments the artifact declared for the factory. The
+            names bind to the factory's signature (checked at compile); the
+            values are decoded YAML carried as-is.
     """
 
     kind: ClassVar[str] = "python"
 
     factory_ref: str
-    factory: ToolsetFactory
+    factory: Callable[..., object]
+    params: Mapping[str, Any] = {}
 
 
 class CompiledA2ACapability(LoomFrozenStruct, frozen=True, kw_only=True):

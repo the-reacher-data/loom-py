@@ -716,10 +716,31 @@ the same skill name fail compilation with `SKILLS_NAME_COLLISION`.
 ```yaml
 - kind: python
   factory: myapp.tools.metrics:build_metrics_toolset
+  params:
+    max_results: 3
+    radius_km: 25
 ```
 
 A **factory**, never a constructed object: the reference must be callable and is
-invoked with the container at start-up.
+invoked once at start-up as `factory(container, **params)`.
+
+`params` is a nested block (never a sibling of `factory:`) passed to the factory
+as **keyword arguments**. The factory declares its own named parameters with
+defaults:
+
+```python
+def build_metrics_toolset(container, *, max_results: int = 3, radius_km: int = 25):
+    ...
+```
+
+The parameter **names** are validated at compile time against the factory's
+signature: an unknown key, or a required parameter the artifact does not
+supply, fails with `PYTHON_FACTORY_PARAMS_REJECTED` naming the factory and
+Python's binding reason. A factory declaring `**kwargs` accepts any key; a
+callable whose signature cannot be inspected is accepted as-is. The **values**
+are decoded YAML and are not validated: a wrong type surfaces as a Python error
+when the factory runs at start-up. `params` carries settings, never secrets; the
+artifact's self-description lists the parameter names only.
 
 ### `a2a` — delegation to a remote agent
 

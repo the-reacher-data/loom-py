@@ -19,3 +19,6 @@ output:
 capabilities:
   - kind: python
     factory: myapp.tools.geo:build_geo_toolset
+    params:
+      max_results: 3
+      radius_km: 25

@@ -41,6 +41,7 @@ from loom.ai.compiler import (
     CompiledA2ACapability,
     CompiledCapability,
     CompiledMcpCapability,
+    CompiledPythonCapability,
     CompiledSkillsCapability,
 )
 from loom.ai.config import AgentEndpointConfig, AiConfig
@@ -502,6 +503,84 @@ class TestPythonFactory:
             AgentErrorCode.PYTHON_FACTORY_NOT_CALLABLE,
             "capabilities.factory",
         )
+
+    def test_carries_params_when_they_bind_to_the_factory_signature(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        plan_for: Callable[..., AgentPlan],
+    ) -> None:
+        params = {"max_results": 3, "radius_km": 25}
+        spec = spec_factory(
+            capabilities=(
+                PythonCapability(factory="myapp.tools.geo:build_geo_toolset", params=params),
+            )
+        )
+        (compiled,) = plan_for(spec).capabilities
+        assert isinstance(compiled, CompiledPythonCapability)
+        assert compiled.params == params
+
+    def test_reports_params_rejected_when_a_key_is_unknown_to_the_factory(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        single_issue_for: Callable[..., AgentCompilationIssue],
+    ) -> None:
+        spec = spec_factory(
+            capabilities=(
+                PythonCapability(
+                    factory="myapp.tools.geo:build_geo_toolset", params={"max_depth": 3}
+                ),
+            )
+        )
+        issue = single_issue_for(spec)
+        assert (issue.code, issue.field) == (
+            AgentErrorCode.PYTHON_FACTORY_PARAMS_REJECTED,
+            "capabilities.params",
+        )
+        assert "myapp.tools.geo:build_geo_toolset" in issue.message
+        assert "max_depth" in issue.message
+
+    def test_reports_params_rejected_when_a_required_parameter_is_missing(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        single_issue_for: Callable[..., AgentCompilationIssue],
+    ) -> None:
+        spec = spec_factory(
+            capabilities=(PythonCapability(factory="myapp.tools.params:build_strict"),)
+        )
+        issue = single_issue_for(spec)
+        assert (issue.code, issue.field) == (
+            AgentErrorCode.PYTHON_FACTORY_PARAMS_REJECTED,
+            "capabilities.params",
+        )
+        assert "max_results" in issue.message
+
+    def test_accepts_any_key_when_the_factory_declares_kwargs(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        plan_for: Callable[..., AgentPlan],
+    ) -> None:
+        spec = spec_factory(
+            capabilities=(
+                PythonCapability(factory="myapp.tools.params:build_any", params={"anything": 1}),
+            )
+        )
+        (compiled,) = plan_for(spec).capabilities
+        assert isinstance(compiled, CompiledPythonCapability)
+        assert compiled.params == {"anything": 1}
+
+    def test_accepts_params_when_the_factory_signature_cannot_be_inspected(
+        self,
+        spec_factory: Callable[..., AgentSpecV1],
+        plan_for: Callable[..., AgentPlan],
+    ) -> None:
+        spec = spec_factory(
+            capabilities=(
+                PythonCapability(factory="myapp.tools.params:UNINSPECTABLE", params={"x": 1}),
+            )
+        )
+        (compiled,) = plan_for(spec).capabilities
+        assert isinstance(compiled, CompiledPythonCapability)
+        assert compiled.params == {"x": 1}
 
 
 class TestAnonymousOptOut:

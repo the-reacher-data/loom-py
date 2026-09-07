@@ -256,6 +256,14 @@ def _v1_python_capability() -> dict[str, Any]:
                     "A factory, never a constructed object."
                 ),
             },
+            "params": {
+                "type": "object",
+                "description": (
+                    "Keyword arguments the factory is called with. Names are "
+                    "validated against the factory signature at compile time; "
+                    "values are not. Settings, never secrets."
+                ),
+            },
         },
     }
 

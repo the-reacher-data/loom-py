@@ -326,11 +326,12 @@ def _python_toolset(
 ) -> AbstractToolset[Any]:
     """Call the resolved factory once, at build, with the application container.
 
-    The produced toolset is first-party code that can reach anything the
-    container reaches, so its tools sit behind the same authenticated boundary
-    a ``usecase`` tool does.
+    The declared ``params`` are splatted as keyword arguments. The produced
+    toolset is first-party code that can reach anything the container reaches,
+    so its tools sit behind the same authenticated boundary a ``usecase`` tool
+    does.
     """
-    toolset = capability.factory(context.container)
+    toolset = capability.factory(context.container, **capability.params)
     if not isinstance(toolset, AbstractToolset):
         raise AgentCompilationError(
             [python_factory_not_callable(context.agent, capability.factory_ref)]
