@@ -435,6 +435,17 @@ callable. Code doing `isinstance(value, httpx.Auth)` on the result stops
 matching for the built-in `bearer` and `static` strategies.
 ```
 
+## Reuse the agent's connection from Python
+
+A `kind: python` factory of the same agent can wrap a remote tool — run one
+canonical query instead of letting the model dictate it — without opening a
+second connection. Its `ToolsetContext.remote(server)` returns the worker's
+shared session for one of the agent's own `mcp` grants, so the registration and
+the credential above are still resolved once per worker. The context is
+build-time only, the reach is bounded to that agent's grants, and calls through
+the session bypass the grant's `include`/`exclude`. Details and failure codes in
+[the `python` capability](artifacts.md#python-application-owned-toolsets).
+
 ## The rule: your own tools are a `usecase` grant
 
 Here is the decision that actually comes up, and the one this page exists for.

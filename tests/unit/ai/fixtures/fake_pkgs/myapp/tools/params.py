@@ -5,15 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_any(container: object, **options: Any) -> object:
+def build_any(context: object, **options: Any) -> object:
     """Accept any keyword parameter through ``**options``."""
-    del container, options
+    del context, options
     return object()
 
 
-def build_strict(container: object, *, max_results: int) -> object:
+def build_strict(context: object, *, max_results: int) -> object:
     """Require ``max_results``; the artifact must supply it."""
-    del container, max_results
+    del context, max_results
     return object()
 
 
@@ -22,9 +22,9 @@ class _Uninspectable:
 
     __signature__ = "not a signature"
 
-    def __call__(self, container: object, **options: Any) -> object:
+    def __call__(self, context: object, **options: Any) -> object:
         """Build a toolset whatever the parameters are."""
-        del container, options
+        del context, options
         return object()
 
 

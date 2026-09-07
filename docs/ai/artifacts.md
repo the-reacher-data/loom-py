@@ -722,14 +722,39 @@ the same skill name fail compilation with `SKILLS_NAME_COLLISION`.
 ```
 
 A **factory**, never a constructed object: the reference must be callable and is
-invoked once at start-up as `factory(container, **params)`.
+invoked once at start-up as `factory(context, **params)`.
+
+The first positional is a `ToolsetContext` (exported from `loom.ai`) with three
+members:
+
+- `agent` — the name of the agent being built;
+- `container` — the application container, to resolve services from;
+- `remote(server)` — the agent's shared MCP session for one of **its own**
+  `mcp` grants, by server name; the same connection the agent's `mcp` toolset
+  runs over, so a tool that wraps a remote query does not open a second one.
+
+The context is a **build-time** object. Resolve what you need in the factory
+body and keep it on the toolset you return; do not call `remote()` from a tool
+at run time. `remote()` is bounded to the agent's own `mcp` grants: a server the
+artifact did not declare is refused at start-up with `PYTHON_REMOTE_NOT_GRANTED`
+naming the agent, the factory and the server, whatever else the deployment
+knows about that server. Calls made through the session go to the shared
+connection directly and are **not** filtered by that grant's `include`/`exclude`;
+the toolset already sits behind the authenticated call boundary. See
+[MCP](mcp.md#reuse-the-agents-connection-from-python).
 
 `params` is a nested block (never a sibling of `factory:`) passed to the factory
 as **keyword arguments**. The factory declares its own named parameters with
 defaults:
 
 ```python
-def build_metrics_toolset(container, *, max_results: int = 3, radius_km: int = 25):
+from loom.ai import ToolsetContext
+
+
+def build_metrics_toolset(
+    context: ToolsetContext, *, max_results: int = 3, radius_km: int = 25
+):
+    session = context.remote("metrics")  # one of this agent's mcp grants
     ...
 ```
 
@@ -741,6 +766,20 @@ callable whose signature cannot be inspected is accepted as-is. The **values**
 are decoded YAML and are not validated: a wrong type surfaces as a Python error
 when the factory runs at start-up. `params` carries settings, never secrets; the
 artifact's self-description lists the parameter names only.
+
+Compilation refuses a reference that cannot be imported
+(`PYTHON_FACTORY_UNRESOLVABLE`), one that is not callable
+(`PYTHON_FACTORY_NOT_CALLABLE`) and a `params` block the signature cannot bind
+(`PYTHON_FACTORY_PARAMS_REJECTED`); `PYTHON_REMOTE_NOT_GRANTED` is the one
+failure raised at start-up, when the factory runs.
+
+```{admonition} Breaking change
+:class: warning
+The factory used to be called as `factory(container)`. It now receives the
+`ToolsetContext` as its first positional; a factory written against the old
+shape gets a `TypeError` at start-up. `ToolsetFactory` is now the alias
+`Callable[..., object]`; the contract above is what the compiler checks.
+```
 
 ### `a2a` — delegation to a remote agent
 

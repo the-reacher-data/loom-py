@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 import msgspec
 import pytest
 
+from loom.ai.abc import ToolsetContext
 from loom.ai.compiler._plan import (
     AgentPlan,
     CompiledA2ACapability,
@@ -32,7 +33,6 @@ from loom.ai.compiler._plan import (
 from loom.ai.declarative import PolicySpec
 from loom.ai.describe import _as_builtin, describe_agent, describe_agents
 from loom.ai.inference import InferenceTarget, _RedactedOptions
-from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
 from loom.core.introspection import IntrospectionError
 from loom.core.model import LoomFrozenStruct
@@ -63,9 +63,9 @@ class _GrantedUseCase:
 class _GeoToolsetFactory:
     """Imported toolset factory a ``python`` grant resolved to."""
 
-    def __call__(self, container: LoomContainer) -> object:
+    def __call__(self, context: ToolsetContext) -> object:
         """Build the engine-facing toolset."""
-        del container
+        del context
         return object()
 
 

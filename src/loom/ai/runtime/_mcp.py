@@ -13,9 +13,10 @@ import logging
 from collections.abc import Callable, Coroutine, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeVar
+from typing import Any, TypeVar
 
 from loom.ai._filters import select_names
+from loom.ai.abc import McpSession
 from loom.ai.compiler import AgentPlan, CompiledMcpCapability, mcp_connection
 from loom.ai.errors import (
     AgentCompilationIssue,
@@ -27,31 +28,6 @@ from loom.ai.errors import (
 _logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
-
-
-class McpSession(Protocol):
-    """Minimal MCP session the runtime needs from any client library."""
-
-    async def list_tools(self) -> tuple[str, ...]:
-        """Return the tool names the server exposes.
-
-        Returns:
-            Every tool name the server advertises, before any declared filter
-            is applied.
-        """
-        ...
-
-    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
-        """Invoke one tool and return its result.
-
-        Args:
-            name: Tool name as the server exposes it.
-            arguments: Arguments to pass to the tool.
-
-        Returns:
-            The tool's result, as the client library decoded it.
-        """
-        ...
 
 
 McpClientFactory = Callable[[CompiledMcpCapability], AbstractAsyncContextManager[McpSession]]

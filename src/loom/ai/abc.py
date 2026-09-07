@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
-from typing import Any, ClassVar, Final, Literal, Protocol
+from typing import Any, ClassVar, Final, Literal, Protocol, TypeAlias
 
 from loom.ai.errors import AgentRunErrorCode
 from loom.ai.inference import InferenceTarget
@@ -304,19 +304,83 @@ class HealthStatus(LoomFrozenStruct, frozen=True, kw_only=True):
     detail: str | None = None
 
 
-class ToolsetFactory(Protocol):
-    """Target of a ``kind: python`` capability, validated at compile time."""
+class McpSession(Protocol):
+    """Minimal MCP session the runtime needs from any client library."""
 
-    def __call__(self, container: LoomContainer) -> object:
-        """Build the toolset from application-scope services.
-
-        Args:
-            container: Application container the factory may resolve from.
+    async def list_tools(self) -> tuple[str, ...]:
+        """Return the tool names the server exposes.
 
         Returns:
-            The engine-facing toolset object.
+            Every tool name the server advertises, before any declared filter
+            is applied.
         """
         ...
+
+    async def call_tool(self, name: str, arguments: Mapping[str, Any]) -> object:
+        """Invoke one tool and return its result.
+
+        Args:
+            name: Tool name as the server exposes it.
+            arguments: Arguments to pass to the tool.
+
+        Returns:
+            The tool's result, as the client library decoded it.
+        """
+        ...
+
+
+class ToolsetContext(Protocol):
+    """What a ``kind: python`` factory may reach while building its toolset.
+
+    A build-time object: the engine hands it to the factory once, at start-up,
+    and nothing keeps it alive afterwards. A factory resolves the remotes it
+    needs in its body and keeps the session on the toolset it returns; it must
+    not call :meth:`remote` lazily from a tool at run time.
+
+    :meth:`remote` is bounded to the ``mcp`` grants of the same agent: it
+    returns the worker's shared session for a server the agent's own artifact
+    declared, and nothing else. Calls made through that session go to the
+    shared connection directly, so they bypass the ``include``/``exclude``
+    filter of the ``mcp`` grant.
+    """
+
+    @property
+    def agent(self) -> str:
+        """Name of the plan being built."""
+        ...
+
+    @property
+    def container(self) -> LoomContainer:
+        """Application container the factory may resolve services from."""
+        ...
+
+    def remote(self, server: str) -> McpSession:
+        """Return the agent's shared session for one of its ``mcp`` servers.
+
+        Args:
+            server: Server name as the agent's ``mcp`` grant declares it.
+
+        Returns:
+            The session the agent's own ``mcp`` toolset runs over.
+
+        Raises:
+            AgentCompilationError: When the agent has no ``mcp`` grant on that
+                server.
+        """
+        ...
+
+
+ToolsetFactory: TypeAlias = Callable[..., object]
+"""Target of a ``kind: python`` capability, validated at compile time.
+
+Called exactly once at build as ``factory(context, **params)``: the first
+positional is a :class:`ToolsetContext`, and the artifact's ``params`` arrive
+as keyword arguments. A factory declares its own named parameters, with
+defaults, and returns the engine-facing toolset. The parameter names are
+checked against the signature at compile time; a plain ``Callable`` alias
+rather than a Protocol, because a Protocol fixing ``**params`` would reject
+every factory that names them.
+"""
 
 
 class DepsFactory(Protocol):

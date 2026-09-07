@@ -59,6 +59,7 @@ async def test_tool_span_is_a_child_of_the_agent_span() -> None:
         observability=runtime,
         timeout_s=5.0,
         mcp=SharedMcpToolsets(),
+        mcp_grants=(),
     )
 
     agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")
@@ -87,6 +88,7 @@ async def test_a_timed_out_tool_closes_its_span_as_an_error_under_the_agent_span
         observability=runtime,
         timeout_s=0.001,
         mcp=SharedMcpToolsets(),
+        mcp_grants=(),
     )
 
     agent = runtime.open_span(Scope.AGENT, "agent_run", agent="analyst")

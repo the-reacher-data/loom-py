@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Final, NamedTuple, cast
@@ -34,6 +35,7 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from loom.ai._filters import matches
 from loom.ai._usecase import invoke_as, require_invoker
+from loom.ai.abc import McpSession, ToolsetContext
 from loom.ai.compiler import (
     AgentPlan,
     CompiledA2ACapability,
@@ -56,7 +58,7 @@ from loom.ai.engines.pydantic_ai._guards import (
     guarded_toolset,
     require_authenticated,
 )
-from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets
+from loom.ai.engines.pydantic_ai._mcp import SharedMcpToolsets, _ToolsetSession
 from loom.ai.engines.pydantic_ai._native import native_capability as _native_capability
 from loom.ai.engines.pydantic_ai._returns import (
     bounded_return,
@@ -77,6 +79,7 @@ from loom.ai.errors import (
     AgentRunErrorCode,
     provider_not_installed,
     python_factory_not_callable,
+    python_remote_not_granted,
 )
 from loom.core.di import LoomContainer
 from loom.core.engine.compilable import Compilable
@@ -321,17 +324,73 @@ def _tool_predicate(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _PythonToolsetContext:
+    """What a ``python`` factory reaches at build (:class:`~loom.ai.abc.ToolsetContext`).
+
+    The remotes are resolved before the factory runs, one per ``mcp`` grant of
+    the plan, so :meth:`remote` is a lookup and never opens anything.
+
+    Attributes:
+        agent: Name of the plan being built.
+        container: Application container the factory may resolve from.
+        factory_ref: The artifact's factory reference, named in the failure.
+        remotes: The agent's shared MCP sessions, by granted server name.
+    """
+
+    agent: str
+    container: LoomContainer
+    factory_ref: str
+    remotes: Mapping[str, McpSession]
+
+    def remote(self, server: str) -> McpSession:
+        """Return the agent's shared session for one of its ``mcp`` servers.
+
+        Raises:
+            AgentCompilationError: When the agent has no ``mcp`` grant on
+                ``server``, whatever the worker knows about it.
+        """
+        session = self.remotes.get(server)
+        if session is None:
+            raise AgentCompilationError(
+                [python_remote_not_granted(self.agent, self.factory_ref, server)]
+            )
+        return session
+
+
+def _python_context(
+    capability: CompiledPythonCapability, context: BuildContext
+) -> _PythonToolsetContext:
+    """Build the factory's context over the plan's own ``mcp`` grants.
+
+    Each session wraps the very toolset ``for_build`` hands the agent's ``mcp``
+    capability, so a factory that reuses a remote shares the worker's one
+    connection to it rather than opening a second.
+    """
+    remotes = {
+        grant.server: _ToolsetSession(context.mcp.for_build(grant, context.agent))
+        for grant in context.mcp_grants
+    }
+    return _PythonToolsetContext(
+        agent=context.agent,
+        container=context.container,
+        factory_ref=capability.factory_ref,
+        remotes=remotes,
+    )
+
+
 def _python_toolset(
     capability: CompiledPythonCapability, context: BuildContext
 ) -> AbstractToolset[Any]:
-    """Call the resolved factory once, at build, with the application container.
+    """Call the resolved factory once, at build, with its toolset context.
 
     The declared ``params`` are splatted as keyword arguments. The produced
     toolset is first-party code that can reach anything the container reaches,
     so its tools sit behind the same authenticated boundary a ``usecase`` tool
     does.
     """
-    toolset = capability.factory(context.container, **capability.params)
+    python_context: ToolsetContext = _python_context(capability, context)
+    toolset = capability.factory(python_context, **capability.params)
     if not isinstance(toolset, AbstractToolset):
         raise AgentCompilationError(
             [python_factory_not_callable(context.agent, capability.factory_ref)]
@@ -510,9 +569,9 @@ def build_toolsets(
 
     Args:
         plan: Compiled plan whose capabilities carry resolved handles.
-        container: Application container; a ``python`` factory receives it here,
-            at build time, and every other toolset resolves through the
-            per-invocation bundle instead.
+        container: Application container; a ``python`` factory receives it on
+            its context here, at build time, and every other toolset resolves
+            through the per-invocation bundle instead.
         mcp: The worker's MCP toolsets. Passing the *same* store for every plan
             is what makes an ``mcp`` grant reuse the connection the runtime
             already opened instead of adding one per agent.
