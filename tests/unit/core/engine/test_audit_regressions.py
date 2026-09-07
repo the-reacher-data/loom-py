@@ -8,35 +8,35 @@ the transaction is out of the context.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, ClassVar
 
 import pytest
 
 from loom.core.engine.compiler import UseCaseCompiler
-from loom.core.engine.events import EventKind, RuntimeEvent
+from loom.core.engine.events import EventKind
 from loom.core.engine.executor import RuntimeExecutor
 from loom.core.engine.post_commit import PostCommitError, active_channel
 from loom.core.job.context import add_pending_dispatch
-from loom.core.repository.sqlalchemy.transactional import _mutations, get_active_session
+from loom.core.repository.sqlalchemy.transactional import get_active_session
 from loom.core.repository.sqlalchemy.uow import SQLAlchemyUnitOfWorkFactory
 from loom.core.uow.abc import UnitOfWork
-from loom.core.uow.context import get_active_uow
 from loom.core.use_case.use_case import UseCase
+
+from ._lifecycle_doubles import (
+    Boom,
+    Broker,
+    Dispatching,
+    DispatchThenFail,
+    Log,
+    Metrics,
+    Ok,
+    cancel_mid_flight,
+    context_is_clean,
+)
 
 # ---------------------------------------------------------------------------
 # Doubles
 # ---------------------------------------------------------------------------
-
-
-class _Log:
-    """Ordered log shared by every double of one scenario."""
-
-    def __init__(self) -> None:
-        self.entries: list[str] = []
-
-    def __call__(self, entry: str) -> None:
-        self.entries.append(entry)
 
 
 class _StubUoW:
@@ -46,7 +46,7 @@ class _StubUoW:
 
     def __init__(
         self,
-        log: _Log,
+        log: Log,
         *,
         commit_raises: Exception | None = None,
         begin_raises: Exception | None = None,
@@ -90,7 +90,7 @@ class _StubUoW:
 
 
 class _StubUoWFactory:
-    def __init__(self, log: _Log, **options: Any) -> None:
+    def __init__(self, log: Log, **options: Any) -> None:
         self._log = log
         self._options = options
         self.created: list[_StubUoW] = []
@@ -101,46 +101,8 @@ class _StubUoWFactory:
         return uow
 
 
-class _Metrics:
-    def __init__(self, log: _Log | None = None) -> None:
-        self.events: list[RuntimeEvent] = []
-        self._log = log
-
-    def on_event(self, event: RuntimeEvent) -> None:
-        self.events.append(event)
-        if self._log is not None:
-            self._log(f"event.{event.kind.name}")
-
-    def kinds(self) -> list[EventKind]:
-        return [event.kind for event in self.events]
-
-    def only(self, kind: EventKind) -> RuntimeEvent:
-        matching = [event for event in self.events if event.kind is kind]
-        assert len(matching) == 1, matching
-        return matching[0]
-
-
-class _Broker:
-    """Job service double: ``dispatch`` enqueues a send on the channel."""
-
-    def __init__(self, log: _Log) -> None:
-        self._log = log
-        self.sent: list[str] = []
-        self.failing: set[str] = set()
-
-    def dispatch(self, job_name: str) -> None:
-        def send() -> None:
-            self._log(f"broker.send({job_name}) uow={get_active_uow() is not None}")
-            if job_name in self.failing:
-                raise ConnectionError("broker down")
-            self.sent.append(job_name)
-
-        add_pending_dispatch(send)
-        self._log(f"dispatch.queued({job_name})")
-
-
 class _FakeSession:
-    def __init__(self, log: _Log) -> None:
+    def __init__(self, log: Log) -> None:
         self._log = log
 
     async def commit(self) -> None:
@@ -151,7 +113,7 @@ class _FakeSession:
 
 
 class _FakeSessionCM:
-    def __init__(self, log: _Log) -> None:
+    def __init__(self, log: Log) -> None:
         self._log = log
         self.session = _FakeSession(log)
         self.exits = 0
@@ -166,7 +128,7 @@ class _FakeSessionCM:
 
 
 class _FakeSessionManager:
-    def __init__(self, log: _Log) -> None:
+    def __init__(self, log: Log) -> None:
         self._log = log
         self.cms: list[_FakeSessionCM] = []
 
@@ -176,81 +138,11 @@ class _FakeSessionManager:
         return cm
 
 
-# ---------------------------------------------------------------------------
-# Use cases
-# ---------------------------------------------------------------------------
-
-
-class _Ok(UseCase[Any, str]):
-    async def execute(self, value: str) -> str:
-        return value
-
-
-class _Boom(UseCase[Any, str]):
-    async def execute(self, value: str) -> str:
-        raise RuntimeError("boom")
-
-
-class _Hang(UseCase[Any, str]):
-    async def execute(self, value: str) -> str:
-        await asyncio.sleep(10)
-        return value
-
-
-class _Dispatching(UseCase[Any, str]):
-    def __init__(self, broker: _Broker) -> None:
-        self._broker = broker
-
-    async def execute(self, value: str) -> str:
-        self._broker.dispatch(value)
-        return value
-
-
-class _DispatchThenFail(UseCase[Any, str]):
-    def __init__(self, broker: _Broker) -> None:
-        self._broker = broker
-
-    async def execute(self, value: str) -> str:
-        self._broker.dispatch(value)
-        raise RuntimeError("after dispatch")
-
-
 def _executor(
     factory: _StubUoWFactory | SQLAlchemyUnitOfWorkFactory | None = None,
-    metrics: _Metrics | None = None,
+    metrics: Metrics | None = None,
 ) -> RuntimeExecutor:
     return RuntimeExecutor(UseCaseCompiler(), uow_factory=factory, metrics=metrics)
-
-
-def _context_is_clean() -> bool:
-    return (
-        get_active_session() is None
-        and get_active_uow() is None
-        and active_channel() is None
-        and _mutations.get() is None
-    )
-
-
-async def _cancel_mid_flight(executor: RuntimeExecutor) -> None:
-    """Cancel a hanging execution and check the context from inside the task.
-
-    The task runs in a copied context, so the check must happen there: the
-    caller's context would look clean even if the adapter leaked.
-    """
-    observed: list[bool] = []
-
-    async def run() -> None:
-        try:
-            await executor.execute(_Hang(), params={"value": "x"})
-        finally:
-            observed.append(_context_is_clean())
-
-    task = asyncio.create_task(run())
-    await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert observed == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -259,51 +151,51 @@ async def _cancel_mid_flight(executor: RuntimeExecutor) -> None:
 
 
 class TestF01SessionClosed:
-    def _sqlalchemy_executor(self, log: _Log) -> tuple[RuntimeExecutor, _FakeSessionManager]:
+    def _sqlalchemy_executor(self, log: Log) -> tuple[RuntimeExecutor, _FakeSessionManager]:
         manager = _FakeSessionManager(log)
         # The fake stands in for the real SessionManager.
         factory = SQLAlchemyUnitOfWorkFactory(manager)  # type: ignore[arg-type]
         return _executor(factory), manager
 
     async def test_commit_path_exits_the_session_once_and_unbinds_everything(self) -> None:
-        log = _Log()
+        log = Log()
         executor, manager = self._sqlalchemy_executor(log)
 
-        await executor.execute(_Ok(), params={"value": "x"})
+        await executor.execute(Ok(), params={"value": "x"})
 
         assert [cm.exits for cm in manager.cms] == [1]
         assert log.entries == ["session_cm.enter", "session.commit", "session_cm.exit"]
-        assert _context_is_clean()
+        assert context_is_clean()
 
     async def test_rollback_path_exits_the_session_once_and_unbinds_everything(self) -> None:
-        log = _Log()
+        log = Log()
         executor, manager = self._sqlalchemy_executor(log)
 
         with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(_Boom(), params={"value": "x"})
+            await executor.execute(Boom(), params={"value": "x"})
 
         assert [cm.exits for cm in manager.cms] == [1]
         assert log.entries == ["session_cm.enter", "session.rollback", "session_cm.exit"]
-        assert _context_is_clean()
+        assert context_is_clean()
 
     async def test_cancellation_path_exits_the_session_once_and_unbinds_everything(
         self,
     ) -> None:
-        log = _Log()
+        log = Log()
         executor, manager = self._sqlalchemy_executor(log)
 
-        await _cancel_mid_flight(executor)
+        await cancel_mid_flight(executor)
 
         assert [cm.exits for cm in manager.cms] == [1]
         assert log.entries == ["session_cm.enter", "session.rollback", "session_cm.exit"]
-        assert _context_is_clean()
+        assert context_is_clean()
 
     async def test_a_later_execution_opens_its_own_session(self) -> None:
-        log = _Log()
+        log = Log()
         executor, manager = self._sqlalchemy_executor(log)
-        await executor.execute(_Ok(), params={"value": "x"})
+        await executor.execute(Ok(), params={"value": "x"})
 
-        await executor.execute(_Ok(), params={"value": "y"})
+        await executor.execute(Ok(), params={"value": "y"})
 
         assert [cm.exits for cm in manager.cms] == [1, 1]
         assert get_active_session() is None
@@ -316,32 +208,32 @@ class TestF01SessionClosed:
 
 class TestF02DispatchAfterClose:
     async def test_without_unit_of_work_the_dispatch_is_sent_at_the_end(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
 
-        await _executor().execute(_Dispatching(broker), params={"value": "job-A"})
+        await _executor().execute(Dispatching(broker), params={"value": "job-A"})
 
         assert broker.sent == ["job-A"]
         assert log.entries == ["dispatch.queued(job-A)", "broker.send(job-A) uow=False"]
         assert active_channel() is None
 
     async def test_read_only_execution_sends_at_the_end_and_leaks_nothing(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         executor = _executor(_StubUoWFactory(log))
 
-        await executor.execute(_Dispatching(broker), params={"value": "job-B"}, read_only=True)
+        await executor.execute(Dispatching(broker), params={"value": "job-B"}, read_only=True)
         assert broker.sent == ["job-B"]
 
-        await _executor(_StubUoWFactory(_Log())).execute(_Ok(), params={"value": "unrelated"})
+        await _executor(_StubUoWFactory(Log())).execute(Ok(), params={"value": "unrelated"})
         assert broker.sent == ["job-B"]
 
     async def test_under_a_unit_of_work_the_send_happens_after_the_close(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         executor = _executor(_StubUoWFactory(log))
 
-        await executor.execute(_Dispatching(broker), params={"value": "job-C"})
+        await executor.execute(Dispatching(broker), params={"value": "job-C"})
 
         assert log.entries == [
             "uow.begin",
@@ -352,27 +244,27 @@ class TestF02DispatchAfterClose:
         ]
 
     async def test_failed_execution_discards_and_never_leaks_into_a_later_one(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         executor = _executor(_StubUoWFactory(log))
 
         with pytest.raises(RuntimeError, match="after dispatch"):
-            await executor.execute(_DispatchThenFail(broker), params={"value": "job-D"})
-        await executor.execute(_Ok(), params={"value": "later"})
+            await executor.execute(DispatchThenFail(broker), params={"value": "job-D"})
+        await executor.execute(Ok(), params={"value": "later"})
 
         assert broker.sent == []
         assert "broker.send(job-D) uow=False" not in log.entries
 
     async def test_broker_failure_after_commit_is_a_post_commit_error(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         broker.failing.add("job-E")
         factory = _StubUoWFactory(log)
-        metrics = _Metrics(log)
+        metrics = Metrics(log)
         executor = _executor(factory, metrics)
 
         with pytest.raises(PostCommitError) as info:
-            await executor.execute(_Dispatching(broker), params={"value": "job-E"})
+            await executor.execute(Dispatching(broker), params={"value": "job-E"})
 
         assert info.value.committed is True
         assert [type(failure) for failure in info.value.failures] == [ConnectionError]
@@ -390,13 +282,13 @@ class TestF02DispatchAfterClose:
 
 class TestF07TerminalEvent:
     async def test_commit_failure_emits_exec_error_and_rolls_back_once(self) -> None:
-        log = _Log()
-        metrics = _Metrics(log)
+        log = Log()
+        metrics = Metrics(log)
         factory = _StubUoWFactory(log, commit_raises=RuntimeError("commit failed"))
         executor = _executor(factory, metrics)
 
         with pytest.raises(RuntimeError, match="commit failed"):
-            await executor.execute(_Ok(), params={"value": "x"})
+            await executor.execute(Ok(), params={"value": "x"})
 
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
         error = metrics.only(EventKind.EXEC_ERROR)
@@ -408,26 +300,26 @@ class TestF07TerminalEvent:
         assert log.entries.index("uow.closed") < log.entries.index("event.EXEC_ERROR")
 
     async def test_begin_failure_emits_exec_start_then_exec_error(self) -> None:
-        log = _Log()
-        metrics = _Metrics(log)
+        log = Log()
+        metrics = Metrics(log)
         factory = _StubUoWFactory(log, begin_raises=ConnectionError("no database"))
         executor = _executor(factory, metrics)
 
         with pytest.raises(ConnectionError, match="no database"):
-            await executor.execute(_Ok(), params={"value": "x"})
+            await executor.execute(Ok(), params={"value": "x"})
 
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
         assert metrics.only(EventKind.EXEC_ERROR).error_kind == "begin"
         assert log.entries == ["event.EXEC_START", "uow.begin", "event.EXEC_ERROR"]
-        assert _context_is_clean()
+        assert context_is_clean()
 
     async def test_business_failure_emits_exec_error_after_the_rollback(self) -> None:
-        log = _Log()
-        metrics = _Metrics(log)
+        log = Log()
+        metrics = Metrics(log)
         executor = _executor(_StubUoWFactory(log), metrics)
 
         with pytest.raises(RuntimeError, match="boom"):
-            await executor.execute(_Boom(), params={"value": "x"})
+            await executor.execute(Boom(), params={"value": "x"})
 
         error = metrics.only(EventKind.EXEC_ERROR)
         assert error.error_kind == "business"
@@ -441,23 +333,23 @@ class TestF07TerminalEvent:
         ]
 
     async def test_cancellation_emits_exec_error_with_error_kind_cancelled(self) -> None:
-        log = _Log()
-        metrics = _Metrics(log)
+        log = Log()
+        metrics = Metrics(log)
         executor = _executor(_StubUoWFactory(log), metrics)
 
-        await _cancel_mid_flight(executor)
+        await cancel_mid_flight(executor)
 
         assert metrics.kinds() == [EventKind.EXEC_START, EventKind.EXEC_ERROR]
         assert metrics.only(EventKind.EXEC_ERROR).error_kind == "cancelled"
         assert "uow.rollback" in log.entries
-        assert _context_is_clean()
+        assert context_is_clean()
 
     async def test_exec_done_is_emitted_after_the_close_with_timings(self) -> None:
-        log = _Log()
-        metrics = _Metrics(log)
+        log = Log()
+        metrics = Metrics(log)
         executor = _executor(_StubUoWFactory(log), metrics)
 
-        await executor.execute(_Ok(), params={"value": "x"})
+        await executor.execute(Ok(), params={"value": "x"})
 
         assert log.entries == [
             "event.EXEC_START",
@@ -473,9 +365,9 @@ class TestF07TerminalEvent:
         assert done.duration_ms >= done.pipeline_ms
 
     async def test_without_unit_of_work_exec_done_carries_no_commit_time(self) -> None:
-        metrics = _Metrics()
+        metrics = Metrics()
 
-        await _executor(metrics=metrics).execute(_Ok(), params={"value": "x"})
+        await _executor(metrics=metrics).execute(Ok(), params={"value": "x"})
 
         done = metrics.only(EventKind.EXEC_DONE)
         assert done.pipeline_ms is not None
@@ -489,14 +381,14 @@ class TestF07TerminalEvent:
 
 class TestNestedExecutions:
     async def test_inner_joins_the_outer_unit_of_work_and_channel(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         factory = _StubUoWFactory(log)
         executor = _executor(factory)
 
         class _Outer(UseCase[Any, str]):
             async def execute(self, value: str) -> str:
-                inner = await executor.execute(_Dispatching(broker), params={"value": "inner"})
+                inner = await executor.execute(Dispatching(broker), params={"value": "inner"})
                 broker.dispatch("outer")
                 return inner
 
@@ -514,8 +406,8 @@ class TestNestedExecutions:
         ]
 
     async def test_inner_with_its_own_unit_of_work_drains_right_after_its_close(self) -> None:
-        log = _Log()
-        broker = _Broker(log)
+        log = Log()
+        broker = Broker(log)
         factory = _StubUoWFactory(log)
         executor = _executor(factory)
 
@@ -523,7 +415,7 @@ class TestNestedExecutions:
             read_only = True
 
             async def execute(self, value: str) -> str:
-                await executor.execute(_Dispatching(broker), params={"value": "inner"})
+                await executor.execute(Dispatching(broker), params={"value": "inner"})
                 log("outer.after_inner")
                 raise RuntimeError("outer fails after the inner committed")
 
@@ -541,14 +433,14 @@ class TestNestedExecutions:
         ]
 
     async def test_an_action_that_executes_a_use_case_opens_its_own_lifecycle(self) -> None:
-        log = _Log()
+        log = Log()
         factory = _StubUoWFactory(log)
         executor = _executor(factory)
 
         class _FromAction(UseCase[Any, str]):
             async def execute(self, value: str) -> str:
                 async def run_again() -> None:
-                    await executor.execute(_Ok(), params={"value": "again"})
+                    await executor.execute(Ok(), params={"value": "again"})
 
                 add_pending_dispatch(run_again)
                 return value
